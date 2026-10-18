@@ -538,8 +538,8 @@ struct WorkspaceRightRailView: View {
             checkDockerEnvironments()
         }
         .task(id: signature) { rebuildCapabilityRailSnapshot(for: signature) }
-        // Contextual repairs (GitHub repository access) describe one checkout.
-        .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshCapabilityPrerequisiteStatuses() }
+        .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshCapabilityPrerequisiteStatuses() } // one checkout's repairs
+        .rescansPrerequisitesOnActivation { refreshCapabilityPrerequisiteStatuses() } // CLI state changed outside ASTRA
         .onChange(of: workspace.primaryPath) {
             loadSSHConnections()
             checkGitRepositories()

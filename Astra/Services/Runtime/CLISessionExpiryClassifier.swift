@@ -283,7 +283,9 @@ enum CLISessionExpiryClassifier {
 
     /// A GitHub check still aimed at github.com while the resumed run's
     /// `GH_HOST` (else its `GH_REPO`'s host) names an enterprise host checks
-    /// that host instead: `gh` sends that run's calls there.
+    /// that host instead: `gh` sends that run's calls there. Its sign-in
+    /// (`gh auth login`) signs in to that host too, so Sign in and the check
+    /// agree: `GH_REPO` is not carried into Terminal.
     static func checkingLaunchHost(_ repair: RepairAction) -> RepairAction {
         let environment = repair.checkEnvironment ?? [:]
         guard let binary = repair.checkBinary, (binary as NSString).lastPathComponent == "gh",
@@ -292,6 +294,11 @@ enum CLISessionExpiryClassifier {
         else { return repair }
         var hosted = repair
         hosted.checkArguments = gitHub.onHost(host).checkArguments
+        if let command = repair.command, command == binary + gitHub.signInCommand.dropFirst(gitHub.checkBinary.count) {
+            let retargeted = "\(command) --hostname \(host)"
+            hosted.command = retargeted
+            hosted.detail = repair.detail.replacingOccurrences(of: "`\(command)`", with: "`\(retargeted)`")
+        }
         return hosted
     }
 
@@ -320,10 +327,12 @@ enum CLISessionExpiryClassifier {
 
     /// True when `command` runs `cli` with another command after it that
     /// decides the line's exit status, or inside a substitution whose
-    /// enclosing command is another program, so the CLI could fail while the
-    /// line succeeds. A CLI that runs last, alone or after `&&`, does not
-    /// count: its own success is the line's. Nor does `token=$(gh auth token)`,
-    /// which exits with the substitution's status.
+    /// enclosing command is another program, or as the condition of an `if`,
+    /// `elif`, `while` or `until` (which succeeds whether or not its
+    /// condition does), so the CLI could fail while the line succeeds. A CLI
+    /// that runs last, alone or after `&&`, does not count: its own success
+    /// is the line's. Nor does `token=$(gh auth token)`, which exits with the
+    /// substitution's status.
     static func masksExitStatus(of cli: String, in command: String) -> Bool {
         let segments = segments(command)
         return segments.indices.contains { index in
@@ -331,15 +340,29 @@ enum CLISessionExpiryClassifier {
             guard executes(cli, segment.words) else { return false }
             return segment.enclosingCommands.contains { !executes(cli, $0) }
                 || negates(segment.words)
+                || isCondition(segment.words)
                 || (index < segments.count - 1 && statusMaskingSeparators.contains(segment.separator))
         }
     }
 
+    /// Shell reserved words that open or continue a compound command: the
+    /// word after one is a command (`if gh auth status; then …; fi`).
+    private static let reservedWords: Set<String> = ["if", "then", "elif", "else", "fi", "while", "until", "do", "done", "!"]
+
+    /// Reserved words whose command is a condition.
+    private static let conditionWords: Set<String> = ["if", "elif", "while", "until"]
+
+    /// True when this command is a compound command's condition (`if gh
+    /// auth status`, `then if ! gh …`).
+    private static func isCondition(_ words: [String]) -> Bool {
+        words.prefix { reservedWords.contains($0) }.contains { conditionWords.contains($0) }
+    }
+
     /// True when the shell negates this command's status (`! gh auth
-    /// status`, also after the `time` keyword): the line succeeds exactly
-    /// when the CLI fails.
+    /// status`, also after the `time` keyword or a reserved word such as
+    /// `then`): the line succeeds exactly when the CLI fails.
     private static func negates(_ words: [String]) -> Bool {
-        var rest = words[...]
+        var rest = words.drop { reservedWords.contains($0) && $0 != "!" }
         if rest.first == "time" { rest = rest.dropFirst().drop { $0.hasPrefix("-") } }
         return rest.first == "!"
     }
@@ -525,8 +548,9 @@ enum CLISessionExpiryClassifier {
                 assignments.append(words.removeFirst())
                 continue
             }
-            // The shell's negation runs the command after it (`! gh …`).
-            if first.hasPrefix("$(") || first == "!" {
+            // The shell's negation and compound-command reserved words run
+            // the command after them (`! gh …`, `if gh …; then gh …; fi`).
+            if first.hasPrefix("$(") || reservedWords.contains(first) {
                 words.removeFirst()
                 continue
             }

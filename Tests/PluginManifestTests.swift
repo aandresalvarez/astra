@@ -179,6 +179,23 @@ struct PluginManifestTests {
         )) { try PluginManifestConverter.checkedPackage(from: account) }
     }
 
+    @Test("Two setup components sharing a name but checking different CLIs both round-trip")
+    func sameNamedSetupComponentsRoundTripByPosition() throws {
+        var manifest = PluginManifestConverter.manifest(from: try builtIn("gcloud-workflow"))
+        var twin = try #require(manifest.components.first { $0.kind == .setup && $0.name == "Google Cloud login" })
+        twin.setup.check?.arguments = ["auth", "list", "--filter=status:ACTIVE", "--format=value(account)"]
+        manifest.components.append(twin)
+        let package = try PluginManifestConverter.checkedPackage(from: manifest)
+        let logins = package.prerequisites.filter { $0.displayName == "Google Cloud login" }
+        #expect(logins.map(\.livenessArgs).last == twin.setup.check?.arguments)
+        #expect(logins.count == 2)
+        // A dropped step on the twin is still refused, named by its component.
+        manifest.components[manifest.components.count - 1].setup.verify = PluginSetupStep(kind: .exec, binary: "gcloud")
+        #expect(throws: PluginManifestError.unrepresentableSetup(component: "Google Cloud login")) {
+            try PluginManifestConverter.checkedPackage(from: manifest)
+        }
+    }
+
     @Test("A hint's first backticked command is the repair command")
     func firstCommandExtraction() {
         #expect(PluginManifestConverter.firstCommand("Run `gh auth login`.") == "gh auth login")

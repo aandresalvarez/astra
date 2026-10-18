@@ -244,6 +244,29 @@ struct PluginRepairTests {
         #expect(PluginRepairCoordinator.checkExecutablePath(name, environment: repair.checkEnvironment ?? [:]) == "\(broken)/\(name)")
         #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
     }
+
+    @Test("A repair check applies its semantic test to stderr too: a down Docker daemon is not verified")
+    func liveCheckAppliesEverySemanticTest() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-repair-semantic-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let name = "astra-docker-\(UUID().uuidString.prefix(8))"
+        let file = root.appendingPathComponent(name)
+        func script(stderr: String) throws {
+            try "#!/bin/sh\necho 'Client: 27.0.0'\necho '\(stderr)' >&2\nexit 0\n".write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        }
+        var repair = RepairAction(strategy: .terminal, componentName: "Docker", title: "Docker", verb: "Check", detail: "")
+        repair.checkBinary = name
+        repair.checkArguments = ["version"]
+        repair.checkExpect = SemanticCheck.stderrNoDaemonError.rawValue
+        repair.checkEnvironment = ["PATH": "\(root.path):/usr/bin:/bin"]
+        try script(stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?")
+        #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+        try script(stderr: "")
+        #expect(await PluginRepairCoordinator.liveCheck(repair))
+    }
 }
 
 private actor CheckScript {

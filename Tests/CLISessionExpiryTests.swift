@@ -262,6 +262,52 @@ struct CLISessionExpiryTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("Sign in signs in to the Enterprise host the launch's GH_REPO or GH_HOST selects, the host Resume checks")
+    @MainActor
+    func signInTargetsLaunchSelectedHost() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Enterprise", primaryPath: NSTemporaryDirectory())
+        context.insert(workspace)
+        let repair = CLISessionExpiryClassifier.gitHub.repair
+        for (key, value, expected) in [
+            ("GH_REPO", "github.example.com/team/app", "gh auth login --hostname github.example.com"),
+            ("GH_HOST", "github.example.com", "env GH_HOST='github.example.com' gh auth login --hostname github.example.com")
+        ] {
+            let task = AgentTask(title: "PRs", goal: "List GitHub Enterprise pull requests", workspace: workspace, runtime: .claudeCode)
+            task.skillSnapshots = [SkillSnapshotConfig(
+                id: UUID().uuidString, name: "Enterprise Agent", icon: "lock", description: "GitHub Enterprise",
+                allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+                environmentKeys: [key], environmentValues: [value], isGlobal: false,
+                connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+                createdAt: Date(), updatedAt: Date()
+            )]
+            context.insert(task)
+            let run = TaskRun(task: task)
+            context.insert(run)
+            let events = [snapshot(task, run, TaskEventTypes.System.runtimeRepairRequired, repair.encoded())]
+
+            let targeted = try #require(TaskRunStopEvidence.signInRepair(events: events, runID: run.id, task: task))
+            #expect(targeted.command == expected, "\(key)")
+            #expect(targeted.detail.contains("`gh auth login --hostname github.example.com`"), "\(key)")
+            #expect(targeted.checkArguments == ["auth", "status", "--hostname", "github.example.com"], "\(key)")
+            let command = try #require(targeted.command)
+            #expect(RepairAction.isSafeTerminalCommand(command, binary: "gh", allowsInstaller: false, allowsStoreSelectors: true))
+            let launcher = RecordingTerminal()
+            RepairActionRunner.run(targeted, terminal: launcher)
+            #expect(launcher.launched == [expected], "\(key)")
+        }
+        // A github.com repository keeps the default sign-in.
+        var projected = repair
+        projected.checkEnvironment = ["GH_REPO": "team/app"]
+        #expect(CLISessionExpiryClassifier.checkingLaunchHost(projected).command == "gh auth login")
+        withExtendedLifetime(container) {}
+    }
+
     @Test("A rejected Enterprise token stops with token guidance and keeps the host it targeted")
     func gitHubEnterpriseTokenIsRecognised() throws {
         for variable in ["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"] {
@@ -366,6 +412,31 @@ struct CLISessionExpiryTests {
         }
         #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: "! cat notes.md", failed: false) == nil)
         #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: "echo ! gh auth status", failed: false) == nil)
+    }
+
+    @Test("A CLI in a shell conditional runs, and as the condition its failure is masked")
+    func shellConditionalsRunAndMaskTheCLI() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in [
+            "if gh auth status; then echo ok; fi", "if ! gh auth status; then echo out; fi",
+            "if true; then echo a; elif gh auth status; then echo b; fi",
+            "while gh pr list; do sleep 1; done", "until gh auth status; do sleep 5; done",
+            "if test -d .git; then if gh auth status; then echo ok; fi; fi",
+            // No later command decides this line's status: the `if` does.
+            "if gh auth status && echo signed-in; then :; fi"
+        ] {
+            #expect(CLISessionExpiryClassifier.runs("gh", in: command), "not run: \(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) != nil, "missed failed: \(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) != nil, "missed: \(command)")
+        }
+        // A CLI in a branch body runs too.
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "if test -d .git; then gh pr list; else gh repo list; fi"))
+        #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: "if true; then gh api user; fi") != nil)
+        // Plain reads that quote the error, inside a conditional or not, never stop.
+        for command in ["cat notes.md", "if cat notes.md; then echo ok; fi", "if grep -q 'gh auth login' notes.md; then echo; fi", "echo if gh auth status"] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) == nil, "stopped: \(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) == nil, "stopped: \(command)")
+        }
     }
 
     @Test("A substitution inside another command masks the CLI's failure; an assignment does not")

@@ -118,6 +118,15 @@ enum PluginsSurfacePresentation {
         return haystack.contains { $0.lowercased().contains(needle) }
     }
 
+    /// What a failing component's row shows before its repair button: the
+    /// command the button runs, or, for a repair that runs nothing (prose
+    /// guidance such as "Start Docker Desktop…"), that guidance, so Check
+    /// is never offered without saying what to fix first.
+    static func repairGuidance(_ repair: RepairAction) -> (text: String, isCommand: Bool) {
+        if let command = repair.command { return (command, true) }
+        return (repair.detail, false)
+    }
+
     /// The required accounts an added plugin has no working sign-in for: a
     /// pending step each. Google is the only provider ASTRA signs in to, so
     /// any other stays pending.
