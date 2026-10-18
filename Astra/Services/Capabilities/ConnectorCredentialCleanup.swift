@@ -177,10 +177,17 @@ enum ConnectorCredentialCleanup {
     /// saved is rolled back with the workspace's membership arrays, which
     /// rollback doesn't restore, so no later save commits it without its
     /// cleanup. False when it was rolled back.
+    ///
+    /// `save` exports `workspace`'s mirror; every other workspace whose
+    /// plugins bound the account is exported here once it is saved, so no
+    /// mirror keeps the deleted account (a cleanup that ran at once leaves no
+    /// record for a later pass to rewrite them by). `exportMirror` stands in
+    /// for `WorkspaceConfigManager.autoExport` in tests.
     @discardableResult
     static func deleteConnector(
         _ connector: Connector, in workspace: Workspace, modelContext: ModelContext,
         store: ConnectorCredentialCleanupStore? = nil,
+        exportMirror: ((Workspace) -> Void)? = nil,
         save: () -> Bool
     ) -> Bool {
         var seen = Set<UUID>()
@@ -197,6 +204,13 @@ enum ConnectorCredentialCleanup {
                 WorkspaceCapabilityActivation.restore(membership, to: affectedWorkspace)
             }
             return false
+        }
+        for affectedWorkspace in affected where affectedWorkspace.id != workspace.id {
+            if let exportMirror {
+                exportMirror(affectedWorkspace)
+            } else {
+                WorkspaceConfigManager.autoExport(workspace: affectedWorkspace, modelContext: modelContext)
+            }
         }
         return true
     }

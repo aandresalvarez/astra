@@ -285,6 +285,49 @@ struct RetryInterruptedRunTests {
         }
     }
 
+    @Test("The GitHub check targets the enterprise host and token the resumed run gets")
+    func gitHubCheckUsesEnterpriseHost() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Enterprise", primaryPath: env.root)
+            let task = AgentTask(title: "Token", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            task.skillSnapshots = [SkillSnapshotConfig(
+                id: UUID().uuidString, name: "GitHub Agent", icon: "key", description: "GitHub pull requests",
+                allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+                environmentKeys: ["GH_HOST", "GH_ENTERPRISE_TOKEN", "UNRELATED"],
+                environmentValues: ["github.example.com", "enterprise-token", "x"], isGlobal: false,
+                connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+                createdAt: Date(), updatedAt: Date()
+            )]
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = CLISessionExpiryClassifier.gitHub
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
+            try env.context.save()
+            var checks: [(environment: [String: String]?, arguments: [String]?)] = []
+            env.coordinator.repairCheck = { repair in
+                checks.append((repair.checkEnvironment, repair.checkArguments))
+                return false
+            }
+
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(checks.map(\.environment) == [["GH_HOST": "github.example.com", "GH_ENTERPRISE_TOKEN": "enterprise-token"]])
+            #expect(checks.map(\.arguments) == [["auth", "status", "--hostname", "github.example.com"]], "retry: \(useRetry)")
+        }
+    }
+
     @Test("The gcloud check runs with the credential-selecting variables the resumed run gets")
     func gcloudCheckUsesLaunchEnvironment() async throws {
         for useRetry in [false, true] {

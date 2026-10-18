@@ -39,6 +39,9 @@ enum CapabilityRuntimeResourceMatcher {
         ].joined(separator: "|")
     }
 
+    /// A launch copy whose request froze its plugins' definitions
+    /// (`Workspace.launchPluginDefinitions`) resolves against those instead
+    /// of the library, under the same policy gates.
     static func enabledPackages(
         for workspace: Workspace?,
         library: CapabilityLibrary = CapabilityLibrary(),
@@ -48,8 +51,10 @@ enum CapabilityRuntimeResourceMatcher {
         guard let workspace else { return [] }
         let enabledIDs = Set(workspace.enabledCapabilityIDs)
         guard !enabledIDs.isEmpty else { return [] }
+        let definitions = workspace.launchPluginDefinitions.map { uniquePackages($0 + PluginCatalog.builtInPackages) }
+            ?? packageDefinitions(library: library)
         return packPolicyAllowedPackages(
-            packageDefinitions(library: library).filter { enabledIDs.contains($0.id) },
+            definitions.filter { enabledIDs.contains($0.id) },
             workspace: workspace,
             approvalRecords: approvalRecords,
             packPolicy: packPolicy,

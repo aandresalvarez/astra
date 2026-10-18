@@ -297,7 +297,7 @@ public struct CapabilityIconDescriptor: Codable, Sendable, Equatable {
     }
 }
 
-public struct PluginPackage: Codable, Identifiable, Sendable {
+public struct PluginPackage: Codable, Equatable, Identifiable, Sendable {
     public var formatVersion: Int
     public var id: String
     public var name: String
@@ -495,7 +495,7 @@ public struct PluginSetupRequirement: Codable, Equatable, Sendable, Identifiable
     }
 }
 
-public struct PluginSkill: Codable, Sendable {
+public struct PluginSkill: Codable, Equatable, Sendable {
     /// Stable component identity within the plugin (Plugins 2.0). Optional:
     /// without it the identity derives from the name, as rows stamped by
     /// earlier installers recorded it. Changing it is a rename only when the
@@ -530,7 +530,7 @@ public struct PluginSkill: Codable, Sendable {
     }
 }
 
-public struct PluginConnector: Codable, Sendable {
+public struct PluginConnector: Codable, Equatable, Sendable {
     /// Stable component identity within the plugin (Plugins 2.0). Optional:
     /// without it the identity derives from the name, as rows stamped by
     /// earlier installers recorded it. Changing it is a rename only when the
@@ -550,7 +550,7 @@ public struct PluginConnector: Codable, Sendable {
     public var configHints: [ConfigHint]
     public var notes: String
 
-    public struct CredentialHint: Codable, Sendable {
+    public struct CredentialHint: Codable, Equatable, Sendable {
         public var key: String
         public var hint: String
         /// Shape this credential must have, enforced at save time by
@@ -569,7 +569,7 @@ public struct PluginConnector: Codable, Sendable {
         }
     }
 
-    public struct ConfigHint: Codable, Sendable {
+    public struct ConfigHint: Codable, Equatable, Sendable {
         public var key: String
         public var hint: String
         public var isList: Bool
@@ -596,7 +596,7 @@ public struct PluginConnector: Codable, Sendable {
     }
 }
 
-public struct PluginLocalTool: Codable, Sendable {
+public struct PluginLocalTool: Codable, Equatable, Sendable {
     /// Stable component identity within the plugin (Plugins 2.0). Optional:
     /// without it the identity derives from the name, as rows stamped by
     /// earlier installers recorded it. Changing it is a rename only when the
@@ -751,7 +751,7 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-public struct PluginTemplate: Codable, Sendable {
+public struct PluginTemplate: Codable, Equatable, Sendable {
     public var name: String
     public var icon: String
     public var description: String

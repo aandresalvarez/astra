@@ -753,9 +753,10 @@ struct PluginActivationMigrationTests {
     @Test("Only the exact note the disallowed-tools migration appended counts as unedited")
     func behaviorMatchIsExact() throws {
         let note = "\nDo NOT use these tools: Write, Edit."
-        let generated = try Fixture(gcloudBehaviorSuffix: note)
+        // Folded: the list moved into the text.
+        let generated = try Fixture(gcloudBehaviorSuffix: note, gcloudDisallowedTools: [])
         #expect(try PluginActivationMigration.migrate(modelContext: generated.context, packages: generated.packages).skillsProjected == 1)
-        let extended = try Fixture(gcloudBehaviorSuffix: note + "\nAlso cite the console link.")
+        let extended = try Fixture(gcloudBehaviorSuffix: note + "\nAlso cite the console link.", gcloudDisallowedTools: [])
         let report = try PluginActivationMigration.migrate(modelContext: extended.context, packages: extended.packages)
         #expect(report.skillsProjected == 0)
         let kept = try #require(try extended.context.fetch(FetchDescriptor<Skill>()).first { $0.id == extended.gcloudSkillID })
@@ -925,6 +926,225 @@ struct PluginActivationMigrationTests {
             }
         }
     }
+
+    @Test("A failed migration that cannot take back a copied secret says so")
+    func failedSecretRollbackIsReported() throws {
+        guard AstraSecureKeychainTestSupport.isAvailable else { return }
+        let keychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
+        defer {
+            AstraSecureKeychainTestSupport.cleanup(keychainPath: keychainPath, bootstrapService: bootstrap, services: [])
+        }
+        try AstraSecureKeychainStore.$keychainPathOverride.withValue(keychainPath) {
+            try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
+                let fixture = try Fixture(gcloudSkillSecret: "s3cret")
+                #expect(SkillSecretSeam.required.saveSecretValue(
+                    "s3cret", key: "GCP_API_TOKEN", skillID: fixture.gcloudSkillID, skillName: "GCloud", allowUserInteraction: false
+                ))
+                try FileManager.default.createDirectory(
+                    at: fixture.storeDirectory.appendingPathComponent("PluginSecretCleanup.json", isDirectory: true),
+                    withIntermediateDirectories: true
+                )
+                // The copy lands; taking it back (a delete, as nothing was
+                // there before) does not.
+                #expect(throws: PluginActivationMigration.MigrationError.credentialRestoreFailed(keys: ["GCP_API_TOKEN"])) {
+                    try PluginActivationMigration.migrate(
+                        modelContext: fixture.context,
+                        packages: fixture.packagesDeclaringSecret,
+                        secrets: UndeletableSkillSecrets.self
+                    )
+                }
+                // The store side is still put back.
+                #expect(WorkspaceCapabilityActivation.activations(of: try fixture.workspace(fixture.aID)).isEmpty)
+            }
+        }
+    }
+
+    @Test("A plugin skill whose denied tools the person changed stays an authored row")
+    func editedDisallowedToolsAreKept() throws {
+        // Installed with Write and Edit denied; the person allowed Edit.
+        let fixture = try Fixture(gcloudDisallowedTools: ["Write"])
+        let report = try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        #expect(report.skillsProjected == 0)
+        let kept = try #require(try fixture.context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.gcloudSkillID })
+        #expect(kept.disallowedTools == ["Write"])
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: try fixture.workspace(fixture.aID)))
+        let component = CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0])
+        #expect(activation.overridingRowID(forComponent: component) == fixture.gcloudSkillID)
+    }
+
+    @Test("An edited tool of a shared skill kept without its plugin still replaces the plugin's tool where the plugin is on")
+    func editedToolOfIndependentSkillIsAlsoAnOverride() throws {
+        let fixture = try Fixture(componentOnlyWorkspace: true, editedToolDescription: "My own words")
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let edited = try fixture.context.fetch(FetchDescriptor<LocalTool>())
+        let editedIDs = Set(edited.map(\.id))
+        #expect(editedIDs.count == fixture.gcloud.localTools.count)
+
+        // D, which turned the skill on by itself, keeps the tools on it.
+        let skill = try #require(try fixture.context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.gcloudSkillID })
+        #expect(Set(skill.localTools.map(\.id)) == editedIDs)
+        // A, which has the plugin, runs the person's tools, not the plugin's.
+        let a = try fixture.workspace(fixture.aID)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
+        for spec in fixture.gcloud.localTools {
+            let row = activation.overridingRowID(forComponent: CapabilityResourceOrigin.componentID(for: spec))
+            #expect(row.map(editedIDs.contains) == true)
+        }
+        let task = AgentTask(title: "A", goal: "Manage GCP resources", workspace: a)
+        fixture.context.insert(task)
+        let scope = TaskCapabilityResolver(task: task).activationScope(contextText: "Manage GCP resources")
+        #expect(editedIDs.isSubset(of: Set(scope.localTools.map(\.id))))
+    }
+
+    @Test("A tool the person attached to an unedited plugin skill stays with the plugin, not in the workspace's ambient scope")
+    func authoredAttachmentStaysWithTheActivation() throws {
+        let fixture = try Fixture(authoredToolOnGCloudSkill: true)
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let toolID = try #require(fixture.authoredToolID)
+        let tool = try #require(try fixture.context.fetch(FetchDescriptor<LocalTool>()).first { $0.id == toolID })
+        // Its skill is kept as the person's override, the tool on it.
+        #expect(tool.skill?.id == fixture.gcloudSkillID)
+        let a = try fixture.workspace(fixture.aID)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
+        #expect(activation.overridingRowID(forComponent: CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0]))
+            == fixture.gcloudSkillID)
+
+        let task = AgentTask(title: "A", goal: "Manage GCP resources", workspace: a)
+        fixture.context.insert(task)
+        #expect(TaskCapabilityResolver(task: task).allLocalTools.contains { $0.id == toolID })
+        // B uses the same shared skill but never reaches A's own tool.
+        let taskB = AgentTask(title: "B", goal: "Manage GCP resources", workspace: try fixture.workspace(fixture.bID))
+        fixture.context.insert(taskB)
+        #expect(!TaskCapabilityResolver(task: taskB).allLocalTools.contains { $0.id == toolID })
+        // Turning the plugin off takes the tool with it.
+        WorkspaceCapabilityActivation.mutate(a) { $0.capabilityIDs.removeAll { $0 == "gcloud-workflow" } }
+        #expect(!TaskCapabilityResolver(task: task).allLocalTools.contains { $0.id == toolID })
+    }
+
+    @Test("The rail counts an activation's override rows as its own")
+    func railActivationResourcesIncludeOverrides() throws {
+        let fixture = try Fixture(editedToolDescription: "My own words")
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        // Launch reconciles right after migrating; an activation still on its
+        // legacy version waits for Update and doesn't run.
+        try PluginUpdateService.reconcileAll(modelContext: fixture.context, packages: fixture.packages, mode: .automatic)
+        let a = try fixture.workspace(fixture.aID)
+        let shared = try fixture.context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
+        let tools = try fixture.context.fetch(FetchDescriptor<LocalTool>())
+        let capabilities = WorkspaceCapabilities(
+            workspace: a, globalSkills: shared, globalTools: tools, packageDefinitions: fixture.packages
+        )
+        let index = CapabilityRailWorkspaceResourceIndex(workspace: a, capabilities: capabilities)
+        #expect(index.activations["jira-workflow"]?.skills.contains { $0.id == fixture.editedJiraSkillID } == true)
+        #expect(Set(tools.map(\.id)).isSubset(of: Set(index.activations["gcloud-workflow"]?.tools.map(\.id) ?? [])))
+    }
+
+    @Test("A queued request runs with the plugin definitions it was submitted with, not an update installed while it waited")
+    func queuedRequestKeepsSubmittedDefinitions() throws {
+        let fixture = try Fixture()
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let task = AgentTask(title: "A", goal: "Use Jira and Google Cloud", workspace: a)
+        context.insert(task)
+        // Submitted against an earlier GCloud: other rules, another command
+        // line. The library now holds the built-in, as after an Update.
+        var submitted = fixture.gcloud
+        submitted.skills[0].behaviorInstructions = "Submitted GCloud rules."
+        submitted.localTools[0].arguments = "--submitted"
+        let request = TaskTurnRequest(
+            task: task, messageEventID: UUID(), sequence: 2, kind: .retry, pluginDefinitions: [fixture.jira, submitted]
+        )
+        context.insert(request)
+        try context.save()
+        let skillName = fixture.gcloud.skills[0].name
+        let liveSkill = TaskCapabilityResolver(task: task).allBehaviorSkills.first { $0.name == skillName }
+        #expect(liveSkill?.behaviorInstructions == fixture.gcloud.skills[0].behaviorInstructions)
+
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        // The runtime re-detaches its launch task (`AgentRuntimeExecutionContext`).
+        let relaunched = TaskExecutionLaunchSnapshotApplicator.detachedTask(AgentTaskLaunchSnapshot(task: detached), from: detached)
+        let toolID = CapabilityResourceOrigin.componentID(for: fixture.gcloud.localTools[0])
+        for launch in [detached, relaunched] {
+            let resolver = TaskCapabilityResolver(task: launch)
+            #expect(resolver.allBehaviorSkills.first { $0.name == skillName }?.behaviorInstructions == "Submitted GCloud rules.")
+            #expect(resolver.allLocalTools.first { $0.originComponentID == toolID }?.arguments == "--submitted")
+        }
+        let decoded = try JSONDecoder().decode(
+            TaskExecutionPolicySnapshotV1.self, from: Data(try #require(request.executionPolicySnapshotJSON).utf8)
+        )
+        #expect(decoded.pluginDefinitions?.first { $0.id == "gcloud-workflow" }?.skills[0].behaviorInstructions == "Submitted GCloud rules.")
+    }
+
+    @Test("A queued request runs with its accounts as submitted, not as edited or deleted while it waited")
+    func queuedRequestKeepsSubmittedAccounts() throws {
+        let fixture = try Fixture()
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: fixture.packages, mode: .automatic)
+        let a = try fixture.workspace(fixture.aID)
+        let accounts = try context.fetch(FetchDescriptor<Connector>())
+        let first = try #require(accounts.first { $0.id == fixture.jiraAccount1ID })
+        let second = try #require(accounts.first { $0.id == fixture.jiraAccount2ID })
+        first.configKeys = ["JIRA_PROJECTS"]
+        first.configValues = ["CLIN"]
+        first.credentialValues = ["legacy-plaintext"]
+        let submittedName = first.name
+        let task = AgentTask(title: "A", goal: "Use Jira and Google Cloud", workspace: a)
+        context.insert(task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, kind: .retry)
+        context.insert(request)
+        try context.save()
+        // Never a credential value, not even the legacy column's.
+        #expect(request.executionPolicySnapshotJSON?.contains("legacy-plaintext") == false)
+
+        // While it waits, one account moves and is reconfigured; the other
+        // is deleted.
+        first.name = "Renamed"
+        first.baseURL = "https://edited.atlassian.net"
+        first.configValues = ["EDITED"]
+        context.delete(second)
+        try context.save()
+
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        let connectors = TaskCapabilityResolver(task: detached).allConnectors
+        let launchedFirst = try #require(connectors.first { $0.id == fixture.jiraAccount1ID })
+        #expect(launchedFirst.name == submittedName)
+        #expect(launchedFirst.baseURL == "https://one.atlassian.net")
+        #expect(launchedFirst.config["JIRA_PROJECTS"] == "CLIN")
+        let launchedSecond = try #require(connectors.first { $0.id == fixture.jiraAccount2ID })
+        #expect(launchedSecond.baseURL == "https://two.atlassian.net")
+        // The store was never touched.
+        #expect(try context.fetch(FetchDescriptor<Connector>()).first { $0.id == fixture.jiraAccount1ID }?.baseURL
+            == "https://edited.atlassian.net")
+    }
+}
+
+/// The real skill-secret persistence, except that a delete never lands.
+private enum UndeletableSkillSecrets: SkillSecretPersisting {
+    static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? {
+        SkillSecretSeam.required.loadSecretValue(key: key, skillID: skillID, store: store)
+    }
+
+    static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool {
+        SkillSecretSeam.required.saveSecretValue(
+            value, key: key, skillID: skillID, skillName: skillName, allowUserInteraction: allowUserInteraction
+        )
+    }
+
+    static func deleteSecret(key: String, skillID: UUID) -> Bool { false }
+
+    static func secretExists(key: String, skillID: UUID) -> Bool {
+        SkillSecretSeam.required.secretExists(key: key, skillID: skillID)
+    }
+
+    static func deleteAllSecrets(skillID: UUID) {
+        SkillSecretSeam.required.deleteAllSecrets(skillID: skillID)
+    }
 }
 
 // MARK: - Fixture
@@ -952,6 +1172,8 @@ private struct Fixture {
     let sharedGCloudID: UUID
     let gcloudSkillID: UUID
     let editedJiraSkillID: UUID
+    /// A's own tool the person attached to the GCloud skill, when asked for.
+    let authoredToolID: UUID?
     let storeDirectory: URL
 
     private static var retained: [ModelContainer] = []
@@ -965,7 +1187,9 @@ private struct Fixture {
         gcloudBehaviorSuffix: String? = nil,
         aOwnsGCloudAccount: Bool = false,
         gcloudSkillVersion: String? = nil,
-        workspaceScopedRows: Bool = false
+        workspaceScopedRows: Bool = false,
+        gcloudDisallowedTools: [String]? = nil,
+        authoredToolOnGCloudSkill: Bool = false
     ) throws {
         jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         gcloud = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
@@ -1054,6 +1278,9 @@ private struct Fixture {
             skill.skillDescription = gcloudSkillSpec.description
             skill.allowedTools = gcloudSkillSpec.allowedTools
             skill.customTools = gcloudSkillSpec.customTools
+            // As installed: the spec's denied tools, not yet folded into the
+            // behavior text by the startup pass.
+            skill.disallowedTools = gcloudDisallowedTools ?? gcloudSkillSpec.disallowedTools
             skill.behaviorInstructions = gcloudSkillSpec.behaviorInstructions + (gcloudBehaviorSuffix ?? "")
             skill.environmentKeys = ["GCP_PROJECT"] + (gcloudSkillSecret == nil ? [] : ["GCP_API_TOKEN"])
             skill.environmentValues = [gcloudSkillProject] + (gcloudSkillSecret == nil ? [] : [""])
@@ -1092,6 +1319,19 @@ private struct Fixture {
                 tool.originComponentID = CapabilityResourceOrigin.componentID(for: toolSpec)
                 tool.skill = skill
                 context.insert(tool)
+            }
+
+            if authoredToolOnGCloudSkill {
+                let tool = V19.LocalTool()
+                tool.name = "My GCP report"
+                tool.toolDescription = "A's own report command"
+                tool.toolType = "cli"
+                tool.command = "gcloud"
+                tool.arguments = "projects list"
+                tool.workspace = a
+                tool.skill = skill
+                context.insert(tool)
+                ids["authoredTool"] = tool.id
             }
 
             let jiraSkillSpec = jira.skills[0]
@@ -1135,6 +1375,7 @@ private struct Fixture {
         sharedGCloudID = try #require(ids["shared"])
         gcloudSkillID = try #require(ids["gcloudSkill"])
         editedJiraSkillID = try #require(ids["edited"])
+        authoredToolID = ids["authoredTool"]
     }
 
     /// The built-ins, with the GCloud skill declaring the secret the

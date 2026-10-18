@@ -383,6 +383,21 @@ enum CapabilityPackageValidator {
             }
         }
 
+        // A setting is stored under `componentID#KEY`
+        // (`PluginActivation.settingKey`) and split at the last `#`, so a key
+        // containing one would be read back under the wrong component.
+        for skill in package.skills {
+            for key in skill.environmentKeys where key.contains("#") {
+                issues.append(issue(
+                    .blocker,
+                    .invalidComponentIdentity,
+                    "Invalid setting name",
+                    "\(skill.name) declares the setting \(key); setting names cannot contain #.",
+                    component: key
+                ))
+            }
+        }
+
         if !isValidSemanticVersionLiteral(package.version) {
             issues.append(issue(
                 .blocker,

@@ -163,6 +163,54 @@ struct PluginsSurfaceTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("Add's one-step approval is audited with its digest, and so is a failed one")
+    func addAuditsTheApprovalItGrants() throws {
+        let workspace = Workspace(name: "Audit", primaryPath: "/tmp/plugins-add-audit")
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-plugins-add-audit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let draft = package("draft-audited", name: "Draft Audited", governance: .localDraft())
+        let policy = CapabilityCatalogPolicyContext.currentUser(workspace: workspace, approvalRecords: [])
+        let service = CapabilityCatalogActionService(library: CapabilityLibrary(directory: root.appendingPathComponent("library")))
+        func audits(_ traceID: String) -> [String] {
+            AppLogger.flushForTesting()
+            return AppLogger.entries.map(\.message).filter {
+                $0.contains(AuditEvent.capabilityApprovalChanged.rawValue) && $0.contains("trace_id=\(traceID)")
+            }
+        }
+
+        let granted = AuditTrace.make("grant")
+        let approvals = CapabilityApprovalStore(directory: root.appendingPathComponent("approvals"))
+        _ = try service.grantPendingApproval(
+            for: draft, workspace: workspace, policyContext: policy, approvalStore: approvals,
+            source: "plugins_add_connect_account", traceID: granted
+        )
+        let record = try #require(approvals.records().first { $0.packageID == draft.id })
+        let success = try #require(audits(granted).first)
+        for field in [
+            "status=approved", "package_id=draft-audited", "workspace_id=\(workspace.id.uuidString)",
+            "digest_prefix=\(record.sourceDigest.prefix(12))", "source=plugins_add_connect_account"
+        ] {
+            #expect(success.contains(field), "missing \(field)")
+        }
+        #expect(!success.contains("result=failed"))
+
+        // A store it can't write to: the attempt is audited as failed.
+        let failed = AuditTrace.make("grant-failed")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let blocker = root.appendingPathComponent("not-a-directory")
+        try Data().write(to: blocker)
+        #expect(throws: (any Error).self) {
+            try service.grantPendingApproval(
+                for: draft, workspace: workspace, policyContext: policy,
+                approvalStore: CapabilityApprovalStore(directory: blocker), source: "plugins_add", traceID: failed
+            )
+        }
+        let failure = try #require(audits(failed).first)
+        #expect(failure.contains("result=failed"))
+        #expect(failure.contains("package_id=draft-audited"))
+    }
+
     @Test("Add connects a supported account first, and refuses one ASTRA can't sign in to")
     func addRefusesUnsupportedOAuthProviders() throws {
         #expect(try CapabilityCatalogActionService.addRoute(for: builtIn("google-workspace")) == .connectAccount)

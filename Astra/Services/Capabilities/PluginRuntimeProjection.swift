@@ -99,6 +99,16 @@ struct PluginRuntimeProjection {
                             let copy = TaskExecutionLaunchSnapshotApplicator.detachedSkill(row)
                             primarySkill = copy
                             skills.append(copy)
+                            // The row's own attachments come with it, wired
+                            // to the copy, as they would with the row.
+                            for tool in row.localTools where !tool.isDeleted
+                                && (tool.isGlobal || tool.workspace == nil || tool.workspace?.id == workspace.id) {
+                                tools.append(TaskExecutionLaunchSnapshotApplicator.detachedLocalTool(tool, skill: copy))
+                            }
+                            for connector in attachedConnectors(of: row, in: workspace)
+                            where seenConnectorIDs.insert(connector.id).inserted {
+                                connectors.append(TaskExecutionLaunchSnapshotApplicator.detachedConnector(connector, skill: copy))
+                            }
                         } else {
                             skills.append(row)
                         }
@@ -148,11 +158,13 @@ struct PluginRuntimeProjection {
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
                 if overridden.contains(componentID) {
                     if let row = overridingTool(for: componentID, of: activation, in: workspace) {
-                        // An ownerless replacement still belongs to its
-                        // plugin: the runtime gets a copy wired to the first
-                        // skill, so scope pruning keeps it with the plugin as
-                        // it would the projected tool.
-                        if connectorMode == .runtimeCopies, row.skill == nil, let primarySkill {
+                        // A replacement no skill of this plugin owns (none,
+                        // or one a workspace kept without the plugin) still
+                        // belongs to its plugin: the runtime gets a copy wired
+                        // to the first skill, so scope pruning keeps it with
+                        // the plugin as it would the projected tool.
+                        let ownedHere = row.skill.map { activation.overridingRowIDs.contains($0.id.uuidString) } ?? false
+                        if connectorMode == .runtimeCopies, !ownedHere, let primarySkill {
                             tools.append(TaskExecutionLaunchSnapshotApplicator.detachedLocalTool(row, skill: primarySkill))
                         } else {
                             tools.append(row)
@@ -259,6 +271,18 @@ struct PluginRuntimeProjection {
     /// it keeps skipping the component, and the launch carries the row.
     private static func overrideRowIsGone(in workspace: Workspace) -> Bool {
         workspace.modelContext != nil
+    }
+
+    /// The connectors attached to an override row that its workspace
+    /// reaches through it: its own, or shared ones it turned on.
+    private static func attachedConnectors(of row: Skill, in workspace: Workspace) -> [Connector] {
+        let enabledShared = Set(WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs)
+        return row.connectors.filter { connector in
+            guard !connector.isDeleted else { return false }
+            return connector.isGlobal
+                ? enabledShared.contains(connector.id.uuidString)
+                : connector.workspace?.id == workspace.id
+        }
     }
 
     /// The authored row an override names: the workspace's own (or, in a

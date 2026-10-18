@@ -397,10 +397,13 @@ struct CapabilityRailWorkspaceResourceIndex {
         let projection = capabilities.projection
         var activations: [String: CapabilityRailActivationResources] = [:]
         for activation in WorkspaceCapabilityActivation.activations(of: workspace) {
+            // An override row has no plugin provenance: it belongs to the
+            // activation that names it.
+            let overrides = Set(activation.overridingRowIDs.compactMap(UUID.init(uuidString:)))
             activations[activation.pluginID] = CapabilityRailActivationResources(
                 isEnabled: activation.isEnabled,
-                skills: projection.skills.filter { $0.originPackageID == activation.pluginID },
-                tools: projection.tools.filter { $0.originPackageID == activation.pluginID },
+                skills: projection.skills.filter { $0.originPackageID == activation.pluginID || overrides.contains($0.id) },
+                tools: projection.tools.filter { $0.originPackageID == activation.pluginID || overrides.contains($0.id) },
                 accounts: activation.bindings.filter { !$0.isDeleted }.compactMap(\.account),
                 accountIDsByComponent: CapabilityPackageState.boundAccountIDs(of: activation)
             )

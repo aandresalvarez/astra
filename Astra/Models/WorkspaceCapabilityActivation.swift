@@ -675,6 +675,15 @@ public enum WorkspaceCapabilityActivation {
     /// Renames `account` when another account of its service that some
     /// workspace it will be visible in already sees has its name.
     private static func disambiguateAlias(of account: Connector, joining activation: PluginActivation) {
+        // An account another workspace already uses keeps its name: renaming
+        // the shared row would change its alias there too. A collision in
+        // the joining workspace is told apart per launch instead
+        // (`ConnectorRuntimeProjection` suffixes duplicate aliases).
+        let joining = activation.workspace
+        if account.accountBindings.contains(where: { binding in
+            guard !binding.isDeleted, let other = binding.activation?.workspace else { return false }
+            return other !== joining
+        }) { return }
         var workspaces: [Workspace] = activation.workspace.map { [$0] } ?? []
         for binding in account.accountBindings where !binding.isDeleted {
             if let workspace = binding.activation?.workspace, !workspaces.contains(where: { $0 === workspace }) {
@@ -876,6 +885,101 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
         var descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.id == id })
         descriptor.fetchLimit = 1
         return try? context.fetch(descriptor).first
+    }
+}
+
+/// A plugin account's non-secret contents, frozen with a queued request so an
+/// account edited or deleted while the request waits does not change what it
+/// runs with. Never a credential value: those stay in the Keychain, read by
+/// the account's ID at launch. (`credentialValues` is the legacy plaintext
+/// column, so it is never captured.)
+public struct PluginAccountRecord: Codable, Equatable, Sendable {
+    public let id: UUID
+    public let name: String
+    public let serviceType: String
+    public let icon: String
+    public let connectorDescription: String
+    public let baseURL: String
+    public let authMethod: String
+    public let credentialKeys: [String]
+    public let configKeys: [String]
+    public let configValues: [String]
+    public let isGlobal: Bool
+    public let testHTTPMethod: String
+    public let notes: String
+    public let originPackageID: String?
+    public let originPackageVersion: String?
+    public let originComponentID: String?
+    public let originComponentKind: String?
+    public let originSourceKind: String?
+    public let createdAt: Date
+    public let updatedAt: Date
+
+    public init(_ account: Connector) {
+        id = account.id
+        name = account.name
+        serviceType = account.serviceType
+        icon = account.icon
+        connectorDescription = account.connectorDescription
+        baseURL = account.baseURL
+        authMethod = account.authMethod
+        credentialKeys = account.credentialKeys
+        configKeys = account.configKeys
+        configValues = account.configValues
+        isGlobal = account.isGlobal
+        testHTTPMethod = account.testHTTPMethod
+        notes = account.notes
+        originPackageID = account.originPackageID
+        originPackageVersion = account.originPackageVersion
+        originComponentID = account.originComponentID
+        originComponentKind = account.originComponentKind
+        originSourceKind = account.originSourceKind
+        createdAt = account.createdAt
+        updatedAt = account.updatedAt
+    }
+
+    /// The accounts `workspace`'s enabled activations bind, once each.
+    public static func boundAccounts(of workspace: Workspace) -> [PluginAccountRecord] {
+        var seen = Set<UUID>()
+        return WorkspaceCapabilityActivation.activations(of: workspace)
+            .filter(\.isEnabled)
+            .flatMap(\.bindings)
+            .filter { !$0.isDeleted }
+            .compactMap(\.account)
+            .filter { !$0.isDeleted && seen.insert($0.id).inserted }
+            .map(PluginAccountRecord.init)
+    }
+
+    /// Writes these contents onto `account`, a launch copy (never a stored
+    /// row): its credential values are left as they are.
+    public func apply(to account: Connector) {
+        account.name = name
+        account.serviceType = serviceType
+        account.icon = icon
+        account.connectorDescription = connectorDescription
+        account.baseURL = baseURL
+        account.authMethod = authMethod
+        account.credentialKeys = credentialKeys
+        account.configKeys = configKeys
+        account.configValues = configValues
+        account.isGlobal = isGlobal
+        account.testHTTPMethod = testHTTPMethod
+        account.notes = notes
+        account.originPackageID = originPackageID
+        account.originPackageVersion = originPackageVersion
+        account.originComponentID = originComponentID
+        account.originComponentKind = originComponentKind
+        account.originSourceKind = originSourceKind
+        account.createdAt = createdAt
+        account.updatedAt = updatedAt
+    }
+
+    /// A never-inserted account with these contents, for one deleted since.
+    public func makeAccount() -> Connector {
+        let account = Connector()
+        account.id = id
+        apply(to: account)
+        return account
     }
 }
 
