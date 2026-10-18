@@ -4,6 +4,13 @@ import Testing
 import ASTRAModels
 @testable import ASTRAPersistence
 
+private final class ReplacedStoreSaveProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var attempts = 0
+    func record() { lock.withLock { attempts += 1 } }
+    var count: Int { lock.withLock { attempts } }
+}
+
 @MainActor
 @Suite("Saved export pending obligations", .serialized)
 struct WorkspaceSavedExportPendingTests {
@@ -272,5 +279,35 @@ struct WorkspaceSavedExportPendingTests {
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("source.store").path) == recreated)
         #expect(!FileManager.default.fileExists(atPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceRoot.path)))
         withExtendedLifetime(source) {}
+    }
+
+    @Test("A deferred save checks its original store before touching a replaced owner")
+    func deferredSaveRejectsRecreatedStore() async throws {
+        let (root, container, workspace, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) }
+        let id = workspace.id
+        let probe = ReplacedStoreSaveProbe()
+        let observer = NotificationCenter.default.addObserver(forName: ModelContext.willSave,
+            object: context, queue: nil) { _ in probe.record() }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        workspace.name = "Never committed to replacement"
+        WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: context,
+            delayNanoseconds: 0)
+        // No actor hop: the timer cannot start until this replacement is done.
+        try FileManager.default.removeItem(at: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let replacement = try ModelContainer(for: ASTRASchema.current,
+            configurations: [ModelConfiguration(url: root.appendingPathComponent("source.store"))])
+        replacement.mainContext.autosaveEnabled = false
+        replacement.mainContext.insert(Workspace(name: "Replacement owner", primaryPath: root.path))
+        try replacement.mainContext.save()
+        await WorkspacePersistenceCoordinator.waitForPendingExport(workspaceID: id)
+        #expect(probe.count == 0, "A delayed job must not attempt a save against a replaced authority")
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 0)
+        #expect(try replacement.mainContext.fetchCount(FetchDescriptor<Workspace>()) == 1)
+        #expect(!FileManager.default.fileExists(atPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path)))
+        withExtendedLifetime(container) {}
     }
 }

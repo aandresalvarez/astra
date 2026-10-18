@@ -270,16 +270,24 @@ public enum WorkspacePersistenceCoordinator {
         }
         let workspaceID = workspace.id
         let container = modelContext.container
+        let source = WorkspaceSavedExportSource(container)
         let requestID = UUID()
         debouncedExports[workspaceID]?.task.cancel()
         debouncedExports[workspaceID] = PendingExport(
             id: requestID, workspace: workspace, context: modelContext,
-            source: WorkspaceSavedExportSource(container), lease: nil,
+            source: source, lease: nil,
             task: Task { @MainActor in
                 defer { withExtendedLifetime(container) {} }
                 do { try await Task.sleep(nanoseconds: delayNanoseconds) }
                 catch { return }
                 guard !Task.isCancelled, debouncedExports[workspaceID]?.id == requestID else { return }
+                // A delayed save still belongs to its original store, even
+                // if another store now exists at that URL. Check before
+                // touching the old context or faulting its workspace models.
+                guard source.resolve(workspaceID: workspaceID.uuidString) != nil else {
+                    debouncedExports[workspaceID] = nil
+                    return
+                }
                 // Success retires this debounce and enqueues its committed
                 // replacement. Failure keeps both obligations drainable.
                 saveAndAutoExport(workspace: workspace, modelContext: modelContext)
