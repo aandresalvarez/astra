@@ -164,6 +164,7 @@ final class TaskLifecycleCoordinator {
             return retryVerifiedTask(task)
         }
         repair.checkEnvironment = projectedCheckEnvironment(for: task, binary: repair.checkBinary)
+        repair = CLISessionExpiryClassifier.checkingLaunchHost(repair)
         let check = repairCheck
         let origin = RepairCheckOrigin(task)
         return Task { @MainActor [weak self] in
@@ -357,6 +358,7 @@ final class TaskLifecycleCoordinator {
             return resumeVerifiedTask(task)
         }
         repair.checkEnvironment = projectedCheckEnvironment(for: task, binary: repair.checkBinary)
+        repair = CLISessionExpiryClassifier.checkingLaunchHost(repair)
         let check = repairCheck
         let origin = RepairCheckOrigin(task)
         return Task { @MainActor [weak self] in
@@ -409,9 +411,14 @@ final class TaskLifecycleCoordinator {
         }
     }
 
+    private static let gitHubCheckVariables: Set<String> = [
+        "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"
+    ]
+
     /// The variables the resumed run gives the checked CLI, so a repair check
     /// judges the credentials that run gets: for `gh` its token variables
-    /// (which override any sign-in), for `gcloud` the whole stripped launch
+    /// (which override any sign-in) and the GitHub Enterprise host and
+    /// tokens (`GH_HOST` picks the host), for `gcloud` the whole stripped launch
     /// environment, where `CLOUDSDK_CONFIG`, `CLOUDSDK_CORE_ACCOUNT` or
     /// `GOOGLE_APPLICATION_CREDENTIALS` pick the account it uses. Built from
     /// the same launch scope as the run, detached skill snapshots included: a
@@ -426,7 +433,7 @@ final class TaskLifecycleCoordinator {
         var launchEnvironment = scope.resolver.resolvedEnvironmentVariables
         BrokeredConnectorEnvironment.strip(from: &launchEnvironment, capabilityScope: scope)
         let environment = launchEnvironment.filter { key, value in
-            !value.isEmpty && (binary == "gcloud" || ["GH_TOKEN", "GITHUB_TOKEN"].contains(key))
+            !value.isEmpty && (binary == "gcloud" || Self.gitHubCheckVariables.contains(key))
         }
         return environment.isEmpty ? nil : environment
     }
