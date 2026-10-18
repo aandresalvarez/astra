@@ -100,13 +100,15 @@ struct WorkspaceSavedExportReplacementTests {
         #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 0)
     }
 
-    @Test("Prepared writes preserve committed data but reject moved or deleted destinations",
-          arguments: ["bookkeeping", "move", "delete", "termination"], ["write", "projection"])
+    @Test("Sealed copies survive unrelated saves but retire changed owners without replacements",
+          arguments: ["unrelated", "bookkeeping", "move", "delete", "termination"], ["write", "projection"])
     func preparedValueBoundary(change: String, stage: String) async throws {
         let (root, container, workspace) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let context = container.mainContext
         defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) }
+        let other = Workspace(name: "Unrelated", primaryPath: root.appendingPathComponent("Unrelated").path)
+        context.insert(other); try context.save()
         let latch = ProjectionWriteLatch()
         defer { Task { await latch.release() } }
         let pause: @Sendable () async -> Void = { await latch.pause() }
@@ -116,6 +118,7 @@ struct WorkspaceSavedExportReplacementTests {
             workspace: workspace, modelContext: context, writer: writer, reader: reader))
         try await latch.waitForArrival()
         switch change {
+        case "unrelated": other.name = "Unrelated bookkeeping"
         case "move":
             let moved = root.appendingPathComponent("Moved")
             try FileManager.default.createDirectory(at: moved, withIntermediateDirectories: true)
@@ -129,11 +132,45 @@ struct WorkspaceSavedExportReplacementTests {
         }
         await latch.release(); await prior.value
         let url = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path))
-        if change == "move" || change == "delete" {
+        if change != "unrelated" && change != "termination" {
             #expect(!FileManager.default.fileExists(atPath: url.path))
         } else {
             #expect(try WorkspaceConfigManager.loadConfig(from: url).name ==
                 (change == "termination" ? "Later committed" : "Prior committed"))
         }
+    }
+
+    @Test("A sealed source copy cannot republish a chat moved to another workspace",
+          arguments: ["write", "projection"])
+    func moveRetiresSealedSource(stage: String) async throws {
+        let (root, container, workspace) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) }
+        let destinationRoot = root.appendingPathComponent("Destination")
+        try FileManager.default.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+        let destination = Workspace(name: "Destination", primaryPath: destinationRoot.path)
+        let task = AgentTask(title: "Moved chat", goal: "Synthetic ownership transfer", workspace: workspace)
+        context.insert(destination); context.insert(task); try context.save()
+        let latch = ProjectionWriteLatch()
+        defer { Task { await latch.release() } }
+        let pause: @Sendable () async -> Void = { await latch.pause() }
+        let prior = try #require(WorkspacePersistenceCoordinator.enqueueSavedAutoExport(
+            workspace: workspace, modelContext: context,
+            writer: WorkspaceAutoExportWriter(beforeWrite: stage == "write" ? pause : nil),
+            reader: WorkspaceSavedAutoExport(beforeProjection: stage == "projection" ? pause : nil)))
+        try await latch.waitForArrival()
+        task.workspace = destination
+        #expect(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: destination, modelContext: context))
+        await WorkspacePersistenceCoordinator.waitForPendingExport(workspaceID: destination.id)
+        await latch.release(); await prior.value
+        let sourceURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path))
+        let destinationURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: destinationRoot.path))
+        #expect(!FileManager.default.fileExists(atPath: sourceURL.path),
+            "An affected owner without a replacement cannot publish its old sealed copy")
+        #expect(try WorkspaceConfigManager.loadConfig(from: destinationURL).tasks?.compactMap(\.id) == [task.id.uuidString])
+        // The invalid source request remains owed and drains current rows.
+        #expect(WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) == 1)
+        #expect((try WorkspaceConfigManager.loadConfig(from: sourceURL).tasks ?? []).isEmpty)
     }
 }

@@ -35,7 +35,10 @@ public enum WorkspacePersistenceCoordinator {
         var didSave = false
         do {
             try WorkspacePersistenceWork.measure("swiftdata_save", workspaceID: workspace?.id.uuidString ?? "none") {
-                try modelContext.save()
+                try WorkspaceSavedExportLease.preservingPriorProjection(
+                    for: shouldSkipAutoExport() ? nil : workspace?.id, context: modelContext) {
+                    try modelContext.save()
+                }
             }
             didSave = true
             if taskID != nil || !auditFields.isEmpty {
@@ -122,7 +125,10 @@ public enum WorkspacePersistenceCoordinator {
     ) throws {
         do {
             try WorkspacePersistenceWork.measure("swiftdata_save", workspaceID: workspace?.id.uuidString ?? "none") {
-                try modelContext.save()
+                try WorkspaceSavedExportLease.preservingPriorProjection(
+                    for: shouldSkipAutoExport() ? nil : workspace?.id, context: modelContext) {
+                    try modelContext.save()
+                }
             }
             if taskID != nil || !auditFields.isEmpty {
                 var fields = auditFields
