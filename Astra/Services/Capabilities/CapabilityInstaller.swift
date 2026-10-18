@@ -237,6 +237,10 @@ struct CapabilityInstaller {
             guard let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
+            // Added back after a Remove: the same projected IDs (templates
+            // and schedules name them) and the person's overrides again,
+            // before reconciling derives anything from them.
+            WorkspaceCapabilityActivation.reinstateRetired(on: activation, in: workspace)
             // Adding a version this workspace had at another one is an Update
             // for it: renamed components keep their state, dropped ones
             // release theirs, and the version and digest are recorded.

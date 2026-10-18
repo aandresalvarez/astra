@@ -28,11 +28,12 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
     /// `TaskExecutionPolicySnapshotV1.pluginActivations`); nil reads the live
     /// workspace's.
     let pluginActivations: [PluginActivationRecord]?
-    /// The plugin definitions and bound accounts frozen with those
-    /// activations (`TaskExecutionPolicySnapshotV1`); nil reads the live
-    /// library and rows.
+    /// The plugin definitions, bound accounts and override rows frozen with
+    /// those activations (`TaskExecutionPolicySnapshotV1`); nil reads the
+    /// live library and rows.
     let pluginDefinitions: [PluginPackage]?
     let pluginAccounts: [PluginAccountRecord]?
+    let pluginOverrides: PluginOverrideRecords?
 
     init(task: AgentTask) {
         id = task.id
@@ -60,6 +61,7 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         // task is projected from the library as it is now.
         pluginDefinitions = task.workspace?.launchPluginDefinitions
         pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
+        pluginOverrides = task.workspace.map(PluginOverrideRecords.init(workspace:))
     }
 
     init(
@@ -83,7 +85,8 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         runtimePermissionGrantsJSON: String?,
         pluginActivations: [PluginActivationRecord]? = nil,
         pluginDefinitions: [PluginPackage]? = nil,
-        pluginAccounts: [PluginAccountRecord]? = nil
+        pluginAccounts: [PluginAccountRecord]? = nil,
+        pluginOverrides: PluginOverrideRecords? = nil
     ) {
         self.id = id
         self.model = model
@@ -106,5 +109,6 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         self.pluginActivations = pluginActivations
         self.pluginDefinitions = pluginDefinitions
         self.pluginAccounts = pluginAccounts
+        self.pluginOverrides = pluginOverrides
     }
 }
