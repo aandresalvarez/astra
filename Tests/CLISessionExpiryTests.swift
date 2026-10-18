@@ -201,7 +201,10 @@ struct CLISessionExpiryTests {
         // A bare name, disagreeing paths, or a path unsafe as one word stay on PATH.
         for command in [
             "gh api user", "/opt/a/gh api user && /opt/b/gh api user", "\"/opt/my tools/gh\" api user",
-            "/opt/../tmp/gh api user", "./gh api user"
+            "/opt/../tmp/gh api user", "./gh api user",
+            // A path the agent could have just written is never run by Resume
+            // or Sign in: home, workspace and temporary folders.
+            "/tmp/x/gh api user", "/private/var/folders/ab/T/gh api user", "/Users/someone/work/gh api user"
         ] {
             #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.gitHub, "\(command)")
         }

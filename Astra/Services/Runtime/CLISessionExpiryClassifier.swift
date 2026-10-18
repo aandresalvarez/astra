@@ -220,11 +220,20 @@ enum CLISessionExpiryClassifier {
         return exactExecutable(executable)
     }
 
+    /// Where an installed CLI lives: system and package-manager prefixes,
+    /// never a home, workspace or temporary folder. The path comes from the
+    /// agent's own command, and Resume runs it and Sign in opens it in
+    /// Terminal, so one the agent could have just written (`/tmp/x/gh`) is
+    /// not carried; such a call is checked and repaired by name on PATH.
+    static let installedExecutablePrefixes = ["/usr/", "/bin/", "/sbin/", "/opt/", "/Applications/", "/Library/"]
+
     /// `candidate` when it is an absolute path of plain components (no
-    /// `.` or `..`, no shell syntax), so it is safe as one Terminal word.
+    /// `.` or `..`, no shell syntax), so it is safe as one Terminal word,
+    /// under an installed-CLI prefix.
     private static func exactExecutable(_ candidate: String) -> String? {
         let components = candidate.split(separator: "/", omittingEmptySubsequences: false).dropFirst()
         guard candidate.hasPrefix("/"), candidate.count <= 1024,
+              installedExecutablePrefixes.contains(where: { candidate.hasPrefix($0) }),
               candidate.range(of: #"^(/[A-Za-z0-9._+-]+)+$"#, options: .regularExpression) != nil,
               !components.contains(where: { $0 == "." || $0 == ".." })
         else { return nil }
