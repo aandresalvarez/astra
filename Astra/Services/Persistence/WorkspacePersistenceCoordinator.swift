@@ -16,7 +16,8 @@ public enum WorkspacePersistenceCoordinator {
         weak var context: ModelContext?
         let source: WorkspaceSavedExportSource
         let lease: WorkspaceSavedExportLease?
-        let task: Task<Void, Never>
+        // A committed save is still owed when setup cannot launch a job.
+        var task: Task<Void, Never>?
     }
 
     // Committed projections and unsaved debounce work are distinct obligations.
@@ -61,7 +62,7 @@ public enum WorkspacePersistenceCoordinator {
 
         guard didSave else { return didSave }
         guard let workspace else { return didSave }
-        debouncedExports.removeValue(forKey: workspace.id)?.task.cancel()
+        debouncedExports.removeValue(forKey: workspace.id)?.task?.cancel()
         guard !shouldSkipAutoExport() else {
             AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "skipped",
@@ -150,7 +151,7 @@ public enum WorkspacePersistenceCoordinator {
         }
 
         guard let workspace else { return }
-        debouncedExports.removeValue(forKey: workspace.id)?.task.cancel()
+        debouncedExports.removeValue(forKey: workspace.id)?.task?.cancel()
         guard !shouldSkipAutoExport() else {
             AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "skipped",
@@ -201,16 +202,6 @@ public enum WorkspacePersistenceCoordinator {
     static func enqueueSavedAutoExport(workspace: Workspace, modelContext: ModelContext,
                                       writer: WorkspaceAutoExportWriter = .shared,
                                       reader: WorkspaceSavedAutoExport = .shared) -> Task<Void, Never>? {
-        let target = WorkspaceConfigManager.autoExportTarget(for: workspace.primaryPath)
-        guard let url = target.url else {
-            logSkippedExport(workspace: workspace, reason: target.reason)
-            return nil
-        }
-        // Register before dispatch, ordered with deletion on the saving actor.
-        guard WorkspaceMirrorRegistry(for: modelContext)?.register([workspace.primaryPath]) ?? true else {
-            logSkippedExport(workspace: workspace, reason: "mirror_registry_unwritable")
-            return nil
-        }
         let workspaceID = workspace.id
         let ticket = WorkspaceAutoExportGate.shared.beginRead(for: workspaceID.uuidString)
         let lease = WorkspaceSavedExportLease(context: modelContext, workspace: workspace, ticket: ticket)
@@ -219,28 +210,49 @@ public enum WorkspacePersistenceCoordinator {
         let requestID = UUID()
         // Unprepared reads may coalesce. A prepared value remains publishable
         // until its replacement has actually prepared and promoted a ticket.
-        if savedExports[workspaceID]?.lease?.isSealed != true { savedExports[workspaceID]?.task.cancel() }
+        if savedExports[workspaceID]?.lease?.isSealed != true { savedExports[workspaceID]?.task?.cancel() }
+        // Record the newer obligation before destination or registry setup.
+        // Even a successful older fallback cannot complete this newer save.
         savedExports[workspaceID] = PendingExport(
             id: requestID, workspace: workspace, context: modelContext, source: source, lease: lease,
-            task: Task { @MainActor in
-                defer { withExtendedLifetime(lease) {} }
-                guard !Task.isCancelled else { return }
-                var written = false
-                if let prepared = await reader.prepareForExport(source: source,
-                    workspaceID: workspaceID, url: url, lease: lease),
-                   !Task.isCancelled, let publication = lease.promote() {
-                    written = await writer.write(prepared.config, to: url,
-                        workspaceID: workspaceID.uuidString, ticket: publication)
-                }
-                // An old completion must never erase a newer pending request.
-                if savedExports[workspaceID]?.id == requestID,
-                   written || savedExports[workspaceID]?.context == nil || source.resolve() == nil ||
-                    workspace.isDeleted || workspace.modelContext == nil {
-                    savedExports[workspaceID] = nil
-                }
-            }
+            task: nil
         )
+        let target = WorkspaceConfigManager.autoExportTarget(for: workspace.primaryPath)
+        guard let url = target.url else {
+            logSkippedExport(workspace: workspace, reason: target.reason)
+            return nil
+        }
+        // Register before dispatch, ordered with deletion on the saving actor.
+        guard registerMirror(path: workspace.primaryPath, workspaceID: workspaceID, modelContext: modelContext) else { return nil }
+        savedExports[workspaceID]?.task = Task { @MainActor in
+            defer { withExtendedLifetime(lease) {} }
+            guard !Task.isCancelled else { return }
+            var written = false
+            if let prepared = await reader.prepareForExport(source: source,
+                workspaceID: workspaceID, url: url, lease: lease),
+               !Task.isCancelled, let publication = lease.promote() {
+                written = await writer.write(prepared.config, to: url,
+                    workspaceID: workspaceID.uuidString, ticket: publication)
+            }
+            // An old completion must never erase a newer pending request.
+            if savedExports[workspaceID]?.id == requestID,
+               written || savedExports[workspaceID]?.context == nil || source.resolve() == nil ||
+                workspace.isDeleted || workspace.modelContext == nil {
+                savedExports[workspaceID] = nil
+            }
+        }
         return savedExports[workspaceID]?.task
+    }
+
+    private static func registerMirror(path: String, workspaceID: UUID, modelContext: ModelContext) -> Bool {
+        guard WorkspaceMirrorRegistry(for: modelContext)?.register([path]) ?? true else {
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "auto_export_skipped", "reason": "mirror_registry_unwritable",
+                "workspace_id": workspaceID.uuidString
+            ], level: .debug)
+            return false
+        }
+        return true
     }
 
     private static func logSkippedExport(workspace: Workspace, reason: String) {
@@ -257,10 +269,10 @@ public enum WorkspacePersistenceCoordinator {
               WorkspaceAutoExportGate.shared.isCurrent(ticket) else { return }
         if let previous = lease.writeTicket {
             guard previous.generation <= ticket.generation else { return }
-            if previous.generation < ticket.generation { pending.task.cancel() }
+            if previous.generation < ticket.generation { pending.task?.cancel() }
         } else {
             guard ticket.coveredReadRevision >= lease.readTicket.revision else { return }
-            pending.task.cancel()
+            pending.task?.cancel()
         }
         savedExports[id] = nil
     }
@@ -278,7 +290,7 @@ public enum WorkspacePersistenceCoordinator {
         let container = modelContext.container
         let source = WorkspaceSavedExportSource(container)
         let requestID = UUID()
-        debouncedExports[workspaceID]?.task.cancel()
+        debouncedExports[workspaceID]?.task?.cancel()
         debouncedExports[workspaceID] = PendingExport(
             id: requestID, workspace: workspace, context: modelContext,
             source: source, lease: nil,
@@ -316,8 +328,8 @@ public enum WorkspacePersistenceCoordinator {
     /// With only a debounce queued, wait for that scheduled attempt instead.
     /// A failure or invalidation may still leave an obligation to drain.
     static func waitForPendingExport(workspaceID: UUID) async {
-        if let saved = savedExports[workspaceID] { await saved.task.value }
-        else { await debouncedExports[workspaceID]?.task.value }
+        if let saved = savedExports[workspaceID] { await saved.task?.value }
+        else { await debouncedExports[workspaceID]?.task?.value }
     }
 
     /// Writes every pending mirror, including projections already off-main.
@@ -346,8 +358,8 @@ public enum WorkspacePersistenceCoordinator {
             if entry.context != nil, entry.source.resolve() != nil { pending[id] = entry }
             else if pending[id] == nil { pending[id] = entry }
         }
-        for entry in savedExports.values { entry.task.cancel() }
-        for entry in debouncedExports.values { entry.task.cancel() }
+        for entry in savedExports.values { entry.task?.cancel() }
+        for entry in debouncedExports.values { entry.task?.cancel() }
         savedExports.removeAll()
         debouncedExports.removeAll()
         for workspaceID in pending.keys {
@@ -386,6 +398,8 @@ public enum WorkspacePersistenceCoordinator {
                     container: container, workspaceID: workspaceID),
                       entry.source.resolve(workspaceID: workspaceID.uuidString) != nil,
                       let url = WorkspaceConfigManager.autoExportTarget(for: prepared.config.primaryPath).url else { continue }
+                guard registerMirror(path: prepared.config.primaryPath, workspaceID: workspaceID,
+                    modelContext: context) else { continue }
                 let result = WorkspaceConfigManager.writeResult(prepared.config,
                     workspaceID: workspaceID.uuidString, to: url)
                 if result.didExport { exported += 1 }

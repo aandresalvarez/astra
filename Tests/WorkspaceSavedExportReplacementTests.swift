@@ -173,4 +173,63 @@ struct WorkspaceSavedExportReplacementTests {
         #expect(WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) == 1)
         #expect((try WorkspaceConfigManager.loadConfig(from: sourceURL).tasks ?? []).isEmpty)
     }
+
+    @Test("Setup failure retains the newest save after its older copy finishes",
+          arguments: ["target", "registry"], ["write", "projection"])
+    func replacementSetupFailure(setup: String, stage: String) async throws {
+        let (root, container, workspace) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) }
+        let folder = root.appendingPathComponent("workspace")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        workspace.primaryPath = folder.path; try context.save()
+        let registry = try #require(WorkspaceMirrorRegistry(for: context))
+        let latch = ProjectionWriteLatch()
+        defer { Task { await latch.release() } }
+        let pause: @Sendable () async -> Void = { await latch.pause() }
+        let prior = try #require(WorkspacePersistenceCoordinator.enqueueSavedAutoExport(
+            workspace: workspace, modelContext: context,
+            writer: WorkspaceAutoExportWriter(beforeWrite: stage == "write" ? pause : nil),
+            reader: WorkspaceSavedAutoExport(beforeProjection: stage == "projection" ? pause : nil)))
+        try await latch.waitForArrival()
+        let unavailable = setup == "target" ? folder : registry.directory
+        let held = root.appendingPathComponent("held-\(setup)")
+        try FileManager.default.moveItem(at: unavailable, to: held)
+        if setup == "registry" { try Data("unwritable registry".utf8).write(to: unavailable) }
+        workspace.name = "Newest durable save"
+        #expect(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
+        if setup == "registry" { try FileManager.default.removeItem(at: unavailable) }
+        try FileManager.default.moveItem(at: held, to: unavailable)
+        await latch.release(); await prior.value
+        let url = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        #expect(try WorkspaceConfigManager.loadConfig(from: url).name == "Prior committed")
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 1)
+        #expect(WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) == 1)
+        #expect(try WorkspaceConfigManager.loadConfig(from: url).name == "Newest durable save")
+    }
+
+    @Test("The first save remains owed when target or registry setup is unavailable",
+          arguments: ["target", "registry"])
+    func initialSetupFailure(setup: String) throws {
+        let (root, container, workspace) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) }
+        let folder = root.appendingPathComponent("workspace")
+        let registry = try #require(WorkspaceMirrorRegistry(for: context))
+        if setup == "registry" {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data("unwritable registry".utf8).write(to: registry.directory)
+        }
+        workspace.primaryPath = folder.path
+        #expect(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 1)
+        if setup == "registry" { try FileManager.default.removeItem(at: registry.directory) }
+        else { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        #expect(WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) == 1)
+        let url = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        #expect(try WorkspaceConfigManager.loadConfig(from: url).name == "Prior committed")
+        #expect(registry.folders()?.contains(folder.resolvingSymlinksInPath().path) == true)
+    }
 }
