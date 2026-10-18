@@ -83,14 +83,16 @@ struct PluginsSurfaceView: View {
         return PluginsSurfacePresentation.makeState(packages.map { package in
             let packageState = CapabilityPackageState(package: package, workspace: workspace, capabilities: currentCapabilities)
             let decision = CapabilityCatalogPolicy.decision(for: package, context: context)
+            let listing = PluginsSurfacePresentation.listing(for: decision, isEnabled: packageState.isEnabled)
             return PluginsSurfacePresentation.Input(
                 package: package,
                 isEnabled: packageState.isEnabled,
                 pendingSteps: packageState.connectorsNeedingAttention.count + packageState.missingConnectors.count
                     + failingSetup(for: package).count
                     + PluginsSurfacePresentation.pendingAccounts(for: package, googleAccountConnected: googleConnected).count,
-                isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
-                isRemovable: Self.isRemovable(package)
+                isVisible: listing.isVisible,
+                isRemovable: Self.isRemovable(package),
+                blocker: listing.blocker
             )
         }, query: query)
     }
@@ -155,6 +157,9 @@ struct PluginsSurfaceView: View {
         }
         // A sign-in, reauthorization or revocation stamps the profile.
         .onChange(of: googleAccounts.map(\.updatedAt)) { _, _ in refreshGoogleCredential() }
+        // Contextual checks (GitHub repository access) describe one checkout:
+        // a new working path, from any window, scans again.
+        .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshStatuses() }
         .onChange(of: expanded) { _, ids in
             PluginsSurfacePreferences.setExpandedPluginIDs(ids, workspaceID: workspace.id)
         }
@@ -318,6 +323,12 @@ struct PluginsSurfaceView: View {
                         .controlSize(.small)
                         .tint(Stanford.lagunita)
                 }
+            } else if let connector, packageState?.inactiveSharedConnectors.contains(where: { $0.id == connector.id }) == true {
+                // A shared account that is off here: turning it on is the step.
+                Button("Turn on") { activate(connector, for: package) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(Stanford.lagunita)
             } else if let connector {
                 Button("Add key") { onEditElement(.connectors, connector.id) }
                     .buttonStyle(.bordered)
@@ -456,6 +467,15 @@ struct PluginsSurfaceView: View {
         } catch {
             errorMessage = "Couldn't add \(package.name): \(error.localizedDescription)"
         }
+    }
+
+    private func activate(_ connector: Connector, for package: PluginPackage) {
+        errorMessage = nil
+        guard CapabilityCatalogActionService().activateSharedConnector(connector, workspace: workspace, modelContext: modelContext) else {
+            errorMessage = "Couldn't turn on \(connector.name) for \(package.name). Try again."
+            return
+        }
+        onCatalogChanged()
     }
 
     private func confirmationRow(_ confirmation: PluginsSurfaceConfirmation, package: PluginPackage) -> some View {

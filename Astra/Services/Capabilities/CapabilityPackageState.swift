@@ -156,6 +156,14 @@ struct CapabilityPackageState {
         return missingConnectors.contains { CapabilityResourceOrigin.componentID(for: $0) == componentID }
     }
 
+    /// Shared accounts among `connectorsNeedingAttention` that are off in
+    /// this workspace: what they need first is turning on here, not a key.
+    /// Credentials are checked once the account is active.
+    var inactiveSharedConnectors: [Connector] {
+        let active = Set(activeLinkedConnectors.map(\.id))
+        return connectorsNeedingAttention.filter { $0.isGlobal && !active.contains($0.id) }
+    }
+
     /// Connectors an added plugin requires that have no row at all (deleted
     /// since): a pending step with nothing to edit, so Add sets it up again.
     var missingConnectors: [PluginConnector] {

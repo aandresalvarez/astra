@@ -247,8 +247,18 @@ enum CLISessionExpiryClassifier {
             let segment = segments[index]
             guard executes(cli, segment.words) else { return false }
             return segment.enclosingCommands.contains { !executes(cli, $0) }
+                || negates(segment.words)
                 || (index < segments.count - 1 && statusMaskingSeparators.contains(segment.separator))
         }
+    }
+
+    /// True when the shell negates this command's status (`! gh auth
+    /// status`, also after the `time` keyword): the line succeeds exactly
+    /// when the CLI fails.
+    private static func negates(_ words: [String]) -> Bool {
+        var rest = words[...]
+        if rest.first == "time" { rest = rest.dropFirst().drop { $0.hasPrefix("-") } }
+        return rest.first == "!"
     }
 
     private static func executes(_ cli: String, _ simpleCommand: [String]) -> Bool {
@@ -432,7 +442,8 @@ enum CLISessionExpiryClassifier {
                 assignments.append(words.removeFirst())
                 continue
             }
-            if first.hasPrefix("$(") {
+            // The shell's negation runs the command after it (`! gh …`).
+            if first.hasPrefix("$(") || first == "!" {
                 words.removeFirst()
                 continue
             }

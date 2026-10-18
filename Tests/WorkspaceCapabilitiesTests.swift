@@ -590,6 +590,39 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.attentionMessages(for: connector) == state.readiness.messages)
     }
 
+    @Test("A shared account that is off here needs turning on, not a key, and the action service turns it on")
+    @MainActor
+    func inactiveSharedConnectorIsActivatedNotKeyed() throws {
+        let workspace = Workspace(name: "Inactive Shared Jira", primaryPath: "/tmp/inactive-shared-jira")
+        let connector = Connector(name: "Jira", serviceType: "jira", authMethod: "none")
+        connector.isGlobal = true
+        let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        skill.isGlobal = true
+        skill.connectors = [connector]
+        workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        func state() -> CapabilityPackageState {
+            CapabilityPackageState(
+                package: package, workspace: workspace,
+                capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [skill], globalConnectors: [connector]),
+                secretStore: MockSecretStore()
+            )
+        }
+        #expect(state().inactiveSharedConnectors.map(\.id) == [connector.id])
+
+        // A failed save leaves the account off.
+        let container = try makeCapabilitiesPersistenceContainer()
+        let service = CapabilityCatalogActionService()
+        #expect(!service.activateSharedConnector(connector, workspace: workspace, modelContext: container.mainContext) { _, _ in false })
+        #expect(!workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString))
+
+        #expect(service.activateSharedConnector(connector, workspace: workspace, modelContext: container.mainContext) { _, _ in true })
+        #expect(workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString))
+        #expect(state().inactiveSharedConnectors.isEmpty)
+        #expect(state().connectorsNeedingAttention.isEmpty)
+        withExtendedLifetime(container) {}
+    }
+
     @Test("package state links configured connectors by non-custom service type")
     @MainActor
     func packageStateLinksConnectorsByServiceType() {

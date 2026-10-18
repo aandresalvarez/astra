@@ -239,6 +239,17 @@ struct CLISessionExpiryTests {
         #expect(monitor.runtimeStopReason == nil)
     }
 
+    @Test("A shell-negated CLI runs, and its failure is the line's success")
+    func shellNegationMasksTheCLI() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in ["! gh auth status", "cd /tmp && ! gh auth status", "time ! gh auth status", "( ! gh auth status )"] {
+            #expect(CLISessionExpiryClassifier.runs("gh", in: command), "not run: \(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) != nil, "missed: \(command)")
+        }
+        #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: "! cat notes.md", failed: false) == nil)
+        #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: "echo ! gh auth status", failed: false) == nil)
+    }
+
     @Test("A substitution inside another command masks the CLI's failure; an assignment does not")
     func substitutionInsideAnotherCommandMasksTheCLI() {
         let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
