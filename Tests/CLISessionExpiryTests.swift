@@ -210,6 +210,29 @@ struct CLISessionExpiryTests {
         }
     }
 
+    @Test("bq or gsutil run by path is checked and signed in with the gcloud beside it")
+    func companionPathRetargetsToSiblingGcloud() throws {
+        let sdk = "/opt/google-cloud-sdk/bin"
+        let installed: (String) -> Bool = { $0 == "\(sdk)/gcloud" }
+        for command in ["\(sdk)/bq query 'select 1'", "\(sdk)/gsutil ls gs://bucket"] {
+            let family = try #require(CLISessionExpiryClassifier.family(content: gcloudReauth, command: command, isExecutable: installed))
+            #expect(family.repair.checkBinary == "\(sdk)/gcloud", "\(command)")
+            #expect(family.repair.command == "\(sdk)/gcloud auth login", "\(command)")
+            #expect(family.repair.checkExpect == SemanticCheck.stdoutNonEmpty.rawValue)
+            #expect(CLISessionExpiryClassifier.family(forStopMessage: family.stopMessage) == family, "\(command)")
+        }
+        // No gcloud beside it (a standalone gsutil), disagreeing companions,
+        // or a gcloud the line runs by name: checked by name on PATH.
+        for command in [
+            "/usr/local/bin/gsutil ls gs://bucket",
+            "\(sdk)/bq ls; /opt/other-sdk/bin/gsutil ls",
+            "gcloud config list && \(sdk)/bq ls"
+        ] {
+            let family = try #require(CLISessionExpiryClassifier.family(content: gcloudReauth, command: command, isExecutable: installed))
+            #expect(family.repair.checkBinary == "gcloud", "\(command)")
+        }
+    }
+
     @Test("Sign in runs against the credential store the resumed task reads, carrying no token")
     @MainActor
     func signInTargetsProjectedCredentialStore() throws {
@@ -258,8 +281,36 @@ struct CLISessionExpiryTests {
         }
         // No selector, or one that can't be quoted, leaves the command as is.
         #expect(repair.targetingCredentialStore(["CLOUDSDK_AUTH_ACCESS_TOKEN": "x"]) == repair)
-        #expect(repair.targetingCredentialStore(["CLOUDSDK_CONFIG": "/a'b"]) == repair)
+        #expect(repair.targetingCredentialStore(["CLOUDSDK_CONFIG": "/a\nb"]) == repair)
         withExtendedLifetime(container) {}
+    }
+
+    @Test("A credential-store path with an apostrophe is quoted, not dropped, and the shell reads it back exactly")
+    func signInQuotesApostrophesInStorePaths() throws {
+        let store = "/Users/O'Connor/.config/gh"
+        let repair = CLISessionExpiryClassifier.gitHub.repair
+        let targeted = repair.targetingCredentialStore(["GH_CONFIG_DIR": store, "GH_HOST": "it's"])
+        let command = try #require(targeted.command)
+        #expect(command == #"env GH_CONFIG_DIR='/Users/O'\''Connor/.config/gh' GH_HOST='it'\''s' gh auth login"#)
+        #expect(RepairAction.isSafeTerminalCommand(command, binary: "gh", allowsInstaller: false, allowsStoreSelectors: true))
+        // A bare apostrophe that would end the value early is still refused.
+        #expect(!RepairAction.isSafeTerminalCommand(
+            "env GH_CONFIG_DIR='/a'b' gh auth login", binary: "gh", allowsInstaller: false, allowsStoreSelectors: true
+        ))
+        // The shell takes the quoted prefix as exactly the stored path.
+        let probe = try #require(RepairAction(
+            strategy: .terminal, componentName: "probe", title: "probe", verb: "Sign in", detail: "",
+            command: "printenv GH_CONFIG_DIR"
+        ).targetingCredentialStore(["GH_CONFIG_DIR": store]).command)
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        shell.arguments = ["-c", probe]
+        let output = Pipe()
+        shell.standardOutput = output
+        try shell.run()
+        shell.waitUntilExit()
+        let printed = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        #expect(printed == store + "\n")
     }
 
     @Test("Sign in signs in to the Enterprise host the launch's GH_REPO or GH_HOST selects, the host Resume checks")

@@ -38,8 +38,13 @@ public struct RepairAction: Codable, Sendable, Equatable {
     /// `CLOUDSDK_CONFIG`), so the check sees what the resumed run will. Set
     /// when checking, not stored with the repair.
     public var checkEnvironment: [String: String]?
+    /// The directory the resumed run starts in, where a relative or empty
+    /// entry of the projected `PATH` (`./tools`) points. Set with
+    /// `checkEnvironment`, not stored with the repair.
+    public var checkWorkingDirectory: String?
 
-    /// `checkEnvironment` can hold a token: it is never encoded.
+    /// `checkEnvironment` can hold a token: it is never encoded, nor is
+    /// `checkWorkingDirectory`, which belongs with it.
     private enum CodingKeys: String, CodingKey {
         case strategy, componentName, title, verb, detail, command, url, checkBinary, checkArguments, checkExpect
     }
@@ -111,29 +116,34 @@ public struct RepairAction: Codable, Sendable, Equatable {
     /// store `environment` selects (the stopped run's), as
     /// `env CLOUDSDK_CONFIG='/path' gcloud auth login`: signing in to the
     /// default store would leave the one the resumed run reads still broken.
-    /// Only `credentialStoreSelectors` are carried, never a token. Unchanged
-    /// without a command or a selector, or when a value can't be quoted.
+    /// Only `credentialStoreSelectors` are carried, never a token. An
+    /// apostrophe (`/Users/O'Connor/.config/gh`) is written `'\''`: closed,
+    /// escaped, reopened. Unchanged without a command or a selector, or when
+    /// a value holds a control character, which no quoting makes one word.
     public func targetingCredentialStore(_ environment: [String: String]?) -> RepairAction {
         let selectors = Self.credentialStoreSelectors.compactMap { name in
             environment?[name].flatMap { $0.isEmpty ? nil : (name, $0) }
         }
         guard let command, !selectors.isEmpty,
-              selectors.allSatisfy({ !$0.1.contains("'") && !$0.1.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) })
+              selectors.allSatisfy({ !$0.1.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) })
         else { return self }
         var targeted = self
-        targeted.command = "env " + selectors.map { "\($0.0)='\($0.1)' " }.joined() + command
+        targeted.command = "env " + selectors.map {
+            "\($0.0)='\($0.1.replacingOccurrences(of: "'", with: #"'\''"#))' "
+        }.joined() + command
         return targeted
     }
 
     /// `command` without a leading `env NAME='value' …` that sets only
     /// `credentialStoreSelectors`, each single-quoted so the shell takes it
-    /// literally (`targetingCredentialStore`); `command` itself without one;
-    /// nil when the prefix sets anything else or is malformed.
+    /// literally, an apostrophe as `'\''` (`targetingCredentialStore`);
+    /// `command` itself without one; nil when the prefix sets anything else
+    /// or is malformed.
     static func droppingSelectorPrefix(_ command: String) -> String? {
         guard command.hasPrefix("env ") else { return command }
         var rest = command.dropFirst("env ".count)
         var selectors = 0
-        while let assignment = rest.range(of: #"^[A-Z_]+='[^']*' "#, options: .regularExpression) {
+        while let assignment = rest.range(of: #"^[A-Z_]+='[^']*'(\\''[^']*')* "#, options: .regularExpression) {
             let name = rest[assignment].prefix { $0 != "=" }
             guard credentialStoreSelectors.contains(String(name)) else { return nil }
             rest = rest[assignment.upperBound...]

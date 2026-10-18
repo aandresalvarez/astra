@@ -924,7 +924,7 @@ struct WorkspaceRightRailView: View {
             isEnabled: item.isEnabled,
             isCompact: isCompact,
             repairVerb: item.repair?.verb,
-            repairCommand: item.repair?.strategy == .terminal ? item.repair?.command : nil,
+            repairGuidance: CapabilityRailRow.repairGuidance(for: item.repair),
             repairStatus: item.repair.flatMap { repairs.phase(for: $0, owner: item.id) } == .waiting ? "Checking…" : nil,
             onRepair: { if let repair = item.repair { repairs.start(repair, owner: item.id) { refreshCapabilityPrerequisiteStatuses() } } },
             contextualRepair: contextualRepair(for: item),

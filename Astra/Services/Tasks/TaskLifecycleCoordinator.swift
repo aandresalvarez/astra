@@ -164,6 +164,7 @@ final class TaskLifecycleCoordinator {
             return retryVerifiedTask(task)
         }
         repair.checkEnvironment = Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
+        repair.checkWorkingDirectory = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         repair = CLISessionExpiryClassifier.checkingLaunchHost(repair)
         let check = repairCheck
         let origin = RepairCheckOrigin(task)
@@ -358,6 +359,7 @@ final class TaskLifecycleCoordinator {
             return resumeVerifiedTask(task)
         }
         repair.checkEnvironment = Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
+        repair.checkWorkingDirectory = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         repair = CLISessionExpiryClassifier.checkingLaunchHost(repair)
         let check = repairCheck
         let origin = RepairCheckOrigin(task)
@@ -428,7 +430,8 @@ final class TaskLifecycleCoordinator {
     /// the same launch scope as the run, detached skill snapshots included: a
     /// snapshot whose skill was removed still delivers its variables.
     /// `binary` may be the path of the installation that failed; its name
-    /// picks the variables.
+    /// picks the variables. A relative `PATH` entry is resolved from the
+    /// run's code directory (`RepairAction.checkWorkingDirectory`).
     static func projectedCheckEnvironment(for task: AgentTask, binary: String?) -> [String: String]? {
         let binary = binary.map { ($0 as NSString).lastPathComponent }
         guard binary == "gh" || binary == "gcloud" else { return nil }
@@ -448,18 +451,23 @@ final class TaskLifecycleCoordinator {
     /// The repair the task's latest run stopped for, if it stopped for one.
     /// A stop whose fix is outside ASTRA (a rejected `GH_TOKEN`) records no
     /// repair to offer, but its check is still the one Resume and Retry run.
+    /// `task.events` is a stored relationship with no order, so the run's
+    /// events are read newest first by timestamp, and the stop is the newest
+    /// error that is a sign-in stop message: another error in the same run
+    /// must not hide it.
     func pendingRepair(for task: AgentTask) -> RepairAction? {
         guard let run = task.runs.max(by: { $0.startedAt < $1.startedAt }) else { return nil }
-        if let recorded = task.events
-            .last(where: { $0.run?.id == run.id && $0.type == TaskEventTypes.System.runtimeRepairRequired.rawValue })
+        let newestFirst = task.events.filter { $0.run?.id == run.id }.sorted { $0.timestamp > $1.timestamp }
+        if let recorded = newestFirst
+            .first(where: { $0.type == TaskEventTypes.System.runtimeRepairRequired.rawValue })
             .flatMap({ RepairAction.decode(from: $0.payload) }) {
             return recorded
         }
         guard run.typedStopReason == .capabilitySessionExpired else { return nil }
-        let stopMessage = task.events
-            .last { $0.run?.id == run.id && $0.type == TaskEventTypes.System.error.rawValue }?
-            .payload
-        return CLISessionExpiryClassifier.family(forStopMessage: stopMessage)?.repair
+        return newestFirst.lazy
+            .filter { $0.type == TaskEventTypes.System.error.rawValue }
+            .compactMap { CLISessionExpiryClassifier.family(forStopMessage: $0.payload) }
+            .first?.repair
     }
 
     private func recordRepairStillNeeded(_ task: AgentTask, repair: RepairAction, action: String = "resumed") {

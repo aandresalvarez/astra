@@ -254,13 +254,17 @@ struct CapabilityCatalogActionService {
         }
     }
 
-    /// Turns a package off in one workspace, leaving it installed.
+    /// Turns a package off in one workspace, leaving it installed. A saved
+    /// disable is audited like Configure's (`capabilityDisabled`): it takes
+    /// the workspace's access to the package and may delete its workspace
+    /// resources. A rolled-back one is audited by the disabler.
     @discardableResult
     func disable(
         _ package: PluginPackage,
         workspace: Workspace,
         capabilities: WorkspaceCapabilities,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        traceID: String = AuditTrace.make("capability-disable")
     ) -> CapabilityActivationDisabler.Result {
         let result = CapabilityActivationDisabler().disable(
             package,
@@ -268,6 +272,22 @@ struct CapabilityCatalogActionService {
             capabilities: capabilities,
             modelContext: modelContext
         )
+        if result.persisted {
+            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                "source": "plugins_turn_off",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "workspace_id": workspace.id.uuidString,
+                "disabled_skills_count": String(result.disabledSkillIDs.count),
+                "disabled_connectors_count": String(result.disabledConnectorIDs.count),
+                "disabled_tools_count": String(result.disabledToolIDs.count),
+                "removed_workspace_skills_count": String(result.removedWorkspaceSkillIDs.count),
+                "removed_workspace_connectors_count": String(result.removedWorkspaceConnectorIDs.count),
+                "enabled_capability_ids": CapabilityAudit.compactNames(WorkspaceCapabilityActivation.state(of: workspace).capabilityIDs)
+            ])
+        }
         CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return result
     }
