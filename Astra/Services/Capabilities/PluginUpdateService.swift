@@ -401,6 +401,30 @@ enum PluginUpdateService {
             throw UpdateError.ambiguousRename(component: new)
         }
 
+        // A rename destination whose namespace is still journaled for
+        // deletion (a component removed earlier whose cleanup failed) is
+        // cleared first, so the renamed one never inherits its old values.
+        let pendingDestinations = renames.sorted(by: { $0.key < $1.key }).compactMap { old, new -> String? in
+            guard known.contains(old), !currentSet.contains(old), new.hasPrefix("skill:"),
+                  let spec = package.skills.first(where: { CapabilityResourceOrigin.componentID(for: $0) == new }) else { return nil }
+            let kept = Set(activation.secretSettingKeys
+                .filter { PluginActivation.componentID(ofSettingKey: $0) == new }
+                .map { String($0.dropFirst(new.count + 1)) })
+            let settled = PluginSecretCleanupOutbox.settleRenameDestination(
+                PluginRuntimeProjection.derivedID(of: activation, componentID: new),
+                keys: spec.environmentKeys, kept: kept, modelContext: modelContext ?? activation.modelContext
+            ) { persistence.deleteSecret(key: $0, skillID: PluginRuntimeProjection.derivedID(of: activation, componentID: new)) }
+            return settled ? nil : new
+        }
+        if let blocked = pendingDestinations.first {
+            guard mode == .release else {
+                result.withheld = pendingDestinations
+                result.marked = WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
+                return result
+            }
+            throw UpdateError.secretCleanupPending(key: blocked)
+        }
+
         for (old, new) in renames.sorted(by: { $0.key < $1.key })
         where known.contains(old) && !currentSet.contains(old) {
             if old.hasPrefix("skill:"), let spec = package.skills.first(where: { CapabilityResourceOrigin.componentID(for: $0) == new }) {

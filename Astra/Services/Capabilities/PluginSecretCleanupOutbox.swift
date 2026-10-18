@@ -123,6 +123,36 @@ struct PluginSecretCleanupOutbox {
         return failed
     }
 
+    /// Clears what is still journaled for deletion in the namespace a rename
+    /// is about to move state into (`destination`, keys `keys`), keeping the
+    /// keys the activation records there (`kept`): a component removed
+    /// earlier whose cleanup failed must not hand its old values to the one
+    /// now renamed onto its ID. Returns false while something is still
+    /// pending there (a delete failed, or the record can't be read).
+    static func settleRenameDestination(
+        _ destination: UUID,
+        keys: [String],
+        kept: Set<String>,
+        modelContext: ModelContext?,
+        outbox: PluginSecretCleanupOutbox? = nil,
+        delete: (String) -> Bool
+    ) -> Bool {
+        guard let outbox = outbox ?? modelContext.flatMap(PluginSecretCleanupOutbox.init(for:)) else { return true }
+        guard let entries = try? outbox.entries() else { return false }
+        let namespace = destination.uuidString
+        let prefix = namespace + "#"
+        let journaled = entries.filter { $0 == namespace || $0.hasPrefix(prefix) }
+        guard !journaled.isEmpty else { return true }
+        var toDelete = Set(journaled.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) })
+        if journaled.contains(namespace) { toDelete.formUnion(keys) }
+        let failed = toDelete.subtracting(kept).filter { !delete($0) }
+        guard failed.isEmpty else { return false }
+        try? outbox.writeEntries(entries.filter { !journaled.contains($0) })
+        return (try? outbox.entries()).map { remaining in
+            !remaining.contains { $0 == namespace || $0.hasPrefix(prefix) }
+        } ?? false
+    }
+
     /// Cleans every recorded namespace nothing live names and drops it from
     /// the record; one still in use (re-added, restored) is dropped uncleaned.
     /// A recorded key is deleted unless a live activation records that

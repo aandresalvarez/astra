@@ -157,6 +157,49 @@ struct PluginActivationReviewTests {
         #expect(try outbox.pendingKeys().isEmpty)
     }
 
+    @Test("A rename onto a component whose old secrets are still journaled clears them first, and waits while it can't")
+    func renameDestinationSettlesItsPendingCleanup() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-rename-dest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: root.appendingPathComponent("default.store"))]
+        )
+        Fixtures.Environment.retained.append(container)
+        let context = container.mainContext
+        let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
+        context.insert(workspace)
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
+        let v1 = Fixtures.package(version: "1.0.0")
+        try CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
+            .install(v1, into: workspace, modelContext: context, announceCatalogMutation: false)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
+        // An earlier version had a "Renamed Agent" whose Remove left its
+        // namespace journaled: the delete failed.
+        let destination = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:renamed-agent")
+        let outbox = try #require(PluginSecretCleanupOutbox(for: context))
+        try outbox.writeEntries([destination.uuidString])
+
+        var v2 = Fixtures.package(version: "2.0.0")
+        v2.skills[0].name = "Renamed Agent"
+        v2.skills[0].replaces = ["skill:report-agent"]
+        try library.install(v2, sourceMetadata: .builtIn())
+        let packages = library.installedPackages()
+        #expect(throws: PluginUpdateService.UpdateError.secretCleanupPending(key: "skill:renamed-agent")) {
+            try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsRefusingDeletes.self)
+        }
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .automatic, secrets: SecretsRefusingDeletes.self)
+        #expect(activation.recordedVersion == "1.0.0")
+        #expect(activation.knownComponentIDs.contains("skill:report-agent"))
+        #expect(try outbox.entries() == [destination.uuidString])
+
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsAcceptingDeletes.self)
+        #expect(activation.recordedVersion == "2.0.0")
+        #expect(!(try outbox.entries()).contains(destination.uuidString))
+    }
+
     @Test("An import whose new library entry can't be read back fails and puts the previous version back")
     func importFailsWhenTheInstalledCopyIsUnreadable() throws {
         let env = try Fixtures.Environment()
