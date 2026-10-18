@@ -231,6 +231,8 @@ enum CapabilityRuntimeResourceMatcher {
         packPolicy suppliedPackPolicy: PackResolvedPolicy?,
         resolvePackPolicyIfNeeded: Bool
     ) -> [PluginPackage] {
+        // A plugin whose activation awaits Update doesn't run.
+        let packages = PluginRuntimeProjection.runnable(packages, in: workspace)
         guard !packages.isEmpty else { return [] }
         let packPolicy = suppliedPackPolicy
             ?? (resolvePackPolicyIfNeeded ? PackWorkspacePolicyProvider.resolvedPolicy(for: workspace) : .empty)

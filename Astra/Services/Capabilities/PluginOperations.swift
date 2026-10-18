@@ -18,6 +18,9 @@ enum PluginOperations {
         case notAdded(pluginID: String)
         case secretSaveFailed(key: String)
         case secretDeleteFailed(key: String)
+        /// The change wasn't saved and the Keychain couldn't take back the
+        /// value it had already written or cleared.
+        case secretRestoreFailed(key: String)
         case storeUnreadable
         case saveFailed
 
@@ -26,6 +29,7 @@ enum PluginOperations {
             case .notAdded: "Add the plugin to this workspace first."
             case .secretSaveFailed(let key): "Couldn't save \(key) to the Keychain."
             case .secretDeleteFailed(let key): "Couldn't clear \(key) from the Keychain; the old value is still in use."
+            case .secretRestoreFailed(let key): "Couldn't save the change, and \(key) couldn't be put back as it was in the Keychain. Enter it again."
             case .storeUnreadable: "Couldn't read the workspaces that use this account."
             case .saveFailed: "Couldn't save the change."
             }
@@ -54,14 +58,17 @@ enum PluginOperations {
     /// Sets a plugin skill's setting for this workspace. An empty secret
     /// clears it from the Keychain; a clear the Keychain refuses throws, so
     /// the old credential is never reported gone while still in use. An
-    /// emptied non-secret setting is kept as empty.
+    /// emptied non-secret setting is kept as empty. A failed save puts the
+    /// Keychain back too; one it can't put back is reported as such.
     static func setSetting(
         _ key: String,
         to value: String,
         of skill: PluginSkill,
         pluginID: String,
         in workspace: Workspace,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        secrets: (any SkillSecretPersisting.Type)? = nil,
+        persist: (Workspace, ModelContext) throws -> Void = persistAndExport
     ) throws {
         guard let activation = WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) else {
             throw OperationError.notAdded(pluginID: pluginID)
@@ -71,7 +78,7 @@ enum PluginOperations {
         let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         if Skill.isSecretEnvironmentKey(key) {
             let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
-            let persistence = SkillSecretSeam.required
+            let persistence = secrets ?? SkillSecretSeam.required
             let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
             if value.isEmpty {
                 guard persistence.deleteSecret(key: key, skillID: skillID) else {
@@ -83,21 +90,27 @@ enum PluginOperations {
             // Which secrets exist is recorded, so cleanup and Update find them.
             WorkspaceCapabilityActivation.setSecretRecorded(!value.isEmpty, forKey: settingKey, on: activation)
             do {
-                try save(workspace, modelContext: modelContext, restoring: snapshot)
+                try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
             } catch {
                 // The record went back to what it was; so does the Keychain.
-                if let previous {
+                // A value it can't take back no longer matches the record.
+                let restored = if let previous {
                     persistence.saveSecretValue(previous, key: key, skillID: skillID, skillName: skill.name, allowUserInteraction: false)
                 } else {
                     persistence.deleteSecret(key: key, skillID: skillID)
                 }
+                guard restored else { throw OperationError.secretRestoreFailed(key: key) }
                 throw error
             }
             return
         }
         WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
         workspace.updatedAt = Date()
-        try save(workspace, modelContext: modelContext, restoring: snapshot)
+        try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
+    }
+
+    static func persistAndExport(_ workspace: Workspace, modelContext: ModelContext) throws {
+        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
     }
 
     // MARK: - Accounts
@@ -227,10 +240,11 @@ enum PluginOperations {
     private static func save(
         _ workspace: Workspace,
         modelContext: ModelContext,
-        restoring snapshot: WorkspaceCapabilityActivation.Snapshot
+        restoring snapshot: WorkspaceCapabilityActivation.Snapshot,
+        persist: (Workspace, ModelContext) throws -> Void = persistAndExport
     ) throws {
         do {
-            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
+            try persist(workspace, modelContext)
         } catch {
             modelContext.rollback()
             WorkspaceCapabilityActivation.restore(snapshot, to: workspace)

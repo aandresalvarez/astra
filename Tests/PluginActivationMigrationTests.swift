@@ -100,6 +100,9 @@ struct PluginActivationMigrationTests {
         let fixture = try Fixture()
         let context = fixture.context
         try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        // Launch reconciles right after migrating: a plugin recorded at its
+        // legacy version runs once it records the library's.
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: fixture.packages, mode: .automatic)
         let a = try fixture.workspace(fixture.aID)
         let b = try fixture.workspace(fixture.bID)
 
@@ -530,6 +533,9 @@ struct PluginActivationMigrationTests {
     func editedSharedSkillFollowsItsActivation() throws {
         let fixture = try Fixture()
         try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        // Launch reconciles right after migrating: a plugin recorded at its
+        // legacy version runs once it records the library's.
+        try PluginUpdateService.reconcileAll(modelContext: fixture.context, packages: fixture.packages, mode: .automatic)
         let a = try fixture.workspace(fixture.aID)
         let shared = try fixture.context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
         func activeSkillIDs() -> Set<UUID> {
@@ -550,6 +556,9 @@ struct PluginActivationMigrationTests {
     func editedWorkspaceRowsFollowTheirActivation() throws {
         let fixture = try Fixture(editedToolDescription: "My own words", workspaceScopedRows: true)
         try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        // Launch reconciles right after migrating: a plugin recorded at its
+        // legacy version runs once it records the library's.
+        try PluginUpdateService.reconcileAll(modelContext: fixture.context, packages: fixture.packages, mode: .automatic)
         let a = try fixture.workspace(fixture.aID)
         let tools = try fixture.context.fetch(FetchDescriptor<LocalTool>())
         let toolIDs = Set(tools.map(\.id))

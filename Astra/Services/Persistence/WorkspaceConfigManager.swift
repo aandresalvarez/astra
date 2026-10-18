@@ -1362,7 +1362,9 @@ public enum WorkspaceConfigManager {
             let template = makeTemplate(from: tc, workspace: workspace)
             // Skill IDs from the file resolve to the rows it created (fresh
             // under `.validate`).
-            template.defaultSkillIDs = template.defaultSkillIDs.map { skillsByID[$0]?.id.uuidString ?? projectedIDs[$0] ?? $0 }
+            WorkspaceCapabilityActivation.rewriteDefaultSkills(of: template, in: workspace) { ids in
+                ids.map { skillsByID[$0]?.id.uuidString ?? projectedIDs[$0] ?? $0 }
+            }
             sanitizeCreated(template, trust: capabilityTrust, report: &trustReport)
             modelContext.insert(template)
         }

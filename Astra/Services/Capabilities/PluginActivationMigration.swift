@@ -452,7 +452,7 @@ enum PluginActivationMigration {
         let old = skillID.uuidString
         let new = projectedID.uuidString
         for template in workspace.templates where template.defaultSkillIDs.contains(old) {
-            template.defaultSkillIDs = template.defaultSkillIDs.map { $0 == old ? new : $0 }
+            WorkspaceCapabilityActivation.rewriteDefaultSkills(of: template, in: workspace) { $0.map { $0 == old ? new : $0 } }
         }
         for schedule in workspace.schedules where schedule.skillIDs.contains(old) {
             schedule.skillIDs = schedule.skillIDs.map { $0 == old ? new : $0 }

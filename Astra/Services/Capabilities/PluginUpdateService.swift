@@ -36,8 +36,13 @@ enum PluginUpdateService {
         case refusedByWorkspace(workspace: String, reason: String)
         case secretCopyFailed(component: String, key: String)
         case ambiguousRename(component: String)
+        /// A secret setting the definition declares again still has an old
+        /// value waiting to be cleared from the Keychain.
+        case secretCleanupPending(key: String)
         case storeUnreadable
         case saveFailed
+        /// The update failed and a secret it had copied couldn't be put back.
+        case credentialRestoreFailed(keys: [String])
 
         var errorDescription: String? {
             switch self {
@@ -47,10 +52,14 @@ enum PluginUpdateService {
                 "Couldn't move the saved \(key) of \(component) to the new version."
             case .ambiguousRename(let component):
                 "\(component) takes over more than one component this workspace still has settings for, so the update can't tell whose to keep."
+            case .secretCleanupPending(let key):
+                "The earlier saved \(key) couldn't be cleared from the Keychain yet, so this version can't use it. Try again."
             case .storeUnreadable:
                 "Couldn't read the workspaces that use this plugin."
             case .saveFailed:
                 "Couldn't save the update."
+            case .credentialRestoreFailed(let keys):
+                "Couldn't save the update, and the saved \(keys.joined(separator: ", ")) it had moved couldn't be put back. Enter \(keys.count == 1 ? "it" : "them") again in the plugin's settings."
             }
         }
     }
@@ -211,7 +220,8 @@ enum PluginUpdateService {
     static func reconcileAll(
         modelContext: ModelContext,
         packages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions(),
-        mode: Mode = .automatic
+        mode: Mode = .automatic,
+        secrets: (any SkillSecretPersisting.Type)? = nil
     ) throws -> Int {
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let activations = try modelContext.fetch(FetchDescriptor<PluginActivation>())
@@ -230,7 +240,9 @@ enum PluginUpdateService {
                       let package = packagesByID[activation.pluginID],
                       needsReconcile(activation, to: package) || !PluginTemplateSync.isInSync(package, in: workspace)
                 else { continue }
-                let result = try reconcile(activation, in: workspace, to: package, mode: mode, modelContext: modelContext, copied: &total.copied)
+                let result = try reconcile(
+                    activation, in: workspace, to: package, mode: mode, modelContext: modelContext, secrets: secrets, copied: &total.copied
+                )
                 total.released += result.released
                 total.staleSecrets += result.staleSecrets
                 guard result.changed else { continue }
@@ -245,7 +257,10 @@ enum PluginUpdateService {
         } catch {
             modelContext.rollback()
             restore()
-            undo(total.copied)
+            // A copy the Keychain can't take back is reported ahead of the
+            // failure: the successor would keep a value Update reads as its own.
+            let unrestored = undo(total.copied, secrets: secrets)
+            if !unrestored.isEmpty { throw UpdateError.credentialRestoreFailed(keys: unrestored) }
             throw error
         }
         return changed
@@ -347,8 +362,10 @@ enum PluginUpdateService {
         to package: PluginPackage,
         mode: Mode,
         modelContext: ModelContext? = nil,
+        secrets: (any SkillSecretPersisting.Type)? = nil,
         copied: inout [CopiedSecret]
     ) throws -> Reconciliation {
+        let persistence = secrets ?? SkillSecretSeam.required
         var result = Reconciliation()
         let current = componentIDs(of: package)
         let currentSet = Set(current)
@@ -382,7 +399,7 @@ enum PluginUpdateService {
                 let undeclared = mode == .release ? [] : activation.secretSettingKeys
                     .filter { PluginActivation.componentID(ofSettingKey: $0) == old }
                     .map { String($0.dropFirst(old.count + 1)) }
-                try copySecrets(of: spec, alsoCopying: undeclared, from: oldID, to: newID, copied: &copied)
+                try copySecrets(of: spec, alsoCopying: undeclared, from: oldID, to: newID, persistence: persistence, copied: &copied)
                 result.copied += copied[before...]
                 retargetSkill(oldID, to: newID, in: workspace)
                 result.released.append(oldID)
@@ -396,8 +413,18 @@ enum PluginUpdateService {
         let dropped = known.subtracting(currentSet).subtracting(renames.keys).sorted()
         let staleKeys = staleSettings(of: activation, in: package)
         let templatesInSync = PluginTemplateSync.isInSync(package, in: workspace)
-        if mode == .automatic, !dropped.isEmpty || !staleKeys.isEmpty || !templatesInSync {
+        // A secret the definition declares again whose old value is still
+        // journaled for deletion is cleared before the definition is taken.
+        let unsettled = PluginSecretCleanupOutbox.settleRedeclared(
+            unrecordedSecrets(of: activation, in: package), modelContext: modelContext ?? activation.modelContext
+        ) { persistence.deleteSecret(key: $0.key, skillID: $0.skillID) }
+        let secretsSettled = unsettled.isEmpty
+        if !secretsSettled, mode == .release {
+            throw UpdateError.secretCleanupPending(key: Set(unsettled.map(\.key)).sorted().joined(separator: ", "))
+        }
+        if mode == .automatic, !dropped.isEmpty || !staleKeys.isEmpty || !templatesInSync || !secretsSettled {
             result.withheld = dropped + staleKeys.map(\.settingKey) + (templatesInSync ? [] : ["templates"])
+                + (secretsSettled ? [] : ["secrets"])
             // The renames moved state onto components the definition still
             // declares: the history names those now.
             WorkspaceCapabilityActivation.setKnownComponents(
@@ -446,16 +473,21 @@ enum PluginUpdateService {
         (try? CapabilityApprovalDigest.digest(for: package)) ?? ""
     }
 
-    /// Puts back what `copied` overwrote, newest first.
-    static func undo(_ copied: [CopiedSecret]) {
-        let persistence = SkillSecretSeam.required
+    /// Puts back what `copied` overwrote, newest first. Returns the keys it
+    /// couldn't put back, for the caller to report.
+    @discardableResult
+    static func undo(_ copied: [CopiedSecret], secrets: (any SkillSecretPersisting.Type)? = nil) -> [String] {
+        let persistence = secrets ?? SkillSecretSeam.required
+        var unrestored: [String] = []
         for secret in copied.reversed() {
-            if let previous = secret.previousValue {
+            let restored = if let previous = secret.previousValue {
                 persistence.saveSecretValue(previous, key: secret.key, skillID: secret.skillID, skillName: "", allowUserInteraction: false)
             } else {
                 persistence.deleteSecret(key: secret.key, skillID: secret.skillID)
             }
+            if !restored, !unrestored.contains(secret.key) { unrestored.append(secret.key) }
         }
+        return unrestored
     }
 
     // MARK: - Private
@@ -521,6 +553,18 @@ enum PluginUpdateService {
         return stale
     }
 
+    /// The secret settings `package` declares that `activation` doesn't
+    /// record a value for, by namespace.
+    private static func unrecordedSecrets(of activation: PluginActivation, in package: PluginPackage) -> [StaleSecret] {
+        package.skills.flatMap { skill -> [StaleSecret] in
+            let componentID = CapabilityResourceOrigin.componentID(for: skill)
+            return skill.environmentKeys
+                .filter { Skill.isSecretEnvironmentKey($0) }
+                .filter { !activation.secretSettingKeys.contains(PluginActivation.settingKey(componentID: componentID, key: $0)) }
+                .map { StaleSecret(key: $0, skillID: PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)) }
+        }
+    }
+
     /// Copies each secret setting of a renamed skill (and the recorded
     /// `extraKeys`) into its successor's namespace, unless the successor
     /// already has a value of its own.
@@ -529,9 +573,9 @@ enum PluginUpdateService {
         alsoCopying extraKeys: [String] = [],
         from oldID: UUID,
         to newID: UUID,
+        persistence: any SkillSecretPersisting.Type,
         copied: inout [CopiedSecret]
     ) throws {
-        let persistence = SkillSecretSeam.required
         let declared = spec.environmentKeys.filter(Skill.isSecretEnvironmentKey)
         for key in declared + extraKeys.filter({ !declared.contains($0) }) {
             guard let value = persistence.loadSecretValue(key: key, skillID: oldID, store: KeychainSecretStore()),
@@ -553,7 +597,7 @@ enum PluginUpdateService {
             ids.compactMap { $0 == oldID ? new?.uuidString : $0 }
         }
         for template in workspace.templates where template.defaultSkillIDs.contains(oldID) {
-            template.defaultSkillIDs = rewrite(template.defaultSkillIDs)
+            WorkspaceCapabilityActivation.rewriteDefaultSkills(of: template, in: workspace, rewrite)
         }
         for schedule in workspace.schedules where schedule.skillIDs.contains(oldID) {
             schedule.skillIDs = rewrite(schedule.skillIDs)

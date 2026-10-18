@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 
@@ -166,6 +167,36 @@ public enum WorkspaceCapabilityActivation {
         guard activation.templateDigests != entries else { return }
         activation.templateDigests = entries
         touch(activation)
+    }
+
+    /// A digest of everything the person can edit on a plugin's template
+    /// row: what a sync writes, and what only they set (model overrides,
+    /// hooks, default skills), so an edit to either keeps the row theirs.
+    public static func templateContentDigest(of row: TaskTemplate) -> String {
+        let fields: [String] = [
+            row.name, row.icon, row.templateDescription, row.beforeGoal, row.mainGoal, row.afterGoal,
+            "\(row.beforeBudget)", "\(row.mainBudget)", "\(row.afterBudget)",
+            row.variablesJSON, "\(row.passContextToMain)", "\(row.passContextToAfter)",
+            row.beforeModel, row.mainModel, row.afterModel, row.hooksJSON
+        ] + ["skills"] + row.defaultSkillIDs
+        let data = (try? JSONEncoder().encode(fields)) ?? Data()
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Rewrites a template row's default skills where ASTRA, not the
+    /// person, moves a skill (a rename, a release, a migration, a validated
+    /// import's fresh IDs). A plugin's row that was unedited stays unedited:
+    /// the digest its activation records follows the rewrite.
+    public static func rewriteDefaultSkills(of row: TaskTemplate, in workspace: Workspace?, _ rewrite: ([String]) -> [String]) {
+        let rewritten = rewrite(row.defaultSkillIDs)
+        guard rewritten != row.defaultSkillIDs else { return }
+        let before = "\(row.originComponentID ?? "")#\(templateContentDigest(of: row))"
+        row.defaultSkillIDs = rewritten
+        guard let workspace, let packageID = row.originPackageID, let componentID = row.originComponentID,
+              let activation = activation(for: packageID, in: workspace),
+              activation.templateDigests.contains(before) else { return }
+        let after = "\(componentID)#\(templateContentDigest(of: row))"
+        setTemplateDigests(entries: activation.templateDigests.map { $0 == before ? after : $0 }, on: activation)
     }
 
     /// Records the components of the definition the activation was
@@ -469,12 +500,17 @@ public enum WorkspaceCapabilityActivation {
         accountsByID: [UUID: Connector]
     ) {
         for record in records {
+            // Which definition the workspace accepted (its version and
+            // components) is its current state, not the request's: a request
+            // queued before an Update runs what the Update accepted, and none
+            // runs a plugin awaiting Update.
+            let accepted = activations(of: source).first { $0.id == record.id }
             let activation = PluginActivation(
                 id: record.id,
                 pluginID: record.pluginID,
                 isEnabled: record.isEnabled,
-                recordedVersion: record.recordedVersion,
-                recordedDigest: record.recordedDigest,
+                recordedVersion: accepted?.recordedVersion ?? record.recordedVersion,
+                recordedDigest: accepted?.recordedDigest ?? record.recordedDigest,
                 createdAt: record.createdAt
             )
             activation.configKeys = record.configKeys
@@ -487,7 +523,7 @@ public enum WorkspaceCapabilityActivation {
             activation.overriddenComponentIDs = live.map(\.componentID)
             activation.overridingRowIDs = live.map(\.rowID)
             activation.secretSettingKeys = record.secretSettingKeys
-            activation.knownComponentIDs = record.knownComponentIDs
+            activation.knownComponentIDs = accepted?.knownComponentIDs ?? record.knownComponentIDs
             activation.templateDigests = record.templateDigests
             activation.namespaceSeed = record.namespaceSeed
             activation.revision = record.revision
@@ -717,6 +753,30 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
     public let createdAt: Date
     public let updatedAt: Date
     public let bindings: [Binding]
+
+    /// A field added after records were first frozen into queued requests
+    /// decodes as empty when absent, so a request an earlier build queued
+    /// still launches with its snapshot.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        pluginID = try container.decode(String.self, forKey: .pluginID)
+        isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+        recordedVersion = try container.decode(String.self, forKey: .recordedVersion)
+        recordedDigest = try container.decode(String.self, forKey: .recordedDigest)
+        configKeys = try container.decode([String].self, forKey: .configKeys)
+        configValues = try container.decode([String].self, forKey: .configValues)
+        overriddenComponentIDs = try container.decode([String].self, forKey: .overriddenComponentIDs)
+        overridingRowIDs = try container.decode([String].self, forKey: .overridingRowIDs)
+        secretSettingKeys = try container.decodeIfPresent([String].self, forKey: .secretSettingKeys) ?? []
+        knownComponentIDs = try container.decodeIfPresent([String].self, forKey: .knownComponentIDs) ?? []
+        templateDigests = try container.decodeIfPresent([String].self, forKey: .templateDigests) ?? []
+        namespaceSeed = try container.decodeIfPresent(String.self, forKey: .namespaceSeed) ?? ""
+        revision = try container.decode(Int.self, forKey: .revision)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        bindings = try container.decode([Binding].self, forKey: .bindings)
+    }
 
     public init(_ activation: PluginActivation) {
         id = activation.id

@@ -45,14 +45,30 @@ struct PluginRuntimeProjection {
     static let empty = PluginRuntimeProjection(skills: [], tools: [], connectors: [], unboundConnectorComponents: [:])
 
     /// Projects every enabled activation of `workspace` whose plugin is in
-    /// `packages` (the caller's enabled, policy-allowed definitions).
+    /// `packages` (the caller's enabled, policy-allowed definitions), except
+    /// one that awaits Update (`awaitsUpdate`). `definitions` are the
+    /// installed definitions a shared account's creator is looked up in when
+    /// that plugin is not among `packages` (off here, or not runnable); nil
+    /// reads the library, only when such an account is bound.
     static func project(
         workspace: Workspace?,
         packages: [PluginPackage],
-        connectorMode: ConnectorMode = .accounts
+        connectorMode: ConnectorMode = .accounts,
+        definitions: [PluginPackage]? = nil
     ) -> PluginRuntimeProjection {
         guard let workspace, !packages.isEmpty else { return .empty }
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var definitionsByID: [String: PluginPackage]?
+        func creator(_ packageID: String) -> PluginPackage? {
+            if let package = packagesByID[packageID] { return package }
+            if definitionsByID == nil {
+                definitionsByID = Dictionary(
+                    (definitions ?? CapabilityRuntimeResourceMatcher.packageDefinitions()).map { ($0.id, $0) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+            }
+            return definitionsByID?[packageID]
+        }
         var skills: [Skill] = []
         var tools: [LocalTool] = []
         var connectors: [Connector] = []
@@ -62,7 +78,7 @@ struct PluginRuntimeProjection {
         var owners: [UUID: Set<UUID>] = [:]
 
         for activation in WorkspaceCapabilityActivation.activations(of: workspace) where activation.isEnabled {
-            guard let package = packagesByID[activation.pluginID] else { continue }
+            guard let package = packagesByID[activation.pluginID], !awaitsUpdate(activation, to: package) else { continue }
             let overridden = Set(activation.overriddenComponentIDs)
             // Only a projected skill is ever wired to projected resources: a
             // row assigned to a never-inserted model's relationship would
@@ -114,16 +130,17 @@ struct PluginRuntimeProjection {
                             // A bound account is in scope through its binding,
                             // wherever the row itself lives.
                             copy.isGlobal = true
-                            copies[account.id] = copy
+                            // An account a plugin created carries the
+                            // credentials its creator's installed definition
+                            // declares, whether or not that plugin is on here.
+                            // A key an update stopped declaring stays on the
+                            // row (Update keeps what the person entered) but
+                            // never reaches a run.
+                            if let creatorSpec = creatorSpec(of: account, binding: spec, in: package, creator: creator) {
+                                retainDeclaredCredentials(of: creatorSpec, on: copy)
+                            }
                             connectors.append(copy)
                         }
-                    }
-                    // An account this plugin created carries the credentials
-                    // its definition declares. A key an update stopped
-                    // declaring stays on the row (Update keeps what the person
-                    // entered) but never reaches a run.
-                    if account.originPackageID == package.id, let copy = copies[account.id] {
-                        retainDeclaredCredentials(of: spec, on: copy)
                     }
                 }
             }
@@ -198,6 +215,28 @@ struct PluginRuntimeProjection {
         return componentIDs
             .filter { seen.insert($0).inserted }
             .map { derivedID(of: activation, componentID: $0) }
+    }
+
+    /// Whether `activation` was reconciled against another definition of
+    /// its plugin than `package`: an automatic pass that would have released
+    /// something left it on its recorded version and components
+    /// (`PluginUpdateService.Mode.automatic`). Its plugin doesn't run, here
+    /// or in a scheduled launch, until Update reconciles it; the Plugins row
+    /// offers Update meanwhile. The recorded digest only says the activation
+    /// was reconciled: it also covers where a copy came from (its source and
+    /// clamped governance), so two copies of one definition differ in it.
+    static func awaitsUpdate(_ activation: PluginActivation, to package: PluginPackage) -> Bool {
+        guard !activation.recordedDigest.isEmpty else { return false }
+        if activation.recordedVersion != package.version { return true }
+        return !activation.knownComponentIDs.isEmpty && Set(activation.knownComponentIDs) != Set(componentIDs(of: package))
+    }
+
+    /// `packages` without the plugins whose activation in `workspace` awaits
+    /// Update.
+    static func runnable(_ packages: [PluginPackage], in workspace: Workspace) -> [PluginPackage] {
+        packages.filter { package in
+            WorkspaceCapabilityActivation.activation(for: package.id, in: workspace).map { !awaitsUpdate($0, to: package) } ?? true
+        }
     }
 
     /// True for a skill this projection built rather than a stored row.
@@ -282,6 +321,22 @@ struct PluginRuntimeProjection {
         skill.createdAt = activation.createdAt
         skill.updatedAt = activation.updatedAt
         return skill
+    }
+
+    /// The connector declaration that created `account`: `binding` when the
+    /// account is `package`'s, else its creator's component of the same ID.
+    /// Nil for an account no installed plugin created.
+    private static func creatorSpec(
+        of account: Connector,
+        binding spec: PluginConnector,
+        in package: PluginPackage,
+        creator: (String) -> PluginPackage?
+    ) -> PluginConnector? {
+        guard let originID = account.originPackageID, !originID.isEmpty else { return nil }
+        if originID == package.id { return spec }
+        return creator(originID)?.connectors.first {
+            CapabilityResourceOrigin.componentID(for: $0) == account.originComponentID
+        }
     }
 
     /// Drops from a runtime copy the credential keys `spec` doesn't declare.

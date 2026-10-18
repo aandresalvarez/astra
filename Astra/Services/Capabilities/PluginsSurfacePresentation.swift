@@ -106,6 +106,13 @@ enum PluginsSurfacePresentation {
         !(package.id.hasPrefix("skill.") && package.sourceMetadata?.kind == "workspace")
     }
 
+    /// Whether an expanded row shows the Turn off switch: the row is on here
+    /// and may be turned off. A shared standalone skill has no activation,
+    /// so the row's own state says whether it is on.
+    static func showsTurnOff(_ row: PluginRow) -> Bool {
+        (row.activation?.isEnabled ?? row.display.isEnabled) && offersTurnOff(row.package)
+    }
+
     /// Name, summary and tags, plus what is inside: skill names, tool names and
     /// commands, MCP servers, connector services. "bigquery" finds Google Cloud
     /// through its `bq` tool's description.

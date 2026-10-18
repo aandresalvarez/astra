@@ -374,16 +374,14 @@ public enum PluginManifestConverter {
 
     /// The payload with the component's `id` as its identity. A default
     /// `id` (the one its name derives) is left off, so a package converted
-    /// to a manifest and back is unchanged. A payload that gains an `id`
-    /// here also replaces the identity its name derives: an earlier ASTRA
-    /// dropped the component's `id`, so an activation it made keys this
-    /// component's settings, accounts and secrets by that name.
+    /// to a manifest and back is unchanged. A payload identified here also
+    /// replaces the identity its name derives, whether or not it repeats the
+    /// `id` itself: an earlier ASTRA ignored both, so an activation it made
+    /// keys this component's settings, accounts and secrets by that name.
     private static func identifiedSkill(_ component: PluginComponent) -> PluginSkill? {
         guard var skill = component.skill else { return nil }
         if component.id != PluginComponent.defaultID(forName: skill.name) || skill.id != nil {
-            if skill.id == nil {
-                skill.replaces = adding(identity(["skill", skill.name]), to: skill.replaces, unless: identity(["skill", component.id]))
-            }
+            skill.replaces = adding(identity(["skill", skill.name]), to: skill.replaces, unless: identity(["skill", component.id]))
             skill.id = component.id
         }
         return skill
@@ -392,30 +390,26 @@ public enum PluginManifestConverter {
     private static func identifiedConnector(_ component: PluginComponent) -> PluginConnector? {
         guard var connector = component.connector else { return nil }
         if component.id != PluginComponent.defaultID(forName: connector.name) || connector.id != nil {
-            if connector.id == nil {
-                connector.replaces = adding(
-                    identity(["connector", connector.serviceType, connector.name]),
-                    to: connector.replaces,
-                    unless: identity(["connector", connector.serviceType, component.id])
-                )
-            }
+            connector.replaces = adding(
+                identity(["connector", connector.serviceType, connector.name]),
+                to: connector.replaces,
+                unless: identity(["connector", connector.serviceType, component.id])
+            )
             connector.id = component.id
         }
         return connector
     }
 
     /// A tool without an `id` is identified by its type, command and name; one
-    /// that gains an `id` here also replaces that form, both with the name
-    /// its `id` derives from (a version that renamed it) and with its own
-    /// name (an earlier ASTRA that dropped the `id`).
+    /// identified here also replaces that form, both with the name its `id`
+    /// derives from (a version that renamed it) and with its own name (an
+    /// earlier ASTRA that ignored the `id`, even one the payload repeats).
     private static func identifiedTool(_ component: PluginComponent) -> PluginLocalTool? {
         guard var tool = component.tool else { return nil }
         if component.id != PluginComponent.defaultID(forName: tool.name) || tool.id != nil {
-            if tool.id == nil {
-                let current = identity(["tool", component.id])
-                for name in [component.id, tool.name] {
-                    tool.replaces = adding(identity(["tool", tool.toolType, tool.command, name]), to: tool.replaces, unless: current)
-                }
+            let current = identity(["tool", component.id])
+            for name in [component.id, tool.name] {
+                tool.replaces = adding(identity(["tool", tool.toolType, tool.command, name]), to: tool.replaces, unless: current)
             }
             tool.id = component.id
         }

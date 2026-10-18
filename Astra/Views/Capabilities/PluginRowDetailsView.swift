@@ -150,7 +150,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
 
     private var footer: some View {
         HStack {
-            if let activation = row.activation, activation.isEnabled {
+            if PluginsSurfacePresentation.showsTurnOff(row) {
                 // Turning off deletes nothing, so it asks nothing.
                 Toggle("On in this workspace", isOn: Binding(get: { true }, set: { if !$0 { onTurnOff() } }))
                     .toggleStyle(.switch)

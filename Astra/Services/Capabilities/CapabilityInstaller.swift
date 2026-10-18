@@ -372,7 +372,7 @@ struct CapabilityInstaller {
             restoreReconciled()
             WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
             let unrestored = restoreSkillSecrets(savedSkillSecrets)
-            PluginUpdateService.undo(renamedSecrets)
+                + PluginUpdateService.undo(renamedSecrets)
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
             fields["result"] = "enable_failed_rolled_back"
