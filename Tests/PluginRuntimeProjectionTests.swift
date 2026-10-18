@@ -5,6 +5,7 @@ import ASTRAModels
 @testable import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
+import HostControlToolSupport
 
 /// Identity and ownership rules of `PluginRuntimeProjection` and the services
 /// that write activations (Plugins 2.0 R1 review).
@@ -418,7 +419,77 @@ struct PluginRuntimeProjectionTests {
         #expect(detached.skills.contains { $0.originComponentID == component })
     }
 
+    /// Make default on the second of two accounts: a broker call that names
+    /// no account reaches it, and naming the other still reaches that one.
+    @Test("An aliasless broker call reaches the account made default, and a named one still wins")
+    func aliaslessBrokerCallUsesTheWorkspaceDefault() throws {
+        let context = try makeContext()
+        let jira = try builtIn("jira-workflow")
+        let workspace = Workspace(name: "Defaults", primaryPath: "/tmp/projection-defaults")
+        context.insert(workspace)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(jira.id) }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+        let component = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        let accounts = ["Ops", "Research"].map { name in
+            let account = Connector(name: name, serviceType: "jira", baseURL: "https://\(name.lowercased()).atlassian.net", authMethod: "basic")
+            account.workspace = workspace
+            context.insert(account)
+            WorkspaceCapabilityActivation.bind(account, toComponent: component, of: activation)
+            return account
+        }
+        WorkspaceCapabilityActivation.bind(accounts[1], toComponent: component, of: activation, isDefault: true)
+        let task = AgentTask(title: "Issues", goal: "list the open issues", workspace: workspace, runtime: .claudeCode)
+        context.insert(task)
+        try context.save()
+
+        let configuration = Self.brokerConfiguration(for: task)
+        #expect(configuration.connectorManifest.connectors.count == 2)
+        #expect(configuration.connectorManifest.connectors.filter { $0.isDefault == true }.map(\.id) == [accounts[1].id.uuidString])
+        let resolve = { HostControlBrokeredServices.resolveConnector(forServiceType: "jira", alias: $0, in: configuration).connector?.id }
+        #expect(resolve(nil) == accounts[1].id.uuidString)
+        let other = try #require(configuration.connectorManifest.connectors.first { $0.id == accounts[0].id.uuidString })
+        #expect(resolve(other.alias) == accounts[0].id.uuidString)
+    }
+
+    @Test("Accounts enabled outside a plugin carry no default, so an aliasless call is still refused")
+    func directAccountsKeepTheRefusal() throws {
+        let context = try makeContext()
+        let workspace = Workspace(name: "Direct", primaryPath: "/tmp/projection-direct")
+        context.insert(workspace)
+        for name in ["Ops", "Research"] {
+            let account = Connector(name: name, serviceType: "jira", baseURL: "https://\(name.lowercased()).atlassian.net", authMethod: "basic")
+            account.workspace = workspace
+            context.insert(account)
+        }
+        let task = AgentTask(title: "Issues", goal: "list the open issues", workspace: workspace, runtime: .claudeCode)
+        context.insert(task)
+        try context.save()
+
+        let configuration = Self.brokerConfiguration(for: task)
+        #expect(configuration.connectorManifest.connectors.count == 2)
+        #expect(configuration.connectorManifest.connectors.allSatisfy { $0.isDefault == nil })
+        let resolution = HostControlBrokeredServices.resolveConnector(forServiceType: "jira", alias: nil, in: configuration)
+        guard case .ambiguous(alias: nil, _) = resolution else {
+            Issue.record("Expected the aliasless call to be refused, got \(resolution)")
+            return
+        }
+    }
+
     // MARK: - Helpers
+
+    /// The broker's configuration as a launch of `task` builds it.
+    private static func brokerConfiguration(for task: AgentTask) -> HostControlToolConfiguration {
+        let store = MockSecretStore()
+        let scope = TaskCapabilityResolver(task: task, runtime: .claudeCode, secretStore: store).resolvedScope(.fullInventory)
+        let environment = HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: task,
+            runtime: .claudeCode,
+            capabilityScope: scope,
+            requiredTools: ["jira"],
+            secretStore: store
+        )
+        return HostControlToolConfiguration(connectorsJSON: environment["ASTRA_CONNECTORS"] ?? #"{"connectors":[]}"#)
+    }
 
     private func makeContext() throws -> ModelContext {
         let container = try ModelContainer(

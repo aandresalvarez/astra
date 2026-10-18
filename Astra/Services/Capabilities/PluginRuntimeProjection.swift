@@ -41,6 +41,11 @@ struct PluginRuntimeProjection {
     /// two plugins bind is emitted once, wired to the first plugin's skill;
     /// scope pruning keeps it for any of its owners.
     var accountOwnerSkillIDs: [UUID: Set<UUID>] = [:]
+    /// The projected accounts a binding marks as their service's default in
+    /// this workspace (`AccountBinding.isDefault`, set by Make default). The
+    /// broker resolves a call that names no account to the one default of
+    /// its service; this is the only place that flag leaves the bindings.
+    var defaultAccountIDs: Set<UUID> = []
 
     static let empty = PluginRuntimeProjection(skills: [], tools: [], connectors: [], unboundConnectorComponents: [:])
 
@@ -76,6 +81,7 @@ struct PluginRuntimeProjection {
         var seenConnectorIDs = Set<UUID>()
         var copies: [UUID: Connector] = [:]
         var owners: [UUID: Set<UUID>] = [:]
+        var defaults = Set<UUID>()
 
         for activation in WorkspaceCapabilityActivation.activations(of: workspace) where activation.isEnabled {
             guard let package = packagesByID[activation.pluginID], !awaitsUpdate(activation, to: package) else { continue }
@@ -131,6 +137,11 @@ struct PluginRuntimeProjection {
                 if let primarySkill {
                     for account in accounts { owners[account.id, default: []].insert(primarySkill.id) }
                 }
+                defaults.formUnion(activation.bindings.compactMap { binding in
+                    guard !binding.isDeleted, binding.isDefault, binding.componentID == componentID,
+                          let account = binding.account, !account.isDeleted else { return nil }
+                    return account.id
+                })
                 for account in accounts {
                     if seenConnectorIDs.insert(account.id).inserted {
                         switch connectorMode {
@@ -174,7 +185,8 @@ struct PluginRuntimeProjection {
             tools: tools,
             connectors: connectors,
             unboundConnectorComponents: unbound,
-            accountOwnerSkillIDs: owners
+            accountOwnerSkillIDs: owners,
+            defaultAccountIDs: defaults
         )
     }
 
