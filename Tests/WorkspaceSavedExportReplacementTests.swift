@@ -36,6 +36,99 @@ struct WorkspaceSavedExportReplacementTests {
         return (root, container, workspace)
     }
 
+    @Test("A failed explicit write preserves the queued committed projection without a termination drain",
+          arguments: [false, true], ["encoding", "staging", "rename"])
+    func failedExplicitReplacement(existingMirror: Bool, failure: String) async throws {
+        let (root, container, workspace) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) }
+        let task = AgentTask(title: "Committed task", goal: "Synthetic", workspace: workspace)
+        context.insert(task); try context.save()
+        let url = try #require(WorkspaceConfigManager.autoExportTarget(for: root.path).url)
+        if existingMirror {
+            workspace.name = "Older disk mirror"
+            #expect(WorkspaceConfigManager.exportToFileResult(workspace: workspace, modelContext: context, url: url).didExport)
+            workspace.name = "Prior committed"; try context.save()
+        }
+        let latch = ProjectionWriteLatch()
+        defer { Task { await latch.release() } }
+        let prior = try #require(WorkspacePersistenceCoordinator.enqueueSavedAutoExport(
+            workspace: workspace, modelContext: context,
+            writer: WorkspaceAutoExportWriter(beforeWrite: { await latch.pause() })))
+        try await latch.waitForArrival()
+        workspace.name = "Uncommitted explicit snapshot"
+        if failure == "encoding" { task.costUSD = .nan }
+        let blocked = failure == "staging" ? url.deletingLastPathComponent() : url
+        let held = root.appendingPathComponent("held-mirror")
+        let writer = WorkspaceAutoExportWriter(beforeWrite: {
+            guard failure != "encoding" else { return }
+            do {
+                if FileManager.default.fileExists(atPath: blocked.path) {
+                    try FileManager.default.moveItem(at: blocked, to: held)
+                }
+                if failure == "staging" { try Data("blocked parent".utf8).write(to: blocked) }
+                else { try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: false) }
+            } catch { Issue.record("Failed to arrange actual write failure: \(error)") }
+        })
+        let explicit = try #require(WorkspaceConfigManager.autoExport(
+            workspace: workspace, modelContext: context, writer: writer,
+            makeSnapshot: { WorkspaceConfigManager.export(workspace: workspace, modelContext: context) }))
+        #expect(await explicit.value == false)
+        if failure != "encoding" {
+            try FileManager.default.removeItem(at: blocked)
+            if FileManager.default.fileExists(atPath: held.path) {
+                try FileManager.default.moveItem(at: held, to: blocked)
+            }
+        }
+        task.costUSD = 0
+        await latch.release(); await prior.value
+        let mirror = try WorkspaceConfigManager.loadConfig(from: url)
+        #expect(mirror.name == "Prior committed")
+        #expect(mirror.tasks?.first?.title == "Committed task")
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 0)
+    }
+
+    @Test("A failed saved write also keeps its older prepared recovery copy publishable",
+          arguments: [false, true], ["staging", "rename"])
+    func failedSavedReplacement(existingMirror: Bool, failure: String) async throws {
+        let (root, container, workspace) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) }
+        let url = try #require(WorkspaceConfigManager.autoExportTarget(for: root.path).url)
+        if existingMirror {
+            workspace.name = "Older disk mirror"
+            #expect(WorkspaceConfigManager.exportToFileResult(workspace: workspace, modelContext: context, url: url).didExport)
+            workspace.name = "Prior committed"; try context.save()
+        }
+        let latch = ProjectionWriteLatch()
+        defer { Task { await latch.release() } }
+        let prior = try #require(WorkspacePersistenceCoordinator.enqueueSavedAutoExport(
+            workspace: workspace, modelContext: context,
+            writer: WorkspaceAutoExportWriter(beforeWrite: { await latch.pause() })))
+        try await latch.waitForArrival()
+        workspace.name = "Newest committed"
+        #expect(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
+        let blocked = failure == "staging" ? url.deletingLastPathComponent() : url
+        let held = root.appendingPathComponent("held-mirror")
+        if FileManager.default.fileExists(atPath: blocked.path) {
+            try FileManager.default.moveItem(at: blocked, to: held)
+        }
+        if failure == "staging" { try Data("blocked parent".utf8).write(to: blocked) }
+        else { try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: false) }
+        await WorkspacePersistenceCoordinator.waitForPendingExport(workspaceID: workspace.id)
+        try FileManager.default.removeItem(at: blocked)
+        if FileManager.default.fileExists(atPath: held.path) {
+            try FileManager.default.moveItem(at: held, to: blocked)
+        }
+        await latch.release(); await prior.value
+        #expect(try WorkspaceConfigManager.loadConfig(from: url).name == "Prior committed")
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 1)
+        #expect(WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) == 1)
+        #expect(try WorkspaceConfigManager.loadConfig(from: url).name == "Newest committed")
+    }
+
     @Test("A failing replacement keeps the prior real prepared write alive", arguments: [false, true], ["write", "projection"])
     func failingReplacement(existingMirror: Bool, stage: String) async throws {
         let (root, container, workspace) = try fixture()

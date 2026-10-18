@@ -20,6 +20,50 @@ struct WorkspaceSavedExportReviewTests {
         return (root, container, workspace)
     }
 
+    @Test("Explicit publication preserves ordering and destructive barriers until atomic replacement",
+          arguments: ["older-read", "newer-read", "pending-read", "newer-explicit", "failed-explicit", "deletion"])
+    func explicitPublicationOrdering(order: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-publication-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("mirror.json")
+        let gate = WorkspaceAutoExportGate()
+        let id = UUID().uuidString
+        let olderRead = gate.beginRead(for: id)
+        let explicit = gate.reserveExport(for: id)
+        switch order {
+        case "older-read":
+            let prior = try #require(gate.promote(olderRead, sealed: true))
+            #expect(try gate.writeIfCurrent(prior, data: Data("prior".utf8), to: url))
+            #expect(try gate.writeIfCurrent(explicit, data: Data("explicit".utf8), to: url) != nil)
+            #expect(try gate.writeIfCurrent(prior, data: Data("stale".utf8), to: url) == false)
+        case "newer-read", "pending-read":
+            let newer = try #require(gate.promote(gate.beginRead(for: id), sealed: true))
+            if order == "pending-read" {
+                #expect(try gate.writeIfCurrent(explicit, data: Data("fallback".utf8), to: url) != nil)
+            }
+            #expect(try gate.writeIfCurrent(newer, data: Data("newer".utf8), to: url))
+            #expect(try gate.writeIfCurrent(explicit, data: Data("stale".utf8), to: url) == nil)
+        case "newer-explicit":
+            let newer = gate.reserveExport(for: id)
+            #expect(try gate.writeIfCurrent(newer, data: Data("newer".utf8), to: url) != nil)
+            #expect(try gate.writeIfCurrent(explicit, data: Data("stale".utf8), to: url) == nil)
+        case "failed-explicit":
+            let newer = gate.reserveExport(for: id)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+            #expect(throws: (any Error).self) { try gate.writeIfCurrent(newer, data: Data("newer".utf8), to: url) }
+            try FileManager.default.removeItem(at: url)
+            #expect(try gate.writeIfCurrent(explicit, data: Data("explicit".utf8), to: url) != nil)
+        default:
+            gate.retire(workspaceID: id)
+            #expect(try gate.writeIfCurrent(explicit, data: Data("deleted".utf8), to: url) == nil)
+            #expect(!FileManager.default.fileExists(atPath: url.path))
+            return
+        }
+        #expect(try String(contentsOf: url, encoding: .utf8) ==
+            (["older-read", "failed-explicit"].contains(order) ? "explicit" : "newer"))
+    }
+
     @Test("A real failing save preserves the pending mirror of the last durable state",
           arguments: ["automatic", "throwing", "bookkeeping", "throwing-bookkeeping", "raw"])
     func failedSaveKeepsLastDurableProjection(mode: String) async throws {

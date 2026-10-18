@@ -267,13 +267,8 @@ public enum WorkspacePersistenceCoordinator {
         guard let id = UUID(uuidString: ticket.workspaceID),
               let pending = savedExports[id], let lease = pending.lease,
               WorkspaceAutoExportGate.shared.isCurrent(ticket) else { return }
-        if let previous = lease.writeTicket {
-            guard previous.generation <= ticket.generation else { return }
-            if previous.generation < ticket.generation { pending.task?.cancel() }
-        } else {
-            guard ticket.coveredReadRevision >= lease.readTicket.revision else { return }
-            pending.task?.cancel()
-        }
+        guard ticket.coveredReadRevision >= lease.readTicket.revision else { return }
+        pending.task?.cancel()
         savedExports[id] = nil
     }
 

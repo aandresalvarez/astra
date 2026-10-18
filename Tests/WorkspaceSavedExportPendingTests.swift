@@ -33,6 +33,44 @@ struct WorkspaceSavedExportPendingTests {
             from: Data(contentsOf: URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path))))
     }
 
+    @Test("Large save scopes batch prior owners while preserving deletion and reparenting boundaries",
+          arguments: [false, true])
+    func largeSaveScope(deleting: Bool) throws {
+        let (root, container, workspace, task) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        let source = Workspace(name: "Source", primaryPath: root.appendingPathComponent("Source").path)
+        let destination = Workspace(name: "Destination", primaryPath: root.appendingPathComponent("Destination").path)
+        let unrelated = Workspace(name: "Unrelated", primaryPath: root.appendingPathComponent("Unrelated").path)
+        let moved = AgentTask(title: "Moved task", goal: "Synthetic", workspace: source)
+        context.insert(moved); context.insert(destination); context.insert(unrelated)
+        let run = TaskRun(task: task); context.insert(run)
+        let events = (0..<2_100).map { index in
+            let event = TaskEvent(task: task, type: "agent.response", payload: "History \(index)", run: run)
+            context.insert(event)
+            return event
+        }
+        try context.save()
+        moved.workspace = destination
+        if deleting {
+            SwiftDataDeletionPreparation.prepare(workspace)
+            context.delete(workspace)
+            context.processPendingChanges()
+        } else {
+            for event in events { event.payload = "Changed history" }
+        }
+        let changedCount = context.changedModelsArray.count + context.deletedModelsArray.count
+        try #require(changedCount >= events.count, "Exercise a genuinely large pending save")
+        let scope = WorkspaceExportChangeScope.capture(context)
+        #expect(scope.affects(workspace, id: workspace.id))
+        #expect(scope.affects(source, id: source.id))
+        #expect(scope.affects(destination, id: destination.id))
+        #expect(!scope.affects(unrelated, id: unrelated.id))
+        #expect(scope.previousFetchCount < 20,
+                "Thousands of changed history rows must not cause one old-owner query per row")
+        context.rollback()
+    }
+
     @Test("An unrelated workspace save preserves A's queued recovery mirror",
           arguments: ["workspace", "task", "run", "event", "delete-event", "delete-task", "delete-workspace", "app"])
     func unrelatedSave(change: String) async throws {

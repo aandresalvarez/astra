@@ -7,11 +7,15 @@ import ASTRAModels
 /// Read old owners before commit as well: deletion and reparenting can clear
 /// the live inverse, and flat workspaceID models have no inverse to inspect.
 struct WorkspaceExportChangeScope {
+    private static let fetchBatchSize = 256
     private var workspaces = Set<UUID>()
     private var globalSkills = Set<UUID>()
     private var globalConnectors = Set<UUID>()
     private var globalTools = Set<UUID>()
     private var all = false
+    // Synchronous query work, retained only for this capture's diagnostics.
+    private(set) var previousFetchCount = 0
+    private var requestTaskIDs = Set<UUID>()
 
     @MainActor
     static func capture(_ context: ModelContext) -> Self {
@@ -20,14 +24,26 @@ struct WorkspaceExportChangeScope {
             let inserted = context.insertedModelsArray
             let insertedIDs = Set(inserted.map(\.persistentModelID))
             for model in inserted { result.include(model) }
-            let previous = ModelContext(context.container)
-            previous.autosaveEnabled = false
+            var oldRows: [any PersistentModel] = []
             for model in context.changedModelsArray + context.deletedModelsArray {
                 if !model.isDeleted { result.include(model) }
-                if !insertedIDs.contains(model.persistentModelID) {
-                    result.includePrevious(model, in: previous)
+                if !insertedIDs.contains(model.persistentModelID) { oldRows.append(model) }
+            }
+            result.includeRequestOwners(in: context)
+            let previous = ModelContext(context.container)
+            previous.autosaveEnabled = false
+            // Fetch each entity in bounded batches before traversing its
+            // relationships. Keep those rows alive so shared ancestors reuse
+            // this context's registered models throughout the scope capture.
+            let groups = Dictionary(grouping: oldRows) { ObjectIdentifier(type(of: $0)) }
+            var savedRows: [any PersistentModel] = []
+            for models in groups.values {
+                if let model = models.first {
+                    savedRows += result.fetchPrevious(models, of: model, in: previous)
                 }
             }
+            for model in savedRows { result.include(model) }
+            result.includeRequestOwners(in: previous, countingPrevious: true)
             return result
         }
     }
@@ -40,16 +56,23 @@ struct WorkspaceExportChangeScope {
             || !globalTools.isDisjoint(with: workspace.enabledGlobalToolIDs.compactMap(UUID.init(uuidString:)))
     }
 
-    private mutating func includePrevious<Model: PersistentModel>(_ model: Model, in context: ModelContext) {
-        guard !all else { return }
+    private mutating func fetchPrevious<Model: PersistentModel>(_ models: [any PersistentModel],
+                                                               of model: Model, in context: ModelContext) -> [any PersistentModel] {
+        guard !all else { return [] }
         switch model {
-        case is GoogleOAuthAccountProfile, is FeedbackReport, is PersistentStoreMigrationRecord: return
+        case is GoogleOAuthAccountProfile, is FeedbackReport, is PersistentStoreMigrationRecord: return []
         default: break
         }
-        let id = model.persistentModelID
-        var descriptor = FetchDescriptor<Model>(predicate: #Predicate { $0.persistentModelID == id })
-        descriptor.fetchLimit = 1
-        do { if let previous = try context.fetch(descriptor).first { include(previous) } }
+        let allIDs = Array(Set(models.map(\.persistentModelID)))
+        var rows: [any PersistentModel] = []
+        do {
+            for offset in stride(from: 0, to: allIDs.count, by: Self.fetchBatchSize) {
+                let ids = Array(allIDs[offset..<min(offset + Self.fetchBatchSize, allIDs.count)])
+                let descriptor = FetchDescriptor<Model>(predicate: #Predicate { ids.contains($0.persistentModelID) })
+                previousFetchCount += 1
+                rows += try context.fetch(descriptor)
+            }
+        }
         catch {
             all = true // Never accept a possibly crossed save boundary.
             AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
@@ -57,6 +80,7 @@ struct WorkspaceExportChangeScope {
                 "error_type": String(describing: type(of: error))
             ], level: .error)
         }
+        return rows
     }
 
     private mutating func include(_ model: any PersistentModel) {
@@ -75,7 +99,7 @@ struct WorkspaceExportChangeScope {
             if value.isGlobal { globalTools.insert(value.id) }
         case let value as TaskTemplate: add(value.workspace)
         case let value as TaskSchedule: add(value.workspace)
-        case let value as TaskTurnRequest: add(taskID: value.taskID, in: value.modelContext)
+        case let value as TaskTurnRequest: requestTaskIDs.insert(value.taskID)
         case let value as WorkspaceApp: workspaces.insert(value.workspaceID)
         case let value as WorkspaceAppRun: workspaces.insert(value.workspaceID)
         case let value as WorkspaceAppRunEvent: workspaces.insert(value.workspaceID)
@@ -91,11 +115,17 @@ struct WorkspaceExportChangeScope {
         if let workspace { workspaces.insert(workspace.id) }
     }
 
-    private mutating func add(taskID: UUID, in context: ModelContext?) {
-        guard let context else { all = true; return }
-        var descriptor = FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
-        descriptor.fetchLimit = 1
-        do { if let task = try context.fetch(descriptor).first { add(task.workspace) } }
+    private mutating func includeRequestOwners(in context: ModelContext, countingPrevious: Bool = false) {
+        let allIDs = Array(requestTaskIDs)
+        requestTaskIDs.removeAll()
+        do {
+            for offset in stride(from: 0, to: allIDs.count, by: Self.fetchBatchSize) {
+                let ids = Array(allIDs[offset..<min(offset + Self.fetchBatchSize, allIDs.count)])
+                let descriptor = FetchDescriptor<AgentTask>(predicate: #Predicate { ids.contains($0.id) })
+                if countingPrevious { previousFetchCount += 1 }
+                for task in try context.fetch(descriptor) { add(task.workspace) }
+            }
+        }
         catch { all = true }
     }
 

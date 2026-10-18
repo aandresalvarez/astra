@@ -1057,31 +1057,33 @@ public enum WorkspaceConfigManager {
     }
 
     // The preparation boundary can fail before a replacement snapshot exists.
-    // Keep the prior queued write alive until this whole preparation succeeds.
+    // Keep the prior queued write alive until the replacement file lands.
+    @discardableResult
     static func autoExport(workspace: Workspace, modelContext: ModelContext,
-                           makeSnapshot: () -> WorkspaceConfig?) {
+                           writer: WorkspaceAutoExportWriter = .shared,
+                           makeSnapshot: () -> WorkspaceConfig?) -> Task<Bool, Never>? {
         let workspaceID = workspace.id.uuidString
         guard !workspace.isDeleted else {
             WorkspaceAutoExportGate.shared.retire(workspaceID: workspaceID)
-            return
+            return nil
         }
         let target = autoExportTarget(for: workspace.primaryPath)
         guard let url = target.url else {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
-            return
+            return nil
         }
-        guard let config = makeSnapshot() else { return }
+        guard let config = makeSnapshot() else { return nil }
         // Recorded before the mirror lands, so recovery after a lost store
         // probes this folder even when no scanned root holds it. A folder
         // that can't be recorded gets no mirror: one recovery can't find
         // would hold owners a trusted cleanup never counts.
         guard WorkspaceMirrorRegistry(for: modelContext)?.register([workspace.primaryPath]) ?? true else {
             logAutoExportSkipped(workspace: workspace, reason: "mirror_registry_unwritable")
-            return
+            return nil
         }
-        let ticket = WorkspaceAutoExportGate.shared.beginExport(for: workspaceID)
-        Task.detached(priority: .utility) {
-            await WorkspaceAutoExportWriter.shared.write(config, to: url, workspaceID: workspaceID, ticket: ticket)
+        let ticket = WorkspaceAutoExportGate.shared.reserveExport(for: workspaceID)
+        return Task.detached(priority: .utility) {
+            await writer.write(config, to: url, workspaceID: workspaceID, ticket: ticket)
         }
     }
 
