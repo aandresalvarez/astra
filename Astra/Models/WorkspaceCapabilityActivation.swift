@@ -528,6 +528,15 @@ public enum WorkspaceCapabilityActivation {
     /// Renames `account` when another account of its service that some
     /// workspace it will be visible in already sees has its name.
     private static func disambiguateAlias(of account: Connector, joining activation: PluginActivation) {
+        // An account another workspace already uses keeps its name: renaming
+        // the shared row would change its alias there too. A collision in
+        // the joining workspace is told apart per launch instead
+        // (`ConnectorRuntimeProjection` suffixes duplicate aliases).
+        let joining = activation.workspace
+        if account.accountBindings.contains(where: { binding in
+            guard !binding.isDeleted, let other = binding.activation?.workspace else { return false }
+            return other !== joining
+        }) { return }
         var workspaces: [Workspace] = activation.workspace.map { [$0] } ?? []
         for binding in account.accountBindings where !binding.isDeleted {
             if let workspace = binding.activation?.workspace, !workspaces.contains(where: { $0 === workspace }) {

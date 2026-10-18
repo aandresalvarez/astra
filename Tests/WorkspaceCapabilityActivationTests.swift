@@ -319,6 +319,30 @@ struct WorkspaceCapabilityActivationTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("Sharing an account into a workspace with a same-named one never renames it where it already works")
+    @MainActor
+    func sharedAccountKeepsItsAliasWhenBoundElsewhere() throws {
+        let (container, first) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let second = Workspace(name: "Second", primaryPath: "/tmp/second-\(UUID().uuidString)")
+        context.insert(second)
+        let shared = Connector(name: "Stanford", serviceType: "jira")
+        let local = Connector(name: "Stanford", serviceType: "jira")
+        [shared, local].forEach(context.insert)
+        local.workspace = second
+        for workspace in [first, second] {
+            WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability("jira-workflow") }
+        }
+        let inFirst = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: first))
+        let inSecond = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: second))
+        WorkspaceCapabilityActivation.bind(shared, toComponent: "connector:jira:jira", of: inFirst)
+        WorkspaceCapabilityActivation.bind(local, toComponent: "connector:jira:jira", of: inSecond)
+        WorkspaceCapabilityActivation.bind(shared, toComponent: "connector:jira:jira", of: inSecond)
+        #expect(shared.name == "Stanford")
+        #expect(local.name == "Stanford")
+        withExtendedLifetime(container) {}
+    }
+
     @Test("An emptied setting is kept; removing one restores the default")
     @MainActor
     func emptySettingIsKeptAndNilRemoves() throws {
