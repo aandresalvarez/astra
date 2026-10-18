@@ -11,6 +11,22 @@ final class WorkspaceSavedExportSource: @unchecked Sendable {
     private weak var container: ModelContainer?
     init(_ container: ModelContainer) { self.container = container }
     func resolve() -> ModelContainer? { container }
+
+    /// A deferred owner can remain alive briefly after its store is replaced.
+    /// Check the authority before touching any of its lazy managed models.
+    static func isAvailable(_ container: ModelContainer, workspaceID: String) -> Bool {
+        for configuration in container.configurations where !configuration.isStoredInMemoryOnly {
+            do { _ = try FileManager.default.attributesOfItem(atPath: configuration.url.path) }
+            catch {
+                AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
+                    "result": "auto_export_skipped", "reason": "backing_store_unavailable",
+                    "workspace_id": workspaceID, "error_type": String(describing: type(of: error))
+                ], level: .debug)
+                return false
+            }
+        }
+        return true
+    }
 }
 
 /// A serialized, read-only projection of an immutable saved-store snapshot.
@@ -83,16 +99,7 @@ actor WorkspaceSavedAutoExport {
               let container = source.resolve() else { return nil }
         // A caller may have closed and removed a temporary/replaced store
         // before this queued read starts. Do not fault models from that store.
-        for configuration in container.configurations where !configuration.isStoredInMemoryOnly {
-            do { _ = try FileManager.default.attributesOfItem(atPath: configuration.url.path) }
-            catch {
-                AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
-                    "result": "auto_export_skipped", "reason": "backing_store_unavailable",
-                    "workspace_id": workspaceID.uuidString, "error_type": String(describing: type(of: error))
-                ], level: .debug)
-                return nil
-            }
-        }
+        guard WorkspaceSavedExportSource.isAvailable(container, workspaceID: workspaceID.uuidString) else { return nil }
         do {
             guard let prepared = try await prepare(container: container, workspaceID: workspaceID), !Task.isCancelled,
                   WorkspaceAutoExportGate.shared.isCurrent(ticket) else { return nil }

@@ -334,11 +334,15 @@ public enum WorkspacePersistenceCoordinator {
             return 0
         }
 
-        var savedContexts = [ObjectIdentifier(modelContext): saveWithoutAutoExport(
-            modelContext: modelContext, auditFields: ["operation": "pending_export_drain"])]
+        var savedContexts: [ObjectIdentifier: Bool] = [:]
+        if WorkspaceSavedExportSource.isAvailable(modelContext.container, workspaceID: "none") {
+            savedContexts[ObjectIdentifier(modelContext)] = saveWithoutAutoExport(
+                modelContext: modelContext, auditFields: ["operation": "pending_export_drain"])
+        }
         var exported = 0
-        for entry in pending.values {
-            guard let context = entry.context, let container = entry.container else { continue }
+        for (workspaceID, entry) in pending {
+            guard let context = entry.context, let container = entry.container,
+                  WorkspaceSavedExportSource.isAvailable(container, workspaceID: workspaceID.uuidString) else { continue }
             defer { withExtendedLifetime(container) {} }
             guard !entry.workspace.isDeleted, entry.workspace.modelContext != nil else { continue }
             let owner = ObjectIdentifier(context)

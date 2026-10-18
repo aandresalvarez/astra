@@ -40,7 +40,7 @@ private final class SavedExportContextObservation: @unchecked Sendable {
         registryLock.withLock {
             registry = registry.filter { $0.value.value != nil }
             let key = ObjectIdentifier(context)
-            if let existing = registry[key]?.value { return existing }
+            if let existing = registry[key]?.value, existing.context === context { return existing }
             let observation = SavedExportContextObservation(context)
             registry[key] = WeakObservation(observation)
             return observation

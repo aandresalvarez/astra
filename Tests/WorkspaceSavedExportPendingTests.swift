@@ -240,4 +240,32 @@ struct WorkspaceSavedExportPendingTests {
         #expect(try mirror(root).name == "Committed replacement")
         #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 0)
     }
+
+    @Test("Termination discards a replaced or removed store before faulting its old workspace models")
+    func removedStoreAtTermination() throws {
+        let (root, container, original, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspaceRoot = root.appendingPathComponent("workspace")
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        original.primaryPath = workspaceRoot.path
+        try container.mainContext.save()
+        let source = ModelContext(container)
+        source.autosaveEnabled = false
+        let id = original.id
+        let workspace = try #require(source.fetch(FetchDescriptor<Workspace>(predicate: #Predicate { $0.id == id })).first)
+        try #require(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: source))
+        // Simulate store replacement while a closed owner's deferred release
+        // still keeps the source context alive. Do not resolve its task graph.
+        try FileManager.default.removeItem(at: root)
+        // Workspace files survive store replacement in production. Recreate
+        // that folder so a missing workspace path cannot hide this boundary.
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        let replacement = try ModelContainer(for: ASTRASchema.current,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        #expect(WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: replacement.mainContext) == 0)
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 0)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("source.store").path))
+        #expect(!FileManager.default.fileExists(atPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceRoot.path)))
+        withExtendedLifetime(source) {}
+    }
 }
