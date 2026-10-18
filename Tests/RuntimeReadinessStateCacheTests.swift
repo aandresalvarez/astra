@@ -23,10 +23,8 @@ struct RuntimeReadinessStateCacheTests {
             await inspections.release()
         }
         defer { escape.cancel() }
-        let runner = StubBinaryRunner()
-        await runner.setResponse(forKey: "/opt/codex --version", result: .exited(code: 0, stdout: "codex-cli 0.130.0", stderr: ""))
         let service = RuntimeProviderAvailabilityService(readinessService: RuntimeReadinessService(
-            runner: runner, detectExecutable: { "/opt/" + $0 }, isExecutable: { $0 == "/opt/codex" },
+            runner: StubBinaryRunner(), detectExecutable: { _ in "" }, isExecutable: { _ in false },
             homeAccessCheck: { await inspections.check($0) }
         ))
         let states = await service.states(configuration: configuration, cache: cache)
@@ -40,8 +38,8 @@ struct RuntimeReadinessStateCacheTests {
                 : ([.codexCLI, .antigravityCLI].contains(runtime) ? .warning : base)
             #expect(states[runtime] == expected)
         }
-        #expect(cached?[.codexCLI] == .ready)
-        #expect(states[.codexCLI] == .warning)
+        #expect(cached?[.codexCLI] == (cacheHit ? .ready : .blocked))
+        #expect(states[.codexCLI] == (cacheHit ? .warning : .blocked))
     }
 
     @Test("An availability miss and a cache hit each inspect provider homes exactly once")
