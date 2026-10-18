@@ -195,7 +195,7 @@ enum CapabilityPackageValidator {
         validatePayload(package, issues: &issues)
         validateIconDescriptor(package.iconDescriptor, sourceURL: sourceURL, issues: &issues)
         validateLocalTools(package.localTools, issues: &issues)
-        validateConnectors(package.connectors, issues: &issues)
+        validateConnectors(package.connectors, in: package, issues: &issues)
         validateBrowserAdapters(package.browserAdapters, issues: &issues)
         validateMCPServers(in: package, issues: &issues)
         validatePrerequisites(
@@ -523,37 +523,24 @@ enum CapabilityPackageValidator {
         }
     }
 
-    /// Endings of a setting key that name something non-secret. A key is a
-    /// plain setting only with one of them and nothing the Keychain treats
-    /// as a credential (`RunSecretRedaction.isSecretKey`).
-    static let plainSettingSuffixes = [
-        "PROJECT", "PROJECTS", "PROJECT_KEY", "REGION", "ZONE", "LOCATION", "URL", "HOST", "DOMAIN",
-        "ORG", "ORGANIZATION", "SITE", "TENANT", "WORKSPACE", "DATASET", "DATASETS", "SPACE", "SPACES",
-        "CHANNEL", "CHANNELS", "REPO", "REPOS", "TEAM", "TEAMS", "LABELS", "TAGS", "BOARD", "BOARDS"
-    ]
-
-    static func isPlainSettingKey(_ key: String) -> Bool {
-        let upper = key.uppercased()
-        guard !RunSecretRedaction.isSecretKey(upper) else { return false }
-        return plainSettingSuffixes.contains { upper == $0 || upper.hasSuffix("_" + $0) }
-    }
-
     private static func validateConnectors(
         _ connectors: [PluginConnector],
+        in package: PluginPackage,
         issues: inout [CapabilityPackageValidationIssue]
     ) {
+        // Only a bundled plugin keeps plain settings, and only ones its own
+        // definition declares (`PluginConnectorFieldTrust`); every other
+        // plugin's settings are stored as credentials. A bundled setting
+        // named like a credential is a definition mistake: refused.
+        let isBundled = PluginConnectorFieldTrust.isBundled(package.id)
         for connector in connectors {
-            // A setting is stored as plain text and exported with the
-            // workspace, and its key is the package's choice: only a key of
-            // a known non-secret shape may be one; anything else must be a
-            // credential field, kept in the Keychain.
-            for hint in connector.configHints where !isPlainSettingKey(hint.key) {
+            for hint in connector.configHints where isBundled && RunSecretRedaction.isSecretKey(hint.key) {
                 let name = displayName(connector.name, fallback: connector.serviceType)
                 issues.append(issue(
                     .blocker,
                     .unsafeConnector,
                     "Credential stored as a setting",
-                    "\(name) declares \(hint.key) as a plain setting. Plain settings are limited to known non-secret kinds (a project, region, URL, team…); anything else must be a credential field, kept in the Keychain.",
+                    "\(name) declares \(hint.key) as a plain setting. A key named like a credential must be a credential field, kept in the Keychain.",
                     component: name
                 ))
             }

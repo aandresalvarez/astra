@@ -60,18 +60,8 @@ struct WorkspaceCapabilities {
     /// while that activation is (the projection brings it in), so it never
     /// counts as one of the workspace's own. Lists still show it.
     var activeSkills: [Skill] {
-        let overriding = Self.overridingRowIDs(of: workspace)
+        let overriding = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
         return uniqueSkills(workspaceSkills.filter { !overriding.contains($0.id) } + enabledGlobalSkills + enabledPackageSkills)
-    }
-
-    /// Rows any of the workspace's activations, on or off, names as a
-    /// component's override, and those a removed one named (retired by
-    /// Remove until the plugin is added back or the row deleted).
-    static func overridingRowIDs(of workspace: Workspace) -> Set<UUID> {
-        Set(WorkspaceCapabilityActivation.activations(of: workspace)
-            .flatMap(\.overridingRowIDs)
-            .compactMap(UUID.init(uuidString:)))
-            .union(WorkspaceCapabilityActivation.retiredOverrideRowIDs(of: workspace))
     }
 
     var workspaceConnectors: [Connector] {
@@ -150,7 +140,7 @@ struct WorkspaceCapabilities {
     }
 
     var activeTools: [LocalTool] {
-        let overriding = Self.overridingRowIDs(of: workspace)
+        let overriding = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
         let ambient = (workspaceTools + activeSkills.flatMap(\.localTools)).filter { !overriding.contains($0.id) }
         return uniqueTools(ambient + enabledGlobalTools + projection.tools)
     }

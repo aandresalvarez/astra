@@ -37,7 +37,6 @@ struct CapabilityPackageRoundTripE2ETests {
             sourceURL: sourceURL,
             workspace: workspace,
             modelContext: context,
-            configInputs: ["ROUNDTRIP_PROJECT": "dev"],
             policyContext: CapabilityCatalogPolicyContext.workspaceUser(
                 workspace: workspace,
                 isAdmin: true,
@@ -68,6 +67,11 @@ struct CapabilityPackageRoundTripE2ETests {
         #expect(workspace.installedVersion(of: package.id) == package.version)
         #expect(skills.contains { $0.originPackageID == package.id && $0.name == package.name })
         #expect(tools.contains { $0.originPackageID == package.id && $0.name == "jq" })
+        // A plugin made in ASTRA isn't a bundled one: its setting is stored as
+        // a credential, in the Keychain, never as plain text on the account.
+        let account = try #require(workspace.connectors.first { $0.originPackageID == package.id })
+        #expect(account.credentialKeys.contains("ROUNDTRIP_PROJECT"))
+        #expect(!account.configKeys.contains("ROUNDTRIP_PROJECT"))
 
         let runDecision = CapabilityCatalogPolicy.decision(
             for: installedPackage,
@@ -136,7 +140,6 @@ struct CapabilityPackageRoundTripE2ETests {
             importedPackage,
             into: workspace,
             modelContext: context,
-            configInputs: ["ROUNDTRIP_PROJECT": "dev"],
             policyContext: CapabilityCatalogPolicyContext.workspaceUser(
                 workspace: workspace,
                 isAdmin: true,
@@ -146,6 +149,10 @@ struct CapabilityPackageRoundTripE2ETests {
         )
 
         #expect(result.packageID == importedPackage.id)
+        // An imported plugin's setting is stored as a credential.
+        let account = try #require(workspace.connectors.first { $0.originPackageID == importedPackage.id })
+        #expect(account.credentialKeys.contains("ROUNDTRIP_PROJECT"))
+        #expect(!account.configKeys.contains("ROUNDTRIP_PROJECT"))
         #expect(workspace.enabledCapabilityIDs.contains(importedPackage.id))
         #expect(library.installedPackage(id: importedPackage.id)?.sourceMetadata == .localLibrary())
     }

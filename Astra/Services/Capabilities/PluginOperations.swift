@@ -139,9 +139,12 @@ enum PluginOperations {
             authMethod: connector.authMethod
         )
         account.notes = connector.notes
-        account.credentialKeys = connector.credentialHints.map(\.key)
+        // A setting only a bundled definition may keep plain; any other is
+        // a credential field of the account (`PluginConnectorFieldTrust`).
+        let stored = PluginConnectorFieldTrust.asStored(connector, in: package)
+        account.credentialKeys = stored.credentialHints.map(\.key)
         account.credentialValues = Array(repeating: "", count: account.credentialKeys.count)
-        account.configKeys = connector.configHints.map(\.key)
+        account.configKeys = stored.configHints.map(\.key)
         account.configValues = Array(repeating: "", count: account.configKeys.count)
         CapabilityResourceOrigin.stamp(account, package: package, componentID: componentID)
         modelContext.insert(account)

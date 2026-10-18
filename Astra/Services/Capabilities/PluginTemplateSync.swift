@@ -62,13 +62,15 @@ enum PluginTemplateSync {
     }
 
     /// Records the digest of each stamped row that still has the
-    /// definition's content (the migration's starting point).
+    /// definition's content and none of the person's own settings (the
+    /// migration's starting point): a customized row gets no digest, so a
+    /// later Remove or Update keeps it.
     static func recordUnedited(_ package: PluginPackage, in workspace: Workspace, on activation: PluginActivation) {
         var digests: [String: String] = [:]
         for spec in package.templates {
             let componentID = CapabilityResourceOrigin.componentID(for: spec)
             guard let row = stamped(package.id, in: workspace).first(where: { $0.originComponentID == componentID }),
-                  matches(row, spec) else { continue }
+                  !isEdited(row, spec: spec, recorded: nil) else { continue }
             digests[componentID] = contentDigest(of: row)
         }
         guard !digests.isEmpty else { return }
@@ -78,8 +80,8 @@ enum PluginTemplateSync {
     /// True when the person changed a stamped row since a sync wrote it. A
     /// row with no recorded digest (written before digests were kept) counts
     /// as edited unless it already has the definition's content and none of
-    /// the person's own (model overrides, hooks): keeping a row is
-    /// recoverable, overwriting an edit is not.
+    /// the person's own (model overrides, hooks, default skills): keeping a
+    /// row is recoverable, overwriting an edit is not.
     static func isEdited(_ row: TaskTemplate, spec: PluginTemplate, recorded: String?) -> Bool {
         if let recorded { return contentDigest(of: row) != recorded }
         return !matches(row, spec) || hasOwnSettings(row)
@@ -89,6 +91,7 @@ enum PluginTemplateSync {
     private static func hasOwnSettings(_ row: TaskTemplate) -> Bool {
         !(row.beforeModel.isEmpty && row.mainModel.isEmpty && row.afterModel.isEmpty)
             || !(row.hooksJSON.isEmpty || row.hooksJSON == "{}")
+            || !row.defaultSkillIDs.isEmpty
     }
 
     /// `isEdited` for a stamped row of `package`, whose declared template

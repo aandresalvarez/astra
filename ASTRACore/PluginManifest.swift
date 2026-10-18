@@ -337,6 +337,7 @@ public enum PluginManifestConverter {
     }
 
     public static func package(from manifest: PluginManifest) -> PluginPackage {
+        let shared = sharedLegacyIdentities(manifest.components)
         var package = PluginPackage(
             id: manifest.id,
             name: manifest.name,
@@ -348,9 +349,9 @@ public enum PluginManifestConverter {
             tags: manifest.tags,
             version: manifest.version,
             setupGuide: manifest.setupGuide,
-            skills: manifest.components.compactMap(identifiedSkill),
-            connectors: manifest.components.compactMap(identifiedConnector),
-            localTools: manifest.components.compactMap(identifiedTool),
+            skills: manifest.components.compactMap { identifiedSkill($0, shared: shared) },
+            connectors: manifest.components.compactMap { identifiedConnector($0, shared: shared) },
+            localTools: manifest.components.compactMap { identifiedTool($0, shared: shared) },
             mcpServers: manifest.components.compactMap(\.mcp),
             templates: manifest.components.compactMap(\.template),
             setupRequirements: manifest.components.compactMap(\.requirement),
@@ -381,22 +382,27 @@ public enum PluginManifestConverter {
     /// replaces the identity its name derives, whether or not it repeats the
     /// `id` itself: an earlier ASTRA ignored both, so an activation it made
     /// keys this component's settings, accounts and secrets by that name.
-    private static func identifiedSkill(_ component: PluginComponent) -> PluginSkill? {
+    /// An identity two components' names derive (`shared`) is not added: it
+    /// can't say which of them an earlier activation meant.
+    private static func identifiedSkill(_ component: PluginComponent, shared: Set<String>) -> PluginSkill? {
         guard var skill = component.skill else { return nil }
         if component.id != PluginComponent.defaultID(forName: skill.name) || skill.id != nil {
-            skill.replaces = adding(identity(["skill", skill.name]), to: skill.replaces, unless: identity(["skill", component.id]))
+            skill.replaces = adding(
+                identity(["skill", skill.name]), to: skill.replaces, unless: identity(["skill", component.id]), shared: shared
+            )
             skill.id = component.id
         }
         return skill
     }
 
-    private static func identifiedConnector(_ component: PluginComponent) -> PluginConnector? {
+    private static func identifiedConnector(_ component: PluginComponent, shared: Set<String>) -> PluginConnector? {
         guard var connector = component.connector else { return nil }
         if component.id != PluginComponent.defaultID(forName: connector.name) || connector.id != nil {
             connector.replaces = adding(
                 identity(["connector", connector.serviceType, connector.name]),
                 to: connector.replaces,
-                unless: identity(["connector", connector.serviceType, component.id])
+                unless: identity(["connector", connector.serviceType, component.id]),
+                shared: shared
             )
             connector.id = component.id
         }
@@ -407,12 +413,12 @@ public enum PluginManifestConverter {
     /// identified here also replaces that form, both with the name its `id`
     /// derives from (a version that renamed it) and with its own name (an
     /// earlier ASTRA that ignored the `id`, even one the payload repeats).
-    private static func identifiedTool(_ component: PluginComponent) -> PluginLocalTool? {
+    private static func identifiedTool(_ component: PluginComponent, shared: Set<String>) -> PluginLocalTool? {
         guard var tool = component.tool else { return nil }
         if component.id != PluginComponent.defaultID(forName: tool.name) || tool.id != nil {
             let current = identity(["tool", component.id])
-            for name in [component.id, tool.name] {
-                tool.replaces = adding(identity(["tool", tool.toolType, tool.command, name]), to: tool.replaces, unless: current)
+            for legacy in legacyIdentities(of: component) {
+                tool.replaces = adding(legacy, to: tool.replaces, unless: current, shared: shared)
             }
             tool.id = component.id
         }
@@ -424,9 +430,31 @@ public enum PluginManifestConverter {
         parts.map { PluginComponent.defaultID(forName: $0) }.joined(separator: ":")
     }
 
-    private static func adding(_ identity: String, to replaces: [String]?, unless current: String) -> [String]? {
-        guard identity != current, !(replaces ?? []).contains(identity) else { return replaces }
+    private static func adding(
+        _ identity: String, to replaces: [String]?, unless current: String, shared: Set<String>
+    ) -> [String]? {
+        guard identity != current, !shared.contains(identity), !(replaces ?? []).contains(identity) else { return replaces }
         return (replaces ?? []) + [identity]
+    }
+
+    /// The identities a component's name derives in `componentID`'s form (a
+    /// tool's both with its `id` and its name), whatever `id` it declares.
+    private static func legacyIdentities(of component: PluginComponent) -> [String] {
+        if let skill = component.skill { return [identity(["skill", skill.name])] }
+        if let connector = component.connector { return [identity(["connector", connector.serviceType, connector.name])] }
+        guard let tool = component.tool else { return [] }
+        let forms = [component.id, tool.name].map { identity(["tool", tool.toolType, tool.command, $0]) }
+        return forms[0] == forms[1] ? [forms[0]] : forms
+    }
+
+    /// Name-derived identities more than one component derives: two
+    /// same-service connectors sharing a name, say. Neither may claim it.
+    private static func sharedLegacyIdentities(_ components: [PluginComponent]) -> Set<String> {
+        var counts: [String: Int] = [:]
+        for component in components {
+            for legacy in legacyIdentities(of: component) { counts[legacy, default: 0] += 1 }
+        }
+        return Set(counts.filter { $0.value > 1 }.keys)
     }
 
     /// `package(from:)`, refusing a manifest whose setup steps the package
@@ -472,13 +500,22 @@ public enum PluginManifestConverter {
                 throw PluginManifestError.unrepresentableComponentID(component: component.name, id: component.id)
             }
         }
-        // Matched by the ID checked above (two connectors may share a name);
-        // a setup step's ID isn't carried, so it is matched by its name.
-        for component in manifest.components where !component.setup.isEmpty {
-            let kept = carried.first {
-                $0.kind == component.kind && (component.kind == .setup ? $0.name == component.name : $0.id == component.id)
-            }?.setup
-            guard kept == component.setup else {
+        // Each component's steps are compared with its own carried copy, by
+        // position within its group (a kind; setup split by whether it holds
+        // a requirement), the order conversion keeps: two setup components
+        // may share a name and still check different CLIs.
+        func group(_ component: PluginComponent) -> String {
+            component.kind == .setup ? "setup:\(component.requirement != nil)" : component.kind.rawValue
+        }
+        let carriedGroups = Dictionary(grouping: carried, by: group)
+        var positions: [String: Int] = [:]
+        for component in manifest.components {
+            let key = group(component)
+            let index = positions[key, default: 0]
+            positions[key] = index + 1
+            guard !component.setup.isEmpty else { continue }
+            let kept = carriedGroups[key] ?? []
+            guard index < kept.count, kept[index].setup == component.setup else {
                 throw PluginManifestError.unrepresentableSetup(component: component.name)
             }
         }
@@ -526,9 +563,14 @@ public enum PluginManifestConverter {
         }
     }
 
+    /// `components` alone marks a manifest: a package would ignore them, so
+    /// a document carrying them and legacy package fields but no
+    /// `manifestVersion` must fail manifest decoding (the version is
+    /// required) rather than import without its components' setup steps
+    /// and `worksOn` restrictions.
     public static func isManifest(_ data: Data) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
-        return object["components"] != nil && object["manifestVersion"] != nil
+        return object["components"] != nil
     }
 
     /// Where a plugin works. On a runtime without MCP delivery, a plugin with
