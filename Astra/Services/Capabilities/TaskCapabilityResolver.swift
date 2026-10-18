@@ -186,7 +186,7 @@ struct TaskCapabilityResolver {
     private func allBehaviorSkills(connectors: [Connector]) -> [Skill] {
         // Enabled package definitions are authoritative over stale live task
         // references with the same package/component identity.
-        var combined = enabledPackageSkills() + task.skills
+        var combined = enabledPackageSkills() + pinnedSkills()
         for connector in connectors {
             guard let skill = connector.skill else { continue }
             combined.append(skill)
@@ -203,7 +203,7 @@ struct TaskCapabilityResolver {
         // only through its binding (the projection), so turning the plugin
         // off takes it out of scope.
         let boundAccountIDs = boundAccountIDs()
-        let fromSkills = (task.skills + packageSkills).flatMap(\.connectors).filter { connector in
+        let fromSkills = (pinnedSkills() + packageSkills).flatMap(\.connectors).filter { connector in
             if projectedIDs.contains(connector.id) { return true }
             guard !boundAccountIDs.contains(connector.id) else { return false }
             if connector.isGlobal {
@@ -237,11 +237,11 @@ struct TaskCapabilityResolver {
     }
 
     var allLocalTools: [LocalTool] {
-        let packageSkills = enabledPackageSkills()
-        let fromSkills = (task.skills + packageSkills).flatMap(\.localTools)
         // A tool an activation names as an override reaches a run only
         // through the projection, while its plugin is on.
-        let overriding = task.workspace.map(WorkspaceCapabilities.overridingRowIDs(of:)) ?? []
+        let overriding = overridingRowIDs()
+        let pinnedTools = pinnedSkills().flatMap(\.localTools).filter { !overriding.contains($0.id) }
+        let fromSkills = pinnedTools + enabledPackageSkills().flatMap(\.localTools)
         let standalone = task.workspace?.localTools.filter {
             $0.skill == nil && !$0.isGlobal && !overriding.contains($0.id)
         } ?? []
@@ -262,7 +262,7 @@ struct TaskCapabilityResolver {
     var enabledBrowserAdapters: [String] {
         Self.enabledBrowserAdapters(
             for: task.workspace,
-            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(for: task.workspace),
             approvalRecords: CapabilityApprovalStore().records()
         )
     }
@@ -270,7 +270,7 @@ struct TaskCapabilityResolver {
     var enabledMCPServerManifests: [RunPermissionManifest.MCPServer] {
         Self.enabledMCPServerManifests(
             for: task.workspace,
-            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(for: task.workspace),
             approvalRecords: CapabilityApprovalStore().records()
         )
     }
@@ -299,6 +299,19 @@ struct TaskCapabilityResolver {
         )
         projectionCache.value = projection
         return projection
+    }
+
+    /// The task's pinned skills, less the rows the workspace's activations
+    /// name as overrides: such a row reaches a run only through the
+    /// projection, while its plugin is on, even when a task pinned it (or
+    /// kept a pin from before the migration).
+    private func pinnedSkills() -> [Skill] {
+        let overriding = overridingRowIDs()
+        return task.skills.filter { !overriding.contains($0.id) }
+    }
+
+    private func overridingRowIDs() -> Set<UUID> {
+        task.workspace.map(WorkspaceCapabilityActivation.overridingRowIDs(of:)) ?? []
     }
 
     private func boundAccountIDs() -> Set<UUID> {

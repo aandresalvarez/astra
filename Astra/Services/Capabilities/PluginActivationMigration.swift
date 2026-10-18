@@ -27,7 +27,11 @@ import ASTRAPersistence
 /// - A row whose plugin is no longer in the library, that no activation
 ///   uses, or that a workspace turned on by itself without the plugin, is
 ///   kept as an authored row rather than lost; so is an account whose plugin
-///   is no longer in the library.
+///   is no longer in the library. A row of a missing plugin an activation
+///   uses is recorded as pending as that activation's override of the
+///   component it came from: once the definition is back (Add, or this pass
+///   on a later launch) it replaces that component instead of sitting next
+///   to the plugin's own copy.
 /// - Deleted rows' secret namespaces go through `PluginSecretCleanupOutbox`,
 ///   recorded before the save.
 ///
@@ -111,6 +115,14 @@ enum PluginActivationMigration {
         if activations.contains(where: { $0.knownComponentIDs.isEmpty && withComponents.contains($0.pluginID) }) {
             return true
         }
+        // Rows kept while a plugin was missing, and its definition is back.
+        if workspaces.contains(where: { workspace in
+            WorkspaceCapabilityActivation.pendingOverridePluginIDs(of: workspace).contains { pluginID in
+                withComponents.contains(pluginID) && WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) != nil
+            }
+        }) {
+            return true
+        }
         let skills = (try? modelContext.fetch(FetchDescriptor<Skill>())) ?? []
         if skills.contains(where: isPluginOrigin) { return true }
         let tools = (try? modelContext.fetch(FetchDescriptor<LocalTool>())) ?? []
@@ -151,6 +163,14 @@ enum PluginActivationMigration {
                     WorkspaceCapabilityActivation.setKnownComponents(
                         PluginRuntimeProjection.componentIDs(of: package),
                         on: activation
+                    )
+                }
+                // Rows kept while the plugin was missing replace the
+                // components they came from now that it is back.
+                for activation in WorkspaceCapabilityActivation.activations(of: workspace) {
+                    guard let package = packagesByID[activation.pluginID] else { continue }
+                    WorkspaceCapabilityActivation.adoptPendingOverrides(
+                        on: activation, declaring: PluginRuntimeProjection.componentIDs(of: package), in: workspace
                     )
                 }
             }
@@ -231,6 +251,7 @@ enum PluginActivationMigration {
                 let spec = package?.skills.first { matches($0, skill: skill) }
                 let using = targets(pluginID: pluginID, owner: skill.isGlobal ? nil : skill.workspace)
                 guard package != nil, let spec, !using.isEmpty else {
+                    if package == nil { recordPending(skill.id, componentID: pendingComponentID(of: skill), for: using) }
                     clearOrigin(skill)
                     report.skillsKeptAsAuthored += 1
                     continue
@@ -294,6 +315,7 @@ enum PluginActivationMigration {
                 let spec = package?.localTools.first { matches($0, tool: tool) }
                 let using = targets(pluginID: pluginID, owner: tool.isGlobal ? nil : tool.workspace)
                 guard package != nil, let spec, !using.isEmpty else {
+                    if package == nil { recordPending(tool.id, componentID: pendingComponentID(of: tool), for: using) }
                     clearOrigin(tool)
                     report.toolsKeptAsAuthored += 1
                     continue
@@ -495,6 +517,35 @@ enum PluginActivationMigration {
         for schedule in workspace.schedules where schedule.skillIDs.contains(old) {
             schedule.skillIDs = schedule.skillIDs.map { $0 == old ? new : $0 }
         }
+    }
+
+    /// A row of a missing plugin, kept as authored, is pending as each using
+    /// activation's override of `componentID` (`adoptPendingOverrides`).
+    private static func recordPending(_ rowID: UUID, componentID: String, for using: [(Workspace, PluginActivation)]) {
+        for (workspace, activation) in using {
+            WorkspaceCapabilityActivation.recordPendingOverride(
+                componentID: componentID, rowID: rowID, pluginID: activation.pluginID, in: workspace
+            )
+        }
+    }
+
+    /// The component a row came from: its stamp, else the ID a definition
+    /// declaring a component like it would give (what `matches` compares).
+    private static func pendingComponentID(of skill: Skill) -> String {
+        let stamped = trimmed(skill.originComponentID)
+        guard stamped.isEmpty else { return stamped }
+        return CapabilityResourceOrigin.componentID(for: PluginSkill(
+            name: skill.name, icon: "", description: "", allowedTools: [], disallowedTools: [], customTools: [],
+            behaviorInstructions: "", environmentKeys: [], environmentValues: []
+        ))
+    }
+
+    private static func pendingComponentID(of tool: LocalTool) -> String {
+        let stamped = trimmed(tool.originComponentID)
+        guard stamped.isEmpty else { return stamped }
+        return CapabilityResourceOrigin.componentID(for: PluginLocalTool(
+            name: tool.name, description: "", icon: "", toolType: tool.toolType, command: tool.command, arguments: tool.arguments
+        ))
     }
 
     // MARK: - Matching

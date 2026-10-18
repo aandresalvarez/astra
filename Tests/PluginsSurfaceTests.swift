@@ -71,6 +71,44 @@ struct PluginsSurfaceTests {
         #expect(source.contains(".onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshStatuses() }"))
     }
 
+    /// Docker Desktop stopping or a logout in Terminal fires no ASTRA event:
+    /// both mounted surfaces rescan when ASTRA comes back to the front, once
+    /// per burst of focus flips.
+    @Test("Coming back to ASTRA rescans prerequisite health, at most once per interval")
+    func activationRescansHealthThrottled() throws {
+        var throttle = PrerequisiteActivationRescan()
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let interval = PrerequisiteActivationRescan.minimumInterval
+        let decisions = [0, 1, interval - 1, interval, interval + 1].map { throttle.shouldRescan(at: start.addingTimeInterval($0)) }
+        #expect(decisions == [true, false, false, true, false])
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let surface = try String(contentsOf: root.appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift"), encoding: .utf8)
+        #expect(surface.contains(".rescansPrerequisitesOnActivation { refreshStatuses() }"))
+        let rail = try String(contentsOf: root.appendingPathComponent("Astra/Views/WorkspaceRightRailView.swift"), encoding: .utf8)
+        #expect(rail.contains(".rescansPrerequisitesOnActivation { refreshCapabilityPrerequisiteStatuses() }"))
+    }
+
+    @Test("A repair that runs nothing shows its guidance before Check; one with a command shows the command")
+    func proseOnlyRepairShowsGuidance() throws {
+        let prose = RepairAction(
+            strategy: .terminal, componentName: "Docker", title: "Docker", verb: "Check",
+            detail: "Start Docker Desktop if the daemon is unreachable.", checkBinary: "docker"
+        )
+        let guidance = PluginsSurfacePresentation.repairGuidance(prose)
+        #expect(guidance.text == "Start Docker Desktop if the daemon is unreachable.")
+        #expect(!guidance.isCommand)
+        var signIn = prose
+        signIn.command = "gh auth login"
+        #expect(PluginsSurfacePresentation.repairGuidance(signIn).text == "gh auth login")
+        #expect(PluginsSurfacePresentation.repairGuidance(signIn).isCommand)
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("let guidance = PluginsSurfacePresentation.repairGuidance(repair)"))
+        #expect(!source.contains("if let command = repair.command {"))
+    }
+
     @Test("Removing and deleting an account ask first; removing keeps accounts")
     func destructiveActionsConfirm() {
         let remove = PluginsSurfaceConfirmation.remove(packageID: "jira").copy(name: "Jira")
@@ -381,6 +419,23 @@ struct PluginsSurfaceTests {
             )
             #expect(connected == (refreshToken != nil), "refresh token: \(refreshToken ?? "none")")
         }
+    }
+
+    @Test("A cached access token that has since expired counts only while a refresh token is stored")
+    func cachedStatusExpiresWithItsToken() throws {
+        let scopes = GoogleWorkspaceSetupStateFactory.requiredScopes
+        let profile = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com", grantedScopes: scopes)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let cached = GoogleOAuthCredentialStatus.available(expiresAt: now, grantedScopes: scopes)
+        #expect(GoogleWorkspaceCapability.isAccountConnected(profile, credentialStatus: cached, hasRefreshToken: false, now: now.addingTimeInterval(-60)))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(profile, credentialStatus: cached, hasRefreshToken: false, now: now))
+        #expect(GoogleWorkspaceCapability.isAccountConnected(profile, credentialStatus: cached, hasRefreshToken: true, now: now.addingTimeInterval(60)))
+        // The surface reads the Keychain again when the cached token expires.
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains(".task(id: googleCredentialExpiry) { await refreshGoogleCredential(at: googleCredentialExpiry) }"))
     }
 
     @Test("An account missing a newly required Workspace scope is a pending step, not Ready")

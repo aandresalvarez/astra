@@ -181,9 +181,14 @@ struct PluginsSurfaceView: View {
         }
         // A sign-in, reauthorization or revocation stamps the profile.
         .onChange(of: googleAccounts.map(\.updatedAt)) { _, _ in refreshGoogleCredential() }
+        // Nor does an access token reaching its expiry: read it again then.
+        .task(id: googleCredentialExpiry) { await refreshGoogleCredential(at: googleCredentialExpiry) }
         // Contextual checks (GitHub repository access) describe one checkout:
         // a new working path, from any window, scans again.
         .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshStatuses() }
+        // A CLI's own state (Docker stopped, a logout in Terminal) changes
+        // outside ASTRA: coming back to ASTRA scans again.
+        .rescansPrerequisitesOnActivation { refreshStatuses() }
         .onChange(of: expanded) { _, ids in
             PluginsSurfacePreferences.setExpandedPluginIDs(ids, workspaceID: workspace.id)
         }
@@ -319,13 +324,14 @@ struct PluginsSurfaceView: View {
                 if repairs.phase(for: repair, owner: "\(package.id)/\(component.id)") == .waiting {
                     Text("Checking…").font(Stanford.caption(11)).foregroundStyle(.secondary)
                 } else {
-                    // What the button runs is shown before it runs.
-                    if let command = repair.command {
-                        Text(command)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
+                    // What the button runs is shown before it runs; a repair
+                    // that runs nothing says what to do before Check.
+                    let guidance = PluginsSurfacePresentation.repairGuidance(repair)
+                    Text(guidance.text)
+                        .font(guidance.isCommand ? .system(size: 11, design: .monospaced) : Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                     Button(repair.verb) { repairs.start(repair, owner: "\(package.id)/\(component.id)") { refreshStatuses() } }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -409,6 +415,22 @@ struct PluginsSurfaceView: View {
         let vault = GoogleOAuthCredentialVault()
         googleCredentialStatuses = account.map { [$0.id: vault.credentialStatus(for: $0)] } ?? [:]
         googleRefreshableAccountIDs = account.map { vault.hasRefreshToken(for: $0) ? [$0.id] : [] } ?? []
+    }
+
+    /// When the cached access token expires; the row may change then.
+    private var googleCredentialExpiry: Date? {
+        googleCredentialStatuses.values.compactMap { status -> Date? in
+            if case .available(let expiresAt, _) = status { return expiresAt }
+            return nil
+        }.min()
+    }
+
+    private func refreshGoogleCredential(at expiry: Date?) async {
+        guard let expiry else { return }
+        let delay = max(expiry.timeIntervalSinceNow, 0) + 1
+        try? await Task.sleep(for: .seconds(delay))
+        guard !Task.isCancelled else { return }
+        refreshGoogleCredential()
     }
 
     private func refreshStatuses() {

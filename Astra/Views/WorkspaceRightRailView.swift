@@ -537,9 +537,9 @@ struct WorkspaceRightRailView: View {
             checkGitRepositories()
             checkDockerEnvironments()
         }
-        .task(id: signature) {
-            rebuildCapabilityRailSnapshot(for: signature)
-        }
+        .task(id: signature) { rebuildCapabilityRailSnapshot(for: signature) }
+        .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshCapabilityPrerequisiteStatuses() } // one checkout's repairs
+        .rescansPrerequisitesOnActivation { refreshCapabilityPrerequisiteStatuses() } // CLI state changed outside ASTRA
         .onChange(of: workspace.primaryPath) {
             loadSSHConnections()
             checkGitRepositories()

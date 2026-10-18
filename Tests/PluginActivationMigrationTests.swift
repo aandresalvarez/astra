@@ -438,6 +438,78 @@ struct PluginActivationMigrationTests {
         #expect(!WorkspaceCapabilities(workspace: a).boundAccountIDs.contains(fixture.sharedGCloudID))
     }
 
+    @Test("Rows kept while their plugin was missing become its overrides once it is back, never a second copy")
+    func missingPluginRowsBecomeOverridesWhenItIsBack() throws {
+        for path in ["launch", "add", "remove then add"] {
+            let fixture = try Fixture()
+            let context = fixture.context
+            let missing = fixture.packages.filter { $0.id != "gcloud-workflow" }
+            try PluginActivationMigration.migrate(modelContext: context, packages: missing)
+            let a = try fixture.workspace(fixture.aID)
+            let keptToolIDs = Set(try context.fetch(FetchDescriptor<LocalTool>()).map(\.id))
+            #expect(keptToolIDs.count == fixture.gcloud.localTools.count)
+            func capabilities(_ packages: [PluginPackage]) throws -> WorkspaceCapabilities {
+                WorkspaceCapabilities(
+                    workspace: a,
+                    globalSkills: try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })),
+                    globalTools: try context.fetch(FetchDescriptor<LocalTool>()),
+                    packageDefinitions: packages
+                )
+            }
+            // Without the definition the kept rows are the person's, in scope.
+            let before = try capabilities(missing)
+            #expect(before.activeSkills.contains { $0.id == fixture.gcloudSkillID })
+            #expect(keptToolIDs.isSubset(of: Set(before.activeTools.map(\.id))))
+            #expect(try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a)).overriddenComponentIDs.isEmpty)
+            if path == "remove then add" {
+                // Removed while missing: the rows stay the person's, in scope.
+                let removed = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
+                WorkspaceCapabilityActivation.retire(removed, in: a)
+                WorkspaceCapabilityActivation.mutate(a) { $0.pluginIDs.removeAll { $0 == "gcloud-workflow" } }
+                #expect(try capabilities(missing).activeSkills.contains { $0.id == fixture.gcloudSkillID })
+            }
+
+            // The definition is back: found at launch, or added again.
+            if path == "launch" {
+                #expect(PluginActivationMigration.needsMigration(modelContext: context, packages: fixture.packages))
+                try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+                #expect(!PluginActivationMigration.needsMigration(modelContext: context, packages: fixture.packages))
+            } else {
+                let root = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("astra-missing-plugin-readd-\(UUID().uuidString)", isDirectory: true)
+                defer { try? FileManager.default.removeItem(at: root) }
+                try CapabilityInstaller(library: CapabilityLibrary(directory: root)).enable(
+                    fixture.gcloud, in: a, modelContext: context, persist: { _, context in (try? context.save()) != nil }
+                )
+            }
+            // Each kept row replaces its component: one copy of the skill and
+            // of each tool, the person's.
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
+            let after = try capabilities(fixture.packages)
+            let skillSpec = fixture.gcloud.skills[0]
+            #expect(after.activeSkills.filter { $0.name == skillSpec.name }.map(\.id) == [fixture.gcloudSkillID])
+            #expect(activation.overridingRowID(forComponent: CapabilityResourceOrigin.componentID(for: skillSpec)) == fixture.gcloudSkillID)
+            for spec in fixture.gcloud.localTools {
+                let component = CapabilityResourceOrigin.componentID(for: spec)
+                #expect(activation.overridingRowID(forComponent: component).map(keptToolIDs.contains) == true)
+                #expect(!after.activeTools.contains { $0.originComponentID == component })
+            }
+            #expect(keptToolIDs.isSubset(of: Set(after.activeTools.map(\.id))))
+            #expect(after.activeTools.count == Set(after.activeTools.map(\.id)).count)
+            // B's activation used the same shared rows: they replace its
+            // components too, in the same pass.
+            let b = try fixture.workspace(fixture.bID)
+            let bActivation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: b))
+            #expect(bActivation.overridingRowID(forComponent: CapabilityResourceOrigin.componentID(for: skillSpec)) == fixture.gcloudSkillID)
+            #expect(WorkspaceCapabilityActivation.pendingOverridePluginIDs(of: a).isEmpty)
+            #expect(WorkspaceCapabilityActivation.pendingOverridePluginIDs(of: b).isEmpty)
+            // Now they follow the plugin: off with it, still the person's rows.
+            WorkspaceCapabilityActivation.mutate(a) { $0.capabilityIDs.removeAll { $0 == "gcloud-workflow" } }
+            #expect(!(try capabilities(fixture.packages)).activeSkills.contains { $0.id == fixture.gcloudSkillID })
+            #expect(try context.fetch(FetchDescriptor<Skill>()).contains { $0.id == fixture.gcloudSkillID })
+        }
+    }
+
     @Test("A skill's secret setting moves to the projected skill's Keychain namespace")
     func secretSettingMovesToProjectedNamespace() throws {
         guard AstraSecureKeychainTestSupport.isAvailable else { return }
@@ -1082,6 +1154,41 @@ struct PluginActivationMigrationTests {
         #expect(!TaskCapabilityResolver(task: task).allLocalTools.contains { $0.id == toolID })
     }
 
+    @Test("An override skill selected for a task is never pinned, and leaves the run with its plugin")
+    func overrideSkillStaysOutOfTaskPins() throws {
+        let fixture = try Fixture(authoredToolOnGCloudSkill: true)
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let toolID = try #require(fixture.authoredToolID)
+        let a = try fixture.workspace(fixture.aID)
+        let shared = try fixture.context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
+        let capabilities = WorkspaceCapabilities(workspace: a, globalSkills: shared, packageDefinitions: fixture.packages)
+        // The composer offers the override row itself: a stored skill.
+        let skill = try #require(capabilities.activeSkills.first { $0.id == fixture.gcloudSkillID })
+        #expect(skill.modelContext != nil)
+        #expect(AgentTask.storableSkills([skill], in: a).isEmpty)
+
+        // A pin kept from before the migration still never outlives the plugin.
+        let task = AgentTask(title: "A", goal: "Manage GCP resources", workspace: a)
+        fixture.context.insert(task)
+        task.skills = [skill]
+        func inRun() -> (skill: Bool, tool: Bool) {
+            let resolver = TaskCapabilityResolver(task: task)
+            return (resolver.allBehaviorSkills.contains { $0.id == fixture.gcloudSkillID },
+                    resolver.allLocalTools.contains { $0.id == toolID })
+        }
+        #expect(inRun() == (true, true))
+        WorkspaceCapabilityActivation.mutate(a) { $0.capabilityIDs.removeAll { $0 == "gcloud-workflow" } }
+        #expect(inRun() == (false, false))
+
+        // Remove retires the activation; its override stays out of pins and runs.
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
+        WorkspaceCapabilityActivation.retire(activation, in: a)
+        WorkspaceCapabilityActivation.mutate(a) { $0.pluginIDs.removeAll { $0 == "gcloud-workflow" } }
+        #expect(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a) == nil)
+        #expect(AgentTask.storableSkills([skill], in: a).isEmpty)
+        #expect(inRun() == (false, false))
+    }
+
     @Test("The rail counts an activation's override rows as its own")
     func railActivationResourcesIncludeOverrides() throws {
         let fixture = try Fixture(editedToolDescription: "My own words")
@@ -1136,6 +1243,48 @@ struct PluginActivationMigrationTests {
             TaskExecutionPolicySnapshotV1.self, from: Data(try #require(request.executionPolicySnapshotJSON).utf8)
         )
         #expect(decoded.pluginDefinitions?.first { $0.id == "gcloud-workflow" }?.skills[0].behaviorInstructions == "Submitted GCloud rules.")
+    }
+
+    @Test("A queued request launches the MCP servers it was submitted with, not the library's")
+    func queuedRequestKeepsSubmittedMCPServers() throws {
+        let fixture = try Fixture()
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let task = AgentTask(title: "A", goal: "Use Jira and Google Cloud", workspace: a)
+        context.insert(task)
+        // Submitted against a GCloud that shipped an MCP server; the library
+        // now holds the built-in, which has none, as after an Update.
+        #expect(fixture.gcloud.mcpServers.isEmpty)
+        var submitted = fixture.gcloud
+        submitted.mcpServers = [PluginMCPServer(
+            id: "submitted-files", displayName: "Submitted files", transport: .stdio, command: "/bin/cat"
+        )]
+        let request = TaskTurnRequest(
+            task: task, messageEventID: UUID(), sequence: 2, kind: .retry, pluginDefinitions: [fixture.jira, submitted]
+        )
+        context.insert(request)
+        try context.save()
+        func serverIDs(_ launch: AgentTask) -> (codex: Set<String>, manifest: Set<String>) {
+            let codex = CodexMCPLaunchProjection.resolve(
+                task: launch, workspacePath: "/tmp/astra-frozen-mcp", runID: UUID(),
+                executionEnvironment: .host, contextText: "Use Jira and Google Cloud"
+            )
+            return (Set(codex.servers.map(\.server.id)),
+                    Set(TaskCapabilityResolver(task: launch).enabledMCPServerManifests.map(\.id)))
+        }
+        #expect(!serverIDs(task).codex.contains("submitted-files"))
+
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        let relaunched = TaskExecutionLaunchSnapshotApplicator.detachedTask(AgentTaskLaunchSnapshot(task: detached), from: detached)
+        for launch in [detached, relaunched] {
+            let ids = serverIDs(launch)
+            #expect(ids.codex.contains("submitted-files"))
+            #expect(ids.manifest.contains("submitted-files"))
+            #expect(CapabilityRuntimeResourceMatcher.packageDefinitions(for: launch.workspace)
+                .first { $0.id == "gcloud-workflow" }?.mcpServers.map(\.id) == ["submitted-files"])
+        }
     }
 
     @Test("A queued request runs with its accounts as submitted, not as edited or deleted while it waited")

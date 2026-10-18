@@ -497,13 +497,22 @@ public enum PluginManifestConverter {
                 throw PluginManifestError.unrepresentableComponentID(component: component.name, id: component.id)
             }
         }
-        // Matched by the ID checked above (two connectors may share a name);
-        // a setup step's ID isn't carried, so it is matched by its name.
-        for component in manifest.components where !component.setup.isEmpty {
-            let kept = carried.first {
-                $0.kind == component.kind && (component.kind == .setup ? $0.name == component.name : $0.id == component.id)
-            }?.setup
-            guard kept == component.setup else {
+        // Each component's steps are compared with its own carried copy, by
+        // position within its group (a kind; setup split by whether it holds
+        // a requirement), the order conversion keeps: two setup components
+        // may share a name and still check different CLIs.
+        func group(_ component: PluginComponent) -> String {
+            component.kind == .setup ? "setup:\(component.requirement != nil)" : component.kind.rawValue
+        }
+        let carriedGroups = Dictionary(grouping: carried, by: group)
+        var positions: [String: Int] = [:]
+        for component in manifest.components {
+            let key = group(component)
+            let index = positions[key, default: 0]
+            positions[key] = index + 1
+            guard !component.setup.isEmpty else { continue }
+            let kept = carriedGroups[key] ?? []
+            guard index < kept.count, kept[index].setup == component.setup else {
                 throw PluginManifestError.unrepresentableSetup(component: component.name)
             }
         }
@@ -551,9 +560,14 @@ public enum PluginManifestConverter {
         }
     }
 
+    /// `components` alone marks a manifest: a package would ignore them, so
+    /// a document carrying them and legacy package fields but no
+    /// `manifestVersion` must fail manifest decoding (the version is
+    /// required) rather than import without its components' setup steps
+    /// and `worksOn` restrictions.
     public static func isManifest(_ data: Data) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
-        return object["components"] != nil && object["manifestVersion"] != nil
+        return object["components"] != nil
     }
 
     public static func defaultWorksOn(hasMCP: Bool) -> [String: PluginRuntimeSupport] {
