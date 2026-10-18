@@ -209,6 +209,15 @@ struct CapabilityInstaller {
             throw InstallationError.secretCleanupPending(packageID: package.id)
         }
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
+        // The library holds one definition for every workspace: each other
+        // one whose activation kept rows while it was missing gets them as
+        // overrides in the same save, so none projects a second copy.
+        let pendingElsewhere = ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).filter { other in
+            other.id != workspace.id
+                && WorkspaceCapabilityActivation.pendingOverridePluginIDs(of: other).contains(package.id)
+                && WorkspaceCapabilityActivation.activation(for: package.id, in: other) != nil
+        }
+        let pendingSnapshots = pendingElsewhere.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         var savedSkillSecrets: [SavedSkillSecret] = []
         // Everything from here through persist() is one transaction: staging a
         // skill/connector/tool can throw (credential save denied, activation
@@ -241,12 +250,15 @@ struct CapabilityInstaller {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
             // Added back after a Remove: the same projected IDs (templates
-            // and schedules name them) and the person's overrides again.
-            WorkspaceCapabilityActivation.reinstateRetired(on: activation, in: workspace)
-            WorkspaceCapabilityActivation.setKnownComponents(
-                activation.knownComponentIDs + PluginRuntimeProjection.componentIDs(of: package),
-                on: activation
-            )
+            // and schedules name them) and the person's overrides again,
+            // the rows the migration kept while it was missing included.
+            let componentIDs = PluginRuntimeProjection.componentIDs(of: package)
+            WorkspaceCapabilityActivation.reinstateRetired(on: activation, declaring: componentIDs, in: workspace)
+            for (other, _) in pendingSnapshots {
+                guard let otherActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: other) else { continue }
+                WorkspaceCapabilityActivation.adoptPendingOverrides(on: otherActivation, declaring: componentIDs, in: other)
+            }
+            WorkspaceCapabilityActivation.setKnownComponents(activation.knownComponentIDs + componentIDs, on: activation)
             // An account bound to a connector component this version no
             // longer declares is released (the account itself stays), so it
             // is back in the workspace's own scope rather than unreachable.
@@ -374,6 +386,7 @@ struct CapabilityInstaller {
             // membership-array mutations it does not revert.
             modelContext.rollback()
             WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
+            for (other, snapshot) in pendingSnapshots { WorkspaceCapabilityActivation.restore(snapshot, to: other) }
             let unrestored = restoreSkillSecrets(savedSkillSecrets)
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }

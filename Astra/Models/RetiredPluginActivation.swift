@@ -12,20 +12,43 @@ import SwiftData
 ///   override row out of its ambient scope; retired, the row stays listed
 ///   (the person can delete it) and stays out of scope until the plugin is
 ///   added back, when it is the component's override again.
+/// - The rows the V19 migration kept as authored for a plugin whose
+///   definition was missing (`pendingOverrides`), recorded while its
+///   activation is still live.
 ///
 /// Secret settings are not kept: Remove cleans their namespaces, and a later
 /// Add starts with none, as it always has.
 public struct RetiredPluginActivation: Codable, Equatable, Sendable {
+    /// An authored row and the plugin component it came from.
+    public struct PendingOverride: Codable, Equatable, Sendable {
+        public var componentID: String
+        public var rowID: String
+    }
+
     public var pluginID: String
     public var namespaceSeed: String
     public var overriddenComponentIDs: [String]
     public var overridingRowIDs: [String]
+    /// Rows kept as the person's because nothing could compare them with the
+    /// plugin's missing definition. Unlike the overrides above they stay in
+    /// the workspace's scope, as authored rows; once the definition is back
+    /// (Add, or a launch that finds it) each becomes its component's
+    /// override (`adoptPendingOverrides`), so the plugin never projects a
+    /// second copy next to it.
+    public var pendingOverrides: [PendingOverride]?
 
-    public init(pluginID: String, namespaceSeed: String, overriddenComponentIDs: [String], overridingRowIDs: [String]) {
+    public init(
+        pluginID: String,
+        namespaceSeed: String,
+        overriddenComponentIDs: [String],
+        overridingRowIDs: [String],
+        pendingOverrides: [PendingOverride]? = nil
+    ) {
         self.pluginID = pluginID
         self.namespaceSeed = namespaceSeed
         self.overriddenComponentIDs = overriddenComponentIDs
         self.overridingRowIDs = overridingRowIDs
+        self.pendingOverrides = pendingOverrides
     }
 
     public init(_ activation: PluginActivation) {
@@ -38,7 +61,7 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
     }
 
     var keepsAnything: Bool {
-        !namespaceSeed.isEmpty || overridingRowIDs.contains { UUID(uuidString: $0) != nil }
+        !namespaceSeed.isEmpty || overridingRowIDs.contains { UUID(uuidString: $0) != nil } || !(pendingOverrides ?? []).isEmpty
     }
 
     /// Each kept override's component and row.
@@ -64,19 +87,71 @@ extension WorkspaceCapabilityActivation {
     }
 
     /// Keeps `activation`'s seed and overrides before Remove deletes it,
-    /// replacing what an earlier Remove of the same plugin kept.
+    /// replacing what an earlier Remove of the same plugin kept. Rows still
+    /// pending as its overrides stay pending, for the next Add.
     public static func retire(_ activation: PluginActivation, in workspace: Workspace) {
-        var retired = retiredActivations(of: workspace).filter { $0.pluginID != activation.pluginID }
-        let entry = RetiredPluginActivation(activation)
+        let all = retiredActivations(of: workspace)
+        var retired = all.filter { $0.pluginID != activation.pluginID }
+        var entry = RetiredPluginActivation(activation)
+        entry.pendingOverrides = all.first { $0.pluginID == activation.pluginID }?.pendingOverrides
         if entry.keepsAnything { retired.append(entry) }
         setRetired(retired, on: workspace)
+    }
+
+    /// Records that the authored row `rowID` came from `componentID` of a
+    /// plugin whose definition is missing (`pendingOverrides`).
+    public static func recordPendingOverride(componentID: String, rowID: UUID, pluginID: String, in workspace: Workspace) {
+        var all = retiredActivations(of: workspace)
+        let pending = RetiredPluginActivation.PendingOverride(componentID: componentID, rowID: rowID.uuidString)
+        if let index = all.firstIndex(where: { $0.pluginID == pluginID }) {
+            guard !(all[index].pendingOverrides ?? []).contains(pending) else { return }
+            all[index].pendingOverrides = (all[index].pendingOverrides ?? []) + [pending]
+        } else {
+            all.append(RetiredPluginActivation(
+                pluginID: pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: [], pendingOverrides: [pending]
+            ))
+        }
+        setRetired(all, on: workspace)
+    }
+
+    /// The plugins whose kept rows are pending as overrides in `workspace`.
+    public static func pendingOverridePluginIDs(of workspace: Workspace) -> Set<String> {
+        Set(retiredActivations(of: workspace).filter { !($0.pendingOverrides ?? []).isEmpty }.map(\.pluginID))
+    }
+
+    /// Makes each row pending for `activation`'s plugin the override of the
+    /// component it came from, now that the plugin's definition (declaring
+    /// `componentIDs`) is available, and forgets the pending list. A row the
+    /// person deleted, or whose component the definition doesn't declare,
+    /// stays as it is: nothing would project it in its place. A shared row
+    /// leaves the workspace's shared lists, as a migrated override does, so
+    /// it is on exactly while the activation is.
+    public static func adoptPendingOverrides(on activation: PluginActivation, declaring componentIDs: [String], in workspace: Workspace) {
+        var all = retiredActivations(of: workspace)
+        guard let index = all.firstIndex(where: { $0.pluginID == activation.pluginID }),
+              let pending = all[index].pendingOverrides else { return }
+        let declared = Set(componentIDs)
+        for override in pending
+        where declared.contains(override.componentID) && !activation.overriddenComponentIDs.contains(override.componentID) {
+            guard let rowID = UUID(uuidString: override.rowID), rowExists(rowID, near: workspace) else { continue }
+            setOverridden(true, componentID: override.componentID, rowID: rowID, on: activation)
+            mutate(workspace) { state in
+                state.globalSkillIDs.removeAll { $0 == override.rowID }
+                state.globalToolIDs.removeAll { $0 == override.rowID }
+            }
+        }
+        all[index].pendingOverrides = nil
+        setRetired(all.filter(\.keepsAnything), on: workspace)
     }
 
     /// Gives a new activation of a removed plugin what its Remove kept: the
     /// seed, before anything derives an ID from it, and the overrides whose
     /// rows still exist (one the person deleted gives its component back to
-    /// the plugin). Then forgets the record.
-    public static func reinstateRetired(on activation: PluginActivation, in workspace: Workspace) {
+    /// the plugin), as well as the rows pending as overrides of the
+    /// components the definition declares (`componentIDs`). Then forgets the
+    /// record.
+    public static func reinstateRetired(on activation: PluginActivation, declaring componentIDs: [String], in workspace: Workspace) {
+        adoptPendingOverrides(on: activation, declaring: componentIDs, in: workspace)
         let all = retiredActivations(of: workspace)
         guard let entry = all.first(where: { $0.pluginID == activation.pluginID }) else { return }
         if activation.namespaceSeed.isEmpty, !entry.namespaceSeed.isEmpty {
@@ -90,11 +165,19 @@ extension WorkspaceCapabilityActivation {
     }
 
     /// Restores what a workspace's own mirror kept, for plugins it has no
-    /// activation of.
+    /// activation of; for one it has, only the rows still pending as its
+    /// overrides.
     public static func restoreRetired(_ entries: [RetiredPluginActivation], to workspace: Workspace) {
         let active = Set(activations(of: workspace).map(\.pluginID))
         let kept = retiredActivations(of: workspace).filter { entry in !entries.contains { $0.pluginID == entry.pluginID } }
-        setRetired(kept + entries.filter { !active.contains($0.pluginID) && $0.keepsAnything }, on: workspace)
+        let restored = entries.map { entry in
+            guard active.contains(entry.pluginID) else { return entry }
+            return RetiredPluginActivation(
+                pluginID: entry.pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: [],
+                pendingOverrides: entry.pendingOverrides
+            )
+        }
+        setRetired(kept + restored.filter(\.keepsAnything), on: workspace)
     }
 
     /// Copies the record onto `target`, a never-inserted launch copy, so its
