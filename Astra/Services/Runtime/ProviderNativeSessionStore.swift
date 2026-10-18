@@ -62,7 +62,7 @@ enum ProviderNativeSessionStore {
             let launchHome = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let base = !home.isEmpty ? home : (launchHome.isEmpty ? userHome : launchHome)
             return entryLookup(
-                path(base, ".gemini", "antigravity-cli", "conversations", "\(sessionID).db"), fileManager: fileManager
+                RuntimeHomeAccessPolicy.antigravityConversation.path(root: path(base, ".gemini"), sessionID: sessionID), fileManager: fileManager
             )
         case .copilotCLI:
             return entryLookup(

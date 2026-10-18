@@ -51,6 +51,7 @@ target_for_path() {
     Astra/Services/Runtime/RuntimeHomeAccess*.swift|Astra/Services/Runtime/RuntimeAccessACL.swift|Astra/Services/Runtime/CopilotHomeAccessCheck.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner+HomeAccessGuard.swift|Astra/Services/Runtime/AgentRuntimeHomeStateAccess.swift|Astra/Services/Runtime/RuntimeReadinessService.swift|Astra/Services/Runtime/RuntimeProviderAvailabilityService.swift|Astra/Services/Runtime/AgentRuntimeAdapter.swift|Astra/Services/Runtime/ExecutionEnvironment.swift|AstraObjCSupport/AstraMembership.m|Tests/RuntimeHomeAccess*Tests.swift|Tests/CopilotHomeAccessCheckTests.swift|Astra/Services/Runtime/ProviderNativeSessionStore.swift|Tests/NativeContinuationFallbackTests.swift|Tests/ExecutionSandboxRunnerTests.swift)
       add_target "RuntimeHomeAccessTests"
       add_target "RuntimeHomeAccessEdgeCaseTests"
+      add_target "RuntimeHomeAccessAdditionalStateTests"
       add_target "NativeContinuationFallbackTests"
       add_target "ExecutionSandboxRunnerTests"
       add_target "CopilotHomeAccessCheckTests"

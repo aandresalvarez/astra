@@ -18,7 +18,10 @@ enum RuntimeHomeAccessContainerPreflight {
         var probeArguments = ["run", "--rm", "--pull", "never", "--network", "none", "--read-only", "--cap-drop", "ALL",
                               "--security-opt", "no-new-privileges", "--workdir", "/", "--entrypoint", "/bin/sh"]
         if let user = original.executionEnvironment.user, !user.isEmpty { probeArguments += ["--user", user] }
-        probeArguments += ["--", image, "-c", "exit 0"]
+        let policy = AgentRuntimeAdapterRegistry.homeAccessPolicy(for: original.runtime)
+        let needsOwnershipCheck = policy.roots.contains { $0.stateFiles.contains(where: \.requiresPrivateOwner) }
+        let probe = needsOwnershipCheck ? "[ -O /proc/self ] && [ -r /proc/self/status ]" : "exit 0"
+        probeArguments += ["--", image, "-c", probe]
         let path = original.executablePath, environment = original.environment
         let arguments = probeArguments
         let work = Task.detached(priority: .utility) {

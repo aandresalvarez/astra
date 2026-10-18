@@ -14,6 +14,7 @@ struct RuntimeHomeAccessRequest: Sendable {
     var insideContainer = false
     var copilotHomeOverride: String? = nil
     var providersFileBlocks = true
+    var currentUserID: uid_t = getuid()
 }
 
 enum RuntimeHomeAccessService {
@@ -37,24 +38,29 @@ enum RuntimeHomeAccessService {
         // Container launches run the same provider policy in the container,
         // with its real uid, home and mounts, immediately before exec.
         guard !request.insideContainer, !Task.isCancelled else { return nil }
+        var copilotCheck: RuntimeReadinessCheck?
+        var copilotHome: String?
         if request.runtime == .copilotCLI {
             let home = request.copilotHomeOverride ?? request.policy.roots.first?.path(
                 environment: request.environment, userHome: request.userHome, workingDirectory: request.workingDirectory
             ) ?? (request.userHome as NSString).appendingPathComponent(".copilot")
-            return CopilotHomeAccessCheck.readinessCheck(for: CopilotHomeAccessCheck.inspect(
+            copilotHome = home
+            copilotCheck = CopilotHomeAccessCheck.readinessCheck(for: CopilotHomeAccessCheck.inspect(
                 home: home, resumeSessionID: request.resumeSessionID, environment: request.environment,
                 workingDirectory: request.workingDirectory, sandboxReceipt: request.sandboxReceipt
             ), providersFileBlocks: request.providersFileBlocks)
+            if copilotCheck?.state == .blocked { return copilotCheck }
         }
         var problems: [String] = []
-        for root in request.policy.roots {
+        for root in request.policy.roots where root.isEnabled(environment: request.environment) {
             if Task.isCancelled { return nil }
-            let path = root.path(environment: request.environment, userHome: request.userHome, workingDirectory: request.workingDirectory)
+            let path = copilotHome ?? root.path(environment: request.environment, userHome: request.userHome, workingDirectory: request.workingDirectory)
             if let issue = problem(path, directory: true, writable: root.writable, create: root.createIfMissing ?? root.writable, receipt: request.sandboxReceipt) {
                 problems.append(issue)
                 continue
             }
-            for file in root.files {
+            // Copilot's richer check already applies config overrides/fallbacks.
+            for file in root.files where request.runtime != .copilotCLI {
                 if let issue = problem((path as NSString).appendingPathComponent(file), directory: false, writable: false, receipt: request.sandboxReceipt) {
                     problems.append(issue)
                 }
@@ -65,13 +71,25 @@ enum RuntimeHomeAccessService {
                 }
             }
             for file in root.stateFiles {
-                let statePath = file.path(environment: request.environment, directory: path)
-                if let issue = problem(statePath,
-                                       directory: false, writable: true, create: true, receipt: request.sandboxReceipt) {
+                for statePath in file.paths(environment: request.environment, directory: path) {
+                    if let issue = problem(statePath,
+                                           directory: false, writable: true, create: true,
+                                           privateOwner: file.requiresPrivateOwner ? request.currentUserID : nil, receipt: request.sandboxReceipt) {
+                        problems.append(issue)
+                    } else if let issue = problem((statePath as NSString).deletingLastPathComponent,
+                                                  directory: true, writable: true, create: true, readable: false, receipt: request.sandboxReceipt) {
+                        // SQLite must be able to create/update journals beside its database.
+                        problems.append(issue)
+                    }
+                }
+            }
+            if let session = request.resumeSessionID, ProviderNativeSessionStore.isPlainSessionToken(session), let state = root.resumedState {
+                let statePath = state.path(root: path, sessionID: session)
+                if let issue = problem(statePath, directory: state.isDirectory, writable: true, create: true, receipt: request.sandboxReceipt) {
                     problems.append(issue)
-                } else if let issue = problem((statePath as NSString).deletingLastPathComponent,
-                                              directory: true, writable: true, create: true, readable: false, receipt: request.sandboxReceipt) {
-                    // SQLite must be able to create/update journals beside its database.
+                } else if !state.isDirectory,
+                          let issue = problem((statePath as NSString).deletingLastPathComponent, directory: true, writable: true,
+                                              create: true, readable: false, receipt: request.sandboxReceipt) {
                     problems.append(issue)
                 }
             }
@@ -90,7 +108,7 @@ enum RuntimeHomeAccessService {
                 problems.append(issue)
             }
         }
-        guard !problems.isEmpty else { return nil }
+        guard !problems.isEmpty else { return copilotCheck }
         return RuntimeReadinessCheck(
             id: checkID(for: request.runtime), title: "\(request.runtime.displayName) settings and state",
             detail: "\(request.runtime.displayName) cannot use its settings or state: \(problems.prefix(5).joined(separator: "; ")).",
@@ -100,7 +118,7 @@ enum RuntimeHomeAccessService {
     }
 
     private static func problem(
-        _ path: String, directory: Bool, writable: Bool, create: Bool = false, readable: Bool = true,
+        _ path: String, directory: Bool, writable: Bool, create: Bool = false, readable: Bool = true, privateOwner: uid_t? = nil,
         receipt: ExecutionSandboxBoundaryReceipt?
     ) -> String? {
         let display = (path as NSString).abbreviatingWithTildeInPath
@@ -123,6 +141,9 @@ enum RuntimeHomeAccessService {
         } else {
             let correctKind = directory ? (info.st_mode & S_IFMT) == S_IFDIR : (info.st_mode & S_IFMT) == S_IFREG
             guard correctKind else { return "\(display) has the wrong file type" }
+            if let user = privateOwner, user != 0, info.st_uid != user {
+                return "\(display) is owned by another user; private database permissions require ownership review"
+            }
             let requiredAccess = (readable ? R_OK : 0) | (directory ? X_OK : 0)
             guard access(path, requiredAccess) == 0 else { return "\(display) is unreadable" }
             if writable, access(path, W_OK) != 0 || CopilotHomeAccessCheck.lockState(of: path, followLinks: true).any {

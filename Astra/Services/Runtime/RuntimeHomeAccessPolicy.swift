@@ -6,19 +6,37 @@ import ASTRACore
 struct RuntimeHomeAccessPolicy: Sendable {
     struct StateFile: Sendable {
         let name: String
-        let overrideVariable: String
+        var overrideVariable: String? = nil
+        var companionSuffixes: [String] = []
+        var requiresPrivateOwner = false
 
         func path(environment: [String: String], directory: String) -> String {
-            let override = environment[overrideVariable].flatMap { $0.isEmpty ? nil : $0 }
+            let override = overrideVariable.flatMap { environment[$0] }.flatMap { $0.isEmpty ? nil : $0 }
             let value = override ?? name
             return value.hasPrefix("/") ? value : (directory as NSString).appendingPathComponent(value)
         }
+
+        func paths(environment: [String: String], directory: String) -> [String] {
+            let primary = path(environment: environment, directory: directory)
+            return [primary] + companionSuffixes.map { primary + $0 }
+        }
     }
-    static let openCodeDatabase = StateFile(name: "opencode.db", overrideVariable: "OPENCODE_DB")
+    struct ResumedState: Sendable {
+        let directory: String
+        var fileSuffix: String? = nil
+        var isDirectory: Bool { fileSuffix == nil }
+        func path(root: String, sessionID: String) -> String {
+            ((root as NSString).appendingPathComponent(directory) as NSString).appendingPathComponent(sessionID + (fileSuffix ?? ""))
+        }
+    }
+    static let openCodeDatabase = StateFile(name: "opencode.db", overrideVariable: "OPENCODE_DB", companionSuffixes: ["-wal", "-shm"], requiresPrivateOwner: true)
+    static let copilotDatabase = StateFile(name: "session-store.db", companionSuffixes: ["-wal", "-shm"])
+    static let antigravityConversation = ResumedState(directory: "antigravity-cli/conversations", fileSuffix: ".db")
 
     struct Root: Sendable {
         var variable: String? = nil
         var fallback: String
+        var onlyWhenConfigured = false
         var suffix = ""
         var writable = true
         var createIfMissing: Bool? = nil
@@ -27,8 +45,13 @@ struct RuntimeHomeAccessPolicy: Sendable {
         var files: [String] = []
         var directories: [String] = []
         var stateFiles: [StateFile] = []
+        var resumedState: ResumedState? = nil
         var fileOverrides: [String: String] = [:]
         var fallbacks: [String: String] = [:]
+
+        func isEnabled(environment: [String: String]) -> Bool {
+            !onlyWhenConfigured || variable.flatMap { environment[$0] }.map { !$0.isEmpty } == true
+        }
 
         func path(environment: [String: String], userHome: String, workingDirectory: String) -> String {
             let value = variable.flatMap { environment[$0] }.flatMap { $0.isEmpty ? nil : $0 }
@@ -69,9 +92,12 @@ extension CopilotCLIRuntimeAdapter {
     var homeAccessPolicy: RuntimeHomeAccessPolicy {
         // Native host launches use CopilotHomeAccessCheck's richer diagnosis.
         // The same declared startup set is used inside containers.
-        .init(roots: [.init(variable: "COPILOT_HOME", fallback: ".copilot", writable: false, createIfMissing: true,
-                           files: CopilotHomeAccessCheck.startupEntries.filter { $0.value == .file }.map(\.key).sorted(),
+        let mutable = RuntimeHomeAccessPolicy.copilotDatabase
+        let mutableNames = Set([mutable.name] + mutable.companionSuffixes.map { mutable.name + $0 })
+        return .init(roots: [.init(variable: "COPILOT_HOME", fallback: ".copilot", createIfMissing: true,
+                           files: CopilotHomeAccessCheck.startupEntries.filter { $0.value == .file && !mutableNames.contains($0.key) }.map(\.key).sorted(),
                            directories: ["session-state"],
+                           stateFiles: [mutable], resumedState: .init(directory: "session-state"),
                            fileOverrides: [CopilotHomeAccessCheck.providersFileName: CopilotHomeAccessCheck.providersOverrideVariable],
                            fallbacks: ["permissions-config": "permissions-config.json"])])
     }
@@ -79,7 +105,8 @@ extension CopilotCLIRuntimeAdapter {
 
 extension AntigravityCLIRuntimeAdapter {
     var homeAccessPolicy: RuntimeHomeAccessPolicy {
-        .init(roots: [.init(fallback: ".gemini", files: ["settings.json", "oauth_creds.json", "config/mcp_config.json", "antigravity-cli/settings.json"]),
+        .init(roots: [.init(fallback: ".gemini", files: ["settings.json", "oauth_creds.json", "config/mcp_config.json", "antigravity-cli/settings.json"],
+                           resumedState: RuntimeHomeAccessPolicy.antigravityConversation),
                       .init(fallback: ".antigravity")], configuredHomeVariable: "HOME")
     }
 }
@@ -103,6 +130,8 @@ extension OpenCodeCLIRuntimeAdapter {
         .init(roots: [.init(variable: "XDG_CONFIG_HOME", fallback: ".config", suffix: "opencode", writable: false, files: ["opencode.json", "opencode.jsonc"]),
                       .init(variable: "XDG_DATA_HOME", fallback: ".local/share", suffix: "opencode", files: ["auth.json"], stateFiles: [RuntimeHomeAccessPolicy.openCodeDatabase]),
                       .init(variable: "XDG_STATE_HOME", fallback: ".local/state", suffix: "opencode"),
-                      .init(variable: "XDG_CACHE_HOME", fallback: ".cache", suffix: "opencode")], environmentFiles: ["OPENCODE_CONFIG"])
+                      .init(variable: "XDG_CACHE_HOME", fallback: ".cache", suffix: "opencode"),
+                      .init(variable: "OPENCODE_CONFIG_DIR", fallback: "", onlyWhenConfigured: true, writable: false,
+                            files: ["opencode.json", "opencode.jsonc"])], environmentFiles: ["OPENCODE_CONFIG"])
     }
 }

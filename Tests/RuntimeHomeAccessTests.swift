@@ -248,7 +248,7 @@ struct RuntimeHomeAccessTests {
             request = .init(runtime: runtime, policy: policy, environment: ["HOME": home], workingDirectory: home, userHome: home)
             try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
             var paths: [String] = []
-            for root in policy.roots {
+            for root in policy.roots where root.isEnabled(environment: [:]) {
                 let path = root.path(environment: [:], userHome: home, workingDirectory: home)
                 try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
                 for name in root.files {
