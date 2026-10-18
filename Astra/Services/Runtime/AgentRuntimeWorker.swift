@@ -1139,6 +1139,16 @@ final class AgentRuntimeWorker {
                 runtimeRequirements: appliedRuntime.requirements
             )) { _, scoped in scoped }
             : nil
+        let copilotHomeReport: CopilotHomeAccessReport?
+        if let environment = copilotFailureEnvironment {
+            let sessionID = nativeContinuationSessionID
+            let directory = executionPath
+            copilotHomeReport = await Task.detached(priority: .utility) {
+                CopilotHomeAccessCheck.inspect(resumeSessionID: sessionID, environment: environment, workingDirectory: directory)
+            }.value
+        } else {
+            copilotHomeReport = nil
+        }
         let failureDiagnostic = (processSucceeded || result.runtimeStopped || result.repetitionKilled || cancellationRequested || task.status == .cancelled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: selectedRuntime,
             model: task.model,
@@ -1153,13 +1163,7 @@ final class AgentRuntimeWorker {
             timedOut: result.timedOut,
             budgetExceeded: result.budgetExceeded,
             maxTurnsExceeded: result.maxTurnsExceeded, startupEvidence: startupEvidence,
-            copilotHomeAccess: copilotFailureEnvironment.map { environment in
-                // A file the sandbox would have hidden was already refused
-                // at launch (`guardedSandboxedPlan`), so no boundary here.
-                { CopilotHomeAccessCheck.inspect(
-                    resumeSessionID: nativeContinuationSessionID, environment: environment, workingDirectory: executionPath
-                ) }
-            }
+            copilotHomeAccess: copilotHomeReport.map { report in { report } }
         )
         if let failureDiagnostic {
             AppLogger.audit(
@@ -1644,7 +1648,7 @@ final class AgentRuntimeWorker {
         guard let stopReason = TaskRunStopReason(rawValue: reason) else { return false }
         // A launch refused before Copilot started (its home is unusable)
         // fails the task, as the readiness preflight's own refusal does.
-        if stopReason.isDockerRuntimeBlocked || reason == CopilotHomeAccessCheck.launchStopReason {
+        if stopReason.isDockerRuntimeBlocked || reason == RuntimeHomeAccessService.launchStopReason {
             return true
         }
         return [

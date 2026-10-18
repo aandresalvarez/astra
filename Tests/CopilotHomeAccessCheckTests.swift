@@ -250,7 +250,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(problem.access == .unreadable)
         #expect(problem.hasACL)
         #expect(report.cause.contains("with an ACL"))
-        #expect(report.fixCommand == "chmod -N '\(config)' && chmod u+r '\(config)'")
+        #expect(report.fixCommand == "chmod -a '\(Self.aclPrincipal) deny read' '\(config)' && chmod u+r '\(config)'")
         try Self.shell("/bin/sh", ["-c", report.fixCommand])
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
@@ -836,7 +836,7 @@ struct CopilotHomeAccessCheckTests {
 
         #expect(report.problems.first?.hasACL == true)
         #expect(report.fixCommand
-            == "sudo chown \"$USER\" '\(store)' && chmod -N '\(store)' && chmod u+rw '\(store)'")
+            == "sudo chown \"$USER\" '\(store)' && chmod -a '\(Self.aclPrincipal) deny read' '\(store)' && chmod u+rw '\(store)'")
     }
 
     @Test("A missing home under a locked parent blocks and the parent is unlocked")
@@ -1125,7 +1125,7 @@ struct CopilotHomeAccessCheckTests {
 
         #expect(report.problems.map(\.access) == [.cannotCreateHome])
         #expect(report.problems.first?.hasACL == true)
-        #expect(report.fixCommand.hasPrefix("chmod -N '\(parent)'"))
+        #expect(report.fixCommand.hasPrefix("chmod -a '\(Self.aclPrincipal) deny append' '\(parent)'"))
     }
 
     @Test("An error in Copilot's own startup log is evidence: the home is not blamed")
@@ -1294,7 +1294,7 @@ struct CopilotHomeAccessCheckTests {
 
         let own = CopilotHomeAccessCheck.inspect(home: notAFolder)
         #expect(own.problems.first?.moveDeniedByOwnACL == true)
-        #expect(own.fixCommand == "chmod -h -N '\(notAFolder)' && mv -n '\(notAFolder)' '\(notAFolder).bak'")
+        #expect(own.fixCommand == "chmod -h -a '\(Self.aclPrincipal) deny delete' '\(notAFolder)' && mv -n '\(notAFolder)' '\(notAFolder).bak'")
         try Self.shell("/bin/sh", ["-c", own.fixCommand])
         #expect(!FileManager.default.fileExists(atPath: notAFolder))
 
@@ -1352,7 +1352,7 @@ struct CopilotHomeAccessCheckTests {
         let report = CopilotHomeAccessCheck.inspect(home: home.path)
 
         #expect(report.problems.first?.hasACL == true)
-        #expect(report.fixCommand == "chmod -N '\(config)' && chmod u+r '\(config)'")
+        #expect(report.fixCommand == "chmod -a '\(Self.aclPrincipal) deny read' '\(config)' && chmod u+r '\(config)'")
         try Self.shell("/bin/sh", ["-c", report.fixCommand])
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
@@ -1367,7 +1367,71 @@ struct CopilotHomeAccessCheckTests {
 
         let report = CopilotHomeAccessCheck.inspect(home: notAFolder, currentUserID: getuid() + 1)
 
-        #expect(report.fixCommand.hasPrefix("sudo chmod -h -N '\(notAFolder)'"))
+        #expect(report.fixCommand.hasPrefix("sudo chmod -h -a '\(Self.aclPrincipal) deny delete' '\(notAFolder)'"))
+    }
+
+    @Test("Repair subtracts only the blocking permission and preserves unrelated ACL policy")
+    func repairPreservesMixedACLs() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o600)
+        try Self.shell("/bin/chmod", ["+a", "user:nobody allow read", config])
+        try Self.shell("/bin/chmod", ["+a", "user:\(NSUserName()) deny read,write", config])
+        defer { _ = try? Self.shell("/bin/chmod", ["-N", config]) }
+        let before = try aclText(config)
+        #expect(before.contains("deny"))
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+        #expect(report.blocksCopilot)
+        #expect(!report.fixCommand.contains("-N"))
+        #expect(!report.fixCommand.contains("-a#"))
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        let after = try aclText(config)
+        #expect(after.contains("allow:read"))
+        #expect(after.contains("deny:write"))
+        #expect(!after.contains("deny:read"))
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
+    }
+
+    @Test("A group ACL is explained without changing access for other group members")
+    func groupACLIsManual() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o640)
+        let record = try #require(getgrgid(getgid()))
+        let group = String(cString: record.pointee.gr_name)
+        try Self.shell("/bin/chmod", ["+a", "group:\(group) deny read,write", config])
+        defer { _ = try? Self.shell("/bin/chmod", ["-N", config]) }
+        let before = try aclText(config)
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+        #expect(report.blocksCopilot)
+        #expect(report.fixCommand.isEmpty)
+        #expect(report.remediation.contains("preserving other users' access rules"))
+        #expect(try aclText(config) == before)
+    }
+
+    @Test("Selective ACL repair retains inheritance flags and unrelated permissions")
+    func aclRepairPreservesInheritance() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let folder = try home.makeDirectory("shared", mode: 0o755)
+        try Self.shell("/bin/chmod", ["+a", "user:\(NSUserName()) deny list,add_file,file_inherit,directory_inherit", folder])
+        defer { _ = try? Self.shell("/bin/chmod", ["-N", folder]) }
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+        #expect(report.problems.contains { $0.path == folder && $0.hasACL })
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        let after = try aclText(folder)
+        #expect(after.contains("file_inherit"))
+        #expect(after.contains("directory_inherit"))
+        #expect(access(folder, W_OK) != 0)
+        #expect(access(folder, R_OK | X_OK) == 0)
+    }
+
+    private func aclText(_ path: String) throws -> String {
+        let acl = try #require(acl_get_link_np(path, ACL_TYPE_EXTENDED))
+        defer { acl_free(UnsafeMutableRawPointer(acl)) }
+        let text = try #require(acl_to_text(acl, nil))
+        defer { acl_free(UnsafeMutableRawPointer(text)) }
+        return String(cString: text)
     }
 
     @Test("A deny ACL aimed at someone else is kept")
@@ -1761,6 +1825,8 @@ struct CopilotHomeAccessCheckTests {
         #expect(clean.category == .providerProcessFailed)
         #expect(clean.userMessage.contains("failed before ASTRA received a visible assistant response"))
     }
+
+    private static var aclPrincipal: String { "user:" + NSUserName() }
 
     private static func shell(_ executable: String, _ arguments: [String]) throws {
         let process = Process()

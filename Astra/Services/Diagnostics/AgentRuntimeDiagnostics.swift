@@ -277,6 +277,9 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         if timedOut {
             return .runtimeTimedOut
         }
+        if exitCode == 78, haystack.contains(RuntimeHomeAccessContainerCommand.failureMarker.lowercased()) {
+            return .providerHomeAccessDenied
+        }
         if budgetExceeded || maxTurnsExceeded {
             return .budgetExceeded
         }
@@ -435,7 +438,7 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         case .providerProcessFailed:
             return "\(runtime.displayName) failed before ASTRA received a visible assistant response."
         case .providerHomeAccessDenied:
-            return "\(runtime.displayName) could not read or write its own settings folder. Restore your user's ownership of it, then retry."
+            return "\(runtime.displayName) could not use its settings or state. Review the reported path and restore the access required by the provider, then retry."
         case .sandboxCredentialAccessBlocked:
             return "\(runtime.displayName) crashed while reading its saved macOS Keychain login. This runtime's own sandbox is disabled under the current policy, so ASTRA wraps it in a stricter sandbox that blocks this Keychain read. Try Review or Interactive policy for this task, or lower the sandbox read scope in Settings."
         }

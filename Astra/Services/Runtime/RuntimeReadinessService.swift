@@ -190,7 +190,7 @@ struct RuntimeReadinessService {
         let probed = await AgentRuntimeAdapterRegistry
             .descriptorReadiness(for: configuration.runtime)
             .readinessReport(configuration: configuration, probes: probes)
-        return RuntimeReadinessReport(checks: probed.checks + uncachedChecks(for: configuration.runtime))
+        return RuntimeReadinessReport(checks: probed.checks + (await uncachedChecks(configuration: configuration)))
     }
 
     /// Checks of local state the user can break at any moment, and cheap
@@ -199,24 +199,30 @@ struct RuntimeReadinessService {
     /// and the launch preflight leaves them to the final-plan guard
     /// (`guardedSandboxedPlan`), which checks every launch. A config that
     /// turns root-owned after a ready probe is caught on the next launch.
-    static let uncachedCheckIDs: Set<String> = [CopilotHomeAccessCheck.readinessCheckID]
+    static let uncachedCheckIDs: Set<String> = Set(AgentRuntimeAdapterRegistry.runtimeIDs.map(RuntimeHomeAccessService.checkID))
 
-    func uncachedChecks(for runtime: AgentRuntimeID) -> [RuntimeReadinessCheck] {
-        guard runtime == .copilotCLI else { return [] }
-        // Copilot exits 1 with no output at all when it cannot read its own
-        // config, so this is the only place the cause can surface before a
-        // task fails.
-        let report = CopilotHomeAccessCheck.inspect(home: copilotStateHome)
-        // No task environment exists yet; the launch gate rules on providers.
-        return CopilotHomeAccessCheck.readinessCheck(for: report, providersFileBlocks: false).map { [$0] } ?? []
+    func uncachedChecks(configuration: RuntimeReadinessConfiguration) async -> [RuntimeReadinessCheck] {
+        let runtime = configuration.runtime
+        var environment = ProcessInfo.processInfo.environment
+        let configuredHome = configuration.providerSettings.homeDirectory(for: runtime)
+        let policy = AgentRuntimeAdapterRegistry.homeAccessPolicy(for: runtime)
+        if let variable = policy.configuredHomeVariable, !configuredHome.isEmpty { environment[variable] = configuredHome }
+        let request = RuntimeHomeAccessRequest(
+            runtime: runtime, policy: policy,
+            environment: environment, workingDirectory: FileManager.default.currentDirectoryPath,
+            userHome: environment["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path,
+            copilotHomeOverride: runtime == .copilotCLI ? copilotStateHome : nil,
+            providersFileBlocks: false
+        )
+        guard let check = await RuntimeHomeAccessService.check(request) else { return [] }
+        return [check]
     }
 
-    /// A cached readiness state with the uncached checks re-run now.
     func refreshingUncachedChecks(
         _ state: RuntimeReadinessState,
-        runtime: AgentRuntimeID
-    ) -> RuntimeReadinessState {
-        uncachedChecks(for: runtime).reduce(state) { $0.combined(with: $1.state) }
+        configuration: RuntimeReadinessConfiguration
+    ) async -> RuntimeReadinessState {
+        await uncachedChecks(configuration: configuration).reduce(state) { $0.combined(with: $1.state) }
     }
 
     private static func defaultDetectExecutable(_ binary: String) -> String {

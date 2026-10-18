@@ -48,6 +48,13 @@ target_for_path() {
       add_target "GitHubReviewPublicationTests"
       add_target "SwiftDataDeletionPreparationTests"
       ;;
+    Astra/Services/Runtime/RuntimeHomeAccess*.swift|Astra/Services/Runtime/RuntimeAccessACL.swift|Astra/Services/Runtime/CopilotHomeAccessCheck.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner+HomeAccessGuard.swift|Astra/Services/Runtime/AgentRuntimeHomeStateAccess.swift|Astra/Services/Runtime/RuntimeReadinessService.swift|Astra/Services/Runtime/RuntimeProviderAvailabilityService.swift|Astra/Services/Runtime/AgentRuntimeAdapter.swift|Astra/Services/Runtime/ExecutionEnvironment.swift|AstraObjCSupport/AstraMembership.m|Tests/RuntimeHomeAccessTests.swift|Tests/CopilotHomeAccessCheckTests.swift)
+      add_target "RuntimeHomeAccessTests"
+      add_target "CopilotHomeAccessCheckTests"
+      add_target "RuntimeReadinessServiceTests"
+      add_target "AgentRuntimeAdapterTests"
+      add_target "ExecutionEnvironmentTests"
+      ;;
     Tests/RuntimeFeedbackSnapshotTests.swift|Astra/Services/Feedback/RuntimeFeedbackSnapshotBuilder.swift)
       add_target "RuntimeFeedbackSnapshotTests"
       add_target "FeedbackEvidencePrivacyTests"

@@ -386,8 +386,9 @@ enum DockerExecutionPlanner {
         }
         dockerArgs.append("--")
         dockerArgs.append(image)
-        dockerArgs.append(containerExecutable)
-        dockerArgs.append(contentsOf: base.arguments)
+        dockerArgs.append(contentsOf: RuntimeHomeAccessContainerCommand.command(
+            runtime: base.runtime, executable: containerExecutable, arguments: base.arguments
+        ))
 
         var commandFields = base.commandPlannedFields
         commandFields["execution_environment_kind"] = environment.kind.rawValue

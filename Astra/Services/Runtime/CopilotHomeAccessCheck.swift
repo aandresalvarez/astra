@@ -40,6 +40,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     /// An extended ACL can deny access the mode bits allow, so restoring mode
     /// bits alone would leave the entry broken.
     var hasACL = false
+    var aclNeedsManualRepair = false
+    var denyingACLEntries: [RuntimeAccessACL.DenyEntry] = []
+    var moveDenyingACLEntries: [RuntimeAccessACL.DenyEntry] = []
     /// Set when `path` is a symlink: Copilot follows it, so the target is what
     /// must be readable, and ASTRA never suggests changing a file outside the
     /// Copilot home.
@@ -70,8 +73,8 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     var requiresWrite = true
     /// For `.wrongType`: a FIFO, socket or device where a file belongs.
     var isSpecialFile = false
-    /// The Copilot home itself, whose recursive repair must stay read-only so
-    /// hardened config files below it keep their mode.
+    /// The Copilot home itself, whose own access may be restored without
+    /// changing hardened config files beneath it.
     var isHome = false
     /// The file `COPILOT_PROVIDERS_CONFIG` names.
     var isProvidersOverride = false
@@ -222,7 +225,7 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
 
     /// A Terminal command that restores access, or "" when nothing inside the
     /// Copilot home can be repaired by one. Entries owned by someone else
-    /// (usually root) get their ownership back first; ACLs are removed next;
+    /// (usually root) get their ownership back first; applicable deny ACL entries are removed next;
     /// then every entry gets its owner permission bits back, because a chown
     /// alone leaves a mode-000 file just as unreadable as before.
     var fixCommand: String {
@@ -252,9 +255,8 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
             // bits to everyone in `staff`.
             commands.append("sudo chown \"$USER\" \(Self.quotedPaths(foreign))")
         }
-        let withACL = repairable.filter(\.hasACL)
-        if !withACL.isEmpty {
-            commands.append("chmod -N \(Self.quotedPaths(withACL))")
+        for problem in repairable where problem.hasACL {
+            commands += RuntimeAccessACL.repairCommands(path: problem.path, entries: problem.denyingACLEntries)
         }
         // Write comes back only where Copilot writes: the home, its state
         // folders and the folder a missing home is created in. Any other
@@ -276,11 +278,11 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
             commands.append("chmod u+r \(Self.quotedPaths(readOnlyFiles))")
         }
         let unlockedForMove = problems.filter { $0.isMisplaced && $0.isRepairable && $0.moveDeniedByOwnACL }
-        if !unlockedForMove.isEmpty {
-            // A misplaced entry is never chowned first, so another user's
-            // needs sudo for its ACL too.
-            let sudo = unlockedForMove.contains { !$0.ownedByCurrentUser } ? "sudo " : ""
-            commands.append("\(sudo)chmod -h -N \(Self.quotedPaths(unlockedForMove))")
+        for problem in unlockedForMove {
+            commands += RuntimeAccessACL.repairCommands(
+                path: problem.path, entries: problem.moveDenyingACLEntries,
+                sudo: !problem.ownedByCurrentUser, link: true
+            )
         }
         // Moves last: renaming an entry needs its parent repaired first.
         for misplaced in problems where misplaced.isMisplaced && misplaced.isRepairable {
@@ -331,9 +333,13 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         if !systemLocked.isEmpty {
             sentences.append("\(Self.listed(systemLocked)) carry a system lock flag (schg or sappnd), which only an administrator can clear; ASTRA suggests no command for it.")
         }
+        let manualACLs = problems.filter(\.aclNeedsManualRepair)
+        if !manualACLs.isEmpty {
+            sentences.append("An access rule on \(Self.listed(manualACLs)) affects a group or an account ASTRA cannot safely target. Ask an administrator to restore access for your user while preserving other users' access rules.")
+        }
         let unvouched = problems.filter {
             !$0.isRepairable && $0.symlinkTarget == nil && !$0.isProvidersOverride
-                && !$0.hasSystemLockFlag && !$0.hasOtherHardLinks
+                && !$0.hasSystemLockFlag && !$0.hasOtherHardLinks && !$0.aclNeedsManualRepair
         }
         if let override = problems.first(where: { !$0.isRepairable && $0.isProvidersOverride }) {
             sentences.append("COPILOT_PROVIDERS_CONFIG names \(override.displayPath), which is not in a Copilot folder ASTRA manages, so ASTRA suggests no command for it; fix it yourself or point the variable at a file you own.")
@@ -689,10 +695,8 @@ enum CopilotHomeAccessCheck {
                 homeProblem.symlinkTarget = resolvedHome
                 homeProblem.hidesChildren = false
             }
-            // An unreadable home hides everything inside it, and the fix for
-            // the home (a recursive chown) covers its children too. A home
-            // that is only unwritable can still hide an unreadable config, so
-            // its children are still checked.
+            // An unreadable home hides its children: repair the home alone
+            // and check again. An unwritable home can still be inspected.
             guard homeProblem.access == .unwritable else { return [homeProblem] }
             problems.append(homeProblem)
         }
@@ -886,36 +890,7 @@ enum CopilotHomeAccessCheck {
     /// Whether the entry's own ACL (links not followed) has a deny entry for
     /// `permission`, for any principal.
     private static func aclDenies(_ path: String, _ permission: acl_perm_t) -> Bool {
-        guard let acl = acl_get_link_np(path, ACL_TYPE_EXTENDED) else { return false }
-        defer { acl_free(UnsafeMutableRawPointer(acl)) }
-        var entry: acl_entry_t?
-        var entryID = ACL_FIRST_ENTRY.rawValue
-        while acl_get_entry(acl, entryID, &entry) == 0, let current = entry {
-            entryID = ACL_NEXT_ENTRY.rawValue
-            var tag = ACL_UNDEFINED_TAG
-            var permissions: acl_permset_t?
-            guard acl_get_tag_type(current, &tag) == 0, tag == ACL_EXTENDED_DENY,
-                  acl_get_permset(current, &permissions) == 0, let permissions,
-                  acl_get_perm_np(permissions, permission) == 1 else { continue }
-            // Only a deny that applies to this user (directly, or through a
-            // group they belong to) explains the refusal; one aimed at someone
-            // else is legitimate sharing policy and must survive the fix.
-            if aceAppliesToCurrentUser(current) { return true }
-        }
-        return false
-    }
-
-    private static func aceAppliesToCurrentUser(_ entry: acl_entry_t) -> Bool {
-        guard let qualifier = acl_get_qualifier(entry) else { return false }
-        defer { acl_free(qualifier) }
-        return AstraMembership.currentUserMatchesPrincipal(qualifier.assumingMemoryBound(to: UInt8.self))
-    }
-
-    /// Whether the entry itself (not a link target) carries an extended ACL.
-    private static func hasExtendedACL(_ path: String) -> Bool {
-        guard let acl = acl_get_link_np(path, ACL_TYPE_EXTENDED) else { return false }
-        acl_free(UnsafeMutableRawPointer(acl))
-        return true
+        !RuntimeAccessACL.denyingEntries(at: path, permissions: [permission]).isEmpty
     }
 
     private static func problem(
@@ -974,12 +949,14 @@ enum CopilotHomeAccessCheck {
         let locked = lockState(of: path, followLinks: false).any
         let accessRefused = access == .unreadable
             || ((access == .unwritable || access == .cannotCreateHome) && writeDenied(path) && !locked)
-        // Blamed when the owner bits allow the access (so only the ACL can be
-        // refusing it), or when the ACL itself carries a matching deny entry
-        // (then it refuses whatever the mode bits become).
-        problem.hasACL = accessRefused && hasExtendedACL(path)
-            && (ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
-                || deniedPermissions(for: access, isDirectory: isDirectory).contains { aclDenies(path, $0) })
+        // A matching deny rule remains effective after a mode change. Record
+        // only its failing permission bits; preserve other ACL policy.
+        problem.denyingACLEntries = accessRefused
+            ? RuntimeAccessACL.denyingEntries(at: path, permissions: deniedPermissions(for: access, isDirectory: isDirectory))
+            : []
+        problem.hasACL = !problem.denyingACLEntries.isEmpty
+        problem.aclNeedsManualRepair = problem.denyingACLEntries.contains(where: \.requiresManualRepair)
+        if problem.aclNeedsManualRepair { problem.isRepairable = false }
         var linkCount = stat()
         problem.hasOtherHardLinks = !isDirectory && lstat(path, &linkCount) == 0 && linkCount.st_nlink > 1
         problem.requiresWrite = requiresWrite
@@ -997,7 +974,12 @@ enum CopilotHomeAccessCheck {
         problem.hidesChildren = isDirectory && access == .unreadable
         if problem.isMisplaced {
             problem.backupPath = unusedBackupPath(for: path, fileManager: fileManager)
-            problem.moveDeniedByOwnACL = aclDenies(path, ACL_DELETE)
+            problem.moveDenyingACLEntries = RuntimeAccessACL.denyingEntries(at: path, permissions: [ACL_DELETE])
+            problem.moveDeniedByOwnACL = !problem.moveDenyingACLEntries.isEmpty
+            if problem.moveDenyingACLEntries.contains(where: \.requiresManualRepair) {
+                problem.aclNeedsManualRepair = true
+                problem.isRepairable = false
+            }
             problem.moveDeniedByParentACL = aclDenies((path as NSString).deletingLastPathComponent, ACL_DELETE_CHILD)
         }
         return problem
@@ -1047,22 +1029,6 @@ enum CopilotHomeAccessCheck {
             return [ACL_ADD_SUBDIRECTORY, ACL_SEARCH]
         default:
             return []
-        }
-    }
-
-    private static func ownerBitsAllow(
-        _ access: CopilotHomeAccessProblem.Access,
-        isDirectory: Bool,
-        mode: Int?
-    ) -> Bool {
-        guard let mode else { return false }
-        let traverse = isDirectory ? 0o100 : 0
-        switch access {
-        case .unreadable: return mode & (0o400 | traverse) == (0o400 | traverse)
-        case .unwritable: return mode & (0o200 | traverse) == (0o200 | traverse)
-        // Creating the home needs write and search on its parent.
-        case .cannotCreateHome: return mode & 0o300 == 0o300
-        default: return false
         }
     }
 

@@ -109,7 +109,7 @@ struct RuntimeProviderAvailabilityService {
         cacheMaxAge: TimeInterval = RuntimeProviderAvailabilityService.cacheMaxAge
     ) async -> [AgentRuntimeID: RuntimeReadinessState] {
         if let cache, let cached = await cache.states(for: configuration, maxAge: cacheMaxAge) {
-            let refreshed = refreshingUncachedChecks(cached)
+            let refreshed = await refreshingUncachedChecks(cached, configuration: configuration)
             AppLogger.debug("runtime.availability_refresh source=cache \(Self.summary(of: refreshed))", category: "Runtime")
             return refreshed
         }
@@ -148,20 +148,21 @@ struct RuntimeProviderAvailabilityService {
         if let cache, states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count {
             await cache.store(states, for: configuration)
         }
-        let refreshed = refreshingUncachedChecks(states)
+        let refreshed = await refreshingUncachedChecks(states, configuration: configuration)
         AppLogger.debug("runtime.availability_refresh source=probe \(Self.summary(of: refreshed))", category: "Runtime")
         return refreshed
     }
 
     private func refreshingUncachedChecks(
-        _ states: [AgentRuntimeID: RuntimeReadinessState]
-    ) -> [AgentRuntimeID: RuntimeReadinessState] {
+        _ states: [AgentRuntimeID: RuntimeReadinessState],
+        configuration: RuntimeProviderAvailabilityConfiguration
+    ) async -> [AgentRuntimeID: RuntimeReadinessState] {
         var refreshed = states
         // A warning at most: this answer is global, but whether the host home
         // matters depends on the launch (a container never reads it). The
         // final-plan guard blocks the launches it would actually break.
         for (runtime, state) in states {
-            let checked = readinessService.refreshingUncachedChecks(.ready, runtime: runtime)
+            let checked = await readinessService.refreshingUncachedChecks(.ready, configuration: configuration.readinessConfiguration(for: runtime))
             refreshed[runtime] = state.combined(with: checked == .blocked ? .warning : checked)
         }
         return refreshed

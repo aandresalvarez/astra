@@ -180,6 +180,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface AstraMembership : NSObject
 
 + (BOOL)currentUserMatchesPrincipal:(const unsigned char *)principalUUID;
++ (nullable NSString *)posixPrincipalForUUID:(const unsigned char *)principalUUID;
 
 @end
 
