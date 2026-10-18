@@ -969,7 +969,7 @@ public enum WorkspaceConfigManager {
         let toolConfigs = localTools.compactMap(localToolConfig)
         let templateConfigs = workspace.templates.map(templateConfig)
         let scheduleConfigs = workspace.schedules.map(scheduleConfig)
-        let sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+        let sshConnections = SSHConnectionManager.loadForExport(workspacePath: workspace.primaryPath)
         guard let taskConfigs = try? workspace.tasks.map({ try taskConfig($0, modelContext: modelContext) }) else { return nil }
         let workspaceAppConfigs = workspaceAppsForExport(workspace: workspace).map(workspaceAppConfig)
         let workspaceAppRunSnapshot = workspaceAppRunMirrorSnapshotForExport(workspace: workspace)
@@ -1051,25 +1051,39 @@ public enum WorkspaceConfigManager {
     }
 
     public static func autoExport(workspace: Workspace, modelContext: ModelContext) {
+        autoExport(workspace: workspace, modelContext: modelContext) {
+            export(workspace: workspace, modelContext: modelContext)
+        }
+    }
+
+    // The preparation boundary can fail before a replacement snapshot exists.
+    // Keep the prior queued write alive until the replacement file lands.
+    @discardableResult
+    static func autoExport(workspace: Workspace, modelContext: ModelContext,
+                           writer: WorkspaceAutoExportWriter = .shared,
+                           makeSnapshot: () -> WorkspaceConfig?) -> Task<Bool, Never>? {
+        let workspaceID = workspace.id.uuidString
+        guard !workspace.isDeleted else {
+            WorkspaceAutoExportGate.shared.retire(workspaceID: workspaceID)
+            return nil
+        }
         let target = autoExportTarget(for: workspace.primaryPath)
         guard let url = target.url else {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
-            return
+            return nil
         }
-        guard let config = export(workspace: workspace, modelContext: modelContext) else { return }
-        let workspaceID = workspace.id.uuidString
+        guard let config = makeSnapshot() else { return nil }
         // Recorded before the mirror lands, so recovery after a lost store
         // probes this folder even when no scanned root holds it. A folder
         // that can't be recorded gets no mirror: one recovery can't find
         // would hold owners a trusted cleanup never counts.
         guard WorkspaceMirrorRegistry(for: modelContext)?.register([workspace.primaryPath]) ?? true else {
             logAutoExportSkipped(workspace: workspace, reason: "mirror_registry_unwritable")
-            return
+            return nil
         }
-        // Taken with the snapshot, so a deletion settled first drops it.
-        let ticket = WorkspaceAutoExportGate.shared.ticket(for: workspaceID)
-        Task.detached(priority: .utility) {
-            await WorkspaceAutoExportWriter.shared.write(config, to: url, workspaceID: workspaceID, ticket: ticket)
+        let ticket = WorkspaceAutoExportGate.shared.reserveExport(for: workspaceID)
+        return Task.detached(priority: .utility) {
+            await writer.write(config, to: url, workspaceID: workspaceID, ticket: ticket)
         }
     }
 
@@ -1135,7 +1149,7 @@ public enum WorkspaceConfigManager {
         )
     }
 
-    private static func writeResult(_ config: WorkspaceConfig, workspaceID: String, to url: URL) -> WorkspaceConfigExportResult {
+    static func writeResult(_ config: WorkspaceConfig, workspaceID: String, to url: URL) -> WorkspaceConfigExportResult {
         do {
             try write(config, to: url)
             return exportResult(status: .exported, workspaceID: workspaceID, url: url, error: nil)

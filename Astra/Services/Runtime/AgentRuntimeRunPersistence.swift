@@ -14,7 +14,7 @@ enum AgentRuntimeRunPersistence {
         _ work: () -> T
     ) -> T {
         let start = DispatchTime.now().uptimeNanoseconds
-        let result = work()
+        let result = MainThreadPhase.tracking("run_finalize_\(phase)", work)
         PerformanceTelemetry.logIfNeeded(
             "run_finalize_phase",
             start: start,

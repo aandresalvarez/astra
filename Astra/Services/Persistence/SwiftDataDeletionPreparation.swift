@@ -20,7 +20,7 @@ public enum SwiftDataDeletionPreparation {
         for schedule in workspace.schedules { _ = (schedule.id, schedule.workspace?.id) }
         // The owning workspace's array is already resolved. Prepare each
         // task's children once; inverse skill owners are handled below.
-        for task in tasks { prepareContents(of: task) }
+        for task in tasks { SwiftDataTaskRollbackPreparation.prepare(task) }
         var preparedSkills: Set<ObjectIdentifier> = []
         for skill in skills where preparedSkills.insert(ObjectIdentifier(skill)).inserted {
             _ = (skill.id, skill.workspace?.id)
@@ -36,17 +36,11 @@ public enum SwiftDataDeletionPreparation {
         if let workspace = task.workspace {
             for related in workspace.tasks { _ = related.id }
         }
-        prepareContents(of: task)
+        SwiftDataTaskRollbackPreparation.prepare(task)
         for skill in task.skills {
             _ = skill.id
             for related in skill.tasks { _ = related.id }
         }
     }
 
-    private static func prepareContents(of task: AgentTask) {
-        _ = (task.id, task.workspace?.id)
-        for run in task.runs { _ = (run.id, run.task?.id) }
-        for event in task.events { _ = (event.id, event.task?.id, event.run?.id) }
-        for artifact in task.artifacts { _ = (artifact.id, artifact.task?.id) }
-    }
 }

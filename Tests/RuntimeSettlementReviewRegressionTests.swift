@@ -3,7 +3,7 @@ import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
-import ASTRAPersistence
+@testable import ASTRAPersistence
 @testable import ASTRA
 
 @Suite("Runtime settlement review regressions", .serialized)
@@ -59,6 +59,9 @@ struct RuntimeSettlementReviewRegressionTests {
         let queue = TaskQueue(poolSize: 1)
         defer { queue.cancelAll() }
         await RuntimeTurnSettlementRecoveryService.resume(modelContext: container.mainContext, taskQueue: queue)
+        // Recovery saves synchronously; its mirror has always been asynchronous.
+        // Await the scheduled write before inspecting the same cleanup in JSON.
+        await WorkspacePersistenceCoordinator.waitForPendingExport(workspaceID: try #require(task.workspace).id)
         let (reopenedContainer, reopenedTask) = try helper.reopen(fixture)
         defer { withExtendedLifetime(reopenedContainer) {} }
         #expect(try RuntimeTurnSettlementService.checkpoint(for: try #require(reopenedTask.runs.first), task: reopenedTask) == nil)
