@@ -208,6 +208,15 @@ struct PluginRepairTests {
         #expect(!RepairAction.isSafeTerminalCommand("/tmp/gcloud auth login", binary: "/opt/gcloud/bin/gcloud", allowsInstaller: false))
     }
 
+    @Test("A path-qualified check accepts only a repair that runs that exact path")
+    func terminalRepairRequiresTheDeclaredPath() {
+        // The check runs /opt/gcloud/bin/gcloud; a bare `gcloud` in Terminal
+        // resolves through PATH and may be a different program.
+        #expect(!RepairAction.isSafeTerminalCommand("gcloud auth login", binary: "/opt/gcloud/bin/gcloud", allowsInstaller: false))
+        #expect(!RepairAction.isSafeTerminalCommand("gcloud auth login", binary: "/opt/gcloud/bin/gcloud", allowsInstaller: true))
+        #expect(RepairAction.isSafeTerminalCommand("/opt/gcloud/bin/gcloud auth login", binary: "/opt/gcloud/bin/gcloud", allowsInstaller: false))
+    }
+
     @Test("A repair check runs the CLI the resumed run's projected PATH finds")
     func liveCheckResolvesTheProjectedPATH() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

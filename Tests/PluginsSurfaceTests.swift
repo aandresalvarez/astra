@@ -29,6 +29,46 @@ struct PluginsSurfaceTests {
         #expect(state.available.allSatisfy { $0.verb == .add })
     }
 
+    @Test("A draft plugin with a blocker approval can't clear names the blocker instead of offering Add")
+    func hardBlockersReplaceAdd() {
+        let workspace = Workspace(name: "Blocked", primaryPath: "/tmp/plugins-blocked")
+        let policy = CapabilityCatalogPolicyContext.currentUser(workspace: workspace, approvalRecords: [])
+        let reviewable = package("draft", name: "Draft", governance: .localDraft())
+        var blocked = package("blocked", name: "Blocked", governance: .localDraft())
+        blocked.requires = ["base-capability"]
+        let blockedDecision = CapabilityCatalogPolicy.decision(for: blocked, context: policy)
+        #expect(blockedDecision.requiresApproval && blockedDecision.hasNonApprovalBlockers)
+
+        let inputs = [reviewable, blocked].map { package in
+            let listing = PluginsSurfacePresentation.listing(
+                for: CapabilityCatalogPolicy.decision(for: package, context: policy), isEnabled: false
+            )
+            return PluginsSurfacePresentation.Input(
+                package: package, isEnabled: false, pendingSteps: 0,
+                isVisible: listing.isVisible, isRemovable: true, blocker: listing.blocker
+            )
+        }
+        let state = PluginsSurfacePresentation.makeState(inputs, query: "")
+
+        #expect(state.available.map(\.id) == ["blocked", "draft"])
+        let blockedRow = state.available.first { $0.id == "blocked" }
+        #expect(blockedRow?.verb == nil)
+        #expect(blockedRow?.subtitle == "Capability requires base-capability to be installed or enabled first.")
+        // Approval alone is what Add grants, so a plain draft still offers it.
+        #expect(state.available.first { $0.id == "draft" }?.verb == .add)
+    }
+
+    /// The rescan lives in the view's lifecycle (no hosted view here), so
+    /// its trigger is pinned in the source.
+    @Test("A new working path rescans the surface's health")
+    func workingPathChangeRescansHealth() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains(".onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshStatuses() }"))
+    }
+
     @Test("Turning off and removing ask first, naming what is deleted and how far it reaches")
     func destructiveActionsConfirm() {
         let off = PluginsSurfaceConfirmation.turnOff(packageID: "jira").copy(name: "Jira", hasAccounts: true)

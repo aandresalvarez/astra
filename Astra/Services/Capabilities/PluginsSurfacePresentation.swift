@@ -39,6 +39,22 @@ enum PluginsSurfacePresentation {
         /// Hidden or blocked by policy; such packages are not listed.
         var isVisible: Bool
         var isRemovable: Bool
+        /// Why a plugin that is not on can't be added, when approval would
+        /// not clear it: shown in place of Add, which could only fail.
+        var blocker: String?
+    }
+
+    /// Whether a package is listed and what keeps it from being added. Listed
+    /// when policy shows it and it is on, can be turned on, or needs only the
+    /// approval Add grants. One that also has a blocker approval can't clear
+    /// (a missing dependency, an unsafe tool) names it instead of offering Add.
+    static func listing(
+        for decision: CapabilityCatalogDecision,
+        isEnabled: Bool
+    ) -> (isVisible: Bool, blocker: String?) {
+        let isVisible = decision.isVisible && (decision.canEnable || isEnabled || decision.requiresApproval)
+        let blocker = isEnabled ? nil : decision.nonApprovalBlockers.first?.message
+        return (isVisible, blocker)
     }
 
     static func makeState(_ inputs: [Input], query: String) -> PluginsSurfaceState {
@@ -55,7 +71,7 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: input.isEnabled ? nil : .add
+                verb: input.isEnabled || input.blocker != nil ? nil : .add
             )
             if !input.isEnabled {
                 state.available.append(row)
@@ -71,6 +87,7 @@ enum PluginsSurfacePresentation {
     /// "1 step pending · 1 skill, 3 tools" for an added plugin with work left;
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
+        if !input.isEnabled, let blocker = input.blocker { return blocker }
         let contents = input.package.contentParts.joined(separator: ", ")
         guard input.isEnabled, input.pendingSteps > 0 else {
             return contents.isEmpty ? input.package.description : contents
