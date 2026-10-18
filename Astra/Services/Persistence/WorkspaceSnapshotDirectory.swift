@@ -9,7 +9,16 @@ import ASTRACore
 enum WorkspaceSnapshotDirectory {
     private static let prefix = ".astra-mirror-"
 
-    static func withDirectory<T>(beside store: URL, body: (URL) throws -> T) throws -> T {
+    /// A short saving-actor fence may suspend while this immutable copy stays
+    /// leased. Its capture and row traversal still run on the reader actor.
+    final class Reservation {
+        let root: URL
+        private let lease: FileLease
+        fileprivate init(root: URL, lease: FileLease) { self.root = root; self.lease = lease }
+        deinit { try? FileManager.default.removeItem(at: root); lease.release() }
+    }
+
+    static func reserve(beside store: URL) throws -> Reservation {
         let parent = store.deletingLastPathComponent()
         let root: URL
         let lease: FileLease
@@ -23,8 +32,7 @@ enum WorkspaceSnapshotDirectory {
             do { lease = try FileLease(root.appendingPathComponent("owner.lock"), blocking: true) }
             catch { try? FileManager.default.removeItem(at: root); throw error }
         }
-        defer { try? FileManager.default.removeItem(at: root); lease.release() }
-        return try body(root)
+        return Reservation(root: root, lease: lease)
     }
 
     private static func reapAbandoned(in parent: URL) throws {
@@ -59,7 +67,7 @@ enum WorkspaceSnapshotDirectory {
         }
     }
 
-    private final class FileLease {
+    fileprivate final class FileLease {
         private var descriptor: Int32
 
         init(_ url: URL, blocking: Bool) throws {

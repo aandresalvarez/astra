@@ -57,7 +57,7 @@ struct WorkspaceSavedAutoExportTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let context = container.mainContext
         #expect(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
-        let old = WorkspaceAutoExportGate.shared.ticket(for: workspace.id.uuidString)
+        let old = WorkspaceAutoExportGate.shared.readTicket(for: workspace.id.uuidString)
         task.title = "Second"
         try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: context)
         #expect(!WorkspaceAutoExportGate.shared.isCurrent(old))
@@ -114,13 +114,14 @@ struct WorkspaceSavedAutoExportTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let context = container.mainContext
         #expect(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
-        let old = WorkspaceAutoExportGate.shared.ticket(for: workspace.id.uuidString)
+        let old = WorkspaceAutoExportGate.shared.readTicket(for: workspace.id.uuidString)
         task.title = "Intermediate bookkeeping"
         if rawSave { try context.save() }
         else { #expect(WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: context)) }
         #expect(!WorkspaceAutoExportGate.shared.isCurrent(old))
         let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path))
-        await WorkspaceSavedAutoExport().export(container: container, workspaceID: workspace.id, url: mirror, ticket: old)
+        #expect(await WorkspaceSavedAutoExport().prepareForExport(source: WorkspaceSavedExportSource(container),
+            workspaceID: workspace.id, url: mirror, readTicket: old) == nil)
         #expect(!FileManager.default.fileExists(atPath: mirror.path))
         // The cancelled read still owes a mirror at the next explicit drain.
         #expect(WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) >= 1)

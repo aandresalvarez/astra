@@ -8,23 +8,38 @@ import SwiftData
 enum WorkspaceSavedExportSnapshot {
     enum SnapshotError: Error { case unsupportedStoreConfiguration }
 
-    static func read<T>(container: ModelContainer, workspaceID: String = "none",
-                        body: (ModelContainer) throws -> T) throws -> T {
+    /// Only a file copy crosses the saving-actor fence. No live model or
+    /// context exists until the reader resumes its synchronous row traversal.
+    struct CapturedStore {
+        let directory: WorkspaceSnapshotDirectory.Reservation
+        let schema: Schema
+
+        func read<T>(_ body: (ModelContainer) throws -> T) throws -> T {
+            try withExtendedLifetime(directory) {
+                let snapshot = try ModelContainer(for: schema, configurations: [
+                    ModelConfiguration(schema: schema, url: directory.root.appendingPathComponent("snapshot.store"),
+                        allowsSave: false, cloudKitDatabase: .none)
+                ])
+                return try body(snapshot)
+            }
+        }
+    }
+
+    static func capture(container: ModelContainer, workspaceID: String) throws -> CapturedStore {
         guard container.configurations.count == 1,
               let source = container.configurations.first, !source.isStoredInMemoryOnly else {
             throw SnapshotError.unsupportedStoreConfiguration
         }
-        // Provider sandboxes can write general temp roots. Keep the copy
-        // inside the store owner's protection boundary, alongside the store.
-        return try WorkspaceSnapshotDirectory.withDirectory(beside: source.url) { root in
-            let url = root.appendingPathComponent("snapshot.store")
-            try WorkspacePersistenceWork.measure("mirror_store_snapshot", workspaceID: workspaceID) {
-                try WorkspaceRecoveryService.copyStoreSnapshot(from: source.url, to: url)
-            }
-            let snapshot = try ModelContainer(for: container.schema, configurations: [
-                ModelConfiguration(schema: container.schema, url: url, allowsSave: false, cloudKitDatabase: .none)
-            ])
-            return try body(snapshot)
+        let directory = try WorkspaceSnapshotDirectory.reserve(beside: source.url)
+        try WorkspacePersistenceWork.measure("mirror_store_snapshot", workspaceID: workspaceID) {
+            try WorkspaceRecoveryService.copyStoreSnapshot(from: source.url,
+                to: directory.root.appendingPathComponent("snapshot.store"))
         }
+        return CapturedStore(directory: directory, schema: container.schema)
+    }
+
+    static func read<T>(container: ModelContainer, workspaceID: String = "none",
+                        body: (ModelContainer) throws -> T) throws -> T {
+        try capture(container: container, workspaceID: workspaceID).read(body)
     }
 }

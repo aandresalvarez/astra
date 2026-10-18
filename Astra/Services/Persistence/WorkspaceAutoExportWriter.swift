@@ -16,24 +16,97 @@ public final class WorkspaceAutoExportGate: @unchecked Sendable {
     public struct Ticket: Sendable {
         let workspaceID: String
         let generation: Int
+        let coveredReadRevision: Int
+    }
+
+    /// Reading may fail or be superseded without revoking an already prepared
+    /// value. Only promotion of a successful read advances publication order.
+    struct ReadTicket: Sendable {
+        let workspaceID: String
+        let revision: Int
+        let epoch: Int
     }
 
     private let lock = NSLock()
+    // Publication order, source-read validity, destructive/explicit barriers,
+    // and the newest prepared read are separate dimensions of the same gate.
+    // A sealed older copy may finish, but can never replace a newer prepared
+    // value or cross a deletion, destination move, or explicit snapshot.
     private var generations: [String: Int] = [:]
+    private var readRevisions: [String: Int] = [:]
+    private var epochs: [String: Int] = [:]
+    private var publishedReadRevisions: [String: Int] = [:]
+
+    func readTicket(for workspaceID: String) -> ReadTicket {
+        lock.withLock { ReadTicket(workspaceID: workspaceID, revision: readRevisions[workspaceID, default: 0],
+            epoch: epochs[workspaceID, default: 0]) }
+    }
+
+    func beginRead(for workspaceID: String) -> ReadTicket {
+        lock.withLock {
+            readRevisions[workspaceID, default: 0] += 1
+            return ReadTicket(workspaceID: workspaceID, revision: readRevisions[workspaceID, default: 0],
+                epoch: epochs[workspaceID, default: 0])
+        }
+    }
+
+    func isCurrent(_ ticket: ReadTicket) -> Bool {
+        lock.withLock { readRevisions[ticket.workspaceID, default: 0] == ticket.revision
+            && epochs[ticket.workspaceID, default: 0] == ticket.epoch
+            && publishedReadRevisions[ticket.workspaceID, default: 0] < ticket.revision }
+    }
+
+    func isSealedCurrent(_ ticket: ReadTicket) -> Bool {
+        lock.withLock { epochs[ticket.workspaceID, default: 0] == ticket.epoch
+            && publishedReadRevisions[ticket.workspaceID, default: 0] < ticket.revision }
+    }
+
+    func invalidateIfCurrent(_ ticket: ReadTicket) {
+        lock.withLock {
+            guard readRevisions[ticket.workspaceID, default: 0] == ticket.revision,
+                  epochs[ticket.workspaceID, default: 0] == ticket.epoch,
+                  publishedReadRevisions[ticket.workspaceID, default: 0] < ticket.revision else { return }
+            readRevisions[ticket.workspaceID, default: 0] += 1
+        }
+    }
+
+    func promote(_ ticket: ReadTicket, sealed: Bool) -> Ticket? {
+        lock.withLock {
+            guard sealed || readRevisions[ticket.workspaceID, default: 0] == ticket.revision,
+                  epochs[ticket.workspaceID, default: 0] == ticket.epoch,
+                  publishedReadRevisions[ticket.workspaceID, default: 0] < ticket.revision else { return nil }
+            generations[ticket.workspaceID, default: 0] += 1
+            publishedReadRevisions[ticket.workspaceID] = ticket.revision
+            return Ticket(workspaceID: ticket.workspaceID, generation: generations[ticket.workspaceID, default: 0],
+                coveredReadRevision: ticket.revision)
+        }
+    }
+
+    func retireIfCurrentEpoch(_ ticket: ReadTicket) {
+        lock.withLock {
+            guard epochs[ticket.workspaceID, default: 0] == ticket.epoch else { return }
+            epochs[ticket.workspaceID, default: 0] += 1
+            generations[ticket.workspaceID, default: 0] += 1
+        }
+    }
 
     public func ticket(for workspaceID: String) -> Ticket {
         lock.lock()
         defer { lock.unlock() }
-        return Ticket(workspaceID: workspaceID, generation: generations[workspaceID, default: 0])
+        return Ticket(workspaceID: workspaceID, generation: generations[workspaceID, default: 0],
+            coveredReadRevision: publishedReadRevisions[workspaceID, default: 0])
     }
 
-    /// A newer requested projection supersedes earlier reads as well as writes.
-    /// Issued by the saving actor, before handing work to a background actor.
+    /// An explicit value snapshot is already prepared at this boundary.
+    /// Supersede earlier reads and writes only after that preparation succeeds.
     public func beginExport(for workspaceID: String) -> Ticket {
         lock.lock()
         defer { lock.unlock() }
         generations[workspaceID, default: 0] += 1
-        return Ticket(workspaceID: workspaceID, generation: generations[workspaceID, default: 0])
+        epochs[workspaceID, default: 0] += 1
+        publishedReadRevisions[workspaceID] = readRevisions[workspaceID, default: 0]
+        return Ticket(workspaceID: workspaceID, generation: generations[workspaceID, default: 0],
+            coveredReadRevision: publishedReadRevisions[workspaceID, default: 0])
     }
 
     func isCurrent(_ ticket: Ticket) -> Bool {
@@ -42,13 +115,14 @@ public final class WorkspaceAutoExportGate: @unchecked Sendable {
         return generations[ticket.workspaceID, default: 0] == ticket.generation
     }
 
-    /// A source-context save invalidates only the read that observed that
-    /// context's previous save boundary, never a newer explicit snapshot.
+    /// Withdraw a prepared publication on a moved/deleted destination, without
+    /// letting an older lease retire a newer explicit snapshot.
     func invalidateIfCurrent(_ ticket: Ticket) {
         lock.lock()
         defer { lock.unlock() }
         guard generations[ticket.workspaceID, default: 0] == ticket.generation else { return }
         generations[ticket.workspaceID, default: 0] += 1
+        epochs[ticket.workspaceID, default: 0] += 1
     }
 
     /// Writes `data` to `url` only while no `retire` came after `ticket`.
@@ -77,6 +151,7 @@ public final class WorkspaceAutoExportGate: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         generations[workspaceID, default: 0] += 1
+        epochs[workspaceID, default: 0] += 1
     }
 }
 
@@ -89,6 +164,9 @@ public final class WorkspaceAutoExportGate: @unchecked Sendable {
 /// while preserving `.sortedKeys` so the on-disk recovery file stays deterministic.
 actor WorkspaceAutoExportWriter {
     static let shared = WorkspaceAutoExportWriter()
+    private let beforeWrite: (@Sendable () async -> Void)?
+
+    init(beforeWrite: (@Sendable () async -> Void)? = nil) { self.beforeWrite = beforeWrite }
 
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -105,6 +183,7 @@ actor WorkspaceAutoExportWriter {
         ticket: WorkspaceAutoExportGate.Ticket
     ) async -> Bool {
         guard !Task.isCancelled else { return false }
+        if let beforeWrite { await beforeWrite() }
         // Projection may have observed a concurrent store commit before the
         // source context posts didSave. Its main-actor save must finish before
         // this snapshot is accepted. Encoding and filesystem I/O remain here.

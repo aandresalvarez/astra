@@ -42,7 +42,7 @@ struct WorkspaceSavedExportPendingTests {
         context.insert(task); context.insert(run); context.insert(event); context.insert(app)
         try context.save()
         try #require(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
-        let ticket = WorkspaceAutoExportGate.shared.ticket(for: workspace.id.uuidString)
+        let ticket = WorkspaceAutoExportGate.shared.readTicket(for: workspace.id.uuidString)
         switch change {
         case "workspace": other.name = "B changed"
         case "task": task.title = "B changed"
@@ -70,7 +70,7 @@ struct WorkspaceSavedExportPendingTests {
         let other = Workspace(name: "B", primaryPath: root.appendingPathComponent("B").path)
         context.insert(other); try context.save()
         try #require(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
-        let ticket = WorkspaceAutoExportGate.shared.ticket(for: workspace.id.uuidString)
+        let ticket = WorkspaceAutoExportGate.shared.readTicket(for: workspace.id.uuidString)
         task.workspace = other
         try context.save()
         #expect(!WorkspaceAutoExportGate.shared.isCurrent(ticket))
@@ -142,7 +142,7 @@ struct WorkspaceSavedExportPendingTests {
         }
         try context.save()
         try #require(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
-        let ticket = WorkspaceAutoExportGate.shared.ticket(for: workspace.id.uuidString)
+        let ticket = WorkspaceAutoExportGate.shared.readTicket(for: workspace.id.uuidString)
         switch kind {
         case "skill": skill.name = "Changed"
         case "connector": connector.name = "Changed"
@@ -169,9 +169,9 @@ struct WorkspaceSavedExportPendingTests {
         context.insert(other); context.insert(app); try context.save()
         try #require(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
         try #require(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: other, modelContext: context))
-        let first = WorkspaceAutoExportGate.shared.ticket(for: workspace.id.uuidString)
-        let second = WorkspaceAutoExportGate.shared.ticket(for: other.id.uuidString)
-        try #require(second.generation > 0)
+        let first = WorkspaceAutoExportGate.shared.readTicket(for: workspace.id.uuidString)
+        let second = WorkspaceAutoExportGate.shared.readTicket(for: other.id.uuidString)
+        try #require(second.revision > 0)
         #expect(WorkspaceAutoExportGate.shared.isCurrent(first))
         app.workspaceID = other.id
         try context.save()
@@ -193,7 +193,7 @@ struct WorkspaceSavedExportPendingTests {
             messageEventID: UUID(), sequence: 1)
         context.insert(request); try context.save()
         try #require(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
-        let ticket = WorkspaceAutoExportGate.shared.ticket(for: workspace.id.uuidString)
+        let ticket = WorkspaceAutoExportGate.shared.readTicket(for: workspace.id.uuidString)
         switch change {
         case "delete": context.delete(request)
         case "move": request.taskID = otherTask.id
@@ -214,7 +214,7 @@ struct WorkspaceSavedExportPendingTests {
         let context = container.mainContext
         defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) }
         try #require(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
-        let ticket = WorkspaceAutoExportGate.shared.ticket(for: workspace.id.uuidString)
+        let ticket = WorkspaceAutoExportGate.shared.readTicket(for: workspace.id.uuidString)
         let other = Workspace(name: "B", primaryPath: root.appendingPathComponent("B").path)
         let transient = AgentTask(title: "Never saved", goal: "Synthetic", workspace: other)
         context.insert(transient); context.delete(transient)

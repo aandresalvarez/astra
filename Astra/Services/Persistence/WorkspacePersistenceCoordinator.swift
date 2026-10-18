@@ -15,7 +15,7 @@ public enum WorkspacePersistenceCoordinator {
         // container only while actually reading; termination drains live owners.
         weak var context: ModelContext?
         weak var container: ModelContainer?
-        let ticket: WorkspaceAutoExportGate.Ticket?
+        let lease: WorkspaceSavedExportLease?
         let task: Task<Void, Never>
     }
 
@@ -191,31 +191,41 @@ public enum WorkspacePersistenceCoordinator {
     /// authority on its own actor rather than faulting every task's history on
     /// the main actor at each settlement checkpoint. Keep the request pending
     /// through the write so termination can synchronously drain it.
-    private static func enqueueSavedAutoExport(workspace: Workspace, modelContext: ModelContext) {
+    @discardableResult
+    static func enqueueSavedAutoExport(workspace: Workspace, modelContext: ModelContext,
+                                      writer: WorkspaceAutoExportWriter = .shared,
+                                      reader: WorkspaceSavedAutoExport = .shared) -> Task<Void, Never>? {
         let target = WorkspaceConfigManager.autoExportTarget(for: workspace.primaryPath)
         guard let url = target.url else {
             logSkippedExport(workspace: workspace, reason: target.reason)
-            return
+            return nil
         }
         // Register before dispatch, ordered with deletion on the saving actor.
         guard WorkspaceMirrorRegistry(for: modelContext)?.register([workspace.primaryPath]) ?? true else {
             logSkippedExport(workspace: workspace, reason: "mirror_registry_unwritable")
-            return
+            return nil
         }
         let workspaceID = workspace.id
-        let ticket = WorkspaceAutoExportGate.shared.beginExport(for: workspaceID.uuidString)
+        let ticket = WorkspaceAutoExportGate.shared.beginRead(for: workspaceID.uuidString)
         let lease = WorkspaceSavedExportLease(context: modelContext, workspace: workspace, ticket: ticket)
         let container = modelContext.container
         let source = WorkspaceSavedExportSource(container)
         let requestID = UUID()
-        savedExports[workspaceID]?.task.cancel()
+        // Unprepared reads may coalesce. A prepared value remains publishable
+        // until its replacement has actually prepared and promoted a ticket.
+        if savedExports[workspaceID]?.lease?.isSealed != true { savedExports[workspaceID]?.task.cancel() }
         savedExports[workspaceID] = PendingExport(
-            id: requestID, workspace: workspace, context: modelContext, container: container, ticket: ticket,
+            id: requestID, workspace: workspace, context: modelContext, container: container, lease: lease,
             task: Task { @MainActor in
                 defer { withExtendedLifetime(lease) {} }
                 guard !Task.isCancelled else { return }
-                let written = await WorkspaceSavedAutoExport.shared.export(source: source, workspaceID: workspaceID,
-                    url: url, ticket: ticket)
+                var written = false
+                if let prepared = await reader.prepareForExport(source: source,
+                    workspaceID: workspaceID, url: url, lease: lease),
+                   !Task.isCancelled, let publication = lease.promote() {
+                    written = await writer.write(prepared.config, to: url,
+                        workspaceID: workspaceID.uuidString, ticket: publication)
+                }
                 // An old completion must never erase a newer pending request.
                 if savedExports[workspaceID]?.id == requestID,
                    written || savedExports[workspaceID]?.context == nil || savedExports[workspaceID]?.container == nil ||
@@ -224,6 +234,7 @@ public enum WorkspacePersistenceCoordinator {
                 }
             }
         )
+        return savedExports[workspaceID]?.task
     }
 
     private static func logSkippedExport(workspace: Workspace, reason: String) {
@@ -236,10 +247,15 @@ public enum WorkspacePersistenceCoordinator {
     /// coordinator request. Failed writes and later/debounced saves stay owed.
     static func autoExportDidWrite(_ ticket: WorkspaceAutoExportGate.Ticket) {
         guard let id = UUID(uuidString: ticket.workspaceID),
-              let pending = savedExports[id], let previous = pending.ticket,
-              previous.generation <= ticket.generation,
+              let pending = savedExports[id], let lease = pending.lease,
               WorkspaceAutoExportGate.shared.isCurrent(ticket) else { return }
-        if previous.generation < ticket.generation { pending.task.cancel() }
+        if let previous = lease.writeTicket {
+            guard previous.generation <= ticket.generation else { return }
+            if previous.generation < ticket.generation { pending.task.cancel() }
+        } else {
+            guard ticket.coveredReadRevision >= lease.readTicket.revision else { return }
+            pending.task.cancel()
+        }
         savedExports[id] = nil
     }
 
@@ -257,7 +273,7 @@ public enum WorkspacePersistenceCoordinator {
         let requestID = UUID()
         debouncedExports[workspaceID]?.task.cancel()
         debouncedExports[workspaceID] = PendingExport(
-            id: requestID, workspace: workspace, context: modelContext, container: container, ticket: nil,
+            id: requestID, workspace: workspace, context: modelContext, container: container, lease: nil,
             task: Task { @MainActor in
                 defer { withExtendedLifetime(container) {} }
                 do { try await Task.sleep(nanoseconds: delayNanoseconds) }

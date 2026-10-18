@@ -57,13 +57,14 @@ for path in \
   Astra/Services/Persistence/WorkspaceSavedExportLease.swift \
   Astra/Services/Persistence/WorkspaceSnapshotDirectory.swift \
   Tests/WorkspaceSavedExportPendingTests.swift \
+  Tests/WorkspaceSavedExportReplacementTests.swift \
   Tests/WorkspaceSnapshotDirectoryTests.swift \
   Tests/WorkspaceSavedAutoExportTests.swift \
   Tests/WorkspaceSavedExportReviewTests.swift \
   Tests/WorkspaceExportTerminationFlushTests.swift \
   Tests/RunFinalizationResponsivenessTests.swift \
   Tests/RuntimeSettlementReviewRegressionTests.swift; do
-  assert_targets $'RuntimeSettlementReviewRegressionTests\nWorkspaceSavedAutoExportTests\nWorkspaceSavedExportSnapshotTests\nWorkspaceSavedExportReviewTests\nWorkspaceSavedExportPendingTests\nWorkspaceSnapshotDirectoryTests\nWorkspaceExportTerminationFlushTests\nAgentRuntimeRunPersistenceTests\nTaskThreadChangeObserverTests' "$path"
+  assert_targets $'RuntimeSettlementReviewRegressionTests\nWorkspaceSavedAutoExportTests\nWorkspaceSavedExportSnapshotTests\nWorkspaceSavedExportReviewTests\nWorkspaceSavedExportPendingTests\nWorkspaceSavedExportReplacementTests\nWorkspaceSnapshotDirectoryTests\nWorkspaceExportTerminationFlushTests\nAgentRuntimeRunPersistenceTests\nTaskThreadChangeObserverTests' "$path"
 done
 
 assert_targets "FeedbackEvidencePrivacyTests" \
@@ -234,7 +235,7 @@ assert_targets $'HostFileAccessBrokerTests\nShelfPreviewFailureTests\nShelfMarkd
 assert_targets $'TaskOutputDiscoveryTests\nAgentRuntimeRunPersistenceTests' \
   "Astra/Services/Persistence/TaskOutputDiscovery.swift"
 
-assert_targets $'TaskOutputDiscoveryTests\nAgentRuntimeRunPersistenceTests\nRuntimeSettlementReviewRegressionTests\nWorkspaceSavedAutoExportTests\nWorkspaceSavedExportSnapshotTests\nWorkspaceSavedExportReviewTests\nWorkspaceSavedExportPendingTests\nWorkspaceSnapshotDirectoryTests\nWorkspaceExportTerminationFlushTests\nTaskThreadChangeObserverTests' \
+assert_targets $'TaskOutputDiscoveryTests\nAgentRuntimeRunPersistenceTests\nRuntimeSettlementReviewRegressionTests\nWorkspaceSavedAutoExportTests\nWorkspaceSavedExportSnapshotTests\nWorkspaceSavedExportReviewTests\nWorkspaceSavedExportPendingTests\nWorkspaceSavedExportReplacementTests\nWorkspaceSnapshotDirectoryTests\nWorkspaceExportTerminationFlushTests\nTaskThreadChangeObserverTests' \
   "Astra/Services/Runtime/AgentRuntimeRunPersistence.swift"
 
 assert_targets $'PendingP2RegressionTests\nSpecEngineTests\nAntigravityCLIRuntimeTests' \

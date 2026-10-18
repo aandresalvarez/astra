@@ -34,6 +34,9 @@ final class WorkspaceSavedExportSource: @unchecked Sendable {
 /// discarded after projection; SwiftData remains the durable authority.
 actor WorkspaceSavedAutoExport {
     static let shared = WorkspaceSavedAutoExport()
+    private let beforeProjection: (@Sendable () async -> Void)?
+
+    init(beforeProjection: (@Sendable () async -> Void)? = nil) { self.beforeProjection = beforeProjection }
 
     struct Prepared: Sendable {
         let config: WorkspaceConfigManager.WorkspaceConfig
@@ -94,15 +97,52 @@ actor WorkspaceSavedAutoExport {
 
     func prepareForExport(source: WorkspaceSavedExportSource, workspaceID: UUID, url: URL,
                           ticket: WorkspaceAutoExportGate.Ticket) async -> Prepared? {
+        await prepareForExport(source: source, workspaceID: workspaceID, url: url,
+            isCurrent: { WorkspaceAutoExportGate.shared.isCurrent(ticket) })
+    }
+
+    func prepareForExport(source: WorkspaceSavedExportSource, workspaceID: UUID, url: URL,
+                          readTicket: WorkspaceAutoExportGate.ReadTicket) async -> Prepared? {
+        await prepareForExport(source: source, workspaceID: workspaceID, url: url,
+            isCurrent: { WorkspaceAutoExportGate.shared.isCurrent(readTicket) })
+    }
+
+    func prepareForExport(source: WorkspaceSavedExportSource, workspaceID: UUID, url: URL,
+                          lease: WorkspaceSavedExportLease) async -> Prepared? {
+        await prepareForExport(source: source, workspaceID: workspaceID, url: url,
+            isCurrent: { lease.isCurrent }, read: { container in
+                if container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
+                    return try await MainActor.run {
+                        guard lease.seal() else { return nil }
+                        return try Self.prepareRows(container: container, workspaceID: workspaceID)
+                    }
+                }
+                // Keep the expensive copy and traversal on this serialized
+                // actor. Only sealing yields to the source context's actor.
+                let captured = try WorkspaceSavedExportSnapshot.capture(container: container,
+                    workspaceID: workspaceID.uuidString)
+                guard await MainActor.run(body: { lease.seal() }) else { return nil }
+                if let beforeProjection = self.beforeProjection { await beforeProjection() }
+                guard !Task.isCancelled, lease.isCurrent else { return nil }
+                return try captured.read { try Self.prepareRows(container: $0, workspaceID: workspaceID) }
+            })
+    }
+
+    private func prepareForExport(source: WorkspaceSavedExportSource, workspaceID: UUID, url: URL,
+                                  isCurrent: @Sendable () -> Bool,
+                                  read: ((ModelContainer) async throws -> Prepared?)? = nil) async -> Prepared? {
         // Coalesce queued requests before paying to fault the workspace graph.
-        guard !Task.isCancelled, WorkspaceAutoExportGate.shared.isCurrent(ticket),
+        guard !Task.isCancelled, isCurrent(),
               let container = source.resolve() else { return nil }
         // A caller may have closed and removed a temporary/replaced store
         // before this queued read starts. Do not fault models from that store.
         guard WorkspaceSavedExportSource.isAvailable(container, workspaceID: workspaceID.uuidString) else { return nil }
         do {
-            guard let prepared = try await prepare(container: container, workspaceID: workspaceID), !Task.isCancelled,
-                  WorkspaceAutoExportGate.shared.isCurrent(ticket) else { return nil }
+            let prepared: Prepared?
+            if let read { prepared = try await read(container) }
+            else { prepared = try await prepare(container: container, workspaceID: workspaceID) }
+            guard let prepared, !Task.isCancelled,
+                  isCurrent() else { return nil }
             // A path move saved by a caller that did not request a new mirror
             // must not write the new workspace config into the old folder.
             let savedURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: prepared.config.primaryPath))

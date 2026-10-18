@@ -34,7 +34,7 @@ struct WorkspaceSavedExportReviewTests {
         let workspace = try #require(context.fetch(FetchDescriptor<Workspace>(predicate: #Predicate { $0.id == id })).first)
         // A clean context has nothing to commit and may enqueue its saved rows.
         try #require(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context))
-        let ticket = WorkspaceAutoExportGate.shared.ticket(for: id.uuidString)
+        let ticket = WorkspaceAutoExportGate.shared.readTicket(for: id.uuidString)
         workspace.name = "Unsaved failing change"
         switch mode {
         case "automatic":
@@ -127,7 +127,9 @@ struct WorkspaceSavedExportReviewTests {
         let written = await WorkspaceAutoExportWriter.shared.write(config, to: url,
             workspaceID: workspace.id.uuidString, ticket: explicit)
         if saved {
-            #expect(!written)
+            // The older value may publish first, or the newer preparation may
+            // already have superseded it. Either order must finish the latest
+            // obligation; the blocked-writer regression fixes that order.
             await WorkspacePersistenceCoordinator.waitForPendingExport(workspaceID: workspace.id)
         } else {
             #expect(written)
