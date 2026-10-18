@@ -215,7 +215,14 @@ reconciliation finishes or undoes what an exit interrupted:
   connector's name for another service, or a name for another kind, declares
   a different ID: reconciliation sees the old one dropped and the new one
   added, and no binding, setting or secret crosses between them. That needs
-  nothing beyond `knownComponentIDs`. Components the new version
+  nothing beyond `knownComponentIDs`. A stable explicit `id` keeps that
+  property where it matters: a connector's identity is still
+  `connector:<service>:<id>`, so a connector that keeps `id: "jira"` but
+  becomes a Slack connector is a new component and no Jira binding,
+  setting or secret moves to it; every identity starts with its kind, so a
+  skill and a tool never share one. A tool with an explicit `id` is
+  `tool:<id>`; a tool holds no settings, bindings or secrets, only an
+  optional override row the person authored, which stays theirs. Components the new version
   dropped are removed from each activation like a Remove of that component,
   in the same save that advances its digest: their bindings and
   `configValues` are deleted and their activation-owned secrets go through
@@ -391,8 +398,11 @@ Each is a decision R1 implements and its fixture tests.
     (with fresh UUIDs, since a connector's Keychain namespace is derived from
     its ID, so a copy imported on the same Mac never resolves the original's
     credentials), and gives the activation a fresh ID and namespace seed;
-    only credentials are entered again. Recovery from the workspace's own
-    mirror keeps account IDs.
+    only credentials are entered again. Templates and schedules that name a
+    projected skill are remapped from the file's own workspace ID to the
+    IDs the new activation derives, also when the copy gets a fresh
+    workspace UUID (Duplicate), so they keep resolving. Recovery from the
+    workspace's own mirror keeps account IDs.
 
 9. **Legacy component IDs.** Rows made by the current installer carry
    `originComponentID` values from `CapabilityResourceOrigin.componentID(for:)`
@@ -573,7 +583,13 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   before the save, a value the new component already has wins, and every
   copy is put back by `PluginUpdateService.undo` if any activation's
   reconciliation or the save fails), and the templates and schedules that
-  named its skill are rewritten (`retargetSkill`). The predecessor's own
+  named its skill are rewritten (`retargetSkill`). Before any state moves,
+  a destination namespace still journaled for deletion (a component of
+  that ID removed earlier whose cleanup failed) is cleared, keeping only
+  the keys the activation records there; while it can't be cleared, Update
+  refuses ("can't be updated yet") and the automatic pass holds back, so a
+  renamed component never inherits old credentials
+  (`PluginSecretCleanupOutbox.settleRenameDestination`). The predecessor's own
   namespace is journaled in `PluginSecretCleanupOutbox` before the save and
   deleted after it once no activation owns it, so a rename leaves no
   ownerless credentials; a failed save keeps it. The automatic launch pass
