@@ -111,7 +111,9 @@ struct CapabilitySetupCopier {
                 }
             }
 
-            for hint in pluginConnector.credentialHints where inputs.credentialInputs[hint.key] == nil {
+            // A workspace with the plugin's activation is copied from the
+            // accounts it binds, never from a row it doesn't.
+            for hint in pluginConnector.credentialHints where activation == nil && inputs.credentialInputs[hint.key] == nil {
                 if let value = legacyGlobalCredentialValue(
                     for: hint.key,
                     workspace: workspace,
@@ -147,9 +149,12 @@ struct CapabilitySetupCopier {
     }
 
     /// The accounts this package's own (enabled) activation binds to the
-    /// component, its default first, then the workspace's rows no plugin is
-    /// bound to. An account another plugin uses is never a source: two
-    /// plugins of one service must not swap URLs or credentials.
+    /// component, its default first, and only those: a row it never bound
+    /// must not fill in a URL, setting or credential its account lacks. A
+    /// workspace without the activation (one from before plugins had them)
+    /// falls back to its rows no plugin is bound to. An account another
+    /// plugin uses is never a source: two plugins of one service must not
+    /// swap URLs or credentials.
     private func matchingConnectors(
         for pluginConnector: PluginConnector,
         activation: PluginActivation?,
@@ -159,6 +164,7 @@ struct CapabilitySetupCopier {
         let ownAccounts = activation?
             .accounts(forComponent: CapabilityResourceOrigin.componentID(for: pluginConnector))
             .filter { !$0.isDeleted } ?? []
+        if activation != nil { return ownAccounts }
         let enabledGlobalConnectorIDs = Set(workspace.enabledGlobalConnectorIDs.map(Self.normalizedID))
         let enabledGlobalConnectors = globalConnectors.filter { connector in
             enabledGlobalConnectorIDs.contains(Self.normalizedID(connector.id.uuidString))

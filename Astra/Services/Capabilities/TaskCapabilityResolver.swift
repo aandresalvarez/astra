@@ -446,7 +446,7 @@ struct TaskCapabilityResolver {
 
         var seen = Set<String>()
         var adapters: [String] = []
-        for package in packages
+        for package in PluginRuntimeProjection.runnable(packages, in: workspace)
             where enabledPackageIDs.contains(package.id)
                 && CapabilityCatalogPolicy.decision(for: package, context: context).canRun {
             for adapter in package.browserAdapters {
@@ -473,7 +473,7 @@ struct TaskCapabilityResolver {
             approvalRecords: approvalRecords
         )
 
-        return packages
+        return PluginRuntimeProjection.runnable(packages, in: workspace)
             .filter { enabledPackageIDs.contains($0.id) }
             .filter { CapabilityCatalogPolicy.decision(for: $0, context: context).canRun }
             .flatMap { package in

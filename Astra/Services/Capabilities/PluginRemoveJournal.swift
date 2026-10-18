@@ -11,8 +11,8 @@ import ASTRAModels
 /// launch an intent whose plugin no activation names any more finishes the
 /// Remove, a plugin that never had one included; one whose activations are
 /// still stored (the save never landed, or the plugin was added again) is
-/// dropped. An unreadable store or a library entry that can't be removed
-/// leaves the intent for the next launch. A journal that exists but can't be
+/// dropped. An unreadable store, or a library entry that can't be read or
+/// removed, leaves the intent for the next launch. A journal that exists but can't be
 /// read is never rewritten: Remove refuses to start and launch keeps it, so
 /// the intents in it are not lost.
 @MainActor
@@ -76,7 +76,15 @@ struct PluginRemoveJournal {
                 continue
             }
             if !library.installedPackages().contains(where: { $0.id == pluginID }) {
-                journal.finish(pluginID)
+                // An entry still on disk that doesn't decode is not gone: it
+                // would block a reinstall under its name, so the intent stays.
+                if library.occupiedStorageNames().contains(CapabilityLibrary.safeFileName(for: pluginID).lowercased()) {
+                    AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                        "source": "plugin_remove_resume", "package_id": pluginID, "result": "library_entry_unreadable_kept"
+                    ], level: .error)
+                } else {
+                    journal.finish(pluginID)
+                }
                 continue
             }
             do {

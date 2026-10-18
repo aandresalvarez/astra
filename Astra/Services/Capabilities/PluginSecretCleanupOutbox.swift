@@ -99,6 +99,30 @@ struct PluginSecretCleanupOutbox {
         return after.allSatisfy { !derived.contains($0) }
     }
 
+    /// Settles the recorded single secrets among `keys` (secret settings a
+    /// definition declares that their activation doesn't record) before the
+    /// definition is accepted: a value a failed cleanup left there would
+    /// otherwise reach a run as the new setting's, and the next cleanup would
+    /// delete a credential the person may have entered since. Returns the
+    /// keys still pending: a delete failed, or (all of them) the record
+    /// can't be read.
+    static func settleRedeclared(
+        _ keys: [PluginUpdateService.StaleSecret],
+        modelContext: ModelContext?,
+        outbox: PluginSecretCleanupOutbox? = nil,
+        delete: (PluginUpdateService.StaleSecret) -> Bool
+    ) -> [PluginUpdateService.StaleSecret] {
+        guard !keys.isEmpty, let outbox = outbox ?? modelContext.flatMap(PluginSecretCleanupOutbox.init(for:)) else { return [] }
+        guard let pending = try? outbox.pendingKeys() else { return keys }
+        let redeclared = keys.filter(Set(pending).contains)
+        let failed = redeclared.filter { !delete($0) }
+        let settled = Set(redeclared.filter { !failed.contains($0) }.map(entry))
+        if !settled.isEmpty, let entries = try? outbox.entries() {
+            try? outbox.writeEntries(entries.filter { !settled.contains($0) })
+        }
+        return failed
+    }
+
     /// Cleans every recorded namespace nothing live names and drops it from
     /// the record; one still in use (re-added, restored) is dropped uncleaned.
     /// A recorded key is deleted unless a live activation records that

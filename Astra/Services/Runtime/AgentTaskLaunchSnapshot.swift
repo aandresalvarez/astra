@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 import ASTRAModels
 
 /// Immutable request-time configuration passed through a runtime launch.
@@ -27,6 +28,11 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
     /// `TaskExecutionPolicySnapshotV1.pluginActivations`); nil reads the live
     /// workspace's.
     let pluginActivations: [PluginActivationRecord]?
+    /// The plugin definitions and bound accounts frozen with those
+    /// activations (`TaskExecutionPolicySnapshotV1`); nil reads the live
+    /// library and rows.
+    let pluginDefinitions: [PluginPackage]?
+    let pluginAccounts: [PluginAccountRecord]?
 
     init(task: AgentTask) {
         id = task.id
@@ -50,6 +56,10 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         pluginActivations = task.workspace.map {
             WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.init)
         }
+        // A launch copy carries its request's frozen definitions on; a live
+        // task is projected from the library as it is now.
+        pluginDefinitions = task.workspace?.launchPluginDefinitions
+        pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
     }
 
     init(
@@ -71,7 +81,9 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         templateHooksJSON: String,
         skillSnapshotsJSON: String,
         runtimePermissionGrantsJSON: String?,
-        pluginActivations: [PluginActivationRecord]? = nil
+        pluginActivations: [PluginActivationRecord]? = nil,
+        pluginDefinitions: [PluginPackage]? = nil,
+        pluginAccounts: [PluginAccountRecord]? = nil
     ) {
         self.id = id
         self.model = model
@@ -92,5 +104,7 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         self.skillSnapshotsJSON = skillSnapshotsJSON
         self.runtimePermissionGrantsJSON = runtimePermissionGrantsJSON
         self.pluginActivations = pluginActivations
+        self.pluginDefinitions = pluginDefinitions
+        self.pluginAccounts = pluginAccounts
     }
 }

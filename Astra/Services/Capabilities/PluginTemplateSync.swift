@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import SwiftData
 import ASTRACore
@@ -78,11 +77,18 @@ enum PluginTemplateSync {
 
     /// True when the person changed a stamped row since a sync wrote it. A
     /// row with no recorded digest (written before digests were kept) counts
-    /// as edited unless it already has the definition's content: keeping a
-    /// row is recoverable, overwriting an edit is not.
+    /// as edited unless it already has the definition's content and none of
+    /// the person's own (model overrides, hooks): keeping a row is
+    /// recoverable, overwriting an edit is not.
     static func isEdited(_ row: TaskTemplate, spec: PluginTemplate, recorded: String?) -> Bool {
         if let recorded { return contentDigest(of: row) != recorded }
-        return !matches(row, spec)
+        return !matches(row, spec) || hasOwnSettings(row)
+    }
+
+    /// Whether a row carries settings a plugin template never declares.
+    private static func hasOwnSettings(_ row: TaskTemplate) -> Bool {
+        !(row.beforeModel.isEmpty && row.mainModel.isEmpty && row.afterModel.isEmpty)
+            || !(row.hooksJSON.isEmpty || row.hooksJSON == "{}")
     }
 
     /// `isEdited` for a stamped row of `package`, whose declared template
@@ -95,15 +101,10 @@ enum PluginTemplateSync {
         return isEdited(row, spec: spec, recorded: recorded)
     }
 
-    /// A digest of everything a sync writes on a row.
+    /// A digest of everything the person can edit on a row
+    /// (`WorkspaceCapabilityActivation.templateContentDigest`).
     static func contentDigest(of row: TaskTemplate) -> String {
-        let fields: [String] = [
-            row.name, row.icon, row.templateDescription, row.beforeGoal, row.mainGoal, row.afterGoal,
-            "\(row.beforeBudget)", "\(row.mainBudget)", "\(row.afterBudget)",
-            row.variablesJSON, "\(row.passContextToMain)", "\(row.passContextToAfter)"
-        ]
-        let data = (try? JSONEncoder().encode(fields)) ?? Data()
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        WorkspaceCapabilityActivation.templateContentDigest(of: row)
     }
 
     /// Makes a row the person's own: it no longer names the plugin.

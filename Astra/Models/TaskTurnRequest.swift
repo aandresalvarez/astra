@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 /// The durable reason an execution request exists.
 public enum TaskExecutionRequestKind: String, Codable, CaseIterable, Sendable {
@@ -37,10 +38,20 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     /// change what it runs with. Nil for requests written before activations
     /// were frozen, which keep reading the live workspace.
     public let pluginActivations: [PluginActivationRecord]?
+    /// The library definitions of the plugins those activations turn on, as
+    /// accepted at submission, so an Update while the request waits does not
+    /// change its skills and tools. Nil when the submitter froze none (and
+    /// for older requests): the launch reads the live library.
+    public let pluginDefinitions: [PluginPackage]?
+    /// The non-secret contents of the accounts those activations bind, so an
+    /// account edited or deleted while the request waits does not change what
+    /// it runs with. Nil for older requests, which read the live rows.
+    public let pluginAccounts: [PluginAccountRecord]?
 
     public init(
         task: AgentTask,
-        turnIntentSnapshot: TaskTurnIntentSnapshot? = nil
+        turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
+        pluginDefinitions: [PluginPackage]? = nil
     ) {
         version = 1
         reasoningEffort = task.reasoningEffort
@@ -61,6 +72,8 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         pluginActivations = task.workspace.map {
             WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.init)
         }
+        self.pluginDefinitions = pluginDefinitions
+        pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
     }
 }
 
@@ -189,6 +202,7 @@ public final class TaskTurnRequest {
         kind: TaskExecutionRequestKind = .followUp,
         resourceClaims: [TaskExecutionResourceClaim] = [],
         turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
+        pluginDefinitions: [PluginPackage]? = nil,
         state: TaskTurnRequestState = .waitingForWorker,
         submittedAt: Date = Date()
     ) {
@@ -215,7 +229,8 @@ public final class TaskTurnRequest {
         self.tokenBudgetSnapshot = task.tokenBudget
         self.executionPolicySnapshotJSON = Self.encode(TaskExecutionPolicySnapshotV1(
             task: task,
-            turnIntentSnapshot: turnIntentSnapshot
+            turnIntentSnapshot: turnIntentSnapshot,
+            pluginDefinitions: pluginDefinitions
         ))
         self.resourceClaimsJSON = Self.encode(resourceClaims) ?? "[]"
     }

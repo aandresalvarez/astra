@@ -58,6 +58,23 @@ struct CLISessionExpiryTests {
         #expect(CLISessionExpiryClassifier.runs("gh", in: "cd 'my repo' && \"gh\" pr list"))
     }
 
+    @Test("env -S splits its operand into the command it runs")
+    func envSplitStringRunsItsOperand() {
+        for command in [
+            "env -S 'gh auth token'", "env -S'gh auth token'", "env --split-string='gh auth token'",
+            "env --split-string 'gh auth token'", "env -i -S 'X=1 /usr/local/bin/gh api user'", "env -S 'gh' auth token"
+        ] {
+            #expect(CLISessionExpiryClassifier.runs("gh", in: command), "missed: \(command)")
+        }
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "env -S 'echo gh'"))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "env -S"))
+        let stop = CLISessionExpiryClassifier.stop(
+            content: "You are not logged into any GitHub hosts. To log in, run: gh auth login",
+            command: "env -S 'gh auth token'"
+        )
+        #expect(stop?.reason == TaskRunStopReason.capabilitySessionExpired.rawValue)
+    }
+
     @Test("A substitution inside double quotes still runs; inside single quotes it is text")
     func doubleQuotedSubstitutionsRun() {
         #expect(CLISessionExpiryClassifier.runs("gh", in: "token=\"$(gh auth token)\""))
@@ -102,6 +119,29 @@ struct CLISessionExpiryTests {
         )
         #expect(stop?.message.contains("`gh auth login`") == true)
         #expect(CLISessionExpiryClassifier.family(forStopMessage: stop?.message) == CLISessionExpiryClassifier.gitHub)
+    }
+
+    @Test("A GitHub Enterprise failure signs in to and checks the host that failed")
+    func gitHubEnterpriseHostIsCarried() throws {
+        let output = "HTTP 401: Bad credentials (https://github.example.com/api/v3/user)"
+        for command in [
+            "GH_HOST=github.example.com gh api user", "env GH_HOST=GitHub.Example.com gh api user",
+            "gh api user --hostname github.example.com", "gh auth token --hostname=github.example.com"
+        ] {
+            let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "missed: \(command)")
+            let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
+            #expect(family.repair.checkArguments == ["auth", "status", "--hostname", "github.example.com"], "\(command)")
+            #expect(family.repair.command == "gh auth login --hostname github.example.com")
+            #expect(RepairAction.isSafeTerminalCommand(try #require(family.repair.command), binary: "gh", allowsInstaller: false))
+        }
+        // github.com, or a value that is not a host name, keeps the default check.
+        for command in ["GH_HOST=github.com gh api user", "gh api user --hostname 'x;rm -rf /'"] {
+            #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.gitHub)
+        }
+        // A host the launch environment picks retargets the default check.
+        var projected = CLISessionExpiryClassifier.gitHub.repair
+        projected.checkEnvironment = ["GH_HOST": "github.example.com", "GH_ENTERPRISE_TOKEN": "enterprise-token"]
+        #expect(CLISessionExpiryClassifier.checkingLaunchHost(projected).checkArguments?.last == "github.example.com")
     }
 
     @Test("The process monitor stops the run when the agent's gcloud call hits an expired sign-in")
@@ -226,6 +266,21 @@ struct CLISessionExpiryTests {
         RepairActionRunner.run(repair, terminal: refusing, copy: { copied.append($0) })
         #expect(copied == ["gcloud auth login"])
         #expect(refusing.openedTerminal)
+    }
+
+    @Test("A stored repair page opens only when it is an https URL")
+    @MainActor
+    func repairRunnerRevalidatesStoredURLs() throws {
+        var opened: [URL] = []
+        for target in ["https://cloud.google.com/sdk/docs/install", "file:///etc/passwd", "smb://host/share", "astra-evil://x"] {
+            let stored = RepairAction(
+                strategy: .url, componentName: "Google Cloud CLI", title: "Install", verb: "Install",
+                detail: "", url: URL(string: target)
+            )
+            let decoded = try #require(RepairAction.decode(from: stored.encoded()))
+            RepairActionRunner.run(decoded, terminal: RecordingTerminal(), openURL: { opened.append($0) })
+        }
+        #expect(opened.map(\.absoluteString) == ["https://cloud.google.com/sdk/docs/install"])
     }
 
     private func snapshot(_ task: AgentTask, _ run: TaskRun, _ type: TaskEventType, _ payload: String) -> TaskEventSnapshot {
