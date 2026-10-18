@@ -1664,6 +1664,8 @@ public enum WorkspaceConfigManager {
     private static func connectorConfig(_ connector: Connector) -> ConnectorConfig? {
         guard !connector.isDeleted, connector.modelContext != nil else { return nil }
         guard ConnectorSecurityPolicy.isRuntimeSafe(connector) else { return nil }
+        let config = ConnectorSettingStorageSeam.exportableConfig(keys: connector.configKeys, values: connector.configValues,
+                                                                  originPackageID: connector.originPackageID, originComponentID: connector.originComponentID)
         return ConnectorConfig(
             id: connector.id.uuidString,
             name: connector.name,
@@ -1673,8 +1675,8 @@ public enum WorkspaceConfigManager {
             baseURL: connector.baseURL,
             authMethod: connector.authMethod,
             credentialKeys: connector.credentialKeys,
-            configKeys: connector.configKeys,
-            configValues: connector.configValues,
+            configKeys: config.keys,
+            configValues: config.values,
             isGlobal: connector.isGlobal,
             notes: connector.notes,
             originPackageID: connector.originPackageID,

@@ -253,32 +253,44 @@ struct PluginOperationsReviewTests {
         #expect(weekly.originComponentID == nil)
     }
 
-    @Test("A connector setting named like a credential is refused: settings are plain text in the mirror")
+    @Test("Only a bundled plugin's own settings stay plain; one named like a credential is refused, any other plugin's is stored as one")
     func credentialNamedSettingsAreRefused() throws {
-        var package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
-        let index = try #require(package.connectors.firstIndex { !$0.configHints.isEmpty })
-        let clean = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
-        #expect(!clean.blockers.contains { $0.title == "Credential stored as a setting" })
-        var hint = package.connectors[index].configHints[0]
-        hint.key = "JIRA_API_TOKEN"
-        package.connectors[index].configHints.append(hint)
-        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
-        #expect(report.blockers.contains { $0.title == "Credential stored as a setting" })
-        // A project key is a name, not a credential.
-        hint.key = "PROJECT_KEY"
-        package.connectors[index].configHints[package.connectors[index].configHints.count - 1] = hint
-        let named = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
-        #expect(!named.blockers.contains { $0.title == "Credential stored as a setting" })
-        // A key the package chose is not trusted to be harmless: an unknown
-        // shape is refused even when nothing in it says "token".
-        hint.key = "VALUE"
-        package.connectors[index].configHints[package.connectors[index].configHints.count - 1] = hint
-        let unknown = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
-        #expect(unknown.blockers.contains { $0.title == "Credential stored as a setting" })
-        // Every built-in's settings are of a known shape.
+        let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let index = try #require(jira.connectors.firstIndex { !$0.configHints.isEmpty })
+        func blocked(_ package: PluginPackage) -> Bool {
+            CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+                .blockers.contains { $0.title == "Credential stored as a setting" }
+        }
+        func adding(_ key: String, to package: PluginPackage) -> PluginPackage {
+            var extended = package
+            var hint = extended.connectors[index].configHints[0]
+            hint.key = key
+            extended.connectors[index].configHints.append(hint)
+            return extended
+        }
+        #expect(!blocked(jira))
+        // A bundled definition naming a setting like a credential is a mistake.
+        #expect(blocked(adding("JIRA_API_TOKEN", to: jira)))
+        // Any other key it doesn't declare isn't refused: it is stored as a
+        // credential, whatever it is called.
+        for key in ["PROJECT_KEY", "SITE", "TENANT", "VALUE"] {
+            let extended = adding(key, to: jira)
+            #expect(!blocked(extended), "\(key)")
+            let stored = PluginConnectorFieldTrust.asStored(extended.connectors[index], in: extended)
+            #expect(!stored.configHints.contains { $0.key == key } && stored.credentialHints.contains { $0.key == key }, "\(key)")
+        }
+        // Another plugin's settings are all credentials, so none is refused.
+        var imported = adding("JIRA_API_TOKEN", to: jira)
+        imported.id = "imported.jira-copy"
+        #expect(!blocked(imported))
+        #expect(PluginConnectorFieldTrust.asStored(imported.connectors[index], in: imported).configHints.isEmpty)
+        // Every built-in's own settings are trusted.
         for builtIn in PluginCatalog.builtInPackages {
-            for hint in builtIn.connectors.flatMap(\.configHints) {
-                #expect(CapabilityPackageValidator.isPlainSettingKey(hint.key), "\(builtIn.id) \(hint.key)")
+            for connector in builtIn.connectors {
+                #expect(
+                    PluginConnectorFieldTrust.trustedPlainSettingKeys(of: connector, in: builtIn) == Set(connector.configHints.map(\.key)),
+                    "\(builtIn.id) \(connector.name)"
+                )
             }
         }
     }

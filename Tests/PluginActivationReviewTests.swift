@@ -414,11 +414,11 @@ struct PluginActivationReviewTests {
         let env = try Fixtures.Environment()
         var v1 = Fixtures.package(version: "1.0.0")
         v1.connectors[0].configHints = [.init(key: "TRACKER_REGION", hint: "Region", isList: false)]
-        try env.installer.install(
-            v1, into: env.workspace, modelContext: env.context,
-            configInputs: ["TRACKER_REGION": "eu-old"], announceCatalogMutation: false
-        )
+        try env.install(v1)
         let account = try #require(env.workspace.connectors.first { $0.originPackageID == v1.id })
+        // This plugin's settings are credentials now (only a bundled plugin's
+        // stay plain); an account from before that holds the value as one.
+        account.setConfigValue("TRACKER_REGION", value: "eu-old")
         try env.importUpdate(Fixtures.package(version: "2.0.0"))
 
         let copy = try #require(PluginRuntimeProjection.project(

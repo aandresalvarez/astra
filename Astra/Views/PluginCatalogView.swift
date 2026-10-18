@@ -2120,9 +2120,15 @@ struct PluginInstallSheet: View {
         package.requiresSetup || !package.prerequisites.isEmpty
     }
 
+    /// The connectors' fields as their accounts store them: a setting only
+    /// a bundled plugin keeps plain is otherwise a masked credential field.
+    private var storedConnectors: [PluginConnector] {
+        package.connectors.map { PluginConnectorFieldTrust.asStored($0, in: package) }
+    }
+
     private var hasRequiredEmpty: Bool {
         // At least one credential field should be filled for each connector
-        for conn in package.connectors {
+        for conn in storedConnectors {
             for hint in conn.credentialHints {
                 if (credentialValues[hint.key] ?? "").isEmpty {
                     return true
@@ -2168,7 +2174,7 @@ struct PluginInstallSheet: View {
                         copySetupSection
                     }
 
-                    ForEach(package.connectors, id: \.name) { connector in
+                    ForEach(storedConnectors, id: \.name) { connector in
                         connectorSetupSection(connector)
                     }
 
@@ -2527,8 +2533,9 @@ struct PluginInstallSheet: View {
     @MainActor
     private func validateConnector(_ pluginConnector: PluginConnector, traceID: String) async -> [PluginInstallValidationResult] {
         var results: [PluginInstallValidationResult] = []
-
-        let missingCredentials = pluginConnector.credentialHints.compactMap { hint -> String? in
+        // Its settings a bundled plugin doesn't keep plain are credentials.
+        let stored = PluginConnectorFieldTrust.asStored(pluginConnector, in: package)
+        let missingCredentials = stored.credentialHints.compactMap { hint -> String? in
             let value = credentialValues[hint.key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return value.isEmpty ? hint.key : nil
         }
@@ -2562,7 +2569,7 @@ struct PluginInstallSheet: View {
             return results
         }
 
-        let connector = validationConnector(from: pluginConnector)
+        let connector = validationConnector(from: stored)
         let store = PluginInstallValidationSecretStore(credentials: credentialValues)
         let testResult = await connector.testConnection(
             store: store,

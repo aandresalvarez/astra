@@ -350,7 +350,10 @@ struct PluginRuntimeProjection {
     /// creator whose definition can't be found (unreadable, or removed while
     /// its provenance stayed) fails closed: no credential reaches the run,
     /// and only the settings the binding plugin declares do. An account no
-    /// plugin created keeps everything the person entered.
+    /// plugin created keeps everything the person entered. A setting its
+    /// creator stores as a credential (`PluginConnectorFieldTrust`) reaches
+    /// the run from the Keychain; one an older row still holds as plain text
+    /// is kept as a setting until Add moves it.
     private static func retainDeclaredKeys(
         of account: Connector,
         on copy: Connector,
@@ -364,7 +367,7 @@ struct PluginRuntimeProjection {
             return
         }
         retain(
-            credentials: Set(declaration.spec.credentialHints.map(\.key)),
+            credentials: Set(PluginConnectorFieldTrust.asStored(declaration.spec, in: declaration.package).credentialHints.map(\.key)),
             config: declaredConfigKeys(of: declaration.spec, in: declaration.package, on: copy),
             on: copy
         )

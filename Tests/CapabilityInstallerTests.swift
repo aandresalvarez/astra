@@ -90,8 +90,7 @@ struct CapabilityInstallerTests {
         let result = try CapabilityInstaller(library: library).install(
             package,
             into: workspace,
-            modelContext: context,
-            configInputs: ["GCP_PROJECT": "astra-dev"]
+            modelContext: context
         )
 
         #expect(library.installedPackages().map(\.id) == [package.id])
@@ -104,13 +103,15 @@ struct CapabilityInstallerTests {
         #expect(workspace.installedVersion(of: package.id) == package.version)
 
         // The connector component's account is a workspace row bound to the
-        // activation; the configured value lives on it.
+        // activation. This plugin isn't a bundled one, so its setting is a
+        // credential field of the account (Keychain), not a plain setting.
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
         let connector = try #require(workspace.connectors.first)
         #expect(workspace.connectors.map(\.name) == ["Google Cloud"])
         #expect(activation.accounts(forComponent: "connector:google_cloud:google-cloud").map(\.id) == [connector.id])
         #expect(connector.skill == nil)
-        #expect(connector.config == ["GCP_PROJECT": "astra-dev"])
+        #expect(connector.config.isEmpty)
+        #expect(connector.credentialKeys == ["GCP_TOKEN", "GCP_PROJECT"])
         #expect(result.connectorIDs == [connector.id])
 
         let capabilities = WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages())
@@ -123,8 +124,8 @@ struct CapabilityInstallerTests {
         #expect(result.skillIDs == [skill.id])
         #expect(result.localToolIDs == [tool.id])
         #expect(tool.skill?.id == skill.id)
-        // The value went to the account, not the skill: the package has a
-        // connector, so the skill's own setting stays at its default.
+        // Nothing reached the skill: the package has a connector, so the
+        // skill's own setting stays at its default.
         #expect(skill.environmentVariables["GCP_PROJECT"] == "")
         #expect(activation.configKeys.isEmpty)
     }
@@ -243,8 +244,12 @@ struct CapabilityInstallerTests {
         second.id = "gcp-staging"
         second.configHints = [.init(key: "GCP_REGION", hint: "Region", isList: false)]
         package.connectors.append(second)
+        // A plain skill setting each account carries; the connectors' own
+        // settings are credentials (not a bundled plugin).
+        package.skills[0].environmentKeys.append("GCP_DATASET")
+        package.skills[0].environmentValues.append("")
         let installer = CapabilityInstaller(library: library)
-        try installer.install(package, into: workspace, modelContext: context, configInputs: ["GCP_PROJECT": "prod"])
+        try installer.install(package, into: workspace, modelContext: context, configInputs: ["GCP_DATASET": "prod"])
 
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
         let prodID = CapabilityResourceOrigin.componentID(for: package.connectors[0])
@@ -253,14 +258,15 @@ struct CapabilityInstallerTests {
         let staging = try #require(activation.accounts(forComponent: stagingID).first)
         #expect(workspace.connectors.count == 2 && prod.id != staging.id)
         #expect(prod.originComponentID == prodID && staging.originComponentID == stagingID)
-        #expect(prod.configKeys == ["GCP_PROJECT"] && prod.config["GCP_PROJECT"] == "prod")
-        #expect(staging.configKeys == ["GCP_REGION", "GCP_PROJECT"])
+        #expect(prod.credentialKeys == ["GCP_TOKEN", "GCP_PROJECT"] && staging.credentialKeys == ["GCP_TOKEN", "GCP_REGION"])
+        #expect(prod.config == ["GCP_DATASET": "prod"] && staging.config == ["GCP_DATASET": "prod"])
 
         // Adding again with new settings keeps each component on its own row.
-        try installer.install(package, into: workspace, modelContext: context, configInputs: ["GCP_REGION": "us-west1"])
+        try installer.install(package, into: workspace, modelContext: context, configInputs: ["GCP_DATASET": "staging"])
         #expect(workspace.connectors.count == 2)
-        #expect(prod.configKeys == ["GCP_PROJECT"])
+        #expect(activation.accounts(forComponent: prodID).map(\.id) == [prod.id])
         #expect(activation.accounts(forComponent: stagingID).map(\.id) == [staging.id])
+        #expect(staging.credentialKeys == ["GCP_TOKEN", "GCP_REGION"] && staging.config == ["GCP_DATASET": "staging"])
     }
 
     @Test("configured source values stay scoped to their workspace")

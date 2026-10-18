@@ -35,6 +35,7 @@ enum RuntimeSeamRegistration {
         SkillSecretSeam.register(SkillSecretPersistence.self)
         ConnectorSecretSeam.register(ConnectorSecretPersistence.self)
         ConnectorDeclaredCredentialFormatSeam.register(ConnectorDeclaredCredentialFormatResolver.self)
+        ConnectorSettingStorageSeam.register(PluginConnectorFieldTrust.self)
         OutlookMailConnectionSeam.register(OutlookMailConnectionAdapter.self)
         ConnectorEnvironmentProjectionSeam.register(ConnectorEnvironmentProjectionAdapter.self)
         TaskForkStateInitializingSeam.register(TaskStateTransitionSeamAdapter.self)
