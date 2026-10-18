@@ -117,7 +117,7 @@ final class PluginRepairCoordinator: ObservableObject {
         // With the stopped run's variables, the check runs the CLI as that
         // run did: a token the task projected, not ASTRA's own login.
         if let environment = repair.checkEnvironment, !environment.isEmpty {
-            let path = RuntimePathResolver.detectExecutablePath(named: binary)
+            let path = checkExecutablePath(binary, environment: environment)
             guard !path.isEmpty else { return false }
             let merged = ProcessInfo.processInfo.environment.merging(environment) { _, projected in projected }
             let result = await ProcessBinaryRunner().run(
@@ -135,5 +135,17 @@ final class PluginRepairCoordinator: ObservableObject {
             semantic: repair.checkExpect.flatMap(SemanticCheck.init(rawValue:))
         )
         return status.isUsable
+    }
+
+    /// The executable the resumed run's shell would start: with a projected
+    /// `PATH`, the first match on it (as the shell resolves it), else ASTRA's
+    /// usual lookup. Empty when the projected `PATH` has none.
+    nonisolated static func checkExecutablePath(_ binary: String, environment: [String: String]) -> String {
+        guard let projected = environment["PATH"], !binary.contains("/") else {
+            return RuntimePathResolver.detectExecutablePath(named: binary)
+        }
+        return projected.split(separator: ":")
+            .map { URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent(binary).path }
+            .first { FileManager.default.isExecutableFile(atPath: $0) } ?? ""
     }
 }
