@@ -210,12 +210,14 @@ struct WorkspaceSavedAutoExportTests {
     @Test("A queued mirror does not keep its persistence owner and autosave alive", arguments: [false, true])
     func deferredMirrorReleasesItsOwner(memory: Bool) async throws {
         func enqueueAndCloseOwner() throws -> (URL, UUID, WeakContainer) {
-            let (root, container, workspace, task) = try fixture(memory: memory)
+            let (root, container, workspace, _) = try fixture(memory: memory)
             container.mainContext.autosaveEnabled = true
             let observed = WeakContainer(container)
             #expect(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: container.mainContext))
-            task.title = "Bookkeeping after the requested export"
-            try container.mainContext.save() // invalidates the pending read
+            // Isolate queue ownership from save-scope temporary contexts.
+            // Real save invalidation is covered by laterSaveInvalidatesProjection.
+            let ticket = WorkspaceAutoExportGate.shared.readTicket(for: workspace.id.uuidString)
+            WorkspaceAutoExportGate.shared.invalidateIfCurrent(ticket)
             return (root, workspace.id, observed)
         }
         let (root, workspaceID, observed) = try enqueueAndCloseOwner()
