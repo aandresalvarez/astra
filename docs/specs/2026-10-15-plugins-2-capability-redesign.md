@@ -120,7 +120,11 @@ accounts) is not shipped and is superseded.
   save.
 - **`Account`** (`@Model`): `id` (UUID), `serviceType`, `alias` (unique per
   normalized service among the accounts a workspace can see, checked on
-  every bind, a share into another workspace included), `baseURL`, `authMethod`,
+  every bind; an account already bound in another workspace is never
+  renamed, since the row is shared and its alias would change there too,
+  and a collision it brings into the joining workspace is told apart per
+  launch, where `ConnectorRuntimeProjection` suffixes duplicate aliases),
+  `baseURL`, `authMethod`,
   `credentialKeys`, `configValues` (per-account settings such as Jira
   projects or a tenant), and an owner: one workspace unless shared
   explicitly. `revision`.
@@ -804,13 +808,17 @@ Keychain, under the account), `account.baseURL`, `account.alias`, or
 a form with a field that declares none, so no value is ever classified by
 its name, and a token can never land in SwiftData. A declared destination
 is not trusted on its own either: `account.config` is plain text and goes
-into the workspace mirror, so a field there whose key names a credential
-(`RunSecretRedaction.isSecretKey`, the rule the Keychain itself uses) is
-refused. *(As built, a connector declares its fields as `credentialHints`,
-which go to the Keychain, and `configHints`, plain settings;
-`CapabilityPackageValidator` refuses a config hint named like a credential,
-"Credential stored as a setting", so a package can't route a token to a
-plain setting.)*
+into the workspace mirror, and the key is the package's choice, so a name
+heuristic alone can't keep a token out. A plain field must be of a known
+non-secret kind: its key ends in one of a fixed list (project, region,
+zone, URL, host, domain, org, site, tenant, workspace, dataset, space,
+channel, repo, team, labels, tags, board) and matches nothing the Keychain
+treats as a credential; every other field must be `secret`. *(As built, a
+connector declares its fields as `credentialHints`, which go to the
+Keychain, and `configHints`, plain settings; `CapabilityPackageValidator`
+refuses a config hint outside that list,
+`CapabilityPackageValidator.isPlainSettingKey`, "Credential stored as a
+setting". Every built-in setting fits.)*
 
 A CLI extension declares the same contract with different legs:
 
@@ -1064,6 +1072,12 @@ Available
   and asks nothing.
 - A connector component expanded shows an `Accounts` sub-list
   (`Stanford · API token · 3 workspaces`) and `Add account`.
+- Accounts no plugin row shows (kept by Remove, or released by an Update
+  that dropped their component) are listed in their own group, "Accounts
+  not used by a plugin", built from the durable account rows rather than
+  any manifest, each with Edit and `Delete account` (the same named
+  confirmation), so a retained credential always has a way to be cleared
+  (`PluginsSurfacePresentation.unusedAccounts`, `PluginAccountsSection`).
 - Brand marks via `BrandMark` as in the rail.
 - The composer turns today's per-turn word matching into a suggestion ("This
   task mentions Jira; the Jira plugin is off in this workspace. Turn on")
