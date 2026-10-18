@@ -165,6 +165,26 @@ struct PluginManifestTests {
         #expect(checked.connectors[index + 1].credentialHints.map(\.key) == ["JIRA_SERVER_PAT"])
     }
 
+    @Test("Same-named components with distinct IDs claim no shared name-derived predecessor")
+    func sameNamedComponentsClaimNoSharedPredecessor() throws {
+        var package = try builtIn("jira-workflow")
+        let index = try #require(package.connectors.firstIndex { !$0.credentialHints.isEmpty })
+        var second = package.connectors[index]
+        package.connectors[index].id = "jira-cloud"
+        second.id = "jira-server"
+        package.connectors.insert(second, at: index + 1)
+        var lone = package.connectors[index]
+        lone.name = "Jira Lone"
+        lone.id = "jira-solo"
+        package.connectors.append(lone)
+
+        let checked = try PluginManifestConverter.checkedPackage(from: PluginManifestConverter.manifest(from: package))
+        #expect(PluginUpdateService.replacesProblems(in: checked).isEmpty)
+        #expect(checked.connectors[index].replaces == nil && checked.connectors[index + 1].replaces == nil)
+        // A name only one component derives is still its predecessor.
+        #expect(checked.connectors.last?.replaces?.count == 1)
+    }
+
     @Test("A setup component ID the package would re-derive is refused, not silently replaced")
     func undeclarableSetupIDsAreRefused() throws {
         // A CLI check comes back with its name's slug.

@@ -228,6 +228,41 @@ struct CapabilityInstallerTests {
         #expect(resolver.resolvedEnvironmentVariables["JIRA_PROJECTS"] == nil)
     }
 
+    @Test("two same-named connectors of one service with distinct IDs each get their own account")
+    func sameNamedConnectorsGetSeparateAccounts() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Two Sites", primaryPath: "/tmp/capability-two-sites")
+        context.insert(workspace)
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        var second = package.connectors[0]
+        package.connectors[0].id = "gcp-prod"
+        second.id = "gcp-staging"
+        second.configHints = [.init(key: "GCP_REGION", hint: "Region", isList: false)]
+        package.connectors.append(second)
+        let installer = CapabilityInstaller(library: library)
+        try installer.install(package, into: workspace, modelContext: context, configInputs: ["GCP_PROJECT": "prod"])
+
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        let prodID = CapabilityResourceOrigin.componentID(for: package.connectors[0])
+        let stagingID = CapabilityResourceOrigin.componentID(for: second)
+        let prod = try #require(activation.accounts(forComponent: prodID).first)
+        let staging = try #require(activation.accounts(forComponent: stagingID).first)
+        #expect(workspace.connectors.count == 2 && prod.id != staging.id)
+        #expect(prod.originComponentID == prodID && staging.originComponentID == stagingID)
+        #expect(prod.configKeys == ["GCP_PROJECT"] && prod.config["GCP_PROJECT"] == "prod")
+        #expect(staging.configKeys == ["GCP_REGION", "GCP_PROJECT"])
+
+        // Adding again with new settings keeps each component on its own row.
+        try installer.install(package, into: workspace, modelContext: context, configInputs: ["GCP_REGION": "us-west1"])
+        #expect(workspace.connectors.count == 2)
+        #expect(prod.configKeys == ["GCP_PROJECT"])
+        #expect(activation.accounts(forComponent: stagingID).map(\.id) == [staging.id])
+    }
+
     @Test("configured source values stay scoped to their workspace")
     func configuredSourceValuesStayScopedToWorkspace() throws {
         let container = try makeCapabilityInstallerContainer()

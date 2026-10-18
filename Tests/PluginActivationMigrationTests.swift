@@ -531,6 +531,28 @@ struct PluginActivationMigrationTests {
         #expect(activation.overriddenComponentIDs.isEmpty)
     }
 
+    @Test("A V19 account stamped with the identity a stable ID replaced is bound to the renamed component")
+    func stampedPredecessorAccountMigrates() throws {
+        let fixture = try Fixture()
+        var jira = fixture.jira
+        let legacy = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        jira.connectors[0].id = "jira-site"
+        jira.connectors[0].replaces = [legacy]
+        let packages = fixture.packages.map { $0.id == jira.id ? jira : $0 }
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: packages)
+
+        // Bound by the migration itself: the activation is seeded from the
+        // current definition, so no later reconcile need move it.
+        let a = try fixture.workspace(fixture.aID)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: a))
+        let renamed = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        #expect(Set(activation.accounts(forComponent: renamed).map(\.id)) == [fixture.jiraAccount1ID, fixture.jiraAccount2ID])
+        #expect(activation.accounts(forComponent: legacy).isEmpty)
+        try PluginUpdateService.reconcileAll(modelContext: fixture.context, packages: packages, mode: .automatic)
+        let projected = PluginRuntimeProjection.project(workspace: a, packages: [jira]).connectors.map(\.id)
+        #expect(Set(projected) == [fixture.jiraAccount1ID, fixture.jiraAccount2ID])
+    }
+
     @Test("A plugin tool whose description was edited stays an authored row")
     func editedToolDescriptionIsKept() throws {
         let fixture = try Fixture(editedToolDescription: "My own words")

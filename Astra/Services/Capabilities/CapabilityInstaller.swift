@@ -571,8 +571,7 @@ struct CapabilityInstaller {
         allowCredentialUserInteraction: Bool
     ) throws -> Connector {
         let connector = existing ?? existingWorkspaceConnector(
-            name: pluginConnector.name,
-            serviceType: pluginConnector.serviceType,
+            for: pluginConnector,
             workspace: workspace
         ) ?? Connector(
             name: pluginConnector.name,
@@ -739,13 +738,21 @@ struct CapabilityInstaller {
         }
     }
 
+    /// The workspace's same-named account of the connector's service that
+    /// serves this component, or no component yet: one stamped with or bound
+    /// to another component (two same-named connectors with distinct IDs) is
+    /// that component's account, and Add makes this one its own.
     private func existingWorkspaceConnector(
-        name: String,
-        serviceType: String,
+        for pluginConnector: PluginConnector,
         workspace: Workspace
     ) -> Connector? {
-        workspace.connectors.first {
-            $0.name == name && $0.serviceType == serviceType
+        let identities = Set([CapabilityResourceOrigin.componentID(for: pluginConnector)]
+            + CapabilityResourceOrigin.replacedComponentIDs(for: pluginConnector))
+        return workspace.connectors.first { candidate in
+            guard candidate.name == pluginConnector.name, candidate.serviceType == pluginConnector.serviceType else { return false }
+            let stamp = candidate.originComponentID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let served = Set(candidate.accountBindings.filter { !$0.isDeleted }.map(\.componentID) + (stamp.isEmpty ? [] : [stamp]))
+            return served.isEmpty || !served.isDisjoint(with: identities)
         }
     }
 

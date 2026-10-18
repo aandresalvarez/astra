@@ -507,9 +507,22 @@ enum PluginActivationMigration {
         value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
+    /// A stamp naming an identity the definition `replaces` (a name-derived
+    /// one a stable ID took over) resolves to the component that replaced
+    /// it, as skill and tool stamps do: the activation is seeded from the
+    /// current definition, so a binding under the old identity is never
+    /// reconciled and the account would serve nothing.
     private static func connectorComponentID(_ connector: Connector, package: PluginPackage?) -> String {
         let stamped = trimmed(connector.originComponentID)
-        if !stamped.isEmpty { return stamped }
+        if !stamped.isEmpty {
+            let successor = package?.connectors.first {
+                CapabilityResourceOrigin.replacedComponentIDs(for: $0).contains(stamped)
+            }
+            guard let successor,
+                  package?.connectors.contains(where: { CapabilityResourceOrigin.componentID(for: $0) == stamped }) != true
+            else { return stamped }
+            return CapabilityResourceOrigin.componentID(for: successor)
+        }
         if let spec = package?.connectors.first(where: {
             CapabilityRuntimeResourceMatcher.normalizedName($0.name) == CapabilityRuntimeResourceMatcher.normalizedName(connector.name)
         }) ?? package?.connectors.first(where: {

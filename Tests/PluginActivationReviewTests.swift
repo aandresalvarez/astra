@@ -387,6 +387,72 @@ struct PluginActivationReviewTests {
         #expect(account.credentialKeys == ["TRACKER_TOKEN", "LEGACY_TOKEN"])
     }
 
+    @Test("A legacy template row customized only in the person's own settings gets no baseline digest")
+    func customizedLegacyTemplateIsNotBaselined() throws {
+        let env = try Fixtures.Environment()
+        var v1 = Fixtures.package(version: "1.0.0")
+        v1.templates = ["Daily", "Weekly", "Monthly"].map { Fixtures.template($0, goal: "Write it") }
+        try env.install(v1)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        // As a V19 store left it: stamped rows, no digests recorded.
+        WorkspaceCapabilityActivation.setTemplateDigests(entries: [], on: activation)
+        let rows = Dictionary(uniqueKeysWithValues: PluginTemplateSync.stamped(v1.id, in: env.workspace).map { ($0.name, $0) })
+        try #require(rows["Daily"]).mainModel = "claude-opus"
+        try #require(rows["Weekly"]).defaultSkillIDs = [UUID().uuidString]
+
+        PluginTemplateSync.recordUnedited(v1, in: env.workspace, on: activation)
+        func digest(_ name: String) -> String? {
+            activation.templateDigest(forComponent: CapabilityResourceOrigin.componentID(for: Fixtures.template(name, goal: "")))
+        }
+        #expect(digest("Daily") == nil)
+        #expect(digest("Weekly") == nil)
+        #expect(digest("Monthly") != nil)
+    }
+
+    @Test("A setting an Update stopped declaring stays on the account but never reaches a run")
+    func retiredConnectorSettingIsNotProjected() throws {
+        let env = try Fixtures.Environment()
+        var v1 = Fixtures.package(version: "1.0.0")
+        v1.connectors[0].configHints = [.init(key: "TRACKER_REGION", hint: "Region", isList: false)]
+        try env.installer.install(
+            v1, into: env.workspace, modelContext: env.context,
+            configInputs: ["TRACKER_REGION": "eu-old"], announceCatalogMutation: false
+        )
+        let account = try #require(env.workspace.connectors.first { $0.originPackageID == v1.id })
+        try env.importUpdate(Fixtures.package(version: "2.0.0"))
+
+        let copy = try #require(PluginRuntimeProjection.project(
+            workspace: env.workspace, packages: env.library.installedPackages(), connectorMode: .runtimeCopies,
+            definitions: env.library.installedPackages()
+        ).connectors.first { $0.id == account.id })
+        #expect(!copy.configKeys.contains("TRACKER_REGION") && copy.configKeys.count == copy.configValues.count)
+        #expect(copy.credentialKeys == ["TRACKER_TOKEN"])
+        #expect(account.config["TRACKER_REGION"] == "eu-old")
+    }
+
+    @Test("A shared account whose creator's definition can't be found brings no credentials to a run")
+    func sharedAccountWithUnresolvableCreatorFailsClosed() throws {
+        let env = try Fixtures.Environment()
+        try env.install(Fixtures.package(version: "1.0.0"))
+        let account = try #require(env.workspace.connectors.first { $0.originPackageID == "ops.report" })
+        var other = Fixtures.package(version: "1.0.0")
+        other.id = "ops.other"
+        other.skills[0].name = "Other Agent"
+        WorkspaceCapabilityActivation.mutate(env.workspace) { $0.enableCapability(other.id) }
+        let otherActivation = try #require(WorkspaceCapabilityActivation.activation(for: other.id, in: env.workspace))
+        WorkspaceCapabilityActivation.bind(
+            account, toComponent: CapabilityResourceOrigin.componentID(for: other.connectors[0]), of: otherActivation
+        )
+        WorkspaceCapabilityActivation.mutate(env.workspace) { $0.capabilityIDs.removeAll { $0 == "ops.report" } }
+
+        // The creator's library entry is unreadable: only `other` is found.
+        let copy = try #require(PluginRuntimeProjection.project(
+            workspace: env.workspace, packages: [other], connectorMode: .runtimeCopies, definitions: [other]
+        ).connectors.first { $0.id == account.id })
+        #expect(copy.credentialKeys.isEmpty && copy.credentialValues.isEmpty)
+        #expect(account.credentialKeys == ["TRACKER_TOKEN"])
+    }
+
     @Test("A queued launch keeps its frozen acceptance with its frozen definitions, and takes the live one without them")
     func queuedLaunchAcceptanceFollowsItsDefinitions() throws {
         let env = try Fixtures.Environment()
