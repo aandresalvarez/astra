@@ -21,13 +21,15 @@ enum TaskRunStopEvidence {
     /// The repair Sign in runs: the run's, its sign-in aimed at the
     /// credential store the resumed task reads (`CLOUDSDK_CONFIG`,
     /// `GH_CONFIG_DIR`…), the store Resume's check reads too. Resolved on
-    /// the click, not in `body`: it walks the task's launch scope.
+    /// the click, not in `body`: it walks the task's launch scope. A GitHub
+    /// Enterprise host the launch selects (`GH_HOST`, else `GH_REPO`) is the
+    /// one signed in to, the host Resume's check retargets to
+    /// (`checkingLaunchHost`).
     @MainActor
     static func signInRepair(events: [TaskEventSnapshot], runID: UUID?, task: AgentTask) -> RepairAction? {
-        guard let repair = repair(events: events, runID: runID) else { return nil }
-        return repair.targetingCredentialStore(
-            TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
-        )
+        guard var repair = repair(events: events, runID: runID) else { return nil }
+        repair.checkEnvironment = TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
+        return CLISessionExpiryClassifier.checkingLaunchHost(repair).targetingCredentialStore(repair.checkEnvironment)
     }
 
     private static func latestPayload(events: [TaskEventSnapshot], runID: UUID?, type: TaskEventType) -> String? {
