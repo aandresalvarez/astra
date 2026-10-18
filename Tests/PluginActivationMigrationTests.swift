@@ -35,13 +35,15 @@ struct PluginActivationMigrationTests {
         }
 
         // 1. One activation per installed-or-enabled plugin, on when enabled,
-        // with the recorded version and the library digest.
+        // accepting the definition it migrated against: its version (not the
+        // legacy one, which would await an Update) and digest.
         #expect(Set(a.enabledCapabilityIDs) == ["jira-workflow", "gcloud-workflow"])
         #expect(Set(b.enabledCapabilityIDs) == ["jira-workflow", "gcloud-workflow"])
         #expect(c.installedPluginIDs == ["jira-workflow"])
         #expect(c.enabledCapabilityIDs.isEmpty)
         let aJira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: a))
-        #expect(aJira.recordedVersion == "1.0.0")
+        #expect(aJira.recordedVersion == fixture.jira.version)
+        #expect(fixture.jira.version != "1.0.0")
         #expect(aJira.recordedDigest == (try CapabilityApprovalDigest.digest(for: fixture.jira)))
 
         // 2. Connectors stay rows with the same IDs and become accounts,
@@ -881,6 +883,30 @@ struct PluginActivationMigrationTests {
         #expect(config.skills.contains { $0.id == fixture.editedJiraSkillID.uuidString })
     }
 
+    @Test("The mirror carries the shared rows a removed activation named as overrides")
+    func mirrorCarriesRetiredOverrideRows() throws {
+        let fixture = try Fixture(editedToolDescription: "My own words")
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let b = try fixture.workspace(fixture.bID)
+        let toolIDs = Set(try fixture.context.fetch(FetchDescriptor<LocalTool>()).map(\.id.uuidString))
+        #expect(!toolIDs.isEmpty)
+        // Remove both plugins from B: only the retired entries name the rows.
+        for pluginID in ["jira-workflow", "gcloud-workflow"] {
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: pluginID, in: b))
+            WorkspaceCapabilityActivation.retire(activation, in: b)
+            WorkspaceCapabilityActivation.mutate(b) {
+                $0.capabilityIDs.removeAll { $0 == pluginID }
+                $0.pluginIDs.removeAll { $0 == pluginID }
+            }
+        }
+        #expect(WorkspaceCapabilityActivation.activations(of: b).isEmpty)
+        #expect(WorkspaceCapabilityActivation.retiredOverrideRowIDs(of: b).contains(fixture.editedJiraSkillID))
+        #expect(b.enabledGlobalSkillIDs.isEmpty && b.enabledGlobalToolIDs.isEmpty)
+        let config = try #require(WorkspaceConfigManager.export(workspace: b, modelContext: fixture.context))
+        #expect(config.skills.contains { $0.id == fixture.editedJiraSkillID.uuidString })
+        #expect(toolIDs.isSubset(of: Set((config.localTools ?? []).compactMap(\.id))))
+    }
+
     @Test("Only the exact note the disallowed-tools migration appended counts as unedited")
     func behaviorMatchIsExact() throws {
         let note = "\nDo NOT use these tools: Write, Edit."
@@ -1089,6 +1115,35 @@ struct PluginActivationMigrationTests {
                 // The store side is still put back.
                 #expect(WorkspaceCapabilityActivation.activations(of: try fixture.workspace(fixture.aID)).isEmpty)
             }
+        }
+    }
+
+    @Test("A failed migration keeps the legacy enablement on, with the plugins' MCP servers and browser adapters")
+    func failedMigrationKeepsLegacyEnablement() throws {
+        let fixture = try Fixture()
+        var gcloud = fixture.gcloud
+        gcloud.mcpServers = [PluginMCPServer(id: "legacy-files", displayName: "Legacy files", transport: .stdio, command: "/bin/cat")]
+        gcloud.browserAdapters = [BrowserSiteAdapterID.googleDrive]
+        let packages = fixture.packages.map { $0.id == gcloud.id ? gcloud : $0 }
+        // The cleanup record can't be written: the migration rolls back.
+        try FileManager.default.createDirectory(
+            at: fixture.storeDirectory.appendingPathComponent("PluginSecretCleanup.json", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        #expect(throws: PluginActivationMigration.MigrationError.cleanupUnrecordable) {
+            try PluginActivationMigration.migrate(modelContext: fixture.context, packages: packages)
+        }
+        let a = try fixture.workspace(fixture.aID)
+        #expect(WorkspaceCapabilityActivation.activations(of: a).isEmpty)
+        #expect(Set(a.enabledCapabilityIDs) == ["jira-workflow", "gcloud-workflow"])
+        let adapter = try #require(BrowserSiteAdapterID.normalized(BrowserSiteAdapterID.googleDrive))
+        let task = AgentTask(title: "A", goal: "Manage GCP resources", workspace: a)
+        fixture.context.insert(task)
+        // A queued launch's copy sees them too.
+        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(AgentTaskLaunchSnapshot(task: task), from: task)
+        for workspace in [a, try #require(detached.workspace)] {
+            #expect(TaskCapabilityResolver.enabledMCPServerManifests(for: workspace, packages: packages).map(\.id) == ["legacy-files"])
+            #expect(TaskCapabilityResolver.enabledBrowserAdapters(for: workspace, packages: packages) == [adapter])
         }
     }
 
@@ -1375,6 +1430,39 @@ struct PluginActivationMigrationTests {
             #expect(resolver.allLocalTools.first { $0.id == tool.id }?.arguments == submittedArguments)
         }
         #expect(tool.arguments == "--edited")
+    }
+
+    @Test("A queued request runs an override skill with its attachments as submitted, not as edited or deleted while it waited")
+    func queuedRequestKeepsOverrideSkillAttachments() throws {
+        let fixture = try Fixture(authoredToolOnGCloudSkill: true)
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let toolID = try #require(fixture.authoredToolID)
+        let tool = try #require(try context.fetch(FetchDescriptor<LocalTool>()).first { $0.id == toolID })
+        let submittedArguments = tool.arguments
+        let task = AgentTask(title: "A", goal: "Manage GCP resources", workspace: a)
+        context.insert(task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, kind: .retry)
+        context.insert(request)
+        try context.save()
+
+        // While it waits, the attached command is edited, then deleted.
+        tool.arguments = "projects delete everything"
+        try context.save()
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let edited = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        #expect(TaskCapabilityResolver(task: edited).allLocalTools.first { $0.id == toolID }?.arguments == submittedArguments)
+
+        context.delete(tool)
+        try context.save()
+        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        let relaunched = TaskExecutionLaunchSnapshotApplicator.detachedTask(AgentTaskLaunchSnapshot(task: detached), from: detached)
+        for launch in [detached, relaunched] {
+            let launched = TaskCapabilityResolver(task: launch).allLocalTools.first { $0.id == toolID }
+            #expect(launched?.arguments == submittedArguments)
+            #expect(launched?.skill?.id == fixture.gcloudSkillID)
+        }
     }
 }
 

@@ -611,6 +611,7 @@ struct CapabilityInstaller {
         let pluginConnector = fields.connector
         let connector = existing ?? existingWorkspaceConnector(
             for: pluginConnector,
+            package: package,
             workspace: workspace
         ) ?? Connector(
             name: pluginConnector.name,
@@ -783,21 +784,29 @@ struct CapabilityInstaller {
         }
     }
 
-    /// The workspace's same-named account of the connector's service that
-    /// serves this component, or no component yet: one stamped with or bound
-    /// to another component (two same-named connectors with distinct IDs) is
-    /// that component's account, and Add makes this one its own.
+    /// A workspace row this plugin's component created itself: one stamped
+    /// by this plugin and stamped with or bound to this component (or one it
+    /// `replaces`). A row the person authored is never taken over just
+    /// because its name and service match: Add would overwrite its URL, keys
+    /// and skill attachment, and a Remove could not put them back. A row of
+    /// another component (two same-named connectors with distinct IDs) is
+    /// that component's account, and Add makes this one its own. The
+    /// activation's own binding comes in as `existing`.
     private func existingWorkspaceConnector(
         for pluginConnector: PluginConnector,
+        package: PluginPackage,
         workspace: Workspace
     ) -> Connector? {
         let identities = Set([CapabilityResourceOrigin.componentID(for: pluginConnector)]
             + CapabilityResourceOrigin.replacedComponentIDs(for: pluginConnector))
         return workspace.connectors.first { candidate in
-            guard candidate.name == pluginConnector.name, candidate.serviceType == pluginConnector.serviceType else { return false }
+            guard candidate.name == pluginConnector.name,
+                  candidate.serviceType == pluginConnector.serviceType,
+                  CapabilityResourceOrigin.isOwnedBy(candidate, packageID: package.id)
+            else { return false }
             let stamp = candidate.originComponentID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let served = Set(candidate.accountBindings.filter { !$0.isDeleted }.map(\.componentID) + (stamp.isEmpty ? [] : [stamp]))
-            return served.isEmpty || !served.isDisjoint(with: identities)
+            return !served.isDisjoint(with: identities)
         }
     }
 

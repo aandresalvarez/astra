@@ -423,6 +423,46 @@ struct CapabilityInstallerTests {
         #expect(!workspace.enabledGlobalSkillIDs.contains(legacy.id.uuidString))
     }
 
+    @Test("Add creates its own account instead of taking over an authored row with the same name and service")
+    func addLeavesMatchingAuthoredConnectorAlone() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Authored account", primaryPath: "/tmp/authored-account")
+        context.insert(workspace)
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let package = makeAnalystCapabilityPackage()
+        let pluginConnector = try #require(package.connectors.first)
+        let attachedSkill = Skill(name: "Authored skill", behaviorInstructions: "Mine")
+        context.insert(attachedSkill)
+        let authored = Connector(
+            name: pluginConnector.name,
+            serviceType: pluginConnector.serviceType,
+            icon: "cloud",
+            connectorDescription: "Mine",
+            baseURL: "https://authored.example.com",
+            authMethod: "none"
+        )
+        authored.configKeys = ["MY_PROJECT"]
+        authored.configValues = ["authored"]
+        authored.workspace = workspace
+        authored.skill = attachedSkill
+        context.insert(authored)
+        try context.save()
+
+        let result = try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+
+        #expect(authored.baseURL == "https://authored.example.com")
+        #expect(authored.config == ["MY_PROJECT": "authored"])
+        #expect(authored.skill?.id == attachedSkill.id)
+        #expect(!CapabilityResourceOrigin.hasOrigin(authored))
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        let account = try #require(activation.accounts(forComponent: CapabilityResourceOrigin.componentID(for: pluginConnector)).first)
+        #expect(account.id != authored.id)
+        #expect(result.connectorIDs == [account.id])
+    }
+
     @Test("connector-only and tool-only packages project standalone elements")
     func standaloneElementPackagesProject() throws {
         let container = try makeCapabilityInstallerContainer()

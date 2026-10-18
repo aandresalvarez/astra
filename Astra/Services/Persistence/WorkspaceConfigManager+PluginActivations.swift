@@ -101,11 +101,11 @@ extension WorkspaceConfigManager {
 
     /// Shared rows an activation names as a component's override, so the
     /// mirror carries them even when nothing else enables them (an edited
-    /// shared row kept while its plugin was off).
+    /// shared row kept while its plugin was off), and those a removed one
+    /// named: `retiredPlugins` carries only their IDs, and recovery could
+    /// not recreate the row an Add puts back as the override.
     static func overridingRows<Row: PersistentModel>(of workspace: Workspace, among rows: [Row]) -> [Row] where Row.ID == UUID {
-        let ids = Set(WorkspaceCapabilityActivation.activations(of: workspace)
-            .flatMap(\.overridingRowIDs)
-            .compactMap(UUID.init(uuidString:)))
+        let ids = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
         guard !ids.isEmpty else { return [] }
         return rows.filter { ids.contains($0.id) }
     }
