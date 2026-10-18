@@ -66,7 +66,7 @@ struct PluginSourcesTests {
             "core.hooksPath=/dev/null", "core.fsmonitor=false", "protocol.allow=never",
             "protocol.https.allow=always", "protocol.ssh.allow=always", "filter.lfs.smudge=",
             "filter.lfs.process=", "filter.lfs.required=false", "credential.interactive=never",
-            "credential.helper=osxkeychain"
+            "credential.helper=osxkeychain", "core.attributesFile=/dev/null", "core.bigFileThreshold=1m"
         ] {
             #expect(call.args.contains(pair), "missing -c \(pair)")
         }
@@ -79,7 +79,7 @@ struct PluginSourcesTests {
         #expect(environment["GIT_CONFIG_NOSYSTEM"] == "1")
         #expect(environment["GIT_CONFIG_GLOBAL"] == "/dev/null")
         #expect(Set(environment.keys).isSubset(of: [
-            "PATH", "HOME", "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_LFS_SKIP_SMUDGE",
+            "PATH", "HOME", "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_ATTR_NOSYSTEM", "GIT_LFS_SKIP_SMUDGE",
             "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "SSH_AUTH_SOCK"
         ]))
         #expect(environment["GIT_SSH_COMMAND"] == PluginSourceFetcher.sshCommand(knownHostsFile: fixture.store.knownHostsFile.path))
@@ -129,7 +129,14 @@ struct PluginSourcesTests {
         try Data("* ident\n".utf8).write(to: source.appendingPathComponent(".gitattributes"))
         let body = String(repeating: "$Id$", count: 500)
         try Data(body.utf8).write(to: source.appendingPathComponent("f.txt"))
-        let env = PluginSourceFetcher.environment(knownHostsFile: fixture.store.knownHostsFile.path)
+        // The person's own attributes file asks for the same expansion.
+        let home = fixture.root.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".config/git"), withIntermediateDirectories: true)
+        try Data("*.txt ident\n".utf8).write(to: home.appendingPathComponent(".config/git/attributes"))
+        let env = PluginSourceFetcher.environment(
+            base: ["PATH": "/usr/bin:/bin", "HOME": home.path],
+            knownHostsFile: fixture.store.knownHostsFile.path
+        )
         func git(_ arguments: [String], in directory: URL) throws {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/git")

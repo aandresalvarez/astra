@@ -369,7 +369,15 @@ struct PluginSourceFetcher {
     /// filter driver, a hooks path, an fsmonitor) runs; credentials come only
     /// from the system keychain helper or the SSH agent.
     static func hardening(allowedProtocols: [String] = ["https", "ssh"]) -> [String] {
-        ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "protocol.allow=never"]
+        ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "protocol.allow=never",
+         // The person's own attributes file (~/.config/git/attributes) is
+         // read even with no global config; an `ident` there would inflate
+         // the checkout too.
+         "-c", "core.attributesFile=/dev/null",
+         // Objects over 1 MB are streamed, not inflated in memory: a tiny
+         // pack of one huge zero blob otherwise costs its full size in RAM
+         // before the tree can be measured (T11).
+         "-c", "core.bigFileThreshold=1m"]
             + allowedProtocols.flatMap { ["-c", "protocol.\($0).allow=always"] }
             + [
                 "-c", "filter.lfs.smudge=",
@@ -409,6 +417,7 @@ struct PluginSourceFetcher {
         // Neither ~/.gitconfig nor the XDG one: a global filter driver,
         // hook path or alias never applies to an untrusted checkout.
         environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        environment["GIT_ATTR_NOSYSTEM"] = "1"
         environment["GIT_LFS_SKIP_SMUDGE"] = "1"
         // ssh reads no config file either: a `ProxyCommand`, `Match exec` or
         // `LocalCommand` in ~/.ssh/config or the system one would run a shell
