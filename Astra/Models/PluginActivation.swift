@@ -123,8 +123,9 @@ public final class PluginActivation {
     }
 
     /// A setting's key. Setting keys (environment variable names) never
-    /// contain `#`, so the last `#` splits the pair however the component is
-    /// named (a component ID may contain `.` or `#`).
+    /// contain `#` (`CapabilityPackageValidator` rejects a package declaring
+    /// one), so the last `#` splits the pair however the component is named
+    /// (a component ID may contain `.` or `#`).
     public static func settingKey(componentID: String, key: String) -> String {
         "\(componentID)#\(key)"
     }

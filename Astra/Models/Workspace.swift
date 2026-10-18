@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 @Model
 public final class Workspace: Identifiable {
@@ -59,6 +60,13 @@ public final class Workspace: Identifiable {
     /// `WorkspaceCapabilityActivation`.
     @Relationship(deleteRule: .cascade, inverse: \PluginActivation.workspace)
     public var pluginActivations: [PluginActivation] = []
+
+    /// On a never-inserted launch copy only: the plugin definitions its
+    /// request froze at submission, which its plugins are projected from
+    /// instead of the live library. Nil everywhere else. Set only by
+    /// `TaskExecutionLaunchSnapshotApplicator`; never stored.
+    @Transient
+    public var launchPluginDefinitions: [PluginPackage]? = nil
 
     public init(
         name: String,

@@ -53,7 +53,9 @@ enum RepairActionRunner {
                 terminal.openTerminalApp()
             }
         case .url:
-            if let url = repair.url { openURL(url) }
+            // Checked again for the same reason: a stored event's URL never
+            // passed package validation.
+            if let url = repair.url, RepairAction.isSafeRepairURL(url) { openURL(url) }
         case .deviceCode, .credentialForm:
             break
         }

@@ -388,6 +388,11 @@ struct OnboardingWizardTests {
         redcap.credentialKeys = ["REDCAP_API_TOKEN"]
         redcap.credentialValues = [""]
         context.insert(redcap)
+        // With the plugins on, these rows are their accounts: a copy reads
+        // only an activation's bound accounts.
+        #expect(source.testBind(jira, toPlugin: "jira-workflow"))
+        #expect(source.testBind(gcloud, toPlugin: "gcloud-workflow"))
+        #expect(source.testBind(redcap, toPlugin: "redcap-workflow"))
 
         let store = MockSecretStore()
         store.save(
@@ -458,6 +463,7 @@ struct OnboardingWizardTests {
         redcap.configKeys = ["API_URL"]
         redcap.configValues = ["https://redcap.legacy.edu/api/"]
         context.insert(redcap)
+        #expect(source.testBind(redcap, toPlugin: "redcap-workflow"))
 
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "redcap-workflow" })
         let inputs = CapabilitySetupCopier(secretStore: MockSecretStore()).installationInputs(

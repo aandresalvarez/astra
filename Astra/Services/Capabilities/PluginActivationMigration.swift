@@ -49,6 +49,10 @@ enum PluginActivationMigration {
     enum MigrationError: Error, Equatable {
         case secretCopyFailed(skill: String, key: String)
         case cleanupUnrecordable
+        /// The migration failed and could not put back a secret it had
+        /// overwritten or copied (keys sorted), so a projected namespace may
+        /// hold a value nothing owns, or have lost the one it had.
+        case credentialRestoreFailed(keys: [String])
     }
 
     /// The definitions this build ships, plus the library's own plugins.
@@ -113,7 +117,11 @@ enum PluginActivationMigration {
     }
 
     @discardableResult
-    static func migrate(modelContext: ModelContext, packages: [PluginPackage]) throws -> Report {
+    static func migrate(
+        modelContext: ModelContext,
+        packages: [PluginPackage],
+        secrets: any SkillSecretPersisting.Type = SkillSecretSeam.required
+    ) throws -> Report {
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
         let connectors = try modelContext.fetch(FetchDescriptor<Connector>())
@@ -220,7 +228,11 @@ enum PluginActivationMigration {
                     continue
                 }
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
-                if isEdited(skill, spec: spec) {
+                // A row the person attached their own connector or tool to
+                // is theirs too: deleting it would leave those attachments
+                // ownerless, in the workspace's ambient scope even with the
+                // plugin off. Kept as the override, they stay with it.
+                if isEdited(skill, spec: spec) || hasAuthoredAttachments(skill) {
                     clearOrigin(skill)
                     // The override is on exactly while its activation is
                     // (the projection brings the row in): a shared-list
@@ -243,6 +255,7 @@ enum PluginActivationMigration {
                         componentID: componentID,
                         to: activation,
                         projectedID: projectedID,
+                        secrets: secrets,
                         copied: &copiedSecrets
                     )
                     retarget(skillID: skill.id, to: projectedID, in: workspace)
@@ -279,8 +292,11 @@ enum PluginActivationMigration {
                 }
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
                 // A tool of a skill kept for a workspace without the plugin
-                // stays that skill's, as an authored row.
-                if let owner = tool.skill, independentSkillIDs.contains(owner.id) {
+                // stays that skill's, as an authored row. Edited, it is also
+                // what the workspaces with the plugin used: there it replaces
+                // the plugin's tool, as any edited tool does.
+                let keptForIndependentSkill = tool.skill.map { independentSkillIDs.contains($0.id) } ?? false
+                if keptForIndependentSkill, !isEdited(tool, spec: spec) {
                     clearOrigin(tool)
                     report.toolsKeptAsAuthored += 1
                     continue
@@ -289,7 +305,7 @@ enum PluginActivationMigration {
                     clearOrigin(tool)
                     // Its skill row may be deleted above: the projection wires
                     // the runtime's copy to the plugin's first skill instead.
-                    tool.skill = nil
+                    if !keptForIndependentSkill { tool.skill = nil }
                     let toolID = tool.id.uuidString
                     for (workspace, activation) in using {
                         WorkspaceCapabilityActivation.setOverridden(true, componentID: componentID, rowID: tool.id, on: activation)
@@ -335,7 +351,17 @@ enum PluginActivationMigration {
                 workspace.legacyInstalledPluginIDs = installed
                 workspace.legacyInstalledPluginVersions = versions
             }
-            restore(copiedSecrets)
+            let unrestored = restore(copiedSecrets, secrets: secrets)
+            // Reported ahead of the failure that caused it, as the installer
+            // does: retrying cannot bring back a value the rollback lost.
+            if !unrestored.isEmpty {
+                AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                    "migration": "plugin_activations_v20",
+                    "result": "secret_restore_failed",
+                    "unrestored_secret_count": String(unrestored.count)
+                ], level: .error)
+                throw MigrationError.credentialRestoreFailed(keys: Array(Set(unrestored)).sorted())
+            }
             throw error
         }
         return report
@@ -348,11 +374,13 @@ enum PluginActivationMigration {
         let previousValue: String?
     }
 
-    private static func restore(_ copied: [CopiedSecret]) {
-        let persistence = SkillSecretSeam.required
+    /// Puts back what each copy overwrote; the keys it could not.
+    private static func restore(_ copied: [CopiedSecret], secrets persistence: any SkillSecretPersisting.Type) -> [String] {
+        var unrestored: [String] = []
         for secret in copied.reversed() {
+            let restored: Bool
             if let previous = secret.previousValue {
-                persistence.saveSecretValue(
+                restored = persistence.saveSecretValue(
                     previous,
                     key: secret.key,
                     skillID: secret.skillID,
@@ -360,9 +388,11 @@ enum PluginActivationMigration {
                     allowUserInteraction: false
                 )
             } else {
-                persistence.deleteSecret(key: secret.key, skillID: secret.skillID)
+                restored = persistence.deleteSecret(key: secret.key, skillID: secret.skillID)
             }
+            if !restored { unrestored.append(secret.key) }
         }
+        return unrestored
     }
 
     // MARK: - Steps
@@ -407,9 +437,9 @@ enum PluginActivationMigration {
         componentID: String,
         to activation: PluginActivation,
         projectedID: UUID,
+        secrets persistence: any SkillSecretPersisting.Type,
         copied: inout [CopiedSecret]
     ) throws {
-        let persistence = SkillSecretSeam.required
         // A build that kept skill secrets in the login keychain (or the row)
         // is migrated by a later launch pass that only sees surviving rows:
         // this row is about to go, so its secrets move to the dedicated
@@ -452,7 +482,7 @@ enum PluginActivationMigration {
         let old = skillID.uuidString
         let new = projectedID.uuidString
         for template in workspace.templates where template.defaultSkillIDs.contains(old) {
-            template.defaultSkillIDs = template.defaultSkillIDs.map { $0 == old ? new : $0 }
+            WorkspaceCapabilityActivation.rewriteDefaultSkills(of: template, in: workspace) { $0.map { $0 == old ? new : $0 } }
         }
         for schedule in workspace.schedules where schedule.skillIDs.contains(old) {
             schedule.skillIDs = schedule.skillIDs.map { $0 == old ? new : $0 }
@@ -508,18 +538,27 @@ enum PluginActivationMigration {
             || skill.skillDescription != spec.description
             || skill.allowedTools != spec.allowedTools
             || skill.customTools != spec.customTools
-            || !behaviorMatches(skill.behaviorInstructions, spec: spec)
+            || !restrictionsMatch(skill, spec: spec)
     }
 
-    /// The one-time startup migration folds `disallowedTools` into the
-    /// behavior text, so a row may carry the spec's text plus exactly the
-    /// note it appends (`migrateDisallowedToolsToBehavior`); anything more is
-    /// the person's.
-    private static func behaviorMatches(_ behavior: String, spec: PluginSkill) -> Bool {
-        if behavior == spec.behaviorInstructions { return true }
-        guard !spec.disallowedTools.isEmpty else { return false }
+    /// A row's denied tools and behavior text say what the spec's do. The
+    /// startup pass folds `disallowedTools` into the behavior text, and this
+    /// migration runs before it, so a row is either as installed (the spec's
+    /// list and text) or folded: no list, and the spec's text plus exactly
+    /// the note it appends (`migrateDisallowedToolsToBehavior`). Anything
+    /// else, a denial added or removed included, is the person's.
+    private static func restrictionsMatch(_ skill: Skill, spec: PluginSkill) -> Bool {
+        if skill.disallowedTools == spec.disallowedTools, skill.behaviorInstructions == spec.behaviorInstructions {
+            return true
+        }
+        guard skill.disallowedTools.isEmpty, !spec.disallowedTools.isEmpty else { return false }
         let note = "\nDo NOT use these tools: \(spec.disallowedTools.joined(separator: ", "))."
-        return behavior == spec.behaviorInstructions + note
+        return skill.behaviorInstructions == spec.behaviorInstructions + note
+    }
+
+    private static func hasAuthoredAttachments(_ skill: Skill) -> Bool {
+        skill.connectors.contains { !$0.isDeleted && !isPluginOrigin($0) }
+            || skill.localTools.contains { !$0.isDeleted && !isPluginOrigin($0) }
     }
 
     private static func isEdited(_ tool: LocalTool, spec: PluginLocalTool) -> Bool {

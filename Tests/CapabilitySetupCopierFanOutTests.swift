@@ -103,9 +103,10 @@ struct CapabilitySetupCopierFanOutTests {
         global.credentialKeys = ["REDCAP_API_TOKEN"]
         context.insert(global)
 
+        // A workspace from before plugins had activations: its enabled
+        // shared rows are what a copy reads (the legacy sweep included).
         let workspace = Workspace(name: "Source", primaryPath: NSTemporaryDirectory())
         workspace.enabledGlobalConnectorIDs = [global.id.uuidString]
-        workspace.testEnabledCapabilityIDs = ["redcap-workflow"]
         context.insert(workspace)
         try context.save()
 
@@ -147,9 +148,10 @@ struct CapabilitySetupCopierFanOutTests {
         global.credentialKeys = ["REDCAP_API_TOKEN"]
         context.insert(global)
 
+        // A workspace from before plugins had activations: its enabled
+        // shared rows are what a copy reads (the legacy sweep included).
         let workspace = Workspace(name: "Source", primaryPath: NSTemporaryDirectory())
         workspace.enabledGlobalConnectorIDs = [global.id.uuidString]
-        workspace.testEnabledCapabilityIDs = ["redcap-workflow"]
         context.insert(workspace)
         try context.save()
 
@@ -180,9 +182,9 @@ struct CapabilitySetupCopierFanOutTests {
         // entries outlived it. This is the only case the legacy pass can still
         // learn something from, so the skip above must not reach it.
         let danglingID = UUID()
+        // A workspace from before plugins had activations.
         let workspace = Workspace(name: "Source", primaryPath: NSTemporaryDirectory())
         workspace.enabledGlobalConnectorIDs = [danglingID.uuidString]
-        workspace.testEnabledCapabilityIDs = ["redcap-workflow"]
         context.insert(workspace)
         try context.save()
 
@@ -360,9 +362,9 @@ struct CopyableCapabilitySetupKeyTests {
         // Configured identically, so only the exclusion can tell them apart.
         let source = Workspace(name: "Source", primaryPath: NSTemporaryDirectory())
         let destination = Workspace(name: "Destination", primaryPath: NSTemporaryDirectory())
+        // Workspaces from before plugins had activations.
         for workspace in [source, destination] {
             workspace.enabledGlobalConnectorIDs = [global.id.uuidString]
-            workspace.testEnabledCapabilityIDs = ["redcap-workflow"]
             context.insert(workspace)
         }
         let empty = Workspace(name: "Empty", primaryPath: NSTemporaryDirectory())

@@ -26,6 +26,16 @@ struct CapabilityPackageSnapshotUnavailable: LocalizedError, Equatable {
     }
 }
 
+/// The library took the new version but couldn't read it back, so nothing
+/// could be reconciled with it; the previous entry is put back.
+struct CapabilityPackageInstallUnreadable: LocalizedError, Equatable {
+    var packageID: String
+
+    var errorDescription: String? {
+        "ASTRA couldn't read back the new version of \(packageID), so it kept the version you had. Try again."
+    }
+}
+
 @MainActor
 struct CapabilityPackageImporter {
     let library: CapabilityLibrary
@@ -108,12 +118,14 @@ struct CapabilityPackageImporter {
                 try library.install(package, sourceMetadata: .localLibrary())
             }
             if let modelContext {
+                // The activations are reconciled with the definition as the
+                // library stores it: one that can't be read back fails the
+                // import, rather than reconciling nothing and reporting it kept.
+                guard let installed = library.installedPackage(id: package.id) else {
+                    throw CapabilityPackageInstallUnreadable(packageID: package.id)
+                }
                 // The person chose this version: what it dropped is released.
-                try PluginUpdateService.reconcileAll(
-                    modelContext: modelContext,
-                    packages: library.installedPackages().filter { $0.id == package.id },
-                    mode: .release
-                )
+                try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: [installed], mode: .release)
             }
         } catch {
             // The snapshot outlives a restore only when the restore fails.

@@ -383,6 +383,21 @@ enum CapabilityPackageValidator {
             }
         }
 
+        // A setting is stored under `componentID#KEY`
+        // (`PluginActivation.settingKey`) and split at the last `#`, so a key
+        // containing one would be read back under the wrong component.
+        for skill in package.skills {
+            for key in skill.environmentKeys where key.contains("#") {
+                issues.append(issue(
+                    .blocker,
+                    .invalidComponentIdentity,
+                    "Invalid setting name",
+                    "\(skill.name) declares the setting \(key); setting names cannot contain #.",
+                    component: key
+                ))
+            }
+        }
+
         if !isValidSemanticVersionLiteral(package.version) {
             issues.append(issue(
                 .blocker,
@@ -508,21 +523,37 @@ enum CapabilityPackageValidator {
         }
     }
 
+    /// Endings of a setting key that name something non-secret. A key is a
+    /// plain setting only with one of them and nothing the Keychain treats
+    /// as a credential (`RunSecretRedaction.isSecretKey`).
+    static let plainSettingSuffixes = [
+        "PROJECT", "PROJECTS", "PROJECT_KEY", "REGION", "ZONE", "LOCATION", "URL", "HOST", "DOMAIN",
+        "ORG", "ORGANIZATION", "SITE", "TENANT", "WORKSPACE", "DATASET", "DATASETS", "SPACE", "SPACES",
+        "CHANNEL", "CHANNELS", "REPO", "REPOS", "TEAM", "TEAMS", "LABELS", "TAGS", "BOARD", "BOARDS"
+    ]
+
+    static func isPlainSettingKey(_ key: String) -> Bool {
+        let upper = key.uppercased()
+        guard !RunSecretRedaction.isSecretKey(upper) else { return false }
+        return plainSettingSuffixes.contains { upper == $0 || upper.hasSuffix("_" + $0) }
+    }
+
     private static func validateConnectors(
         _ connectors: [PluginConnector],
         issues: inout [CapabilityPackageValidationIssue]
     ) {
         for connector in connectors {
             // A setting is stored as plain text and exported with the
-            // workspace: a credential-named key must be a credential hint
-            // (the Keychain), whatever the package says.
-            for hint in connector.configHints where RunSecretRedaction.isSecretKey(hint.key) {
+            // workspace, and its key is the package's choice: only a key of
+            // a known non-secret shape may be one; anything else must be a
+            // credential field, kept in the Keychain.
+            for hint in connector.configHints where !isPlainSettingKey(hint.key) {
                 let name = displayName(connector.name, fallback: connector.serviceType)
                 issues.append(issue(
                     .blocker,
                     .unsafeConnector,
                     "Credential stored as a setting",
-                    "\(name) declares \(hint.key) as a plain setting; a credential must be a credential field, kept in the Keychain.",
+                    "\(name) declares \(hint.key) as a plain setting. Plain settings are limited to known non-secret kinds (a project, region, URL, team…); anything else must be a credential field, kept in the Keychain.",
                     component: name
                 ))
             }

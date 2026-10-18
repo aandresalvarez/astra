@@ -259,6 +259,39 @@ struct WorkspaceCapabilityActivationTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("Deleting an account several workspaces bind refreshes every one of their mirrors")
+    @MainActor
+    func deletingASharedAccountExportsEveryAffectedWorkspace() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let other = Workspace(name: "Other", primaryPath: "/tmp/activation-owner-other")
+        let unrelated = Workspace(name: "Unrelated", primaryPath: "/tmp/activation-owner-unrelated")
+        [other, unrelated].forEach(context.insert)
+        let shared = Connector(name: "Shared Jira", serviceType: "jira")
+        shared.isGlobal = true
+        context.insert(shared)
+        for owner in [workspace, other, unrelated] {
+            WorkspaceCapabilityActivation.mutate(owner) { $0.enableCapability("jira-workflow") }
+        }
+        for owner in [workspace, other] {
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: owner))
+            WorkspaceCapabilityActivation.bind(shared, toComponent: "connector:jira:jira", of: activation)
+        }
+        try context.save()
+
+        var exported: [UUID] = []
+        let deleted = ConnectorCredentialCleanup.deleteConnector(
+            shared, in: workspace, modelContext: context, exportMirror: { exported.append($0.id) }
+        ) {
+            (try? context.save()) != nil
+        }
+        #expect(deleted)
+        // The clicked workspace is exported by its own save; the other one
+        // that bound the account is exported here, and nothing else.
+        #expect(exported == [other.id])
+        withExtendedLifetime(container) {}
+    }
+
     @Test("Accounts of one service a workspace sees get distinct names")
     @MainActor
     func aliasesAreUniquePerServiceInAWorkspace() throws {
@@ -283,6 +316,30 @@ struct WorkspaceCapabilityActivationTests {
         #expect(second.name == "stanford  2")
         #expect(otherService.name == "Stanford")
         #expect(WorkspaceCapabilityActivation.uniqueAlias("Stanford", serviceType: "jira", in: workspace) == "Stanford 2")
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("Sharing an account into a workspace with a same-named one never renames it where it already works")
+    @MainActor
+    func sharedAccountKeepsItsAliasWhenBoundElsewhere() throws {
+        let (container, first) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let second = Workspace(name: "Second", primaryPath: "/tmp/second-\(UUID().uuidString)")
+        context.insert(second)
+        let shared = Connector(name: "Stanford", serviceType: "jira")
+        let local = Connector(name: "Stanford", serviceType: "jira")
+        [shared, local].forEach(context.insert)
+        local.workspace = second
+        for workspace in [first, second] {
+            WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability("jira-workflow") }
+        }
+        let inFirst = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: first))
+        let inSecond = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: second))
+        WorkspaceCapabilityActivation.bind(shared, toComponent: "connector:jira:jira", of: inFirst)
+        WorkspaceCapabilityActivation.bind(local, toComponent: "connector:jira:jira", of: inSecond)
+        WorkspaceCapabilityActivation.bind(shared, toComponent: "connector:jira:jira", of: inSecond)
+        #expect(shared.name == "Stanford")
+        #expect(local.name == "Stanford")
         withExtendedLifetime(container) {}
     }
 

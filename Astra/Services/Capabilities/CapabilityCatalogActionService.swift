@@ -188,7 +188,10 @@ struct CapabilityCatalogActionService {
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
         _ = try Self.addRoute(for: package)
-        let context = try grantPendingApproval(for: package, policyContext: policyContext, approvalStore: approvalStore)
+        let context = try grantPendingApproval(
+            for: package, workspace: workspace, policyContext: policyContext,
+            approvalStore: approvalStore, source: "plugins_add", traceID: traceID
+        )
         return try enable(
             package,
             workspace: workspace,
@@ -201,19 +204,34 @@ struct CapabilityCatalogActionService {
 
     /// The approval Add writes when the policy holds `package` for review:
     /// the person adding it is the reviewer. Returns the context to enable
-    /// against.
+    /// against. Audited like the catalog review's approval: the record is a
+    /// durable permission change even when the enable after it never happens.
     func grantPendingApproval(
         for package: PluginPackage,
+        workspace: Workspace,
         policyContext: CapabilityCatalogPolicyContext,
-        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore()
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
+        source: String,
+        traceID: String
     ) throws -> CapabilityCatalogPolicyContext {
         var context = policyContext
-        if let record = try CapabilityApprovalGrant.pendingRecord(
-            for: package,
-            context: policyContext,
-            approvedBy: "user",
-            reviewNotes: "Added in Plugins."
-        ) {
+        var fields = [
+            "source": source,
+            "trace_id": traceID,
+            "package_id": package.id,
+            "package_name": package.name,
+            "package_version": package.version,
+            "status": CapabilityApprovalStatus.approved.rawValue,
+            "workspace_id": workspace.id.uuidString
+        ]
+        do {
+            guard let record = try CapabilityApprovalGrant.pendingRecord(
+                for: package,
+                context: policyContext,
+                approvedBy: "user",
+                reviewNotes: "Added in Plugins."
+            ) else { return context }
+            fields["digest_prefix"] = String(record.sourceDigest.prefix(12))
             let saved = try approvalStore.save(
                 package: package,
                 status: record.status,
@@ -222,8 +240,16 @@ struct CapabilityCatalogActionService {
                 approvedAt: record.approvedAt
             )
             context.approvalRecords.append(saved)
+            fields["status"] = saved.status.rawValue
+            fields["digest_prefix"] = String(saved.sourceDigest.prefix(12))
+            AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: fields)
+            return context
+        } catch {
+            fields["result"] = "failed"
+            fields["error_type"] = String(describing: type(of: error))
+            AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: fields, level: .error)
+            throw error
         }
-        return context
     }
 
     /// Turns a package off in one workspace, leaving it installed and
