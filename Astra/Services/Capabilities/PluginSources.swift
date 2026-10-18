@@ -292,7 +292,7 @@ struct PluginSourceFetcher {
         // 2. Measure what a checkout would write, from the tree, first.
         let tree = await runner.run(
             path: git,
-            args: Self.hardening(allowedProtocols: allowedProtocols) + ["-C", staging.path, "ls-tree", "-r", "-l", "--full-tree", "HEAD"],
+            args: Self.treeArguments(in: staging.path, allowedProtocols: allowedProtocols),
             timeout: timeout,
             environment: environment
         )
@@ -301,7 +301,9 @@ struct PluginSourceFetcher {
         guard sizes.count <= maxCheckoutFiles, sizes.reduce(0, +) <= maxCheckoutBytes else {
             throw PluginSourceFetchError.tooLarge
         }
-        // 3. Check out under the same isolated configuration.
+        // 3. Check out under the same isolated configuration, with every
+        // attribute that changes the bytes written unset first.
+        try Self.writeAttributeOverride(gitDirectory: staging.appendingPathComponent(".git", isDirectory: true), fileManager: fileManager)
         let checkout = await runner.run(
             path: git,
             args: Self.checkoutArguments(in: staging.path, allowedProtocols: allowedProtocols),
@@ -393,6 +395,8 @@ struct PluginSourceFetcher {
                 "-c", "filter.lfs.process=",
                 "-c", "filter.lfs.required=false",
                 "-c", "credential.helper=osxkeychain",
+                // Git before 2.47 ignores this key; `GIT_TERMINAL_PROMPT=0`
+                // with no askpass in the environment still keeps it silent.
                 "-c", "credential.interactive=never"
             ]
     }
@@ -405,16 +409,31 @@ struct PluginSourceFetcher {
             + ["clone", "--depth", "1", "--no-checkout", "--no-recurse-submodules", "--quiet", "--", location, path]
     }
 
-    /// The checkout reads no attributes from the repository: `ident`,
-    /// `working-tree-encoding` or a filter in its `.gitattributes` would make
-    /// the files written larger than the blobs measured (T11). The empty tree
-    /// is the attribute source.
-    static func checkoutArguments(in path: String, allowedProtocols: [String] = ["https", "ssh"]) -> [String] {
-        ["--attr-source=\(emptyTree)"] + hardening(allowedProtocols: allowedProtocols)
-            + ["-C", path, "checkout", "--quiet", "HEAD", "--", "."]
+    /// Lists what a checkout would write, with each blob's size.
+    static func treeArguments(in path: String, allowedProtocols: [String] = ["https", "ssh"]) -> [String] {
+        hardening(allowedProtocols: allowedProtocols) + ["-C", path, "ls-tree", "-r", "-l", "--full-tree", "HEAD"]
     }
 
-    static let emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    /// Checks out the measured tree. Every option here, in `cloneArguments`
+    /// and in `treeArguments` exists in Git 2.39, the oldest Apple git a
+    /// supported macOS ships; `--attr-source` (2.41) is not used.
+    static func checkoutArguments(in path: String, allowedProtocols: [String] = ["https", "ssh"]) -> [String] {
+        hardening(allowedProtocols: allowedProtocols) + ["-C", path, "checkout", "--quiet", "HEAD", "--", "."]
+    }
+
+    /// What `$GIT_DIR/info/attributes` holds before the checkout. That file
+    /// outranks every `.gitattributes` in the tree, whatever its pattern,
+    /// nesting or `[attr]` macro, and every git reads it, so `ident`,
+    /// end-of-line conversion, `working-tree-encoding` or a filter in the
+    /// repository can't make the files written differ from the blobs
+    /// measured (T11).
+    static let attributeOverride = "* -text -eol -crlf -ident -filter -working-tree-encoding\n"
+
+    static func writeAttributeOverride(gitDirectory: URL, fileManager: FileManager = .default) throws {
+        let info = gitDirectory.appendingPathComponent("info", isDirectory: true)
+        try fileManager.createDirectory(at: info, withIntermediateDirectories: true)
+        try Data(attributeOverride.utf8).write(to: info.appendingPathComponent("attributes"), options: .atomic)
+    }
 
     static func environment(
         base: [String: String] = ProcessInfo.processInfo.environment,
@@ -438,9 +457,10 @@ struct PluginSourceFetcher {
     }
 
     /// The ssh a fetch runs: no config file, nothing that executes a command
-    /// or forwards anything, never a prompt. A host seen for the first time
-    /// is accepted and its key kept in ASTRA's own known-hosts file
-    /// (`accept-new`); a known host whose key changed is refused, so the
+    /// or forwards anything, never a prompt, and no key file from disk
+    /// (`IdentityFile=none`): only the agent's keys are offered. A host seen
+    /// for the first time is accepted and its key kept in ASTRA's own
+    /// known-hosts file (`accept-new`); a known host whose key changed is refused, so the
     /// key is still verified on every later fetch. The person's
     /// `~/.ssh/known_hosts` is read, never written.
     static func sshCommand(knownHostsFile: String) -> String {
@@ -449,7 +469,8 @@ struct PluginSourceFetcher {
             "/usr/bin/ssh", "-F", "/dev/null",
             "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "PermitLocalCommand=no",
             "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ControlMaster=no",
-            "-o", "ControlPath=none", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ControlPath=none", "-o", "BatchMode=yes", "-o", "IdentityFile=none",
+            "-o", "StrictHostKeyChecking=accept-new",
             "-o", shellQuoted(knownHosts)
         ].joined(separator: " ")
     }

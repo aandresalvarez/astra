@@ -115,53 +115,99 @@ struct PluginSourcesTests {
         // ASTRA's file comes first (new keys are written there), its space intact.
         #expect(files.hasPrefix("userknownhostsfile /tmp/astra test/known_hosts "))
         #expect(files.contains(".ssh/known_hosts"))
+        // Agent-only credentials: no default key file (~/.ssh/id_ed25519 and
+        // the rest) is loaded or offered.
+        #expect(lines.filter { $0.hasPrefix("identityfile ") } == ["identityfile none"])
     }
 
-    @Test("T11: the checkout applies no attribute from the repository, so files are the size measured")
-    func checkoutIgnoresRepositoryAttributes() throws {
-        let args = PluginSourceFetcher.checkoutArguments(in: "/tmp/staging")
-        #expect(args.first == "--attr-source=\(PluginSourceFetcher.emptyTree)")
-        #expect(args.suffix(5) == ["checkout", "--quiet", "HEAD", "--", "."])
-        // Real git: an `ident` attribute would expand every `$Id$`.
+    @Test("T3: every option a fetch passes git exists in Git 2.39, the oldest Apple git on macOS 14")
+    func gitVectorRunsOnGit239() {
+        // Checked against the Git 2.39 manual (git, git-clone, git-ls-tree,
+        // git-checkout). `--attr-source` (2.41) or any other newer global
+        // option would make every git-source fetch fail there.
+        let vectors = [
+            PluginSourceFetcher.cloneArguments(location: "https://example.com/p.git", into: "/tmp/dir"),
+            PluginSourceFetcher.treeArguments(in: "/tmp/dir"),
+            PluginSourceFetcher.checkoutArguments(in: "/tmp/dir")
+        ]
+        let subcommands: [String: Set<String>] = [
+            "clone": ["--depth", "1", "--no-checkout", "--no-recurse-submodules", "--quiet"],
+            "ls-tree": ["-r", "-l", "--full-tree", "HEAD"],
+            "checkout": ["--quiet", "HEAD"]
+        ]
+        for args in vectors {
+            var index = 0
+            // Before the subcommand: only `-c <key>=<value>` and `-C <path>`.
+            while index < args.count, args[index] == "-c" || args[index] == "-C" {
+                index += 2
+            }
+            guard index < args.count, let allowed = subcommands[args[index]] else {
+                Issue.record("unexpected global option in \(args)")
+                continue
+            }
+            // What follows `--` is a location or a pathspec, never an option.
+            let options = args[(index + 1)...].prefix { $0 != "--" }
+            #expect(Set(options).isSubset(of: allowed), "\(args[index]): \(options)")
+        }
+        #expect(!vectors.joined().contains { $0.hasPrefix("--attr-source") })
+    }
+
+    @Test("T11: the checkout applies no attribute from the repository or the person, so files are the size measured")
+    func checkoutIgnoresRepositoryAttributes() async throws {
+        guard let git = Self.git() else { return }
         let fixture = try Fixture()
-        let source = fixture.root.appendingPathComponent("src", isDirectory: true)
-        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
-        try Data("* ident\n".utf8).write(to: source.appendingPathComponent(".gitattributes"))
-        let body = String(repeating: "$Id$", count: 500)
-        try Data(body.utf8).write(to: source.appendingPathComponent("f.txt"))
+        // An `ident` attribute would expand every `$Id$`.
+        let body = Data(String(repeating: "$Id$", count: 500).utf8)
+        let repository = try fixture.bareRepository(with: [
+            "capability.json": try Self.packageJSON(id: "ident", version: "1.0.0"),
+            ".gitattributes": Data("* ident\n".utf8),
+            "f.txt": body
+        ])
         // The person's own attributes file asks for the same expansion.
         let home = fixture.root.appendingPathComponent("home", isDirectory: true)
         try FileManager.default.createDirectory(at: home.appendingPathComponent(".config/git"), withIntermediateDirectories: true)
         try Data("*.txt ident\n".utf8).write(to: home.appendingPathComponent(".config/git/attributes"))
-        let env = PluginSourceFetcher.environment(
-            base: ["PATH": "/usr/bin:/bin", "HOME": home.path],
-            knownHostsFile: fixture.store.knownHostsFile.path
-        )
-        func git(_ arguments: [String], in directory: URL) throws {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            process.arguments = ["-C", directory.path] + arguments
-            process.environment = env
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
-            try process.run()
-            process.waitUntilExit()
-            #expect(process.terminationStatus == 0, "\(arguments)")
+        var fetcher = PluginSourceFetcher(gitPath: { git })
+        fetcher.allowedProtocols = ["file"]
+        fetcher.runner = EnvironmentOverridingRunner(home: home.path)
+        let source = PluginSource(id: "ident", kind: .git, location: repository.path, displayName: "ident", addedAt: Date())
+        try await fetcher.fetch(source, store: fixture.store)
+        let clone = fixture.store.cloneDirectory(for: source)
+        #expect(try Data(contentsOf: clone.appendingPathComponent("f.txt")) == body)
+        let override = try String(contentsOf: clone.appendingPathComponent(".git/info/attributes"), encoding: .utf8)
+        #expect(override == PluginSourceFetcher.attributeOverride)
+    }
+
+    @Test("T11: a more specific pattern, an [attr] macro or a nested .gitattributes still can't inflate or convert the checkout")
+    func specificRepositoryAttributesCannotConvert() async throws {
+        guard let git = Self.git() else { return }
+        let fixture = try Fixture()
+        let body = Data(String(repeating: "$Id$ line\n", count: 200).utf8)
+        let paths = ["a.txt", "b.macro", "c.crlf", "d.enc", "nested/e.dat", "nested/deeper/f.dat"]
+        var files = ["capability.json": try Self.packageJSON(id: "attributed", version: "1.0.0")]
+        for path in paths { files[path] = body }
+        let repository = try fixture.bareRepository(with: files)
+        // Committed after the files, so `git add` never converts them.
+        let attributes = """
+        [attr]inflate ident text eol=crlf
+        *.txt ident
+        *.macro inflate
+        *.crlf text eol=crlf
+        *.enc working-tree-encoding=UTF-16LE
+
+        """
+        try fixture.commit([
+            ".gitattributes": Data(attributes.utf8),
+            "nested/.gitattributes": Data("* ident text eol=crlf\n".utf8)
+        ], to: repository, staging: [".gitattributes", "nested/.gitattributes"])
+        var fetcher = PluginSourceFetcher(gitPath: { git })
+        fetcher.allowedProtocols = ["file"]
+        let source = PluginSource(id: "attributed", kind: .git, location: repository.path, displayName: "attributed", addedAt: Date())
+        try await fetcher.fetch(source, store: fixture.store)
+        let clone = fixture.store.cloneDirectory(for: source)
+        for path in paths {
+            #expect(try Data(contentsOf: clone.appendingPathComponent(path)) == body, "\(path) was converted")
         }
-        try git(["init", "-q"], in: source)
-        try git(["add", "-A"], in: source)
-        try git(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "x"], in: source)
-        let staging = fixture.root.appendingPathComponent("staging", isDirectory: true)
-        try git(["clone", "-q", "--no-checkout", source.path, staging.path], in: fixture.root)
-        let checkout = Process()
-        checkout.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        checkout.arguments = PluginSourceFetcher.checkoutArguments(in: staging.path, allowedProtocols: ["file"])
-        checkout.environment = env
-        try checkout.run()
-        checkout.waitUntilExit()
-        #expect(checkout.terminationStatus == 0)
-        let written = try Data(contentsOf: staging.appendingPathComponent("f.txt"))
-        #expect(written.count == body.utf8.count)
     }
 
     @Test("T3: a hook the person's git config names does not run during a fetch")
@@ -662,11 +708,13 @@ struct PluginSourcesTests {
             return bare
         }
 
-        func commit(_ files: [String: Data], to bare: URL) throws {
+        /// Commits `files`, staging all of them, or only `staging` when an
+        /// attribute being committed would refuse to re-add the others.
+        func commit(_ files: [String: Data], to bare: URL, staging: [String]? = nil) throws {
             let work = root.appendingPathComponent("work-\(UUID().uuidString)", isDirectory: true)
             try run(["-c", "protocol.file.allow=always", "clone", "--quiet", bare.path, work.path])
             try write(files, in: work)
-            try run(["-C", work.path, "add", "-A"])
+            try run(["-C", work.path, "add"] + (staging.map { ["--"] + $0 } ?? ["-A"]))
             try run(["-C", work.path, "-c", "user.name=Tests", "-c", "user.email=tests@example.com",
                      "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "update"])
             try run(["-C", work.path, "-c", "protocol.file.allow=always", "push", "--quiet", "origin", "HEAD"])
