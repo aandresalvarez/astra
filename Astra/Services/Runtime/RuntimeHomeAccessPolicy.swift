@@ -32,9 +32,10 @@ struct RuntimeHomeAccessPolicy: Sendable {
     var configuredHomeVariable: String? = nil
     static let none = Self()
 
-    func homeFilePaths(environment: [String: String], userHome: String) -> [String] {
+    func homeFilePaths(environment: [String: String], userHome: String, workingDirectory: String) -> [String] {
         let base = homeFilesOverrideVariable.flatMap { environment[$0] }.flatMap { $0.isEmpty ? nil : $0 } ?? userHome
-        return homeFiles.map { (base as NSString).appendingPathComponent($0) }
+        let absolute = base.hasPrefix("/") ? base : (workingDirectory as NSString).appendingPathComponent(base)
+        return homeFiles.map { (absolute as NSString).appendingPathComponent($0) }
     }
 }
 

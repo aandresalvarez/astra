@@ -111,6 +111,29 @@ struct RuntimeHomeAccessTests {
         #expect(await RuntimeHomeAccessService.check(request)?.state == .blocked)
     }
 
+    @Test("Relative Claude configuration is checked from the provider working directory")
+    func relativeClaudeGlobalConfig() async throws {
+        let fixture = try Fixture(.claudeCode)
+        defer { fixture.remove() }
+        let custom = fixture.home + "/relative profile"
+        try FileManager.default.createDirectory(atPath: custom, withIntermediateDirectories: true)
+        let file = custom + "/.claude.json"
+        FileManager.default.createFile(atPath: file, contents: Data(), attributes: [.posixPermissions: 0])
+        let plan = AgentRuntimeProcessLaunchPlan(
+            runtime: .claudeCode, executablePath: "/unused/claude", arguments: [], currentDirectory: fixture.home,
+            environment: ["HOME": fixture.home, "CLAUDE_CONFIG_DIR": "relative profile"],
+            browserShimDirectory: nil, providerVersion: nil, parsesJSONLines: true
+        )
+        let block = await AgentRuntimeProcessRunner.providerHomeBlock(for: plan, resumeSessionID: nil)
+        #expect(block?.contains(".claude.json") == true)
+        let script = RuntimeHomeAccessContainerCommand.script(policy: fixture.request.policy)
+        let refused = try runShell(script, home: fixture.home, environment: ["CLAUDE_CONFIG_DIR": "relative profile"])
+        #expect(refused.exitCode == 78)
+        try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: file)
+        #expect(await AgentRuntimeProcessRunner.providerHomeBlock(for: plan, resumeSessionID: nil) == nil)
+        #expect(try runShell(script, home: fixture.home, environment: ["CLAUDE_CONFIG_DIR": "relative profile"]).exitCode == 0)
+    }
+
     @Test("OpenCode checks its custom config and honors XDG homes")
     func openCodeCustomConfig() async throws {
         let fixture = try Fixture(.openCodeCLI)
@@ -252,6 +275,7 @@ struct RuntimeHomeAccessTests {
     private func runShell(_ script: String, home: String, environment: [String: String] = [:]) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.currentDirectoryURL = URL(fileURLWithPath: home, isDirectory: true)
         process.arguments = ["-c", script, "astra-home-preflight", "/usr/bin/printf", "provider-reached\\n"]
         process.environment = ["HOME": home, "PATH": "/usr/bin:/bin"].merging(environment) { _, explicit in explicit }
         let out = Pipe(), err = Pipe()

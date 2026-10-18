@@ -65,7 +65,9 @@ enum RuntimeHomeAccessService {
                 }
             }
         }
-        var extraFiles = request.policy.homeFilePaths(environment: request.environment, userHome: request.userHome)
+        var extraFiles = request.policy.homeFilePaths(
+            environment: request.environment, userHome: request.userHome, workingDirectory: request.workingDirectory
+        )
         for variable in request.policy.environmentFiles {
             guard let path = request.environment[variable], !path.isEmpty else { continue }
             let absolute = path.hasPrefix("/") ? path : (request.workingDirectory as NSString).appendingPathComponent(path)
