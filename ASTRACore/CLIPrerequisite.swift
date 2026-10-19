@@ -12,14 +12,17 @@ import Foundation
 /// JSON later if desired. The semantic check is an enum (not a closure)
 /// for the same reason.
 public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
-    /// Stable identity: we key caches on `binary`, so two specs for the
-    /// same binary share a result. The struct's `id` is a synthesised
-    /// composite so SwiftUI lists can key on it if they want per-package
-    /// rendering.
+    /// Stable identity: the whole check contract (binary, arguments,
+    /// semantic test, context), not the label. Health results are keyed by
+    /// it (`PreflightCache`, the Plugins surface), so two specs share a
+    /// result only when they check the same thing: an identical `docker
+    /// version` probe that also requires a reachable daemon is a different
+    /// check.
     public var id: String {
-        let base = "\(binary):\(livenessArgs.joined(separator: " "))"
-        guard let contextualCheck else { return base }
-        return "\(base):context=\(contextualCheck.rawValue)"
+        var id = "\(binary):\(livenessArgs.joined(separator: " "))"
+        if let semantic { id += ":semantic=\(semantic.rawValue)" }
+        if let contextualCheck { id += ":context=\(contextualCheck.rawValue)" }
+        return id
     }
 
     /// Short binary name as it should appear on PATH, e.g. `gcloud`,

@@ -42,14 +42,15 @@ public enum HealthCheckPolicy {
 
     /// Checks allowed only as these exact arguments. `osascript -e` runs any
     /// script, so only the one that returns a constant is a status check.
-    /// `gcloud config config-helper` prints an access token unless
-    /// `--format` picks the expiry, and the checker shows stdout as the CLI's
-    /// "version": it refreshes the credential it reads and prints only when
-    /// that expires.
+    /// `gcloud config config-helper` and `gcloud auth application-default
+    /// print-access-token` print an access token unless `--format` picks the
+    /// expiry, and the checker shows stdout as the CLI's "version": each
+    /// refreshes the credential it reads and prints only when that expires.
     static let exactChecks: [String: Set<[String]>] = [
         "osascript": [["-e", "return \"ok\""]],
         "gcloud": [
-            ["config", "config-helper", "--format=value(credential.token_expiry)"]
+            ["config", "config-helper", "--format=value(credential.token_expiry)"],
+            ["auth", "application-default", "print-access-token", "--format=value(expiry)"]
         ]
     ]
 
