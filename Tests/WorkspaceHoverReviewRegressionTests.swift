@@ -71,11 +71,13 @@ struct WorkspaceHoverReviewRegressionTests {
         defer { fixture.tearDown() }
         fixture.keyWindow = fixture.other
         fixture.notifications.post(name: NSWindow.didResignKeyNotification, object: fixture.other)
-        await fixture.settle()
+        #expect(fixture.lifetime.pendingFocusCheck == nil)
         #expect(fixture.dismissals == 0)
         fixture.notifications.post(name: NSWindow.didResignKeyNotification, object: fixture.parent)
+        let pending = fixture.lifetime.pendingFocusCheck
+        #expect(pending != nil)
         fixture.lifetime.invalidate()
-        await fixture.settle()
+        await pending?.value
         #expect(fixture.dismissals == 0)
         fixture.notifications.post(name: NSWindow.didResizeNotification, object: fixture.parent)
         #expect(fixture.dismissals == 0)
@@ -111,7 +113,11 @@ private final class FocusFixture {
         }
     }
 
-    func settle() async { try? await Task.sleep(for: .milliseconds(20)) }
+    func settle() async {
+        let pending = lifetime.pendingFocusCheck
+        #expect(pending != nil)
+        await pending?.value
+    }
 
     func tearDown() {
         lifetime.invalidate()
