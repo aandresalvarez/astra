@@ -608,8 +608,7 @@ struct SidebarGroupingTests {
         #expect(!SidebarLeanPresentation.selectedWorkspaceChildrenUseGuide)
         #expect(SidebarLeanPresentation.sidebarTaskStatusesShowExceptionsOnly)
         #expect(!SidebarLeanPresentation.sidebarTaskStatusesNeverAddSecondLine)
-        #expect(SidebarLeanPresentation.workspaceRowsShowRestStateDisclosure)
-        #expect(SidebarLeanPresentation.workspaceDisclosureChevronWidth == 11)
+        #expect(!SidebarLeanPresentation.workspaceRowsShowRestStateDisclosure)
         #expect(SidebarLeanPresentation.workspaceSectionHorizontalInset == 10)
         #expect(SidebarLeanPresentation.workspaceRowContentLeadingPadding == 4)
         #expect(SidebarLeanPresentation.workspaceRowContentTrailingPadding >= 4)
@@ -620,7 +619,7 @@ struct SidebarGroupingTests {
         )
         #expect(SidebarLeanPresentation.workspaceRowElementSpacing == 7)
         #expect(SidebarLeanPresentation.workspaceFolderIconWidth == 17)
-        #expect(SidebarLeanPresentation.workspaceTitleLeadingOffset == 46)
+        #expect(SidebarLeanPresentation.workspaceTitleLeadingOffset == 28)
         #expect(SidebarLeanPresentation.pinnedDropZoneAppearsOnlyDuringDrag)
         // One fold for every capped rail list: Pinned, Unreads, and
         // workspace drawers all preview the same number of rows.
@@ -850,8 +849,6 @@ struct SidebarGroupingTests {
         let readableTitleWidth: CGFloat = 200
         let workspaceRowFixedChrome =
             SidebarLeanPresentation.workspaceRowTrailingSlotWidth
-            + SidebarLeanPresentation.workspaceDisclosureChevronWidth
-            + SidebarLeanPresentation.workspaceRowElementSpacing
             + SidebarLeanPresentation.workspaceFolderIconWidth
             + SidebarLeanPresentation.workspaceRowElementSpacing
             + SidebarLeanPresentation.workspaceRowContentLeadingPadding

@@ -122,11 +122,8 @@ enum SidebarLeanPresentation {
     // completed task merely because its spinner is elsewhere. Unreads retain
     // their workspace-name context; pinned rows move that context to hover.
     static let sidebarTaskStatusesNeverAddSecondLine = false
-    // Workspace rows expose expansion with a rest-state chevron; the
-    // folder icon's fill tracks selection only, so icon fill no longer
-    // does double duty as a collapsed/expanded signal.
-    static let workspaceRowsShowRestStateDisclosure = true
-    static let workspaceDisclosureChevronWidth: CGFloat = 11
+    // The folder silhouette represents disclosure, independently of selection.
+    static let workspaceRowsShowRestStateDisclosure = false
     static let workspaceSectionHorizontalInset: CGFloat = 10
     static let workspaceRowContentLeadingPadding: CGFloat = 4
     // Keep trailing status glyphs clear of the row's rounded stroke. The
@@ -140,8 +137,6 @@ enum SidebarLeanPresentation {
     }
     static var workspaceTitleLeadingOffset: CGFloat {
         workspaceRowContentLeadingPadding
-            + workspaceDisclosureChevronWidth
-            + workspaceRowElementSpacing
             + workspaceFolderIconWidth
             + workspaceRowElementSpacing
     }
@@ -688,6 +683,10 @@ struct TaskSidebarView: View {
         .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
         .accessibilityIdentifier("TaskSidebar")
+        .modifier(WorkspaceRemovalConfirmation(
+            pendingWorkspace: $workspacePendingRemoval,
+            onRemove: onDeleteWorkspace
+        ))
         .alert("Rename Task", isPresented: Binding(
             get: { renamingTask != nil },
             set: { if !$0 { renamingTask = nil } }
@@ -1501,6 +1500,7 @@ struct TaskSidebarView: View {
         }
     }
 
+    @State private var workspacePendingRemoval: Workspace?
     @State private var hoveredWorkspaceID: UUID?
     @State private var hoveredTaskID: UUID?
     @State private var hoveredScheduleID: UUID?
@@ -1645,77 +1645,25 @@ struct TaskSidebarView: View {
                 waiting: taskIndex.waitingTaskCount(in: workspace)
             )
 
-        return HStack(alignment: .center, spacing: SidebarLeanPresentation.workspaceRowElementSpacing) {
-            if workspaceSortMode == .manual {
-                Image(systemName: "line.3.horizontal")
-                    .font(Stanford.ui(10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 20, height: 28)
-                    .contentShape(Rectangle())
-                    .onDrag {
-                        beginWorkspaceDrag(workspace.id)
-                        return WorkspaceSidebarDragPayload.provider(for: workspace.id)
-                    }
-                    .help("Drag to reorder \(workspace.name)")
-                    .accessibilityLabel("Reorder \(workspace.name)")
-            }
-
-            // One button spanning chevron + folder + title. These used to be
-            // two buttons with the identical action, which made VoiceOver
-            // announce "Expand <workspace>" twice per row.
-            Button {
+        return WorkspaceFolderRow(
+            workspace: workspace,
+            isExpanded: isExpanded,
+            isSelected: isSelected,
+            isHovered: isHovered,
+            isNewTaskTarget: newTaskComposerWorkspaceID == workspace.id,
+            activityCounts: activityCounts,
+            allowsReordering: workspaceSortMode == .manual,
+            onToggle: {
                 withAnimation(accordionAnimation) {
                     toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
-            } label: {
-                HStack(spacing: SidebarLeanPresentation.workspaceRowElementSpacing) {
-                    // Rest-state disclosure: expansion used to be signalled
-                    // only by folder-icon fill, which read as two *kinds* of
-                    // folder rather than two states. The chevron stays
-                    // visible (tertiary) so rows advertise that they expand,
-                    // and brightens with the rest of the row on hover.
-                    Image(systemName: "chevron.right")
-                        .font(Stanford.ui(9, weight: .semibold))
-                        .foregroundStyle(isHovered ? .secondary : .tertiary)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .frame(width: SidebarLeanPresentation.workspaceDisclosureChevronWidth, height: 22)
-                        .animation(accordionAnimation, value: isExpanded)
-
-                    Image(systemName: isSelected ? "folder.fill" : "folder")
-                        .font(Stanford.ui(13, weight: .medium))
-                        .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
-                        .frame(width: SidebarLeanPresentation.workspaceFolderIconWidth, height: 22)
-
-                    Text(workspace.name)
-                        .font(Stanford.body(15))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+            },
+            onNewTask: { startNewTask(in: workspace) },
+            onBeginDrag: {
+                beginWorkspaceDrag(workspace.id)
+                return WorkspaceSidebarDragPayload.provider(for: workspace.id)
             }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
-            .accessibilityHint("Expands or collapses the workspace.")
-            .help(workspace.name)
-
-            workspaceRowActions(
-                for: workspace,
-                isHovered: isHovered,
-                activityCounts: activityCounts
-            )
-        }
-        .padding(.leading, SidebarLeanPresentation.workspaceRowContentLeadingPadding)
-        // Internal clearance keeps the status glyph away from the rounded row
-        // stroke; the header filter uses the same inset to preserve alignment.
-        .padding(.trailing, SidebarLeanPresentation.workspaceRowContentTrailingPadding)
-        .padding(.vertical, 6)
-        .frame(height: Stanford.sidebarWorkspaceRowHeight, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
+        )
         .onHover { updateWorkspaceHover($0, id: workspace.id) }
         .background(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
@@ -1729,41 +1677,16 @@ struct TaskSidebarView: View {
                 .animation(hoverAnimation, value: isSelected)
                 .animation(fastHoverAnimation, value: isHovered)
         )
+        .workspaceHoverCard(isHovered: isHovered) { dismiss in
+            WorkspaceHoverCard(
+                workspace: workspace,
+                taskCount: taskIndex.taskCount(in: workspace),
+                actions: workspaceActions(for: workspace),
+                dismiss: dismiss
+            )
+        }
         .contextMenu {
-            Button {
-                startNewTask(in: workspace)
-            } label: {
-                Label("New Task", systemImage: "square.and.pencil")
-            }
-
-            Button {
-                toggleStarred(for: workspace)
-            } label: {
-                Label(workspace.isStarred ? "Unstar Workspace" : "Star Workspace", systemImage: workspace.isStarred ? "star.slash" : "star")
-            }
-
-            Divider()
-
-            Button {
-                selectedWorkspace = workspace
-                onEditWorkspace?(workspace)
-            } label: {
-                Label("Workspace Details", systemImage: "info.circle")
-            }
-
-            Button {
-                onRenameWorkspace?(workspace)
-            } label: {
-                Label("Rename", systemImage: "pencil")
-            }
-
-            Divider()
-
-            Button(role: .destructive) {
-                onDeleteWorkspace?(workspace)
-            } label: {
-                Label("Remove", systemImage: "trash")
-            }
+            WorkspaceOptionsMenu(actions: workspaceActions(for: workspace), workspace: workspace)
         }
         // Keep the destination on the fixed-height workspace header. The
         // enclosing List row can also contain an expanded task drawer, and
@@ -1802,24 +1725,13 @@ struct TaskSidebarView: View {
         return .clear
     }
 
-    private func workspaceRowActions(
-        for workspace: Workspace,
-        isHovered: Bool,
-        activityCounts: SidebarWorkspaceActivityCounts
-    ) -> some View {
-        WorkspaceRowActions(
-            workspace: workspace,
-            isNewTaskTarget: newTaskComposerWorkspaceID == workspace.id,
-            isRowHovered: isHovered,
-            activityCounts: activityCounts,
-            onNewTask: { startNewTask(in: workspace) },
-            onToggleStarred: { toggleStarred(for: workspace) },
-            onEdit: {
-                selectedWorkspace = workspace
-                onEditWorkspace?(workspace)
-            },
-            onRename: { onRenameWorkspace?(workspace) },
-            onDelete: { onDeleteWorkspace?(workspace) }
+    private func workspaceActions(for workspace: Workspace) -> WorkspaceSidebarActions {
+        WorkspaceSidebarActions(
+            newTask: { startNewTask(in: workspace) },
+            openConfiguration: { openWorkspace(workspace) },
+            toggleStarred: { toggleStarred(for: workspace) },
+            rename: { onRenameWorkspace?(workspace) },
+            remove: { workspacePendingRemoval = workspace }
         )
     }
 
@@ -1836,8 +1748,6 @@ struct TaskSidebarView: View {
 
     private func toggleWorkspaceOpenState(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
         let wasExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
-        selectedTask = nil
-        selectedWorkspace = workspace
         setAccordionState(WorkspaceSidebarAccordion.toggling(
             workspace.id,
             in: accordion,
