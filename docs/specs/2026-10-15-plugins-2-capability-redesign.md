@@ -357,8 +357,11 @@ Each is a decision R1 implements and its fixture tests.
    and takes shared rows out of the shared lists, as for an edited override.
    Every workspace with an activation of the plugin is reconciled in the same
    save. A row that was deleted, or names a component no longer declared,
-   stays authored. Templates need nothing: Add upserts a plugin template by
-   name.
+   stays authored. Templates keep their component stamp, which is their
+   pending mapping: Add adopts the row stamped with the component (or, by
+   name, only a row this plugin stamped before component IDs existed) and
+   never takes over a template the person wrote; it adds its own stamped
+   template beside it instead.
 5. **Cleanup ownership.** `ConnectorCredentialCleanup.Ownership` counts the
    namespaces accounts own, so deleting a migrated connector row in R2 never
    cleans the account's UUID namespace; R2 enqueues only the obsolete stable
@@ -417,7 +420,10 @@ Each is a decision R1 implements and its fixture tests.
     Workspace action that imports several workspaces at once (a parent
     `Workspaces` folder) shares one import session: each exported shared
     account gets one fresh row for the whole action, stays shared, and every
-    imported activation that named it binds that row; the fresh ID still never
+    imported activation that named it binds that row, but only when every
+    file describes the account the same way (service, URL, sign-in method,
+    name, credential keys, settings), otherwise each workspace gets its own
+    fresh row; the fresh ID still never
     resolves an existing Keychain credential, and a single-workspace import or
     mirror recovery is unchanged.
 
@@ -524,7 +530,8 @@ stored.
    any workspace it joins can see (other components and plugins included),
    is renamed " 2", " 3" when it is bound (`WorkspaceCapabilityActivation.bind`,
    used by the migration, Add and mirror restore; new accounts take
-   `uniqueAlias`).
+   `uniqueAlias`; a shared account that can't be renamed keeps its
+   collision alias on its binding, `AccountBinding.alias`).
 2. **Component IDs are the runtime IDs already stamped on rows**
    (`skill:<name>`, `connector:<service>:<name>`, `tool:<type>:<command>:<name>`,
    from `CapabilityResourceOrigin`). The library still stores `PluginPackage`,
@@ -1006,7 +1013,11 @@ Plugins 2.0 makes the model explicit:
   normalized service among the accounts a workspace can see, so a name
   always selects one account: `WorkspaceCapabilityActivation.bind` renames
   a colliding account " 2", " 3" when it joins a workspace (sharing
-  included), and a new account takes `uniqueAlias`.
+  included), and a new account takes `uniqueAlias`. A shared account that
+  can't be renamed (another workspace uses its name) keeps its collision
+  alias ("Work 2") on its binding (`AccountBinding.alias`), so the alias a
+  task or selection names stays the same when the other account goes away;
+  runtime copies, launch records, mirrors and recovery carry it.
 
 This needs a new schema version (account is a new entity; today it is the
 `Connector` row). Follow the repository rule: add `Vn+1`, never edit a shipped
