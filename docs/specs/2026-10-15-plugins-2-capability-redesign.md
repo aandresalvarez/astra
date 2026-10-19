@@ -855,7 +855,10 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
 - **Routine skills are scoped like pinned ones.** A skill a routine selects
   reaches the run under the word-matched scope every task gets; a
   projected plugin skill needs no pin, since a pinned row is pruned by the
-  goal's wording the same way.
+  goal's wording the same way. A routine's or a template's selection is
+  checked against durable state when it is saved (the library-backed
+  resolution, not the editor's cached catalog), so nothing removed or
+  updated away while the editor was open is saved as a dangling reference.
 
 ### How R4 was built (2026-10-16)
 
