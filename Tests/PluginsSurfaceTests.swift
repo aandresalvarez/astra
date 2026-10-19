@@ -404,6 +404,33 @@ struct PluginsSurfaceTests {
         }
     }
 
+    @Test("A pending account offers Reconnect only when Add can sign in to it")
+    func pendingAccountOffersReconnectOnlyForSupportedProviders() throws {
+        let google = try builtIn("google-workspace")
+        #expect(PluginsSurfacePresentation.pendingAccountAction(for: google) == .reconnect)
+        let googleAccount = try #require(google.setupRequirements.first)
+        for provider in ["salesforce", nil] {
+            let account = PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: provider)
+            // Alone, or beside a Google account Add could connect: Add
+            // refuses the plugin, so the row says why and offers nothing.
+            for requirements in [[account], [googleAccount, account]] {
+                var crm = package("imported-crm", name: "CRM")
+                crm.setupRequirements = requirements
+                #expect(!PluginsSurfacePresentation.pendingAccounts(for: crm, googleAccountConnected: false).isEmpty)
+                let expected = CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)
+                #expect(PluginsSurfacePresentation.pendingAccountAction(for: crm) == .unsupported(try #require(expected.errorDescription)))
+                #expect(throws: expected) { try CapabilityCatalogActionService.addRoute(for: crm) }
+            }
+        }
+        // The row reads it from that rule, not a copy of it.
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("switch PluginsSurfacePresentation.pendingAccountAction(for: package) {"))
+        #expect(source.components(separatedBy: "Button(\"Reconnect\")").count == 2)
+    }
+
     @Test("A required account with no working sign-in is a pending step")
     func requiredOAuthAccountsArePendingUntilConnected() throws {
         let google = try builtIn("google-workspace")

@@ -111,6 +111,10 @@ enum MCPInstallPackageBuilder {
                   seen.insert(command).inserted else {
                 return nil
             }
+            // `docker run …` needs the daemon, not just the client: `docker
+            // --version` passes with Docker Desktop stopped. The daemon-aware
+            // built-in check (`CommonCLIPrerequisites.docker`) is read-only.
+            if let docker = dockerPrerequisite(for: command) { return docker }
             // A runtime with a known version report (`npx`, `uvx`, `node`…)
             // is checked with it; any other command only has to be found,
             // never run unasked (`HealthCheckPolicy.isExistenceOnly`).
@@ -124,6 +128,17 @@ enum MCPInstallPackageBuilder {
                 installHint: installHint(for: spec.installSource)
             )
         }
+    }
+
+    /// `CommonCLIPrerequisites.docker` run as `command` (`docker`, or an
+    /// installed path to it), when the check policy allows it.
+    private static func dockerPrerequisite(for command: String) -> CLIPrerequisite? {
+        var docker = CommonCLIPrerequisites.docker
+        guard (command as NSString).lastPathComponent == docker.binary,
+              HealthCheckPolicy.isReadOnly(binary: command, arguments: docker.livenessArgs) else { return nil }
+        docker.binary = command
+        docker.purpose = "Runs the pasted MCP server's container; the Docker daemon must be running."
+        return docker
     }
 
     private static func environmentDeclarationSkills(for servers: [PluginMCPServer]) -> [PluginSkill] {

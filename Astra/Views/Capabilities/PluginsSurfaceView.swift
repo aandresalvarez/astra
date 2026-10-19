@@ -352,11 +352,18 @@ struct PluginsSurfaceView: View {
                     .controlSize(.small)
                     .tint(Stanford.lagunita)
             } else if accountPending {
-                // Add routes through the install flow that signs in again.
-                Button("Reconnect") { add(package.id) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(Stanford.lagunita)
+                switch PluginsSurfacePresentation.pendingAccountAction(for: package) {
+                case .reconnect:
+                    Button("Reconnect") { add(package.id) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(Stanford.lagunita)
+                case .unsupported(let reason):
+                    Text(reason)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else if failing != nil {
                 Text("Not working").font(Stanford.caption(11)).foregroundStyle(Stanford.statusError)
             } else if isEnabled, let checkID, statuses[checkID]?.isNotChecked == true {

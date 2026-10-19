@@ -214,7 +214,7 @@ struct PluginRepairTests {
         // An install step's package manager only installs.
         #expect(!RepairAction.isSafeTerminalCommand("brew uninstall gh", binary: "gh", allowsInstaller: true))
         for (command, binary) in [
-            ("gh auth login", "gh"), ("gh auth refresh --hostname github.example.com", "gh"), ("gh auth status --hostname github.example.com", "gh"), ("gh auth status --active --hostname github.example.com", "gh"),
+            ("gh auth login", "gh"), ("gh auth refresh --hostname github.example.com", "gh"),
             ("gh auth login --hostname github.example.com --web", "gh"), ("gcloud auth login", "gcloud"),
             ("gcloud auth application-default login", "gcloud"), ("/opt/sdk/bin/gcloud auth login --account=me@x.org", "/opt/sdk/bin/gcloud"),
             ("az login --tenant contoso", "az"), ("aws sso login --profile dev", "aws"), ("aws configure sso", "aws"),
@@ -239,6 +239,32 @@ struct PluginRepairTests {
         let prerequisite = package.prerequisites[0]
         let repair = CapabilityRailRepair.repair(for: package, statuses: [prerequisite.id: .unauthenticated(detail: "expired")])
         #expect(repair?.command == nil)
+        let report = CapabilityPackageValidator.validate(data: try JSONEncoder().encode(package), checkPrerequisites: false)
+        #expect(report.blockers.contains { $0.title == "Unsafe repair command" })
+    }
+
+    @Test("A status command is a check, never a repair: it changes nothing")
+    func statusCommandsAreNotRepairs() throws {
+        for (command, binary) in [
+            ("gh auth status", "gh"), ("gh auth status --active", "gh"), ("gh auth status --active --hostname github.example.com", "gh"),
+            ("gh auth status -h github.example.com", "gh"), ("gcloud auth list", "gcloud"),
+            ("gcloud auth application-default print-access-token --format=none", "gcloud"),
+            ("gcloud config config-helper --format=value(credential.token_expiry)", "gcloud"),
+            ("az account show", "az"), ("aws sts get-caller-identity", "aws"), ("gh --version", "gh")
+        ] {
+            let words = command.split(separator: " ").map(String.init)
+            // Each one is a read-only check...
+            #expect(HealthCheckPolicy.isReadOnly(binary: binary, arguments: Array(words.dropFirst())), "\(command)")
+            // ...and no Sign in button runs it.
+            #expect(!TerminalRepairPolicy.isSignIn(cli: binary, arguments: Array(words.dropFirst())), "\(command)")
+            #expect(!RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: true), "\(command)")
+        }
+        // A plugin whose sign-in hint leads with one is refused at import.
+        var package = try gcloudPackage()
+        package.prerequisites = [CLIPrerequisite(
+            binary: "gh", livenessArgs: ["auth", "status"], displayName: "GitHub login", purpose: "",
+            authHint: "Run `gh auth status` to sign in."
+        )]
         let report = CapabilityPackageValidator.validate(data: try JSONEncoder().encode(package), checkPrerequisites: false)
         #expect(report.blockers.contains { $0.title == "Unsafe repair command" })
     }

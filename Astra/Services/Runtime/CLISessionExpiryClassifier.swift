@@ -18,7 +18,8 @@ import ASTRAModels
 /// still counts when a later command decided its exit status
 /// (`gcloud projects list | cat`), or when the CLI ran in a substitution
 /// inside another command (`echo "$(gh auth token)"`), which hides the CLI's
-/// own failure.
+/// own failure. A call that `&&`, `||` or a branch may have skipped counts
+/// only when the line shows it ran (`provablyRuns`).
 /// Patterns are whole diagnostics, not fragments.
 enum CLISessionExpiryClassifier {
     struct Family: Equatable, Sendable {
@@ -270,10 +271,12 @@ enum CLISessionExpiryClassifier {
     ) -> Family? {
         guard let command, !command.isEmpty else { return nil }
         let lowered = content.lowercased()
+        let applicationDefault = readsOnlyApplicationDefault(command)
         guard var family = families.first(where: { family in
             family.commands.contains { failed ? failureReaches(from: $0, in: command) : masksExitStatus(of: $0, in: command) }
                 && family.patterns.contains { lowered.contains($0) }
-                && (!family.readsApplicationDefault || readsOnlyApplicationDefault(command))
+                && (!family.readsApplicationDefault || applicationDefault == true)
+                && (family.checkBinary != "gcloud" || applicationDefault != nil)
         }) else { return nil }
         // A GitHub Enterprise host the command targeted is the one to sign
         // in to and check; github.com's login says nothing about it. A
@@ -309,20 +312,71 @@ enum CLISessionExpiryClassifier {
     }
 
     /// True when `command` calls Google Cloud only as `gcloud auth
-    /// application-default …`. A command that also runs another gcloud, bq
-    /// or gsutil call may have failed on the CLI account instead.
-    static func readsOnlyApplicationDefault(_ command: String) -> Bool {
+    /// application-default …`, on any release track and after any
+    /// gcloud-wide flags. False when a call is another gcloud command, or a
+    /// bq or gsutil call: the command may have failed on the CLI account
+    /// instead. Nil when a call's flags leave its command unknown
+    /// (`applicationDefaultReadings`): neither sign-in is offered, since
+    /// `gcloud auth login` for a failed ADC read fixes nothing.
+    static func readsOnlyApplicationDefault(_ command: String) -> Bool? {
         let calls = simpleCommands(command).compactMap { words -> [String]? in
             var rest = words
             stripWrappers(&rest)
             guard let executable = rest.first, googleCloud.commands.contains((executable as NSString).lastPathComponent) else { return nil }
             return rest
         }
-        return !calls.isEmpty && calls.allSatisfy { call in
-            (call[0] as NSString).lastPathComponent == "gcloud"
-                && Array(call.dropFirst().filter { !$0.hasPrefix("-") }.prefix(2)) == ["auth", "application-default"]
+        guard !calls.isEmpty else { return false }
+        let readings = calls.map { call in
+            (call[0] as NSString).lastPathComponent == "gcloud" ? applicationDefaultReadings(call.dropFirst()) : [false]
         }
+        if readings.contains([false]) { return false }
+        return readings.allSatisfy { $0 == [true] } ? true : nil
     }
+
+    /// Whether a gcloud call's command group is `auth application-default`,
+    /// after an optional release track, for each way its flags can be read.
+    /// One answer when every flag before the command is a known gcloud-wide
+    /// one (`gcloudValueFlags` take the next word, `gcloudBooleanFlags`
+    /// don't, `--flag=value` carries its own); an unknown `--flag word` may
+    /// be either, so both readings count. Past `maxUnknownFlags`, the call
+    /// is unknown.
+    private static func applicationDefaultReadings(_ arguments: ArraySlice<String>, positionals: [String] = [], unknownFlags: Int = 0) -> Set<Bool> {
+        var positionals = positionals
+        var rest = arguments
+        while let word = rest.first, positionals.count < 3 {
+            rest = rest.dropFirst()
+            if word == "--" { break }
+            guard word.hasPrefix("-"), word != "-" else {
+                positionals.append(word)
+                continue
+            }
+            if word.contains("=") || gcloudBooleanFlags.contains(word) { continue }
+            if gcloudValueFlags.contains(word) {
+                rest = rest.dropFirst()
+                continue
+            }
+            guard unknownFlags < maxUnknownFlags else { return [true, false] }
+            return applicationDefaultReadings(rest, positionals: positionals, unknownFlags: unknownFlags + 1)
+                .union(applicationDefaultReadings(rest.dropFirst(), positionals: positionals, unknownFlags: unknownFlags + 1))
+        }
+        if let track = positionals.first, gcloudReleaseTracks.contains(track) { positionals.removeFirst() }
+        return [Array(positionals.prefix(2)) == ["auth", "application-default"]]
+    }
+
+    private static let maxUnknownFlags = 4
+
+    /// gcloud's release tracks, the optional first word of a command.
+    private static let gcloudReleaseTracks: Set<String> = ["alpha", "beta"]
+
+    /// gcloud-wide flags (`gcloud topic flags`) that take a value, and
+    /// those that take none.
+    private static let gcloudValueFlags: Set<String> = [
+        "--project", "--account", "--configuration", "--impersonate-service-account", "--access-token-file",
+        "--credential-file-override", "--billing-project", "--verbosity", "--format", "--flatten", "--flags-file", "--trace-token"
+    ]
+    private static let gcloudBooleanFlags: Set<String> = [
+        "--quiet", "-q", "--help", "-h", "--log-http", "--no-log-http", "--user-output-enabled", "--no-user-output-enabled"
+    ]
 
     /// The check CLI installed beside a companion that `command` runs by path
     /// (`/opt/google-cloud-sdk/bin/bq` → `…/bin/gcloud`): `bq` and `gsutil`
@@ -575,9 +629,12 @@ enum CLISessionExpiryClassifier {
             }
             if let builtin = rest.first, ["cd", "pushd", "popd"].contains(builtin) { changesDirectory = true }
             guard let executable = rest.first, (executable as NSString).lastPathComponent == "gh" else { continue }
+            // `gh` treats an empty one as unset: `GH_HOST= gh api user`
+            // still infers the host from the checkout.
             func assigned(_ name: String) -> String? {
-                if let inline = assignments.last(where: { $0.hasPrefix("\(name)=") }) { return String(inline.dropFirst(name.count + 1)) }
-                return exported.last { $0.name == name && segment.scope.starts(with: $0.scope) }?.value
+                let value = assignments.last(where: { $0.hasPrefix("\(name)=") }).map { String($0.dropFirst(name.count + 1)) }
+                    ?? exported.last { $0.name == name && segment.scope.starts(with: $0.scope) }?.value
+                return value?.isEmpty == false ? value : nil
             }
             // A host-bearing `GH_REPO` names the repository, and with it the
             // host, so it outranks `GH_HOST`, the default for calls whose host
@@ -659,9 +716,10 @@ enum CLISessionExpiryClassifier {
 
     /// A GitHub check still aimed at github.com, by a command that named no
     /// host, for a run whose launch selects none either (`GH_HOST`,
-    /// `GH_REPO`), checks the host `gh` infers from the run's checkout
-    /// (`checkWorkingDirectory`) when its remotes name one Enterprise host
-    /// (`GitHubCheckoutHost`). Unchanged when the remotes can't be read,
+    /// `GH_REPO`; `gh` treats an empty one as unset), checks the host `gh`
+    /// infers from the run's checkout (`checkWorkingDirectory`) when its
+    /// remotes name one Enterprise host (`GitHubCheckoutHost`). Unchanged
+    /// when the remotes can't be read,
     /// name several hosts or github.com: nothing is guessed. Not for the
     /// rejected-`GH_TOKEN` stop, a github.com token.
     static func checkingCheckoutHost(
@@ -669,7 +727,7 @@ enum CLISessionExpiryClassifier {
         readHost: (String) async -> String? = { await GitHubCheckoutHost.host(workingDirectory: $0) }
     ) async -> RepairAction {
         let environment = repair.checkEnvironment ?? [:]
-        guard isUntargetedGitHubCheck(repair), environment["GH_HOST"] == nil, environment["GH_REPO"] == nil,
+        guard isUntargetedGitHubCheck(repair), environment["GH_HOST"]?.isEmpty != false, environment["GH_REPO"]?.isEmpty != false,
               repair.detail != gitHubEnvironmentToken.repair.detail,
               let directory = repair.checkWorkingDirectory,
               let host = await readHost(directory).flatMap(enterpriseHost)
@@ -730,9 +788,10 @@ enum CLISessionExpiryClassifier {
     /// substitution's status.
     static func masksExitStatus(of cli: String, in command: String) -> Bool {
         let segments = segments(command)
+        let gates = gates(of: segments)
         return segments.indices.contains { index in
             let segment = segments[index]
-            guard executes(cli, segment.words) else { return false }
+            guard executes(cli, segment.words), provablyRuns(index, in: segments, gates: gates) else { return false }
             // A compound command's closing word (`}`, `fi`, `done`) carries
             // its status on: the operator after it is the one that decides.
             var end = index
@@ -761,9 +820,11 @@ enum CLISessionExpiryClassifier {
     /// `gh --version; cat incident.txt; false` failed on `false`.
     static func failureReaches(from cli: String, in command: String) -> Bool {
         let segments = segments(command)
+        let gates = gates(of: segments)
         return segments.indices.contains { index in
             let segment = segments[index]
-            guard executes(cli, segment.words), !negates(segment.words), !isCondition(segment.words) else { return false }
+            guard executes(cli, segment.words), !negates(segment.words), !isCondition(segment.words),
+                  provablyRuns(index, in: segments, gates: gates) else { return false }
             var position = index
             while position < segments.count - 1 {
                 // `|| exit 1` (or `|| { …; exit 1; }`) ends the line with the
@@ -795,6 +856,125 @@ enum CLISessionExpiryClassifier {
             if closes(segment.words) { return false }
         }
         return false
+    }
+
+    /// Commands that print no known CLI's diagnostic, only their own errors:
+    /// what a call is commonly gated on (`cd repo && gh pr list`).
+    private static let quietCommands: Set<String> = [
+        "cd", "pushd", "popd", "export", "unset", "true", "false", ":", "test", "[", "[[", "mkdir", "sleep", "exit", "return"
+    ]
+
+    /// What may have skipped a command: the `&&` (true) and `||` (false)
+    /// operators before it in its own list, the innermost branch or loop
+    /// body it is in at its own level (`then`, `else`, `elif`, `do`), and
+    /// whether the group or substitution it runs in was itself gated.
+    private struct Gate {
+        var list: [Bool] = []
+        var body: Int?
+        var inherited = false
+        /// Every body it is in, at any level.
+        var bodies: Set<Int> = []
+
+        var isOpen: Bool { list.isEmpty && body == nil && !inherited }
+    }
+
+    /// Each segment's `Gate`, read left to right: an operator applies at
+    /// the level its segment ends on (a group's last segment carries the
+    /// operator after the group), and `;`, `&` or a newline starts a new list.
+    private static func gates(of segments: [Segment]) -> [Gate] {
+        struct Level {
+            var scope: [Int]
+            var inherited: Bool
+            var outerBodies: Set<Int>
+            var list: [Bool] = []
+            /// Open compound commands, each with the body it is in (nil in
+            /// its condition).
+            var compounds: [Int?] = []
+        }
+        var levels = [Level(scope: [], inherited: false, outerBodies: [])]
+        var nextBody = 0
+        var gates: [Gate] = []
+        for (index, segment) in segments.enumerated() {
+            while levels.count > 1, !segment.scope.starts(with: levels[levels.count - 1].scope) { levels.removeLast() }
+            while levels[levels.count - 1].scope.count < segment.scope.count {
+                let parent = levels[levels.count - 1]
+                let bodies = parent.outerBodies.union(parent.compounds.compactMap { $0 })
+                levels.append(Level(
+                    scope: Array(segment.scope.prefix(parent.scope.count + 1)),
+                    inherited: parent.inherited || !parent.list.isEmpty || !bodies.isEmpty,
+                    outerBodies: bodies
+                ))
+            }
+            let top = levels.count - 1
+            for word in segment.words.prefix(while: reservedWords.contains) {
+                switch word {
+                case "if", "while", "until":
+                    levels[top].compounds.append(nil)
+                // An `elif`'s condition and its `then` body are one: skipping
+                // one skips the other.
+                case "then", "do", "else", "elif" where !levels[top].compounds.isEmpty:
+                    guard ["else", "elif"].contains(word) || levels[top].compounds[levels[top].compounds.count - 1] == nil else { break }
+                    levels[top].compounds[levels[top].compounds.count - 1] = nextBody
+                    nextBody += 1
+                case "fi", "done":
+                    _ = levels[top].compounds.popLast()
+                default:
+                    break
+                }
+            }
+            let level = levels[top]
+            gates.append(Gate(
+                list: level.list, body: level.compounds.last { $0 != nil } ?? nil, inherited: level.inherited,
+                bodies: level.outerBodies.union(level.compounds.compactMap { $0 })
+            ))
+            let next = index + 1 < segments.count ? segments[index + 1].scope : []
+            let depth = zip(segment.scope, next).prefix { $0 == $1 }.count
+            guard let target = levels.lastIndex(where: { $0.scope.count == depth }) else { continue }
+            switch segment.separator {
+            case "&&", "||": levels[target].list.append(segment.separator == "&&")
+            case ";", "\n", "&": levels[target].list = []
+            default: break
+            }
+        }
+        return gates
+    }
+
+    /// True when the call at `index` ran, or the line shows it did. A call
+    /// after `&&` or `||`, or in a branch or loop body, may have been
+    /// skipped (`cat incident.txt; false && gh api user` runs no `gh`), and
+    /// then a sign-in error in the output is another command's. So it counts
+    /// only when every command that could have run without it is quiet
+    /// (`quietCommands`): each one before it, except the command its
+    /// substitution feeds, which runs after it; and each one after it except
+    /// its pipeline, and the rest of the `&&` chain or the body that skipped
+    /// it. A `||` gate's skip succeeds, so the `&&` commands after it run.
+    private static func provablyRuns(_ index: Int, in segments: [Segment], gates: [Gate]) -> Bool {
+        let gate = gates[index]
+        guard !gate.isOpen else { return true }
+        let scope = segments[index].scope
+        let earlier = segments.indices.prefix(index).allSatisfy { j in
+            let feedsIt = ["(", "`"].contains(segments[j].separator)
+                && scope.starts(with: segments[j + 1].scope) && segments[j + 1].scope.count > segments[j].scope.count
+            return feedsIt || isQuiet(segments[j].words)
+        }
+        guard earlier else { return false }
+        let andChain = !gate.inherited && gate.body == nil && gate.list.allSatisfy { $0 }
+        var end = index
+        while end + 1 < segments.count,
+              ["|", "|&"].contains(segments[end].separator)
+                || (andChain && segments[end].separator == "&&" && segments[end + 1].scope == scope) {
+            end += 1
+        }
+        let body = gate.list.isEmpty && !gate.inherited ? gate.body : nil
+        return segments.indices.dropFirst(end + 1).allSatisfy { k in
+            body.map { gates[k].bodies.contains($0) } == true || isQuiet(segments[k].words)
+        }
+    }
+
+    private static func isQuiet(_ words: [String]) -> Bool {
+        var rest = words
+        stripWrappers(&rest)
+        return rest.first.map(quietCommands.contains) ?? true
     }
 
     /// Shell reserved words that open or continue a compound command: the
