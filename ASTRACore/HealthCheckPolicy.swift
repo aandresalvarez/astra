@@ -14,8 +14,10 @@ import Foundation
 /// subcommand) counts only for the known CLIs in `versionForms`, each in the
 /// forms it supports: the same word means something else to another
 /// program (`touch version` creates a file, `sh version` runs a script).
-/// Every rule matches the binary's basename, so a path whose basename is not
-/// listed (`/tmp/x/touch`) has no check either. A bare call, which may start
+/// Every rule matches the binary's basename, and only for a bare name or an
+/// installed path (`TrustedExecutablePath`): `/tmp/plugin/gh` has no check,
+/// and when one runs, the file found must still be an installed path once
+/// symlinks resolve (a bare name ASTRA finds on its own search path aside). A bare call, which may start
 /// an interactive session, is refused. A check that
 /// fails is never run (`HealthStatus.notChecked`, which is not a pass), and
 /// import refuses it (`CapabilityPackageValidator`).
@@ -87,7 +89,9 @@ public enum HealthCheckPolicy {
     /// read-only status check.
     public static func isReadOnly(binary: String, arguments: [String]) -> Bool {
         let cli = (binary as NSString).lastPathComponent
-        guard !arguments.isEmpty else { return false }
+        // A known CLI's name is not its identity: `/tmp/plugin/gh` is not
+        // the GitHub CLI (`TrustedExecutablePath`).
+        guard !arguments.isEmpty, TrustedExecutablePath.isTrustedDeclaration(binary) else { return false }
         if exactChecks[cli]?.contains(arguments) == true { return true }
         return ((versionForms[cli] ?? []) + (checks[cli] ?? [])).contains { $0.matches(arguments) }
     }

@@ -569,6 +569,42 @@ struct RetryInterruptedRunTests {
         }
     }
 
+    @Test("Resume checks the credential store the failed call selected itself, over the launch's")
+    func resumeChecksTheCommandLocalStore() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Team Store", primaryPath: env.root)
+            let task = AgentTask(title: "Projects", goal: "List Google Cloud projects", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = try #require(CLISessionExpiryClassifier.family(
+                content: "ERROR: Reauthentication required.", command: "CLOUDSDK_CONFIG=/tmp/team gcloud projects list"
+            ))
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeRepairRequired, payload: family.repair.encoded(), run: run))
+            try env.context.save()
+            var environments: [[String: String]?] = []
+            env.coordinator.repairCheck = { repair in
+                environments.append(repair.checkEnvironment)
+                return false
+            }
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(environments.count == 1)
+            #expect(environments.first??["CLOUDSDK_CONFIG"] == "/tmp/team", "retry: \(useRetry)")
+        }
+    }
+
     @Test("Without a provider session Retry still relaunches from scratch")
     func noSessionRelaunches() async throws {
         let submitted = try await retry(sessionID: nil, stopReason: "cancelled")

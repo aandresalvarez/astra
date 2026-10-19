@@ -92,14 +92,15 @@ struct HealthCheckPolicyTests {
         repair.checkBinary = "gcloud"
         repair.checkArguments = ["projects", "delete", "victim", "--quiet"]
         repair.checkEnvironment = ["PATH": "\(root.path):/usr/bin:/bin"]
-        #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: { _ in true }) == false)
         repair.checkEnvironment = nil
         #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
         #expect(!FileManager.default.fileExists(atPath: marker.path))
-        // The same script as a status check does run: the guard is the rule.
+        // The same script as a status check does run, once its temporary
+        // folder counts as installed: the guard is the rule.
         repair.checkArguments = ["--version"]
         repair.checkEnvironment = ["PATH": "\(root.path):/usr/bin:/bin"]
-        #expect(await PluginRepairCoordinator.liveCheck(repair))
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: { _ in true }))
         #expect(FileManager.default.fileExists(atPath: marker.path))
     }
 
@@ -138,7 +139,7 @@ struct HealthCheckPolicyTests {
         repair.checkBinary = "touch"
         repair.checkArguments = ["version"]
         repair.checkEnvironment = ["PATH": "\(root.path):/usr/bin:/bin"]
-        #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: { _ in true }) == false)
         #expect(!FileManager.default.fileExists(atPath: marker.path))
         // And import refuses it.
         var package = try decodePackage("gcloud-workflow")

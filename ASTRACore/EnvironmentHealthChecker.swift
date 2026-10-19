@@ -107,6 +107,7 @@ public struct EnvironmentHealthChecker: Sendable {
     private let overridePath: String?
     private let fallbackDirectories: [String]
     private let isExecutable: @Sendable (String) -> Bool
+    private let isInstalled: @Sendable (String) -> Bool
 
     public init(
         runner: BinaryRunner = ProcessBinaryRunner(),
@@ -115,13 +116,15 @@ public struct EnvironmentHealthChecker: Sendable {
         fallbackDirectories: [String] = EnvironmentHealthChecker.defaultFallbackDirectories,
         isExecutable: @escaping @Sendable (String) -> Bool = {
             FileManager.default.isExecutableFile(atPath: $0)
-        }
+        },
+        isInstalled: @escaping @Sendable (String) -> Bool = { TrustedExecutablePath.isInstalled($0) }
     ) {
         self.runner = runner
         self.envPath = envPath
         self.overridePath = overridePath
         self.fallbackDirectories = fallbackDirectories
         self.isExecutable = isExecutable
+        self.isInstalled = isInstalled
     }
 
     /// Check a single binary. Order: resolve → liveness → semantic.
@@ -155,6 +158,12 @@ public struct EnvironmentHealthChecker: Sendable {
         // would run on every scan, unasked (`HealthCheckPolicy`).
         guard HealthCheckPolicy.isReadOnly(binary: binary, arguments: livenessArgs) else {
             return .notChecked(detail: HealthCheckPolicy.refusal(binary: binary, arguments: livenessArgs))
+        }
+        // And what was found must be that CLI: a declared path still an
+        // installed path once symlinks resolve, a bare name found on ASTRA's
+        // own search path as an absolute path (`TrustedExecutablePath`).
+        guard binary.contains("/") ? isInstalled(resolved) : resolved.hasPrefix("/") else {
+            return .notChecked(detail: "not checked: `\(resolved)` is not an installed copy of \((binary as NSString).lastPathComponent)")
         }
 
         // Step 2: liveness probe. Run the resolved binary directly so we're

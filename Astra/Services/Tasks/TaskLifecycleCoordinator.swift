@@ -13,7 +13,7 @@ final class TaskLifecycleCoordinator {
     private let workspaceDeletionCleanupStore: WorkspaceDeletionCleanupStore
     private let persistWorkspaceChange: @MainActor (Workspace?, ModelContext) -> Bool
     /// Re-runs a repair's own check before Resume (tests substitute it).
-    var repairCheck: @Sendable (RepairAction) async -> Bool = PluginRepairCoordinator.liveCheck
+    var repairCheck: @Sendable (RepairAction) async -> Bool = { await PluginRepairCoordinator.liveCheck($0) }
 
     init(
         modelContext: ModelContext,
@@ -163,7 +163,7 @@ final class TaskLifecycleCoordinator {
               var repair = pendingRepair(for: task), repair.checkBinary != nil else {
             return retryVerifiedTask(task)
         }
-        repair.checkEnvironment = Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
+        repair = repair.checking(in: Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary))
         repair.checkWorkingDirectory = Self.checkWorkingDirectory(for: task)
         repair = CLISessionExpiryClassifier.checkingCredentialFile(CLISessionExpiryClassifier.checkingLaunchHost(repair))
         let check = repairCheck
@@ -359,7 +359,7 @@ final class TaskLifecycleCoordinator {
         guard var repair = pendingRepair(for: task), repair.checkBinary != nil else {
             return resumeVerifiedTask(task)
         }
-        repair.checkEnvironment = Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
+        repair = repair.checking(in: Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary))
         repair.checkWorkingDirectory = Self.checkWorkingDirectory(for: task)
         repair = CLISessionExpiryClassifier.checkingCredentialFile(CLISessionExpiryClassifier.checkingLaunchHost(repair))
         let check = repairCheck
