@@ -451,6 +451,57 @@ struct PluginRuntimeProjectionTests {
         #expect(resolve(other.alias) == accounts[0].id.uuidString)
     }
 
+    /// Turn off keeps plugin A's bindings, its default included. While A is
+    /// off, B's oldest account stands in; turning A on gives the default back.
+    @Test("With the default's plugin off, an aliasless call reaches the oldest enabled account, and A's again once it's back")
+    func projectedDefaultFallsBackToTheOldestEnabledAccount() throws {
+        let context = try makeContext()
+        let jira = try builtIn("jira-workflow")
+        var other = jira
+        other.id = "jira-ops"
+        other.skills[0].name = "Jira Ops Agent"
+        let workspace = Workspace(name: "Fallback", primaryPath: "/tmp/projection-fallback")
+        context.insert(workspace)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableCapability(jira.id)
+            $0.enableCapability(other.id)
+        }
+        let component = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        func account(_ name: String, boundTo pluginID: String, at offset: TimeInterval) throws -> Connector {
+            let row = Connector(name: name, serviceType: "jira", baseURL: "https://\(name.lowercased()).atlassian.net", authMethod: "basic")
+            row.workspace = workspace
+            context.insert(row)
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace))
+            WorkspaceCapabilityActivation.bind(row, toComponent: component, of: activation)
+            let binding = try #require(activation.bindings.first { $0.account?.id == row.id })
+            binding.createdAt = Date(timeIntervalSince1970: 1_000 + offset)
+            return row
+        }
+        let primary = try account("Primary", boundTo: jira.id, at: 0)
+        let older = try account("Older", boundTo: other.id, at: 10)
+        _ = try account("Newer", boundTo: other.id, at: 20)
+        try context.save()
+
+        func aliaslessCall() -> String? {
+            let projection = PluginRuntimeProjection.project(workspace: workspace, packages: [jira, other], connectorMode: .runtimeCopies)
+            let manifest = ConnectorRuntimeProjection(
+                connectors: projection.connectors, secretStore: MockSecretStore(), defaultConnectorIDs: projection.defaultAccountIDs
+            ).manifestJSON()
+            return HostControlBrokeredServices.resolveConnector(
+                forServiceType: "jira", alias: nil, in: HostControlToolConfiguration(connectorsJSON: manifest)
+            ).connector?.id
+        }
+        #expect(aliaslessCall() == primary.id.uuidString)
+
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.removeAll { $0 == jira.id } }
+        let kept = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+        #expect(!kept.isEnabled && kept.bindings.contains { $0.isDefault && $0.account?.id == primary.id })
+        #expect(aliaslessCall() == older.id.uuidString)
+
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(jira.id) }
+        #expect(aliaslessCall() == primary.id.uuidString)
+    }
+
     @Test("Accounts enabled outside a plugin carry no default, so an aliasless call is still refused")
     func directAccountsKeepTheRefusal() throws {
         let context = try makeContext()
