@@ -1,4 +1,5 @@
 import Foundation
+import os
 import ASTRACore
 
 /// Where plugins come from besides the built-ins: a git repository or a
@@ -102,6 +103,15 @@ struct PluginSource: Codable, Identifiable, Equatable, Sendable {
     static let metadataKind = "plugin-source"
 }
 
+/// The mirror's source identity for a plugin's copy, from this channel's
+/// plugin source store (`PluginSourceStore.mirrorIdentity`). Registered by
+/// `PluginSourceStore.launchedApp` only.
+enum PluginSourceMirrorIdentity: PluginSourceIdentityResolving {
+    static func mirrorIdentity(pluginID: String, digest: String) -> String? {
+        PluginSourceStore.mirrorIdentity(pluginID: pluginID, digest: digest, provenance: PluginSourceStore().provenance())
+    }
+}
+
 enum PluginSourceStoreError: Error, Equatable, LocalizedError {
     /// `sources.json` exists but can't be read: it is reported and never
     /// overwritten (T11).
@@ -127,9 +137,33 @@ struct PluginSourceStore {
     /// use (`PluginSourceFetcher.sshCommand`).
     var knownHostsFile: URL { root.appendingPathComponent("known_hosts") }
 
+    /// Where a store made without a root lives: the channel's Application
+    /// Support once the app's launch path has said so (`launchedApp`), a
+    /// scratch folder of this process before that and in every other
+    /// process. The test binary resolves Application Support to the
+    /// production folder, so no default (this initializer's, the
+    /// coordinator's, the action service's, the import verifier's) may reach
+    /// it there, not even to read.
     static func defaultRoot(for channel: AppChannel = .current) -> URL {
+        launched.withLock { $0 } ? applicationSupportRoot(for: channel) : scratchRoot
+    }
+
+    static func applicationSupportRoot(for channel: AppChannel = .current) -> URL {
         AppChannelStoragePaths.applicationSupportDirectory(for: channel)
             .appendingPathComponent("PluginSources", isDirectory: true)
+    }
+
+    static let scratchRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("astra-plugin-sources-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+
+    private static let launched = OSAllocatedUnfairLock(initialState: false)
+
+    /// Called by `ASTRAApp.init` only, before anything reads a store: from
+    /// then on the default store is the person's, and the mirror records
+    /// sources from it (`PluginSourceIdentitySeam`).
+    static func launchedApp() {
+        launched.withLock { $0 = true }
+        PluginSourceIdentitySeam.register(PluginSourceMirrorIdentity.self)
     }
 
     private var listURL: URL { root.appendingPathComponent("sources.json") }

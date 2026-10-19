@@ -741,6 +741,9 @@ public struct ASTRAApp: App {
         // with credential projections or reads TaskRoleProfile.runtime — see
         // RuntimeSeamRegistration.swift.
         RuntimeSeamRegistration.registerAll()
+        // The person's plugin source store, from here on only: the test
+        // bootstrap runs `registerAll()` but never this.
+        PluginSourceStore.launchedApp()
 
         // A production bundle outside Applications is an installer launcher,
         // not a normal ASTRA session. Give SwiftUI an in-memory container so

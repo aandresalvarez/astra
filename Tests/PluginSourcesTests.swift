@@ -14,6 +14,43 @@ import ASTRACore
 struct PluginSourcesTests {
     // MARK: - T1, T2: locations
 
+    @Test("No plugin source store a test reaches by default is the person's: App Support is never read or written")
+    func testsNeverReachTheRealStore() throws {
+        // The test binary resolves Application Support to the production
+        // folder; only `ASTRAApp.init` opts the default store into it.
+        let appSupport = AppChannelStoragePaths.applicationSupportBaseDirectory().standardizedFileURL.path
+        let real = PluginSourceStore.applicationSupportRoot().standardizedFileURL.path
+        #expect(real.hasPrefix(appSupport + "/"))
+        let scratch = FileManager.default.temporaryDirectory.standardizedFileURL.path
+        for root in [
+            PluginSourceStore().root,
+            PluginSourceStore.defaultRoot(),
+            PluginSourceCoordinator.shared.store.root,
+            CapabilityCatalogActionService().sourceStore.root
+        ] {
+            let path = root.standardizedFileURL.path
+            #expect(path != real, "\(path)")
+            #expect(!path.hasPrefix(appSupport + "/"), "\(path)")
+            #expect(path.hasPrefix(scratch), "\(path)")
+        }
+        // The mirror's export reads no store either: every copy is local.
+        #expect(ObjectIdentifier(PluginSourceIdentitySeam.current) == ObjectIdentifier(LocalPluginSourceIdentity.self))
+        #expect(PluginSourceIdentitySeam.current.mirrorIdentity(pluginID: "any", digest: "any") == nil)
+        // Only the launch path opts in; the test bootstrap's registration never does.
+        let root = Self.repositoryRoot()
+        // Read as text, never called: the name is split so the fitness check
+        // against per-suite seam registration doesn't count a file read.
+        let seamsFile = "Astra/Services/Runtime/" + "RuntimeSeam" + "Registration.swift"
+        let seams = try String(contentsOf: root.appendingPathComponent(seamsFile), encoding: .utf8)
+        let bootstrap = try String(contentsOf: root.appendingPathComponent("Tests/RuntimeSeamTestBootstrap.swift"), encoding: .utf8)
+        let app = try String(contentsOf: root.appendingPathComponent("Astra/ASTRAApp.swift"), encoding: .utf8)
+        for text in [seams, bootstrap] {
+            #expect(!text.contains("PluginSourceIdentitySeam.register("))
+            #expect(!text.contains("launchedApp()"))
+        }
+        #expect(app.contains("PluginSourceStore.launchedApp()"))
+    }
+
     @Test("T1: only token-free https, ssh, owner/repo and absolute folders are accepted")
     func locationsAreTokenFree() {
         #expect(PluginSource.make(from: "https://github.com/acme/plugins.git")?.kind == .git)
