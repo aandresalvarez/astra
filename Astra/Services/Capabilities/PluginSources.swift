@@ -125,6 +125,9 @@ enum PluginSourceStoreError: Error, Equatable, LocalizedError {
     /// Another Add, file import, Create or Remove of the same plugin ID is
     /// running, here or in another ASTRA process (`exclusively`).
     case pluginBusy(String)
+    /// Another ASTRA process is writing the library and didn't finish within
+    /// the wait, or this one is re-entering a library write (`exclusively`).
+    case libraryBusy
 
     var errorDescription: String? {
         switch self {
@@ -132,6 +135,8 @@ enum PluginSourceStoreError: Error, Equatable, LocalizedError {
             "The list of plugin sources can't be read, so it was left as it is."
         case .pluginBusy:
             "This plugin is being added, imported or removed already. Try again when that finishes."
+        case .libraryBusy:
+            "Another plugin is being added, imported or removed. Try again when that finishes."
         }
     }
 }
@@ -380,41 +385,81 @@ struct PluginSourceStore {
         try encoder.encode(records).write(to: provenanceURL, options: .atomic)
     }
 
-    /// Runs one Add from a source, file import, Create or Remove of a
-    /// plugin (`body`), with no other for the same ID running across
-    /// sources (T5, T13): an install from one source can't pass its
-    /// conflict check while another source's install of that ID is between
-    /// its check and its writes, so `body` checks again and writes as one
-    /// step. IDs are keyed as the library names their files (case and
-    /// separators folded), so two IDs that would share a file share the
-    /// key. Held in this process (a set of keys) and across processes (an
-    /// exclusive `flock` on `locks/<key digest>.lock` under the store). A
-    /// second operation is refused, not queued: the paths are synchronous
-    /// on the main actor, so one that arrives meanwhile is re-entering
-    /// from inside the first, or comes from another process.
+    /// How long `exclusively` waits for another process's library write
+    /// before refusing (`libraryBusy`); a write is a few file copies.
+    var libraryLockWait: TimeInterval = 5
+
+    /// Runs one Add from a source, file import, Create, Remove or staged
+    /// approval of a plugin (`body`), with no other for the same ID running
+    /// across sources, and no other library write at all (T5, T13): an
+    /// install from one source can't pass its conflict check while another
+    /// source's install of that ID is between its check and its writes, and
+    /// two installs of different IDs can't both pass the library-wide
+    /// uniqueness checks (an MCP server ID, a file name) before either
+    /// writes, so `body` checks again and writes as one step.
+    ///
+    /// Two locks, always in this order so they can't deadlock: the plugin's
+    /// (IDs keyed as the library names their files, case and separators
+    /// folded, so two IDs that would share a file share the key), then the
+    /// library's. Each is held in this process (a set of keys, a flag) and
+    /// across processes (an exclusive `flock` on `locks/<key digest>.lock`
+    /// and `locks/library.lock` under the store). A second operation in
+    /// this process is refused, not queued: the paths are synchronous on
+    /// the main actor, so one that arrives meanwhile is re-entering from
+    /// inside the first. Another process's hold on the plugin is refused
+    /// too; its hold on the library is waited for (`libraryLockWait`), as a
+    /// write of an unrelated plugin is short and the next check sees it.
     func exclusively<Result>(pluginID: String, _ body: () throws -> Result) throws -> Result {
         let key = CapabilityLibrary.safeFileName(for: pluginID).lowercased()
         guard Self.heldPluginKeys.withLock({ $0.insert(key).inserted }) else {
             throw PluginSourceStoreError.pluginBusy(pluginID)
         }
         defer { _ = Self.heldPluginKeys.withLock { $0.remove(key) } }
-        let lockURL = pluginLockURL(forKey: key)
-        try fileManager.createDirectory(at: lockURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let descriptor = open(lockURL.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: lockURL.path]) }
+        let descriptor = try openLock(pluginLockURL(forKey: key))
         defer { close(descriptor) }
         guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw PluginSourceStoreError.pluginBusy(pluginID) }
+        defer { flock(descriptor, LOCK_UN) }
+        return try exclusivelyLibrary(body)
+    }
+
+    /// The library-wide half of `exclusively`: taken inside a plugin's lock,
+    /// never on its own.
+    private func exclusivelyLibrary<Result>(_ body: () throws -> Result) throws -> Result {
+        guard Self.heldLibrary.withLock({ held -> Bool in
+            if held { return false }
+            held = true
+            return true
+        }) else { throw PluginSourceStoreError.libraryBusy }
+        defer { Self.heldLibrary.withLock { $0 = false } }
+        let descriptor = try openLock(libraryLockURL)
+        defer { close(descriptor) }
+        let deadline = Date().addingTimeInterval(libraryLockWait)
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            guard errno == EWOULDBLOCK, Date() < deadline else { throw PluginSourceStoreError.libraryBusy }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
         defer { flock(descriptor, LOCK_UN) }
         return try body()
     }
 
-    /// The plugin keys `exclusively` holds in this process.
+    /// The plugin keys `exclusively` holds in this process, and whether it
+    /// holds the library.
     private static let heldPluginKeys = OSAllocatedUnfairLock(initialState: Set<String>())
+    private static let heldLibrary = OSAllocatedUnfairLock(initialState: false)
+
+    private func openLock(_ url: URL) throws -> Int32 {
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let descriptor = open(url.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path]) }
+        return descriptor
+    }
 
     func pluginLockURL(forKey key: String) -> URL {
         let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
         return root.appendingPathComponent("locks", isDirectory: true).appendingPathComponent("\(digest).lock")
     }
+
+    var libraryLockURL: URL { root.appendingPathComponent("locks", isDirectory: true).appendingPathComponent("library.lock") }
 
     func cloneDirectory(for source: PluginSource) -> URL {
         root.appendingPathComponent(source.id, isDirectory: true)

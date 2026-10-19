@@ -11,6 +11,12 @@ import ASTRACore
 /// IDs are never touched: they are validated separately, and an entry whose
 /// text changed has a problem, so it offers no Add and no identity derived
 /// from a cleaned name reaches the library.
+///
+/// The setup and repair UI shows a source's hints too: a prerequisite's
+/// purpose, install hint and sign-in hint (the rail, the health message, a
+/// rejected repair's own guidance), and a connector's field hints and
+/// notes, so they are cleaned here as well. `AccountDisplayName` is the
+/// sibling rule for a name a workspace file gives an account.
 enum PluginSourceDisplayText {
     /// Names, authors, categories and tags.
     static let nameLimit = 120
@@ -61,8 +67,9 @@ enum PluginSourceDisplayText {
     }
 
     /// Cleans every display field of `package` in place: its name, author,
-    /// description, category and tags, and each component's name and
-    /// summary. Returns the first change, the one the entry reports.
+    /// description, category and tags, each component's name and summary,
+    /// and every hint the setup and repair UI renders. Returns the first
+    /// change, the one the entry reports.
     static func clean(_ package: inout PluginPackage) -> Change? {
         var changes: [Change] = []
         func name(_ value: inout String) { apply(&value, limit: nameLimit, into: &changes) }
@@ -79,6 +86,22 @@ enum PluginSourceDisplayText {
         for index in package.connectors.indices {
             name(&package.connectors[index].name)
             text(&package.connectors[index].description)
+            text(&package.connectors[index].notes)
+            for hint in package.connectors[index].credentialHints.indices {
+                text(&package.connectors[index].credentialHints[hint].hint)
+            }
+            for hint in package.connectors[index].configHints.indices {
+                text(&package.connectors[index].configHints[hint].hint)
+            }
+        }
+        for index in package.prerequisites.indices {
+            name(&package.prerequisites[index].displayName)
+            text(&package.prerequisites[index].purpose)
+            text(&package.prerequisites[index].installHint)
+            if var authHint = package.prerequisites[index].authHint {
+                text(&authHint)
+                package.prerequisites[index].authHint = authHint
+            }
         }
         for index in package.localTools.indices {
             name(&package.localTools[index].name)

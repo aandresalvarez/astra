@@ -221,6 +221,19 @@ struct CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         approvedBy: String = "ASTRA local admin"
     ) throws -> PluginPackage {
+        // A library write like any other (T13): one at a time per plugin
+        // and across the library.
+        try sourceStore.exclusively(pluginID: id) {
+            try approveStagedExclusively(id: id, modelContext: modelContext, approvalStore: approvalStore, approvedBy: approvedBy)
+        }
+    }
+
+    private func approveStagedExclusively(
+        id: String,
+        modelContext: ModelContext,
+        approvalStore: CapabilityApprovalStore,
+        approvedBy: String
+    ) throws -> PluginPackage {
         guard let draft = library.stagedPackage(id: id) else {
             throw CapabilityLibrary.RemovalError.notInstalled(id)
         }
