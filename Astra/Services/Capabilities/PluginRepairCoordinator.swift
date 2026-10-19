@@ -117,7 +117,7 @@ final class PluginRepairCoordinator: ObservableObject {
         // With the stopped run's variables, the check runs the CLI as that
         // run did: a token the task projected, not ASTRA's own login.
         if let environment = repair.checkEnvironment, !environment.isEmpty {
-            let path = checkExecutablePath(binary, environment: environment)
+            let path = checkExecutablePath(binary, environment: environment, workingDirectory: repair.checkWorkingDirectory)
             guard !path.isEmpty else { return false }
             let merged = ProcessInfo.processInfo.environment.merging(environment) { _, projected in projected }
             let result = await ProcessBinaryRunner().run(
@@ -140,13 +140,22 @@ final class PluginRepairCoordinator: ObservableObject {
 
     /// The executable the resumed run's shell would start: with a projected
     /// `PATH`, the first match on it (as the shell resolves it), else ASTRA's
-    /// usual lookup. Empty when the projected `PATH` has none.
-    nonisolated static func checkExecutablePath(_ binary: String, environment: [String: String]) -> String {
+    /// usual lookup. Empty when the projected `PATH` has none. A relative
+    /// entry (`./tools`), or an empty one (the current directory), is where
+    /// the shell looks from the run's `workingDirectory`, never ASTRA's own;
+    /// without one such entries are skipped.
+    nonisolated static func checkExecutablePath(
+        _ binary: String, environment: [String: String], workingDirectory: String? = nil
+    ) -> String {
         guard let projected = environment["PATH"], !binary.contains("/") else {
             return RuntimePathResolver.detectExecutablePath(named: binary)
         }
-        return projected.split(separator: ":")
-            .map { URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent(binary).path }
+        return projected.split(separator: ":", omittingEmptySubsequences: false)
+            .compactMap { entry -> String? in
+                if entry.hasPrefix("/") { return String(entry) }
+                return workingDirectory.map { ($0 as NSString).appendingPathComponent(String(entry)) }
+            }
+            .map { ($0 as NSString).appendingPathComponent(binary) }
             .first { FileManager.default.isExecutableFile(atPath: $0) } ?? ""
     }
 }

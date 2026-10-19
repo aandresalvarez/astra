@@ -282,12 +282,15 @@ struct CapabilityCatalogActionService {
     /// (`skill.<uuid>`) has no activation: a shared skill leaves this
     /// workspace's scope, and a workspace's own skill, which has no off state
     /// short of deleting it, is refused (`PluginsSurfacePresentation.offersTurnOff`).
+    /// A saved disable is audited like Configure's (`capabilityDisabled`); a
+    /// rolled-back one is audited by the disabler.
     @discardableResult
     func disable(
         _ package: PluginPackage,
         workspace: Workspace,
         capabilities: WorkspaceCapabilities,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        traceID: String = AuditTrace.make("capability-disable")
     ) -> CapabilityActivationDisabler.Result {
         guard PluginsSurfacePresentation.offersTurnOff(package) else {
             return CapabilityActivationDisabler.Result(packageID: package.id, persisted: false)
@@ -299,6 +302,22 @@ struct CapabilityCatalogActionService {
             modelContext: modelContext,
             keepingWorkspaceRows: CapabilityInstaller.syntheticSkillRowID(of: package) != nil
         )
+        if result.persisted {
+            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                "source": "plugins_turn_off",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "workspace_id": workspace.id.uuidString,
+                "disabled_skills_count": String(result.disabledSkillIDs.count),
+                "disabled_connectors_count": String(result.disabledConnectorIDs.count),
+                "disabled_tools_count": String(result.disabledToolIDs.count),
+                "removed_workspace_skills_count": String(result.removedWorkspaceSkillIDs.count),
+                "removed_workspace_connectors_count": String(result.removedWorkspaceConnectorIDs.count),
+                "enabled_capability_ids": CapabilityAudit.compactNames(WorkspaceCapabilityActivation.state(of: workspace).capabilityIDs)
+            ])
+        }
         CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return result
     }

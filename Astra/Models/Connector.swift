@@ -376,6 +376,60 @@ public final class Connector {
         ConnectorSecretSeam.required.synchronizeCredentialNamespaces(keys: credentialKeys, facts: facts)
     }
 
+    /// Moves the plain values of the settings this account's creator stores
+    /// as credentials (`ConnectorSettingStorageSeam`) into the Keychain. The
+    /// workspace mirror withholds those settings, so a value left on the row
+    /// would be one recovery from being lost. Only a definite answer about
+    /// the creator moves anything. Returns the keys moved.
+    @discardableResult
+    public func moveSettingsStoredAsCredentials(
+        resolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
+        store: SecretStore = SecretStoreSeam.required
+    ) -> [String] {
+        guard let originPackageID, !originPackageID.isEmpty,
+              let keys = resolver?.declaredSettingKeysStoredAsCredentials(
+                originPackageID: originPackageID, originComponentID: originComponentID
+              ) else { return [] }
+        return moveSettingsToKeychain(keys, store: store)
+    }
+
+    /// Moves each of `keys` that holds a plain value on this row into the
+    /// Keychain, one at a time: a setting leaves `configKeys` (and becomes a
+    /// credential key) only once its value reads back from the Keychain, so
+    /// a failed write keeps it here for the next try. A different value the
+    /// Keychain already holds for the key is left for the person to settle.
+    @discardableResult
+    public func moveSettingsToKeychain(_ keys: Set<String>, store: SecretStore = SecretStoreSeam.required) -> [String] {
+        let secrets = ConnectorSecretSeam.required
+        var moved: [String] = []
+        for key in configKeys where keys.contains(key) {
+            let value = configValue(key)
+            guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let upperKey = key.uppercased()
+            func held() -> String? { secrets.loadAllCredentials(keys: [upperKey], facts: secretFacts, store: store)[upperKey] }
+            if let existing = held(), !existing.isEmpty, existing != value { continue }
+            guard held() == value
+                || (secrets.saveCredential(value, key: upperKey, facts: secretFacts, store: store) && held() == value) else { continue }
+            if let index = configKeys.firstIndex(of: key) {
+                configKeys.remove(at: index)
+                if index < configValues.count { configValues.remove(at: index) }
+            }
+            if !credentialKeys.contains(where: { $0.caseInsensitiveCompare(key) == .orderedSame }) {
+                while credentialValues.count < credentialKeys.count { credentialValues.append("") }
+                credentialKeys.append(key)
+                credentialValues.append("")
+            }
+            moved.append(key)
+        }
+        if !moved.isEmpty {
+            updatedAt = Date()
+            AuditLoggingSeam.required.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
+                "scope": "connector_setting", "result": "moved", "key_count": String(moved.count)
+            ], level: .info)
+        }
+        return moved
+    }
+
     /// Delete all Keychain entries when connector is deleted.
     public func cleanupKeychain() {
         keychainCleanup.run()

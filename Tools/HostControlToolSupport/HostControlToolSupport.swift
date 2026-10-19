@@ -123,6 +123,8 @@ public struct HostControlConnector: Codable, Equatable, Sendable {
     public var env: [String: String]
     public var credentials: [String: String]
     public var config: [String: String]
+    /// The workspace's default account of its service; absent in older manifests.
+    public var isDefault: Bool? = nil
 }
 
 public struct HostControlCommandResult: Equatable, Sendable {

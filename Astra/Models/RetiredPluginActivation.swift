@@ -164,6 +164,55 @@ extension WorkspaceCapabilityActivation {
         setRetired(all.filter { $0.pluginID != activation.pluginID }, on: workspace)
     }
 
+    /// Gives back each override of a component the definition `activation`
+    /// just accepted (declaring `componentIDs`) no longer declares: nothing
+    /// projects its row in the component's place any more, so the row is the
+    /// workspace's own again rather than out of scope for good. A shared row
+    /// goes back on the workspace's shared lists, which it left when it
+    /// became the override, unless another override there still names it.
+    public static func releaseUndeclaredOverrides(
+        on activation: PluginActivation,
+        declaring componentIDs: [String],
+        in workspace: Workspace
+    ) {
+        let declared = Set(componentIDs)
+        let released = activation.overriddenComponentIDs.enumerated().compactMap { index, componentID -> (String, UUID?)? in
+            guard !declared.contains(componentID) else { return nil }
+            return (componentID, index < activation.overridingRowIDs.count ? UUID(uuidString: activation.overridingRowIDs[index]) : nil)
+        }
+        guard !released.isEmpty else { return }
+        for (componentID, _) in released {
+            setOverridden(false, componentID: componentID, on: activation)
+        }
+        let stillOverriding = overridingRowIDs(of: workspace)
+        for case let (_, rowID?) in released where !stillOverriding.contains(rowID) {
+            guard let context = workspace.modelContext else { continue }
+            var skills = FetchDescriptor<Skill>(predicate: #Predicate { $0.id == rowID && $0.isGlobal == true })
+            skills.fetchLimit = 1
+            var tools = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.id == rowID && $0.isGlobal == true })
+            tools.fetchLimit = 1
+            if ((try? context.fetchCount(skills)) ?? 0) > 0 {
+                mutate(workspace) { $0.enableGlobalSkill(rowID.uuidString) }
+            } else if ((try? context.fetchCount(tools)) ?? 0) > 0 {
+                mutate(workspace) { $0.enableGlobalTool(rowID.uuidString) }
+            }
+        }
+    }
+
+    /// Takes every row the workspace's activations, and removed ones, name
+    /// as overrides off its shared lists: such a row is on exactly while its
+    /// activation is, so a shared-list membership (a mirror import turns on
+    /// every shared row it reads) would keep it on with the plugin off.
+    public static func takeOverridesOffSharedLists(in workspace: Workspace) {
+        let ids = Set(overridingRowIDs(of: workspace).map(\.uuidString))
+        let state = state(of: workspace)
+        guard state.globalSkillIDs.contains(where: ids.contains) || state.globalToolIDs.contains(where: ids.contains) else { return }
+        mutate(workspace) { state in
+            state.globalSkillIDs.removeAll(where: ids.contains)
+            state.globalToolIDs.removeAll(where: ids.contains)
+        }
+    }
+
     /// Restores what a workspace's own mirror kept, for plugins it has no
     /// activation of; for one it has, only the rows still pending as its
     /// overrides.
@@ -185,6 +234,16 @@ extension WorkspaceCapabilityActivation {
     public static func copyRetired(from source: Workspace, to target: Workspace) {
         guard target.retiredPluginActivationsJSON != source.retiredPluginActivationsJSON else { return }
         target.retiredPluginActivationsJSON = source.retiredPluginActivationsJSON
+    }
+
+    /// Gives `target`, a launch copy, the record a queued request froze
+    /// (`entries`) instead of the live one: an Add while the request waited
+    /// consumes the live record, and the rows it kept out of scope at
+    /// submission must stay out of the run. Nil (a request that froze none)
+    /// leaves the copy as it is.
+    public static func applyFrozenRetired(_ entries: [RetiredPluginActivation]?, to target: Workspace) {
+        guard let entries else { return }
+        setRetired(entries, on: target)
     }
 
     static func setRetired(_ entries: [RetiredPluginActivation], on workspace: Workspace) {

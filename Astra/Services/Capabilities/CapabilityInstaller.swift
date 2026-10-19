@@ -177,7 +177,8 @@ struct CapabilityInstaller {
         policyContext: CapabilityCatalogPolicyContext? = nil,
         auditSource: String = "enable",
         traceID: String? = nil,
-        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
+        exportMirror: (@MainActor (Workspace) -> Void)? = nil
     ) throws -> InstallationResult {
         var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
         if let traceID { startFields["trace_id"] = traceID }
@@ -294,19 +295,27 @@ struct CapabilityInstaller {
 
             for pluginConnector in package.connectors {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginConnector)
-                let fields = StoredConnectorFields(pluginConnector, in: package, credentialInputs: credentialInputs, configInputs: configInputs)
+                // This component's own inputs over the shared ones: two
+                // connectors with one name or field key never trade values.
+                let ownConfigInputs = PluginSetupInputs.view(configInputs, component: componentID)
+                let fields = StoredConnectorFields(
+                    pluginConnector, in: package,
+                    credentialInputs: PluginSetupInputs.view(credentialInputs, component: componentID),
+                    configInputs: ownConfigInputs
+                )
                 let configKeys = connectorConfigKeys(
                     hints: fields.connector.configHints,
                     extraConfigKeys: packageEnvironmentKeys,
-                    configInputs: configInputs
+                    configInputs: ownConfigInputs
                 )
-                let baseURL = baseURLOverrides[pluginConnector.name] ?? pluginConnector.baseURL
+                let overriddenBaseURL = PluginSetupInputs.baseURL(in: baseURLOverrides, for: pluginConnector)
+                let baseURL = overriddenBaseURL ?? pluginConnector.baseURL
                 let hasScopedInputs = connectorHasScopedInputs(
                     fields.connector,
                     configKeys: configKeys,
                     credentialInputs: fields.credentialInputs,
-                    configInputs: configInputs,
-                    baseURLOverridden: baseURLOverrides[pluginConnector.name] != nil
+                    configInputs: ownConfigInputs,
+                    baseURLOverridden: overriddenBaseURL != nil
                 )
                 let bound = activation.accounts(forComponent: componentID).first
                 // The account replacing this component's default takes its
@@ -314,6 +323,10 @@ struct CapabilityInstaller {
                 let inheritsDefault = activation.bindings.contains {
                     !$0.isDeleted && $0.componentID == componentID && $0.isDefault
                 }
+                // And its age, which elects the next default.
+                let boundAge = activation.bindings.first {
+                    !$0.isDeleted && $0.componentID == componentID && $0.account?.id == bound?.id
+                }?.createdAt
                 let account: Connector
                 if let bound, !hasScopedInputs {
                     // Adding again keeps the account the workspace chose.
@@ -329,7 +342,7 @@ struct CapabilityInstaller {
                         workspace: workspace,
                         existing: bound.flatMap { $0.isGlobal ? nil : $0 },
                         modelContext: modelContext,
-                        configInputs: configInputs,
+                        configInputs: ownConfigInputs,
                         extraConfigKeys: packageEnvironmentKeys,
                         baseURL: baseURL,
                         allowCredentialUserInteraction: allowCredentialUserInteraction
@@ -340,7 +353,7 @@ struct CapabilityInstaller {
                         WorkspaceCapabilityActivation.unbind(bound, from: activation, componentID: componentID)
                     }
                 }
-                WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: inheritsDefault)
+                WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: inheritsDefault, createdAt: boundAge)
                 appendUnique(account.id, to: &connectorIDs)
             }
 
@@ -361,6 +374,16 @@ struct CapabilityInstaller {
                 persist(workspace, modelContext)
             }) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
+            }
+            // `persist` exports the clicked workspace; the others whose
+            // pending rows became overrides in the same save are exported
+            // here, or their mirrors would restore the rows as before.
+            for (other, _) in pendingSnapshots {
+                if let exportMirror {
+                    exportMirror(other)
+                } else if !WorkspacePersistenceCoordinator.shouldSkipAutoExport() {
+                    WorkspaceConfigManager.autoExport(workspace: other, modelContext: modelContext)
+                }
             }
             var enabledFields = [
                 "package_id": package.id,
@@ -611,6 +634,7 @@ struct CapabilityInstaller {
         let pluginConnector = fields.connector
         let connector = existing ?? existingWorkspaceConnector(
             for: pluginConnector,
+            package: package,
             workspace: workspace
         ) ?? Connector(
             name: pluginConnector.name,
@@ -783,21 +807,29 @@ struct CapabilityInstaller {
         }
     }
 
-    /// The workspace's same-named account of the connector's service that
-    /// serves this component, or no component yet: one stamped with or bound
-    /// to another component (two same-named connectors with distinct IDs) is
-    /// that component's account, and Add makes this one its own.
+    /// A workspace row this plugin's component created itself: one stamped
+    /// by this plugin and stamped with or bound to this component (or one it
+    /// `replaces`). A row the person authored is never taken over just
+    /// because its name and service match: Add would overwrite its URL, keys
+    /// and skill attachment, and a Remove could not put them back. A row of
+    /// another component (two same-named connectors with distinct IDs) is
+    /// that component's account, and Add makes this one its own. The
+    /// activation's own binding comes in as `existing`.
     private func existingWorkspaceConnector(
         for pluginConnector: PluginConnector,
+        package: PluginPackage,
         workspace: Workspace
     ) -> Connector? {
         let identities = Set([CapabilityResourceOrigin.componentID(for: pluginConnector)]
             + CapabilityResourceOrigin.replacedComponentIDs(for: pluginConnector))
         return workspace.connectors.first { candidate in
-            guard candidate.name == pluginConnector.name, candidate.serviceType == pluginConnector.serviceType else { return false }
+            guard candidate.name == pluginConnector.name,
+                  candidate.serviceType == pluginConnector.serviceType,
+                  CapabilityResourceOrigin.isOwnedBy(candidate, packageID: package.id)
+            else { return false }
             let stamp = candidate.originComponentID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let served = Set(candidate.accountBindings.filter { !$0.isDeleted }.map(\.componentID) + (stamp.isEmpty ? [] : [stamp]))
-            return served.isEmpty || !served.isDisjoint(with: identities)
+            return !served.isDisjoint(with: identities)
         }
     }
 
@@ -862,7 +894,7 @@ struct CapabilityInstaller {
         baseURLOverrides: [String: String]
     ) -> [String] {
         package.connectors.compactMap { connector in
-            let baseURL = baseURLOverrides[connector.name] ?? connector.baseURL
+            let baseURL = PluginSetupInputs.baseURL(in: baseURLOverrides, for: connector) ?? connector.baseURL
             guard let violation = ConnectorSecurityPolicy.credentialTransportViolation(
                 baseURL: baseURL,
                 authMethod: connector.authMethod,

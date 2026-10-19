@@ -14,8 +14,10 @@ public final class Workspace: Identifiable {
     public var enabledGlobalSkillIDs: [String] = []
     public var enabledGlobalConnectorIDs: [String] = []
     public var enabledGlobalToolIDs: [String] = []
-    /// V19 enablement, read only by `PluginActivationMigration` and cleared
-    /// once it has moved onto `pluginActivations`.
+    /// V19 enablement, moved by `PluginActivationMigration` onto
+    /// `pluginActivations` and then cleared. Until then (a failed migration
+    /// rolls it back) `WorkspaceCapabilityActivation.enabledPluginIDs(of:)`
+    /// still counts it.
     @Attribute(originalName: "enabledCapabilityIDs")
     public var legacyEnabledCapabilityIDs: [String] = []
     public var enabledPackIDs: [String] = []
@@ -140,9 +142,11 @@ public final class Workspace: Identifiable {
         return active != primaryPath
     }
 
-    /// Enabled plugin IDs, derived from `pluginActivations`.
+    /// Enabled plugin IDs, derived from `pluginActivations` (and, until the
+    /// V20 migration has moved it, the legacy enablement:
+    /// `WorkspaceCapabilityActivation.enabledPluginIDs(of:)`).
     public var enabledCapabilityIDs: [String] {
-        WorkspaceCapabilityActivation.state(of: self).capabilityIDs
+        WorkspaceCapabilityActivation.enabledPluginIDs(of: self)
     }
 
     /// Every plugin with an activation here, on or off, and its recorded

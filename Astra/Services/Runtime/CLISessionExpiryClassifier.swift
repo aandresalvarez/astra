@@ -166,7 +166,10 @@ enum CLISessionExpiryClassifier {
         return Stop(reason: TaskRunStopReason.capabilitySessionExpired.rawValue, message: family.stopMessage)
     }
 
-    static func family(content: String, command: String?, failed: Bool = true) -> Family? {
+    static func family(
+        content: String, command: String?, failed: Bool = true,
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> Family? {
         guard let command, !command.isEmpty else { return nil }
         let lowered = content.lowercased()
         guard var family = families.first(where: { family in
@@ -178,8 +181,27 @@ enum CLISessionExpiryClassifier {
         if family.checkBinary == "gh", let host = gitHubHost(in: command) { family = family.onHost(host) }
         // So is the installation it ran by path: another one on PATH may be
         // signed in while this one is not.
-        if let executable = executablePath(of: family.checkBinary, in: command) { family = family.at(executable) }
+        if let executable = executablePath(of: family.checkBinary, in: command)
+            ?? siblingCheckExecutable(of: family, in: command, isExecutable: isExecutable) {
+            family = family.at(executable)
+        }
         return family
+    }
+
+    /// The check CLI installed beside a companion that `command` runs by path
+    /// (`/opt/google-cloud-sdk/bin/bq` → `…/bin/gcloud`): `bq` and `gsutil`
+    /// read that SDK's sign-in. Nil when the check CLI itself runs in
+    /// `command` (by name: PATH picks it), no companion or several run by
+    /// path, or no executable check CLI sits beside it (a standalone `gsutil`).
+    static func siblingCheckExecutable(of family: Family, in command: String, isExecutable: (String) -> Bool) -> String? {
+        guard !runs(family.checkBinary, in: command) else { return nil }
+        let siblings = Set(family.commands.filter { $0 != family.checkBinary }.compactMap { companion in
+            executablePath(of: companion, in: command).map {
+                (($0 as NSString).deletingLastPathComponent as NSString).appendingPathComponent(family.checkBinary)
+            }
+        })
+        guard siblings.count == 1, let sibling = siblings.first.flatMap(exactExecutable), isExecutable(sibling) else { return nil }
+        return sibling
     }
 
     /// The family whose stop message this is; the message is ASTRA's own.

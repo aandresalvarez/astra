@@ -21,8 +21,16 @@ public struct PluginOverrideRecords: Codable, Equatable, Sendable {
         public let isGlobal: Bool
         public let createdAt: Date
         public let updatedAt: Date
+        /// The accounts and tools attached to the row that its workspace
+        /// reaches through it, frozen with it: an attachment edited or
+        /// deleted while the request waits does not change the run either.
+        /// Absent from a request recorded before attachments were frozen.
+        public let attachedConnectors: [PluginAccountRecord]?
+        public let attachedTools: [ToolRecord]?
 
-        public init(_ skill: Skill) {
+        /// `skill`'s contents, with the attachments `workspaceID` reaches:
+        /// shared ones, and its own (never another workspace's).
+        public init(_ skill: Skill, workspaceID: UUID) {
             id = skill.id
             name = skill.name
             icon = skill.icon
@@ -39,6 +47,12 @@ public struct PluginOverrideRecords: Codable, Equatable, Sendable {
             isGlobal = skill.isGlobal
             createdAt = skill.createdAt
             updatedAt = skill.updatedAt
+            attachedConnectors = skill.connectors
+                .filter { !$0.isDeleted && ($0.isGlobal || $0.workspace?.id == workspaceID) }
+                .map(PluginAccountRecord.init)
+            attachedTools = skill.localTools
+                .filter { !$0.isDeleted && ($0.isGlobal || $0.workspace == nil || $0.workspace?.id == workspaceID) }
+                .map(ToolRecord.init)
         }
 
         /// Writes these contents onto `skill`, a launch copy (never a stored
@@ -135,7 +149,7 @@ public struct PluginOverrideRecords: Codable, Equatable, Sendable {
         var tools: [ToolRecord] = []
         for id in ids where seen.insert(id).inserted {
             if let skill = workspace.skills.first(where: { $0.id == id && !$0.isDeleted }) ?? Self.fetch(Skill.self, id, near: workspace) {
-                skills.append(SkillRecord(skill))
+                skills.append(SkillRecord(skill, workspaceID: workspace.id))
             } else if let tool = workspace.localTools.first(where: { $0.id == id && !$0.isDeleted })
                 ?? Self.fetch(LocalTool.self, id, near: workspace) {
                 tools.append(ToolRecord(tool))
@@ -145,7 +159,7 @@ public struct PluginOverrideRecords: Codable, Equatable, Sendable {
         self.localTools = tools
     }
 
-    /// Every row ID these records carry.
+    /// Every override row ID these records carry (not their attachments).
     public var rowIDs: Set<UUID> {
         Set(skills.map(\.id) + localTools.map(\.id))
     }

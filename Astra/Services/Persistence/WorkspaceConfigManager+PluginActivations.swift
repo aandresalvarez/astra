@@ -82,11 +82,18 @@ extension WorkspaceConfigManager {
         public var componentID: String
         public var connectorID: String
         public var isDefault: Bool
+        /// When the binding was made, in seconds since the reference date,
+        /// unrounded: the oldest binding of a service becomes its default
+        /// when the default account goes, across the workspace's plugins,
+        /// and the file's ISO-8601 dates keep whole seconds only. Nil in a
+        /// file written before it was kept.
+        public var boundAt: TimeInterval?
 
-        public init(componentID: String, connectorID: String, isDefault: Bool) {
+        public init(componentID: String, connectorID: String, isDefault: Bool, boundAt: TimeInterval? = nil) {
             self.componentID = componentID
             self.connectorID = connectorID
             self.isDefault = isDefault
+            self.boundAt = boundAt
         }
     }
 
@@ -101,11 +108,11 @@ extension WorkspaceConfigManager {
 
     /// Shared rows an activation names as a component's override, so the
     /// mirror carries them even when nothing else enables them (an edited
-    /// shared row kept while its plugin was off).
+    /// shared row kept while its plugin was off), and those a removed one
+    /// named: `retiredPlugins` carries only their IDs, and recovery could
+    /// not recreate the row an Add puts back as the override.
     static func overridingRows<Row: PersistentModel>(of workspace: Workspace, among rows: [Row]) -> [Row] where Row.ID == UUID {
-        let ids = Set(WorkspaceCapabilityActivation.activations(of: workspace)
-            .flatMap(\.overridingRowIDs)
-            .compactMap(UUID.init(uuidString:)))
+        let ids = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
         guard !ids.isEmpty else { return [] }
         return rows.filter { ids.contains($0.id) }
     }
@@ -117,7 +124,10 @@ extension WorkspaceConfigManager {
                 .sorted { $0.createdAt < $1.createdAt }
                 .compactMap { binding in
                     binding.account.map {
-                        PluginAccountRef(componentID: binding.componentID, connectorID: $0.id.uuidString, isDefault: binding.isDefault)
+                        PluginAccountRef(
+                            componentID: binding.componentID, connectorID: $0.id.uuidString, isDefault: binding.isDefault,
+                            boundAt: binding.createdAt.timeIntervalSinceReferenceDate
+                        )
                     }
                 }
             return InstalledPluginRef(
@@ -255,7 +265,8 @@ extension WorkspaceConfigManager {
                     connector,
                     toComponent: account.componentID,
                     of: activation,
-                    isDefault: account.isDefault
+                    isDefault: account.isDefault,
+                    createdAt: account.boundAt.map(Date.init(timeIntervalSinceReferenceDate:))
                 )
             }
         }
@@ -264,6 +275,25 @@ extension WorkspaceConfigManager {
         if case .preserveRecordedState = trust, let retired = config.retiredPlugins {
             WorkspaceCapabilityActivation.restoreRetired(retired, to: workspace)
         }
+        // The import turned on every shared row it read, the overrides the
+        // mirror carries only so they can be named again included.
+        WorkspaceCapabilityActivation.takeOverridesOffSharedLists(in: workspace)
         return projectedIDs
+    }
+
+    /// Writes `workspace`'s mirror now, on this thread, registering its
+    /// folder as `autoExport` does and dropping the writes still queued for
+    /// it (they hold older snapshots). For a change whose next step must not
+    /// run while the mirror still says otherwise: the V20 migration rewrites
+    /// every mirror before it cleans the namespaces a V19 mirror's rows
+    /// name. False when a mirror was due and could not be written.
+    @MainActor
+    @discardableResult
+    public static func exportMirrorNow(workspace: Workspace, modelContext: ModelContext) -> Bool {
+        guard !WorkspacePersistenceCoordinator.shouldSkipAutoExport(),
+              let url = autoExportTarget(for: workspace.primaryPath).url else { return true }
+        guard WorkspaceMirrorRegistry(for: modelContext)?.register([workspace.primaryPath]) ?? true else { return false }
+        WorkspaceAutoExportGate.shared.retire(workspaceID: workspace.id.uuidString)
+        return exportToFileResult(workspace: workspace, modelContext: modelContext, url: url).didExport
     }
 }

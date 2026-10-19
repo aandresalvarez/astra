@@ -165,7 +165,8 @@ struct TaskCapabilityResolver {
         let connEnvVars = ConnectorRuntimeProjection(
             connectors: liveConnectors,
             secretStore: secretStore,
-            credentialExposurePolicy: connectorCredentialExposurePolicy
+            credentialExposurePolicy: connectorCredentialExposurePolicy,
+            defaultConnectorIDs: pluginProjection.defaultAccountIDs
         )
             .environmentVariables()
 
@@ -805,10 +806,12 @@ struct TaskCapabilityResolver {
         // agree with the aliases every prompt and broker route quotes.
         // `connectorCredentialExposurePolicy` is unchanged, so a connector
         // without an approved grant still contributes config and no secret.
+        let defaultConnectorIDs = pluginProjection.defaultAccountIDs
         let connectorEnvVars = ConnectorRuntimeProjection(
             connectors: effectiveReachableConnectors,
             secretStore: secretStore,
-            credentialExposurePolicy: connectorCredentialExposurePolicy
+            credentialExposurePolicy: connectorCredentialExposurePolicy,
+            defaultConnectorIDs: defaultConnectorIDs
         )
             .environmentVariables()
 
@@ -846,7 +849,8 @@ struct TaskCapabilityResolver {
             reachableConnectors: effectiveReachableConnectors,
             reachableLocalTools: reachableLocalTools ?? scopedTools,
             reachablePackageIDs: Self.uniqueStrings(reachablePackageIDs ?? enabledPackageIDs),
-            reachableBehaviorInstructions: reachableBehaviorInstructions
+            reachableBehaviorInstructions: reachableBehaviorInstructions,
+            defaultConnectorIDs: defaultConnectorIDs
         )
     }
 
@@ -1380,6 +1384,10 @@ struct TaskCapabilityPromptScope {
     /// skill, which is the same reachability-follows-narration bug one layer
     /// down.
     let reachableBehaviorInstructions: [String]
+    /// The accounts the workspace's plugin bindings mark as their service's
+    /// default (`PluginRuntimeProjection.defaultAccountIDs`), so every
+    /// `ASTRA_CONNECTORS` built from this scope marks the same ones.
+    let defaultConnectorIDs: Set<UUID>
 
     /// The browser bridge is wired for this run. Reachability-wide, because
     /// attaching a route the turn never named costs nothing.
@@ -1422,7 +1430,8 @@ extension TaskCapabilityPromptScope {
             connectorEnvVars: ConnectorRuntimeProjection(
                 connectors: reachableConnectors,
                 secretStore: secretStore,
-                credentialExposurePolicy: policy
+                credentialExposurePolicy: policy,
+                defaultConnectorIDs: defaultConnectorIDs
             ).environmentVariables()
         )
         return scope

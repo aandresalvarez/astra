@@ -366,6 +366,12 @@ enum PluginActivationMigration {
             let saved = PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, modelContext: modelContext) {
                 do {
                     try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: nil, modelContext: modelContext)
+                    // Every mirror is rewritten before the cleanup settles: a
+                    // V19 one still names the deleted rows, and a recovery
+                    // from it would bring them back without their secrets.
+                    for workspace in workspaces {
+                        WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext)
+                    }
                     return true
                 } catch {
                     saveError = error
@@ -445,9 +451,12 @@ enum PluginActivationMigration {
             guard let package = packagesByID[id],
                   let activation = WorkspaceCapabilityActivation.activation(for: id, in: workspace),
                   activation.recordedDigest.isEmpty else { continue }
+            // The rows move onto this definition's components, so the
+            // activation accepts it: one recording the legacy version would
+            // stop running until an Update accepted what it already holds.
             WorkspaceCapabilityActivation.recordAccepted(
                 pluginID: id,
-                version: activation.recordedVersion.isEmpty ? package.version : activation.recordedVersion,
+                version: package.version,
                 digest: (try? CapabilityApprovalDigest.digest(for: package)) ?? "",
                 in: workspace
             )

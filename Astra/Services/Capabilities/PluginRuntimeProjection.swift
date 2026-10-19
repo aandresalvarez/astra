@@ -41,6 +41,13 @@ struct PluginRuntimeProjection {
     /// two plugins bind is emitted once, wired to the first plugin's skill;
     /// scope pruning keeps it for any of its owners.
     var accountOwnerSkillIDs: [UUID: Set<UUID>] = [:]
+    /// The projected accounts a binding marks as their service's default in
+    /// this workspace (`AccountBinding.isDefault`, set by Make default), or,
+    /// for a service whose default isn't projected, its oldest projected
+    /// account (`projectedDefaults`). The broker resolves a call that names
+    /// no account to the one default of its service; this is the only place
+    /// that flag leaves the bindings.
+    var defaultAccountIDs: Set<UUID> = []
 
     static let empty = PluginRuntimeProjection(skills: [], tools: [], connectors: [], unboundConnectorComponents: [:])
 
@@ -74,8 +81,12 @@ struct PluginRuntimeProjection {
         var connectors: [Connector] = []
         var unbound: [String: [String]] = [:]
         var seenConnectorIDs = Set<UUID>()
-        var copies: [UUID: Connector] = [:]
+        // A runtime copy is filtered once every plugin that binds its
+        // account is known: the copy serves any of them.
+        var copies: [UUID: (account: Connector, copy: Connector)] = [:]
+        var bindingOwners: [UUID: [(spec: PluginConnector, package: PluginPackage)]] = [:]
         var owners: [UUID: Set<UUID>] = [:]
+        var projectedBindings: [AccountBinding] = []
 
         for activation in WorkspaceCapabilityActivation.activations(of: workspace) where activation.isEnabled {
             guard let package = packagesByID[activation.pluginID], !awaitsUpdate(activation, to: package) else { continue }
@@ -131,7 +142,11 @@ struct PluginRuntimeProjection {
                 if let primarySkill {
                     for account in accounts { owners[account.id, default: []].insert(primarySkill.id) }
                 }
+                projectedBindings += activation.bindings.filter { binding in
+                    !binding.isDeleted && binding.componentID == componentID && binding.account.map { !$0.isDeleted } == true
+                }
                 for account in accounts {
+                    if connectorMode == .runtimeCopies { bindingOwners[account.id, default: []].append((spec, package)) }
                     if seenConnectorIDs.insert(account.id).inserted {
                         switch connectorMode {
                         case .accounts:
@@ -141,7 +156,7 @@ struct PluginRuntimeProjection {
                             // A bound account is in scope through its binding,
                             // wherever the row itself lives.
                             copy.isGlobal = true
-                            retainDeclaredKeys(of: account, on: copy, binding: spec, in: package, creator: creator)
+                            copies[account.id] = (account, copy)
                             connectors.append(copy)
                         }
                     }
@@ -169,12 +184,16 @@ struct PluginRuntimeProjection {
                 tools.append(makeTool(spec, package: package, activation: activation, componentID: componentID, skill: primarySkill))
             }
         }
+        for (id, entry) in copies {
+            retainDeclaredKeys(of: entry.account, on: entry.copy, bindings: bindingOwners[id] ?? [], creator: creator)
+        }
         return PluginRuntimeProjection(
             skills: skills,
             tools: tools,
             connectors: connectors,
             unboundConnectorComponents: unbound,
-            accountOwnerSkillIDs: owners
+            accountOwnerSkillIDs: owners,
+            defaultAccountIDs: projectedDefaults(projectedBindings)
         )
     }
 
@@ -260,6 +279,27 @@ struct PluginRuntimeProjection {
     static let projectedSourceKind = "plugin_activation"
 
     // MARK: - Private
+
+    /// Per service, the projected accounts a binding marks default. Turning
+    /// a plugin off keeps its bindings, default included, so turning it on
+    /// gives the default back; meanwhile a service whose default is on such
+    /// a binding falls back to its oldest projected binding (by creation,
+    /// then ID), so a call that names no account still has one to reach.
+    private static func projectedDefaults(_ bindings: [AccountBinding]) -> Set<UUID> {
+        let byService = Dictionary(grouping: bindings) {
+            ($0.account?.serviceType ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        var defaults = Set<UUID>()
+        for group in byService.values {
+            let stored = group.filter(\.isDefault).compactMap { $0.account?.id }
+            if !stored.isEmpty {
+                defaults.formUnion(stored)
+            } else if let oldest = group.min(by: { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) })?.account {
+                defaults.insert(oldest.id)
+            }
+        }
+        return defaults
+    }
 
     /// An override whose row the store no longer has gives the component
     /// back to the plugin, so deleting the replacement never silently drops
@@ -349,7 +389,8 @@ struct PluginRuntimeProjection {
     /// (Update keeps what the person entered) but never reaches a run. A
     /// creator whose definition can't be found (unreadable, or removed while
     /// its provenance stayed) fails closed: no credential reaches the run,
-    /// and only the settings the binding plugin declares do. An account no
+    /// and only the settings every plugin that binds it declares do, since
+    /// the one copy serves a run scoped to any of them. An account no
     /// plugin created keeps everything the person entered. A setting its
     /// creator stores as a credential (`PluginConnectorFieldTrust`) reaches
     /// the run from the Keychain; one an older row still holds as plain text
@@ -357,13 +398,19 @@ struct PluginRuntimeProjection {
     private static func retainDeclaredKeys(
         of account: Connector,
         on copy: Connector,
-        binding spec: PluginConnector,
-        in package: PluginPackage,
+        bindings: [(spec: PluginConnector, package: PluginPackage)],
         creator: (String) -> PluginPackage?
     ) {
-        guard let originID = account.originPackageID, !originID.isEmpty else { return }
-        guard let declaration = creatorDeclaration(of: account, originID: originID, binding: spec, in: package, creator: creator) else {
-            retain(credentials: [], config: declaredConfigKeys(of: spec, in: package, on: copy), on: copy)
+        guard let originID = account.originPackageID, !originID.isEmpty, let first = bindings.first else { return }
+        var found: (spec: PluginConnector, package: PluginPackage)?
+        for binding in bindings where found == nil {
+            found = creatorDeclaration(of: account, originID: originID, binding: binding.spec, in: binding.package, creator: creator)
+        }
+        guard let declaration = found else {
+            let shared = bindings.dropFirst().reduce(declaredConfigKeys(of: first.spec, in: first.package, on: copy)) {
+                $0.intersection(declaredConfigKeys(of: $1.spec, in: $1.package, on: copy))
+            }
+            retain(credentials: [], config: shared, on: copy)
             return
         }
         retain(

@@ -698,8 +698,11 @@ struct ConnectorEditorView: View {
             }
             normalizeAuthMethodForCurrentService()
         }
-        .onChange(of: connector.serviceType) { _, newType in
+        .onChange(of: connector.serviceType) { oldType, newType in
             applyServiceDefaults(for: newType)
+            // An account bound to plugins moves to the other service's
+            // default election in every workspace that binds it.
+            WorkspaceCapabilityActivation.serviceChanged(of: connector, from: oldType)
         }
         .onDisappear {
             cancelOutlookSignIn()

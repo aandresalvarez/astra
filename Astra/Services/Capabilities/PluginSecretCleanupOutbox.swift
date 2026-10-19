@@ -130,14 +130,18 @@ struct PluginSecretCleanupOutbox {
     /// is about to move state into (`destination`, keys `keys`), keeping the
     /// keys the activation records there (`kept`): a component removed
     /// earlier whose cleanup failed must not hand its old values to the one
-    /// now renamed onto its ID. Returns false while something is still
-    /// pending there (a delete failed, or the record can't be read).
+    /// now renamed onto its ID. A journaled namespace the activation records
+    /// nothing in is cleared whole (`clean`): the failed cleanup may have
+    /// left keys `keys` doesn't name, and a later version declaring one again
+    /// would read it. Returns false while something is still pending there
+    /// (a delete failed, or the record can't be read).
     static func settleRenameDestination(
         _ destination: UUID,
         keys: [String],
         kept: Set<String>,
         modelContext: ModelContext?,
         outbox: PluginSecretCleanupOutbox? = nil,
+        clean: (UUID) -> Bool,
         delete: (String) -> Bool
     ) -> Bool {
         guard let outbox = outbox ?? modelContext.flatMap(PluginSecretCleanupOutbox.init(for:)) else { return true }
@@ -146,10 +150,16 @@ struct PluginSecretCleanupOutbox {
         let prefix = namespace + "#"
         let journaled = entries.filter { $0 == namespace || $0.hasPrefix(prefix) }
         guard !journaled.isEmpty else { return true }
-        var toDelete = Set(journaled.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) })
-        if journaled.contains(namespace) { toDelete.formUnion(keys) }
-        let failed = toDelete.subtracting(kept).filter { !delete($0) }
-        guard failed.isEmpty else { return false }
+        if journaled.contains(namespace), kept.isEmpty {
+            guard clean(destination) else { return false }
+        } else {
+            var toDelete = Set(journaled.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) })
+            // Secrets the activation records there keep it live, so it is
+            // cleaned only of what isn't the person's (as `settle` would).
+            if journaled.contains(namespace) { toDelete.formUnion(keys) }
+            let failed = toDelete.subtracting(kept).filter { !delete($0) }
+            guard failed.isEmpty else { return false }
+        }
         try? outbox.writeEntries(entries.filter { !journaled.contains($0) })
         return (try? outbox.entries()).map { remaining in
             !remaining.contains { $0 == namespace || $0.hasPrefix(prefix) }

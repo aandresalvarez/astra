@@ -547,6 +547,9 @@ struct PluginOperationsTests {
         let state = CapabilityPackageState(package: v2, workspace: env.workspace, capabilities: WorkspaceCapabilities(workspace: env.workspace, packageDefinitions: [v2]))
         #expect(state.attentionMessages(for: account).contains { $0.contains("reconnect") })
         #expect(state.connectorsNeedingAttention.map(\.id) == [account.id])
+        // The plugin's own state says so too, not only the component's.
+        #expect(state.readiness.level == .needsAttention)
+        #expect(state.readiness.messages.contains { $0.contains("reconnect") })
     }
 
     @Test("Update is refused, before anything changes, when a workspace with the plugin would refuse it")

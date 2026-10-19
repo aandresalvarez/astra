@@ -36,6 +36,20 @@ struct CapabilityPackageInstallUnreadable: LocalizedError, Equatable {
     }
 }
 
+/// An Update failed and its previous version couldn't be put back either:
+/// the plugin has no installed definition until the copy kept at
+/// `snapshotPath` is restored.
+struct CapabilityPackageUpdateNotRolledBack: LocalizedError, Equatable {
+    var packageID: String
+    var snapshotPath: String
+    var updateError: String
+
+    var errorDescription: String? {
+        "\(updateError) ASTRA also couldn't put back the version of \(packageID) you had, so it isn't installed now. "
+            + "A copy of it is kept at \(snapshotPath)."
+    }
+}
+
 @MainActor
 struct CapabilityPackageImporter {
     let library: CapabilityLibrary
@@ -128,8 +142,15 @@ struct CapabilityPackageImporter {
                 try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: [installed], mode: .release)
             }
         } catch {
-            // The snapshot outlives a restore only when the restore fails.
-            library.restorePackageStorage(previousStorage)
+            // The snapshot outlives a restore only when the restore fails,
+            // and that failure is the outcome: the definition is gone.
+            if let failure = library.restorePackageStorage(previousStorage) {
+                throw CapabilityPackageUpdateNotRolledBack(
+                    packageID: failure.packageID,
+                    snapshotPath: failure.snapshotDirectory.path,
+                    updateError: error.localizedDescription
+                )
+            }
             throw error
         }
         library.discardPackageStorageSnapshot(previousStorage)
