@@ -454,8 +454,14 @@ Each is a decision R1 implements and its fixture tests.
 - As built: a check runs on every scan (rail, Plugins surface, launch
   preflight, repair polling) with no click, so ASTRA runs it only when it is
   a known read-only status command of a known CLI (`HealthCheckPolicy`,
-  matched by `CLICommandShape` on the binary's basename; a path whose
-  basename isn't listed has no check). A version report counts only for the
+  matched by `CLICommandShape` on the binary's basename). A known CLI's
+  name is not its identity, so it is accepted only as a bare name found on
+  ASTRA's own search path (an absolute match) or a plain absolute path under
+  an installed prefix (`TrustedExecutablePath`: `/usr/`, `/bin/`, `/sbin/`,
+  `/opt/`, `/Applications/`, `/Library/`), still installed after symlinks
+  resolve; any other path (`/tmp/plugin/gh`, a home or workspace folder) has
+  no check, and a repair re-check that finds the CLI through the stopped
+  run's own `PATH` must find an installed copy or it fails closed. A version report counts only for the
   known CLIs, each in the forms it supports: `--version` and `version` for
   gh, gcloud, az, docker, git, terraform; `version` only for bq, gsutil,
   kubectl; `--version` only for aws, node, npm, npx, python3, python, uv,
