@@ -16,29 +16,27 @@ import Foundation
 /// import refuses it (`CapabilityPackageValidator`).
 /// The sibling rule for repairs is `TerminalRepairPolicy`.
 public enum HealthCheckPolicy {
-    struct Check {
-        let positionals: [String]
-        var booleanFlags: Set<String> = []
-        /// Flags whose value is the next word, or follows `=`.
-        var valueFlags: Set<String> = []
-    }
+    typealias Check = CLICommandShape
 
     /// Any CLI: `--version` or `version`.
     static let versionChecks = [Check(positionals: [], booleanFlags: ["--version"]), Check(positionals: ["version"])]
 
     static let checks: [String: [Check]] = [
         // `--show-token` is not listed: it prints the token.
-        "gh": [Check(positionals: ["auth", "status"], booleanFlags: ["--active", "-a"], valueFlags: ["--hostname", "-h"])],
+        "gh": [Check(positionals: ["auth", "status"], booleanFlags: ["--active", "-a"], valueFlags: ["--hostname": .host, "-h": .host])],
         "gcloud": [
-            Check(positionals: ["auth", "list"], valueFlags: ["--format", "--filter"]),
-            Check(positionals: ["config", "get-value", "*"], valueFlags: ["--format"])
+            Check(positionals: ["auth", "list"], valueFlags: ["--format": .any, "--filter": .any]),
+            Check(positionals: ["config", "get-value", "*"], valueFlags: ["--format": .any])
         ],
-        "az": [Check(positionals: ["account", "show"], valueFlags: ["--output", "-o", "--query"])],
-        "aws": [Check(positionals: ["sts", "get-caller-identity"], valueFlags: ["--output", "--profile", "--query", "--region"])],
+        "az": [Check(positionals: ["account", "show"], valueFlags: ["--output": .any, "-o": .any, "--query": .any])],
+        "aws": [Check(
+            positionals: ["sts", "get-caller-identity"],
+            valueFlags: ["--output": .any, "--profile": .plain, "--query": .any, "--region": .plain]
+        )],
         "docker": [
-            Check(positionals: ["version"], valueFlags: ["--format", "-f"]),
-            Check(positionals: ["info"], valueFlags: ["--format", "-f"]),
-            Check(positionals: ["ps"], booleanFlags: ["--quiet", "-q"], valueFlags: ["--format"])
+            Check(positionals: ["version"], valueFlags: ["--format": .any, "-f": .any]),
+            Check(positionals: ["info"], valueFlags: ["--format": .any, "-f": .any]),
+            Check(positionals: ["ps"], booleanFlags: ["--quiet", "-q"], valueFlags: ["--format": .any])
         ]
     ]
 
@@ -61,39 +59,12 @@ public enum HealthCheckPolicy {
         let cli = (binary as NSString).lastPathComponent
         guard !arguments.isEmpty else { return false }
         if exactChecks[cli]?.contains(arguments) == true { return true }
-        return (versionChecks + (checks[cli] ?? [])).contains { matches(arguments, $0) }
+        return (versionChecks + (checks[cli] ?? [])).contains { $0.matches(arguments) }
     }
 
     /// Why `binary arguments` is not run, for the component's status.
     public static func refusal(binary: String, arguments: [String]) -> String {
         let command = ([binary] + arguments).joined(separator: " ")
         return "not checked: ASTRA runs only read-only status checks, and `\(command)` isn't one"
-    }
-
-    static func matches(_ arguments: [String], _ check: Check) -> Bool {
-        var positionals: [String] = []
-        var index = 0
-        while index < arguments.count {
-            let word = arguments[index]
-            index += 1
-            guard word.hasPrefix("-"), word != "-", word != "--" else {
-                positionals.append(word)
-                continue
-            }
-            if let equals = word.firstIndex(of: "=") {
-                guard check.valueFlags.contains(String(word[..<equals])) else { return false }
-            } else if check.valueFlags.contains(word) {
-                guard index < arguments.count else { return false }
-                index += 1
-            } else if !check.booleanFlags.contains(word) {
-                return false
-            }
-        }
-        guard positionals.count == check.positionals.count else { return false }
-        return zip(positionals, check.positionals).allSatisfy { word, expected in
-            expected == "*"
-                ? word.range(of: #"^[A-Za-z0-9_][A-Za-z0-9_./-]*$"#, options: .regularExpression) != nil
-                : word == expected
-        }
     }
 }

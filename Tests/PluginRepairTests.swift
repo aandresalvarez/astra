@@ -211,7 +211,7 @@ struct PluginRepairTests {
         // An install step's package manager only installs.
         #expect(!RepairAction.isSafeTerminalCommand("brew uninstall gh", binary: "gh", allowsInstaller: true))
         for (command, binary) in [
-            ("gh auth login", "gh"), ("gh auth refresh -s repo", "gh"), ("gh auth status --hostname github.example.com", "gh"),
+            ("gh auth login", "gh"), ("gh auth refresh --hostname github.example.com", "gh"), ("gh auth status --hostname github.example.com", "gh"),
             ("gh auth login --hostname github.example.com --web", "gh"), ("gcloud auth login", "gcloud"),
             ("gcloud auth application-default login", "gcloud"), ("/opt/sdk/bin/gcloud auth login --account=me@x.org", "/opt/sdk/bin/gcloud"),
             ("az login --tenant contoso", "az"), ("aws sso login --profile dev", "aws"), ("aws configure sso", "aws"),
@@ -238,6 +238,37 @@ struct PluginRepairTests {
         #expect(repair?.command == nil)
         let report = CapabilityPackageValidator.validate(data: try JSONEncoder().encode(package), checkPrerequisites: false)
         #expect(report.blockers.contains { $0.title == "Unsafe repair command" })
+    }
+
+    @Test("A sign-in may carry only the flags its command lists, with values it accepts")
+    func terminalRepairsAllowOnlyListedFlags() {
+        for command in [
+            "gh auth refresh --insecure-storage", "gh auth login --insecure-storage", "gh auth refresh --scopes admin:org",
+            "gh auth refresh -s admin:org", "gh auth login --scopes=admin:org", "gh auth login --with-token",
+            "gh auth login --git-protocol ftp", "gh auth login --git-protocol=ftp", "gh auth login --clipboard",
+            "gh auth status --show-token", "gcloud auth login --cred-file /tmp/key.json", "gcloud auth login --brief",
+            "gcloud auth login --impersonate-service-account svc@p.iam.gserviceaccount.com",
+            "gcloud auth application-default login --scopes https://www.googleapis.com/auth/cloud-platform",
+            "gcloud auth login --account", "gcloud auth login --project -x", "az login --service-principal",
+            "aws sso login --endpoint-url https://evil.example", "codex login --api-key sk-x", "opencode auth login --insecure",
+            // A boolean flag takes no value: the next word is a positional.
+            "gh auth login --web delete"
+        ] {
+            let binary = String(command.prefix { $0 != " " })
+            #expect(!RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
+        }
+        for command in [
+            "gh auth login --hostname github.example.com --git-protocol https --web", "gh auth login -h ghe.example.com:8443 -p ssh",
+            "gh auth login --git-protocol=ssh", "gcloud auth login --no-launch-browser --update-adc --account=me@x.org",
+            "gcloud auth application-default login --project=my-project --no-launch-browser",
+            "gcloud auth login --configuration work --project my-project", "az login --tenant contoso.onmicrosoft.com --use-device-code",
+            "aws sso login --sso-session corp --use-device-code", "aws configure sso --profile dev"
+        ] {
+            let binary = String(command.prefix { $0 != " " })
+            #expect(RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
+        }
+        #expect(!RepairAction.isSafeTerminalCommand("brew install --HEAD gh", binary: "gh", allowsInstaller: true))
+        #expect(RepairAction.isSafeTerminalCommand("brew install --formula gh", binary: "gh", allowsInstaller: true))
     }
 
     @Test("Every bundled plugin's repair is a sign-in that passes, at import and at launch")
