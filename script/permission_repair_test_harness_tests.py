@@ -95,12 +95,12 @@ with socket.socket(socket.AF_UNIX) as client:
             wrapper = subprocess.Popen([sys.executable, str(Path(harness.__file__)), sys.executable,
                                         '-c', code, str(test_pid), str(command_pid)])
             try:
-                deadline = time.monotonic() + 5
+                deadline = time.monotonic() + 15
                 while not command_pid.exists() and wrapper.poll() is None and time.monotonic() < deadline:
                     time.sleep(0.01)
                 self.assertTrue(command_pid.exists())
                 wrapper.send_signal(signal.SIGTERM)
-                self.assertEqual(wrapper.wait(timeout=5), 130)
+                self.assertEqual(wrapper.wait(timeout=15), 130)
                 for path in [test_pid, command_pid]:
                     with self.assertRaises(ProcessLookupError):
                         os.kill(int(path.read_text()), 0)
@@ -108,6 +108,41 @@ with socket.socket(socket.AF_UNIX) as client:
                 if wrapper.poll() is None:
                     wrapper.kill()
                     wrapper.wait()
+
+    def test_cancellation_cleans_a_separate_helper_process_group(self):
+        code = """import os,signal,subprocess,sys,time
+from pathlib import Path
+subprocess.Popen([sys.executable,'-c',
+ 'import os,signal,sys,time; from pathlib import Path; signal.signal(signal.SIGINT,signal.SIG_IGN); Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)',
+ sys.argv[1]],start_new_session=True)
+while True: time.sleep(1)
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            helper_pid = Path(directory) / 'helper.pid'
+            wrapper = subprocess.Popen([sys.executable, str(Path(harness.__file__)), sys.executable,
+                                        '-c', code, str(helper_pid)], stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.monotonic() + 15
+                while not helper_pid.exists() and wrapper.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(helper_pid.exists())
+                pid = int(helper_pid.read_text())
+                wrapper.send_signal(signal.SIGTERM)
+                self.assertEqual(wrapper.wait(timeout=15), 130)
+                # Reparented helpers are reaped by the OS, which can be asynchronous.
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    try: os.kill(pid, 0)
+                    except ProcessLookupError: break
+                    time.sleep(0.01)
+                else: self.fail('Separate helper survived cancellation')
+            finally:
+                if wrapper.poll() is None:
+                    wrapper.kill()
+                    wrapper.wait()
+                if helper_pid.exists():
+                    try: os.killpg(int(helper_pid.read_text()), signal.SIGKILL)
+                    except ProcessLookupError: pass
 
     def test_test_executor_contains_no_process_launch(self):
         root = Path(__file__).resolve().parents[1]

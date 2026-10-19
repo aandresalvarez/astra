@@ -27,6 +27,39 @@ def terminate_group(process):
     process.wait()
 
 
+
+def stop_test_process(process):
+    # SwiftPM starts its testing helper in a separate process group. Snapshot
+    # descendants before signalling the driver, while parentage is still known.
+    groups = {process.pid}
+    if process.poll() is None:
+        rows = subprocess.check_output(['/bin/ps', '-axo', 'pid=,ppid='], text=True)
+        parents = {int(row.split()[0]): int(row.split()[1]) for row in rows.splitlines() if row.strip()}
+        descendants = {process.pid}
+        while True:
+            found = {pid for pid, parent in parents.items() if parent in descendants}
+            expanded = descendants | found
+            if expanded == descendants:
+                break
+            descendants = expanded
+        for pid in descendants:
+            try:
+                groups.add(os.getpgid(pid))
+            except ProcessLookupError:
+                pass
+        try:
+            process.send_signal(signal.SIGINT)
+            process.wait(timeout=3)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+    for group in groups - {os.getpgrp()}:
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    process.wait()
+
+
 def execute(request):
     if not isinstance(request, dict):
         raise ValueError('Invalid permission-test request')
@@ -109,7 +142,7 @@ def run(command):
                 return 130
             finally:
                 # Also clean descendants after normal SwiftPM termination.
-                terminate_group(child)
+                stop_test_process(child)
                 for number, handler in previous.items():
                     signal.signal(number, handler)
 
