@@ -18,6 +18,9 @@ import Foundation
 ///                       hung background state.
 ///   - `missingBinary` — `which` / PATH scan returned nothing. User needs
 ///                       to install it.
+///   - `notChecked`    — the declared check is not a read-only status
+///                       command (`HealthCheckPolicy`), so it was never run.
+///                       Not usable: an unrun check is not a pass.
 public enum HealthStatus: Sendable, Equatable {
     case healthy(path: String, version: String)
     case unverified(path: String, detail: String)
@@ -25,12 +28,20 @@ public enum HealthStatus: Sendable, Equatable {
     case authorizationRequired(detail: String, authorizationURL: URL?)
     case unresponsive(detail: String)
     case missingBinary
+    case notChecked(detail: String)
+
+    /// The declared check was refused and never ran: neither a pass nor a
+    /// failure a sign-in or install could fix.
+    public var isNotChecked: Bool {
+        if case .notChecked = self { return true }
+        return false
+    }
 
     public var executablePath: String? {
         switch self {
         case .healthy(let path, _), .unverified(let path, _):
             return path
-        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary:
+        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary, .notChecked:
             return nil
         }
     }
@@ -42,7 +53,7 @@ public enum HealthStatus: Sendable, Equatable {
         switch self {
         case .healthy, .unverified:
             return true
-        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary:
+        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary, .notChecked:
             return false
         }
     }
@@ -138,6 +149,12 @@ public struct EnvironmentHealthChecker: Sendable {
             : whichPath
         guard !resolved.isEmpty else {
             return .missingBinary
+        }
+
+        // A check that is not a read-only status command is never run: it
+        // would run on every scan, unasked (`HealthCheckPolicy`).
+        guard HealthCheckPolicy.isReadOnly(binary: binary, arguments: livenessArgs) else {
+            return .notChecked(detail: HealthCheckPolicy.refusal(binary: binary, arguments: livenessArgs))
         }
 
         // Step 2: liveness probe. Run the resolved binary directly so we're

@@ -82,6 +82,30 @@ struct PreflightCacheTests {
         #expect(await runner.count() == 4, "Expired entry must trigger a re-probe")
     }
 
+    @Test("The same probe under a stricter semantic test is its own check, whichever runs first")
+    func semanticTestIsPartOfTheCheckIdentity() async {
+        let strict = CommonCLIPrerequisites.docker
+        var lenient = strict
+        lenient.semantic = nil
+        #expect(lenient.id != strict.id)
+        for order in [[lenient, strict], [strict, lenient]] {
+            let stub = StubBinaryRunner()
+            await stub.setResponse(forKey: "/usr/bin/env which docker", result: .exited(code: 0, stdout: "/usr/local/bin/docker\n", stderr: ""))
+            await stub.setResponse(
+                forKey: "/usr/local/bin/docker version --format {{.Client.Version}}",
+                result: .exited(code: 0, stdout: "27.0.0\n", stderr: "Cannot connect to the Docker daemon. Is the docker daemon running?")
+            )
+            let cache = PreflightCache(checker: EnvironmentHealthChecker(runner: stub))
+            // Merged by id, as the Plugins surface merges every package's results.
+            var statuses: [String: HealthStatus] = [:]
+            for prerequisite in order { statuses[prerequisite.id] = await cache.status(for: prerequisite) }
+            #expect(statuses[lenient.id]?.isUsable == true)
+            #expect(statuses[strict.id]?.isUsable == false)
+            await cache.invalidate(binary: "docker")
+            #expect(await cache.cachedCount() == 0)
+        }
+    }
+
     @Test("invalidate(binary:) removes the binary's entries only")
     func invalidateSingleBinary() async {
         let runner = CountingRunner()

@@ -331,6 +331,8 @@ struct CapabilityRailPrerequisiteStatusSignature: Hashable, Comparable {
             "unresponsive:\(detail)"
         case .missingBinary:
             "missingBinary"
+        case .notChecked(let detail):
+            "notChecked:\(detail)"
         }
     }
 }

@@ -222,7 +222,7 @@ struct PluginCatalogPrereqBadge: View {
         case .authorizationRequired: "person.badge.key.fill"
         case .unresponsive: "exclamationmark.octagon.fill"
         case .missingBinary: "xmark.octagon.fill"
-        case .none: "circle.dotted"
+        case .notChecked, .none: "circle.dotted"
         }
     }
 
@@ -234,7 +234,7 @@ struct PluginCatalogPrereqBadge: View {
         case .authorizationRequired: Stanford.statusWarn
         case .unresponsive: Stanford.statusError
         case .missingBinary: Stanford.statusError
-        case .none: Stanford.coolGrey
+        case .notChecked, .none: Stanford.coolGrey
         }
     }
 
@@ -250,6 +250,7 @@ struct PluginCatalogPrereqBadge: View {
         case .authorizationRequired(let detail, _): detail
         case .unresponsive(let detail): detail
         case .missingBinary: "Not installed"
+        case .notChecked(let detail): detail
         case .none: "Checking..."
         }
     }
@@ -267,7 +268,7 @@ struct PluginCatalogPrereqBadge: View {
 
     private var shouldShowInstallHint: Bool {
         switch status {
-        case .healthy, .unverified, .none: false
+        case .healthy, .unverified, .notChecked, .none: false
         case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary: true
         }
     }
