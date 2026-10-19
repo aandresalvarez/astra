@@ -123,6 +123,14 @@ enum PluginActivationMigration {
         }) {
             return true
         }
+        // A chosen file's activation waiting for its plugin, which is here.
+        if workspaces.contains(where: { workspace in
+            WorkspaceCapabilityActivation.pendingImportPluginIDs(of: workspace).contains { pluginID in
+                withComponents.contains(pluginID) && WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) != nil
+            }
+        }) {
+            return true
+        }
         let skills = (try? modelContext.fetch(FetchDescriptor<Skill>())) ?? []
         if skills.contains(where: isPluginOrigin) { return true }
         let tools = (try? modelContext.fetch(FetchDescriptor<LocalTool>())) ?? []
@@ -133,7 +141,8 @@ enum PluginActivationMigration {
     static func migrate(
         modelContext: ModelContext,
         packages: [PluginPackage],
-        secrets: any SkillSecretPersisting.Type = SkillSecretSeam.required
+        secrets: any SkillSecretPersisting.Type = SkillSecretSeam.required,
+        sourceStore: PluginSourceStore = PluginSourceStore()
     ) throws -> Report {
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
@@ -172,6 +181,14 @@ enum PluginActivationMigration {
                     WorkspaceCapabilityActivation.adoptPendingOverrides(
                         on: activation, declaring: PluginRuntimeProjection.componentIDs(of: package), in: workspace
                     )
+                }
+                // A chosen file's activation that waited for the copy now
+                // installed (same digest, same source) gets its details; it
+                // stays as on or off as it is.
+                let provenance = sourceStore.provenance()
+                for activation in WorkspaceCapabilityActivation.activations(of: workspace) {
+                    guard let package = packagesByID[activation.pluginID] else { continue }
+                    PluginPendingImport.restore(on: activation, package: package, in: workspace, provenance: provenance)
                 }
             }
             // Template rows the plugin wrote and the person left as they

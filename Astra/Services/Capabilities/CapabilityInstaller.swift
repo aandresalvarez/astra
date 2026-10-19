@@ -62,15 +62,20 @@ struct CapabilityInstaller {
     /// What the Keychain holds for an account's key; nil reads the
     /// account's own namespaces (`Connector.currentCredentialValue`).
     private let heldCredentialOverride: ((Connector, String) -> String?)?
+    /// Where installed plugins record their source, for a pending import's
+    /// match (`PluginPendingImport`).
+    let sourceStore: PluginSourceStore
 
     init(
         library: CapabilityLibrary = CapabilityLibrary(),
         appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
         skillSecrets: (any SkillSecretPersisting.Type)? = nil,
-        heldCredential: ((Connector, String) -> String?)? = nil
+        heldCredential: ((Connector, String) -> String?)? = nil,
+        sourceStore: PluginSourceStore = PluginSourceStore()
     ) {
         self.library = library
         self.appVersion = appVersion
+        self.sourceStore = sourceStore
         self.skillSecretsOverride = skillSecrets
         self.heldCredentialOverride = heldCredential
     }
@@ -257,6 +262,10 @@ struct CapabilityInstaller {
             // before reconciling derives anything from them, the rows the
             // migration kept while it was missing included.
             let componentIDs = PluginRuntimeProjection.componentIDs(of: package)
+            // A chosen file's activation that waited for this copy (same
+            // digest, same source) gets its settings, overrides and accounts,
+            // before reinstating forgets the plugin's retired record.
+            PluginPendingImport.restore(on: activation, package: package, in: workspace, provenance: sourceStore.provenance())
             WorkspaceCapabilityActivation.reinstateRetired(on: activation, declaring: componentIDs, in: workspace)
             for (other, _) in pendingSnapshots {
                 guard let otherActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: other) else { continue }

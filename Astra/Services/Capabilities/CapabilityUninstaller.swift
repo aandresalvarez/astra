@@ -183,6 +183,9 @@ struct CapabilityUninstaller {
                 activationSecretSkillIDs += PluginRuntimeProjection.secretNamespaces(of: activation, package: package)
                 WorkspaceCapabilityActivation.retire(activation, in: workspace)
             }
+            // A chosen file's activation waiting for this plugin waits no
+            // more: Remove drops it, with or without an activation here.
+            WorkspaceCapabilityActivation.dropPendingImport(pluginID: package.id, in: workspace)
             // Read before the activation goes: they tell a template the
             // person edited from the plugin's own.
             var templateDigests: [String: String] = [:]

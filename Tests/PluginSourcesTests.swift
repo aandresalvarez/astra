@@ -802,6 +802,156 @@ struct PluginSourcesTests {
         #expect(try imported(config, installedFrom: "acme-other-123abc", trust: { _ in .preserveRecordedState }).enabled)
     }
 
+    @Test("T5: a file imported before its plugin is here keeps the activation's details pending until the same digest and source are added")
+    func importedActivationWaitsForItsPlugin() throws {
+        // Machine A: a source plugin with a setting, an override and an account.
+        let a = try Fixture()
+        let folder = a.root.appendingPathComponent("waits", isDirectory: true)
+        var definition = try Self.package(id: "waiting-plugin", version: "1.0.0")
+        definition.skills[0].environmentKeys = ["REGION"]
+        definition.connectors = [PluginConnector(
+            name: "Acme", serviceType: "acme", icon: "key", description: "", baseURL: "https://api.acme.test",
+            authMethod: "api_key", credentialHints: [.init(key: "ACME_TOKEN", hint: "Token")], configHints: [], notes: ""
+        )]
+        try a.write(["capability.json": try JSONEncoder().encode(definition)], in: folder)
+        let source = try #require(PluginSource.make(from: folder.path))
+        try a.store.save([source])
+        let coordinatorA = PluginSourceCoordinator(store: a.store, installedPackages: { a.library.installedPackages() })
+        coordinatorA.reload()
+        let workspaceA = Workspace(name: "Waits", primaryPath: a.root.appendingPathComponent("ws").path)
+        a.context.insert(workspaceA)
+        let serviceA = CapabilityCatalogActionService(library: a.library, sourceStore: a.store)
+        try serviceA.importReviewed(try #require(coordinatorA.listings.first?.plugins.first), workspace: workspaceA, modelContext: a.context, coordinator: coordinatorA)
+        let installedA = try #require(a.library.installedPackage(id: "waiting-plugin"))
+        func policy(_ workspace: Workspace) -> CapabilityCatalogPolicyContext {
+            .workspaceUser(workspace: workspace, isAdmin: true, currentAppVersion: SemanticVersion(1, 0, 0), approvalRecords: [])
+        }
+        _ = try serviceA.add(installedA, workspace: workspaceA, modelContext: a.context, policyContext: policy(workspaceA),
+                             approvalStore: CapabilityApprovalStore(directory: a.root.appendingPathComponent("approvals")), traceID: "test")
+        let activationA = try #require(WorkspaceCapabilityActivation.activation(for: installedA.id, in: workspaceA))
+        let components = PluginRuntimeProjection.componentIDs(of: installedA)
+        let skillComponent = try #require(components.first { $0.hasPrefix("skill") })
+        let connectorComponent = try #require(components.first { $0.hasPrefix("connector") })
+        WorkspaceCapabilityActivation.setConfigValue("eu", forKey: "\(skillComponent)#REGION", on: activationA)
+        let ownSkill = Skill(name: "My summary")
+        workspaceA.skills.append(ownSkill)
+        WorkspaceCapabilityActivation.setOverridden(true, componentID: skillComponent, rowID: ownSkill.id, on: activationA)
+        // The account is the one Add made for the connector component.
+        #expect(activationA.bindings.contains { $0.componentID == connectorComponent && $0.account != nil })
+        try a.context.save()
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspaceA, modelContext: a.context))
+        config.installedPlugins = WorkspaceConfigManager.installedPluginRefs(for: workspaceA) { id, recorded in
+            a.library.installedPackage(id: id).flatMap {
+                PluginSourceStore.mirrorIdentity(recordedDigest: recorded, installed: $0, provenance: a.store.provenance())
+            }
+        }
+        #expect(config.installedPlugins?.first { $0.id == installedA.id }?.source == "plugin-source:\(source.id)")
+
+        func importFile(on machine: Fixture) -> Workspace {
+            let verifier = WorkspaceConfigManager.CapabilityImportVerifier.live(
+                library: machine.library, approvalRecords: [], sourceStore: machine.store
+            )
+            var file = config
+            file.id = nil
+            return WorkspaceConfigManager.importWorkspaceResult(
+                from: file, modelContext: machine.context, capabilityTrust: .validate(verifier)
+            ).workspace
+        }
+        /// A Mac the file is imported on before anything is installed.
+        func freshImport() throws -> (Fixture, Workspace) {
+            let machine = try Fixture()
+            return (machine, importFile(on: machine))
+        }
+        func addInstalled(_ package: PluginPackage, on machine: Fixture, to workspace: Workspace) throws -> PluginActivation {
+            _ = try CapabilityCatalogActionService(library: machine.library, sourceStore: machine.store).add(
+                package, workspace: workspace, modelContext: machine.context, policyContext: policy(workspace),
+                approvalStore: CapabilityApprovalStore(directory: machine.root.appendingPathComponent("approvals")), traceID: "test"
+            )
+            return try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        }
+        func restored(_ activation: PluginActivation, in workspace: Workspace) -> Bool {
+            activation.configuration["\(skillComponent)#REGION"] == "eu"
+        }
+
+        // Machine B: nothing installed. The activation waits, with nothing applied.
+        let (b, workspaceB) = try freshImport()
+        #expect(WorkspaceCapabilityActivation.activation(for: installedA.id, in: workspaceB) == nil)
+        let pending = try #require(WorkspaceCapabilityActivation.pendingImport(pluginID: installedA.id, in: workspaceB))
+        #expect(pending.source == "plugin-source:\(source.id)")
+        #expect(pending.settings?["\(skillComponent)#REGION"] == "eu")
+        let importedSkill = try #require(workspaceB.skills.first { $0.name == "My summary" })
+        // The account rows this import created; an Add here makes its own too.
+        let importedAccounts = Set(workspaceB.connectors.map(\.id.uuidString))
+        func boundImported(_ activation: PluginActivation, _ imported: Set<String>) -> Set<String> {
+            Set(activation.bindings.filter { !$0.isDeleted }.compactMap { $0.account?.id.uuidString }).intersection(imported)
+        }
+        #expect(pending.overridingRowIDs == [importedSkill.id.uuidString])
+        let pendingAccounts = Set((pending.accounts ?? []).map(\.connectorID))
+        #expect(!pendingAccounts.isEmpty && pendingAccounts.isSubset(of: importedAccounts))
+        #expect(!(workspaceB.retiredPluginActivationsJSON ?? "").contains("ACME_TOKEN"))
+        // The same source added here, and the plugin from it: everything comes back, no credential.
+        try b.store.save([source])
+        let coordinatorB = PluginSourceCoordinator(store: b.store, installedPackages: { b.library.installedPackages() })
+        coordinatorB.reload()
+        try CapabilityCatalogActionService(library: b.library, sourceStore: b.store).importReviewed(
+            try #require(coordinatorB.listings.first?.plugins.first), workspace: workspaceB, modelContext: b.context, coordinator: coordinatorB
+        )
+        let activationB = try addInstalled(try #require(b.library.installedPackage(id: installedA.id)), on: b, to: workspaceB)
+        #expect(restored(activationB, in: workspaceB))
+        #expect(activationB.overridingRowIDs == [importedSkill.id.uuidString])
+        #expect(boundImported(activationB, importedAccounts) == pendingAccounts)
+        #expect(activationB.secretSettingKeys.isEmpty)
+        #expect(WorkspaceCapabilityActivation.pendingImport(pluginID: installedA.id, in: workspaceB) == nil)
+
+        // Machine C: the same bytes from another source never restore it, and Remove drops it.
+        let (c, workspaceC) = try freshImport()
+        // A second workspace waits too, and is never added to.
+        let untouchedC = importFile(on: c)
+        let importedC = Set(workspaceC.connectors.map(\.id.uuidString))
+        try c.library.install(installedA, sourceMetadata: .localLibrary())
+        try c.store.recordProvenance(pluginID: installedA.id, sourceID: "acme-other-123abc", digest: PluginSourceCatalog.contentDigest(installedA))
+        let activationC = try addInstalled(installedA, on: c, to: workspaceC)
+        #expect(!restored(activationC, in: workspaceC))
+        #expect(boundImported(activationC, importedC).isEmpty)
+        #expect(WorkspaceCapabilityActivation.pendingImport(pluginID: installedA.id, in: workspaceC) != nil)
+        _ = try CapabilityCatalogActionService(library: c.library, sourceStore: c.store).remove(installedA, modelContext: c.context)
+        #expect(WorkspaceCapabilityActivation.pendingImport(pluginID: installedA.id, in: workspaceC) == nil)
+        #expect(WorkspaceCapabilityActivation.activation(for: installedA.id, in: untouchedC) == nil)
+        #expect(WorkspaceCapabilityActivation.pendingImport(pluginID: installedA.id, in: untouchedC) == nil)
+
+        // Machine D: the same source with another digest never restores it.
+        let (d, workspaceD) = try freshImport()
+        var changed = installedA
+        changed.version = "1.0.1"
+        try d.library.install(changed, sourceMetadata: .localLibrary())
+        let changedHere = try #require(d.library.installedPackage(id: changed.id))
+        try d.store.recordProvenance(pluginID: changed.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(changedHere))
+        #expect(!restored(try addInstalled(changedHere, on: d, to: workspaceD), in: workspaceD))
+        #expect(WorkspaceCapabilityActivation.pendingImport(pluginID: changed.id, in: workspaceD) != nil)
+
+        // Machine E: imported while another source's copy was here (the
+        // activation off); once provenance names the file's source, the
+        // launch pass restores it and leaves the activation off.
+        let e = try Fixture()
+        try e.library.install(installedA, sourceMetadata: .localLibrary())
+        let installedE = try #require(e.library.installedPackage(id: installedA.id))
+        try e.store.recordProvenance(pluginID: installedE.id, sourceID: "acme-other-123abc", digest: PluginSourceCatalog.contentDigest(installedE))
+        let verifierE = WorkspaceConfigManager.CapabilityImportVerifier.live(library: e.library, approvalRecords: [], sourceStore: e.store)
+        var fileE = config
+        fileE.id = nil
+        let workspaceE = WorkspaceConfigManager.importWorkspaceResult(from: fileE, modelContext: e.context, capabilityTrust: .validate(verifierE)).workspace
+        let activationE = try #require(WorkspaceCapabilityActivation.activation(for: installedE.id, in: workspaceE))
+        #expect(!activationE.isEnabled && !restored(activationE, in: workspaceE))
+        try PluginActivationMigration.migrate(modelContext: e.context, packages: e.library.installedPackages(), sourceStore: e.store)
+        #expect(!restored(activationE, in: workspaceE))
+        try e.store.recordProvenance(pluginID: installedE.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(installedE))
+        #expect(PluginActivationMigration.needsMigration(modelContext: e.context, packages: e.library.installedPackages()))
+        try PluginActivationMigration.migrate(modelContext: e.context, packages: e.library.installedPackages(), sourceStore: e.store)
+        #expect(restored(activationE, in: workspaceE))
+        #expect(!activationE.isEnabled)
+        #expect(WorkspaceCapabilityActivation.pendingImport(pluginID: installedE.id, in: workspaceE) == nil)
+    }
+
     @Test("T8: a folder edited after review can't be added")
     func addInstallsWhatWasReviewed() throws {
         let fixture = try Fixture()

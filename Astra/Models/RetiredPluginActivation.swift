@@ -16,6 +16,11 @@ import SwiftData
 ///   definition was missing (`pendingOverrides`), recorded while its
 ///   activation is still live.
 ///
+/// - A chosen workspace file's activation this Mac couldn't accept on import
+///   (`pendingImport`): its plugin wasn't installed here, or another copy or
+///   source of it was. Its non-secret payload waits, never projected, until
+///   the same digest from the same source is installed.
+///
 /// Secret settings are not kept: Remove cleans their namespaces, and a later
 /// Add starts with none, as it always has.
 public struct RetiredPluginActivation: Codable, Equatable, Sendable {
@@ -36,6 +41,58 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
     /// override (`adoptPendingOverrides`), so the plugin never projects a
     /// second copy next to it.
     public var pendingOverrides: [PendingOverride]?
+    /// A chosen workspace file's activation waiting for its plugin (R5, T5):
+    /// what the file's mirror carried for it, non-secret only, with this
+    /// workspace's own rows (the ones that import created). Restored once,
+    /// on Add or by a launch pass, when the installed copy has `digest` and
+    /// `source`; Remove of the plugin drops it.
+    public var pendingImport: PendingImport?
+
+    public struct PendingImport: Codable, Equatable, Sendable {
+        public struct Account: Codable, Equatable, Sendable {
+            public var componentID: String
+            /// The connector row this workspace's import created.
+            public var connectorID: String
+            public var isDefault: Bool
+            public var boundAt: TimeInterval?
+            /// A shared row the same import created (a batch import's
+            /// shared account), which may still be bound.
+            public var createdByImport: Bool?
+
+            public init(componentID: String, connectorID: String, isDefault: Bool, boundAt: TimeInterval?, createdByImport: Bool?) {
+                self.componentID = componentID
+                self.connectorID = connectorID
+                self.isDefault = isDefault
+                self.boundAt = boundAt
+                self.createdByImport = createdByImport
+            }
+        }
+
+        /// The definition the file's activation accepted.
+        public var digest: String
+        /// `plugin-source:<id>`, or nil for a local copy.
+        public var source: String?
+        /// Non-secret settings keyed `componentID#KEY`.
+        public var settings: [String: String]?
+        public var overriddenComponentIDs: [String]?
+        /// This workspace's rows, by component, as `overriddenComponentIDs`.
+        public var overridingRowIDs: [String]?
+        public var accounts: [Account]?
+        public var knownComponentIDs: [String]?
+
+        public init(
+            digest: String, source: String?, settings: [String: String]?, overriddenComponentIDs: [String]?,
+            overridingRowIDs: [String]?, accounts: [Account]?, knownComponentIDs: [String]?
+        ) {
+            self.digest = digest
+            self.source = source
+            self.settings = settings
+            self.overriddenComponentIDs = overriddenComponentIDs
+            self.overridingRowIDs = overridingRowIDs
+            self.accounts = accounts
+            self.knownComponentIDs = knownComponentIDs
+        }
+    }
 
     public init(
         pluginID: String,
@@ -62,6 +119,7 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
 
     var keepsAnything: Bool {
         !namespaceSeed.isEmpty || overridingRowIDs.contains { UUID(uuidString: $0) != nil } || !(pendingOverrides ?? []).isEmpty
+            || pendingImport != nil
     }
 
     /// Each kept override's component and row.
@@ -114,6 +172,39 @@ extension WorkspaceCapabilityActivation {
         setRetired(all, on: workspace)
     }
 
+    /// Keeps a chosen file's activation `pluginID` this Mac couldn't accept
+    /// (`pendingImport`), replacing an earlier one.
+    public static func recordPendingImport(_ pending: RetiredPluginActivation.PendingImport, pluginID: String, in workspace: Workspace) {
+        var all = retiredActivations(of: workspace)
+        if let index = all.firstIndex(where: { $0.pluginID == pluginID }) {
+            all[index].pendingImport = pending
+        } else {
+            var entry = RetiredPluginActivation(pluginID: pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: [])
+            entry.pendingImport = pending
+            all.append(entry)
+        }
+        setRetired(all, on: workspace)
+    }
+
+    /// The pending import for `pluginID` in `workspace`, if one waits.
+    public static func pendingImport(pluginID: String, in workspace: Workspace) -> RetiredPluginActivation.PendingImport? {
+        retiredActivations(of: workspace).first { $0.pluginID == pluginID }?.pendingImport
+    }
+
+    /// The plugins a pending import waits for in `workspace`.
+    public static func pendingImportPluginIDs(of workspace: Workspace) -> Set<String> {
+        Set(retiredActivations(of: workspace).filter { $0.pendingImport != nil }.map(\.pluginID))
+    }
+
+    /// Forgets the pending import for `pluginID`: restored, or its plugin
+    /// removed.
+    public static func dropPendingImport(pluginID: String, in workspace: Workspace) {
+        var all = retiredActivations(of: workspace)
+        guard let index = all.firstIndex(where: { $0.pluginID == pluginID }), all[index].pendingImport != nil else { return }
+        all[index].pendingImport = nil
+        setRetired(all.filter(\.keepsAnything), on: workspace)
+    }
+
     /// The plugins whose kept rows are pending as overrides in `workspace`.
     public static func pendingOverridePluginIDs(of workspace: Workspace) -> Set<String> {
         Set(retiredActivations(of: workspace).filter { !($0.pendingOverrides ?? []).isEmpty }.map(\.pluginID))
@@ -161,7 +252,14 @@ extension WorkspaceCapabilityActivation {
         where !activation.overriddenComponentIDs.contains(override.componentID) && rowExists(override.rowID, near: workspace) {
             setOverridden(true, componentID: override.componentID, rowID: override.rowID, on: activation)
         }
-        setRetired(all.filter { $0.pluginID != activation.pluginID }, on: workspace)
+        // A pending import for another copy or source keeps waiting.
+        setRetired(all.compactMap { other in
+            guard other.pluginID == activation.pluginID else { return other }
+            guard let pendingImport = other.pendingImport else { return nil }
+            var waiting = RetiredPluginActivation(pluginID: other.pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: [])
+            waiting.pendingImport = pendingImport
+            return waiting
+        }, on: workspace)
     }
 
     /// Gives back each override of a component the definition `activation`
@@ -236,10 +334,12 @@ extension WorkspaceCapabilityActivation {
         let kept = retiredActivations(of: workspace).filter { entry in !entries.contains { $0.pluginID == entry.pluginID } }
         let restored = entries.map { entry in
             guard active.contains(entry.pluginID) else { return entry }
-            return RetiredPluginActivation(
+            var pending = RetiredPluginActivation(
                 pluginID: entry.pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: [],
                 pendingOverrides: entry.pendingOverrides
             )
+            pending.pendingImport = entry.pendingImport
+            return pending
         }
         setRetired(kept + restored.filter(\.keepsAnything), on: workspace)
     }

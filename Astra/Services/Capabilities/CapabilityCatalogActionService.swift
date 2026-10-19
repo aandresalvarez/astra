@@ -62,7 +62,7 @@ struct CapabilityCatalogActionService {
         appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
         sourceStore: PluginSourceStore = PluginSourceStore()
     ) {
-        self.installer = CapabilityInstaller(library: library, appVersion: appVersion)
+        self.installer = CapabilityInstaller(library: library, appVersion: appVersion, sourceStore: sourceStore)
         self.creationService = CapabilityPackageCreationService(library: library, appVersion: appVersion)
         self.uninstaller = CapabilityUninstaller(library: library)
         self.library = library

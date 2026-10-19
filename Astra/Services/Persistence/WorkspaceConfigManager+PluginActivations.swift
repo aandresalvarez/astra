@@ -198,6 +198,18 @@ extension WorkspaceConfigManager {
     ) -> [String: String] {
         var projectedIDs: [String: String] = [:]
         for ref in config.installedPlugins ?? [] {
+            // A chosen file's activation this Mac can't accept yet (its
+            // plugin not installed here, or another copy or source of it)
+            // keeps its non-secret payload pending, with this import's own
+            // rows, until the same digest and source are installed
+            // (`PluginPendingImport`). Nothing of it is applied now.
+            if case .validate = trust, !isAcceptedCopy(ref, trust: trust), let digest = ref.digest, !digest.isEmpty {
+                WorkspaceCapabilityActivation.recordPendingImport(
+                    pendingImport(of: ref, digest: digest, connectorsByID: connectorsByID, skillsByID: skillsByID,
+                                  toolsByID: toolsByID, sessionAccountIDs: sessionAccountIDs),
+                    pluginID: ref.id, in: workspace
+                )
+            }
             guard let activation = WorkspaceCapabilityActivation.activation(for: ref.id, in: workspace) else { continue }
             // A chosen file may keep the workspace's ID, so every activation
             // it brings, accepted or not, gets its own namespaces: one left
@@ -319,6 +331,44 @@ extension WorkspaceConfigManager {
     /// The rows the mirror's own shared list names, by their ID here.
     static func listedSharedAccountIDs(of config: WorkspaceConfig, connectorsByID: [String: Connector]) -> Set<String> {
         Set(requestedActivation(from: config).globalConnectorIDs.map { connectorsByID[$0]?.id.uuidString ?? $0 })
+    }
+
+    /// `ref`'s payload in this workspace's terms: the rows the import created
+    /// for the file's override rows and accounts (a row the file named but
+    /// the import didn't create is left out), and no secret.
+    static func pendingImport(
+        of ref: InstalledPluginRef,
+        digest: String,
+        connectorsByID: [String: Connector],
+        skillsByID: [String: Skill],
+        toolsByID: [String: LocalTool],
+        sessionAccountIDs: Set<String>
+    ) -> RetiredPluginActivation.PendingImport {
+        let overridden = ref.overriddenComponentIDs ?? []
+        let rows = ref.overridingRowIDs ?? []
+        let overrides: [(String, String)] = overridden.enumerated().compactMap { index, componentID in
+            let fileRowID = index < rows.count ? rows[index] : ""
+            guard let row = skillsByID[fileRowID]?.id ?? toolsByID[fileRowID]?.id else { return nil }
+            return (componentID, row.uuidString)
+        }
+        let accounts = (ref.accounts ?? []).compactMap { account -> RetiredPluginActivation.PendingImport.Account? in
+            guard let connector = connectorsByID[account.connectorID] else { return nil }
+            let created = sessionAccountIDs.contains(connector.id.uuidString)
+            guard created || !connector.isGlobal else { return nil }
+            return .init(
+                componentID: account.componentID, connectorID: connector.id.uuidString, isDefault: account.isDefault,
+                boundAt: account.boundAt, createdByImport: created ? true : nil
+            )
+        }
+        return RetiredPluginActivation.PendingImport(
+            digest: digest,
+            source: ref.source,
+            settings: ref.settings,
+            overriddenComponentIDs: overrides.isEmpty ? nil : overrides.map(\.0),
+            overridingRowIDs: overrides.isEmpty ? nil : overrides.map(\.1),
+            accounts: accounts.isEmpty ? nil : accounts,
+            knownComponentIDs: ref.knownComponentIDs
+        )
     }
 
     /// Writes `workspace`'s mirror now, on this thread, registering its
