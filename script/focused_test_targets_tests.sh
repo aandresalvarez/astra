@@ -125,7 +125,7 @@ assert_targets $'TaskAttachmentFilesReaderTests\nComposerAttachmentsTests' \
   "Astra/Services/Tasks/TaskAttachmentFilesReader.swift" \
   "Tests/TaskAttachmentFilesReaderTests.swift"
 
-assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
+assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nCopilotPostFailureHomeInspectionTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
   "Astra/Services/Runtime/AgentRuntimeWorker.swift" \
   "Tests/HeadlessChatProcessScenarioTests.swift" \
   "Astra/Services/Diagnostics/AgentRuntimeDiagnostics.swift" \
@@ -158,7 +158,7 @@ assert_targets $'WorkspaceRightPanelLayoutTests\nPanelLayoutGeometryTests' \
 
 assert_targets ""
 
-assert_targets "" \
+assert_targets $'RuntimeHomeAccessTests\nRuntimeHomeAccessEdgeCaseTests\nRuntimeHomeAccessAdditionalStateTests\nNativeContinuationFallbackTests\nExecutionSandboxRunnerTests\nCopilotHomeAccessCheckTests\nPermissionRepairCommandClientTests\nRuntimeReadinessServiceTests\nRuntimeReadinessStateCacheTests\nRuntimeLaunchReadinessCacheTests\nAgentRuntimeAdapterTests\nExecutionEnvironmentTests' \
   "Astra/Services/Runtime/AgentRuntimeAdapter.swift"
 
 assert_targets $'CodexMCPConfigRendererTests\nMCPRuntimeProjectionTests' \
@@ -263,3 +263,24 @@ assert_targets $'GitHubReviewPublicationTests\nSwiftDataDeletionPreparationTests
   "Astra/Services/Persistence/SwiftDataTaskRollbackPreparation.swift" \
   "Astra/Services/Git/GitHubReviewPublicationService.swift" \
   "Tests/GitHubReviewPublicationTests.swift"
+
+assert_targets $'RuntimeHomeAccessTests\nRuntimeHomeAccessEdgeCaseTests\nRuntimeHomeAccessAdditionalStateTests\nNativeContinuationFallbackTests\nExecutionSandboxRunnerTests\nCopilotHomeAccessCheckTests\nPermissionRepairCommandClientTests\nRuntimeReadinessServiceTests\nRuntimeReadinessStateCacheTests\nRuntimeLaunchReadinessCacheTests\nAgentRuntimeAdapterTests\nExecutionEnvironmentTests' \
+  "Astra/Services/Runtime/RuntimeHomeAccessPolicy.swift" \
+  "Astra/Services/Runtime/RuntimeHomeAccessService.swift" \
+  "Astra/Services/Runtime/RuntimeHomeAccessContainerCommand.swift" \
+  "Astra/Services/Runtime/RuntimeAccessACL.swift" \
+  "Astra/Services/Runtime/AgentRuntimeProcessRunner+HomeAccessGuard.swift" \
+  "AstraObjCSupport/AstraMembership.m" \
+  "Tests/RuntimeHomeAccessTests.swift" \
+  "Tests/RuntimeHomeAccessEdgeCaseTests.swift" \
+  "Tests/RuntimeHomeAccessAdditionalStateTests.swift" \
+  "Tests/RuntimeReadinessStateCacheTests.swift" \
+  "Tests/RuntimeLaunchReadinessCacheTests.swift" \
+  "Astra/Services/Runtime/RuntimeHomeAccessContainerPreflight.swift" \
+  "Astra/Services/Runtime/ProviderNativeSessionStore.swift" \
+  "Astra/Services/Runtime/RuntimeHomeAccessCancellationGate.swift" \
+  "Tests/ExecutionSandboxRunnerTests.swift"
+
+assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nCopilotPostFailureHomeInspectionTests' \
+  "Astra/Services/Runtime/CopilotPostFailureHomeInspection.swift" \
+  "Tests/CopilotPostFailureHomeInspectionTests.swift"

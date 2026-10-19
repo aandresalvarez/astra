@@ -761,7 +761,7 @@ struct AgentRuntimePostProcessContext {
 struct AgentRuntimeProcessLaunchPlan: Equatable {
     let runtime: AgentRuntimeID
     let executablePath: String
-    let arguments: [String]
+    var arguments: [String]
     let currentDirectory: String
     let environment: [String: String]
     let browserShimDirectory: String?
@@ -774,10 +774,12 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     /// write-allow). See `CopilotCLIRuntime.configWriteDenyPaths`.
     let sandboxProtectedWriteDenyPaths: [String]
     let providerDetectedFields: [String: String]
-    let commandPlannedFields: [String: String]
+    var commandPlannedFields: [String: String]
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
     var pathMapper: ExecutionEnvironmentPathMapper?
     var executionEnvironment: WorkspaceExecutionEnvironment
+    /// Owned by Docker planning. Avoid inferring command boundaries from CLI strings.
+    var containerProviderCommandIndex: Int? = nil
     /// Set only by `AgentRuntimeProcessRunner` after every required read-only
     /// enforcement surface has been applied and verified.
     var readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt?

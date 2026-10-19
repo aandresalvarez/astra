@@ -31,6 +31,59 @@ struct NativeContinuationFallbackTests {
 
     // MARK: Provider session store
 
+    @Test("The final host guard revalidates Cursor and OpenCode sessions in the launch environment",
+          arguments: [AgentRuntimeID.cursorCLI, .openCodeCLI], ["entry", "store", "unverifiable", "scoped-entry", "scoped-store", "scoped-unverifiable"])
+    func finalHostGuardRevalidatesSession(runtime: AgentRuntimeID, mode: String) async throws {
+        let override = mode.hasPrefix("scoped-")
+        let mutation = override ? String(mode.dropFirst("scoped-".count)) : mode
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let session = "selected-session"
+        var environment = ["HOME": home]
+        if override {
+            environment["HOME"] = home + "/scoped home"
+            environment["XDG_DATA_HOME"] = home + "/scoped data"
+            environment["OPENCODE_DB"] = "custom.db"
+        }
+        let entry: String
+        let store: String
+        if runtime == .cursorCLI {
+            store = environment["HOME"]! + "/.cursor/chats"
+            entry = store + "/workspace-hash/" + session
+            try touch(entry, directory: true)
+        } else {
+            store = (environment["XDG_DATA_HOME"] ?? home + "/.local/share") + "/opencode"
+            entry = store + "/" + (environment["OPENCODE_DB"] ?? "opencode.db")
+            try makeOpenCodeDatabase(at: entry, sessionIDs: [session])
+        }
+        defer { if runtime == .cursorCLI { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: store) } }
+        let plan = AgentRuntimeProcessLaunchPlan(
+            runtime: runtime, executablePath: "/unused/provider", arguments: [], currentDirectory: home,
+            environment: environment, browserShimDirectory: nil, providerVersion: nil, parsesJSONLines: true
+        )
+        #expect(ProviderNativeSessionStore.lookup(runtime: runtime, sessionID: session, userHome: home, environment: environment) == .present)
+        #expect(await AgentRuntimeProcessRunner.providerHomeBlock(for: plan, resumeSessionID: session) == nil)
+
+        // Change state after selection; a readable OpenCode database without
+        // the selected row must be refused too, not just a missing database.
+        if mutation == "store" { try FileManager.default.removeItem(atPath: store) }
+        else if runtime == .cursorCLI {
+            if mutation == "entry" { try FileManager.default.removeItem(atPath: entry) }
+            else { try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: store) }
+        } else if mutation == "entry" {
+            try FileManager.default.removeItem(atPath: entry)
+            try makeOpenCodeDatabase(at: entry, sessionIDs: [])
+        } else { try Data("not SQLite".utf8).write(to: URL(fileURLWithPath: entry)) }
+
+        let lookup = ProviderNativeSessionStore.lookup(runtime: runtime, sessionID: session, userHome: home, environment: environment)
+        #expect(lookup == (mutation == "unverifiable" ? .unverifiable : .absent))
+        let blocked = await AgentRuntimeProcessRunner.providerHomeBlock(for: plan, resumeSessionID: session)
+        #expect(blocked?.contains("selected native session") == true)
+        #expect(blocked?.contains(mutation == "unverifiable" ? "verified" : "missing") == true)
+        // Missing history is not a dependency of new work or utilities.
+        #expect(await AgentRuntimeProcessRunner.providerHomeBlock(for: plan, resumeSessionID: nil) == nil)
+    }
+
     @Test("Antigravity reads its store from the configured provider home, else the user home")
     func antigravityHomeResolution() throws {
         let userHome = try makeHome()
@@ -134,6 +187,7 @@ struct NativeContinuationFallbackTests {
         try makeOpenCodeDatabase(at: "\(userHome)/.local/share/opencode/opencode.db", sessionIDs: ["ses_default"])
         try makeOpenCodeDatabase(at: "\(elsewhere)/alt.db", sessionIDs: ["ses_absolute"])
         try makeOpenCodeDatabase(at: "\(userHome)/.local/share/opencode/rel.db", sessionIDs: ["ses_relative"])
+        try makeOpenCodeDatabase(at: "\(userHome)/.local/share/opencode/ spaced.db ", sessionIDs: ["ses_spaced"])
 
         func exists(_ id: String, _ environment: [String: String]) -> Bool {
             ProviderNativeSessionStore.sessionExists(
@@ -143,6 +197,7 @@ struct NativeContinuationFallbackTests {
         #expect(exists("ses_absolute", ["OPENCODE_DB": "\(elsewhere)/alt.db"]))
         #expect(!exists("ses_default", ["OPENCODE_DB": "\(elsewhere)/alt.db"]))
         #expect(exists("ses_relative", ["OPENCODE_DB": "rel.db"]))
+        #expect(exists("ses_spaced", ["OPENCODE_DB": " spaced.db "]))
         #expect(exists("ses_default", [:]))
     }
 
@@ -162,6 +217,11 @@ struct NativeContinuationFallbackTests {
         ))
         #expect(!ProviderNativeSessionStore.sessionExists(
             runtime: .openCodeCLI, sessionID: "ses_other", userHome: userHome, environment: configured
+        ))
+        let spacedDataHome = dataHome + "/ data root "
+        try makeOpenCodeDatabase(at: "\(spacedDataHome)/opencode/opencode.db", sessionIDs: ["ses_spaced_home"])
+        #expect(ProviderNativeSessionStore.sessionExists(
+            runtime: .openCodeCLI, sessionID: "ses_spaced_home", userHome: userHome, environment: ["XDG_DATA_HOME": spacedDataHome]
         ))
         // Without XDG_DATA_HOME it looks under ~/.local/share, where there is no database.
         #expect(!ProviderNativeSessionStore.sessionExists(

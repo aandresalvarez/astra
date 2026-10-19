@@ -48,6 +48,20 @@ target_for_path() {
       add_target "GitHubReviewPublicationTests"
       add_target "SwiftDataDeletionPreparationTests"
       ;;
+    Astra/Services/Runtime/RuntimeHomeAccess*.swift|Astra/Services/Runtime/RuntimeAccessACL.swift|Astra/Services/Runtime/CopilotHomeAccessCheck.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner+HomeAccessGuard.swift|Astra/Services/Runtime/AgentRuntimeHomeStateAccess.swift|Astra/Services/Runtime/RuntimeReadinessService.swift|Astra/Services/Runtime/RuntimeProviderAvailabilityService.swift|Astra/Services/Runtime/AgentRuntimeAdapter.swift|Astra/Services/Runtime/ExecutionEnvironment.swift|AstraObjCSupport/AstraMembership.m|Tests/RuntimeHomeAccess*Tests.swift|Tests/CopilotHomeAccessCheckTests.swift|Tests/PermissionRepairCommandClient.swift|Tests/PermissionRepairCommandClientTests.swift|script/swift_test.sh|script/permission_repair_test_harness*.py|Astra/Services/Runtime/ProviderNativeSessionStore.swift|Tests/NativeContinuationFallbackTests.swift|Tests/ExecutionSandboxRunnerTests.swift|Tests/RuntimeReadinessStateCacheTests.swift|Tests/RuntimeLaunchReadinessCacheTests.swift|Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift)
+      add_target "RuntimeHomeAccessTests"
+      add_target "RuntimeHomeAccessEdgeCaseTests"
+      add_target "RuntimeHomeAccessAdditionalStateTests"
+      add_target "NativeContinuationFallbackTests"
+      add_target "ExecutionSandboxRunnerTests"
+      add_target "CopilotHomeAccessCheckTests"
+      add_target "PermissionRepairCommandClientTests"
+      add_target "RuntimeReadinessServiceTests"
+      add_target "RuntimeReadinessStateCacheTests"
+      add_target "RuntimeLaunchReadinessCacheTests"
+      add_target "AgentRuntimeAdapterTests"
+      add_target "ExecutionEnvironmentTests"
+      ;;
     Tests/RuntimeFeedbackSnapshotTests.swift|Astra/Services/Feedback/RuntimeFeedbackSnapshotBuilder.swift)
       add_target "RuntimeFeedbackSnapshotTests"
       add_target "FeedbackEvidencePrivacyTests"
@@ -117,10 +131,11 @@ target_for_path() {
       add_target "ShelfAttachmentHistoryTests"
       add_target "TaskAttachmentFilesReaderTests"
       ;;
-    Tests/HeadlessChatProcessScenarioTests.swift|Tests/RuntimeCancellationDiagnosticTests.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift)
+    Tests/HeadlessChatProcessScenarioTests.swift|Tests/RuntimeCancellationDiagnosticTests.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift|Astra/Services/Runtime/CopilotPostFailureHomeInspection.swift|Tests/CopilotPostFailureHomeInspectionTests.swift)
       add_target "RuntimeCancellationDiagnosticTests"
       add_target "HeadlessChatScenarioTests"
       add_target "FeedbackReportPresentationTests"
+      add_target "CopilotPostFailureHomeInspectionTests"
       ;;
     Astra/Services/Diagnostics/AgentRuntimeDiagnostics.swift)
       add_target "AgentRuntimeFailureDiagnosticsTests"
