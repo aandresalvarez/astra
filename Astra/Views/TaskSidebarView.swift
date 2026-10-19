@@ -1655,63 +1655,25 @@ struct TaskSidebarView: View {
                 waiting: taskIndex.waitingTaskCount(in: workspace)
             )
 
-        return HStack(alignment: .center, spacing: SidebarLeanPresentation.workspaceRowElementSpacing) {
-            if workspaceSortMode == .manual {
-                Image(systemName: "line.3.horizontal")
-                    .font(Stanford.ui(10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 20, height: 28)
-                    .contentShape(Rectangle())
-                    .onDrag {
-                        beginWorkspaceDrag(workspace.id)
-                        return WorkspaceSidebarDragPayload.provider(for: workspace.id)
-                    }
-                    .help("Drag to reorder \(workspace.name)")
-                    .accessibilityLabel("Reorder \(workspace.name)")
-            }
-
-            // Disclosure owns only the drawer; it never changes scene selection.
-            Button {
+        return WorkspaceFolderRow(
+            workspace: workspace,
+            isExpanded: isExpanded,
+            isSelected: isSelected,
+            isHovered: isHovered,
+            isNewTaskTarget: newTaskComposerWorkspaceID == workspace.id,
+            activityCounts: activityCounts,
+            allowsReordering: workspaceSortMode == .manual,
+            onToggle: {
                 withAnimation(accordionAnimation) {
                     toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
-            } label: {
-                HStack(spacing: SidebarLeanPresentation.workspaceRowElementSpacing) {
-                    WorkspaceFolderIcon(isExpanded: isExpanded)
-                        .font(Stanford.ui(13, weight: .medium))
-                        .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
-                        .frame(width: SidebarLeanPresentation.workspaceFolderIconWidth, height: 22)
-
-                    Text(workspace.name)
-                        .font(Stanford.body(15))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+            },
+            onNewTask: { startNewTask(in: workspace) },
+            onBeginDrag: {
+                beginWorkspaceDrag(workspace.id)
+                return WorkspaceSidebarDragPayload.provider(for: workspace.id)
             }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
-            .accessibilityHint("Expands or collapses the workspace.")
-            .help(workspace.name)
-
-            workspaceRowActions(
-                for: workspace,
-                isHovered: isHovered,
-                activityCounts: activityCounts
-            )
-        }
-        .padding(.leading, SidebarLeanPresentation.workspaceRowContentLeadingPadding)
-        // Internal clearance keeps the status glyph away from the rounded row
-        // stroke; the header filter uses the same inset to preserve alignment.
-        .padding(.trailing, SidebarLeanPresentation.workspaceRowContentTrailingPadding)
-        .padding(.vertical, 6)
-        .frame(height: Stanford.sidebarWorkspaceRowHeight, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
+        )
         .onHover { updateWorkspaceHover($0, id: workspace.id) }
         .background(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
@@ -1771,20 +1733,6 @@ struct TaskSidebarView: View {
         if isSelected { return Stanford.borderRest }
         if isHovered { return Stanford.borderSubtle }
         return .clear
-    }
-
-    private func workspaceRowActions(
-        for workspace: Workspace,
-        isHovered: Bool,
-        activityCounts: SidebarWorkspaceActivityCounts
-    ) -> some View {
-        WorkspaceRowActions(
-            workspace: workspace,
-            isNewTaskTarget: newTaskComposerWorkspaceID == workspace.id,
-            isRowHovered: isHovered,
-            activityCounts: activityCounts,
-            onNewTask: { startNewTask(in: workspace) }
-        )
     }
 
     private func workspaceActions(for workspace: Workspace) -> WorkspaceSidebarActions {

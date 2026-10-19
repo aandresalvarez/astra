@@ -27,10 +27,15 @@ struct WorkspaceRowActions: View {
     var body: some View {
         ZStack(alignment: .trailing) {
             metadata.opacity(showsActions ? 0 : 1).accessibilityHidden(showsActions)
+                .allowsHitTesting(false)
             actions.opacity(showsActions ? 1 : 0).allowsHitTesting(showsActions)
         }
-        .frame(width: SidebarLeanPresentation.workspaceRowTrailingSlotWidth + (isNewTaskTarget ? Self.newTaskTargetExtraWidth : 0), alignment: .trailing)
+        .frame(width: Self.trailingWidth(isNewTaskTarget: isNewTaskTarget), alignment: .trailing)
         .animation(hoverAnimation, value: showsActions)
+    }
+
+    static func trailingWidth(isNewTaskTarget: Bool) -> CGFloat {
+        SidebarLeanPresentation.workspaceRowTrailingSlotWidth + (isNewTaskTarget ? newTaskTargetExtraWidth : 0)
     }
 
     private var metadata: some View {

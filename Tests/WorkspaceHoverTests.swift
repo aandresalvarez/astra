@@ -100,7 +100,11 @@ struct WorkspaceHoverTests {
         let start = try #require(source.range(of: "private func workspaceRow(for"))
         let end = try #require(source.range(of: "private func workspaceRowFill", range: start.upperBound..<source.endIndex))
         let row = source[start.lowerBound..<end.lowerBound]
-        #expect(row.contains("WorkspaceFolderIcon(isExpanded: isExpanded)"))
+        #expect(row.contains("WorkspaceFolderRow("))
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let folderRow = try String(contentsOf: root.appendingPathComponent("Astra/Views/WorkspaceFolderRow.swift"), encoding: .utf8)
+        #expect(folderRow.contains("WorkspaceFolderIcon(isExpanded: isExpanded)"))
+        #expect(!folderRow.contains("chevron.right"))
         #expect(!row.contains("chevron.right"))
         #expect(row.contains(".workspaceHoverCard(isHovered: isHovered)"))
     }
