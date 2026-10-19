@@ -214,12 +214,13 @@ struct PluginRuntimeProjection {
     /// the same version (`PluginDefinitionDigest`, which leaves out where a
     /// copy came from, so two copies of one definition agree), or a
     /// component the activation never recorded. A digest recorded before
-    /// content digests can't be compared, so only the version and
-    /// components are. Known components are compared as a superset because
-    /// an Add keeps the ones a definition dropped, for secret cleanup.
+    /// content digests, or none (a mirror written before V20 carries only
+    /// the version), can't be compared, so only the version and components
+    /// are; an activation with no recorded version either has nothing to
+    /// compare. Known components are compared as a superset because an Add
+    /// keeps the ones a definition dropped, for secret cleanup.
     static func awaitsUpdate(_ activation: PluginActivation, to package: PluginPackage) -> Bool {
-        guard !activation.recordedDigest.isEmpty else { return false }
-        if activation.recordedVersion != package.version { return true }
+        if !activation.recordedVersion.isEmpty, activation.recordedVersion != package.version { return true }
         if PluginDefinitionDigest.matches(activation.recordedDigest, package) == false { return true }
         return !activation.knownComponentIDs.isEmpty
             && !Set(componentIDs(of: package)).isSubset(of: Set(activation.knownComponentIDs))

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 import ASTRACore
 
 extension Notification.Name {
@@ -29,6 +30,19 @@ struct CapabilityApprovalRecord: Codable, Equatable, Identifiable, Sendable {
 }
 
 enum CapabilityApprovalDigest {
+    /// The last digest computed per package, reused while the package is
+    /// equal, for a render path's cache key (the rail). A changed icon
+    /// asset file alone isn't seen until the package is written again,
+    /// which every library replacement does.
+    private static let memo = OSAllocatedUnfairLock<[String: (package: PluginPackage, digest: String)]>(initialState: [:])
+
+    static func memoizedDigest(for package: PluginPackage) -> String? {
+        if let cached = memo.withLock({ $0[package.id] }), cached.package == package { return cached.digest }
+        guard let digest = try? digest(for: package) else { return nil }
+        memo.withLock { $0[package.id] = (package, digest) }
+        return digest
+    }
+
     static func digest(for package: PluginPackage) throws -> String {
         try digest(for: CapabilityPackageSource(
             package: package,

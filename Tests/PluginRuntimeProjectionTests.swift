@@ -319,6 +319,64 @@ struct PluginRuntimeProjectionTests {
         #expect(projection.accountOwnerSkillIDs[account.id] == primaries)
     }
 
+    @Test("A request that matches an account two plugins bind brings in both plugins")
+    func matchedSharedAccountIncludesEveryOwner() throws {
+        let context = try makeContext()
+        let jira = try builtIn("jira-workflow")
+        let gcloud = try builtIn("gcloud-workflow")
+        let workspace = Workspace(name: "Owners", primaryPath: "/tmp/projection-owners")
+        context.insert(workspace)
+        let account = Connector(name: "Tracker", serviceType: jira.connectors[0].serviceType)
+        account.authMethod = "none"
+        account.workspace = workspace
+        context.insert(account)
+        // Jira first: the account's one runtime copy is wired to its skill.
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(jira.id) }
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(gcloud.id) }
+        for package in [jira, gcloud] {
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+            WorkspaceCapabilityActivation.bind(
+                account, toComponent: CapabilityResourceOrigin.componentID(for: package.connectors[0]), of: activation
+            )
+        }
+        let task = AgentTask(title: "Owners", goal: "Ask the Tracker", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task).resolvedScope(.providerLaunch(contextText: "Ask the Tracker"))
+        #expect(scope.connectors.contains { $0.id == account.id })
+        let names = Set(scope.behaviorSkills.map(\.name))
+        #expect(names.contains(jira.skills[0].name))
+        #expect(names.contains(gcloud.skills[0].name))
+    }
+
+    @Test("A recorded version is compared even with no recorded digest")
+    func versionIsComparedWithoutADigest() throws {
+        let context = try makeContext()
+        let gcloud = try builtIn("gcloud-workflow")
+        let workspace = Workspace(name: "Pre-V20", primaryPath: "/tmp/projection-pre-v20")
+        context.insert(workspace)
+        // As recovered from a mirror written before V20: a version, no digest.
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableCapability(gcloud.id)
+            $0.recordInstalledPlugin(id: gcloud.id, version: gcloud.version)
+        }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: gcloud.id, in: workspace))
+        #expect(activation.recordedDigest.isEmpty)
+        #expect(!PluginRuntimeProjection.awaitsUpdate(activation, to: gcloud))
+        var newer = gcloud
+        newer.version = "99.0.0"
+        #expect(PluginRuntimeProjection.awaitsUpdate(activation, to: newer))
+        // And components it never recorded.
+        WorkspaceCapabilityActivation.setKnownComponents(PluginRuntimeProjection.componentIDs(of: gcloud), on: activation)
+        var more = gcloud
+        more.skills.append(PluginSkill(
+            name: "Extra", icon: "", description: "", allowedTools: [], disallowedTools: [], customTools: [],
+            behaviorInstructions: "", environmentKeys: [], environmentValues: []
+        ))
+        #expect(PluginRuntimeProjection.awaitsUpdate(activation, to: more))
+    }
+
     @Test("Adding a version without a connector releases its binding and keeps the account")
     func addReleasesDroppedConnectorBindings() throws {
         let context = try makeContext()
