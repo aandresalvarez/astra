@@ -154,6 +154,12 @@ public struct EnvironmentHealthChecker: Sendable {
             return .missingBinary
         }
 
+        // A check with no arguments only finds the binary; it never runs it.
+        if HealthCheckPolicy.isExistenceOnly(binary: binary, arguments: livenessArgs) {
+            return binary.contains("/") || resolved.hasPrefix("/")
+                ? .healthy(path: resolved, version: "")
+                : .notChecked(detail: "not checked: `\(resolved)` is not an absolute path")
+        }
         // A check that is not a read-only status command is never run: it
         // would run on every scan, unasked (`HealthCheckPolicy`).
         guard HealthCheckPolicy.isReadOnly(binary: binary, arguments: livenessArgs) else {

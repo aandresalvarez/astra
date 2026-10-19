@@ -96,6 +96,17 @@ public enum HealthCheckPolicy {
         return ((versionForms[cli] ?? []) + (checks[cli] ?? [])).contains { $0.matches(arguments) }
     }
 
+    /// True for a check that runs nothing: no arguments, so ASTRA only finds
+    /// `binary` (a bare name on its own search path, or a plain absolute
+    /// path) and never starts it. For a CLI with no known status command,
+    /// such as an MCP server's (`acme-mcp`): missing, it is a pending step.
+    public static func isExistenceOnly(binary: String, arguments: [String]) -> Bool {
+        guard arguments.isEmpty else { return false }
+        return TrustedExecutablePath.isTrustedDeclaration(binary)
+            || (binary.range(of: #"^(/[A-Za-z0-9._+-]+)+$"#, options: .regularExpression) != nil
+                && !binary.split(separator: "/").contains { $0 == "." || $0 == ".." })
+    }
+
     /// Why `binary arguments` is not run, for the component's status.
     public static func refusal(binary: String, arguments: [String]) -> String {
         let command = ([binary] + arguments).joined(separator: " ")

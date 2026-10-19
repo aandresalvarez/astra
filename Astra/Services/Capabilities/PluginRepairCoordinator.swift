@@ -122,12 +122,16 @@ final class PluginRepairCoordinator: ObservableObject {
     ) async -> Bool {
         guard let binary = repair.checkBinary else { return true }
         // Only a read-only status check is run (`HealthCheckPolicy`).
-        guard HealthCheckPolicy.isReadOnly(binary: binary, arguments: repair.checkArguments ?? ["--version"]) else { return false }
+        let arguments = repair.checkArguments ?? ["--version"]
+        let existenceOnly = HealthCheckPolicy.isExistenceOnly(binary: binary, arguments: arguments)
+        guard existenceOnly || HealthCheckPolicy.isReadOnly(binary: binary, arguments: arguments) else { return false }
         // With the stopped run's variables, the check runs the CLI as that
         // run did: a token the task projected, not ASTRA's own login.
         if let environment = repair.checkEnvironment, !environment.isEmpty {
             let path = checkExecutablePath(binary, environment: environment, workingDirectory: repair.checkWorkingDirectory)
             let searchedByASTRA = environment["PATH"] == nil && !binary.contains("/")
+            // Found is all an existence check asks; it runs nothing.
+            if existenceOnly { return path.hasPrefix("/") }
             guard searchedByASTRA ? path.hasPrefix("/") : isInstalled(path) else { return false }
             let merged = ProcessInfo.processInfo.environment.merging(environment) { _, projected in projected }
             let result = await ProcessBinaryRunner().run(

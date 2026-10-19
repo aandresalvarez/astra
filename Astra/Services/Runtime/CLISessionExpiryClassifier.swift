@@ -50,7 +50,7 @@ enum CLISessionExpiryClassifier {
 
         var stopMessage: String {
             guard ownCredentials.isEmpty else {
-                return "The \(displayName) credentials that command set itself (\(ownCredentials.joined(separator: ", "))) were rejected. "
+                return "The \(displayName) credentials that command chose itself (\(ownCredentials.joined(separator: ", "))) were rejected. "
                     + "ASTRA can't sign in to or check those for you: fix them where the command sets them, then resume."
             }
             var message: String
@@ -237,6 +237,19 @@ enum CLISessionExpiryClassifier {
 
     static let families = [googleCloudApplicationDefault, googleCloud, gitHubEnterpriseToken, gitHubEnvironmentToken, gitHub]
 
+    /// The tools that run a shell command, as each provider names them:
+    /// Claude's `Bash`, Codex's `command_execution`, Cursor's
+    /// `shellToolCall`, Antigravity's `run_command`, and the like. Another
+    /// tool (an MCP tool, a file read) whose input has a `command` field ran
+    /// no CLI, so its result never stops the run.
+    static func isShellTool(_ name: String) -> Bool {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return [
+            "bash", "shell", "command_execution", "local_shell", "local_shell_call", "exec_command", "shell_command",
+            "run_shell_command", "run_command", "run_terminal_cmd", "shelltoolcall", "terminal"
+        ].contains(normalized) || normalized.hasPrefix("bash(") || normalized.hasPrefix("shell(")
+    }
+
     struct Stop: Equatable {
         let reason: String
         let message: String
@@ -334,7 +347,7 @@ enum CLISessionExpiryClassifier {
         let selectorsStart = fullMessage.range(of: storeSelectorsLead)
         let message = selectorsStart.map { String(fullMessage[..<$0.lowerBound]) } ?? fullMessage
         let selectors = selectorsStart.map { storeSelectors(in: String(fullMessage[$0.upperBound...])) } ?? [:]
-        let ownCredentials = message.range(of: " credentials that command set itself (").flatMap { start in
+        let ownCredentials = message.range(of: " credentials that command chose itself (").flatMap { start in
             message[start.upperBound...].firstIndex(of: ")").map {
                 message[start.upperBound..<$0].components(separatedBy: ", ")
             }
@@ -411,29 +424,66 @@ enum CLISessionExpiryClassifier {
         "gh": ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]
     ]
 
-    /// The credential variables the family's calls in `command` set on
+    /// gcloud's flags that pick another account, configuration or credential
+    /// for one call: the repair can't reproduce them, so it checks nothing.
+    private static let gcloudCredentialFlags = [
+        "--account", "--configuration", "--impersonate-service-account", "--access-token-file", "--credential-file-override"
+    ]
+
+    /// The credential variables the family's calls in `command` set for
     /// themselves (`CLOUDSDK_CONFIG=/team gcloud …`, `env GH_CONFIG_DIR=/x gh
-    /// …`): store selectors to carry, when every call sets the same plain
-    /// absolute path, and the names of any it can't carry (`own`), which
-    /// include a selector the calls disagree on or that is not such a path.
+    /// …`, or an `export` earlier in the same shell scope): store selectors
+    /// to carry, when every call sets the same plain absolute path, and what
+    /// it can't carry (`own`): a credential variable, a selector the calls
+    /// disagree on or that is not such a path, a variable `env` removed
+    /// (`env -u GH_TOKEN`, `env -i`), or gcloud's `--account` and the like.
+    /// With any of those, nothing signs in to or checks a store or account
+    /// the call didn't use.
     static func commandLocalCredentials(of family: Family, in command: String) -> (selectors: [String: String], own: [String]) {
         let cli = (family.checkBinary as NSString).lastPathComponent
         let selectorNames = storeSelectorNames[cli] ?? []
         let watched = selectorNames.union(credentialNames[cli] ?? [])
-        let calls: [[String: String]] = segments(command).compactMap { segment in
+        var own: Set<String> = []
+        var exported: [(name: String, value: String?, scope: [Int])] = []
+        var calls: [[String: String]] = []
+        for segment in segments(command) {
             var rest = segment.words
             var assignments: [String] = []
-            stripWrappers(&rest, assignments: &assignments)
-            guard let executable = rest.first, family.commands.contains((executable as NSString).lastPathComponent) else { return nil }
+            var cleared: [String] = []
+            stripWrappers(&rest, assignments: &assignments, cleared: &cleared)
+            if let builtin = rest.first, builtin == "export" || builtin == "unset" {
+                for word in rest.dropFirst() {
+                    let name = String(word.prefix { $0 != "=" })
+                    guard watched.contains(name) else { continue }
+                    if builtin == "unset" {
+                        exported.append((name, nil, segment.scope))
+                    } else if word.count > name.count {
+                        exported.append((name, String(word.dropFirst(name.count + 1)), segment.scope))
+                    }
+                }
+                continue
+            }
+            guard let executable = rest.first, family.commands.contains((executable as NSString).lastPathComponent) else { continue }
+            if cleared.contains("*") { own.insert("env -i") }
+            for name in cleared where watched.contains(name) { own.insert("env -u \(name)") }
+            if (executable as NSString).lastPathComponent == "gcloud" {
+                for argument in rest.dropFirst() {
+                    for flag in gcloudCredentialFlags where argument == flag || argument.hasPrefix(flag + "=") { own.insert(flag) }
+                }
+            }
             var set: [String: String] = [:]
+            for name in watched {
+                if let entry = exported.last(where: { $0.name == name && segment.scope.starts(with: $0.scope) }), let value = entry.value {
+                    set[name] = value
+                }
+            }
             for assignment in assignments {
                 let name = String(assignment.prefix { $0 != "=" })
                 if watched.contains(name) { set[name] = String(assignment.dropFirst(name.count + 1)) }
             }
-            return set
+            calls.append(set)
         }
         var selectors: [String: String] = [:]
-        var own: Set<String> = []
         for name in Set(calls.flatMap(\.keys)) {
             let values = Set(calls.map { $0[name] })
             guard selectorNames.contains(name), values.count == 1, let value = values.first ?? nil,
@@ -442,7 +492,7 @@ enum CLISessionExpiryClassifier {
             else { own.insert(name); continue }
             selectors[name] = value
         }
-        return (selectors, own.sorted())
+        return (own.isEmpty ? selectors : [:], own.sorted())
     }
 
     /// The absolute path `command` runs `cli` by (`/opt/team/bin/gh api
@@ -716,12 +766,35 @@ enum CLISessionExpiryClassifier {
             guard executes(cli, segment.words), !negates(segment.words), !isCondition(segment.words) else { return false }
             var position = index
             while position < segments.count - 1 {
+                // `|| exit 1` (or `|| { …; exit 1; }`) ends the line with the
+                // failure it caught.
+                if segments[position].separator == "||", exitsWithFailure(after: position, in: segments) { return true }
                 guard failurePassingSeparators.contains(segments[position].separator)
                     || closes(segments[position + 1].words) else { return false }
                 position += 1
             }
             return segments[position].separator != "&"
         }
+    }
+
+    /// True when the command after the `||` at `position` is `exit` or
+    /// `return` with a status other than 0 (none passes the failure on),
+    /// alone or inside a `{ …; }` group it opens.
+    private static func exitsWithFailure(after position: Int, in segments: [Segment]) -> Bool {
+        func exits(_ words: [String]) -> Bool {
+            let rest = words.drop { reservedWords.contains($0) }
+            guard let first = rest.first, first == "exit" || first == "return" else { return false }
+            return rest.dropFirst().first.map { $0 != "0" } ?? true
+        }
+        guard position + 1 < segments.count else { return false }
+        let next = segments[position + 1]
+        if exits(next.words) { return true }
+        guard next.words.first == "{" else { return false }
+        for segment in segments[(position + 1)...] {
+            if exits(segment.words) { return true }
+            if closes(segment.words) { return false }
+        }
+        return false
     }
 
     /// Shell reserved words that open or continue a compound command: the
@@ -807,7 +880,20 @@ enum CLISessionExpiryClassifier {
         // Every open parenthesis or backtick, innermost last, with the
         // command a substitution there feeds (nil for a subshell, or for a
         // substitution that is the whole command, as in an assignment).
-        var groups: [(closer: Character, command: [String]?, id: Int)] = []
+        var groups: [(closer: Character, command: [String]?, id: Int, assignmentStart: Int?)] = []
+        // Substitutions in an assignment (`TOKEN=$(gh auth token) echo ok`)
+        // whose command was not known when they opened: their segments, and
+        // the group depth where that command ends. A command that follows
+        // (`echo`) feeds them; none (`TOKEN=$(gh …)` alone) leaves them be.
+        var assignmentSubstitutions: [Range<Int>] = []
+        var assignmentDepth = 0
+        func closeGroup() {
+            guard let group = groups.popLast() else { return }
+            if let start = group.assignmentStart {
+                assignmentSubstitutions.append(start..<segments.count)
+                assignmentDepth = groups.count
+            }
+        }
         var groupCount = 0
         // Here-documents whose bodies follow this line, in order: the
         // delimiter, whether `<<-` strips leading tabs, whether the body
@@ -847,6 +933,18 @@ enum CLISessionExpiryClassifier {
         func endCommand(_ separator: String) {
             endWord()
             words.removeAll { $0 == "$" }
+            if !assignmentSubstitutions.isEmpty, groups.count == assignmentDepth {
+                var command = words
+                stripWrappers(&command)
+                if !command.isEmpty {
+                    for range in assignmentSubstitutions {
+                        for index in range where index < segments.count { segments[index].enclosingCommands.append(command) }
+                    }
+                    assignmentSubstitutions = []
+                } else if separator != "(" && separator != "`" {
+                    assignmentSubstitutions = []
+                }
+            }
             if !words.isEmpty {
                 segments.append(Segment(
                     words: words, separator: separator, enclosingCommands: groups.compactMap(\.command), scope: groups.map(\.id)
@@ -865,9 +963,14 @@ enum CLISessionExpiryClassifier {
             let substitutes = opener == "`" || ["$", "<", ">"].contains { enclosing.last?.hasSuffix($0) == true }
             if opener == "(", substitutes { enclosing[enclosing.count - 1].removeLast() }
             enclosing.removeAll(where: \.isEmpty)
+            let assigns = enclosing.contains { $0.range(of: #"^[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression) != nil }
             stripWrappers(&enclosing)
             endCommand(String(opener))
-            groups.append((closer: closer, command: substitutes && !enclosing.isEmpty ? enclosing : nil, id: groupCount))
+            let pending = substitutes && enclosing.isEmpty && assigns
+            groups.append((
+                closer: closer, command: substitutes && !enclosing.isEmpty ? enclosing : nil, id: groupCount,
+                assignmentStart: pending ? segments.count : nil
+            ))
             groupCount += 1
         }
         func closeOrOpenGroup(_ character: Character) {
@@ -875,7 +978,7 @@ enum CLISessionExpiryClassifier {
                 return openGroup(character, closer: character == "`" ? "`" : ")")
             }
             endCommand(String(character))
-            if groups.last?.closer == character { groups.removeLast() }
+            if groups.last?.closer == character { closeGroup() }
         }
         while index < characters.count {
             let character = characters[index]
@@ -933,7 +1036,7 @@ enum CLISessionExpiryClassifier {
             case ")" where substitutions.last?.closer == ")" && substitutions.last?.depth == 0,
                  "`" where substitutions.last?.closer == "`":
                 endCommand(String(character))
-                _ = groups.popLast()
+                closeGroup()
                 substitutions.removeLast()
                 quote = "\""
             case "(" where substitutions.last?.closer == ")", ")" where substitutions.last?.closer == ")":
@@ -1004,6 +1107,17 @@ enum CLISessionExpiryClassifier {
         guard let payload = shellPayload(segment.words) else { return [segment] }
         var nested = segments(payload, depth: depth + 1)
         guard !nested.isEmpty else { return [segment] }
+        // What the shell ran under (`env GH_CONFIG_DIR=/team`, `GH_TOKEN=…`,
+        // `env -u GH_TOKEN`) applies to every command it runs: each carries
+        // it, after its own reserved words.
+        var rest = segment.words
+        stripWrappers(&rest)
+        let prefix = segment.words.prefix(segment.words.count - rest.count).filter { !reservedWords.contains($0) }
+        for index in nested.indices where !prefix.isEmpty {
+            let words = nested[index].words
+            let reserved = words.prefix { reservedWords.contains($0) }
+            nested[index].words = Array(reserved) + prefix + words.dropFirst(reserved.count)
+        }
         for index in nested.indices {
             nested[index].enclosingCommands = segment.enclosingCommands + nested[index].enclosingCommands
             nested[index].scope = segment.scope + [-2 - depth] + nested[index].scope
@@ -1097,6 +1211,14 @@ enum CLISessionExpiryClassifier {
 
     /// `stripWrappers`, collecting the `VAR=value` assignments it dropped.
     static func stripWrappers(_ words: inout [String], assignments: inout [String]) {
+        var cleared: [String] = []
+        stripWrappers(&words, assignments: &assignments, cleared: &cleared)
+    }
+
+    /// `stripWrappers`, also collecting the variables `env` removed: each
+    /// `-u NAME` as `NAME`, and `-i` (or `-`), which empties the environment,
+    /// as `*`.
+    static func stripWrappers(_ words: inout [String], assignments: inout [String], cleared: inout [String]) {
         while let first = words.first {
             if first.range(of: #"^[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression) != nil {
                 assignments.append(words.removeFirst())
@@ -1117,6 +1239,17 @@ enum CLISessionExpiryClassifier {
                 if name == "env", let split = envSplitString(option, rest: &words) {
                     words.insert(contentsOf: split, at: 0)
                     continue
+                }
+                if name == "env" {
+                    if ["-i", "--ignore-environment", "-"].contains(option) {
+                        cleared.append("*")
+                    } else if option == "-u" || option == "--unset", let unset = words.first {
+                        cleared.append(unset)
+                    } else if option.hasPrefix("--unset=") {
+                        cleared.append(String(option.dropFirst("--unset=".count)))
+                    } else if option.hasPrefix("-u"), option.count > 2 {
+                        cleared.append(String(option.dropFirst(2)))
+                    }
                 }
                 // `-u name` takes the next word; `-uname` and `--user=name` don't.
                 if valueOptions.contains(option), !option.contains("=") { _ = words.isEmpty ? nil : words.removeFirst() }

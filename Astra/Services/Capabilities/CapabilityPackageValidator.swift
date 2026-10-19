@@ -651,7 +651,8 @@ enum CapabilityPackageValidator {
             // The check runs on every scan with no click, so it may only read
             // status (`HealthCheckPolicy`): refused here, as the checker never
             // runs it.
-            guard HealthCheckPolicy.isReadOnly(binary: prerequisite.binary, arguments: prerequisite.livenessArgs) else {
+            guard HealthCheckPolicy.isReadOnly(binary: prerequisite.binary, arguments: prerequisite.livenessArgs)
+                || HealthCheckPolicy.isExistenceOnly(binary: prerequisite.binary, arguments: prerequisite.livenessArgs) else {
                 let check = ([prerequisite.binary] + prerequisite.livenessArgs).joined(separator: " ")
                 issues.append(issue(
                     .blocker,
