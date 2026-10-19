@@ -144,6 +144,47 @@ struct PluginOperationsTests {
         #expect(PluginOperations.setting("PROJECT", of: package.skills[0], in: there) == "default-project")
     }
 
+    /// A Remove whose save landed but whose mirror couldn't be written: a
+    /// recovery from that mirror would bring back what it deleted, so the
+    /// intent stays, with the workspace, until launch rewrites it.
+    @Test("A Remove's intent is cleared only once every affected mirror is rewritten")
+    func removeIntentWaitsForMirrorRewrites() throws {
+        let env = try Environment()
+        let folder = env.root.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        env.workspace.primaryPath = folder.path
+        let other = Workspace(name: "Other", primaryPath: env.root.appendingPathComponent("other").path)
+        env.context.insert(other)
+        let package = Self.package(version: "1.0.0")
+        try env.install(package)
+        let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
+        // The mirror's path is taken by a folder: it can't be written.
+        let mirrorURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try? FileManager.default.removeItem(at: mirrorURL)
+        try FileManager.default.createDirectory(at: mirrorURL, withIntermediateDirectories: true)
+
+        try CapabilityUninstaller(library: env.library).remove(package, modelContext: env.context, removeJournal: journal)
+        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) == nil)
+        #expect(try journal.intents() == [.init(pluginID: package.id, workspaceIDs: [env.workspace.id])])
+
+        // Launch: still unwritable, still kept; only the recorded workspace
+        // is rewritten.
+        var rewritten: [UUID] = []
+        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal) {
+            rewritten.append($0.id)
+            return false
+        }
+        #expect(rewritten == [env.workspace.id])
+        #expect(try journal.pending() == [package.id])
+
+        try FileManager.default.removeItem(at: mirrorURL)
+        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
+        #expect(try journal.pending().isEmpty)
+        let mirror = try WorkspaceConfigManager.loadConfig(from: mirrorURL)
+        #expect(!(mirror.installedPlugins ?? []).contains { $0.id == package.id })
+    }
+
     @Test("An interrupted Remove is finished at launch; one never saved is dropped")
     func removeJournalResumes() throws {
         let env = try Environment()

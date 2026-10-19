@@ -265,8 +265,12 @@ enum CLISessionExpiryClassifier {
     /// The GitHub Enterprise host a `gh` call in `command` targets: its
     /// `--hostname` flag or the host of its `-R/--repo HOST/OWNER/REPO`, else
     /// a `GH_HOST=` assignment before it, else the host of a `GH_REPO=` one.
-    /// Nil for github.com or a value that is not a plain host name.
+    /// Nil for github.com or a value that is not a plain host name, and nil
+    /// when the `gh` calls disagree (`gh auth status --hostname a; gh auth
+    /// status --hostname b`): which one failed is unknown, so the stop stays
+    /// untargeted rather than checking a host that may be healthy.
     static func gitHubHost(in command: String) -> String? {
+        var hosts: [String?] = []
         for words in simpleCommands(command) {
             var rest = words
             var assignments: [String] = []
@@ -290,9 +294,10 @@ enum CLISessionExpiryClassifier {
                     declared = host
                 }
             }
-            if let host = declared.flatMap(enterpriseHost) { return host }
+            hosts.append(declared.flatMap(enterpriseHost))
         }
-        return nil
+        guard let host = hosts.first, hosts.allSatisfy({ $0 == host }) else { return nil }
+        return host
     }
 
     /// The host of a `HOST/OWNER/REPO` repository selector (`gh --repo`,
@@ -360,16 +365,36 @@ enum CLISessionExpiryClassifier {
         return segments.indices.contains { index in
             let segment = segments[index]
             guard executes(cli, segment.words) else { return false }
+            // A compound command's closing word (`}`, `fi`, `done`) carries
+            // its status on: the operator after it is the one that decides.
+            var end = index
+            while end + 1 < segments.count, closes(segments[end + 1].words) { end += 1 }
+            let separator = segments[end].separator
             return segment.enclosingCommands.contains { !executes(cli, $0) }
                 || negates(segment.words)
                 || isCondition(segment.words)
-                || (index < segments.count - 1 && statusMaskingSeparators.contains(segment.separator))
+                // `&` runs it in the background, and the line succeeds,
+                // even when nothing follows (`gh auth status &`).
+                || separator == "&"
+                || (end < segments.count - 1 && statusMaskingSeparators.contains(separator))
         }
     }
 
     /// Shell reserved words that open or continue a compound command: the
-    /// word after one is a command (`if gh auth status; then …; fi`).
-    private static let reservedWords: Set<String> = ["if", "then", "elif", "else", "fi", "while", "until", "do", "done", "!"]
+    /// word after one is a command (`if gh auth status; then …; fi`, `{ gh
+    /// auth status; } 2>&1`).
+    private static let reservedWords: Set<String> = ["if", "then", "elif", "else", "fi", "while", "until", "do", "done", "!", "{", "}"]
+
+    /// Reserved words that close a compound command, whose status is then
+    /// its last command's.
+    private static let closingWords: Set<String> = ["}", "fi", "done"]
+
+    /// True when this "command" only closes a compound command, perhaps with
+    /// a redirection (`} 2>&1`).
+    private static func closes(_ words: [String]) -> Bool {
+        guard let first = words.first, closingWords.contains(first) else { return false }
+        return words.dropFirst().allSatisfy { $0.contains(">") || $0.contains("<") }
+    }
 
     /// Reserved words whose command is a condition.
     private static let conditionWords: Set<String> = ["if", "elif", "while", "until"]

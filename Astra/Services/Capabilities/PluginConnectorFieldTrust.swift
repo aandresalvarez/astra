@@ -14,8 +14,8 @@ import ASTRACore
 /// declared a credential: in the Keychain, edited masked, never exported.
 ///
 /// The one owner of that decision. Account creation, Update's account sync,
-/// setup copy, the install sheet and the runtime projection read a connector
-/// through `asStored(_:in:)`; the mirror export asks through
+/// setup copy, the install sheet, the runtime projection and every transport
+/// review read a connector through `asStored(_:in:)`; the mirror export asks through
 /// `ConnectorSettingStorageSeam`.
 enum PluginConnectorFieldTrust {
     private static let bundledPluginIDs = Set(PluginCatalog.builtInPackages.map(\.id))
@@ -63,6 +63,22 @@ enum PluginConnectorFieldTrust {
             .filter { !trusted.contains($0.key) && seen.insert($0.key).inserted }
             .map { PluginConnector.CredentialHint(key: $0.key, hint: $0.hint) }
         return stored
+    }
+
+    /// Why `connector` can't carry credentials over its transport, judged
+    /// on its fields as stored: a setting stored as a credential needs a
+    /// protected transport as much as a declared one, so a definition the
+    /// runtime would reject is refused at review (validation, catalog
+    /// policy, install preflight) instead. `baseURL` is an override the
+    /// person entered, when there is one.
+    static func credentialTransportViolation(
+        of connector: PluginConnector, in package: PluginPackage, baseURL: String? = nil
+    ) -> String? {
+        ConnectorSecurityPolicy.credentialTransportViolation(
+            baseURL: baseURL ?? connector.baseURL,
+            authMethod: connector.authMethod,
+            credentialKeys: asStored(connector, in: package).credentialHints.map(\.key)
+        )
     }
 }
 

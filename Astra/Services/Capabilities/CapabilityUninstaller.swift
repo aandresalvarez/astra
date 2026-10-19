@@ -99,9 +99,10 @@ struct CapabilityUninstaller {
         )
 
         // The Remove's intent outlives an exit between the save below and
-        // the library removal at the end.
+        // the mirror rewrites and library removal at the end. Opened before
+        // anything changes: one that can't be read refuses the Remove.
         let removeJournal = removeJournal ?? PluginRemoveJournal(for: modelContext)
-        let recordedIntent = try removeJournal?.begin(package.id) ?? false
+        _ = try removeJournal?.intents()
         var result = RemovalResult(packageID: package.id)
         // Membership arrays are mutated per workspace below; rollback does not
         // revert them, so snapshot for the save-failure path.
@@ -211,6 +212,17 @@ struct CapabilityUninstaller {
             modelContext.delete(skill)
         }
 
+        // Recorded with the workspaces it changes, whose mirrors are
+        // rewritten before it is cleared.
+        let recordedIntent: Bool
+        do {
+            recordedIntent = try removeJournal?.begin(package.id, affecting: result.disabledWorkspaceIDs) ?? false
+        } catch {
+            modelContext.rollback()
+            membershipSnapshots.forEach { WorkspaceCapabilityActivation.restore($1, to: $0) }
+            throw error
+        }
+
         // The connectors' cleanups are recorded before the save and run, read
         // after it, so a connector sharing a namespace with one removed here
         // keeps its credentials; any that don't clear are retried at launch.
@@ -233,9 +245,11 @@ struct CapabilityUninstaller {
             throw UninstallError.saveFailed(packageID: package.id)
         }
         pendingKeychainCleanups.forEach { $0() }
-        for workspace in workspaces where result.disabledWorkspaceIDs.contains(workspace.id) {
-            WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
-        }
+        // Written now, not queued: the intent is cleared only once no mirror
+        // still names what the Remove deleted, else launch rewrites them.
+        let mirrorsWritten = PluginRemoveJournal.rewriteMirrors(
+            of: .init(pluginID: package.id, workspaceIDs: result.disabledWorkspaceIDs), modelContext: modelContext
+        )
 
         // File removal is the last step and deliberately non-throwing: the
         // deletes are committed and the keychain is wiped, so the package is
@@ -245,7 +259,7 @@ struct CapabilityUninstaller {
         // make the caller report a failed uninstall that actually succeeded.
         do {
             _ = try library.removePackage(id: package.id)
-            removeJournal?.finish(package.id)
+            if mirrorsWritten { removeJournal?.finish(package.id) }
         } catch {
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
                 "source": "package_uninstall",

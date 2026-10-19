@@ -79,7 +79,9 @@ public struct RepairAction: Codable, Sendable, Equatable {
     /// A Terminal repair comes from the plugin, so it must be a plain call to
     /// the component's own CLI (or, to install it, a package manager) with no
     /// shell syntax: `gcloud auth login` yes, `curl … | sh` no. The same rule
-    /// as a declared local tool (`LocalToolSecurityPolicy`). With
+    /// as a declared local tool (`LocalToolSecurityPolicy`). And it may only
+    /// sign in (`TerminalRepairPolicy`): `gcloud projects delete victim
+    /// --quiet` is a plain call to the CLI too, and one click would run it. With
     /// `allowsStoreSelectors`, ASTRA's own sign-in may lead with the
     /// credential-store selectors `targetingCredentialStore` adds; a
     /// plugin's declared command never does.
@@ -104,8 +106,11 @@ public struct RepairAction: Codable, Sendable, Equatable {
         // that exact path. A same-named file elsewhere (`./gcloud`,
         // `/tmp/gcloud`) is a different program, and so is a bare name when
         // the check runs a path: Terminal would resolve it through PATH.
-        if let binary, executable == binary { return true }
-        return allowsInstaller && installers.contains(executable)
+        let arguments = Array(words.dropFirst())
+        if let binary, executable == binary {
+            return TerminalRepairPolicy.isSignIn(cli: (binary as NSString).lastPathComponent, arguments: arguments)
+        }
+        return allowsInstaller && installers.contains(executable) && TerminalRepairPolicy.isInstall(arguments: arguments)
     }
 
     /// Variables that pick which credential store a CLI signs in to and

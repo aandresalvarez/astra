@@ -544,11 +544,7 @@ enum CapabilityPackageValidator {
                     component: name
                 ))
             }
-            guard let reason = ConnectorSecurityPolicy.credentialTransportViolation(
-                baseURL: connector.baseURL,
-                authMethod: connector.authMethod,
-                credentialKeys: connector.credentialHints.map(\.key)
-            ) else {
+            guard let reason = PluginConnectorFieldTrust.credentialTransportViolation(of: connector, in: package) else {
                 continue
             }
             let name = displayName(connector.name, fallback: connector.serviceType)
@@ -706,6 +702,23 @@ enum CapabilityPackageValidator {
                     .unsafeLocalTool,
                     "Unsafe install link",
                     "\(prerequisite.displayName) links to \(url.scheme ?? "a non-web") address; install links must be https.",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
+            // A sign-in hint whose first command runs the CLI becomes its Sign
+            // in button, so it may only sign in (`TerminalRepairPolicy`):
+            // refused here at import, as the button refuses it at launch. A
+            // hint naming another program (`stanford-graph-mail login` for
+            // `pwsh`) is guidance and offers no button.
+            if let command = prerequisite.authHint.flatMap(PluginManifestConverter.firstCommand),
+               command.split(whereSeparator: \.isWhitespace).first.map(String.init) == prerequisite.binary,
+               !RepairAction.isSafeTerminalCommand(command, binary: prerequisite.binary, allowsInstaller: false) {
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe repair command",
+                    "\(prerequisite.displayName) offers `\(command)` as its sign-in; a repair may only run \(prerequisite.binary)'s own sign-in command.",
                     component: prerequisite.displayName
                 ))
                 continue
