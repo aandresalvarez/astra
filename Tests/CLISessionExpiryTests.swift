@@ -113,6 +113,39 @@ struct CLISessionExpiryTests {
         }
     }
 
+    @Test("A call that &&, || or a branch may have skipped counts only when the line shows it ran")
+    func shortCircuitedCallsMustHaveRun() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        // `false` skipped gh: the error is cat's output, failed or not.
+        for (command, failed) in [
+            ("cat incident.txt; false && gh api user", true), ("cat incident.txt; false && gh api user; true", false),
+            ("gh auth status; false && gh api user", true), ("cat incident.txt; false && (cd repo; gh api user)", true),
+            ("cat incident.txt; false && echo \"$(gh auth token)\"", false),
+            // A skipped `||` call or branch leaves a success: the `&&` after it runs.
+            ("true || gh api user && cat incident.txt && false", true),
+            ("if test -d .git; then gh api user; fi && cat incident.txt && false", true),
+            // And whatever runs after the skip, or in another branch, may print it.
+            ("cd repo && gh api user; cat incident.txt; true", false),
+            ("cat incident.txt; if test -d .git; then gh api user; fi; true", false),
+            ("if test -d .git; then gh api user; else cat incident.txt; fi; true", false),
+            ("cd repo && gh api user || { echo \"$NOTE\"; exit 1; }", true)
+        ] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: failed) == nil, "\(command)")
+        }
+        // Only quiet commands could have run without it, the rest only with
+        // it: the error is its own.
+        for (command, failed) in [
+            ("false && gh api user", true), ("mkdir -p out && cd out && gh api user", true), ("false || gh api user", true),
+            ("test -d .git && gh api user | jq .", false), ("cd repo && gh api user && echo ok", true),
+            ("cd repo && gh api user; true", false), ("cd repo && gh api user || exit 1", true),
+            ("if test -d .git; then gh api user; echo done; fi", false), ("if test -d .git; then gh auth status; fi", true),
+            ("if test -f .skip; then :; elif gh auth status; then echo signed-in; fi", false),
+            ("false && echo \"$(gh auth token)\"", false), ("cd repo && (export X=1; gh api user)", true)
+        ] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: failed) != nil, "\(command)")
+        }
+    }
+
     @Test("An unquoted here-document's substitutions run; a quoted one's are text")
     func heredocSubstitutionsRun() {
         let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
@@ -446,6 +479,20 @@ struct CLISessionExpiryTests {
         for candidate in [launched, named, token] {
             #expect(await CLISessionExpiryClassifier.checkingCheckoutHost(candidate) { _ in "ghe.example.com" } == candidate)
         }
+        // `gh` treats an empty GH_HOST or GH_REPO as unset, in the launch
+        // and in the command: the checkout still names the host.
+        for environment in [["GH_HOST": ""], ["GH_REPO": ""], ["GH_HOST": "", "GH_REPO": ""]] {
+            var empty = repair
+            empty.checkEnvironment = environment
+            let retargeted = await CLISessionExpiryClassifier.checkingCheckoutHost(empty) { _ in "ghe.example.com" }
+            #expect(retargeted.checkArguments == ["auth", "status", "--active", "--hostname", "ghe.example.com"], "\(environment)")
+            #expect(CLISessionExpiryClassifier.checkingLaunchHost(empty) == empty, "\(environment)")
+        }
+        for command in ["GH_HOST= gh pr list", "GH_REPO='' gh pr list", "export GH_HOST=ghe.example.com; GH_HOST= gh pr list", "env GH_HOST= gh pr list"] {
+            #expect(CLISessionExpiryClassifier.leavesGitHubHostToCheckout(command), "\(command)")
+            #expect(CLISessionExpiryClassifier.gitHubHost(in: command) == nil, "\(command)")
+            #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.gitHub, "\(command)")
+        }
 
         // The remotes, read offline from the checkout's own config.
         for (config, host) in [
@@ -604,7 +651,9 @@ struct CLISessionExpiryTests {
         let output = "ERROR: (gcloud.auth.application-default.print-access-token) There was a problem refreshing your current auth tokens: ('invalid_grant: Bad Request')"
         for command in [
             "gcloud auth application-default print-access-token", "TOKEN=$(gcloud auth application-default print-access-token --quiet)",
-            "/opt/google-cloud-sdk/bin/gcloud auth application-default print-access-token"
+            "/opt/google-cloud-sdk/bin/gcloud auth application-default print-access-token",
+            // A release track runs the same ADC command.
+            "gcloud beta auth application-default print-access-token", "gcloud alpha auth application-default print-access-token --quiet"
         ] {
             let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "missed: \(command)")
             let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
@@ -620,7 +669,8 @@ struct CLISessionExpiryTests {
         // Cloud calls, keeps the ordinary sign-in.
         for command in [
             "gcloud projects list", "gcloud auth application-default print-access-token; bq ls",
-            "gcloud config get-value project && gcloud auth application-default print-access-token"
+            "gcloud config get-value project && gcloud auth application-default print-access-token",
+            "gcloud beta projects list", "gcloud beta auth login", "gcloud beta beta auth application-default print-access-token"
         ] {
             #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.googleCloud, "\(command)")
         }
@@ -1000,7 +1050,7 @@ struct CLISessionExpiryTests {
         let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
         for command in [
             "if gh auth status; then echo ok; fi", "if ! gh auth status; then echo out; fi",
-            "if true; then echo a; elif gh auth status; then echo b; fi",
+            "if test -f .skip; then :; elif gh auth status; then echo b; fi",
             "while gh pr list; do sleep 1; done", "until gh auth status; do sleep 5; done",
             "if test -d .git; then if gh auth status; then echo ok; fi; fi",
             // No later command decides this line's status: the `if` does.

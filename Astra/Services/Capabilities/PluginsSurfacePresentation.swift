@@ -136,6 +136,28 @@ enum PluginsSurfacePresentation {
                 && !($0.provider == GoogleWorkspaceCapability.connectorBinding && googleAccountConnected)
         }
     }
+
+    /// What a pending account's row offers.
+    enum PendingAccountAction: Equatable {
+        /// Add, which routes through the install flow that signs in again.
+        case reconnect
+        /// Add refuses the plugin: why, with no button that could only fail.
+        case unsupported(String)
+    }
+
+    /// Decided by the rule Add itself follows
+    /// (`CapabilityCatalogActionService.addRoute`), so the row never offers
+    /// Reconnect for an account Add can't sign in to (a provider other than
+    /// Google), and the two can't drift.
+    @MainActor
+    static func pendingAccountAction(for package: PluginPackage) -> PendingAccountAction {
+        do {
+            _ = try CapabilityCatalogActionService.addRoute(for: package)
+            return .reconnect
+        } catch {
+            return .unsupported(error.localizedDescription)
+        }
+    }
 }
 
 /// The second tap before a destructive row action: it names what goes and
