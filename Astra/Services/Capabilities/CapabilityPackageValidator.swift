@@ -627,7 +627,7 @@ enum CapabilityPackageValidator {
                     .blocker,
                     .unsafeLocalTool,
                     "Unsafe health check",
-                    "\(prerequisite.displayName) checks itself with `\(check)`; a check may only run a read-only status command, such as `--version`.",
+                    "\(prerequisite.displayName) checks itself with `\(check)`; a check may only run a read-only status command of a CLI ASTRA knows, such as `gh --version` or `gh auth status`.",
                     component: prerequisite.displayName
                 ))
                 continue

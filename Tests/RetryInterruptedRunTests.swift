@@ -505,11 +505,11 @@ struct RetryInterruptedRunTests {
         try env.context.save()
         #expect(TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gh") == ["PATH": "", "GH_TOKEN": ""])
         #expect(TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "/opt/sdk/bin/gcloud")?["CLOUDSDK_CONFIG"] == "")
-        // The resumed shell searches no directory, so it finds no `sh`; nor
+        // The resumed shell searches no directory, so it finds no `git`; nor
         // does the check, though ASTRA's own PATH has one.
         var repair = RepairAction(
-            strategy: .terminal, componentName: "Shell", title: "Check", verb: "Check", detail: "",
-            checkBinary: "sh", checkArguments: ["--version"]
+            strategy: .terminal, componentName: "Git", title: "Check", verb: "Check", detail: "",
+            checkBinary: "git", checkArguments: ["--version"]
         )
         repair.checkEnvironment = TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gh")
         #expect(await PluginRepairCoordinator.liveCheck(repair) == false)

@@ -14,9 +14,12 @@ import Foundation
 /// admin:org` asks for privileges the plugin chose, and `gcloud auth login
 /// --cred-file` signs in with a credential file the plugin names. A flag's
 /// separate value counts as a positional unless the flag is listed as taking
-/// one. Fails closed: a CLI not listed may use only `auth`, `login` and
-/// `sso`, with no flags, and a call with no positional (a bare `copilot`) is
-/// refused.
+/// one. Fails closed: only a known CLI (`HealthCheckPolicy.knownCLIs`, the
+/// list version checks use) with a sign-in listed here has a repair. Any
+/// other binary gives `auth`, `login` or `sso` whatever meaning it likes
+/// (`touch auth` creates a file), so its declared repair is guidance with no
+/// button, and import refuses it. A call with no positional (a bare
+/// `copilot`) is refused.
 public enum TerminalRepairPolicy {
     typealias SignIn = CLICommandShape
 
@@ -43,17 +46,21 @@ public enum TerminalRepairPolicy {
         "aws": [
             SignIn(positionals: ["sso", "login"], booleanFlags: ["--use-device-code"], valueFlags: ["--profile": .plain, "--sso-session": .plain]),
             SignIn(positionals: ["configure", "sso"], booleanFlags: ["--use-device-code"], valueFlags: ["--profile": .plain])
-        ]
+        ],
+        // The provider CLIs whose sign-in is a plain command.
+        "codex": [SignIn(positionals: ["login"])],
+        "cursor-agent": [SignIn(positionals: ["login"])],
+        "opencode": [SignIn(positionals: ["auth", "login"])]
     ]
 
-    /// The only words a CLI without its own entry may use (`codex login`,
-    /// `opencode auth login`, `stanford-graph-mail login`).
-    static let genericSignInVerbs: Set<String> = ["auth", "login", "sso"]
+    /// The CLIs with a listed sign-in: all of them known CLIs.
+    public static var signInCLIs: Set<String> { Set(signIns.keys) }
 
-    /// True when `arguments`, after the CLI named `cli` (a basename), sign in.
+    /// True when `arguments`, after the CLI named `cli` (a basename), sign in:
+    /// a known CLI, and one of its listed sign-ins.
     public static func isSignIn(cli: String, arguments: [String]) -> Bool {
-        if let rule = signIns[cli] { return rule.contains { $0.matches(arguments) } }
-        return !arguments.isEmpty && arguments.allSatisfy(genericSignInVerbs.contains)
+        guard HealthCheckPolicy.knownCLIs.contains(cli), let rule = signIns[cli] else { return false }
+        return rule.contains { $0.matches(arguments) }
     }
 
     /// True when a package manager's `arguments` install packages by name
