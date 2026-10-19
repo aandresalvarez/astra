@@ -80,8 +80,12 @@ extension WorkspaceConfigManager {
         /// own service. A custom or unnamed service also needs the
         /// component's name. Projection and readiness trust a binding, so the
         /// file's word that a row is an account is never enough.
-        public func acceptsAccount(_ connector: Connector, componentID: String, pluginID: String) -> Bool {
-            guard !connector.isGlobal,
+        /// `createdByImport` marks a shared row this same import created for
+        /// another workspace (`ImportSession`): created, so it may be bound.
+        public func acceptsAccount(
+            _ connector: Connector, componentID: String, pluginID: String, createdByImport: Bool = false
+        ) -> Bool {
+            guard createdByImport || !connector.isGlobal,
                   let component = connectorComponents[pluginID]?[componentID] else { return false }
             func normalized(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             let service = normalized(component.serviceType)

@@ -333,6 +333,75 @@ struct PluginActivationOwnershipTests {
         #expect(!activation.configuration.isEmpty)
     }
 
+    @Test("Workspaces imported together keep the shared account they had in common, under a fresh ID")
+    func batchImportKeepsSharedAccountsShared() throws {
+        let keychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
+        defer {
+            AstraSecureKeychainTestSupport.cleanup(keychainPath: keychainPath, bootstrapService: bootstrap, services: [])
+        }
+        try AstraSecureKeychainStore.$keychainPathOverride.withValue(keychainPath) {
+            try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
+                let fixture = try PluginMigrationFixture()
+                try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+                let shared = try #require(try fixture.context.fetch(FetchDescriptor<Connector>()).first { $0.id == fixture.sharedGCloudID })
+                shared.credentialKeys = ["GCP_TOKEN"]
+                shared.credentialValues = [""]
+                #expect(shared.saveCredential(key: "GCP_TOKEN", value: "original-secret"))
+                try fixture.context.save()
+                // A and B both bind the shared Google Cloud account.
+                let configs = try [fixture.aID, fixture.bID].map { id in
+                    try #require(WorkspaceConfigManager.export(workspace: try fixture.workspace(id), modelContext: fixture.context))
+                }
+                let verifier = WorkspaceConfigManager.CapabilityImportVerifier(
+                    approvedPackageIDs: ["jira-workflow", "gcloud-workflow"],
+                    installedPackageIDs: ["jira-workflow", "gcloud-workflow"],
+                    availablePackIDs: [],
+                    declaredComponentIDs: Dictionary(uniqueKeysWithValues: [fixture.jira, fixture.gcloud].map {
+                        ($0.id, Set(PluginRuntimeProjection.componentIDs(of: $0)))
+                    }),
+                    installedContentDigests: fixture.digests,
+                    connectorComponents: WorkspaceConfigManager.CapabilityImportVerifier.connectorComponents(of: fixture.packages)
+                )
+                @MainActor func importAll(session: WorkspaceConfigManager.ImportSession?) throws -> (ModelContext, [Workspace]) {
+                    let target = try ModelContainer(
+                        for: ASTRASchema.current,
+                        migrationPlan: ASTRAMigrationPlan.self,
+                        configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+                    )
+                    Self.retained.append(target)
+                    let workspaces = configs.map { config in
+                        WorkspaceConfigManager.importWorkspaceResult(
+                            from: config, modelContext: target.mainContext, capabilityTrust: .validate(verifier), importSession: session
+                        ).workspace
+                    }
+                    return (target.mainContext, workspaces)
+                }
+                let serviceType = fixture.gcloud.connectors[0].serviceType
+
+                // One import action: one row, shared, bound in both.
+                let (context, imported) = try importAll(session: WorkspaceConfigManager.ImportSession())
+                let rows = try context.fetch(FetchDescriptor<Connector>()).filter { $0.serviceType == serviceType }
+                let row = try #require(rows.first)
+                #expect(rows.count == 1)
+                #expect(row.isGlobal && row.workspace == nil)
+                #expect(row.id != fixture.sharedGCloudID)
+                for workspace in imported {
+                    let gcloud = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: workspace))
+                    #expect(gcloud.bindings.compactMap { $0.account?.id } == [row.id])
+                }
+                // The fresh ID resolves none of this machine's credentials.
+                #expect(row.missingCredentialKeys() == ["GCP_TOKEN"])
+                #expect(shared.credentials["GCP_TOKEN"] == "original-secret")
+
+                // Imported one at a time, each workspace gets its own, as before.
+                let (separate, _) = try importAll(session: nil)
+                #expect(try separate.fetch(FetchDescriptor<Connector>()).filter { $0.serviceType == serviceType }.count == 2)
+            }
+        }
+    }
+
     /// Add, as the Plugins surface's Add does it, against a scratch library.
     private static func add(_ package: PluginPackage, to workspace: Workspace, context: ModelContext) throws {
         let root = FileManager.default.temporaryDirectory

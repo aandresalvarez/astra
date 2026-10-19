@@ -1137,7 +1137,10 @@ final class TaskLifecycleCoordinator {
         return replacement
     }
 
+    /// `importSession` spans one Import Workspace action: workspaces it
+    /// imports together keep the shared accounts they had in common.
     func importFromConfig(at url: URL, existingWorkspaces: [Workspace],
+                          importSession: WorkspaceConfigManager.ImportSession? = nil,
                           askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
         do {
             var config = try WorkspaceConfigManager.loadConfig(from: url)
@@ -1165,10 +1168,10 @@ final class TaskLifecycleCoordinator {
                     }
                     let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
                     return replaceWorkspace(existing, replacementPath: config.primaryPath) {
-                        WorkspaceConfigManager.importWorkspace(
+                        WorkspaceConfigManager.importWorkspaceResult(
                             from: config, modelContext: modelContext, scheduleTrustPolicy: scheduleTrustPolicy,
-                            capabilityTrust: .validate(.live())
-                        )
+                            capabilityTrust: .validate(.live()), importSession: importSession
+                        ).workspace
                     }
                 case .duplicate:
                     var dupConfig = config
@@ -1193,15 +1196,15 @@ final class TaskLifecycleCoordinator {
                     }
                     // The file's projected skill IDs (in its templates and
                     // schedules) were derived from the ID cleared above.
-                    return WorkspaceConfigManager.importWorkspace(
+                    return WorkspaceConfigManager.importWorkspaceResult(
                         from: dupConfig, modelContext: modelContext, capabilityTrust: .validate(.live()),
-                        sourceWorkspaceID: configID.flatMap(UUID.init(uuidString:))
-                    )
+                        sourceWorkspaceID: configID.flatMap(UUID.init(uuidString:)), importSession: importSession
+                    ).workspace
                 }
             }
-            return WorkspaceConfigManager.importWorkspace(
-                from: config, modelContext: modelContext, capabilityTrust: .validate(.live())
-            )
+            return WorkspaceConfigManager.importWorkspaceResult(
+                from: config, modelContext: modelContext, capabilityTrust: .validate(.live()), importSession: importSession
+            ).workspace
         } catch {
             AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
                 "operation": "import_config",

@@ -158,6 +158,9 @@ struct WorkspaceImportOrchestrator {
         let coordinator = TaskLifecycleCoordinator(modelContext: modelContext, taskQueue: taskQueue)
         var imported: [Workspace] = []
         var knownWorkspaces = existingWorkspaces
+        // One for the whole action: the child workspaces of a parent
+        // `Workspaces` folder keep the shared accounts they had in common.
+        let importSession = WorkspaceConfigManager.ImportSession()
 
         for candidate in WorkspaceImportDiscovery.candidates(for: urls) {
             let workspace: Workspace?
@@ -165,6 +168,7 @@ struct WorkspaceImportOrchestrator {
                 workspace = coordinator.importFromConfig(
                     at: configURL,
                     existingWorkspaces: knownWorkspaces,
+                    importSession: importSession,
                     askDuplicateAction: askDuplicateAction
                 )
             } else {
