@@ -1743,12 +1743,7 @@ struct CopilotHomeAccessCheckTests {
             .filter { !$0.hasPrefix("sudo chown") }
             .joined(separator: " && ")
         #expect(afterChown.contains("chmod"))
-        let shell = Process()
-        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-        shell.arguments = ["-c", afterChown]
-        try shell.run()
-        shell.waitUntilExit()
-        #expect(shell.terminationStatus == 0)
+        try Self.shell("/bin/sh", ["-c", afterChown])
 
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
@@ -1856,12 +1851,8 @@ struct CopilotHomeAccessCheckTests {
     private static var aclPrincipal: String { "user:" + NSUserName() }
 
     private static func shell(_ executable: String, _ arguments: [String]) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        try process.run()
-        process.waitUntilExit()
-        #expect(process.terminationStatus == 0, "\(executable) \(arguments)")
+        let result = try PermissionRepairCommandClient.run(executable, arguments)
+        #expect(result.exitCode == 0, "\(executable) \(arguments): \(result.stderr ?? "")")
     }
 
     /// A readiness service whose Copilot CLI probe always answers, so the

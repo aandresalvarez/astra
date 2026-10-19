@@ -48,13 +48,14 @@ target_for_path() {
       add_target "GitHubReviewPublicationTests"
       add_target "SwiftDataDeletionPreparationTests"
       ;;
-    Astra/Services/Runtime/RuntimeHomeAccess*.swift|Astra/Services/Runtime/RuntimeAccessACL.swift|Astra/Services/Runtime/CopilotHomeAccessCheck.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner+HomeAccessGuard.swift|Astra/Services/Runtime/AgentRuntimeHomeStateAccess.swift|Astra/Services/Runtime/RuntimeReadinessService.swift|Astra/Services/Runtime/RuntimeProviderAvailabilityService.swift|Astra/Services/Runtime/AgentRuntimeAdapter.swift|Astra/Services/Runtime/ExecutionEnvironment.swift|AstraObjCSupport/AstraMembership.m|Tests/RuntimeHomeAccess*Tests.swift|Tests/CopilotHomeAccessCheckTests.swift|Astra/Services/Runtime/ProviderNativeSessionStore.swift|Tests/NativeContinuationFallbackTests.swift|Tests/ExecutionSandboxRunnerTests.swift|Tests/RuntimeReadinessStateCacheTests.swift|Tests/RuntimeLaunchReadinessCacheTests.swift|Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift)
+    Astra/Services/Runtime/RuntimeHomeAccess*.swift|Astra/Services/Runtime/RuntimeAccessACL.swift|Astra/Services/Runtime/CopilotHomeAccessCheck.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner+HomeAccessGuard.swift|Astra/Services/Runtime/AgentRuntimeHomeStateAccess.swift|Astra/Services/Runtime/RuntimeReadinessService.swift|Astra/Services/Runtime/RuntimeProviderAvailabilityService.swift|Astra/Services/Runtime/AgentRuntimeAdapter.swift|Astra/Services/Runtime/ExecutionEnvironment.swift|AstraObjCSupport/AstraMembership.m|Tests/RuntimeHomeAccess*Tests.swift|Tests/CopilotHomeAccessCheckTests.swift|Tests/PermissionRepairCommandClient.swift|Tests/PermissionRepairCommandClientTests.swift|script/swift_test.sh|script/permission_repair_test_harness*.py|Astra/Services/Runtime/ProviderNativeSessionStore.swift|Tests/NativeContinuationFallbackTests.swift|Tests/ExecutionSandboxRunnerTests.swift|Tests/RuntimeReadinessStateCacheTests.swift|Tests/RuntimeLaunchReadinessCacheTests.swift|Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift)
       add_target "RuntimeHomeAccessTests"
       add_target "RuntimeHomeAccessEdgeCaseTests"
       add_target "RuntimeHomeAccessAdditionalStateTests"
       add_target "NativeContinuationFallbackTests"
       add_target "ExecutionSandboxRunnerTests"
       add_target "CopilotHomeAccessCheckTests"
+      add_target "PermissionRepairCommandClientTests"
       add_target "RuntimeReadinessServiceTests"
       add_target "RuntimeReadinessStateCacheTests"
       add_target "RuntimeLaunchReadinessCacheTests"
