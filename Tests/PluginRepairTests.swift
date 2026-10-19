@@ -329,7 +329,7 @@ struct PluginRepairTests {
         let working = try install("other-bin", exitCode: 0)
         var repair = RepairAction(strategy: .terminal, componentName: "CLI login", title: "Check", verb: "Check", detail: "")
         repair.checkBinary = name
-        repair.checkArguments = []
+        repair.checkArguments = ["--version"]
         // Only the projected PATH has the CLI; ASTRA's own lookup does not.
         repair.checkEnvironment = ["PATH": "\(working):/usr/bin:/bin"]
         #expect(await PluginRepairCoordinator.liveCheck(repair))
@@ -354,7 +354,7 @@ struct PluginRepairTests {
         }
         var repair = RepairAction(strategy: .terminal, componentName: "CLI login", title: "Check", verb: "Check", detail: "")
         repair.checkBinary = name
-        repair.checkArguments = []
+        repair.checkArguments = ["--version"]
         repair.checkWorkingDirectory = root.path
         repair.checkEnvironment = ["PATH": "./tools:/usr/bin:/bin"]
         let found = PluginRepairCoordinator.checkExecutablePath(name, environment: ["PATH": "./tools:/usr/bin"], workingDirectory: root.path)
