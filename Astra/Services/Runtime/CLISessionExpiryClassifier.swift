@@ -78,6 +78,22 @@ enum CLISessionExpiryClassifier {
             return family
         }
 
+        /// The application-default family when the run's
+        /// `GOOGLE_APPLICATION_CREDENTIALS` picks its credential file: that
+        /// file, not the one `gcloud auth application-default login` writes,
+        /// is what failed and what Resume checks, so there is no sign-in to
+        /// offer, only guidance naming the variable and the file. A file
+        /// path that is not safe to show in backticks is left out.
+        func credentialFile(_ file: String?) -> Family {
+            var family = self
+            let named = file.map { file in
+                file.contains("`") || file.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) ? "" : " `\(file)`,"
+            } ?? ""
+            family.offersSignIn = false
+            family.customStopMessage = "Google Cloud rejected the application default credentials in\(named) the file GOOGLE_APPLICATION_CREDENTIALS names. That variable overrides `gcloud auth application-default login`, so signing in won't help: update that file, or remove the variable where ASTRA's environment gets it, then resume."
+            return family
+        }
+
         /// The same family checking and signing in with the installation the
         /// failed command ran (`exactExecutable` validated), not whichever
         /// one PATH finds first.
@@ -197,8 +213,18 @@ enum CLISessionExpiryClassifier {
                 && (!family.readsApplicationDefault || readsOnlyApplicationDefault(command))
         }) else { return nil }
         // A GitHub Enterprise host the command targeted is the one to sign
-        // in to and check; github.com's login says nothing about it.
-        if family.checkBinary == "gh", let host = gitHubHost(in: command) { family = family.onHost(host) }
+        // in to and check; github.com's login says nothing about it. A
+        // command that names github.com, or hosts that disagree, or a `cd`
+        // away from the run's checkout, pins github.com: only a command that
+        // names no host leaves `gh` to infer it from the checkout
+        // (`checkingCheckoutHost`).
+        if family.checkBinary == "gh" {
+            if let host = gitHubHost(in: command) {
+                family = family.onHost(host)
+            } else if !leavesGitHubHostToCheckout(command) {
+                family = family.onHost("github.com")
+            }
+        }
         // So is the installation it ran by path: another one on PATH may be
         // signed in while this one is not.
         if let executable = executablePath(of: family.checkBinary, in: command)
@@ -248,13 +274,25 @@ enum CLISessionExpiryClassifier {
         let host = message.range(of: " --hostname ").flatMap { start in
             message[start.upperBound...].firstIndex(of: "`").flatMap { enterpriseHost(String(message[start.upperBound..<$0])) }
         }
-        let executable = message.range(of: "`/").flatMap { start in
+        // The last one: a credential file named earlier is not the CLI.
+        let executable = message.range(of: "`/", options: .backwards).flatMap { start in
             let path = message[message.index(before: start.upperBound)...].prefix { $0 != " " && $0 != "`" }
             return exactExecutable(String(path))
         }
         for family in families {
             var candidates = [family]
-            if let host, family.checkBinary == "gh" { candidates.append(family.onHost(host)) }
+            if family.readsApplicationDefault {
+                let file = message.range(of: "application default credentials in `").flatMap { start in
+                    message[start.upperBound...].range(of: "`, the file GOOGLE_APPLICATION_CREDENTIALS names").map {
+                        String(message[start.upperBound..<$0.lowerBound])
+                    }
+                }
+                candidates.append(family.credentialFile(file))
+            }
+            if family.checkBinary == "gh" {
+                if let host { candidates.append(family.onHost(host)) }
+                if message.contains(" --hostname github.com`") { candidates.append(family.onHost("github.com")) }
+            }
             if let executable, (executable as NSString).lastPathComponent == family.checkBinary {
                 candidates += candidates.map { $0.at(executable) }
             }
@@ -300,7 +338,7 @@ enum CLISessionExpiryClassifier {
 
     /// The GitHub Enterprise host a `gh` call in `command` targets: its
     /// `--hostname` flag or the host of its `-R/--repo HOST/OWNER/REPO`, else
-    /// its `GH_HOST`, else the host of its `GH_REPO`: assigned before it, or
+    /// the host of its `GH_REPO`, else its `GH_HOST`: assigned before it, or
     /// exported earlier in the same shell scope (`export GH_HOST=h; gh api
     /// user`; an `export` in a subshell does not reach past it, and `unset`
     /// clears one). Nil for github.com or a value that is not a plain host
@@ -308,7 +346,24 @@ enum CLISessionExpiryClassifier {
     /// a; gh auth status --hostname b`): which one failed is unknown, so the
     /// stop stays untargeted rather than checking a host that may be healthy.
     static func gitHubHost(in command: String) -> String? {
-        var hosts: [String?] = []
+        let hosts = gitHubSelections(in: command).calls.map { $0.host.flatMap(enterpriseHost) }
+        guard let host = hosts.first, hosts.allSatisfy({ $0 == host }) else { return nil }
+        return host
+    }
+
+    /// True when no `gh` call in `command` selects a host or repository
+    /// (`--hostname`, `-R/--repo`, `GH_HOST`, `GH_REPO`) and nothing in it
+    /// changes directory: `gh` then infers the host from the run's checkout.
+    static func leavesGitHubHostToCheckout(_ command: String) -> Bool {
+        let selections = gitHubSelections(in: command)
+        return !selections.changesDirectory && !selections.calls.contains(where: \.selects)
+    }
+
+    /// Each `gh` call's selected host (nil for the default host) and whether
+    /// it selects one at all, and whether `command` changes directory.
+    private static func gitHubSelections(in command: String) -> (calls: [(host: String?, selects: Bool)], changesDirectory: Bool) {
+        var calls: [(host: String?, selects: Bool)] = []
+        var changesDirectory = false
         // `export`ed and `unset` host variables, newest last, with the scope
         // they were set in.
         var exported: [(name: String, value: String?, scope: [Int])] = []
@@ -328,15 +383,23 @@ enum CLISessionExpiryClassifier {
                 }
                 continue
             }
+            if let builtin = rest.first, ["cd", "pushd", "popd"].contains(builtin) { changesDirectory = true }
             guard let executable = rest.first, (executable as NSString).lastPathComponent == "gh" else { continue }
             func assigned(_ name: String) -> String? {
                 if let inline = assignments.last(where: { $0.hasPrefix("\(name)=") }) { return String(inline.dropFirst(name.count + 1)) }
                 return exported.last { $0.name == name && segment.scope.starts(with: $0.scope) }?.value
             }
-            var declared = assigned("GH_HOST") ?? assigned("GH_REPO").flatMap(repositoryHost)
+            // A host-bearing `GH_REPO` names the repository, and with it the
+            // host, so it outranks `GH_HOST`, the default for calls whose host
+            // is neither given nor inferred (`gh help environment`).
+            var declared = assigned("GH_REPO").flatMap(repositoryHost) ?? assigned("GH_HOST")
+            var selects = assigned("GH_REPO") != nil || assigned("GH_HOST") != nil
             let arguments = Array(rest.dropFirst())
             for (index, argument) in arguments.enumerated() {
                 let value = index + 1 < arguments.count ? arguments[index + 1] : nil
+                if ["--hostname", "-R", "--repo"].contains(argument) || ["--hostname=", "--repo=", "-R"].contains(where: { argument.hasPrefix($0) }) {
+                    selects = true
+                }
                 if argument == "--hostname", let value {
                     declared = value
                 } else if argument.hasPrefix("--hostname=") {
@@ -348,10 +411,9 @@ enum CLISessionExpiryClassifier {
                     declared = host
                 }
             }
-            hosts.append(declared.flatMap(enterpriseHost))
+            calls.append((declared, selects))
         }
-        guard let host = hosts.first, hosts.allSatisfy({ $0 == host }) else { return nil }
-        return host
+        return (calls, changesDirectory)
     }
 
     /// The host of a `HOST/OWNER/REPO` repository selector (`gh --repo`,
@@ -362,17 +424,79 @@ enum CLISessionExpiryClassifier {
         return String(parts[0])
     }
 
-    /// A GitHub check still aimed at github.com while the resumed run's
-    /// `GH_HOST` (else its `GH_REPO`'s host) names an enterprise host checks
-    /// that host instead: `gh` sends that run's calls there. Its sign-in
-    /// (`gh auth login`) signs in to that host too, so Sign in and the check
-    /// agree: `GH_REPO` is not carried into Terminal.
+    /// A GitHub check still aimed at github.com, by a command that named no
+    /// host, while the resumed run's `GH_REPO` host (else its `GH_HOST`)
+    /// names an enterprise host checks that host instead: `gh` sends that
+    /// run's calls there. Its sign-in (`gh auth login`) signs in to that host
+    /// too, so Sign in and the check agree: `GH_REPO` is not carried into
+    /// Terminal. A host-bearing `GH_REPO` on github.com keeps github.com.
     static func checkingLaunchHost(_ repair: RepairAction) -> RepairAction {
         let environment = repair.checkEnvironment ?? [:]
-        guard let binary = repair.checkBinary, (binary as NSString).lastPathComponent == "gh",
-              repair.checkArguments == gitHub.checkArguments,
-              let host = (environment["GH_HOST"] ?? environment["GH_REPO"].flatMap(repositoryHost)).flatMap(enterpriseHost)
+        guard isUntargetedGitHubCheck(repair),
+              let host = (environment["GH_REPO"].flatMap(repositoryHost) ?? environment["GH_HOST"]).flatMap(enterpriseHost)
         else { return repair }
+        return retargeted(repair, to: host)
+    }
+
+    /// The stop message to record for `message`, given the variables the
+    /// run's `gcloud` got (`environment`, read only for an
+    /// application-default stop): with `GOOGLE_APPLICATION_CREDENTIALS` set,
+    /// the guidance about that file (`Family.credentialFile`), which offers
+    /// no sign-in. Otherwise `message` unchanged.
+    static func stopMessage(_ message: String, launchEnvironment environment: () -> [String: String]?) -> String {
+        guard let family = family(forStopMessage: message), family.readsApplicationDefault, family.offersSignIn,
+              let file = environment()?["GOOGLE_APPLICATION_CREDENTIALS"], !file.isEmpty
+        else { return message }
+        return family.credentialFile(file).stopMessage
+    }
+
+    /// An application-default sign-in (recorded before the run's
+    /// `GOOGLE_APPLICATION_CREDENTIALS` was known) for a run whose launch
+    /// sets it becomes the check-only guidance about that file: the sign-in
+    /// would write a file that run never reads.
+    static func checkingCredentialFile(_ repair: RepairAction) -> RepairAction {
+        guard repair.checkArguments == googleCloudApplicationDefault.checkArguments, repair.command != nil,
+              let file = repair.checkEnvironment?["GOOGLE_APPLICATION_CREDENTIALS"], !file.isEmpty,
+              let binary = repair.checkBinary
+        else { return repair }
+        var family = googleCloudApplicationDefault.credentialFile(file)
+        if binary != family.checkBinary { family = family.at(binary) }
+        var guidance = family.repair
+        guidance.checkEnvironment = repair.checkEnvironment
+        guidance.checkWorkingDirectory = repair.checkWorkingDirectory
+        return guidance
+    }
+
+    /// A GitHub check still aimed at github.com, by a command that named no
+    /// host, for a run whose launch selects none either (`GH_HOST`,
+    /// `GH_REPO`), checks the host `gh` infers from the run's checkout
+    /// (`checkWorkingDirectory`) when its remotes name one Enterprise host
+    /// (`GitHubCheckoutHost`). Unchanged when the remotes can't be read,
+    /// name several hosts or github.com: nothing is guessed. Not for the
+    /// rejected-`GH_TOKEN` stop, a github.com token.
+    static func checkingCheckoutHost(
+        _ repair: RepairAction,
+        readHost: (String) async -> String? = { await GitHubCheckoutHost.host(workingDirectory: $0) }
+    ) async -> RepairAction {
+        let environment = repair.checkEnvironment ?? [:]
+        guard isUntargetedGitHubCheck(repair), environment["GH_HOST"] == nil, environment["GH_REPO"] == nil,
+              repair.detail != gitHubEnvironmentToken.repair.detail,
+              let directory = repair.checkWorkingDirectory,
+              let host = await readHost(directory).flatMap(enterpriseHost)
+        else { return repair }
+        return retargeted(repair, to: host)
+    }
+
+    /// True for a `gh` repair still checking github.com whose sign-in and
+    /// guidance name no host: one a launch or checkout host may retarget.
+    private static func isUntargetedGitHubCheck(_ repair: RepairAction) -> Bool {
+        guard let binary = repair.checkBinary, (binary as NSString).lastPathComponent == "gh",
+              repair.checkArguments == gitHub.checkArguments else { return false }
+        return ![repair.command ?? "", repair.detail].contains { $0.contains(" --hostname ") }
+    }
+
+    private static func retargeted(_ repair: RepairAction, to host: String) -> RepairAction {
+        guard let binary = repair.checkBinary else { return repair }
         var hosted = repair
         hosted.checkArguments = gitHub.onHost(host).checkArguments
         if let command = repair.command, command == binary + gitHub.signInCommand.dropFirst(gitHub.checkBinary.count) {
@@ -675,8 +799,14 @@ enum CLISessionExpiryClassifier {
         "exec": ["-a"],
         "time": ["-f", "-o", "--format", "--output"],
         "nohup": [],
-        "xargs": ["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a"]
+        "xargs": ["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a"],
+        "timeout": ["-s", "-k", "--signal", "--kill-after"],
+        "gtimeout": ["-s", "-k", "--signal", "--kill-after"]
     ]
+
+    /// Wrappers whose first operand, after their options, is not the
+    /// command: `timeout [OPTION] DURATION COMMAND`.
+    private static let durationWrappers: Set<String> = ["timeout", "gtimeout"]
 
     /// Drops leading assignments, wrappers with their options, and command
     /// substitutions, leaving the executable first.
@@ -711,6 +841,7 @@ enum CLISessionExpiryClassifier {
                 // `-u name` takes the next word; `-uname` and `--user=name` don't.
                 if valueOptions.contains(option), !option.contains("=") { _ = words.isEmpty ? nil : words.removeFirst() }
             }
+            if durationWrappers.contains(name), !words.isEmpty { words.removeFirst() }
         }
     }
 

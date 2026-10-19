@@ -59,6 +59,21 @@ struct CLISessionExpiryTests {
         #expect(CLISessionExpiryClassifier.runs("gh", in: "cd 'my repo' && \"gh\" pr list"))
     }
 
+    @Test("timeout runs the CLI after its options and duration")
+    func timeoutWrapsTheCLI() {
+        let output = "HTTP 401: Bad credentials (https://api.github.com/user)"
+        for command in [
+            "timeout 30s gh api user", "timeout -s KILL 30 gh api user", "timeout --kill-after=5 -v 1m gh api user",
+            "gtimeout --signal TERM 10 /opt/homebrew/bin/gh api user", "timeout -- 30 gh api user"
+        ] {
+            #expect(CLISessionExpiryClassifier.runs("gh", in: command), "\(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: output, command: command) != nil, "\(command)")
+        }
+        // The duration is not the command, nor is a CLI named only as an argument.
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "timeout gh api user"))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "timeout 30 echo gh"))
+    }
+
     @Test("env -S splits its operand into the command it runs")
     func envSplitStringRunsItsOperand() {
         for command in [
@@ -135,9 +150,12 @@ struct CLISessionExpiryTests {
             #expect(family.repair.command == "gh auth login --hostname github.example.com")
             #expect(RepairAction.isSafeTerminalCommand(try #require(family.repair.command), binary: "gh", allowsInstaller: false))
         }
-        // github.com, or a value that is not a host name, keeps the default check.
+        // github.com, or a value that is not a host name, checks github.com,
+        // named so that neither the launch nor the checkout retargets it.
         for command in ["GH_HOST=github.com gh api user", "gh api user --hostname 'x;rm -rf /'"] {
-            #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.gitHub)
+            let family = CLISessionExpiryClassifier.family(content: output, command: command)
+            #expect(family == CLISessionExpiryClassifier.gitHub.onHost("github.com"))
+            #expect(family?.repair.command == "gh auth login --hostname github.com")
         }
         // A host the launch environment picks retargets the default check.
         var projected = CLISessionExpiryClassifier.gitHub.repair
@@ -158,12 +176,12 @@ struct CLISessionExpiryTests {
             #expect(family.repair.checkArguments == ["auth", "status", "--hostname", "github.example.com"], "\(command)")
             #expect(family.repair.command == "gh auth login --hostname github.example.com", "\(command)")
         }
-        // OWNER/REPO, github.com, or a value that is not HOST/OWNER/REPO keeps the default.
+        // OWNER/REPO, github.com, or a value that is not HOST/OWNER/REPO names github.com.
         for command in [
             "gh pr list -R team/app", "gh pr list --repo github.com/team/app", "GH_REPO=team/app gh pr list",
             "gh pr list --repo 'x;rm/team/app'", "gh pr list --repo github.example.com/team/app/extra"
         ] {
-            #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.gitHub, "\(command)")
+            #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.gitHub.onHost("github.com"), "\(command)")
         }
         // The launch's GH_REPO retargets the default check, after GH_HOST.
         var projected = CLISessionExpiryClassifier.gitHub.repair
@@ -171,6 +189,166 @@ struct CLISessionExpiryTests {
         #expect(CLISessionExpiryClassifier.checkingLaunchHost(projected).checkArguments?.last == "github.example.com")
         projected.checkEnvironment = ["GH_REPO": "team/app"]
         #expect(CLISessionExpiryClassifier.checkingLaunchHost(projected).checkArguments?.last == "github.com")
+    }
+
+    @Test("A host-bearing GH_REPO outranks GH_HOST, in the command and in the launch")
+    func repositoryHostOutranksDefaultHost() throws {
+        let output = "HTTP 401: Bad credentials (https://second.example.com/api/v3/repos/o/r/pulls)"
+        for (command, host) in [
+            ("GH_HOST=first.example.com GH_REPO=second.example.com/o/r gh pr list", "second.example.com"),
+            ("export GH_REPO=second.example.com/o/r; GH_HOST=first.example.com gh pr list", "second.example.com"),
+            ("GH_HOST=first.example.com GH_REPO=o/r gh pr list", "first.example.com"),
+            ("GH_HOST=first.example.com GH_REPO=github.com/o/r gh pr list", "github.com")
+        ] {
+            let family = try #require(CLISessionExpiryClassifier.family(content: output, command: command), "\(command)")
+            #expect(family.repair.checkArguments?.last == host, "\(command)")
+            #expect(family.repair.command == "gh auth login --hostname \(host)", "\(command)")
+        }
+        var launch = CLISessionExpiryClassifier.gitHub.repair
+        for (environment, host) in [
+            (["GH_HOST": "first.example.com", "GH_REPO": "second.example.com/o/r"], "second.example.com"),
+            (["GH_HOST": "first.example.com", "GH_REPO": "o/r"], "first.example.com"),
+            (["GH_HOST": "first.example.com", "GH_REPO": "github.com/o/r"], "github.com")
+        ] {
+            launch.checkEnvironment = environment
+            #expect(CLISessionExpiryClassifier.checkingLaunchHost(launch).checkArguments?.last == host, "\(environment)")
+        }
+        // A command that named github.com is not retargeted by the launch.
+        var named = CLISessionExpiryClassifier.gitHub.onHost("github.com").repair
+        named.checkEnvironment = ["GH_HOST": "first.example.com"]
+        #expect(CLISessionExpiryClassifier.checkingLaunchHost(named) == named)
+    }
+
+    @Test("A gh call that names no host is checked on the host the run's checkout remotes name, or not retargeted at all")
+    func checkoutHostTargetsAnUnnamedCall() async throws {
+        let output = "HTTP 401: Bad credentials (https://ghe.example.com/api/v3/repos/team/app/pulls)"
+        // Only a call that names no host, run where the run started, is left to the checkout.
+        #expect(CLISessionExpiryClassifier.leavesGitHubHostToCheckout("gh pr list"))
+        #expect(CLISessionExpiryClassifier.family(content: output, command: "gh pr list") == CLISessionExpiryClassifier.gitHub)
+        for command in ["cd ../other && gh pr list", "gh pr list -R team/app", "GH_REPO=team/app gh pr list", "gh api user --hostname github.com"] {
+            #expect(!CLISessionExpiryClassifier.leavesGitHubHostToCheckout(command), "\(command)")
+        }
+        #expect(CLISessionExpiryClassifier.family(content: output, command: "cd ../other && gh pr list") == CLISessionExpiryClassifier.gitHub.onHost("github.com"))
+
+        var repair = CLISessionExpiryClassifier.gitHub.repair
+        repair.checkWorkingDirectory = "/work/app"
+        let enterprise = await CLISessionExpiryClassifier.checkingCheckoutHost(repair) { $0 == "/work/app" ? "GHE.example.com" : nil }
+        #expect(enterprise.checkArguments == ["auth", "status", "--hostname", "ghe.example.com"])
+        #expect(enterprise.command == "gh auth login --hostname ghe.example.com")
+        #expect(enterprise.detail.contains("`gh auth login --hostname ghe.example.com`"))
+        // Nothing read, github.com, or nothing to read from: unchanged.
+        for host in [nil, "github.com"] as [String?] {
+            #expect(await CLISessionExpiryClassifier.checkingCheckoutHost(repair) { _ in host } == repair)
+        }
+        var unread = repair
+        unread.checkWorkingDirectory = nil
+        #expect(await CLISessionExpiryClassifier.checkingCheckoutHost(unread) { _ in Issue.record("read"); return "ghe.example.com" } == unread)
+        // A launch that selects a host, a command that named one, and a
+        // rejected github.com token are not the checkout's to retarget.
+        var launched = repair
+        launched.checkEnvironment = ["GH_HOST": "github.com"]
+        var named = CLISessionExpiryClassifier.gitHub.onHost("github.com").repair
+        named.checkWorkingDirectory = "/work/app"
+        var token = CLISessionExpiryClassifier.gitHubEnvironmentToken.repair
+        token.checkWorkingDirectory = "/work/app"
+        for candidate in [launched, named, token] {
+            #expect(await CLISessionExpiryClassifier.checkingCheckoutHost(candidate) { _ in "ghe.example.com" } == candidate)
+        }
+
+        // The remotes, read offline from the checkout's own config.
+        for (config, host) in [
+            ("remote.origin.url\ngit@GHE.example.com:team/app.git\0", "ghe.example.com"),
+            ("remote.origin.url\nhttps://ghe.example.com:8443/team/app.git\0", "ghe.example.com:8443"),
+            ("remote.origin.url\nssh://git@ghe.example.com:2222/team/app.git\0remote.fork.url\nhttps://ghe.example.com/me/app\0", "ghe.example.com"),
+            ("remote.origin.url\nhttps://github.com/team/app\0", "github.com")
+        ] {
+            #expect(GitHubCheckoutHost.host(fromConfig: config) == host, "\(config)")
+        }
+        for config in [
+            "", "remote.origin.url\ngit@ghe.example.com:team/app.git\0remote.upstream.url\nhttps://github.com/team/app\0",
+            "remote.origin.url\ngit@work-github:team/app.git\0",
+            "remote.origin.url\ngit@ghe.example.com:team/app.git\0url.git@github.com:.insteadof\ngit@ghe.example.com:\0"
+        ] {
+            #expect(GitHubCheckoutHost.host(fromConfig: config) == nil, "\(config)")
+        }
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("astra-checkout-host-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        #expect(await GitHubCheckoutHost.host(workingDirectory: root.path) == nil)
+        for arguments in [["init", "-q"], ["remote", "add", "origin", "git@ghe.example.com:team/app.git"]] {
+            let git = Process()
+            git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            git.arguments = ["-C", root.path] + arguments
+            try git.run()
+            git.waitUntilExit()
+        }
+        #expect(await GitHubCheckoutHost.host(workingDirectory: root.appendingPathComponent("sub").path) == "ghe.example.com")
+    }
+
+    @Test("The dock's Sign in signs in to the Enterprise host the run's checkout names")
+    func dockSignInTargetsTheCheckoutHost() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("astra-dock-host-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for arguments in [["init", "-q"], ["remote", "add", "origin", "git@ghe.example.com:team/app.git"]] {
+            let git = Process()
+            git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            git.arguments = ["-C", root.path] + arguments
+            try git.run()
+            git.waitUntilExit()
+        }
+        let container = try ModelContainer(
+            for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Checkout", primaryPath: root.path)
+        let task = AgentTask(title: "Pulls", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+        context.insert(workspace)
+        context.insert(task)
+        let run = TaskRun(task: task)
+        context.insert(run)
+        let events = [snapshot(task, run, TaskEventTypes.System.runtimeRepairRequired, CLISessionExpiryClassifier.gitHub.repair.encoded())]
+        let targeted = try #require(await TaskRunStopEvidence.signInRepair(events: events, runID: run.id, task: task))
+        #expect(targeted.command == "gh auth login --hostname ghe.example.com")
+        #expect(targeted.checkArguments == ["auth", "status", "--hostname", "ghe.example.com"])
+    }
+
+    @Test("Expired ADC from the run's GOOGLE_APPLICATION_CREDENTIALS file is guidance naming it, with no sign-in")
+    func environmentSelectedApplicationDefaultIsNotASignIn() throws {
+        let output = "ERROR: (gcloud.auth.application-default.print-access-token) There was a problem refreshing your current auth tokens: ('invalid_grant: Bad Request')"
+        for command in ["gcloud auth application-default print-access-token", "/opt/google-cloud-sdk/bin/gcloud auth application-default print-access-token"] {
+            let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command))
+            #expect(CLISessionExpiryClassifier.stopMessage(stop.message) { [:] } == stop.message)
+            for (file, named) in [("/Users/me/keys/adc.json", true), ("/tmp/odd`name.json", false)] {
+                let message = CLISessionExpiryClassifier.stopMessage(stop.message) { ["GOOGLE_APPLICATION_CREDENTIALS": file] }
+                #expect(message.contains("GOOGLE_APPLICATION_CREDENTIALS"))
+                #expect(message.contains("`\(file)`") == named, "\(file)")
+                let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: message), "lost: \(command) \(file)")
+                #expect(!family.offersSignIn)
+                #expect(family.repair.command == nil)
+                #expect(family.repair.verb == "Check")
+                #expect(family.repair.checkArguments == CLISessionExpiryClassifier.googleCloudApplicationDefault.checkArguments)
+                #expect(family.repair.checkBinary == (command.hasPrefix("/") ? "/opt/google-cloud-sdk/bin/gcloud" : "gcloud"))
+            }
+        }
+        // A sign-in recorded before the variable was known runs nothing once it is.
+        var recorded = CLISessionExpiryClassifier.googleCloudApplicationDefault.repair
+        #expect(CLISessionExpiryClassifier.checkingCredentialFile(recorded) == recorded)
+        recorded.checkEnvironment = ["GOOGLE_APPLICATION_CREDENTIALS": "/Users/me/keys/adc.json"]
+        let guidance = CLISessionExpiryClassifier.checkingCredentialFile(recorded)
+        #expect(guidance.command == nil)
+        #expect(guidance.detail.contains("`/Users/me/keys/adc.json`"))
+        #expect(guidance.checkEnvironment == recorded.checkEnvironment)
+        // The CLI account's own sign-in is unaffected by the variable.
+        var account = CLISessionExpiryClassifier.googleCloud.repair
+        account.checkEnvironment = recorded.checkEnvironment
+        #expect(CLISessionExpiryClassifier.checkingCredentialFile(account) == account)
+        // The stop records the guidance, not the sign-in.
+        let service = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Services/Runtime/RuntimeTurnOutcomeService.swift"), encoding: .utf8)
+        #expect(service.contains("CLISessionExpiryClassifier.stopMessage(message) {"))
+        #expect(service.contains("CLISessionExpiryClassifier.family(forStopMessage: payload), family.offersSignIn"))
     }
 
     @Test("An exported GH_HOST or GH_REPO targets the gh calls after it in the same shell scope")
@@ -288,7 +466,7 @@ struct CLISessionExpiryTests {
 
     @Test("Sign in runs against the credential store the resumed task reads, carrying no token")
     @MainActor
-    func signInTargetsProjectedCredentialStore() throws {
+    func signInTargetsProjectedCredentialStore() async throws {
         let container = try ModelContainer(
             for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,
@@ -312,7 +490,7 @@ struct CLISessionExpiryTests {
         let repair = CLISessionExpiryClassifier.googleCloud.repair
         let events = [snapshot(task, run, TaskEventTypes.System.runtimeRepairRequired, repair.encoded())]
 
-        let targeted = try #require(TaskRunStopEvidence.signInRepair(events: events, runID: run.id, task: task))
+        let targeted = try #require(await TaskRunStopEvidence.signInRepair(events: events, runID: run.id, task: task))
         #expect(targeted.command == "env CLOUDSDK_CONFIG='/tmp/task gcloud' gcloud auth login")
         let launcher = RecordingTerminal()
         RepairActionRunner.run(targeted, terminal: launcher)
@@ -321,7 +499,7 @@ struct CLISessionExpiryTests {
         // The dock's Sign in is the one that resolves it.
         let view = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Astra/Views/TaskMainView.swift"), encoding: .utf8)
-        #expect(view.contains("RepairActionRunner.run(TaskRunStopEvidence.signInRepair(events: sortedEvents, runID: latestRun?.id, task: task))"))
+        #expect(view.contains("RepairActionRunner.run(await TaskRunStopEvidence.signInRepair(events: sortedEvents, runID: latestRun?.id, task: task))"))
 
         // Only ASTRA's own sign-in may lead with selectors, and only selectors.
         let command = try #require(targeted.command)
@@ -368,7 +546,7 @@ struct CLISessionExpiryTests {
 
     @Test("Sign in signs in to the Enterprise host the launch's GH_REPO or GH_HOST selects, the host Resume checks")
     @MainActor
-    func signInTargetsLaunchSelectedHost() throws {
+    func signInTargetsLaunchSelectedHost() async throws {
         let container = try ModelContainer(
             for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,
@@ -395,7 +573,7 @@ struct CLISessionExpiryTests {
             context.insert(run)
             let events = [snapshot(task, run, TaskEventTypes.System.runtimeRepairRequired, repair.encoded())]
 
-            let targeted = try #require(TaskRunStopEvidence.signInRepair(events: events, runID: run.id, task: task))
+            let targeted = try #require(await TaskRunStopEvidence.signInRepair(events: events, runID: run.id, task: task))
             #expect(targeted.command == expected, "\(key)")
             #expect(targeted.detail.contains("`gh auth login --hostname github.example.com`"), "\(key)")
             #expect(targeted.checkArguments == ["auth", "status", "--hostname", "github.example.com"], "\(key)")
@@ -563,7 +741,8 @@ struct CLISessionExpiryTests {
             "GH_HOST=first.example gh api user && gh pr list -R second.example.com/team/app"
         ] {
             #expect(CLISessionExpiryClassifier.gitHubHost(in: command) == nil, "\(command)")
-            #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.gitHub, "\(command)")
+            // Checked on github.com, named, so no checkout host is guessed instead.
+            #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.gitHub.onHost("github.com"), "\(command)")
         }
         // Calls that agree keep their host.
         let agreeing = "gh auth status --hostname second.example.com; gh api user --hostname second.example.com"
