@@ -17,12 +17,28 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
     /// it (`PreflightCache`, the Plugins surface), so two specs share a
     /// result only when they check the same thing: an identical `docker
     /// version` probe that also requires a reachable daemon is a different
-    /// check.
+    /// check. Each value is escaped (`idField`), so no binary or argument
+    /// spells a delimiter: an argument `x:semantic=stdoutNonEmpty` is not
+    /// `x` checked with `.stdoutNonEmpty`, and `["a b"]` is not `["a", "b"]`.
     public var id: String {
-        var id = "\(binary):\(livenessArgs.joined(separator: " "))"
+        var id = "\(Self.idField(binary)):\(livenessArgs.map(Self.idArgument).joined(separator: " "))"
         if let semantic { id += ":semantic=\(semantic.rawValue)" }
         if let contextualCheck { id += ":context=\(contextualCheck.rawValue)" }
         return id
+    }
+
+    /// `value` with the id's field delimiter `:` and the escape `%`
+    /// percent-escaped; a value with neither is unchanged, so the ids of
+    /// ordinary checks (`gh:auth status`) are what they always were.
+    public static func idField(_ value: String) -> String {
+        value.replacingOccurrences(of: "%", with: "%25").replacingOccurrences(of: ":", with: "%3A")
+    }
+
+    /// An argument as `idField`, with the separator between arguments, a
+    /// space, escaped too, and an empty argument as `%00`, so `[""]` is not
+    /// `[]`.
+    private static func idArgument(_ argument: String) -> String {
+        argument.isEmpty ? "%00" : idField(argument).replacingOccurrences(of: " ", with: "%20")
     }
 
     /// Short binary name as it should appear on PATH, e.g. `gcloud`,

@@ -653,7 +653,12 @@ struct CLISessionExpiryTests {
             "gcloud auth application-default print-access-token", "TOKEN=$(gcloud auth application-default print-access-token --quiet)",
             "/opt/google-cloud-sdk/bin/gcloud auth application-default print-access-token",
             // A release track runs the same ADC command.
-            "gcloud beta auth application-default print-access-token", "gcloud alpha auth application-default print-access-token --quiet"
+            "gcloud beta auth application-default print-access-token", "gcloud alpha auth application-default print-access-token --quiet",
+            // gcloud-wide flags, and their values, come before the command.
+            "gcloud --project team auth application-default print-access-token",
+            "gcloud --verbosity debug beta auth application-default print-access-token",
+            "gcloud --format=json -q --billing-project b auth application-default print-access-token",
+            "gcloud --log-http --flags-file f.yaml auth application-default print-access-token"
         ] {
             let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "missed: \(command)")
             let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
@@ -670,10 +675,29 @@ struct CLISessionExpiryTests {
         for command in [
             "gcloud projects list", "gcloud auth application-default print-access-token; bq ls",
             "gcloud config get-value project && gcloud auth application-default print-access-token",
-            "gcloud beta projects list", "gcloud beta auth login", "gcloud beta beta auth application-default print-access-token"
+            "gcloud beta projects list", "gcloud beta auth login", "gcloud beta beta auth application-default print-access-token",
+            "gcloud --project team projects list", "gcloud --quiet application-default auth list"
         ] {
             #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.googleCloud, "\(command)")
         }
+        // A flag that picks the account still reads ADC: its repair checks
+        // nothing it can't reproduce (`commandLocalCredentials`).
+        let account = try #require(CLISessionExpiryClassifier.family(
+            content: output, command: "gcloud --account me@x.org auth application-default print-access-token"
+        ))
+        #expect(account.readsApplicationDefault)
+        #expect(account.ownCredentials == ["--account"])
+        #expect(account.repair.command == nil)
+        // An unknown flag may or may not take the next word: the command is
+        // unknown, so neither sign-in is offered rather than the wrong one.
+        for command in [
+            "gcloud --mystery x auth application-default print-access-token", "gcloud --mystery auth application-default print-access-token",
+            "gcloud auth --mystery application-default print-access-token"
+        ] {
+            #expect(CLISessionExpiryClassifier.readsOnlyApplicationDefault(command) == nil, "\(command)")
+            #expect(CLISessionExpiryClassifier.family(content: output, command: command) == nil, "\(command)")
+        }
+        #expect(CLISessionExpiryClassifier.readsOnlyApplicationDefault("gcloud --mystery x projects list; bq ls") == false)
     }
 
     @Test("A CLI the agent ran by path is checked and signed in at that path")

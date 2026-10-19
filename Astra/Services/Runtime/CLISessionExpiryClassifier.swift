@@ -271,10 +271,12 @@ enum CLISessionExpiryClassifier {
     ) -> Family? {
         guard let command, !command.isEmpty else { return nil }
         let lowered = content.lowercased()
+        let applicationDefault = readsOnlyApplicationDefault(command)
         guard var family = families.first(where: { family in
             family.commands.contains { failed ? failureReaches(from: $0, in: command) : masksExitStatus(of: $0, in: command) }
                 && family.patterns.contains { lowered.contains($0) }
-                && (!family.readsApplicationDefault || readsOnlyApplicationDefault(command))
+                && (!family.readsApplicationDefault || applicationDefault == true)
+                && (family.checkBinary != "gcloud" || applicationDefault != nil)
         }) else { return nil }
         // A GitHub Enterprise host the command targeted is the one to sign
         // in to and check; github.com's login says nothing about it. A
@@ -310,26 +312,71 @@ enum CLISessionExpiryClassifier {
     }
 
     /// True when `command` calls Google Cloud only as `gcloud auth
-    /// application-default …`, on any release track. A command that also runs another gcloud, bq
-    /// or gsutil call may have failed on the CLI account instead.
-    static func readsOnlyApplicationDefault(_ command: String) -> Bool {
+    /// application-default …`, on any release track and after any
+    /// gcloud-wide flags. False when a call is another gcloud command, or a
+    /// bq or gsutil call: the command may have failed on the CLI account
+    /// instead. Nil when a call's flags leave its command unknown
+    /// (`applicationDefaultReadings`): neither sign-in is offered, since
+    /// `gcloud auth login` for a failed ADC read fixes nothing.
+    static func readsOnlyApplicationDefault(_ command: String) -> Bool? {
         let calls = simpleCommands(command).compactMap { words -> [String]? in
             var rest = words
             stripWrappers(&rest)
             guard let executable = rest.first, googleCloud.commands.contains((executable as NSString).lastPathComponent) else { return nil }
             return rest
         }
-        return !calls.isEmpty && calls.allSatisfy { call in
-            // A release track (`gcloud beta auth application-default …`)
-            // runs the same command group.
-            var words = call.dropFirst().filter { !$0.hasPrefix("-") }
-            if let track = words.first, gcloudReleaseTracks.contains(track) { words.removeFirst() }
-            return (call[0] as NSString).lastPathComponent == "gcloud" && Array(words.prefix(2)) == ["auth", "application-default"]
+        guard !calls.isEmpty else { return false }
+        let readings = calls.map { call in
+            (call[0] as NSString).lastPathComponent == "gcloud" ? applicationDefaultReadings(call.dropFirst()) : [false]
         }
+        if readings.contains([false]) { return false }
+        return readings.allSatisfy { $0 == [true] } ? true : nil
     }
+
+    /// Whether a gcloud call's command group is `auth application-default`,
+    /// after an optional release track, for each way its flags can be read.
+    /// One answer when every flag before the command is a known gcloud-wide
+    /// one (`gcloudValueFlags` take the next word, `gcloudBooleanFlags`
+    /// don't, `--flag=value` carries its own); an unknown `--flag word` may
+    /// be either, so both readings count. Past `maxUnknownFlags`, the call
+    /// is unknown.
+    private static func applicationDefaultReadings(_ arguments: ArraySlice<String>, positionals: [String] = [], unknownFlags: Int = 0) -> Set<Bool> {
+        var positionals = positionals
+        var rest = arguments
+        while let word = rest.first, positionals.count < 3 {
+            rest = rest.dropFirst()
+            if word == "--" { break }
+            guard word.hasPrefix("-"), word != "-" else {
+                positionals.append(word)
+                continue
+            }
+            if word.contains("=") || gcloudBooleanFlags.contains(word) { continue }
+            if gcloudValueFlags.contains(word) {
+                rest = rest.dropFirst()
+                continue
+            }
+            guard unknownFlags < maxUnknownFlags else { return [true, false] }
+            return applicationDefaultReadings(rest, positionals: positionals, unknownFlags: unknownFlags + 1)
+                .union(applicationDefaultReadings(rest.dropFirst(), positionals: positionals, unknownFlags: unknownFlags + 1))
+        }
+        if let track = positionals.first, gcloudReleaseTracks.contains(track) { positionals.removeFirst() }
+        return [Array(positionals.prefix(2)) == ["auth", "application-default"]]
+    }
+
+    private static let maxUnknownFlags = 4
 
     /// gcloud's release tracks, the optional first word of a command.
     private static let gcloudReleaseTracks: Set<String> = ["alpha", "beta"]
+
+    /// gcloud-wide flags (`gcloud topic flags`) that take a value, and
+    /// those that take none.
+    private static let gcloudValueFlags: Set<String> = [
+        "--project", "--account", "--configuration", "--impersonate-service-account", "--access-token-file",
+        "--credential-file-override", "--billing-project", "--verbosity", "--format", "--flatten", "--flags-file", "--trace-token"
+    ]
+    private static let gcloudBooleanFlags: Set<String> = [
+        "--quiet", "-q", "--help", "-h", "--log-http", "--no-log-http", "--user-output-enabled", "--no-user-output-enabled"
+    ]
 
     /// The check CLI installed beside a companion that `command` runs by path
     /// (`/opt/google-cloud-sdk/bin/bq` → `…/bin/gcloud`): `bq` and `gsutil`
