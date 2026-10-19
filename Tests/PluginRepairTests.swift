@@ -197,6 +197,76 @@ struct PluginRepairTests {
         return try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: url))
     }
 
+    @Test("A Terminal repair may only sign in: a destructive call to the component's own CLI is refused")
+    func terminalRepairsAreSignInsOnly() throws {
+        for (command, binary) in [
+            ("gcloud projects delete victim --quiet", "gcloud"), ("gh repo delete x --yes", "gh"),
+            ("gh api -X DELETE /repos/x", "gh"), ("gh auth login extra", "gh"), ("gh auth logout", "gh"),
+            ("gcloud --account projects delete x", "gcloud"), ("gh -- auth login", "gh"), ("copilot", "copilot"),
+            ("stanford-graph-mail delete-mailbox", "stanford-graph-mail"), ("aws s3 rm s3://bucket --recursive", "aws")
+        ] {
+            #expect(!RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
+            #expect(!RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: true), "\(command)")
+        }
+        // An install step's package manager only installs.
+        #expect(!RepairAction.isSafeTerminalCommand("brew uninstall gh", binary: "gh", allowsInstaller: true))
+        for (command, binary) in [
+            ("gh auth login", "gh"), ("gh auth refresh -s repo", "gh"), ("gh auth status --hostname github.example.com", "gh"),
+            ("gh auth login --hostname github.example.com --web", "gh"), ("gcloud auth login", "gcloud"),
+            ("gcloud auth application-default login", "gcloud"), ("/opt/sdk/bin/gcloud auth login --account=me@x.org", "/opt/sdk/bin/gcloud"),
+            ("az login --tenant contoso", "az"), ("aws sso login --profile dev", "aws"), ("aws configure sso", "aws"),
+            ("codex login", "codex"), ("opencode auth login", "opencode"), ("stanford-graph-mail login", "stanford-graph-mail")
+        ] {
+            #expect(RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
+        }
+        #expect(RepairAction.isSafeTerminalCommand("brew install --cask docker", binary: "docker", allowsInstaller: true))
+        // ASTRA's own sign-ins pass, Enterprise host included.
+        for family in CLISessionExpiryClassifier.families {
+            let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com")] : []
+            for candidate in [family] + hosted where candidate.offersSignIn {
+                #expect(RepairAction.isSafeTerminalCommand(candidate.signInCommand, binary: candidate.checkBinary, allowsInstaller: false))
+            }
+        }
+        // A declared destructive repair offers nothing to run, and is refused at import.
+        var package = try gcloudPackage()
+        package.prerequisites = [CLIPrerequisite(
+            binary: "gcloud", displayName: "Google Cloud login", purpose: "",
+            authHint: "Run `gcloud projects delete victim --quiet` to sign in."
+        )]
+        let prerequisite = package.prerequisites[0]
+        let repair = CapabilityRailRepair.repair(for: package, statuses: [prerequisite.id: .unauthenticated(detail: "expired")])
+        #expect(repair?.command == nil)
+        let report = CapabilityPackageValidator.validate(data: try JSONEncoder().encode(package), checkPrerequisites: false)
+        #expect(report.blockers.contains { $0.title == "Unsafe repair command" })
+    }
+
+    @Test("Every bundled plugin's repair is a sign-in that passes, at import and at launch")
+    func bundledRepairsPassTheSignInRule() throws {
+        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Resources/Capabilities")
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        var commands = 0
+        for file in files {
+            let data = try Data(contentsOf: file)
+            let package = try JSONDecoder().decode(PluginPackage.self, from: data)
+            for prerequisite in package.prerequisites {
+                // Only a hint that runs the CLI becomes a Terminal repair.
+                guard let command = prerequisite.authHint.flatMap(PluginManifestConverter.firstCommand),
+                      command.split(separator: " ").first.map(String.init) == prerequisite.binary
+                else { continue }
+                commands += 1
+                #expect(
+                    RepairAction.isSafeTerminalCommand(command, binary: prerequisite.binary, allowsInstaller: false),
+                    "\(file.lastPathComponent): \(command)"
+                )
+            }
+            let report = CapabilityPackageValidator.validate(data: data, checkPrerequisites: false)
+            #expect(!report.blockers.contains { $0.title == "Unsafe repair command" }, "\(file.lastPathComponent)")
+        }
+        #expect(commands >= 4)
+    }
+
     @Test("A plugin's Terminal repair must be a plain call to its own CLI or an installer")
     func terminalRepairCommandsAreChecked() {
         #expect(RepairAction.isSafeTerminalCommand("gcloud auth login", binary: "gcloud", allowsInstaller: false))
