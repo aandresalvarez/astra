@@ -64,7 +64,8 @@ enum CLISessionExpiryClassifier {
                 command: offersSignIn ? signInCommand : nil,
                 checkBinary: checkBinary,
                 checkArguments: checkArguments,
-                checkExpect: (checkBinary as NSString).lastPathComponent == "gcloud" ? SemanticCheck.stdoutNonEmpty.rawValue : nil
+                checkExpect: (checkBinary as NSString).lastPathComponent == "gcloud" && !readsApplicationDefault
+                    ? SemanticCheck.stdoutNonEmpty.rawValue : nil
             )
         }
 
@@ -73,8 +74,23 @@ enum CLISessionExpiryClassifier {
         func onHost(_ host: String) -> Family {
             var family = self
             family.signInCommand += " --hostname \(host)"
-            family.checkArguments = ["auth", "status", "--hostname", host]
+            family.checkArguments = ["auth", "status", "--active", "--hostname", host]
             family.namesCheck = true
+            return family
+        }
+
+        /// The same family checking the active account on every host
+        /// (`gh auth status --active`): the command's `gh` calls named
+        /// different hosts, or ran outside the run's checkout, so which host
+        /// failed is unknown, and checking any one of them could pass while
+        /// the failing one is still signed out. Sign in asks for the host.
+        func onEveryHost() -> Family {
+            var family = self
+            family.checkArguments = ["auth", "status", "--active"]
+            family.namesCheck = true
+            if family.customStopMessage == nil {
+                family.customStopMessage = "The \(displayName) sign-in expired while the agent was using it, on one of several hosts its command used. Sign in again to the host that failed, then resume."
+            }
             return family
         }
 
@@ -127,14 +143,17 @@ enum CLISessionExpiryClassifier {
     /// own account: `gcloud auth application-default login` writes them, and
     /// a healthy `gcloud auth login` says nothing about them. So a failed
     /// `gcloud auth application-default print-access-token` signs in to and
-    /// checks ADC; the check prints the refreshed token's expiry, never the
-    /// token.
+    /// checks ADC. The check is that same command with `--format=none`: it
+    /// refreshes the credential and exits non-zero when it cannot, and
+    /// prints nothing, so no token reaches ASTRA. Its exit status alone is
+    /// the result (no semantic test): the command returns a credentials
+    /// object, whose `expiry` is set only by some credential types' refresh.
     static let googleCloudApplicationDefault = Family(
         commands: ["gcloud"],
         displayName: "Google Cloud application default credentials",
         signInCommand: "gcloud auth application-default login",
         checkBinary: "gcloud",
-        checkArguments: ["auth", "application-default", "print-access-token", "--format=value(expiry)"],
+        checkArguments: ["auth", "application-default", "print-access-token", "--format=none"],
         patterns: googleCloud.patterns + ["please run:\n\n  $ gcloud auth application-default login"],
         readsApplicationDefault: true
     )
@@ -144,7 +163,7 @@ enum CLISessionExpiryClassifier {
         displayName: "GitHub",
         signInCommand: "gh auth login",
         checkBinary: "gh",
-        checkArguments: ["auth", "status", "--hostname", "github.com"],
+        checkArguments: ["auth", "status", "--active", "--hostname", "github.com"],
         patterns: [
             "you are not logged into any github hosts",
             "http 401: bad credentials",
@@ -164,7 +183,7 @@ enum CLISessionExpiryClassifier {
         displayName: "GitHub",
         signInCommand: "gh auth login",
         checkBinary: "gh",
-        checkArguments: ["auth", "status", "--hostname", "github.com"],
+        checkArguments: ["auth", "status", "--active", "--hostname", "github.com"],
         patterns: ["the token in gh_token is invalid", "the token in github_token is invalid"],
         offersSignIn: false,
         customStopMessage: "GitHub rejected the token in GH_TOKEN or GITHUB_TOKEN. That variable overrides any sign-in, so signing in again won't help: update or remove it where ASTRA's environment gets it, then resume."
@@ -179,7 +198,7 @@ enum CLISessionExpiryClassifier {
         displayName: "GitHub",
         signInCommand: "gh auth login",
         checkBinary: "gh",
-        checkArguments: ["auth", "status", "--hostname", "github.com"],
+        checkArguments: ["auth", "status", "--active", "--hostname", "github.com"],
         patterns: ["the token in gh_enterprise_token is invalid", "the token in github_enterprise_token is invalid"],
         offersSignIn: false,
         customStopMessage: "GitHub Enterprise rejected the token in GH_ENTERPRISE_TOKEN or GITHUB_ENTERPRISE_TOKEN. That variable overrides any sign-in, so signing in again won't help: update or remove it where ASTRA's environment gets it, then resume."
@@ -214,15 +233,18 @@ enum CLISessionExpiryClassifier {
         }) else { return nil }
         // A GitHub Enterprise host the command targeted is the one to sign
         // in to and check; github.com's login says nothing about it. A
-        // command that names github.com, or hosts that disagree, or a `cd`
-        // away from the run's checkout, pins github.com: only a command that
-        // names no host leaves `gh` to infer it from the checkout
-        // (`checkingCheckoutHost`).
+        // command whose every call names github.com pins it. Calls that name
+        // different hosts, a repository on the default host, or a `cd` away
+        // from the run's checkout leave the host unknown: the check covers
+        // every host. Only a command that names no host leaves `gh` to infer
+        // it from the checkout (`checkingCheckoutHost`).
         if family.checkBinary == "gh" {
             if let host = gitHubHost(in: command) {
                 family = family.onHost(host)
-            } else if !leavesGitHubHostToCheckout(command) {
+            } else if namesOnlyGitHubCom(command) {
                 family = family.onHost("github.com")
+            } else if !leavesGitHubHostToCheckout(command) {
+                family = family.onEveryHost()
             }
         }
         // So is the installation it ran by path: another one on PATH may be
@@ -292,6 +314,7 @@ enum CLISessionExpiryClassifier {
             if family.checkBinary == "gh" {
                 if let host { candidates.append(family.onHost(host)) }
                 if message.contains(" --hostname github.com`") { candidates.append(family.onHost("github.com")) }
+                candidates.append(family.onEveryHost())
             }
             if let executable, (executable as NSString).lastPathComponent == family.checkBinary {
                 candidates += candidates.map { $0.at(executable) }
@@ -344,7 +367,8 @@ enum CLISessionExpiryClassifier {
     /// clears one). Nil for github.com or a value that is not a plain host
     /// name, and nil when the `gh` calls disagree (`gh auth status --hostname
     /// a; gh auth status --hostname b`): which one failed is unknown, so the
-    /// stop stays untargeted rather than checking a host that may be healthy.
+    /// stop checks every host (`Family.onEveryHost`) rather than one that
+    /// may be healthy.
     static func gitHubHost(in command: String) -> String? {
         let hosts = gitHubSelections(in: command).calls.map { $0.host.flatMap(enterpriseHost) }
         guard let host = hosts.first, hosts.allSatisfy({ $0 == host }) else { return nil }
@@ -357,6 +381,12 @@ enum CLISessionExpiryClassifier {
     static func leavesGitHubHostToCheckout(_ command: String) -> Bool {
         let selections = gitHubSelections(in: command)
         return !selections.changesDirectory && !selections.calls.contains(where: \.selects)
+    }
+
+    /// True when every `gh` call in `command` names github.com.
+    static func namesOnlyGitHubCom(_ command: String) -> Bool {
+        let calls = gitHubSelections(in: command).calls
+        return !calls.isEmpty && calls.allSatisfy { $0.selects && $0.host?.lowercased() == "github.com" }
     }
 
     /// Each `gh` call's selected host (nil for the default host) and whether
@@ -757,6 +787,10 @@ enum CLISessionExpiryClassifier {
                 closeOrOpenGroup(character)
             case "(", ")", "`":
                 closeOrOpenGroup(character)
+            case "#" where !inWord:
+                // A comment runs to the end of the line: `false # ; gh auth
+                // status` runs no `gh`.
+                while index < characters.count, characters[index] != "\n" { index += 1 }
             case ";", "\n":
                 endCommand(String(character))
                 guard character == "\n" else { break }

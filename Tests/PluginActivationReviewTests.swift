@@ -96,7 +96,7 @@ struct PluginActivationReviewTests {
         #expect(PluginUpdateService.replacesProblems(in: package).isEmpty)
     }
 
-    @Test("An interrupted Remove whose library entry is still there but unreadable keeps its intent")
+    @Test("An interrupted Remove whose library entry is unreadable moves the entry aside before finishing")
     func removeIntentSurvivesUnreadableEntry() throws {
         let env = try Fixtures.Environment()
         let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
@@ -105,13 +105,13 @@ struct PluginActivationReviewTests {
         #expect(env.library.installedPackage(id: "ops.report") == nil)
         try journal.begin("ops.report")
 
-        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
-        #expect(try journal.pending() == ["ops.report"])
-
-        // Gone from the raw storage too: the Remove is finished.
-        try FileManager.default.removeItem(at: env.library.packageURL(for: "ops.report"))
+        // The unreadable entry is moved aside (it would block a reinstall
+        // under its name), and only then is the Remove finished.
         PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
         #expect(try journal.pending().isEmpty)
+        #expect(!env.library.occupiedStorageNames().contains("ops-report") && !env.library.holdsUnreadableEntry(id: "ops.report"))
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: env.library.quarantineDirectory.path)
+        #expect(quarantined.count == 1 && quarantined[0].hasSuffix("ops-report.json"))
     }
 
     @Test("A secret declared again while its old value awaits deletion is cleared before the definition is taken")

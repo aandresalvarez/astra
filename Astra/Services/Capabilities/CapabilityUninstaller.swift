@@ -8,11 +8,16 @@ import ASTRAPersistence
 struct CapabilityUninstaller {
     enum UninstallError: Error, Equatable, LocalizedError {
         case saveFailed(packageID: String)
+        /// Installed plugins that `requires` this one: removing it would
+        /// leave each with a missing dependency in every workspace.
+        case requiredBy(packageID: String, dependents: [String])
 
         var errorDescription: String? {
             switch self {
             case .saveFailed(let id):
                 return "Removing \(id) could not be saved. No resources were deleted; try again."
+            case .requiredBy(let id, let dependents):
+                return "\(id) can't be removed while \(dependents.joined(separator: ", ")) \(dependents.count == 1 ? "needs" : "need") it. Remove \(dependents.count == 1 ? "that plugin" : "those plugins") first."
             }
         }
     }
@@ -88,6 +93,13 @@ struct CapabilityUninstaller {
         }
 
         let remainingPackages = installedPackages.filter { $0.id != package.id }
+        // Refused while another installed plugin requires it, before
+        // anything changes. Forgetting a missing one changes nothing for
+        // them: they already lack it.
+        let dependents = remainingPackages.filter { ($0.requires ?? []).contains(package.id) }.map(\.name).sorted()
+        guard dependents.isEmpty || definitionMissing else {
+            throw UninstallError.requiredBy(packageID: package.name, dependents: dependents)
+        }
         // A fetch failure must abort the uninstall rather than degrade to
         // "nothing matched": proceeding with empty arrays would remove the
         // package file while leaving its resources behind in every workspace.
@@ -304,8 +316,13 @@ struct CapabilityUninstaller {
         // finds no resources to delete and just clears it). Throwing would
         // make the caller report a failed uninstall that actually succeeded.
         do {
-            // A forgotten plugin has no readable entry to remove.
-            if !definitionMissing { _ = try library.removePackage(id: package.id) }
+            // A forgotten plugin has no readable entry to remove; one whose
+            // entry can't be read is moved aside, or its intent stays.
+            if definitionMissing {
+                try library.quarantineUnreadableEntry(id: package.id)
+            } else {
+                _ = try library.removePackage(id: package.id)
+            }
             if mirrorsWritten { removeJournal?.finish(package.id) }
         } catch {
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [

@@ -183,7 +183,8 @@ struct CapabilityInstaller {
         auditSource: String = "enable",
         traceID: String? = nil,
         persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
-        exportMirror: (@MainActor (Workspace) -> Void)? = nil
+        exportMirror: (@MainActor (Workspace) -> Void)? = nil,
+        rewriteMirror: (@MainActor (Workspace) -> Bool)? = nil
     ) throws -> InstallationResult {
         var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
         if let traceID { startFields["trace_id"] = traceID }
@@ -257,7 +258,17 @@ struct CapabilityInstaller {
             // before reconciling derives anything from them, the rows the
             // migration kept while it was missing included.
             let componentIDs = PluginRuntimeProjection.componentIDs(of: package)
+            // The accounts its components created here before a Remove come
+            // back bound, stamped again, rather than as duplicates.
+            let retainedAccounts = WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: workspace)
             WorkspaceCapabilityActivation.reinstateRetired(on: activation, declaring: componentIDs, in: workspace)
+            for retained in retainedAccounts
+            where componentIDs.contains(retained.componentID) && activation.accounts(forComponent: retained.componentID).isEmpty {
+                CapabilityResourceOrigin.stamp(retained.account, package: package, componentID: retained.componentID)
+                WorkspaceCapabilityActivation.bind(
+                    retained.account, toComponent: retained.componentID, of: activation, isDefault: retained.isDefault
+                )
+            }
             for (other, _) in pendingSnapshots {
                 guard let otherActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: other) else { continue }
                 WorkspaceCapabilityActivation.adoptPendingOverrides(on: otherActivation, declaring: componentIDs, in: other)
@@ -304,6 +315,13 @@ struct CapabilityInstaller {
                 // This component's own inputs over the shared ones: two
                 // connectors with one name or field key never trade values.
                 let ownConfigInputs = PluginSetupInputs.view(configInputs, component: componentID)
+                let bound = activation.accounts(forComponent: componentID).first
+                // What the inputs change: with a bound account, only what
+                // differs from it (`AccountSetupEdits`); the rest it keeps.
+                let edits = AccountSetupEdits(
+                    pluginConnector, bound: bound, configInputs: ownConfigInputs,
+                    baseURLOverride: PluginSetupInputs.baseURL(in: baseURLOverrides, for: pluginConnector)
+                )
                 let fields = StoredConnectorFields(
                     pluginConnector, in: package,
                     credentialInputs: PluginSetupInputs.view(credentialInputs, component: componentID),
@@ -312,18 +330,17 @@ struct CapabilityInstaller {
                 let configKeys = connectorConfigKeys(
                     hints: fields.connector.configHints,
                     extraConfigKeys: packageEnvironmentKeys,
-                    configInputs: ownConfigInputs
+                    configInputs: edits.config
                 )
-                let overriddenBaseURL = PluginSetupInputs.baseURL(in: baseURLOverrides, for: pluginConnector)
-                let baseURL = overriddenBaseURL ?? pluginConnector.baseURL
+                let boundURL = bound.map(\.baseURL).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+                let baseURL = edits.baseURL ?? boundURL ?? pluginConnector.baseURL
                 let hasScopedInputs = connectorHasScopedInputs(
                     fields.connector,
                     configKeys: configKeys,
                     credentialInputs: fields.credentialInputs,
-                    configInputs: ownConfigInputs,
-                    baseURLOverridden: overriddenBaseURL != nil
+                    configInputs: edits.config,
+                    baseURLOverridden: edits.baseURL != nil
                 )
-                let bound = activation.accounts(forComponent: componentID).first
                 // The account replacing this component's default takes its
                 // place as the workspace's default for the service.
                 let inheritsDefault = activation.bindings.contains {
@@ -348,7 +365,7 @@ struct CapabilityInstaller {
                         workspace: workspace,
                         existing: bound.flatMap { $0.isGlobal ? nil : $0 },
                         modelContext: modelContext,
-                        configInputs: ownConfigInputs,
+                        configInputs: edits.accountConfig,
                         extraConfigKeys: packageEnvironmentKeys,
                         baseURL: baseURL,
                         allowCredentialUserInteraction: allowCredentialUserInteraction
@@ -379,9 +396,25 @@ struct CapabilityInstaller {
             // The secret settings written above settle with the save: the
             // activation records them now.
             let journaledSecrets = savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }
+            // Every mirror the save changed is written before anything it
+            // released is cleaned, as Update does: this workspace's, the
+            // others whose pending rows became overrides, and each carrying
+            // an account the reconcile changed. One that can't be written
+            // keeps the cleanup for launch.
+            let mirrored = [workspace] + pendingSnapshots.map(\.0) + WorkspaceConfigManager.workspacesMirroring(
+                accountIDs: reconciliation.changedAccountIDs,
+                among: (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? [], modelContext: modelContext
+            )
+            let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
             guard PluginSecretCleanupOutbox.deleteThenClean(
-                releasedSkillIDs, keys: reconciliation.staleSecrets + journaledSecrets, modelContext: modelContext,
-                save: { persist(workspace, modelContext) }
+                releasedSkillIDs,
+                keys: reconciliation.staleSecrets + journaledSecrets + PluginUpdateService.journaledCopies(renamedSecrets),
+                modelContext: modelContext,
+                save: { persist(workspace, modelContext) },
+                beforeSettling: {
+                    var seen = Set<UUID>()
+                    return mirrored.filter { seen.insert($0.id).inserted }.reduce(true) { rewrite($1) && $0 }
+                }
             ) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
@@ -430,7 +463,9 @@ struct CapabilityInstaller {
             let unrestored = restoreSkillSecrets(savedSkillSecrets)
                 + PluginUpdateService.undo(renamedSecrets)
             PluginSecretSettingWriter.forgetJournaled(
-                savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }, modelContext: modelContext
+                savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }
+                    + PluginUpdateService.journaledCopies(renamedSecrets),
+                modelContext: modelContext
             )
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
@@ -693,7 +728,7 @@ struct CapabilityInstaller {
         )
         connector.configValues = connector.configKeys.map { configInputs[$0] ?? "" }
         for (key, value) in unsettled {
-            if let index = connector.credentialKeys.firstIndex(of: key) {
+            if let index = connector.credentialKeys.firstIndex(where: { ConnectorCredentialKey.same($0, key) }) {
                 connector.credentialKeys.remove(at: index)
                 connector.credentialValues.remove(at: index)
             }
@@ -819,6 +854,41 @@ struct CapabilityInstaller {
             keys.append(key)
         }
         return keys
+    }
+
+    /// The setup inputs that change a component's bound account. A setup
+    /// sheet submits every field it shows, prefilled, so a value equal to
+    /// what the account has, or to the definition's default where the
+    /// account has its own, is no edit; a setting the inputs don't name, or
+    /// leave empty, keeps the account's value (`accountConfig`). Without a
+    /// bound account every input is the new account's.
+    struct AccountSetupEdits {
+        /// The settings and URL the person changed.
+        let config: [String: String]
+        let baseURL: String?
+        /// The account's settings with the changes applied.
+        let accountConfig: [String: String]
+
+        init(_ pluginConnector: PluginConnector, bound: Connector?, configInputs: [String: String], baseURLOverride: String?) {
+            guard let bound else {
+                config = configInputs
+                baseURL = baseURLOverride
+                accountConfig = configInputs
+                return
+            }
+            func trimmed(_ value: String?) -> String { (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+            let defaultURL = trimmed(pluginConnector.baseURL)
+            let current = bound.config
+            config = configInputs.filter { key, value in
+                let value = trimmed(value)
+                let existing = trimmed(current[key])
+                return !value.isEmpty && value != existing && !(value == defaultURL && !existing.isEmpty)
+            }
+            let url = trimmed(baseURLOverride)
+            let boundURL = trimmed(bound.baseURL)
+            baseURL = url.isEmpty || url == boundURL || (url == defaultURL && !boundURL.isEmpty) ? nil : url
+            accountConfig = current.merging(config) { _, edited in edited }
+        }
     }
 
     private func connectorHasScopedInputs(

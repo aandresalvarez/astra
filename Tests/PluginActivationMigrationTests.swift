@@ -1777,6 +1777,8 @@ struct PluginMigrationFixture {
                 let connector = V19.Connector()
                 connector.name = "Jira"
                 connector.serviceType = jiraSpec.serviceType
+                // As Add made it: signed in with the method the plugin declares.
+                connector.authMethod = jiraSpec.authMethod
                 connector.baseURL = baseURL
                 connector.originPackageID = "jira-workflow"
                 connector.originComponentID = CapabilityResourceOrigin.componentID(for: jiraSpec)

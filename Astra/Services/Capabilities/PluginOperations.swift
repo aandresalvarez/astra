@@ -70,7 +70,8 @@ enum PluginOperations {
         in workspace: Workspace,
         modelContext: ModelContext,
         secrets: (any SkillSecretPersisting.Type)? = nil,
-        persist: (Workspace, ModelContext) throws -> Void = persistAndExport
+        persist: (Workspace, ModelContext) throws -> Void = persistAndExport,
+        rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws {
         guard let activation = WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) else {
             throw OperationError.notAdded(pluginID: pluginID)
@@ -88,6 +89,11 @@ enum PluginOperations {
                 ) {
                     workspace.updatedAt = Date()
                     try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
+                    // Written now, not queued: the mirror names the secret
+                    // before the Keychain holds it.
+                    guard rewriteMirror?(workspace)
+                        ?? WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext)
+                    else { throw OperationError.saveFailed }
                 }
                 return
             }
@@ -112,6 +118,15 @@ enum PluginOperations {
             return
         }
         WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
+        // A secret an earlier definition kept under this now plain key is
+        // the person's to replace: entering the setting clears it.
+        if activation.secretSettingKeys.contains(settingKey) {
+            let persistence = secrets ?? SkillSecretSeam.required
+            let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
+            if persistence.deleteSecret(key: key, skillID: skillID) {
+                WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: settingKey, on: activation)
+            }
+        }
         workspace.updatedAt = Date()
         try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
     }

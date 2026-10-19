@@ -572,6 +572,21 @@ enum CapabilityPackageValidator {
                     component: name
                 ))
             }
+            // Credentials are stored under their canonical key: two that
+            // differ only in case would be one Keychain item.
+            let stored = connector.credentialHints.map(\.key)
+                + PluginConnectorFieldTrust.settingsStoredAsCredentials(of: connector, in: package)
+            let collisions = Dictionary(grouping: Set(stored), by: ConnectorCredentialKey.canonical).filter { $0.value.count > 1 }
+            for (canonical, spellings) in collisions.sorted(by: { $0.key < $1.key }) {
+                let name = displayName(connector.name, fallback: connector.serviceType)
+                issues.append(issue(
+                    .blocker,
+                    .invalidComponentIdentity,
+                    "Credential keys differ only in case",
+                    "\(name) declares \(spellings.sorted().joined(separator: " and ")), which are stored as one key, \(canonical).",
+                    component: name
+                ))
+            }
             guard let reason = PluginConnectorFieldTrust.credentialTransportViolation(of: connector, in: package) else {
                 continue
             }
@@ -732,7 +747,7 @@ enum CapabilityPackageValidator {
                     .blocker,
                     .unsafeLocalTool,
                     "Unsafe health check",
-                    "\(prerequisite.displayName) checks itself with `\(check)`; a check may only run a read-only status command, such as `--version`.",
+                    "\(prerequisite.displayName) checks itself with `\(check)`; a check may only run a read-only status command of a CLI ASTRA knows, such as `gh --version` or `gh auth status`.",
                     component: prerequisite.displayName
                 ))
                 continue

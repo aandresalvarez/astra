@@ -190,11 +190,12 @@ enum ConnectorCredentialCleanup {
     /// rollback doesn't restore, so no later save commits it without its
     /// cleanup. False when it was rolled back.
     ///
-    /// `save` exports `workspace`'s mirror; every other workspace whose
-    /// plugins bound the account is exported here once it is saved, so no
-    /// mirror keeps the deleted account (a cleanup that ran at once leaves no
-    /// record for a later pass to rewrite them by). `exportMirror` stands in
-    /// for `WorkspaceConfigManager.autoExport` in tests.
+    /// Every workspace whose mirror carries the connector
+    /// (`WorkspaceConfigManager.workspacesMirroring`, this one included)
+    /// leaves its shared list and is written again once the deletion is
+    /// saved and before its credentials are cleaned, so no mirror keeps the
+    /// deleted account; one that can't be written keeps the cleanup for
+    /// launch. `exportMirror` stands in for the rewrite in tests.
     @discardableResult
     static func deleteConnector(
         _ connector: Connector, in workspace: Workspace, modelContext: ModelContext,
@@ -203,26 +204,34 @@ enum ConnectorCredentialCleanup {
         save: () -> Bool
     ) -> Bool {
         var seen = Set<UUID>()
-        let affected = ([workspace] + WorkspaceCapabilityActivation.workspacesBinding(connector))
+        let id = connector.id.uuidString
+        let stored = (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? [workspace]
+        let affected = ([workspace] + WorkspaceCapabilityActivation.workspacesBinding(connector)
+            + WorkspaceConfigManager.workspacesMirroring(accountIDs: [connector.id], among: stored, modelContext: modelContext)
+            + stored.filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) })
             .filter { seen.insert($0.id).inserted }
         let memberships = affected.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
-        WorkspaceCapabilityActivation.mutate(workspace) { $0.globalConnectorIDs.removeAll { $0 == connector.id.uuidString } }
+        for listing in affected where WorkspaceCapabilityActivation.state(of: listing).globalConnectorIDs.contains(id) {
+            WorkspaceCapabilityActivation.mutate(listing) { $0.globalConnectorIDs.removeAll { $0 == id } }
+        }
         WorkspaceCapabilityActivation.releaseAccount(connector)
         let cleanup = connector.keychainCleanup
         modelContext.delete(connector)
-        guard deleteThenClean([cleanup], modelContext: modelContext, store: store, save: save) else {
+        let rewritten = deleteThenClean([cleanup], modelContext: modelContext, store: store, save: save, beforeSettling: {
+            affected.reduce(true) { written, affectedWorkspace in
+                if let exportMirror {
+                    exportMirror(affectedWorkspace)
+                    return written
+                }
+                return WorkspaceConfigManager.exportMirrorNow(workspace: affectedWorkspace, modelContext: modelContext) && written
+            }
+        })
+        guard rewritten else {
             modelContext.rollback()
             for (affectedWorkspace, membership) in memberships {
                 WorkspaceCapabilityActivation.restore(membership, to: affectedWorkspace)
             }
             return false
-        }
-        for affectedWorkspace in affected where affectedWorkspace.id != workspace.id {
-            if let exportMirror {
-                exportMirror(affectedWorkspace)
-            } else {
-                WorkspaceConfigManager.autoExport(workspace: affectedWorkspace, modelContext: modelContext)
-            }
         }
         return true
     }

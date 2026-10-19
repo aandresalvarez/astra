@@ -130,6 +130,74 @@ struct CapabilityInstallerTests {
         #expect(activation.configKeys.isEmpty)
     }
 
+    @Test("Add again with the sheet's untouched fields keeps a bound account's URL and settings; an edit still applies")
+    func addAgainKeepsBoundAccountSetup() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Jira site", primaryPath: "/tmp/capability-add-again")
+        context.insert(workspace)
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let spec = jira.connectors[0]
+        let installer = CapabilityInstaller(library: library)
+        try installer.enable(jira, in: workspace, modelContext: context)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+        let component = CapabilityResourceOrigin.componentID(for: spec)
+        let account = try #require(activation.accounts(forComponent: component).first)
+        account.baseURL = "https://clinic.atlassian.net"
+        account.configKeys = ["JIRA_PROJECTS", "JIRA_BASE_URL"]
+        account.configValues = ["CLIN", "https://clinic.atlassian.net"]
+        try context.save()
+
+        // R4 has no setup sheet; a submission of every default (a copied
+        // setup, an older client) must still leave the account as it was.
+        try installer.enable(
+            jira, in: workspace, modelContext: context,
+            configInputs: ["JIRA_BASE_URL": spec.baseURL, "JIRA_PROJECTS": ""],
+            baseURLOverrides: [spec.name: spec.baseURL]
+        )
+        let kept = try #require(activation.accounts(forComponent: component).first)
+        #expect(kept.id == account.id)
+        #expect(kept.baseURL == "https://clinic.atlassian.net")
+        #expect(kept.config["JIRA_PROJECTS"] == "CLIN")
+        #expect(kept.config["JIRA_BASE_URL"] == "https://clinic.atlassian.net")
+        // As R3's sheet submits them, keyed by component, untouched: the same.
+        try installer.enable(
+            jira, in: workspace, modelContext: context,
+            configInputs: [PluginSetupInputs.key("JIRA_PROJECTS", component: component): ""],
+            baseURLOverrides: [component: spec.baseURL]
+        )
+        #expect(kept.baseURL == "https://clinic.atlassian.net" && kept.config["JIRA_PROJECTS"] == "CLIN")
+        // A settings edit with the URL left at its default keeps the URL.
+        try installer.enable(
+            jira, in: workspace, modelContext: context,
+            configInputs: [PluginSetupInputs.key("JIRA_PROJECTS", component: component): "CLIN, OPS"],
+            baseURLOverrides: [component: spec.baseURL]
+        )
+        let editedSettings = try #require(activation.accounts(forComponent: component).first)
+        #expect(editedSettings.baseURL == "https://clinic.atlassian.net" && editedSettings.config["JIRA_PROJECTS"] == "CLIN, OPS")
+        editedSettings.configValues = editedSettings.configKeys.map { $0 == "JIRA_PROJECTS" ? "CLIN" : editedSettings.config[$0] ?? "" }
+        // And an Update keeps what the person entered.
+        var next = jira
+        next.version = "99.0.0"
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: [next], mode: .release, approvalRecords: [])
+        #expect(activation.recordedVersion == "99.0.0")
+        #expect(editedSettings.baseURL == "https://clinic.atlassian.net" && editedSettings.config["JIRA_PROJECTS"] == "CLIN")
+
+        // An edit applies, and what it doesn't name stays.
+        try installer.enable(
+            jira, in: workspace, modelContext: context,
+            configInputs: ["JIRA_BASE_URL": "https://ops.atlassian.net"],
+            baseURLOverrides: [spec.name: "https://ops.atlassian.net"]
+        )
+        let edited = try #require(activation.accounts(forComponent: component).first)
+        #expect(edited.baseURL == "https://ops.atlassian.net")
+        #expect(edited.config["JIRA_BASE_URL"] == "https://ops.atlassian.net")
+        #expect(edited.config["JIRA_PROJECTS"] == "CLIN")
+        withExtendedLifetime(container) {}
+    }
+
     @Test("Add takes a template only by its component stamp, never an authored row by its name")
     func addMatchesTemplatesByStampNotName() throws {
         let container = try makeCapabilityInstallerContainer()

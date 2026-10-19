@@ -124,27 +124,31 @@ struct PluginRemoveJournal {
         }
         for intent in pending {
             let pluginID = intent.pluginID
-            guard !activations.contains(where: { $0.pluginID == pluginID && !$0.isDeleted }) else {
-                journal.finish(pluginID)
-                continue
-            }
             // The saved Remove may have exited before its mirrors were
             // rewritten: a recovery from one would bring back what it deleted.
+            // That holds for one added again since, too, before its intent
+            // goes; its new library entry stays.
             guard rewriteMirrors(of: intent, modelContext: modelContext, rewrite: rewriteMirror) else {
                 AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
                     "source": "plugin_remove_resume", "package_id": pluginID, "result": "mirror_rewrite_failed_kept"
                 ], level: .error)
                 continue
             }
+            guard !activations.contains(where: { $0.pluginID == pluginID && !$0.isDeleted }) else {
+                journal.finish(pluginID)
+                continue
+            }
             if !library.installedPackages().contains(where: { $0.id == pluginID }) {
                 // An entry still on disk that doesn't decode is not gone: it
-                // would block a reinstall under its name, so the intent stays.
-                if library.occupiedStorageNames().contains(CapabilityLibrary.safeFileName(for: pluginID).lowercased()) {
+                // would block a reinstall under its name, so it is moved
+                // aside first, and the intent stays while it can't be.
+                do {
+                    try library.quarantineUnreadableEntry(id: pluginID)
+                    journal.finish(pluginID)
+                } catch {
                     AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
                         "source": "plugin_remove_resume", "package_id": pluginID, "result": "library_entry_unreadable_kept"
                     ], level: .error)
-                } else {
-                    journal.finish(pluginID)
                 }
                 continue
             }

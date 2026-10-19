@@ -108,6 +108,11 @@ enum MCPInstallPackageBuilder {
             guard spec.transport == .stdio,
                   let command = spec.command,
                   !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  // Only a runtime with a known version report (`npx`,
+                  // `uvx`, `node`…) gets this check; any other command has
+                  // none to run unasked, and the server's own start is its
+                  // check (`HealthCheckPolicy`).
+                  HealthCheckPolicy.isReadOnly(binary: command, arguments: ["--version"]),
                   seen.insert(command).inserted else {
                 return nil
             }

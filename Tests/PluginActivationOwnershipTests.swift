@@ -476,6 +476,85 @@ struct PluginActivationOwnershipTests {
         }
     }
 
+    @Test("The rail's cache key follows the approval decision, not only the record list")
+    func railKeyFollowsEffectiveApproval() throws {
+        let approved = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
+        let record = CapabilityApprovalRecord(
+            packageID: approved.id, packageVersion: approved.version, status: .approved, approvedBy: "admin",
+            approvedAt: Date(timeIntervalSinceReferenceDate: 1_000), reviewNotes: "",
+            sourceDigest: try CapabilityApprovalDigest.digest(for: approved)
+        )
+        // Another copy of the same version and content: the record no
+        // longer matches it, so policy blocks it, with the same records.
+        var replaced = approved
+        replaced.description += " (another copy)"
+        #expect(PluginDefinitionDigest.content(of: replaced) == PluginDefinitionDigest.content(of: approved))
+        #expect(CapabilityCatalogPolicy.approvalMatch(for: approved, records: [record]) == .record(record))
+        #expect(CapabilityCatalogPolicy.approvalMatch(for: replaced, records: [record]) == .mismatch)
+        #expect(CapabilityRailPackageSignature(package: approved, approvalRecords: [record])
+            != CapabilityRailPackageSignature(package: replaced, approvalRecords: [record]))
+        // A copy its version's records don't cover isn't one with none.
+        #expect(CapabilityRailPackageSignature(package: replaced, approvalRecords: [record])
+            != CapabilityRailPackageSignature(package: replaced, approvalRecords: []))
+        // The rail's whole key, with the same record list.
+        let workspace = Workspace(name: "Rail", primaryPath: "/tmp/rail-approval")
+        func key(_ package: PluginPackage) -> CapabilityRailSnapshotSignature {
+            CapabilityRailSnapshotSignature(
+                workspace: workspace, globalSkills: [], globalConnectors: [], globalTools: [],
+                packages: [package], approvalRecords: [record], prerequisiteStatuses: [:]
+            )
+        }
+        #expect(key(approved) != key(replaced))
+        // A block under the same digest changes it too.
+        var blocked = record
+        blocked.status = .blocked
+        #expect(CapabilityRailPackageSignature(package: approved, approvalRecords: [record])
+            != CapabilityRailPackageSignature(package: approved, approvalRecords: [blocked]))
+    }
+
+    @Test("A chosen file's binding alias isn't taken: the import's own account gets its name here")
+    func validatedImportRederivesBindingAlias() throws {
+        let fixture = try PluginMigrationFixture()
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let b = try fixture.workspace(fixture.bID)
+        var config = try #require(WorkspaceConfigManager.export(workspace: b, modelContext: fixture.context))
+        config.installedPlugins = config.installedPlugins?.map { ref in
+            var ref = ref
+            ref.accounts = ref.accounts?.map { account in
+                var account = account
+                account.alias = "Someone else's tenant"
+                return account
+            }
+            return ref
+        }
+        let target = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        Self.retained.append(target)
+        let verifier = WorkspaceConfigManager.CapabilityImportVerifier(
+            approvedPackageIDs: ["jira-workflow", "gcloud-workflow"],
+            installedPackageIDs: ["jira-workflow", "gcloud-workflow"],
+            availablePackIDs: [],
+            declaredComponentIDs: Dictionary(uniqueKeysWithValues: [fixture.jira, fixture.gcloud].map {
+                ($0.id, Set(PluginRuntimeProjection.componentIDs(of: $0)))
+            }),
+            installedContentDigests: fixture.digests,
+            connectorComponents: WorkspaceConfigManager.CapabilityImportVerifier.connectorComponents(of: fixture.packages)
+        )
+        let imported = WorkspaceConfigManager.importWorkspaceResult(
+            from: config, modelContext: target.mainContext, capabilityTrust: .validate(verifier)
+        ).workspace
+        let bindings = WorkspaceCapabilityActivation.activations(of: imported).flatMap(\.bindings)
+        #expect(!bindings.isEmpty)
+        #expect(bindings.allSatisfy { $0.alias.isEmpty })
+        for binding in bindings {
+            let account = try #require(binding.account)
+            #expect(WorkspaceCapabilityActivation.alias(of: account, in: imported) == account.name)
+        }
+    }
+
     /// Add, as the Plugins surface's Add does it, against a scratch library.
     private static func add(_ package: PluginPackage, to workspace: Workspace, context: ModelContext) throws {
         let root = FileManager.default.temporaryDirectory

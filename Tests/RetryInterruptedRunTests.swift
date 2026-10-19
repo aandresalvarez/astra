@@ -358,7 +358,7 @@ struct RetryInterruptedRunTests {
                 await env.coordinator.resumeTask(task)?.value
             }
             #expect(checks.map(\.environment) == [["GH_HOST": "github.example.com", "GH_ENTERPRISE_TOKEN": "enterprise-token"]])
-            #expect(checks.map(\.arguments) == [["auth", "status", "--hostname", "github.example.com"]], "retry: \(useRetry)")
+            #expect(checks.map(\.arguments) == [["auth", "status", "--active", "--hostname", "github.example.com"]], "retry: \(useRetry)")
         }
     }
 
@@ -395,7 +395,7 @@ struct RetryInterruptedRunTests {
 
         await env.coordinator.resumeTask(task)?.value
         #expect(checks.map(\.environment) == [["GH_REPO": "github.example.com/team/app"]])
-        #expect(checks.map(\.arguments) == [["auth", "status", "--hostname", "github.example.com"]])
+        #expect(checks.map(\.arguments) == [["auth", "status", "--active", "--hostname", "github.example.com"]])
     }
 
     @Test("The gh check reads the configuration directory and PATH the resumed run gets")
@@ -505,11 +505,11 @@ struct RetryInterruptedRunTests {
         try env.context.save()
         #expect(TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gh") == ["PATH": "", "GH_TOKEN": ""])
         #expect(TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "/opt/sdk/bin/gcloud")?["CLOUDSDK_CONFIG"] == "")
-        // The resumed shell searches no directory, so it finds no `sh`; nor
+        // The resumed shell searches no directory, so it finds no `git`; nor
         // does the check, though ASTRA's own PATH has one.
         var repair = RepairAction(
-            strategy: .terminal, componentName: "Shell", title: "Check", verb: "Check", detail: "",
-            checkBinary: "sh", checkArguments: ["--version"]
+            strategy: .terminal, componentName: "Git", title: "Check", verb: "Check", detail: "",
+            checkBinary: "git", checkArguments: ["--version"]
         )
         repair.checkEnvironment = TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gh")
         #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
@@ -562,7 +562,7 @@ struct RetryInterruptedRunTests {
                 }
             }
             try #require(checked.count == 2, "retry: \(useRetry)")
-            #expect(checked[0].checkArguments == ["auth", "status", "--hostname", "ghe.example.com"], "retry: \(useRetry)")
+            #expect(checked[0].checkArguments == ["auth", "status", "--active", "--hostname", "ghe.example.com"], "retry: \(useRetry)")
             #expect(checked[0].command == "gh auth login --hostname ghe.example.com")
             #expect(checked[1].command == nil, "retry: \(useRetry)")
             #expect(checked[1].detail.contains("`/tmp/team-adc.json`"))

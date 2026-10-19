@@ -62,7 +62,7 @@ struct CapabilityRailSnapshotSignature: Hashable {
         self.globalSkills = globalSkills.map(CapabilityRailResourceSignature.init(skill:)).sorted()
         self.globalConnectors = globalConnectors.map(CapabilityRailResourceSignature.init(connector:)).sorted()
         self.globalTools = globalTools.map(CapabilityRailResourceSignature.init(tool:)).sorted()
-        self.packages = packages.map(CapabilityRailPackageSignature.init(package:)).sorted()
+        self.packages = packages.map { CapabilityRailPackageSignature(package: $0, approvalRecords: approvalRecords) }.sorted()
         self.approvalRecords = approvalRecords.map(CapabilityRailApprovalSignature.init(record:)).sorted()
         self.packPolicy = CapabilityRailPackPolicySignature(policy: packPolicy)
         self.prerequisiteStatuses = prerequisiteStatuses.map(CapabilityRailPrerequisiteStatusSignature.init(id:status:)).sorted()
@@ -161,8 +161,13 @@ struct CapabilityRailPackageSignature: Hashable, Comparable {
     /// What an activation accepts (`PluginDefinitionDigest`): a definition
     /// replaced under the same version changes whether one awaits Add.
     let contentDigest: String
+    /// The approval record that governs this copy, by the policy's own rule
+    /// (`CapabilityCatalogPolicy.approvalMatch`): a block, revocation or
+    /// approval, or a copy whose digest no longer matches its record,
+    /// changes it, though the package and the record list may not.
+    let approval: String
 
-    init(package: PluginPackage) {
+    init(package: PluginPackage, approvalRecords: [CapabilityApprovalRecord] = []) {
         id = package.id
         version = package.version
         name = package.name
@@ -172,6 +177,13 @@ struct CapabilityRailPackageSignature: Hashable, Comparable {
         resourceCounts = CapabilityPackageResourceSummary(package: package).resourceCountsForCacheSignature
         requirementNames = package.prerequisites.map(\.displayName).sorted()
         contentDigest = PluginDefinitionDigest.content(of: package)
+        switch CapabilityCatalogPolicy.approvalMatch(
+            for: package, records: approvalRecords, digest: CapabilityApprovalDigest.memoizedDigest(for:)
+        ) {
+        case .none: approval = ""
+        case .mismatch: approval = "mismatch"
+        case .record(let record): approval = "\(record.id)|\(record.status.rawValue)|\(record.approvedAt.timeIntervalSinceReferenceDate)"
+        }
     }
 
     static func < (lhs: CapabilityRailPackageSignature, rhs: CapabilityRailPackageSignature) -> Bool {

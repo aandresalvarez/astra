@@ -141,7 +141,7 @@ public final class Connector {
         allowUserInteraction: Bool = false,
         declaredFormat: ConnectorCredentialFormat? = nil
     ) -> ConnectorCredentialSaveOutcome {
-        let upperKey = key.uppercased()
+        let upperKey = ConnectorCredentialKey.canonical(key)
         let decision = admissionDecision(key: upperKey, value: value, declaredFormat: declaredFormat, store: nil)
         guard decision.isAdmitted else {
             recordCredentialRejection(key: upperKey, verdict: decision.verdict)
@@ -179,7 +179,7 @@ public final class Connector {
         value: String,
         allowUserInteraction: Bool = false
     ) -> Bool {
-        let upperKey = key.uppercased()
+        let upperKey = ConnectorCredentialKey.canonical(key)
         let saved = ConnectorSecretSeam.required.saveCredential(
             value,
             key: upperKey,
@@ -193,7 +193,7 @@ public final class Connector {
     /// Store-injectable twin of `restorePreviouslyStoredCredential(key:value:allowUserInteraction:)`.
     @discardableResult
     func restorePreviouslyStoredCredential(key: String, value: String, store: SecretStore) -> Bool {
-        let upperKey = key.uppercased()
+        let upperKey = ConnectorCredentialKey.canonical(key)
         let saved = ConnectorSecretSeam.required.saveCredential(
             value, key: upperKey, facts: secretFacts, store: store)
         recordCredentialSaveResult(key: upperKey, saved: saved)
@@ -220,7 +220,7 @@ public final class Connector {
         store: SecretStore,
         declaredFormat: ConnectorCredentialFormat? = nil
     ) -> ConnectorCredentialSaveOutcome {
-        let upperKey = key.uppercased()
+        let upperKey = ConnectorCredentialKey.canonical(key)
         let decision = admissionDecision(key: upperKey, value: value, declaredFormat: declaredFormat, store: store)
         guard decision.isAdmitted else {
             recordCredentialRejection(key: upperKey, verdict: decision.verdict)
@@ -305,7 +305,7 @@ public final class Connector {
     /// Records the key only after the Keychain write succeeds — audit logging lives in `ConnectorSecretPersistence`.
     private func recordCredentialSaveResult(key upperKey: String, saved: Bool) {
         // Find existing entry case-insensitively to avoid duplicates
-        if let idx = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
+        if let idx = credentialKeys.firstIndex(where: { ConnectorCredentialKey.same($0, upperKey) }) {
             if saved {
                 // Normalize key to uppercase and clear legacy value
                 credentialKeys[idx] = upperKey
@@ -339,7 +339,7 @@ public final class Connector {
     /// credential batch (e.g. one hint saved, a later one failed) without
     /// needing the key's current position in `credentialKeys`.
     public func removeCredential(forKey key: String) {
-        let upperKey = key.uppercased()
+        let upperKey = ConnectorCredentialKey.canonical(key)
         if let index = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
             removeCredential(at: index)
         } else {
@@ -355,7 +355,7 @@ public final class Connector {
     /// checking "does this key already have a value" cannot trust that
     /// array's current casing to find an already-uppercased Keychain entry.
     public func currentCredentialValue(forKey key: String) -> String? {
-        let value = ConnectorSecretSeam.required.loadCredential(key: key.uppercased(), facts: secretFacts)
+        let value = ConnectorSecretSeam.required.loadCredential(key: ConnectorCredentialKey.canonical(key), facts: secretFacts)
         return (value?.isEmpty == false) ? value : nil
     }
 
@@ -412,7 +412,7 @@ public final class Connector {
         for key in configKeys where keys.contains(key) {
             let value = configValue(key)
             guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            let upperKey = key.uppercased()
+            let upperKey = ConnectorCredentialKey.canonical(key)
             let facts = secretFacts
             func held() -> String? { secrets.loadAllCredentials(keys: [upperKey], facts: facts, store: store)[upperKey] }
             let existing = held()
