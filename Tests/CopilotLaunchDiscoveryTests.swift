@@ -30,8 +30,9 @@ struct CopilotLaunchDiscoveryTests {
         let task = harness.makeTask(runtime: .copilotCLI, goal: "Say hello", model: "gpt-5")
         let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: executable)
         _ = await harness.execute(task: task, worker: worker)
-        #expect(task.status == .failed)
-        #expect(task.runs.isEmpty)
+        #expect(task.status == .pendingUser)
+        #expect(task.runs.count == 1)
+        #expect(task.runs.first?.status == .failed)
         #expect(task.events.contains { $0.payload.contains("Copilot help failed") })
         #expect(!FileManager.default.fileExists(atPath: launched.path))
     }

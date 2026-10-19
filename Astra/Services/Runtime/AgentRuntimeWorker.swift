@@ -356,7 +356,7 @@ final class AgentRuntimeWorker {
             guard let capabilities = await prepareCopilotCapabilities(
                 executablePath: launchSettings.executablePath, task: task, modelContext: modelContext
             ) else { return }
-            executionPolicy.copilotCapabilities = capabilities
+            executionPolicy.copilotCapabilityResolution = capabilities
         }
         guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
             settlePrelaunchCancellation(task: task, modelContext: modelContext)
@@ -1270,7 +1270,10 @@ final class AgentRuntimeWorker {
     @MainActor
     private func prepareCopilotCapabilities(
         executablePath: String, task: AgentTask, modelContext: ModelContext
-    ) async -> CopilotCLICapabilities? {
+    ) async -> CopilotCapabilityResolution? {
+        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
+            return .unavailable("Copilot executable is missing or is not executable.")
+        }
         let preparation = Task {
             try await CopilotCLIRuntime.requiredCapabilities(
                 executablePath: executablePath, timeout: min(timeoutSeconds, 60))
@@ -1285,17 +1288,15 @@ final class AgentRuntimeWorker {
                 settlePrelaunchCancellation(task: task, modelContext: modelContext)
                 return nil
             }
-            return capabilities
+            return .answered(capabilities)
         } catch {
             if cancellationRequested || Task.isCancelled || error is CancellationError || task.status == .cancelled {
                 settlePrelaunchCancellation(task: task, modelContext: modelContext)
-            } else {
-                TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: Date())
-                modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error,
-                    payload: error.localizedDescription))
-                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+                return nil
             }
-            return nil
+            // Admission owns durable launch blocks and their TaskRun history,
+            // including a binary removed after a cached readiness verdict.
+            return .unavailable(error.localizedDescription)
         }
     }
 

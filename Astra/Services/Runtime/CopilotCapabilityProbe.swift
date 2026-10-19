@@ -6,6 +6,19 @@ import ASTRACore
 actor CopilotCapabilityProbe {
     static let shared = CopilotCapabilityProbe()
 
+    typealias Query = @Sendable (String) async -> RunResult
+    private let query: Query
+
+    init() {
+        query = { path in
+            await ProcessBinaryRunner().run(path: path, args: ["help"], timeout: 60,
+                environment: RuntimeProcessEnvironment.enriched(), currentDirectory: nil,
+                maximumOutputBytes: 1_048_576, terminateProcessGroup: true)
+        }
+    }
+
+    init(query: @escaping Query) { self.query = query }
+
     enum Failure: Error, LocalizedError {
         case timedOut, unanswered
         var errorDescription: String? {
@@ -64,6 +77,7 @@ actor CopilotCapabilityProbe {
 
     private struct Waiter {
         let continuation: CheckedContinuation<CopilotCLICapabilities, Error>
+        let deadline: ContinuousClock.Instant
         let timer: Task<Void, Never>
     }
     private struct Flight {
@@ -83,6 +97,7 @@ actor CopilotCapabilityProbe {
         guard timeout.isFinite, timeout > 0 else { throw Failure.timedOut }
         if let answer = Self.cached(executablePath: executablePath) { return answer }
         let key = Identity(executablePath)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(min(timeout, 60)))
         let waiterID = UUID()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -90,31 +105,26 @@ actor CopilotCapabilityProbe {
                     continuation.resume(throwing: CancellationError())
                     return
                 }
-                if flights[key] == nil {
-                    let flightID = UUID()
-                    // Existing runner owns bounded output, process-group termination,
-                    // descriptor closure and reaping, including on task cancellation.
-                    let task = Task {
-                        let result = await ProcessBinaryRunner().run(
-                            path: executablePath, args: ["help"], timeout: 60,
-                            environment: RuntimeProcessEnvironment.enriched(),
-                            currentDirectory: nil, maximumOutputBytes: 1_048_576,
-                            terminateProcessGroup: true
-                        )
-                        self.finish(key, id: flightID, result: result)
-                    }
-                    flights[key] = Flight(id: flightID, task: task, waiters: [:])
-                }
+                if flights[key] == nil { flights[key] = makeFlight(for: key) }
                 let timer = Task {
-                    do { try await Task.sleep(for: .seconds(min(timeout, 60))) }
+                    do { try await ContinuousClock().sleep(until: deadline) }
                     catch { return }
                     self.removeWaiter(key, id: waiterID, error: Failure.timedOut)
                 }
-                flights[key]?.waiters[waiterID] = Waiter(continuation: continuation, timer: timer)
+                flights[key]?.waiters[waiterID] = Waiter(continuation: continuation, deadline: deadline, timer: timer)
             }
         } onCancel: {
             Task { await self.removeWaiter(key, id: waiterID, error: CancellationError()) }
         }
+    }
+
+    private func makeFlight(for key: Identity, waiters: [UUID: Waiter] = [:]) -> Flight {
+        let id = UUID()
+        let task = Task {
+            let result = await query(key.path)
+            self.finish(key, id: id, result: result)
+        }
+        return Flight(id: id, task: task, waiters: waiters)
     }
 
     private func removeWaiter(_ key: Identity, id: UUID, error: Error) {
@@ -129,6 +139,21 @@ actor CopilotCapabilityProbe {
     private func finish(_ key: Identity, id: UUID, result: RunResult) {
         guard let flight = flights[key], flight.id == id else { return }
         flights[key] = nil
+        // The subprocess hang breaker belongs to this flight, not its late
+        // subscribers. Renew only for consumers whose original budget remains;
+        // their existing timers still enforce their own absolute deadlines.
+        if result.timedOut, Identity(key.path) == key {
+            var remaining: [UUID: Waiter] = [:]
+            for (waiterID, waiter) in flight.waiters {
+                if waiter.deadline > .now { remaining[waiterID] = waiter }
+                else {
+                    waiter.timer.cancel()
+                    waiter.continuation.resume(throwing: Failure.timedOut)
+                }
+            }
+            if !remaining.isEmpty { flights[key] = makeFlight(for: key, waiters: remaining) }
+            return
+        }
         let text = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         // A successful process is necessary, but empty/truncated output is not
         // evidence of supported flags. Never memoise a failed/partial response.
@@ -138,7 +163,10 @@ actor CopilotCapabilityProbe {
         if let answer { Self.store(answer, for: key) }
         for waiter in flight.waiters.values {
             waiter.timer.cancel()
-            if let answer { waiter.continuation.resume(returning: answer) }
+            // Timer callbacks can be queued behind this completion. The
+            // subscriber's deadline still wins over a late successful answer.
+            if waiter.deadline <= .now { waiter.continuation.resume(throwing: Failure.timedOut) }
+            else if let answer { waiter.continuation.resume(returning: answer) }
             else { waiter.continuation.resume(throwing: result.timedOut ? Failure.timedOut : Failure.unanswered) }
         }
     }

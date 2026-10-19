@@ -299,11 +299,18 @@ struct RuntimeEligibilityPreviewRequest {
         var executionPolicy = AgentRuntimeExecutionPolicy.default.withTurnIntentSnapshot(intent)
         let configuration = AgentRuntimeConfiguration(
             providerSettings: providerSettings.providerSettings, defaultRuntimeID: requestedRuntime)
+        var copilotExecutableAvailable: Bool?
         if (candidateRuntimes ?? AgentRuntimeAdapterRegistry.runtimeIDs).contains(.copilotCLI) {
             let settings = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).launchSettings(configuration: configuration)
-            if FileManager.default.isExecutableFile(atPath: settings.executablePath) {
-                executionPolicy.copilotCapabilities = try? await CopilotCLIRuntime.requiredCapabilities(
-                    executablePath: settings.executablePath)
+            copilotExecutableAvailable = FileManager.default.isExecutableFile(atPath: settings.executablePath)
+            if copilotExecutableAvailable == true {
+                do {
+                    executionPolicy.copilotCapabilityResolution = .answered(
+                        try await CopilotCLIRuntime.requiredCapabilities(executablePath: settings.executablePath))
+                } catch {
+                    guard !Task.isCancelled else { return nil }
+                    executionPolicy.copilotCapabilityResolution = .unavailable(error.localizedDescription)
+                }
             }
         }
         guard !Task.isCancelled else { return nil }
@@ -322,6 +329,7 @@ struct RuntimeEligibilityPreviewRequest {
             candidateRuntimes: candidateRuntimes ?? AgentRuntimeAdapterRegistry.runtimeIDs,
             isRuntimeUsable: { runtime, _ in
                 readinessStates[runtime]?.allowsTaskLaunch == true
+                    && (runtime != .copilotCLI || copilotExecutableAvailable != false)
             }
         )
     }

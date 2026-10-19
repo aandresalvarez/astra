@@ -201,13 +201,20 @@ enum TaskLaunchAdmissionService {
             let policyIncompatibilities = blockedPolicyDiagnostics.map {
                 TaskRuntimeIncompatibility.policyBlocked(reason: $0.message)
             }
+            let discoveryIncompatibilities: [TaskRuntimeIncompatibility]
+            if runtime == .copilotCLI,
+               !transportIncompatibilities.contains(.runtimeUnavailable),
+               let reason = executionPolicy.copilotCapabilityResolution?.failureReason {
+                discoveryIncompatibilities = [.policyBlocked(reason: reason)]
+            } else { discoveryIncompatibilities = [] }
             let contract = LaunchResourceContract(plan: resourcePlan)
             candidates[runtime] = TaskRuntimeAdmissionCandidate(
                 runtime: runtime,
                 capabilityResolutionSnapshot: capabilitySnapshot,
                 launchResourcePlan: resourcePlan,
                 requirements: requirements,
-                incompatibilities: transportIncompatibilities
+                incompatibilities: discoveryIncompatibilities
+                    + transportIncompatibilities
                     + resourceIncompatibilities
                     + policyIncompatibilities,
                 policyDiagnostics: manifest.providerRender.diagnostics,
