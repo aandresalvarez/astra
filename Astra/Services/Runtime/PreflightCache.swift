@@ -122,8 +122,8 @@ public actor PreflightCache {
     /// variants. Used by the "Re-check" button and when a user runs an
     /// install action we know should change the status.
     public func invalidate(binary: String) {
-        // A prereq's id embeds the binary + args, so prefix-match the key.
-        let matching = entries.keys.filter { $0.hasPrefix("\(binary):") }
+        // A prereq's id starts with its escaped binary, so prefix-match the key.
+        let matching = entries.keys.filter { $0.hasPrefix("\(CLIPrerequisite.idField(binary)):") }
         for key in matching { entries.removeValue(forKey: key) }
     }
 

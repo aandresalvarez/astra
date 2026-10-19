@@ -414,7 +414,19 @@ struct PluginsSurfaceView: View {
                     .controlSize(.small)
                     .tint(Stanford.lagunita)
             } else if accountPending {
-                Text("Needs a sign-in ASTRA can't do").font(Stanford.caption(11)).foregroundStyle(.secondary)
+                // Add routes through the install flow that signs in again.
+                switch PluginsSurfacePresentation.pendingAccountAction(for: package) {
+                case .reconnect:
+                    Button("Reconnect") { add(package) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(Stanford.lagunita)
+                case .unsupported(let reason):
+                    Text(reason)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else if failing != nil {
                 Text("Not working").font(Stanford.caption(11)).foregroundStyle(Stanford.statusError)
             } else if isEnabled, let checkID, statuses[checkID]?.isNotChecked == true {
