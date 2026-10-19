@@ -1129,25 +1129,24 @@ final class AgentRuntimeWorker {
         // environment (a skill can point COPILOT_PROVIDERS_CONFIG elsewhere),
         // resolved only once that failure has happened.
         // Inside a container Copilot used the container's home, not the host's.
-        let copilotFailureEnvironment = selectedRuntime == .copilotCLI && result.exitCode == 1
-            && !runEnvironment.runSnapshot.providerRunsInsideContainer
-            ? baseLaunchEnvironment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+        let copilotHomeReport = await CopilotPostFailureHomeInspection.inspect(
+            runtime: selectedRuntime, result: result, runOutput: run.output,
+            stream: streamSnapshot, startupEvidence: startupEvidence,
+            cancelled: cancellationRequested || task.status == .cancelled,
+            providerRunsInsideContainer: runEnvironment.runSnapshot.providerRunsInsideContainer
+        ) {
+            let environment = baseLaunchEnvironment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
                 for: executionTask,
                 capabilityScope: capabilityResolutionSnapshot.providerLaunch,
                 contextText: providerLaunchContextText,
                 executionPolicy: executionPolicy,
                 runtimeRequirements: appliedRuntime.requirements
             )) { _, scoped in scoped }
-            : nil
-        let copilotHomeReport: CopilotHomeAccessReport?
-        if let environment = copilotFailureEnvironment {
             let sessionID = nativeContinuationSessionID
             let directory = executionPath
-            copilotHomeReport = await Task.detached(priority: .utility) {
+            return await Task.detached(priority: .utility) {
                 CopilotHomeAccessCheck.inspect(resumeSessionID: sessionID, environment: environment, workingDirectory: directory)
             }.value
-        } else {
-            copilotHomeReport = nil
         }
         let failureDiagnostic = (processSucceeded || result.runtimeStopped || result.repetitionKilled || cancellationRequested || task.status == .cancelled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: selectedRuntime,

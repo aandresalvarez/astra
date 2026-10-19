@@ -120,14 +120,10 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         // category into noVisibleOutput, so the gate looks at parsed content.
         // Exit 1 is the observed signature; a signal (128+N) or any other code
         // is a different failure and keeps its own diagnosis.
-        if category == .providerProcessFailed || category == .noVisibleOutput,
-           exitCode == 1,
-           meaningful.isEmpty,
-           resultOutput.isEmpty,
-           // Copilot's own startup log naming an error is evidence too.
-           redactedLog.isEmpty,
-           (stream?.jsonLineCount ?? 0) == 0,
-           (stream?.parsedEventCount ?? 0) == 0,
+        if Self.copilotHomeEvidenceCanExplain(
+            category: category, exitCode: exitCode, rawError: rawError,
+            runOutput: runOutput, startupEvidence: startupEvidence, stream: stream
+        ),
            let report = copilotHomeAccess?(),
            report.blocksCopilot {
             category = .providerHomeAccessDenied
@@ -176,6 +172,21 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
             stderrWasWarningOnly: warningOnly,
             isApprovableRuntimePermission: approvable
         )
+    }
+
+    /// Shared by classification and the asynchronous evidence-acquisition
+    /// boundary, so post-failure I/O uses exactly the same silence policy.
+    static func copilotHomeEvidenceCanExplain(
+        category: AgentRuntimeFailureCategory, exitCode: Int, rawError: String?,
+        runOutput: String?, startupEvidence: String?, stream: AgentRuntimeStreamTelemetrySnapshot?
+    ) -> Bool {
+        (category == .providerProcessFailed || category == .noVisibleOutput)
+            && exitCode == 1
+            && strippingBenignWarnings(rawError ?? "").isEmpty
+            && (runOutput ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && LogSanitizer.sanitize(startupEvidence ?? "", maxLength: 800).isEmpty
+            && (stream?.jsonLineCount ?? 0) == 0
+            && (stream?.parsedEventCount ?? 0) == 0
     }
 
     /// Withholds the approval card only for denials that can be *proven*

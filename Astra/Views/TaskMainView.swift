@@ -793,7 +793,9 @@ struct TaskMainView: View {
         )
         // .task(id:) cancels this on a signature change or disappearance, and a cancelled refresh
         // returns no states. Short of a full map, keep the previous states rather than drop providers.
-        guard states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
+        // Recheck at publication too: the task may have been cancelled while
+        // its completed answer waited to resume on the UI actor.
+        guard !Task.isCancelled, states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
         runtimeReadinessStates = states
         alignTaskAfterRuntimeAvailabilityRefresh()
     }

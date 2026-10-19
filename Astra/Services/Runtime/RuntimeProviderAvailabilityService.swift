@@ -157,12 +157,13 @@ struct RuntimeProviderAvailabilityService {
         _ states: [AgentRuntimeID: RuntimeReadinessState],
         configuration: RuntimeProviderAvailabilityConfiguration
     ) async -> [AgentRuntimeID: RuntimeReadinessState] {
+        guard !Task.isCancelled else { return [:] }
         // A warning at most: this answer is global, but whether the host home
         // matters depends on the launch (a container never reads it). The
         // final-plan guard blocks the launches it would actually break.
         // Independent homes must not add their filesystem latency together,
         // including when the descriptor states came from the cache.
-        return await withTaskGroup(of: (AgentRuntimeID, RuntimeReadinessState).self) { group in
+        let refreshed = await withTaskGroup(of: (AgentRuntimeID, RuntimeReadinessState).self) { group in
             for (runtime, state) in states {
                 group.addTask {
                     let checked = await readinessService.refreshingUncachedChecks(
@@ -175,6 +176,9 @@ struct RuntimeProviderAvailabilityService {
             for await (runtime, state) in group { refreshed[runtime] = state }
             return refreshed
         }
+        // A cancelled filesystem operation can still finish. Do not publish
+        // its old settings over the replacement composer's current answer.
+        return Task.isCancelled ? [:] : refreshed
     }
 
     private static func summary(of states: [AgentRuntimeID: RuntimeReadinessState]) -> String {

@@ -125,7 +125,7 @@ assert_targets $'TaskAttachmentFilesReaderTests\nComposerAttachmentsTests' \
   "Astra/Services/Tasks/TaskAttachmentFilesReader.swift" \
   "Tests/TaskAttachmentFilesReaderTests.swift"
 
-assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
+assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nCopilotPostFailureHomeInspectionTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
   "Astra/Services/Runtime/AgentRuntimeWorker.swift" \
   "Tests/HeadlessChatProcessScenarioTests.swift" \
   "Astra/Services/Diagnostics/AgentRuntimeDiagnostics.swift" \
@@ -280,3 +280,7 @@ assert_targets $'RuntimeHomeAccessTests\nRuntimeHomeAccessEdgeCaseTests\nRuntime
   "Astra/Services/Runtime/ProviderNativeSessionStore.swift" \
   "Astra/Services/Runtime/RuntimeHomeAccessCancellationGate.swift" \
   "Tests/ExecutionSandboxRunnerTests.swift"
+
+assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nCopilotPostFailureHomeInspectionTests' \
+  "Astra/Services/Runtime/CopilotPostFailureHomeInspection.swift" \
+  "Tests/CopilotPostFailureHomeInspectionTests.swift"

@@ -130,10 +130,11 @@ target_for_path() {
       add_target "ShelfAttachmentHistoryTests"
       add_target "TaskAttachmentFilesReaderTests"
       ;;
-    Tests/HeadlessChatProcessScenarioTests.swift|Tests/RuntimeCancellationDiagnosticTests.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift)
+    Tests/HeadlessChatProcessScenarioTests.swift|Tests/RuntimeCancellationDiagnosticTests.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift|Astra/Services/Runtime/CopilotPostFailureHomeInspection.swift|Tests/CopilotPostFailureHomeInspectionTests.swift)
       add_target "RuntimeCancellationDiagnosticTests"
       add_target "HeadlessChatScenarioTests"
       add_target "FeedbackReportPresentationTests"
+      add_target "CopilotPostFailureHomeInspectionTests"
       ;;
     Astra/Services/Diagnostics/AgentRuntimeDiagnostics.swift)
       add_target "AgentRuntimeFailureDiagnosticsTests"

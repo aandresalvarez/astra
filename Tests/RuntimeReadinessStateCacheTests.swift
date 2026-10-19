@@ -5,6 +5,29 @@ import ASTRACore
 
 @Suite("Runtime readiness state cache")
 struct RuntimeReadinessStateCacheTests {
+    @Test("Cancellation during uncached home checks cannot publish a stale availability map", arguments: [false, true])
+    func cancelledHomeRefreshIsDiscarded(cacheHit: Bool) async {
+        let cache = RuntimeReadinessStateCache()
+        let configuration = configuration()
+        if cacheHit {
+            await cache.store(Dictionary(uniqueKeysWithValues: AgentRuntimeAdapterRegistry.runtimeIDs.map { ($0, RuntimeReadinessState.ready) }),
+                              for: configuration)
+        }
+        let inspection = SuspendedHomeInspection()
+        let service = RuntimeProviderAvailabilityService(readinessService: RuntimeReadinessService(
+            runner: StubBinaryRunner(), detectExecutable: { _ in "" }, isExecutable: { _ in false },
+            homeAccessCheck: { await inspection.check($0) }
+        ))
+        let refresh = Task { await service.states(configuration: configuration, cache: cache) }
+        await inspection.waitUntilStarted()
+        refresh.cancel()
+        // Filesystem work can finish after cancellation. Its late answer must
+        // not overwrite a replacement SwiftUI task's current configuration.
+        await inspection.release()
+        #expect(await refresh.value.isEmpty)
+        #expect(await cache.states(for: configuration, maxAge: 300)?[.codexCLI] == (cacheHit ? .ready : .blocked))
+    }
+
     @Test("Independent home inspections overlap on availability misses and cache hits", arguments: [false, true])
     func homeChecksOverlap(cacheHit: Bool) async {
         let cache = RuntimeReadinessStateCache()
@@ -206,6 +229,26 @@ private actor OverlappingHomeInspections {
         guard request.runtime == .codexCLI || request.runtime == .antigravityCLI else { return nil }
         return .init(id: RuntimeHomeAccessService.checkID(for: request.runtime), title: "QA", detail: "QA",
                      state: request.runtime == .codexCLI ? .blocked : .warning, remediation: nil)
+    }
+}
+
+private actor SuspendedHomeInspection {
+    private var started = false
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var finishWaiter: CheckedContinuation<Void, Never>?
+
+    func waitUntilStarted() async {
+        if !started { await withCheckedContinuation { startWaiter = $0 } }
+    }
+
+    func release() { finishWaiter?.resume(); finishWaiter = nil }
+
+    func check(_ request: RuntimeHomeAccessRequest) async -> RuntimeReadinessCheck? {
+        guard request.runtime == .codexCLI else { return nil }
+        started = true
+        startWaiter?.resume(); startWaiter = nil
+        await withCheckedContinuation { finishWaiter = $0 }
+        return .init(id: RuntimeHomeAccessService.checkID(for: request.runtime), title: "QA", detail: "QA", state: .blocked, remediation: nil)
     }
 }
 
