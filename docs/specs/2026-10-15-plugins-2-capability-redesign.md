@@ -704,6 +704,26 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   projected template IDs, requirement 8) is not part of R1-R5; until a
   phase takes it, the "It also emits the plugin's templates" line under
   Runtime describes the target, not what ships.
+- **Secret settings are owned before they are stored.** A plugin skill's
+  secret setting reaches the Keychain only through
+  `PluginSecretSettingWriter`. For a stored activation (the row's details
+  editor), the key is added to `secretSettingKeys` and saved before the
+  value is written, and removed again if the Keychain refuses; clearing
+  deletes the value before removing the key. For an activation saved later
+  in the same transaction (Add, and setup through Add), each key is recorded
+  in `PluginSecretCleanupOutbox` as `namespace#KEY` before the write; Add's
+  save settles it, a failed Add takes it back, and at launch a record no live
+  activation names is deleted. A quit between any two steps leaves a value
+  that Remove, Update or launch cleanup can find, never one nothing records.
+- **Unapproved definitions move no state.** A definition awaiting review (a
+  local draft with no approval for its digest, an approval for another
+  digest, or a pack review gate) reconciles, at launch or on Update, to
+  nothing but marking the activation awaiting Update: no `replaces` rename
+  moves settings, bindings, overrides or secret copies, no account is
+  synced, nothing is released and no template is synced. Once an approval
+  covers the library digest, the next Update or launch pass reconciles it as
+  usual, so a `replaces` declared by an unreviewed file never redirects the
+  person's state and rejecting the draft needs nothing put back.
 
 ### How R4 was built (2026-10-16)
 
