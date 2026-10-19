@@ -214,4 +214,46 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
             .filter { ["skill", "connector", "local_tool"].contains($0) }
         #expect(missingResourceKinds.isEmpty)
     }
+
+    @Test("A row attached to an override after submission stays out of the launch, never as the workspace's own")
+    func lateOverrideAttachmentsStayOutOfTheLaunch() throws {
+        let fixture = try PluginMigrationFixture(authoredToolOnGCloudSkill: true)
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let override = try #require(try context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.gcloudSkillID })
+        let submittedToolID = try #require(fixture.authoredToolID)
+        // A's own connector, in its scope at submission on its own.
+        let standalone = Connector(name: "Standalone", serviceType: "standalone_service", authMethod: "none")
+        standalone.workspace = a
+        context.insert(standalone)
+        let task = AgentTask(title: "A", goal: "Manage GCP resources", workspace: a)
+        context.insert(task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, kind: .retry)
+        context.insert(request)
+        try context.save()
+
+        // While it waits, new rows are attached to the override.
+        let lateConnector = Connector(name: "Late", serviceType: "late_service", authMethod: "none")
+        lateConnector.workspace = a
+        lateConnector.skill = override
+        let lateTool = LocalTool(name: "Late tool", toolDescription: "Attached later", toolType: "cli", command: "echo", arguments: "late")
+        lateTool.workspace = a
+        lateTool.skill = override
+        context.insert(lateConnector)
+        context.insert(lateTool)
+        try context.save()
+        #expect(TaskCapabilityResolver(task: task).allLocalTools.contains { $0.id == lateTool.id })
+
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        let resolver = TaskCapabilityResolver(task: detached)
+        #expect(!resolver.allConnectors.contains { $0.id == lateConnector.id })
+        #expect(!resolver.allLocalTools.contains { $0.id == lateTool.id })
+        #expect(detached.workspace?.connectors.contains { $0.id == lateConnector.id } == false)
+        #expect(detached.workspace?.localTools.contains { $0.id == lateTool.id } == false)
+        // What was in scope at submission still is.
+        #expect(resolver.allLocalTools.contains { $0.id == submittedToolID })
+        #expect(resolver.allConnectors.contains { $0.id == standalone.id })
+    }
 }

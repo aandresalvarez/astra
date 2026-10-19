@@ -1297,9 +1297,8 @@ public enum WorkspaceConfigManager {
             if connector.modelContext == nil { modelContext.insert(connector) }
             connectorsByID[connector.id.uuidString] = connector
             if let fileID = cc.id { connectorsByID[fileID] = connector }
-            if connectorsByName[connector.name] == nil {
-                connectorsByName[connector.name] = connector
-            }
+            // Skills name it as the file does (`connectorNames`), sanitized or not.
+            for name in [cc.name, connector.name] where connectorsByName[name] == nil { connectorsByName[name] = connector }
         }
 
         var toolsByID: [String: LocalTool] = [:]
@@ -2066,7 +2065,7 @@ public enum WorkspaceConfigManager {
             return nil
         }
         let connector = Connector(
-            name: config.name,
+            name: AccountDisplayName.sanitized(config.name) ?? AccountDisplayName.sanitized(config.serviceType) ?? "Account",
             serviceType: config.serviceType,
             icon: config.icon,
             connectorDescription: config.description,
@@ -2101,7 +2100,7 @@ public enum WorkspaceConfigManager {
             return nil
         }
         let connector = Connector(
-            name: snapshot.name,
+            name: AccountDisplayName.sanitized(snapshot.name) ?? AccountDisplayName.sanitized(snapshot.serviceType) ?? "Account",
             serviceType: snapshot.serviceType,
             icon: snapshot.icon,
             connectorDescription: snapshot.description,
@@ -2980,8 +2979,8 @@ public enum WorkspaceConfigManager {
             modelContext.insert(connector)
             connectorsByID[connector.id.uuidString] = connector
             connectorsByID[id] = connector
-            if connectorsByName[connector.name] == nil {
-                connectorsByName[connector.name] = connector
+            for name in [connectorSnapshot.name, connector.name] where connectorsByName[name] == nil {
+                connectorsByName[name] = connector
             }
         }
         for toolSnapshot in snapshot.localToolSnapshots ?? [] {

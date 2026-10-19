@@ -30,7 +30,7 @@ final class PluginRepairCoordinator: ObservableObject {
     private var polls: [String: Task<Void, Never>] = [:]
 
     init(
-        check: @escaping @Sendable (RepairAction) async -> Bool = PluginRepairCoordinator.liveCheck,
+        check: @escaping @Sendable (RepairAction) async -> Bool = { await PluginRepairCoordinator.liveCheck($0) },
         run: @escaping @MainActor (RepairAction) -> Void = { RepairActionRunner.run($0) },
         sleep: @escaping @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(for: .seconds($0)) },
         interval: TimeInterval = 5,
@@ -111,16 +111,28 @@ final class PluginRepairCoordinator: ObservableObject {
         polls.removeAll()
     }
 
-    /// Re-runs the component's check exactly as the health check does.
-    nonisolated static func liveCheck(_ repair: RepairAction) async -> Bool {
+    /// Re-runs the component's check exactly as the health check does. The
+    /// executable it runs must be the CLI (`TrustedExecutablePath`): one the
+    /// stopped run's own `PATH` finds, or a declared path, must be an
+    /// installed copy once symlinks resolve (`isInstalled`, injectable for
+    /// tests); one ASTRA's own lookup finds by name must be absolute.
+    nonisolated static func liveCheck(
+        _ repair: RepairAction,
+        isInstalled: @escaping @Sendable (String) -> Bool = { TrustedExecutablePath.isInstalled($0) }
+    ) async -> Bool {
         guard let binary = repair.checkBinary else { return true }
         // Only a read-only status check is run (`HealthCheckPolicy`).
-        guard HealthCheckPolicy.isReadOnly(binary: binary, arguments: repair.checkArguments ?? ["--version"]) else { return false }
+        let arguments = repair.checkArguments ?? ["--version"]
+        let existenceOnly = HealthCheckPolicy.isExistenceOnly(binary: binary, arguments: arguments)
+        guard existenceOnly || HealthCheckPolicy.isReadOnly(binary: binary, arguments: arguments) else { return false }
         // With the stopped run's variables, the check runs the CLI as that
         // run did: a token the task projected, not ASTRA's own login.
         if let environment = repair.checkEnvironment, !environment.isEmpty {
             let path = checkExecutablePath(binary, environment: environment, workingDirectory: repair.checkWorkingDirectory)
-            guard !path.isEmpty else { return false }
+            let searchedByASTRA = environment["PATH"] == nil && !binary.contains("/")
+            // Found is all an existence check asks; it runs nothing.
+            if existenceOnly { return path.hasPrefix("/") }
+            guard searchedByASTRA ? path.hasPrefix("/") : isInstalled(path) else { return false }
             let merged = ProcessInfo.processInfo.environment.merging(environment) { _, projected in projected }
             let result = await ProcessBinaryRunner().run(
                 path: path, args: repair.checkArguments ?? ["--version"], timeout: 10, environment: merged
@@ -132,7 +144,7 @@ final class PluginRepairCoordinator: ObservableObject {
             let semantic = repair.checkExpect.flatMap(SemanticCheck.init(rawValue:))
             return semantic?.passes(stdout: result.stdout, stderr: result.stderr) ?? true
         }
-        let status = await EnvironmentHealthChecker().check(
+        let status = await EnvironmentHealthChecker(isInstalled: isInstalled).check(
             binary: binary,
             livenessArgs: repair.checkArguments ?? ["--version"],
             semantic: repair.checkExpect.flatMap(SemanticCheck.init(rawValue:))

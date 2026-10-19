@@ -9,7 +9,12 @@ enum CapabilitySharing {
         connector.isGlobal = true
         connector.workspace = nil
         if let workspace {
-            WorkspaceCapabilityActivation.mutate(workspace) { $0.enableGlobalConnector(connector.id.uuidString) }
+            // An account a plugin binds here stays in scope through its
+            // binding: listed, it would stay on with the plugin off, as a
+            // shared account the workspace turned on by itself does.
+            if !WorkspaceCapabilityActivation.boundAccountIDs(of: workspace).contains(connector.id) {
+                WorkspaceCapabilityActivation.mutate(workspace) { $0.enableGlobalConnector(connector.id.uuidString) }
+            }
             workspace.updatedAt = Date()
         }
         connector.updatedAt = Date()

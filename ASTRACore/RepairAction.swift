@@ -43,10 +43,26 @@ public struct RepairAction: Codable, Sendable, Equatable {
     /// `checkEnvironment`, not stored with the repair.
     public var checkWorkingDirectory: String?
 
+    /// Credential-store selectors the failed command set on itself
+    /// (`CLOUDSDK_CONFIG=/team gcloud …`), only `credentialStoreSelectors`:
+    /// paths, no secret, so stored with the repair. `checking(in:)` lays
+    /// them over the resumed run's variables.
+    public var checkSelectors: [String: String]?
+
     /// `checkEnvironment` can hold a token: it is never encoded, nor is
     /// `checkWorkingDirectory`, which belongs with it.
     private enum CodingKeys: String, CodingKey {
-        case strategy, componentName, title, verb, detail, command, url, checkBinary, checkArguments, checkExpect
+        case strategy, componentName, title, verb, detail, command, url, checkBinary, checkArguments, checkExpect, checkSelectors
+    }
+
+    /// This repair checking with `environment` (the resumed run's
+    /// variables) and, over it, the store the failed command selected.
+    public func checking(in environment: [String: String]?) -> RepairAction {
+        var checked = self
+        let selectors = (checkSelectors ?? [:]).filter { Self.credentialStoreSelectors.contains($0.key) }
+        let merged = (environment ?? [:]).merging(selectors) { _, own in own }
+        checked.checkEnvironment = merged.isEmpty ? nil : merged
+        return checked
     }
 
     public init(
@@ -107,10 +123,14 @@ public struct RepairAction: Codable, Sendable, Equatable {
         // `/tmp/gcloud`) is a different program, and so is a bare name when
         // the check runs a path: Terminal would resolve it through PATH.
         let arguments = Array(words.dropFirst())
+        // A path must be an installed copy of the CLI (`TrustedExecutablePath`):
+        // `/tmp/plugin/gh` named after the GitHub CLI is not it.
         if let binary, executable == binary {
+            guard !binary.contains("/") || TrustedExecutablePath.isInstalled(binary) else { return false }
             return TerminalRepairPolicy.isSignIn(cli: (binary as NSString).lastPathComponent, arguments: arguments)
         }
-        return allowsInstaller && installers.contains(executable) && TerminalRepairPolicy.isInstall(arguments: arguments)
+        guard allowsInstaller, installers.contains(executable), let binary, TrustedExecutablePath.isTrustedDeclaration(binary) else { return false }
+        return TerminalRepairPolicy.isInstall(cli: (binary as NSString).lastPathComponent, arguments: arguments)
     }
 
     /// Variables that pick which credential store a CLI signs in to and
@@ -182,10 +202,11 @@ public struct RepairAction: Codable, Sendable, Equatable {
                 }
                 guard let command = step.command else { continue }
                 guard isSafeTerminalCommand(command, binary: check?.binary, allowsInstaller: verb == "Install") else {
-                    // Not a known CLI's listed sign-in (`TerminalRepairPolicy`):
-                    // no button runs it. The plugin's own words still say
-                    // what to do, and ASTRA checks again.
-                    guard verb != "Install", let hint = step.hint, let binary = check?.binary else { continue }
+                    // Not a known CLI's listed sign-in, nor its reviewed
+                    // install (`TerminalRepairPolicy`): no button runs it.
+                    // The plugin's own words still say what to do, and ASTRA
+                    // checks again.
+                    guard let hint = step.hint, let binary = check?.binary else { continue }
                     return RepairAction(
                         strategy: .terminal, componentName: component.name, title: component.name, verb: "Check",
                         detail: hint, checkBinary: binary, checkArguments: check?.arguments, checkExpect: check?.expect

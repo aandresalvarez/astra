@@ -14,7 +14,8 @@ import Foundation
 /// admin:org` asks for privileges the plugin chose, and `gcloud auth login
 /// --cred-file` signs in with a credential file the plugin names. A flag's
 /// separate value counts as a positional unless the flag is listed as taking
-/// one. Fails closed: only a known CLI (`HealthCheckPolicy.knownCLIs`, the
+/// one. An install step may only run the reviewed `brew install` for its
+/// component (`reviewedInstalls`). Fails closed: only a known CLI (`HealthCheckPolicy.knownCLIs`, the
 /// list version checks use) with a sign-in listed here has a repair. Any
 /// other binary gives `auth`, `login` or `sso` whatever meaning it likes
 /// (`touch auth` creates a file), so its declared repair is guidance with no
@@ -63,15 +64,27 @@ public enum TerminalRepairPolicy {
         return rule.contains { $0.matches(arguments) }
     }
 
-    /// True when a package manager's `arguments` install packages by name
-    /// (`brew install gh`, `brew install --cask docker`). Only `--cask` and
-    /// `--formula` are flags it may carry.
-    public static func isInstall(arguments: [String]) -> Bool {
-        let flags: Set<String> = ["--cask", "--formula"]
-        let words = arguments.filter { !flags.contains($0) }
-        guard words.count >= 2, words[0] == "install" else { return false }
-        return words.dropFirst().allSatisfy {
-            $0.range(of: #"^[A-Za-z0-9@][A-Za-z0-9@._+/-]*$"#, options: .regularExpression) != nil
-        }
+    /// The reviewed Homebrew install for each known component, keyed by the
+    /// CLI its check runs: the bundled plugins' and ASTRA's own provider
+    /// installs. Homebrew runs a formula's or cask's code as the person, and
+    /// a tap-qualified name (`attacker/repo/payload`) adds that tap on the
+    /// way, so a plugin may not pick the package: only these exact arguments.
+    static let reviewedInstalls: [String: Set<[String]>] = {
+        let googleCloud: Set<[String]> = [["install", "--cask", "google-cloud-sdk"]]
+        return [
+            "gh": [["install", "gh"]],
+            "gcloud": googleCloud, "bq": googleCloud, "gsutil": googleCloud,
+            "pwsh": [["install", "powershell"], ["install", "--cask", "powershell"]],
+            "jq": [["install", "jq"]],
+            "docker": [["install", "--cask", "docker"]],
+            "copilot": [["install", "copilot-cli"]],
+            "opencode": [["install", "opencode"]]
+        ]
+    }()
+
+    /// True when `brew` with `arguments` is the reviewed install for the
+    /// component whose check runs `cli` (a basename).
+    public static func isInstall(cli: String, arguments: [String]) -> Bool {
+        HealthCheckPolicy.knownCLIs.contains(cli) && reviewedInstalls[cli]?.contains(arguments) == true
     }
 }

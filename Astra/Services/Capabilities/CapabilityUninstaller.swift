@@ -78,7 +78,9 @@ struct CapabilityUninstaller {
         connectorCleanupStore: ConnectorCredentialCleanupStore? = nil,
         removeJournal: PluginRemoveJournal? = nil,
         skillSecrets: (any SkillSecretPersisting.Type)? = nil,
-        definitionMissing: Bool = false
+        definitionMissing: Bool = false,
+        secretCleanupOutbox: PluginSecretCleanupOutbox? = nil,
+        exportMirror: (@MainActor (Workspace) -> Bool)? = nil
     ) throws -> RemovalResult {
         let installedPackages = library.installedPackages()
         guard var package = installedPackages.first(where: { $0.id == requestedPackage.id })
@@ -290,14 +292,20 @@ struct CapabilityUninstaller {
         // The connectors' cleanups are recorded before the save and run, read
         // after it, so a connector sharing a namespace with one removed here
         // keeps its credentials; any that don't clear are retried at launch.
+        let changedWorkspaces = workspaces.filter { result.disabledWorkspaceIDs.contains($0.id) }
+        let exportMirror = exportMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
         guard ConnectorCredentialCleanup.deleteThenClean(
             pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
             save: {
                 PluginSecretCleanupOutbox.deleteThenClean(
-                    activationSecretSkillIDs, modelContext: modelContext, secrets: skillSecrets,
+                    activationSecretSkillIDs, modelContext: modelContext, outbox: secretCleanupOutbox, secrets: skillSecrets,
                     save: { persist(nil, modelContext) },
                     beforeSettling: {
+                        // Every changed mirror is rewritten before the
+                        // activations' secrets are cleaned; one that can't be
+                        // written keeps the cleanup pending (`resumePending`).
                         mirrorsWritten = PluginRemoveJournal.rewriteMirrors(of: intent, modelContext: modelContext)
+                            && changedWorkspaces.reduce(true) { written, workspace in exportMirror(workspace) && written }
                         return mirrorsWritten
                     }
                 )

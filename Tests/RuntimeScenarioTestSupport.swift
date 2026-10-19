@@ -61,7 +61,12 @@ struct InstantSuccessBinaryRunner: BinaryRunner {
         timeout: TimeInterval,
         environment: [String: String]?
     ) async -> RunResult {
-        RunResult(outcome: .exited(code: 0), stdout: "logged in 1.0.0\nASTRA_READY", stderr: "")
+        // `which` answers with an absolute path, as the real one does: a
+        // check runs only what ASTRA's search path found (`TrustedExecutablePath`).
+        if args.first == "which", args.count == 2 {
+            return RunResult(outcome: .exited(code: 0), stdout: "/usr/local/bin/\(args[1])\n", stderr: "")
+        }
+        return RunResult(outcome: .exited(code: 0), stdout: "logged in 1.0.0\nASTRA_READY", stderr: "")
     }
 
     func run(

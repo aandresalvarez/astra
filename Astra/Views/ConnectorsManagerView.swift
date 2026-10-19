@@ -187,12 +187,19 @@ struct ConnectorEditorView: View {
                             .textFieldStyle(.roundedBorder)
 
                         HStack(spacing: 12) {
-                            Picker("Type", selection: $connector.serviceType) {
+                            // A plugin's account keeps its component's service.
+                            Picker("Type", selection: Binding(
+                                get: { connector.serviceType },
+                                set: { WorkspaceCapabilityActivation.changeService(of: connector, to: $0) }
+                            )) {
                                 ForEach(["jira", "github", "slack", "database", "rest_api", "confluence", "redcap", "stanford_outlook_mail", "custom"], id: \.self) { t in
                                     Text(Self.serviceLabel(t)).tag(t)
                                 }
                             }
                             .frame(width: 200)
+                            .disabled(!WorkspaceCapabilityActivation.canChangeService(of: connector))
+                            .help(WorkspaceCapabilityActivation.canChangeService(of: connector)
+                                ? "" : "A plugin uses this account for this service, so its type can't change.")
 
                             Picker("Auth", selection: $connector.authMethod) {
                                 ForEach(Self.authMethods(for: connector.serviceType), id: \.self) { a in
@@ -698,11 +705,8 @@ struct ConnectorEditorView: View {
             }
             normalizeAuthMethodForCurrentService()
         }
-        .onChange(of: connector.serviceType) { oldType, newType in
+        .onChange(of: connector.serviceType) { _, newType in
             applyServiceDefaults(for: newType)
-            // An account bound to plugins moves to the other service's
-            // default election in every workspace that binds it.
-            WorkspaceCapabilityActivation.serviceChanged(of: connector, from: oldType)
         }
         .onDisappear {
             cancelOutlookSignIn()

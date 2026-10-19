@@ -291,9 +291,7 @@ extension WorkspaceCapabilityActivation {
     /// though the person never turned it on. A mirror without a list names
     /// none, so its bound accounts come back binding-only.
     public static func takeBindingOnlyAccountsOffSharedList(in workspace: Workspace, listed: Set<String>) {
-        let bound = Set(activations(of: workspace).flatMap(\.bindings).filter { !$0.isDeleted }
-            .compactMap { $0.account?.id.uuidString })
-            .subtracting(listed)
+        let bound = Set(boundAccountIDs(of: workspace).map(\.uuidString)).subtracting(listed)
         guard state(of: workspace).globalConnectorIDs.contains(where: bound.contains) else { return }
         mutate(workspace) { $0.globalConnectorIDs.removeAll(where: bound.contains) }
     }
