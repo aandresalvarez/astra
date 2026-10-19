@@ -618,13 +618,16 @@ struct TaskCapabilityResolver {
             approvedConnectorIDs.contains(connector.id)
                 && !matchedConnectors.contains { $0.id == connector.id }
         }
+        // An account several plugins bind is emitted once, wired to one of
+        // them; matching it brings in every plugin that binds it, and it
+        // stays for whichever of them is in scope.
+        let accountOwners = pluginProjection.accountOwnerSkillIDs
         for connector in relevantConnectors {
             includeSkill(connector.skill)
+            for skill in skills where accountOwners[connector.id]?.contains(skill.id) == true {
+                includeSkill(skill)
+            }
         }
-
-        // An account several plugins bind stays for whichever of them is in
-        // scope, not only the plugin its copy is wired to.
-        let accountOwners = pluginProjection.accountOwnerSkillIDs
         let includedConnectors = connectors.filter { connector in
             if relevantConnectors.contains(where: { $0.id == connector.id }) {
                 return true

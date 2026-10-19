@@ -251,14 +251,15 @@ struct PluginRuntimeProjection {
     /// held it back (`awaitingUpdate`); otherwise it differs in its version,
     /// its content under the same version (`PluginDefinitionDigest`, which
     /// leaves out where a copy came from, so two copies of one definition
-    /// agree), or its components. A digest recorded before content digests
-    /// can't be compared, so only the version and components are. Its
-    /// plugin doesn't run, here or in a queued launch, until Update
-    /// reconciles it; the Plugins row offers Update meanwhile.
+    /// agree), or its components. A digest recorded before content digests,
+    /// or none (a mirror written before V20 carries only the version), can't
+    /// be compared, so only the version and components are; an activation
+    /// with no recorded version either has nothing to compare. Its plugin
+    /// doesn't run, here or in a queued launch, until Update reconciles it;
+    /// the Plugins row offers Update meanwhile.
     static func awaitsUpdate(_ activation: PluginActivation, to package: PluginPackage) -> Bool {
         if activation.awaitingUpdate { return true }
-        guard !activation.recordedDigest.isEmpty else { return false }
-        if activation.recordedVersion != package.version { return true }
+        if !activation.recordedVersion.isEmpty, activation.recordedVersion != package.version { return true }
         if PluginDefinitionDigest.matches(activation.recordedDigest, package) == false { return true }
         return !activation.knownComponentIDs.isEmpty && Set(activation.knownComponentIDs) != Set(componentIDs(of: package))
     }

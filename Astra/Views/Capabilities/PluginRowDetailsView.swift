@@ -14,7 +14,9 @@ import ASTRAModels
 struct PluginRowDetailsView<SetupRow: View>: View {
     let row: PluginRow
     let workspace: Workspace
-    let setupRow: (PluginComponent) -> SetupRow
+    /// A setup component, with the prerequisite position it checks
+    /// (`PluginManifestConverter.prerequisitePosition`).
+    let setupRow: (PluginComponent, Int?) -> SetupRow
     let onEditAccount: (UUID) -> Void
     let onConfirm: (PluginsSurfaceConfirmation) -> Void
     let onTurnOff: () -> Void
@@ -38,8 +40,8 @@ struct PluginRowDetailsView<SetupRow: View>: View {
             ForEach(Array(row.package.connectors.enumerated()), id: \.offset) { _, connector in
                 accountSection(connector)
             }
-            ForEach(Array(otherComponents.enumerated()), id: \.offset) { _, component in
-                setupRow(component)
+            ForEach(Array(otherComponents.enumerated()), id: \.offset) { _, entry in
+                setupRow(entry.component, entry.position)
             }
             footer
         }
@@ -56,9 +58,11 @@ struct PluginRowDetailsView<SetupRow: View>: View {
         return "\(row.activation?.revision ?? -1)|\(row.package.version)|" + keys.joined(separator: ";")
     }
 
-    private var otherComponents: [PluginComponent] {
-        PluginManifestConverter.manifest(from: row.package).components
-            .filter { $0.kind != .skill && $0.kind != .connector }
+    private var otherComponents: [(component: PluginComponent, position: Int?)] {
+        let manifest = PluginManifestConverter.manifest(from: row.package)
+        return manifest.components.enumerated()
+            .filter { $0.element.kind != .skill && $0.element.kind != .connector }
+            .map { ($0.element, PluginManifestConverter.prerequisitePosition(ofComponentAt: $0.offset, in: manifest)) }
     }
 
     // MARK: - Skill settings

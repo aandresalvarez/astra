@@ -33,7 +33,7 @@ struct HealthCheckPolicyTests {
         // The checks Resume runs after a stopped sign-in, Enterprise host and
         // an installation run by path included.
         for family in CLISessionExpiryClassifier.families {
-            let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com")] : []
+            let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com"), family.onHost("github.com"), family.onEveryHost()] : []
             for candidate in [family] + hosted + ([family] + hosted).map({ $0.at("/opt/homebrew/bin/\(family.checkBinary)") }) {
                 #expect(HealthCheckPolicy.isReadOnly(binary: candidate.checkBinary, arguments: candidate.checkArguments), "\(candidate.checkArguments)")
             }
@@ -103,6 +103,50 @@ struct HealthCheckPolicyTests {
         #expect(FileManager.default.fileExists(atPath: marker.path))
     }
 
+    @Test("A version report counts only for a known CLI, in the forms it supports; touch and sh never run")
+    func versionChecksOnlyForKnownCLIs() async throws {
+        for (binary, arguments) in [
+            ("touch", ["version"]), ("sh", ["version"]), ("sh", ["--version"]), ("rm", ["--version"]),
+            ("/tmp/x/touch", ["version"]), ("my-tool", ["--version"]), ("npm", ["version"]), ("uv", ["version"]),
+            ("aws", ["version"]), ("kubectl", ["--version"]), ("node", ["version"])
+        ] {
+            #expect(!HealthCheckPolicy.isReadOnly(binary: binary, arguments: arguments), "\(binary) \(arguments)")
+        }
+        for (binary, arguments) in [
+            ("gh", ["--version"]), ("gh", ["version"]), ("/opt/homebrew/bin/git", ["--version"]), ("aws", ["--version"]),
+            ("kubectl", ["version"]), ("terraform", ["version"]), ("claude", ["--version"]), ("agy", ["--version"])
+        ] {
+            #expect(HealthCheckPolicy.isReadOnly(binary: binary, arguments: arguments), "\(binary) \(arguments)")
+        }
+        // A scan resolves `touch` and `sh`, and runs neither.
+        let stub = StubBinaryRunner()
+        for binary in ["touch", "sh"] {
+            await stub.setResponse(forKey: "/usr/bin/env which \(binary)", result: .exited(code: 0, stdout: "/usr/bin/\(binary)\n", stderr: ""))
+            let status = await EnvironmentHealthChecker(runner: stub).check(binary: binary, livenessArgs: ["version"])
+            #expect(status.isNotChecked, "\(binary)")
+        }
+        #expect(await stub.recordedCalls().map(\.args) == [["which", "touch"], ["which", "sh"]])
+        // A repair's check through a projected PATH leaves no mark either.
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("astra-touch-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let marker = root.appendingPathComponent("ran")
+        let touch = root.appendingPathComponent("touch")
+        try "#!/bin/sh\n/usr/bin/touch '\(marker.path)'\n".write(to: touch, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: touch.path)
+        var repair = RepairAction(strategy: .terminal, componentName: "Touch", title: "Check", verb: "Check", detail: "")
+        repair.checkBinary = "touch"
+        repair.checkArguments = ["version"]
+        repair.checkEnvironment = ["PATH": "\(root.path):/usr/bin:/bin"]
+        #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+        // And import refuses it.
+        var package = try decodePackage("gcloud-workflow")
+        package.prerequisites = [CLIPrerequisite(binary: "touch", livenessArgs: ["version"], displayName: "Touch", purpose: "")]
+        let report = CapabilityPackageValidator.validate(data: try JSONEncoder().encode(package), checkPrerequisites: false)
+        #expect(report.blockers.contains { $0.title == "Unsafe health check" })
+    }
+
     @Test("A check that never ran shows as not checked, offers no repair, and is refused at import")
     func notCheckedIsNeitherPassNorRepair() throws {
         var package = try decodePackage("gcloud-workflow")
@@ -128,7 +172,7 @@ struct HealthCheckPolicyTests {
     @Test("ASTRA's own Terminal repairs pass the sign-in rule")
     func astraBuiltRepairsPassTheSignInRule() {
         for family in CLISessionExpiryClassifier.families where family.offersSignIn {
-            let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com")] : []
+            let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com"), family.onHost("github.com"), family.onEveryHost()] : []
             for candidate in [family] + hosted + ([family] + hosted).map({ $0.at("/opt/homebrew/bin/\(family.checkBinary)") }) {
                 let repair = candidate.repair.targetingCredentialStore(["CLOUDSDK_CONFIG": "/Users/o'connor/.config/gcloud", "GH_HOST": "github.example.com"])
                 #expect(RepairAction.isSafeTerminalCommand(
