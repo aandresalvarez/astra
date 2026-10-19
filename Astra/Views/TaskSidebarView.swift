@@ -683,20 +683,10 @@ struct TaskSidebarView: View {
         .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
         .accessibilityIdentifier("TaskSidebar")
-        .alert("Remove Workspace from ASTRA?", isPresented: Binding(
-            get: { workspacePendingRemoval != nil },
-            set: { if !$0 { workspacePendingRemoval = nil } }
-        )) {
-            Button("Cancel", role: .cancel) { workspacePendingRemoval = nil }
-            Button("Remove", role: .destructive) {
-                if let workspace = workspacePendingRemoval { onDeleteWorkspace?(workspace) }
-                workspacePendingRemoval = nil
-            }
-        } message: {
-            if let workspace = workspacePendingRemoval {
-                Text("This removes \(workspace.name) and its \(workspace.tasks.count) \(workspace.tasks.count == 1 ? "task" : "tasks") from ASTRA. This cannot be undone.")
-            }
-        }
+        .modifier(WorkspaceRemovalConfirmation(
+            pendingWorkspace: $workspacePendingRemoval,
+            onRemove: onDeleteWorkspace
+        ))
         .alert("Rename Task", isPresented: Binding(
             get: { renamingTask != nil },
             set: { if !$0 { renamingTask = nil } }
