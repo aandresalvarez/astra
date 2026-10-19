@@ -231,7 +231,9 @@ public enum WorkspaceCapabilityActivation {
             touch(activation)
             return
         }
-        let bindingAlias = alias ?? existingAlias(of: account, in: activation) ?? disambiguateAlias(of: account, joining: activation)
+        // A name from a workspace file is cleaned the way every alias is.
+        let bindingAlias = alias.flatMap(AccountDisplayName.sanitized)
+            ?? existingAlias(of: account, in: activation) ?? disambiguateAlias(of: account, joining: activation)
         let hasDefault = sameService.contains { $0.isDefault && $0.account?.id != account.id }
         let accountIsDefault = sameService.contains { $0.isDefault && $0.account?.id == account.id }
         let binding = AccountBinding(

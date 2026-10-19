@@ -2063,7 +2063,7 @@ public enum WorkspaceConfigManager {
             return nil
         }
         let connector = Connector(
-            name: config.name,
+            name: AccountDisplayName.sanitized(config.name) ?? AccountDisplayName.sanitized(config.serviceType) ?? "Account",
             serviceType: config.serviceType,
             icon: config.icon,
             connectorDescription: config.description,
@@ -2098,7 +2098,7 @@ public enum WorkspaceConfigManager {
             return nil
         }
         let connector = Connector(
-            name: snapshot.name,
+            name: AccountDisplayName.sanitized(snapshot.name) ?? AccountDisplayName.sanitized(snapshot.serviceType) ?? "Account",
             serviceType: snapshot.serviceType,
             icon: snapshot.icon,
             connectorDescription: snapshot.description,
