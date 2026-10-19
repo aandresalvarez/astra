@@ -940,15 +940,18 @@ Plugins 2.0 makes the model explicit:
   the alias named in the task text, else the default, else it asks *before
   launch*. The broker's refusal stays as the last line. *(As built in R1
   and R3: a workspace with any bound account of a service always has
-  exactly one default for it, across plugins (`bind` makes the first one
-  the default, `unbind` promotes the oldest remaining), so "neither" does
-  not arise for plugin accounts. No resolver narrows a launch to one
-  account yet (`ConnectorAccountResolver` was not carried into R1): every
-  bound account is in scope, default first
-  (`PluginActivation.accounts(forComponent:)`), and the broker refuses an
-  aliasless call when more than one is projected. Narrowing to the named
-  or default account before launch is not built and not scheduled in
-  R1-R5.)*
+  exactly one default for it, across plugins, held only in
+  `AccountBinding.isDefault`: `bind` makes the first one the default,
+  `unbind` promotes the oldest remaining, and Make default moves it.
+  `PluginRuntimeProjection` derives the projected defaults from the enabled
+  activations' bindings, and the launch marks those accounts `isDefault` in
+  `ASTRA_CONNECTORS` (an optional field, absent otherwise). A brokered call
+  that names no alias uses the one account of that service marked default;
+  a named alias, name or ID always wins. With no default, more than one, or
+  only accounts enabled outside a plugin (which carry no default), the broker
+  still refuses and lists the aliases. Choosing the account from an alias in
+  the task text, and asking before launch, are the resolver's and are not
+  built in R1-R5.)*
 - **Alias is required and visible** as soon as a service has two accounts,
   which is the broker's rule promoted to the UI. Aliases are unique per
   normalized service among the accounts a workspace can see, so a name
