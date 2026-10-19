@@ -135,7 +135,10 @@ struct PluginRuntimeProjection {
             for spec in package.connectors {
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
                 guard !overridden.contains(componentID) else { continue }
-                let accounts = activation.accounts(forComponent: componentID).filter { !$0.isDeleted }
+                // An account whose sign-in method this definition withdrew
+                // stays bound, but nothing runs with it until it reconnects.
+                let accounts = activation.accounts(forComponent: componentID)
+                    .filter { !$0.isDeleted && !Self.signsInWithWithdrawnMethod($0, spec: spec, package: package) }
                 if accounts.isEmpty {
                     unbound[package.id, default: []].append(componentID)
                 }
@@ -262,6 +265,15 @@ struct PluginRuntimeProjection {
         if !activation.recordedVersion.isEmpty, activation.recordedVersion != package.version { return true }
         if PluginDefinitionDigest.matches(activation.recordedDigest, package) == false { return true }
         return !activation.knownComponentIDs.isEmpty && Set(activation.knownComponentIDs) != Set(componentIDs(of: package))
+    }
+
+    /// Whether `account`, which `package` created for `spec`'s component,
+    /// signs in with a method the definition no longer declares. Derived
+    /// from the definition, never stored: the account stays bound, out of
+    /// every run and not ready (`CapabilityPackageState` asks it to
+    /// reconnect), until it signs in with the declared method.
+    static func signsInWithWithdrawnMethod(_ account: Connector, spec: PluginConnector, package: PluginPackage) -> Bool {
+        account.originPackageID == package.id && !spec.authMethod.isEmpty && spec.authMethod != account.authMethod
     }
 
     /// `packages` without the plugins whose activation in `workspace` awaits

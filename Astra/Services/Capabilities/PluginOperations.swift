@@ -118,6 +118,15 @@ enum PluginOperations {
             return
         }
         WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
+        // A secret an earlier definition kept under this now plain key is
+        // the person's to replace: entering the setting clears it.
+        if activation.secretSettingKeys.contains(settingKey) {
+            let persistence = secrets ?? SkillSecretSeam.required
+            let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
+            if persistence.deleteSecret(key: key, skillID: skillID) {
+                WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: settingKey, on: activation)
+            }
+        }
         workspace.updatedAt = Date()
         try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
     }

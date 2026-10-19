@@ -401,7 +401,9 @@ struct CapabilityInstaller {
             )
             let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
             guard PluginSecretCleanupOutbox.deleteThenClean(
-                releasedSkillIDs, keys: reconciliation.staleSecrets + journaledSecrets, modelContext: modelContext,
+                releasedSkillIDs,
+                keys: reconciliation.staleSecrets + journaledSecrets + PluginUpdateService.journaledCopies(renamedSecrets),
+                modelContext: modelContext,
                 save: { persist(workspace, modelContext) },
                 beforeSettling: {
                     var seen = Set<UUID>()
@@ -455,7 +457,9 @@ struct CapabilityInstaller {
             let unrestored = restoreSkillSecrets(savedSkillSecrets)
                 + PluginUpdateService.undo(renamedSecrets)
             PluginSecretSettingWriter.forgetJournaled(
-                savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }, modelContext: modelContext
+                savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }
+                    + PluginUpdateService.journaledCopies(renamedSecrets),
+                modelContext: modelContext
             )
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
