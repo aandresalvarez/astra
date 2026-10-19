@@ -161,10 +161,43 @@ public enum ASTRASchemaV18: VersionedSchema {
 }
 
 /// V19 adds `TaskSchedule.reasoningEffort`, the scheduled-task twin of the
-/// task field introduced in V18. Keeping it in a new version lets SwiftData
-/// lightweight-migrate stores written by the production V18 build.
+/// task field introduced in V18. Its relationship-connected graph is frozen to
+/// the shape shipped in production (`ASTRASchemaV19Models`); never point this
+/// schema back at live models or add fields to it in place.
 public enum ASTRASchemaV19: VersionedSchema {
     public static var versionIdentifier = Schema.Version(19, 0, 0)
+
+    public static var models: [any PersistentModel.Type] {
+        [
+            ASTRASchemaV19Models.Workspace.self,
+            ASTRASchemaV19Models.AgentTask.self,
+            ASTRASchemaV19Models.TaskRun.self,
+            ASTRASchemaV19Models.TaskEvent.self,
+            ASTRASchemaV19Models.Artifact.self,
+            ASTRASchemaV19Models.Skill.self,
+            ASTRASchemaV19Models.Connector.self,
+            ASTRASchemaV19Models.LocalTool.self,
+            ASTRASchemaV19Models.TaskTemplate.self,
+            ASTRASchemaV19Models.TaskSchedule.self,
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self,
+            GoogleOAuthAccountProfile.self,
+            FeedbackReport.self,
+            PersistentStoreMigrationRecord.self,
+            TaskTurnRequest.self
+        ]
+    }
+}
+
+/// The original V20 Dev format adds Connector.accountAlias and the workspace's
+/// paired default-account arrays. Keep this graph compatible with those stores;
+/// adding PluginActivation/AccountBinding or other persisted fields requires a
+/// new schema version. V19 stores lightweight-migrate to this additive shape.
+public enum ASTRASchemaV20: VersionedSchema {
+    public static var versionIdentifier = Schema.Version(20, 0, 0)
 
     public static var models: [any PersistentModel.Type] {
         [
@@ -194,9 +227,9 @@ public enum ASTRASchemaV19: VersionedSchema {
 public enum ASTRASchema {
     /// The newest durable store schema this binary can read and write.
     /// Keep startup compatibility checks derived from this single owner.
-    public static let currentVersion = 19
+    public static let currentVersion = 20
 
     public static var current: Schema {
-        Schema(versionedSchema: ASTRASchemaV19.self)
+        Schema(versionedSchema: ASTRASchemaV20.self)
     }
 }
