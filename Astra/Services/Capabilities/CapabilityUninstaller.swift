@@ -316,8 +316,13 @@ struct CapabilityUninstaller {
         // finds no resources to delete and just clears it). Throwing would
         // make the caller report a failed uninstall that actually succeeded.
         do {
-            // A forgotten plugin has no readable entry to remove.
-            if !definitionMissing { _ = try library.removePackage(id: package.id) }
+            // A forgotten plugin has no readable entry to remove; one whose
+            // entry can't be read is moved aside, or its intent stays.
+            if definitionMissing {
+                try library.quarantineUnreadableEntry(id: package.id)
+            } else {
+                _ = try library.removePackage(id: package.id)
+            }
             if mirrorsWritten { removeJournal?.finish(package.id) }
         } catch {
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [

@@ -98,6 +98,32 @@ struct PluginSecretSettingWriterTests {
         #expect(try store.storedSecretKeys(of: package.id).isEmpty)
     }
 
+    @Test("Every secret edit writes the workspace's mirror before the Keychain, and writes nothing when it can't")
+    func secretEditWritesTheMirrorFirst() throws {
+        let env = try Fixtures.Environment()
+        let package = Self.secretPackage()
+        try env.install(package)
+        var log: [String] = []
+        RecordingSecrets.reset()
+        RecordingSecrets.onSave = { log.append("keychain") }
+        for value in ["first", "second"] {
+            try PluginOperations.setSetting(
+                "API_TOKEN", to: value, of: package.skills[0], pluginID: package.id, in: env.workspace,
+                modelContext: env.context, secrets: RecordingSecrets.self, rewriteMirror: { _ in log.append("mirror"); return true }
+            )
+        }
+        #expect(log == ["mirror", "keychain", "mirror", "keychain"])
+
+        RecordingSecrets.reset()
+        #expect(throws: PluginOperations.OperationError.saveFailed) {
+            try PluginOperations.setSetting(
+                "API_TOKEN", to: "third", of: package.skills[0], pluginID: package.id, in: env.workspace,
+                modelContext: env.context, secrets: RecordingSecrets.self, rewriteMirror: { _ in false }
+            )
+        }
+        #expect(RecordingSecrets.saved.isEmpty)
+    }
+
     @Test("A marker that can't be saved writes nothing to the Keychain")
     func unsavedMarkerWritesNothing() throws {
         let env = try Fixtures.Environment()

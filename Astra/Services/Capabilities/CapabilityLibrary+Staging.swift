@@ -63,3 +63,36 @@ extension CapabilityLibrary {
         _ = try? staging.removePackage(id: id, trustedBuiltInIDs: [])
     }
 }
+
+/// A library entry that can't be read (malformed, unreadable) still holds
+/// its plugin's storage name: nothing lists it, but a reinstall or an
+/// import under that name is refused. Forgetting such a plugin moves the
+/// raw entry aside, beside the library, rather than deleting what may be
+/// the person's only copy.
+extension CapabilityLibrary {
+    var quarantineDirectory: URL {
+        directory.deletingLastPathComponent().appendingPathComponent(directory.lastPathComponent + "Quarantine", isDirectory: true)
+    }
+
+    /// Whether `id`'s storage name is taken by an entry that doesn't read.
+    func holdsUnreadableEntry(id: String) -> Bool {
+        !installedPackages().contains { $0.id == id }
+            && occupiedStorageNames().contains(Self.safeFileName(for: id).lowercased())
+    }
+
+    /// Moves `id`'s unreadable storage (its JSON file or its directory) into
+    /// the quarantine folder. Throws when it can't, so the caller keeps its
+    /// intent for a retry.
+    func quarantineUnreadableEntry(id: String) throws {
+        guard holdsUnreadableEntry(id: id) else { return }
+        try fileManager.createDirectory(at: quarantineDirectory, withIntermediateDirectories: true)
+        let stamp = String(Int(Date().timeIntervalSince1970))
+        for url in [packageURL(for: id), packageManifestURL(for: id).deletingLastPathComponent()]
+        where fileManager.fileExists(atPath: url.path) {
+            let destination = quarantineDirectory.appendingPathComponent("\(stamp)-\(url.lastPathComponent)")
+            try fileManager.moveItem(at: url, to: destination)
+        }
+        guard !holdsUnreadableEntry(id: id) else { throw RemovalError.notInstalled(id) }
+        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
+    }
+}

@@ -149,6 +149,59 @@ struct PluginRenameAndMissingTests {
     }
 }
 
+/// Round 22 review: a re-added plugin's Remove intent and an unreadable
+/// entry's are settled only once what they owe is done.
+@Suite("Remove intents for re-added and unreadable plugins")
+@MainActor
+struct PluginRound22ReviewTests {
+    typealias Fixtures = PluginOperationsTests
+
+    @Test("A Remove intent a re-added activation clears rewrites its mirrors first and keeps the new entry")
+    func reAddedIntentRewritesMirrorsFirst() throws {
+        let env = try Fixtures.Environment()
+        let package = Fixtures.package(version: "1.0.0")
+        try env.install(package)
+        let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
+        try journal.begin(package.id, affecting: [env.workspace.id])
+
+        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal) { _ in false }
+        #expect(try journal.pending() == [package.id])
+        var rewritten: [UUID] = []
+        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal) {
+            rewritten.append($0.id)
+            return true
+        }
+        #expect(rewritten == [env.workspace.id])
+        #expect(try journal.pending().isEmpty)
+        #expect(env.library.installedPackage(id: package.id) != nil)
+        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) != nil)
+    }
+
+    @Test("Forgetting a plugin whose entry is unreadable moves the entry aside, and keeps the intent while it can't")
+    func unreadableEntryIsQuarantined() throws {
+        let env = try Fixtures.Environment()
+        let package = Fixtures.package(version: "1.0.0")
+        try env.install(package)
+        let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
+        try Data("not a package".utf8).write(to: env.library.packageURL(for: package.id))
+        #expect(env.library.holdsUnreadableEntry(id: package.id))
+
+        // The quarantine folder can't be made: the intent stays.
+        try Data().write(to: env.library.quarantineDirectory)
+        try CapabilityUninstaller(library: env.library).forgetMissing(pluginID: package.id, modelContext: env.context, removeJournal: journal)
+        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) == nil)
+        #expect(try journal.pending() == [package.id])
+        #expect(env.library.holdsUnreadableEntry(id: package.id))
+
+        // Launch moves it aside and finishes.
+        try FileManager.default.removeItem(at: env.library.quarantineDirectory)
+        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
+        #expect(try journal.pending().isEmpty)
+        #expect(!env.library.holdsUnreadableEntry(id: package.id))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: env.library.quarantineDirectory.path).count == 1)
+    }
+}
+
 /// Round 21 review: every save that releases secrets writes its mirrors
 /// first, a startup move keeps its Keychain copies until its undo is saved,
 /// and credential keys compare in their stored spelling.

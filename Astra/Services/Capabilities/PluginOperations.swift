@@ -70,7 +70,8 @@ enum PluginOperations {
         in workspace: Workspace,
         modelContext: ModelContext,
         secrets: (any SkillSecretPersisting.Type)? = nil,
-        persist: (Workspace, ModelContext) throws -> Void = persistAndExport
+        persist: (Workspace, ModelContext) throws -> Void = persistAndExport,
+        rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws {
         guard let activation = WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) else {
             throw OperationError.notAdded(pluginID: pluginID)
@@ -88,6 +89,11 @@ enum PluginOperations {
                 ) {
                     workspace.updatedAt = Date()
                     try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
+                    // Written now, not queued: the mirror names the secret
+                    // before the Keychain holds it.
+                    guard rewriteMirror?(workspace)
+                        ?? WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext)
+                    else { throw OperationError.saveFailed }
                 }
                 return
             }
