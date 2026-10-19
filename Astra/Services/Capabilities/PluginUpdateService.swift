@@ -286,7 +286,7 @@ enum PluginUpdateService {
                 let result = try reconcile(
                     activation, in: workspace, to: package, mode: mode, modelContext: modelContext, secrets: secrets,
                     connectorStore: connectorStore,
-                    awaitsReview: awaitsReview(package, in: workspace, approvalRecords: approvalRecords),
+                    awaitsReview: awaitsReview(package, in: workspace, records: approvalRecords),
                     copied: &total.copied
                 )
                 total.released += result.released
@@ -592,10 +592,10 @@ enum PluginUpdateService {
     /// Whether `package` still awaits its review in `workspace`: a draft no
     /// approval covers, an approval for another digest, or a pack's review
     /// gate.
-    static func awaitsReview(_ package: PluginPackage, in workspace: Workspace, approvalRecords: [CapabilityApprovalRecord]) -> Bool {
-        CapabilityCatalogPolicy.decision(
-            for: package, context: .currentUser(workspace: workspace, approvalRecords: approvalRecords)
-        ).blockers.contains { blocker in
+    static func awaitsReview(_ package: PluginPackage, in workspace: Workspace? = nil, records approvalRecords: [CapabilityApprovalRecord]) -> Bool {
+        let context = workspace.map { CapabilityCatalogPolicyContext.currentUser(workspace: $0, approvalRecords: approvalRecords) }
+            ?? CapabilityCatalogPolicyContext(approvalRecords: approvalRecords)
+        return CapabilityCatalogPolicy.decision(for: package, context: context).blockers.contains { blocker in
             switch blocker {
             case .draftRequiresApproval, .approvalDigestMismatch, .packPolicyReviewRequired: true
             default: false

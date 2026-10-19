@@ -76,6 +76,8 @@ struct PluginCatalogView: View {
     @State private var showCreateWizard = false
     @State private var importReview: CapabilityImportReview?
     @State private var importError: String?
+    /// A draft an import kept beside an approved copy, awaiting review.
+    @State private var stagedReview: PluginPackage?
     @State private var showMCPInstallTargetSheet = false
     @State private var pastedMCPInstallTarget = ""
     @State private var mcpInstallRequest: MCPInstallChatRequest?
@@ -291,6 +293,19 @@ struct PluginCatalogView: View {
             Button("OK", role: .cancel) { installError = nil }
         } message: {
             Text(installError ?? "")
+        }
+        .alert("\(stagedReview?.name ?? "") \(stagedReview?.version ?? "") is waiting for review", isPresented: Binding(
+            get: { stagedReview != nil }, set: { if !$0 { stagedReview = nil } }
+        ), presenting: stagedReview) { draft in
+            Button("Approve and update") {
+                do { try CapabilityCatalogActionService().approveStaged(id: draft.id, modelContext: modelContext) } catch {
+                    importError = error.localizedDescription
+                }
+            }
+            Button("Discard", role: .destructive) { CapabilityCatalogActionService().discardStaged(id: draft.id) }
+            Button("Later", role: .cancel) {}
+        } message: { _ in
+            Text("The approved version stays in use in every workspace until you approve this one.")
         }
         .alert("Capability could not be imported", isPresented: Binding(
             get: { importError != nil },
@@ -1055,7 +1070,7 @@ struct PluginCatalogView: View {
         }
         do {
             let result = try CapabilityPackageImporter().importValidatedPackage(report, modelContext: modelContext)
-            openPackageEditor(result.package.id)
+            if result.staged { stagedReview = result.package } else { openPackageEditor(result.package.id) }
             importReview = nil
             AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
                 "source": "import_json",

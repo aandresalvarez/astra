@@ -6,6 +6,9 @@ struct CapabilityPackageImportResult {
     var package: PluginPackage
     var report: CapabilityPackageValidationReport
     var installedURL: URL
+    /// The import is a draft kept beside an approved installed copy
+    /// (`CapabilityLibrary.stage`): nothing changed until it is approved.
+    var staged = false
 }
 
 struct CapabilityPackageImportError: LocalizedError {
@@ -92,10 +95,29 @@ struct CapabilityPackageImporter {
     @discardableResult
     func importValidatedPackage(
         _ report: CapabilityPackageValidationReport,
-        modelContext: ModelContext? = nil
+        modelContext: ModelContext? = nil,
+        approvalRecords: [CapabilityApprovalRecord]? = nil
     ) throws -> CapabilityPackageImportResult {
         guard report.canInstall, let package = report.package else {
             throw CapabilityPackageImportError(report: report)
+        }
+        // Over an approved installed copy, a draft no approval covers is
+        // staged, not installed: the approved copy keeps resolving in every
+        // workspace until the draft's approval commits it.
+        let records = approvalRecords ?? CapabilityApprovalStore().records()
+        if let installed = library.installedPackages().first(where: { $0.id == package.id }),
+           Self.isApproved(installed, records: records) {
+            var draft = report.source ?? CapabilityPackageSource(
+                package: package, manifestURL: report.sourceURL, assetRootURL: report.sourceURL?.deletingLastPathComponent()
+            )
+            draft.package = package
+            if !Self.isApproved(Self.asStored(draft.package), records: records) {
+                try library.stage(draft)
+                CapabilityCatalogPersistenceEvents.post(.global)
+                return CapabilityPackageImportResult(
+                    package: package, report: report, installedURL: library.staging.packageURL(for: package.id), staged: true
+                )
+            }
         }
         if let modelContext, let refusal = PluginUpdateService.refusals(for: package, modelContext: modelContext).first {
             throw refusal
@@ -148,6 +170,8 @@ struct CapabilityPackageImporter {
             throw error
         }
         library.discardPackageStorageSnapshot(previousStorage)
+        // An earlier staged draft of it is superseded by what was installed.
+        library.discardStaged(id: package.id)
         CapabilityCatalogPersistenceEvents.post(.global)
         return CapabilityPackageImportResult(
             package: package,
@@ -156,5 +180,20 @@ struct CapabilityPackageImporter {
                 ? library.packageManifestURL(for: package.id)
                 : library.packageURL(for: package.id)
         )
+    }
+
+    /// Whether `package` needs no further review to run
+    /// (`PluginUpdateService.awaitsReview`).
+    static func isApproved(_ package: PluginPackage, records: [CapabilityApprovalRecord]) -> Bool {
+        !PluginUpdateService.awaitsReview(package, records: records)
+    }
+
+    /// `package` as the library would read it back: a local copy's
+    /// self-declared governance is a draft's (`CapabilityLibrary`).
+    static func asStored(_ package: PluginPackage) -> PluginPackage {
+        var stored = package
+        if stored.sourceMetadata == nil { stored.sourceMetadata = .localLibrary() }
+        if !CapabilityLibrary.trustedBuiltInPackageIDs.contains(stored.id) { _ = CapabilityGovernanceNormalizer.clampToLocalDraft(&stored) }
+        return stored
     }
 }

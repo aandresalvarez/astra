@@ -1,0 +1,65 @@
+import Foundation
+import ASTRACore
+
+/// A draft waiting for review over an approved installed plugin.
+///
+/// A file import of a newer version over an approved plugin can't take its
+/// place yet: the runtime resolves only an approved definition, so every
+/// workspace would lose the plugin until the draft is approved. The library
+/// keeps the draft beside it instead, in its own directory, durably: the
+/// approved copy stays what resolves until approval commits the draft
+/// (`commitStaged`), the only step that replaces it, and a crash before then
+/// leaves both as they were. Staged drafts are never listed as installed,
+/// and their governance is always a draft's.
+extension CapabilityLibrary {
+    /// The library of staged drafts, beside this one.
+    var staging: CapabilityLibrary {
+        CapabilityLibrary(
+            directory: directory.deletingLastPathComponent()
+                .appendingPathComponent(directory.lastPathComponent + "Staged", isDirectory: true),
+            fileManager: fileManager
+        )
+    }
+
+    /// The drafts waiting for review.
+    func stagedPackages() -> [PluginPackage] {
+        staging.installedPackages(trustedBuiltInIDs: [])
+    }
+
+    func stagedPackage(id: String) -> PluginPackage? {
+        stagedPackages().first { $0.id == id }
+    }
+
+    /// Keeps `source` as the draft for its plugin, replacing an earlier one.
+    /// The installed copy is not touched.
+    func stage(_ source: CapabilityPackageSource) throws {
+        try staging.ensureDirectoryExists()
+        try staging.install(source)
+    }
+
+    /// Replaces the installed copy with the staged draft (the one write that
+    /// does), then drops the draft. Returns the definition now installed.
+    /// One a crash left staged after it was installed is committed again,
+    /// harmlessly, by the next approval.
+    @discardableResult
+    func commitStaged(id: String) throws -> PluginPackage {
+        guard let draft = stagedPackage(id: id) else { throw RemovalError.notInstalled(id) }
+        var committed = draft
+        // A staged copy's clamped draft governance is not part of what it
+        // declares: the library clamps it again on load.
+        committed.governance = CapabilityGovernance.defaultGovernance(for: committed.sourceMetadata)
+        try install(CapabilityPackageSource(
+            package: committed,
+            manifestURL: nil,
+            assetRootURL: draft.sourceMetadata?.url?.deletingLastPathComponent()
+        ))
+        discardStaged(id: id)
+        guard let installed = installedPackages().first(where: { $0.id == id }) else { throw RemovalError.notInstalled(id) }
+        return installed
+    }
+
+    /// Drops the staged draft of `id`, if any.
+    func discardStaged(id: String) {
+        _ = try? staging.removePackage(id: id, trustedBuiltInIDs: [])
+    }
+}

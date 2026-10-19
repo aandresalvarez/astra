@@ -258,7 +258,17 @@ struct CapabilityInstaller {
             // before reconciling derives anything from them, the rows the
             // migration kept while it was missing included.
             let componentIDs = PluginRuntimeProjection.componentIDs(of: package)
+            // The accounts its components created here before a Remove come
+            // back bound, stamped again, rather than as duplicates.
+            let retainedAccounts = WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: workspace)
             WorkspaceCapabilityActivation.reinstateRetired(on: activation, declaring: componentIDs, in: workspace)
+            for retained in retainedAccounts
+            where componentIDs.contains(retained.componentID) && activation.accounts(forComponent: retained.componentID).isEmpty {
+                CapabilityResourceOrigin.stamp(retained.account, package: package, componentID: retained.componentID)
+                WorkspaceCapabilityActivation.bind(
+                    retained.account, toComponent: retained.componentID, of: activation, isDefault: retained.isDefault
+                )
+            }
             for (other, _) in pendingSnapshots {
                 guard let otherActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: other) else { continue }
                 WorkspaceCapabilityActivation.adoptPendingOverrides(on: otherActivation, declaring: componentIDs, in: other)

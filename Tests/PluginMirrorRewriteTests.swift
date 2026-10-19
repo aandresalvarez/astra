@@ -152,7 +152,7 @@ struct PluginMirrorRewriteTests {
         let packages = env.library.installedPackages()
         let v2 = try #require(packages.first { $0.id == "ops.report" })
         #expect(v2.governance.approvalStatus == .draft)
-        #expect(PluginUpdateService.awaitsReview(v2, in: env.workspace, approvalRecords: []))
+        #expect(PluginUpdateService.awaitsReview(v2, in: env.workspace, records: []))
 
         for mode in [PluginUpdateService.Mode.release, .automatic] {
             try PluginUpdateService.reconcileAll(modelContext: env.context, packages: packages, mode: mode, approvalRecords: [])
