@@ -332,6 +332,10 @@ struct CapabilityUninstaller {
             } else {
                 _ = try library.removePackage(id: package.id)
             }
+            // A draft staged beside it would bring the plugin back once
+            // approved, or hold its ID: it goes with the Remove, and the
+            // intent stays while it can't.
+            try library.removeStaged(id: package.id)
             if mirrorsWritten { removeJournal?.finish(package.id) }
         } catch {
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [

@@ -98,4 +98,65 @@ struct PluginTemplateIDsAndMirrorsTests {
         #expect(try mirror(other).contains("Renamed Tracker"))
         #expect(try mirror(env.workspace).contains("Renamed Tracker"))
     }
+
+    @Test("Remove keeps a template the person edited as theirs, under its ID; Add again doesn't replace it")
+    func editedTemplateSurvivesRemove() throws {
+        let env = try Fixtures.Environment()
+        var package = Self.packageWithTemplate()
+        var second = package.templates[0]
+        second.name = "Monthly"
+        second.mainGoal = "Write the monthly report"
+        package.templates.append(second)
+        try env.install(package)
+        let weekly = try #require(env.workspace.templates.first { $0.name == "Weekly" })
+        let monthly = try #require(env.workspace.templates.first { $0.name == "Monthly" })
+        let monthlyID = monthly.id
+        // Edited before any Update looked at it.
+        weekly.mainGoal = "Write it my way"
+        try env.context.save()
+
+        try CapabilityUninstaller(library: env.library).remove(package, modelContext: env.context)
+        #expect(env.workspace.templates.contains { $0 === weekly })
+        #expect(weekly.originPackageID == nil && weekly.mainGoal == "Write it my way")
+        #expect(!env.workspace.templates.contains { $0.id == monthlyID && !$0.isDeleted })
+
+        try env.install(package)
+        // The person's row keeps its ID and content; the plugin's Weekly is a
+        // new row beside it, and Monthly is back under its old ID.
+        #expect(weekly.originPackageID == nil && weekly.mainGoal == "Write it my way")
+        let pluginWeekly = try #require(env.workspace.templates.first { $0.name == "Weekly" && $0.originPackageID == package.id })
+        #expect(pluginWeekly.id != weekly.id)
+        #expect(env.workspace.templates.contains { $0.id == monthlyID && $0.originPackageID == package.id })
+    }
+
+    @Test("Remove deletes a draft staged beside the plugin, and so does an interrupted Remove at launch")
+    func removeDeletesStagedDraft() throws {
+        let env = try Fixtures.Environment()
+        let approvals = CapabilityApprovalStore(directory: env.root.appendingPathComponent("Approvals", isDirectory: true))
+        func installAndStage() throws {
+            try env.install(Fixtures.package(version: "1.0.0"))
+            _ = try approvals.save(package: try #require(env.library.installedPackage(id: "ops.report")), status: .approved, approvedBy: "Tests")
+            let report = CapabilityPackageValidator.validate(
+                package: Fixtures.package(version: "2.0.0"), installedPackages: env.library.installedPackages(), checkPrerequisites: false
+            )
+            #expect(try CapabilityPackageImporter(library: env.library)
+                .importValidatedPackage(report, modelContext: env.context, approvalRecords: approvals.records()).staged)
+            #expect(env.library.stagedPackage(id: "ops.report") != nil)
+        }
+        let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
+        try installAndStage()
+        try CapabilityUninstaller(library: env.library).remove(Fixtures.package(version: "1.0.0"), modelContext: env.context, removeJournal: journal)
+        #expect(env.library.stagedPackage(id: "ops.report") == nil)
+        #expect(try journal.pending().isEmpty)
+
+        // Saved, then the quit came before the library and the staged draft went.
+        try installAndStage()
+        WorkspaceCapabilityActivation.mutate(env.workspace) { $0 = WorkspaceCapabilityActivationState() }
+        try env.context.save()
+        try journal.begin("ops.report")
+        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
+        #expect(env.library.stagedPackage(id: "ops.report") == nil)
+        #expect(env.library.installedPackage(id: "ops.report") == nil)
+        #expect(try journal.pending().isEmpty)
+    }
 }
