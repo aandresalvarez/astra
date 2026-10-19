@@ -1149,7 +1149,7 @@ final class TaskLifecycleCoordinator {
     }
 
     /// `importSession` spans one Import Workspace action: workspaces it
-    /// imports together keep the shared accounts they had in common.
+    /// imports together share only the accounts the person confirmed.
     func importFromConfig(at url: URL, existingWorkspaces: [Workspace],
                           importSession: WorkspaceConfigManager.ImportSession? = nil,
                           askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
