@@ -177,6 +177,12 @@ struct CapabilityCatalogActionService {
         try uninstaller.remove(package, modelContext: modelContext)
     }
 
+    /// Remove for a plugin the library no longer has a readable entry for.
+    @discardableResult
+    func forgetMissing(pluginID: String, modelContext: ModelContext) throws -> CapabilityUninstaller.RemovalResult {
+        try uninstaller.forgetMissing(pluginID: pluginID, modelContext: modelContext)
+    }
+
     /// Plugins 2.0 one-step Add: install, approve and enable in this workspace.
     /// When the policy holds the package for review, the person adding it is
     /// the reviewer, so the approval record is written first and the enable

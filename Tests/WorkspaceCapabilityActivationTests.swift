@@ -389,8 +389,72 @@ struct WorkspaceCapabilityActivationTests {
         unused.isGlobal = true
         context.insert(unused)
         WorkspaceCapabilityActivation.bind(unused, toComponent: "connector:jira:ops", of: activation)
-        #expect(unused.name == "Stanford 2")
+        // "Stanford 2" is the shared row's alias here (its binding's).
+        #expect(WorkspaceCapabilityActivation.alias(of: shared, in: joining) == "Stanford 2")
+        #expect(unused.name == "Stanford 3")
         withExtendedLifetime(container) {}
+    }
+
+    @Test("A shared account that can't be renamed keeps its collision alias on the binding, durably")
+    @MainActor
+    func sharedAccountCollisionAliasIsDurable() throws {
+        let (container, joining) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let component = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        let other = Workspace(name: "Other", primaryPath: "/tmp/other-\(UUID().uuidString)")
+        context.insert(other)
+        let shared = Connector(name: "Stanford", serviceType: jira.connectors[0].serviceType)
+        shared.isGlobal = true
+        let local = Connector(name: "Stanford", serviceType: jira.connectors[0].serviceType)
+        [shared, local].forEach(context.insert)
+        local.workspace = joining
+        WorkspaceCapabilityActivation.mutate(other) { $0.enableGlobalConnector(shared.id.uuidString) }
+        WorkspaceCapabilityActivation.mutate(joining) { $0.enableCapability(jira.id) }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: joining))
+        WorkspaceCapabilityActivation.bind(shared, toComponent: component, of: activation)
+
+        // The row keeps its name where it already works; here it is "Stanford 2".
+        #expect(shared.name == "Stanford")
+        #expect(WorkspaceCapabilityActivation.alias(of: shared, in: joining) == "Stanford 2")
+        #expect(WorkspaceCapabilityActivation.alias(of: shared, in: other) == "Stanford")
+        func runtimeName() -> String? {
+            PluginRuntimeProjection.project(workspace: joining, packages: [jira], connectorMode: .runtimeCopies)
+                .connectors.first { $0.id == shared.id }?.name
+        }
+        #expect(runtimeName() == "Stanford 2")
+        // So does one another workspace's plugin binds.
+        let boundElsewhere = Connector(name: "Stanford", serviceType: jira.connectors[0].serviceType)
+        boundElsewhere.isGlobal = true
+        context.insert(boundElsewhere)
+        WorkspaceCapabilityActivation.mutate(other) { $0.enableCapability(jira.id) }
+        let otherActivation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: other))
+        WorkspaceCapabilityActivation.bind(boundElsewhere, toComponent: component, of: otherActivation)
+        WorkspaceCapabilityActivation.bind(boundElsewhere, toComponent: "connector:jira:ops", of: activation)
+        #expect(boundElsewhere.name == "Stanford")
+        #expect(WorkspaceCapabilityActivation.alias(of: boundElsewhere, in: joining) == "Stanford 3")
+        WorkspaceCapabilityActivation.unbind(boundElsewhere, from: activation)
+        // The other account going away doesn't flip it back.
+        context.delete(local)
+        try context.save()
+        #expect(WorkspaceCapabilityActivation.alias(of: shared, in: joining) == "Stanford 2")
+        #expect(runtimeName() == "Stanford 2")
+        // A launch record and the mirror carry it.
+        #expect(PluginActivationRecord(activation).bindings.first?.alias == "Stanford 2")
+        let config = try #require(WorkspaceConfigManager.export(workspace: joining, modelContext: context))
+        #expect(config.installedPlugins?.first?.accounts?.first?.alias == "Stanford 2")
+        // Mirror recovery restores it with the binding.
+        let target = try ModelContainer(
+            for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let recovered = WorkspaceConfigManager.importWorkspaceResult(
+            from: config, modelContext: target.mainContext, capabilityTrust: .preserveRecordedState
+        ).workspace
+        let recoveredShared = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: recovered)?
+            .bindings.first?.account)
+        #expect(WorkspaceCapabilityActivation.alias(of: recoveredShared, in: recovered) == "Stanford 2")
+        withExtendedLifetime((container, target)) {}
     }
 
     @Test("A recovered mirror keeps each binding's age, so the same account succeeds a deleted default")

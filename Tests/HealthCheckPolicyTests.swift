@@ -113,6 +113,11 @@ struct HealthCheckPolicyTests {
         let prerequisite = package.prerequisites[0]
         let status = HealthStatus.notChecked(detail: HealthCheckPolicy.refusal(binary: "gcloud", arguments: prerequisite.livenessArgs))
         #expect(CapabilityRailRepair.repair(for: package, statuses: [prerequisite.id: status]) == nil)
+        // Still a pending step on the Plugins surface: it never passed.
+        #expect(PluginsSurfacePresentation.pendingSetupChecks(for: package, statuses: [prerequisite.id: status]) == 1)
+        #expect(PluginsSurfacePresentation.pendingSetupChecks(
+            for: package, statuses: [prerequisite.id: .healthy(path: "/opt/sdk/bin/gcloud", version: "1")]
+        ) == 0)
         let issue = CapabilityHealthService.prerequisiteIssues(for: package, statuses: [prerequisite.id: status]).first
         #expect(issue?.kind == .notChecked)
         #expect(issue?.message.contains("not checked") == true)

@@ -201,6 +201,85 @@ struct PluginMirrorRewriteTests {
         #expect(activation.recordedDigest == PluginDefinitionDigest.content(of: changed))
     }
 
+    /// A shared account attached to a shared skill another workspace turned
+    /// on is in that workspace's mirror (through the skill), with no plugin
+    /// binding and no shared-list entry of its own.
+    @Test("Deleting an account names and rewrites a workspace whose shared skill carries it")
+    func deleteScopeIncludesSkillLinkedWorkspaces() throws {
+        let env = try Fixtures.Environment()
+        let account = Connector(name: "Shared Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
+        account.isGlobal = true
+        let skill = Skill(name: "Shared Analyst", allowedTools: ["Read"])
+        skill.isGlobal = true
+        env.context.insert(account)
+        env.context.insert(skill)
+        account.skill = skill
+        let linked = Workspace(name: "Linked", primaryPath: env.root.appendingPathComponent("linked").path)
+        env.context.insert(linked)
+        WorkspaceCapabilityActivation.mutate(linked) { $0.enableGlobalSkill(skill.id.uuidString) }
+        try env.context.save()
+
+        #expect(try PluginOperations.workspacesUsing(account).map(\.id) == [linked.id])
+        var rewritten: [UUID] = []
+        try PluginOperations.deleteAccount(account, modelContext: env.context) { rewritten.append($0.id); return true }
+        #expect(rewritten == [linked.id])
+    }
+
+    /// A legacy account holds a promoted setting as plain text while the
+    /// Keychain already has a newer value for it: Add again with another
+    /// change keeps the Keychain's, and leaves the row's visible.
+    @Test("Add again keeps a newer Keychain value over a legacy row's plain setting")
+    func addKeepsANewerKeychainValue() throws {
+        let env = try Fixtures.Environment()
+        let package = PluginConnectorFieldTrustTests.importedPackage()
+        try env.install(package)
+        let componentID = CapabilityResourceOrigin.componentID(for: package.connectors[0])
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
+        let account = try #require(activation.accounts(forComponent: componentID).first)
+        // The legacy shape: the setting is plain on the row.
+        account.credentialKeys = ["TRACKER_TOKEN"]
+        account.credentialValues = [""]
+        account.configKeys = ["TRACKER_PROJECT"]
+        account.configValues = ["ENG-1"]
+        try env.context.save()
+
+        var asked: [String] = []
+        let installer = CapabilityInstaller(library: env.library, appVersion: SemanticVersion(1, 0, 0)) { connector, key in
+            asked.append(key)
+            return connector.id == account.id && key == "TRACKER_PROJECT" ? "ENG-2" : nil
+        }
+        try installer.install(
+            package, into: env.workspace, modelContext: env.context,
+            baseURLOverrides: [componentID: "https://tracker2.example.com"], announceCatalogMutation: false
+        )
+        let after = try #require(activation.accounts(forComponent: componentID).first)
+        #expect(after.id == account.id && after.baseURL == "https://tracker2.example.com")
+        #expect(asked == ["TRACKER_PROJECT"])
+        // Not moved over the Keychain's value: still the row's, to settle.
+        #expect(after.configValue("TRACKER_PROJECT") == "ENG-1")
+        #expect(!after.credentialKeys.contains("TRACKER_PROJECT"))
+        #expect(after.credentialKeys.count == after.credentialValues.count)
+    }
+
+    /// R1's binding alias (`AccountBinding.alias`) is the name a workspace
+    /// knows an account by: a rename that merges two bindings of one
+    /// account keeps it.
+    @Test("A rename that merges an account's bindings keeps the alias it had")
+    func renameMergeKeepsBindingAlias() throws {
+        let env = try Fixtures.Environment()
+        try env.install(Fixtures.package(version: "1.0.0"))
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "ops.report", in: env.workspace))
+        let account = try #require(env.workspace.connectors.first)
+        let old = "connector:tracker:tracker-api", new = "connector:tracker:tracker"
+        WorkspaceCapabilityActivation.bind(account, toComponent: new, of: activation)
+        for binding in activation.bindings { binding.alias = binding.componentID == old ? "Tracker 2" : "" }
+        WorkspaceCapabilityActivation.moveComponentState(from: old, to: new, on: activation)
+        let merged = activation.bindings.filter { !$0.isDeleted }
+        #expect(merged.map(\.componentID) == [new])
+        #expect(merged.first?.alias == "Tracker 2")
+        #expect(WorkspaceCapabilityActivation.alias(of: account, in: env.workspace) == "Tracker 2")
+    }
+
     @Test("Two MCP servers of one package can't share an ID")
     func duplicateMCPServerIDsInOnePackageAreBlocked() {
         var package = Fixtures.package(version: "1.0.0")

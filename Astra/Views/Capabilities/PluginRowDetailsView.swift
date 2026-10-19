@@ -193,7 +193,9 @@ struct PluginRowDetailsView<SetupRow: View>: View {
             Spacer()
             // Remove reaches every workspace, so it is offered once the plugin
             // is off here.
-            if row.display.isRemovable, row.activation?.isEnabled != true {
+            // A plugin the library no longer has runs nowhere: it is offered
+            // even while its activation is on.
+            if row.display.isRemovable, row.activation?.isEnabled != true || row.display.isMissing {
                 Button("Remove", role: .destructive) { onConfirm(.remove(packageID: row.package.id)) }
                     .controlSize(.small)
             }
