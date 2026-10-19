@@ -149,6 +149,132 @@ struct PluginRenameAndMissingTests {
     }
 }
 
+/// Round 21 review: every save that releases secrets writes its mirrors
+/// first, a startup move keeps its Keychain copies until its undo is saved,
+/// and credential keys compare in their stored spelling.
+@Suite("Mirror-first Add, durable migration undo, canonical credential keys")
+@MainActor
+struct PluginRound21ReviewTests {
+    typealias Fixtures = PluginOperationsTests
+
+    @Test("Add again writes every mirror before it cleans what it released, and keeps the cleanup when it can't")
+    func addWritesMirrorsBeforeCleaning() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-add-mirror-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: root.appendingPathComponent("default.store"))]
+        )
+        Fixtures.Environment.retained.append(container)
+        let context = container.mainContext
+        let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
+        context.insert(workspace)
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
+        var v1 = Fixtures.package(version: "1.0.0")
+        var second = v1.skills[0]
+        second.id = "summary-agent"
+        second.name = "Summary Agent"
+        v1.skills.append(second)
+        let installer = CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
+        try installer.install(v1, into: workspace, modelContext: context, announceCatalogMutation: false)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
+        let released = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:summary-agent")
+        let outbox = try #require(PluginSecretCleanupOutbox(for: context))
+
+        var v2 = v1
+        v2.version = "2.0.0"
+        v2.skills.removeLast()
+        var rewritten: [UUID] = []
+        var owedDuringRewrite = false
+        try installer.enable(v2, in: workspace, modelContext: context, rewriteMirror: { written in
+            rewritten.append(written.id)
+            owedDuringRewrite = (try? outbox.pending())?.contains(released) ?? false
+            return false
+        })
+        #expect(activation.recordedVersion == "2.0.0")
+        #expect(rewritten == [workspace.id])
+        #expect(owedDuringRewrite)
+        #expect(try outbox.pending() == [released])
+    }
+
+    @Test("Disabling a legacy plugin writes the workspace's mirror before any cleanup")
+    func legacyDisableWritesTheMirrorFirst() throws {
+        let env = try Fixtures.Environment()
+        var package = Fixtures.package(version: "1.0.0")
+        package.connectors = []
+        // No activation: the legacy path that deletes workspace rows.
+        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) == nil)
+        var rewritten: [UUID] = []
+        let result = CapabilityActivationDisabler().disable(
+            package, in: env.workspace, capabilities: WorkspaceCapabilities(workspace: env.workspace),
+            modelContext: env.context, availablePackages: [package],
+            rewriteMirror: { rewritten.append($0.id); return true }
+        )
+        #expect(result.persisted)
+        #expect(rewritten == [env.workspace.id])
+    }
+
+    @Test("A startup move whose undo can't be saved keeps its Keychain copies for the stored rows")
+    func startupUndoKeepsKeychainUntilSaved() throws {
+        let env = try Fixtures.Environment()
+        func legacyRow() -> Connector {
+            let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
+            row.originPackageID = "imported.tracker"
+            row.originComponentID = "connector:tracker:tracker-api"
+            row.configKeys = ["TRACKER_PROJECT"]
+            row.configValues = ["ENG-1"]
+            env.context.insert(row)
+            row.workspace = env.workspace
+            return row
+        }
+        for (undoSaves, keeps) in [(false, true), (true, false)] {
+            let store = MockSecretStore()
+            let row = legacyRow()
+            var saves = [true, undoSaves]
+            #expect(!StartupCredentialMigrationService.moveSettingsStoredAsCredentials(
+                of: [row], mirroredBy: [env.workspace], modelContext: env.context,
+                resolver: PluginConnectorFieldTrustTests.StubCreator.self, store: store,
+                rewriteMirror: { _ in false }, save: { _ in saves.removeFirst() }
+            ))
+            #expect(row.configValue("TRACKER_PROJECT") == "ENG-1")
+            #expect((PluginConnectorFieldTrustTests.held("TRACKER_PROJECT", of: row, in: store) == "ENG-1") == keeps)
+        }
+    }
+
+    @Test("Credential keys compare in their stored spelling: runtime copy, Update, field trust, validation")
+    func credentialKeysCompareCanonically() throws {
+        let env = try Fixtures.Environment()
+        var package = Fixtures.package(version: "1.0.0")
+        package.connectors[0].credentialHints = [.init(key: "tracker_token", hint: "Token")]
+        try env.install(package)
+        let account = try #require(env.workspace.connectors.first)
+        // A saved credential is recorded under its canonical key.
+        account.credentialKeys = ["TRACKER_TOKEN"]
+        account.credentialValues = [""]
+        let projection = PluginRuntimeProjection.project(
+            workspace: env.workspace, packages: [package], connectorMode: .runtimeCopies, definitions: [package]
+        )
+        #expect(try #require(projection.connectors.first { $0.id == account.id }).credentialKeys == ["TRACKER_TOKEN"])
+
+        // Update doesn't add the declared spelling beside it.
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
+        var copied: [PluginUpdateService.CopiedSecret] = []
+        PluginUpdateService.syncOwnedAccounts(of: activation, to: package, copied: &copied)
+        #expect(account.credentialKeys == ["TRACKER_TOKEN"])
+
+        // A setting and a credential that differ only in case are one stored
+        // credential, and the validator says so.
+        var mixed = PluginConnectorFieldTrustTests.importedPackage()
+        mixed.connectors[0].credentialHints = [.init(key: "TRACKER_PROJECT", hint: "Token")]
+        mixed.connectors[0].configHints = [.init(key: "tracker_project", hint: "Project", isList: false)]
+        #expect(PluginConnectorFieldTrust.asStored(mixed.connectors[0], in: mixed).credentialHints.map(\.key) == ["TRACKER_PROJECT"])
+        #expect(CapabilityPackageValidator.validate(package: mixed, checkPrerequisites: false)
+            .issues.contains { $0.title == "Credential keys differ only in case" })
+    }
+}
+
 /// Skill secrets that record what a cleanup deletes.
 private enum RecordingCleanup: SkillSecretPersisting {
     private struct State {

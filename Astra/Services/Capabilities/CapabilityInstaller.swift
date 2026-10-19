@@ -183,7 +183,8 @@ struct CapabilityInstaller {
         auditSource: String = "enable",
         traceID: String? = nil,
         persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
-        exportMirror: (@MainActor (Workspace) -> Void)? = nil
+        exportMirror: (@MainActor (Workspace) -> Void)? = nil,
+        rewriteMirror: (@MainActor (Workspace) -> Bool)? = nil
     ) throws -> InstallationResult {
         var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
         if let traceID { startFields["trace_id"] = traceID }
@@ -379,9 +380,23 @@ struct CapabilityInstaller {
             // The secret settings written above settle with the save: the
             // activation records them now.
             let journaledSecrets = savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }
+            // Every mirror the save changed is written before anything it
+            // released is cleaned, as Update does: this workspace's, the
+            // others whose pending rows became overrides, and each carrying
+            // an account the reconcile changed. One that can't be written
+            // keeps the cleanup for launch.
+            let mirrored = [workspace] + pendingSnapshots.map(\.0) + WorkspaceConfigManager.workspacesMirroring(
+                accountIDs: reconciliation.changedAccountIDs,
+                among: (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? [], modelContext: modelContext
+            )
+            let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
             guard PluginSecretCleanupOutbox.deleteThenClean(
                 releasedSkillIDs, keys: reconciliation.staleSecrets + journaledSecrets, modelContext: modelContext,
-                save: { persist(workspace, modelContext) }
+                save: { persist(workspace, modelContext) },
+                beforeSettling: {
+                    var seen = Set<UUID>()
+                    return mirrored.filter { seen.insert($0.id).inserted }.reduce(true) { rewrite($1) && $0 }
+                }
             ) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
@@ -693,7 +708,7 @@ struct CapabilityInstaller {
         )
         connector.configValues = connector.configKeys.map { configInputs[$0] ?? "" }
         for (key, value) in unsettled {
-            if let index = connector.credentialKeys.firstIndex(of: key) {
+            if let index = connector.credentialKeys.firstIndex(where: { ConnectorCredentialKey.same($0, key) }) {
                 connector.credentialKeys.remove(at: index)
                 connector.credentialValues.remove(at: index)
             }

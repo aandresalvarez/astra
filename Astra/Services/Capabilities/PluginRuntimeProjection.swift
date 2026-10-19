@@ -453,9 +453,12 @@ struct PluginRuntimeProjection {
     }
 
     /// Drops from a runtime copy the credential and setting keys outside
-    /// the declared sets, with their values.
+    /// the declared sets, with their values. Credential keys compare
+    /// canonically (`ConnectorCredentialKey`): a saved one is stored
+    /// uppercased whatever the declaration's spelling.
     private static func retain(credentials: Set<String>, config: Set<String>, on copy: Connector) {
-        let keptCredentials = copy.credentialKeys.indices.filter { credentials.contains(copy.credentialKeys[$0]) }
+        let declared = Set(credentials.map(ConnectorCredentialKey.canonical))
+        let keptCredentials = copy.credentialKeys.indices.filter { declared.contains(ConnectorCredentialKey.canonical(copy.credentialKeys[$0])) }
         if keptCredentials.count < copy.credentialKeys.count {
             copy.credentialValues = keptCredentials.map { $0 < copy.credentialValues.count ? copy.credentialValues[$0] : "" }
             copy.credentialKeys = keptCredentials.map { copy.credentialKeys[$0] }

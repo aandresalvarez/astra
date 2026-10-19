@@ -287,9 +287,10 @@ struct WorkspaceCapabilityActivationTests {
             (try? context.save()) != nil
         }
         #expect(deleted)
-        // The clicked workspace is exported by its own save; the other one
-        // that bound the account is exported here, and nothing else.
-        #expect(exported == [other.id])
+        // Every workspace whose mirror carries the account, the clicked one
+        // included, is written before its credentials are cleaned; nothing
+        // else is.
+        #expect(Set(exported) == [workspace.id, other.id] && exported.count == 2)
         withExtendedLifetime(container) {}
     }
 

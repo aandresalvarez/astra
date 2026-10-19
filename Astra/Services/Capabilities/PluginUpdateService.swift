@@ -661,7 +661,7 @@ enum PluginUpdateService {
                     account.originComponentID = componentID
                     touched = true
                 }
-                for hint in spec.credentialHints where !account.credentialKeys.contains(hint.key)
+                for hint in spec.credentialHints where !account.credentialKeys.contains(where: { ConnectorCredentialKey.same($0, hint.key) })
                     && !(moved.contains(hint.key) && account.configKeys.contains(hint.key)) {
                     while account.credentialValues.count < account.credentialKeys.count { account.credentialValues.append("") }
                     account.credentialKeys.append(hint.key)
