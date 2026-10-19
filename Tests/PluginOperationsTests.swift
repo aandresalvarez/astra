@@ -233,7 +233,7 @@ struct PluginOperationsTests {
             .setApprovalStatus(.blocked, for: package, workspace: env.workspace, approvalStore: store)
         let record = try #require(store.record(for: package))
         #expect(record.status == .blocked)
-        #expect(record.sourceDigest == PluginUpdateService.digest(of: package))
+        #expect(record.sourceDigest == (try CapabilityApprovalDigest.digest(for: package)))
     }
 
     @Test("A plugin that needs an account sign-in ASTRA can't do is listed without Add")
@@ -272,7 +272,7 @@ struct PluginOperationsTests {
         #expect(activation.knownComponentIDs.contains("skill:summary-agent"))
         #expect(!activation.knownComponentIDs.contains("skill:report-agent"))
 
-        try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [v2], mode: .release)
+        try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [v2], mode: .release, approvalRecords: PluginOperationsTests.approvals([v2]))
         #expect(activation.bindings.isEmpty)
         #expect(activation.recordedVersion == "2.0.0")
         #expect(!PluginUpdateService.needsReconcile(activation, to: v2))
@@ -294,6 +294,24 @@ struct PluginOperationsTests {
         #expect(activation.recordedVersion == "1.0.0")
 
         try env.importUpdate(v2)
+        #expect(activation.configuration(forComponent: "skill:report-agent").isEmpty)
+        #expect(activation.recordedVersion == "2.0.0")
+    }
+
+    /// Adding a version this workspace had at another one is an Update for
+    /// it (`.release`): a setting the new version stopped declaring goes.
+    @Test("Adding a version that stops declaring a setting releases it")
+    func addReleasesADroppedSetting() throws {
+        let env = try Environment()
+        var v1 = Self.package(version: "1.0.0")
+        v1.skills[0].environmentKeys = ["PROJECT", "REGION"]
+        v1.skills[0].environmentValues = ["default-project", ""]
+        try env.install(v1)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        try PluginOperations.setSetting("REGION", to: "us", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        #expect(activation.configuration(forComponent: "skill:report-agent") == ["REGION": "us"])
+
+        try env.install(Self.package(version: "2.0.0"))
         #expect(activation.configuration(forComponent: "skill:report-agent").isEmpty)
         #expect(activation.recordedVersion == "2.0.0")
     }
@@ -569,7 +587,7 @@ struct PluginOperationsTests {
         }
         let twoActivation = try #require(WorkspaceCapabilityActivation.activation(for: ab.id, in: twoLive.workspace))
         #expect(throws: PluginUpdateService.UpdateError.ambiguousRename(component: "skill:c-agent")) {
-            try PluginUpdateService.reconcileAll(modelContext: twoLive.context, packages: [chained], mode: .release)
+            try PluginUpdateService.reconcileAll(modelContext: twoLive.context, packages: [chained], mode: .release, approvalRecords: PluginOperationsTests.approvals([chained]))
         }
         #expect(twoActivation.recordedVersion == "1.0.0")
         #expect(twoActivation.configuration(forComponent: "skill:report-agent") == ["PROJECT": "Report Agent"])
@@ -755,6 +773,17 @@ struct PluginOperationsTests {
         )
     }
 
+    /// An approval of each of `packages` as it is: a local plugin read back
+    /// from the library is a draft until one covers its digest.
+    static func approvals(_ packages: [PluginPackage]) -> [CapabilityApprovalRecord] {
+        packages.map { package in
+            CapabilityApprovalRecord(
+                packageID: package.id, packageVersion: package.version, status: .approved, approvedBy: "Tests",
+                approvedAt: Date(), reviewNotes: "", sourceDigest: (try? CapabilityApprovalDigest.digest(for: package)) ?? ""
+            )
+        }
+    }
+
     static func package(version: String) -> PluginPackage {
         PluginPackage(
             id: "ops.report",
@@ -824,7 +853,7 @@ struct PluginOperationsTests {
                 throw refusal
             }
             try library.install(package, sourceMetadata: .builtIn())
-            try PluginUpdateService.reconcileAll(modelContext: context, packages: library.installedPackages(), mode: mode)
+            try PluginUpdateService.reconcileAll(modelContext: context, packages: library.installedPackages(), mode: mode, approvalRecords: PluginOperationsTests.approvals(library.installedPackages()))
         }
     }
 }

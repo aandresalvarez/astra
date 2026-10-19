@@ -324,7 +324,9 @@ enum ConnectorCredentialCleanup {
     /// any of them. `ids` are the connector IDs the stored workspaces' own
     /// mirrors list, which an export rewrites; `owners` every listed
     /// connector, by the namespaces it resolves to, an import giving one
-    /// without a valid ID a new one; `skillIDs` the skills listed. A loaded
+    /// without a valid ID a new one; `skillIDs` the skills listed, and
+    /// `skillsByWorkspace` those each stored workspace's own mirror lists,
+    /// which an export rewrites. A loaded
     /// mirror of a workspace pending deletion (`excludingWorkspaceIDs`, by
     /// default those the app's outbox holds) names nothing: its deletion
     /// settles what it lists. A missing mirror lists none; nil when one that
@@ -332,7 +334,8 @@ enum ConnectorCredentialCleanup {
     static func connectorsInStoredMirrors(
         modelContext: ModelContext, extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil
     ) -> (
-        ids: Set<UUID>, byWorkspace: [(Workspace, Set<UUID>)], owners: [ConnectorKeychainCleanup], skillIDs: Set<UUID>
+        ids: Set<UUID>, byWorkspace: [(Workspace, Set<UUID>)], owners: [ConnectorKeychainCleanup], skillIDs: Set<UUID>,
+        skillsByWorkspace: [(Workspace, Set<UUID>)]
     )? {
         struct Listed: Decodable {
             struct Skill: Decodable { let id: String? }
@@ -354,6 +357,7 @@ enum ConnectorCredentialCleanup {
         var byWorkspace: [(Workspace, Set<UUID>)] = []
         var owners: [ConnectorKeychainCleanup] = []
         var skillIDs = Set<UUID>()
+        var skillsByWorkspace: [(Workspace, Set<UUID>)] = []
         // Only a stored workspace's own mirror can be exported again.
         var files: [(workspace: Workspace?, path: String)] = workspaces.flatMap { workspace in
             [
@@ -394,7 +398,8 @@ enum ConnectorCredentialCleanup {
                 }
                 owners.append(connector.keychainCleanup)
             }
-            skillIDs.formUnion((listed.skills ?? []).compactMap { $0.id.flatMap(UUID.init(uuidString:)) })
+            let skills = Set((listed.skills ?? []).compactMap { $0.id.flatMap(UUID.init(uuidString:)) })
+            skillIDs.formUnion(skills)
             // Only a stored workspace's own mirror holds an intent back: an
             // export rewrites it. Any other copy names owners, which every
             // cleanup spares, but can't be rewritten, so it holds nothing.
@@ -402,9 +407,10 @@ enum ConnectorCredentialCleanup {
                 readCurrent.insert(workspace.id)
                 all.formUnion(ids)
                 byWorkspace.append((workspace, ids))
+                skillsByWorkspace.append((workspace, skills))
             }
         }
-        return (all, byWorkspace, owners, skillIDs)
+        return (all, byWorkspace, owners, skillIDs, skillsByWorkspace)
     }
 
     private struct Classified {

@@ -51,7 +51,7 @@ struct CapabilityActivationOwnerFitnessTests {
         "Astra/Services/Capabilities/MCPRuntimeProjection.swift": 1,
         // The V19 -> V20 migration reads the legacy shared-row lists it prunes,
         // and which workspaces list a plugin row without the plugin.
-        "Astra/Services/Capabilities/PluginActivationMigration.swift": 5,
+        "Astra/Services/Capabilities/PluginActivationMigration.swift": 3,
         "Astra/Services/Capabilities/TaskCapabilityResolver.swift": 7,
         "Astra/Services/Capabilities/WorkspaceCapabilities.swift": 4,
         "Astra/Services/Packs/AstraPackProfileResolver.swift": 1,

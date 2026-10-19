@@ -58,10 +58,13 @@ struct WorkspaceCapabilities {
 
     /// A row an activation names as a component's override is on exactly
     /// while that activation is (the projection brings it in), so it never
-    /// counts as one of the workspace's own. Lists still show it.
+    /// counts as one of the workspace's own, nor as a shared row the
+    /// workspace lists: a list may still name it (the Shared Library turns
+    /// one on), and that must not keep it on after its plugin is off.
     var activeSkills: [Skill] {
         let overriding = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
-        return uniqueSkills(workspaceSkills.filter { !overriding.contains($0.id) } + enabledGlobalSkills + enabledPackageSkills)
+        let ambient = (workspaceSkills + enabledGlobalSkills).filter { !overriding.contains($0.id) }
+        return uniqueSkills(ambient + enabledPackageSkills)
     }
 
     var workspaceConnectors: [Connector] {
@@ -141,8 +144,9 @@ struct WorkspaceCapabilities {
 
     var activeTools: [LocalTool] {
         let overriding = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
-        let ambient = (workspaceTools + activeSkills.flatMap(\.localTools)).filter { !overriding.contains($0.id) }
-        return uniqueTools(ambient + enabledGlobalTools + projection.tools)
+        let ambient = (workspaceTools + activeSkills.flatMap(\.localTools) + enabledGlobalTools)
+            .filter { !overriding.contains($0.id) }
+        return uniqueTools(ambient + projection.tools)
     }
 
     private var enabledPackages: [PluginPackage] {

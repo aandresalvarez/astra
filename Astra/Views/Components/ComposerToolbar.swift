@@ -44,6 +44,27 @@ enum ComposerToolbarPresentation {
     static func permissionModeHelp(for level: AgentPolicyLevel) -> String {
         level.userFacingLevel.shortDescription
     }
+
+    /// How the capabilities menu shows `skill`. A plugin supplies its
+    /// projected skills and the rows its activations name as a component's
+    /// override: neither is a task's to pin (`AgentTask.storableSkills`
+    /// refuses an override), so the item is locked, and checked while the
+    /// plugin supplying it is on.
+    struct SkillMenuItem: Equatable {
+        let isEnabled: Bool
+        let isPluginOwned: Bool
+    }
+
+    static func skillMenuItem(_ skill: Skill, selected: [Skill], workspace: Workspace?) -> SkillMenuItem {
+        if PluginRuntimeProjection.isProjected(skill) { return SkillMenuItem(isEnabled: true, isPluginOwned: true) }
+        if let workspace, WorkspaceCapabilityActivation.overridingRowIDs(of: workspace).contains(skill.id) {
+            let onWithPlugin = WorkspaceCapabilityActivation.activations(of: workspace).contains {
+                $0.isEnabled && $0.overridingRowIDs.contains(skill.id.uuidString)
+            }
+            return SkillMenuItem(isEnabled: onWithPlugin, isPluginOwned: true)
+        }
+        return SkillMenuItem(isEnabled: selected.contains { $0.id == skill.id }, isPluginOwned: false)
+    }
 }
 
 /// Shared bottom toolbar for both new-task and follow-up composers.
@@ -230,8 +251,9 @@ struct ComposerToolbar: View {
                         // A plugin's skill is on for every task while its
                         // plugin is on in the workspace; the Plugins screen
                         // turns it off, not this menu.
-                        let isPluginSkill = PluginRuntimeProjection.isProjected(skill)
-                        let isEnabled = isPluginSkill || skills.contains { $0.id == skill.id }
+                        let item = ComposerToolbarPresentation.skillMenuItem(skill, selected: skills, workspace: workspace)
+                        let isPluginSkill = item.isPluginOwned
+                        let isEnabled = item.isEnabled
                         Button {
                             onToggleSkill?(skill, !isEnabled)
                         } label: {

@@ -18,8 +18,11 @@ public enum StartupCredentialMigrationService {
     @MainActor
     public static func migrate(modelContext: ModelContext) {
         let workspaces: [Workspace]
+        // Nil when the workspaces can't be read: no mirror can be rewritten.
+        var mirroringWorkspaces: [Workspace]?
         do {
             workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
+            mirroringWorkspaces = workspaces
         } catch {
             workspaces = []
             logFetchFailure(scope: "workspace_connectors", error: error)
@@ -46,7 +49,7 @@ public enum StartupCredentialMigrationService {
         migrateConnectorCredentials(workspaces: workspaces, globalConnectors: globalConnectors)
         moveSettingsStoredAsCredentials(
             of: uniqueConnectors(workspaces: workspaces, globalConnectors: globalConnectors),
-            mirroredBy: workspaces,
+            mirroredBy: mirroringWorkspaces,
             modelContext: modelContext
         )
         migrateSkillSecrets(skills: skills)
@@ -85,18 +88,21 @@ public enum StartupCredentialMigrationService {
     /// shared one, a bound account) is the export's business, so all of
     /// them are rewritten. When the save or a rewrite fails, the rows and
     /// the Keychain are put back as they were, so the next launch moves the
-    /// values, and rewrites the mirrors, again. True when nothing was left
-    /// to retry.
+    /// values, and rewrites the mirrors, again. With `workspaces` unknown
+    /// (nil: they couldn't be read) nothing moves: a mirror nobody rewrites
+    /// would keep the value the store no longer has. True when nothing was
+    /// left to retry.
     @MainActor
     @discardableResult
     static func moveSettingsStoredAsCredentials(
         of connectors: [Connector],
-        mirroredBy workspaces: [Workspace],
+        mirroredBy workspaces: [Workspace]?,
         modelContext: ModelContext,
         resolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
         store: SecretStore = SecretStoreSeam.required,
         rewriteMirror: ((Workspace) -> Bool)? = nil
     ) -> Bool {
+        guard let workspaces else { return false }
         var restorers: [() -> Void] = []
         var writes: [ConnectorSettingSecretWrite] = []
         for connector in connectors {

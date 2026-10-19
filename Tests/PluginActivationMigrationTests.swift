@@ -44,7 +44,7 @@ struct PluginActivationMigrationTests {
         let aJira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: a))
         #expect(aJira.recordedVersion == fixture.jira.version)
         #expect(fixture.jira.version != "1.0.0")
-        #expect(aJira.recordedDigest == (try CapabilityApprovalDigest.digest(for: fixture.jira)))
+        #expect(aJira.recordedDigest == PluginDefinitionDigest.content(of: fixture.jira))
 
         // 2. Connectors stay rows with the same IDs and become accounts,
         // bound by ownership; same-named accounts get distinct aliases.
@@ -250,7 +250,7 @@ struct PluginActivationMigrationTests {
                 "jira-workflow": Set(fixture.jira.connectors.map(CapabilityResourceOrigin.componentID(for:))),
                 "gcloud-workflow": Set(fixture.gcloud.skills.map(CapabilityResourceOrigin.componentID(for:)))
             ],
-            installedDigests: fixture.digests,
+            installedContentDigests: fixture.digests,
             connectorComponents: WorkspaceConfigManager.CapabilityImportVerifier.connectorComponents(of: fixture.packages)
         )
         let validated = WorkspaceConfigManager.importWorkspaceResult(
@@ -759,7 +759,7 @@ struct PluginActivationMigrationTests {
             declaredComponentIDs: Dictionary(uniqueKeysWithValues: [fixture.jira, fixture.gcloud].map {
                 ($0.id, Set(PluginRuntimeProjection.componentIDs(of: $0)))
             }),
-            installedDigests: fixture.digests,
+            installedContentDigests: fixture.digests,
             connectorComponents: WorkspaceConfigManager.CapabilityImportVerifier.connectorComponents(of: fixture.packages)
         )
         let imported = WorkspaceConfigManager.importWorkspaceResult(
@@ -815,7 +815,7 @@ struct PluginActivationMigrationTests {
             installedPackageIDs: ["gcloud-workflow"],
             availablePackIDs: [],
             declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))],
-            installedDigests: fixture.digests
+            installedContentDigests: fixture.digests
         )
         let validated = WorkspaceConfigManager.importWorkspaceResult(
             from: config, modelContext: other.mainContext, capabilityTrust: .validate(verifier)
@@ -851,7 +851,7 @@ struct PluginActivationMigrationTests {
                 installedPackageIDs: ["gcloud-workflow"],
                 availablePackIDs: [],
                 declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))],
-                installedDigests: digests
+                installedContentDigests: digests
             )
             let result = WorkspaceConfigManager.importWorkspaceResult(
                 from: config, modelContext: target.mainContext, capabilityTrust: .validate(verifier)
@@ -941,7 +941,7 @@ struct PluginActivationMigrationTests {
             installedPackageIDs: ["gcloud-workflow"],
             availablePackIDs: [],
             declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))],
-            installedDigests: fixture.digests
+            installedContentDigests: fixture.digests
         )
         let imported = WorkspaceConfigManager.importWorkspaceResult(
             from: config, modelContext: target.mainContext, capabilityTrust: .validate(verifier)
@@ -967,7 +967,7 @@ struct PluginActivationMigrationTests {
             installedPackageIDs: ["gcloud-workflow"],
             availablePackIDs: [],
             declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))],
-            installedDigests: fixture.digests
+            installedContentDigests: fixture.digests
         )
 
         let duplicate = WorkspaceConfigManager.importWorkspaceResult(
@@ -1001,7 +1001,7 @@ struct PluginActivationMigrationTests {
             installedPackageIDs: ["gcloud-workflow"],
             availablePackIDs: [],
             declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))],
-            installedDigests: digests
+            installedContentDigests: digests
         )
 
         let imported = WorkspaceConfigManager.importWorkspaceResult(
@@ -1275,10 +1275,12 @@ struct PluginActivationMigrationTests {
         var submitted = fixture.gcloud
         submitted.skills[0].behaviorInstructions = "Submitted GCloud rules."
         submitted.localTools[0].arguments = "--submitted"
+        Self.accept(submitted, in: a)
         let request = TaskTurnRequest(
             task: task, messageEventID: UUID(), sequence: 2, kind: .retry, pluginDefinitions: [fixture.jira, submitted]
         )
         context.insert(request)
+        Self.accept(fixture.gcloud, in: a)
         try context.save()
         let skillName = fixture.gcloud.skills[0].name
         let liveSkill = TaskCapabilityResolver(task: task).allBehaviorSkills.first { $0.name == skillName }
@@ -1315,10 +1317,12 @@ struct PluginActivationMigrationTests {
         submitted.mcpServers = [PluginMCPServer(
             id: "submitted-files", displayName: "Submitted files", transport: .stdio, command: "/bin/cat"
         )]
+        Self.accept(submitted, in: a)
         let request = TaskTurnRequest(
             task: task, messageEventID: UUID(), sequence: 2, kind: .retry, pluginDefinitions: [fixture.jira, submitted]
         )
         context.insert(request)
+        Self.accept(fixture.gcloud, in: a)
         try context.save()
         func serverIDs(_ launch: AgentTask) -> (codex: Set<String>, manifest: Set<String>) {
             let codex = CodexMCPLaunchProjection.resolve(
@@ -1635,6 +1639,15 @@ struct PluginActivationMigrationTests {
         #expect(accepted.ready.map(\.id) == [newer.id] && accepted.ready.first?.verb == nil)
     }
 
+    /// The workspace's activation accepts `package`, as the Add that
+    /// installed it did: a request freezes the definition and the activation
+    /// that accepted it together.
+    private static func accept(_ package: PluginPackage, in workspace: Workspace) {
+        WorkspaceCapabilityActivation.recordAccepted(
+            pluginID: package.id, version: package.version, digest: PluginDefinitionDigest.content(of: package), in: workspace
+        )
+    }
+
     /// Add, as the Plugins surface's Add does it, against a scratch library.
     private static func add(
         _ package: PluginPackage,
@@ -1677,16 +1690,19 @@ private enum UndeletableSkillSecrets: SkillSecretPersisting {
 
 // MARK: - Fixture
 
+private typealias Fixture = PluginMigrationFixture
+
+/// A real V19 store written through the frozen V19 models (see the suite).
+/// Shared with the suites that pin later review fixes to the same store.
 @MainActor
-private struct Fixture {
+struct PluginMigrationFixture {
     let container: ModelContainer
     let context: ModelContext
     let packages: [PluginPackage]
-    /// Each fixture package's approval digest, as the live verifier reads it.
+    /// Each fixture package's content digest, as activations record it and
+    /// the live verifier reads it.
     var digests: [String: String] {
-        Dictionary(uniqueKeysWithValues: packages.compactMap { package in
-            (try? CapabilityApprovalDigest.digest(for: package)).map { (package.id, $0) }
-        })
+        Dictionary(uniqueKeysWithValues: packages.map { ($0.id, PluginDefinitionDigest.content(of: $0)) })
     }
     let jira: PluginPackage
     let gcloud: PluginPackage
@@ -1709,6 +1725,7 @@ private struct Fixture {
     init(
         gcloudSkillSecret: String? = nil,
         componentOnlyWorkspace: Bool = false,
+        componentWorkspaceHasGCloudOff: Bool = false,
         gcloudSkillProject: String = "skill-project",
         editedToolDescription: String? = nil,
         editedSkillIcon: String? = nil,
@@ -1831,6 +1848,12 @@ private struct Fixture {
                 let d = workspace(dID, "D")
                 d.enabledGlobalSkillIDs = [skill.id.uuidString]
                 d.enabledGlobalConnectorIDs = [shared.id.uuidString]
+                if componentWorkspaceHasGCloudOff {
+                    // D has the plugin, off: Disable took its rows off D's
+                    // lists, and D turned them on again by themselves.
+                    d.installedPluginIDs = ["gcloud-workflow"]
+                    d.installedPluginVersions = ["1.0.0"]
+                }
             }
 
             for toolSpec in gcloud.localTools {

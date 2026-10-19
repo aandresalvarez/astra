@@ -383,6 +383,19 @@ enum CapabilityPackageValidator {
             }
         }
 
+        // Two servers of one package with one ID: the projection keeps only
+        // the first, so the other's tools would silently be missing.
+        let serverIDs = package.mcpServers.map { $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        for duplicate in Dictionary(grouping: serverIDs, by: { $0 }).filter({ $0.value.count > 1 }).keys.sorted() {
+            issues.append(issue(
+                .blocker,
+                .duplicateMCPServerID,
+                "Duplicate MCP server ID",
+                "Two MCP servers in \(package.name) share the ID \(duplicate); give one of them its own.",
+                component: duplicate
+            ))
+        }
+
         // A setting is stored under `componentID#KEY`
         // (`PluginActivation.settingKey`) and split at the last `#`, so a key
         // containing one would be read back under the wrong component.
@@ -691,6 +704,20 @@ enum CapabilityPackageValidator {
                     .unsafeLocalTool,
                     "Unsafe prerequisite",
                     "\(prerequisite.displayName) declares an unsafe binary or liveness arguments: \(reason).",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
+            // The check runs on every scan with no click, so it may only read
+            // status (`HealthCheckPolicy`): refused here, as the checker never
+            // runs it.
+            guard HealthCheckPolicy.isReadOnly(binary: prerequisite.binary, arguments: prerequisite.livenessArgs) else {
+                let check = ([prerequisite.binary] + prerequisite.livenessArgs).joined(separator: " ")
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe health check",
+                    "\(prerequisite.displayName) checks itself with `\(check)`; a check may only run a read-only status command, such as `--version`.",
                     component: prerequisite.displayName
                 ))
                 continue

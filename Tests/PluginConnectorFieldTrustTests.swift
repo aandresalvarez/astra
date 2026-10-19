@@ -338,6 +338,47 @@ struct PluginConnectorFieldTrustTests {
         #expect(!mirror.contains("ENG-1"))
     }
 
+    @Test("The startup move waits while the workspaces can't be read: no mirror could be rewritten")
+    func startupMoveWaitsForReadableWorkspaces() throws {
+        let env = try Fixtures.Environment()
+        let store = MockSecretStore()
+        let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
+        row.originPackageID = "imported.tracker"
+        row.originComponentID = "connector:tracker:tracker-api"
+        row.configKeys = ["TRACKER_PROJECT"]
+        row.configValues = ["ENG-1"]
+        row.isGlobal = true
+        env.context.insert(row)
+        try env.context.save()
+        #expect(!StartupCredentialMigrationService.moveSettingsStoredAsCredentials(
+            of: [row], mirroredBy: nil, modelContext: env.context, resolver: StubCreator.self, store: store
+        ))
+        #expect(row.configKeys == ["TRACKER_PROJECT"] && row.credentialKeys.isEmpty)
+        #expect(Self.held("TRACKER_PROJECT", of: row, in: store) == nil)
+    }
+
+    @Test("The mirror withholds a third-party account's retired setting, and a bundled one's, keeping only declared plain ones")
+    func mirrorWithholdsRetiredSettings() throws {
+        // The imported plugin's current definition no longer declares
+        // OLD_PROJECT, which Update left on the account.
+        let imported = Self.importedPackage()
+        let stamp = CapabilityResourceOrigin.componentID(for: imported.connectors[0])
+        let withheld = PluginConnectorFieldTrust.settingKeysStoredAsCredentials(
+            originPackageID: imported.id, originComponentID: stamp,
+            accountKeys: ["TRACKER_PROJECT", "OLD_PROJECT"], definitions: [imported]
+        )
+        #expect(withheld == ["TRACKER_PROJECT", "OLD_PROJECT"])
+        // A bundled account keeps what ASTRA's definition declares plain,
+        // and nothing it retired.
+        let jira = try Self.jira()
+        let connector = try #require(jira.connectors.first { !$0.configHints.isEmpty })
+        let bundled = PluginConnectorFieldTrust.settingKeysStoredAsCredentials(
+            originPackageID: jira.id, originComponentID: CapabilityResourceOrigin.componentID(for: connector),
+            accountKeys: ["JIRA_PROJECTS", "JIRA_RETIRED"], definitions: [jira]
+        )
+        #expect(bundled == ["JIRA_RETIRED"])
+    }
+
     /// An Update whose reconcile moves an account's plain setting into the
     /// Keychain and then fails: the account's arrays come back, and so must
     /// the Keychain, or a retry after the person edits the setting would

@@ -225,31 +225,42 @@ enum PluginUpdateService {
         /// Whether a held-back pass newly marked the activation as awaiting
         /// Update.
         var marked = false
+        /// Account rows the sync changed: every mirror carrying one is
+        /// rewritten, not only the activation's workspace's.
+        var changedAccountIDs: Set<UUID> = []
         var changed: Bool { recorded || moved || marked || !copied.isEmpty || !released.isEmpty }
     }
 
     /// True when the activation was not reconciled against this definition,
-    /// or a pass held it back from it.
+    /// or a pass held it back from it. A digest recorded before content
+    /// digests (`PluginDefinitionDigest`) can't be judged: only the version
+    /// and components are compared until one is recorded.
     static func needsReconcile(_ activation: PluginActivation, to package: PluginPackage) -> Bool {
         activation.awaitingUpdate
             || activation.recordedVersion != package.version
-            || activation.recordedDigest != digest(of: package)
+            || PluginDefinitionDigest.matches(activation.recordedDigest, package) == false
             || activation.knownComponentIDs != componentIDs(of: package)
     }
 
     /// Reconciles every activation whose definition changed and saves once,
-    /// journaling released secret namespaces before the save and exporting
-    /// every workspace it changed after it. Returns how many activations
-    /// changed. Nothing is saved, and copied secrets are put back, when a
-    /// secret can't move or the save fails.
+    /// journaling released secret namespaces before the save, and rewriting
+    /// every mirror it changed (the reconciled workspaces', and each one
+    /// carrying a changed account) before they are cleaned. A definition
+    /// awaiting its review (`approvalRecords`) is reconciled but not
+    /// recorded as accepted: the activation stays awaiting Update. Returns
+    /// how many activations changed. Nothing is saved, and copied secrets
+    /// are put back, when a secret can't move or the save fails.
     @discardableResult
     static func reconcileAll(
         modelContext: ModelContext,
         packages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions(),
         mode: Mode = .automatic,
         secrets: (any SkillSecretPersisting.Type)? = nil,
-        connectorStore: SecretStore? = nil
+        connectorStore: SecretStore? = nil,
+        approvalRecords: [CapabilityApprovalRecord]? = nil,
+        rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws -> Int {
+        let approvalRecords = approvalRecords ?? CapabilityApprovalStore().records()
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let activations = try modelContext.fetch(FetchDescriptor<PluginActivation>())
         var total = Reconciliation()
@@ -269,18 +280,30 @@ enum PluginUpdateService {
                 else { continue }
                 let result = try reconcile(
                     activation, in: workspace, to: package, mode: mode, modelContext: modelContext, secrets: secrets,
-                    connectorStore: connectorStore, copied: &total.copied
+                    connectorStore: connectorStore,
+                    awaitsReview: awaitsReview(package, in: workspace, approvalRecords: approvalRecords),
+                    copied: &total.copied
                 )
                 total.released += result.released
                 total.staleSecrets += result.staleSecrets
+                total.changedAccountIDs.formUnion(result.changedAccountIDs)
                 guard result.changed else { continue }
                 changed += 1
                 if !changedWorkspaces.contains(where: { $0 === workspace }) { changedWorkspaces.append(workspace) }
             }
             guard changed > 0 else { return 0 }
-            let saved = PluginSecretCleanupOutbox.deleteThenClean(total.released, keys: total.staleSecrets, modelContext: modelContext) {
-                (try? WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspaces: changedWorkspaces, modelContext: modelContext)) != nil
-            }
+            let mirrored = changedWorkspaces + WorkspaceConfigManager.workspacesMirroring(
+                accountIDs: total.changedAccountIDs, among: try modelContext.fetch(FetchDescriptor<Workspace>()), modelContext: modelContext
+            )
+            let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
+            let saved = PluginSecretCleanupOutbox.deleteThenClean(
+                total.released, keys: total.staleSecrets, modelContext: modelContext, secrets: secrets,
+                save: { WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext) },
+                beforeSettling: {
+                    var seen = Set<UUID>()
+                    return mirrored.filter { seen.insert($0.id).inserted }.reduce(true) { rewrite($1) && $0 }
+                }
+            )
             guard saved else { throw UpdateError.saveFailed }
         } catch {
             modelContext.rollback()
@@ -394,6 +417,7 @@ enum PluginUpdateService {
         modelContext: ModelContext? = nil,
         secrets: (any SkillSecretPersisting.Type)? = nil,
         connectorStore: SecretStore? = nil,
+        awaitsReview: Bool = false,
         copied: inout [CopiedSecret]
     ) throws -> Reconciliation {
         let persistence = secrets ?? SkillSecretSeam.required
@@ -466,7 +490,8 @@ enum PluginUpdateService {
         }
 
         let beforeAccounts = copied.count
-        if syncOwnedAccounts(of: activation, to: package, store: connectorStore, copied: &copied) { result.moved = true }
+        result.changedAccountIDs = syncOwnedAccounts(of: activation, to: package, store: connectorStore, copied: &copied)
+        if !result.changedAccountIDs.isEmpty { result.moved = true }
         result.copied += copied[beforeAccounts...]
 
         let dropped = known.subtracting(currentSet).subtracting(renames.keys).sorted()
@@ -481,9 +506,13 @@ enum PluginUpdateService {
         if !secretsSettled, mode == .release {
             throw UpdateError.secretCleanupPending(key: Set(unsettled.map(\.key)).sorted().joined(separator: ", "))
         }
-        if mode == .automatic, !dropped.isEmpty || !staleKeys.isEmpty || !templatesInSync || !secretsSettled {
+        // A definition replaced under the version the activation accepted
+        // (other content, same version) is the person's to take: Update.
+        let changedInPlace = activation.recordedVersion == package.version
+            && PluginDefinitionDigest.matches(activation.recordedDigest, package) == false
+        if mode == .automatic, !dropped.isEmpty || !staleKeys.isEmpty || !templatesInSync || !secretsSettled || changedInPlace {
             result.withheld = dropped + staleKeys.map(\.settingKey) + (templatesInSync ? [] : ["templates"])
-                + (secretsSettled ? [] : ["secrets"])
+                + (secretsSettled ? [] : ["secrets"]) + (changedInPlace ? ["definition"] : [])
             // The renames moved state onto components the definition still
             // declares: the history names those now.
             WorkspaceCapabilityActivation.setKnownComponents(
@@ -523,6 +552,12 @@ enum PluginUpdateService {
         }
 
         WorkspaceCapabilityActivation.setKnownComponents(current, on: activation)
+        // Reconciled, but a definition still awaiting its review isn't the
+        // one the activation runs: it stays awaiting until it is approved.
+        if awaitsReview {
+            result.marked = WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
+            return result
+        }
         WorkspaceCapabilityActivation.recordAccepted(
             pluginID: package.id,
             version: package.version,
@@ -533,8 +568,24 @@ enum PluginUpdateService {
         return result
     }
 
+    /// Whether `package` still awaits its review in `workspace`: a draft no
+    /// approval covers, an approval for another digest, or a pack's review
+    /// gate.
+    static func awaitsReview(_ package: PluginPackage, in workspace: Workspace, approvalRecords: [CapabilityApprovalRecord]) -> Bool {
+        CapabilityCatalogPolicy.decision(
+            for: package, context: .currentUser(workspace: workspace, approvalRecords: approvalRecords)
+        ).blockers.contains { blocker in
+            switch blocker {
+            case .draftRequiresApproval, .approvalDigestMismatch, .packPolicyReviewRequired: true
+            default: false
+            }
+        }
+    }
+
+    /// What an activation records for the definition it accepted: its
+    /// content, never where the copy came from (`PluginDefinitionDigest`).
     static func digest(of package: PluginPackage) -> String {
-        (try? CapabilityApprovalDigest.digest(for: package)) ?? ""
+        PluginDefinitionDigest.content(of: package)
     }
 
     /// Puts back what `copied` overwrote, newest first. Returns the keys it
@@ -567,13 +618,13 @@ enum PluginUpdateService {
     /// creator's declaration is found by ID (`PluginRuntimeProjection`).
     /// What the person entered (URL, auth method, values) is kept. Each
     /// setting moved into the Keychain is recorded in `copied`, for the
-    /// caller to `undo` if its save fails. Returns whether a row changed.
+    /// caller to `undo` if its save fails. Returns the rows it changed.
     @discardableResult
     static func syncOwnedAccounts(
         of activation: PluginActivation, to package: PluginPackage, store: SecretStore? = nil, copied: inout [CopiedSecret]
-    ) -> Bool {
+    ) -> Set<UUID> {
         let store = store ?? SecretStoreSeam.required
-        var changed = false
+        var changed = Set<UUID>()
         for declared in package.connectors {
             // Settings only a bundled definition keeps plain; any other is a
             // credential key. A row that still holds one as plain text moves
@@ -608,7 +659,7 @@ enum PluginUpdateService {
                 if account.originPackageVersion != package.version { account.originPackageVersion = package.version; touched = true }
                 if touched {
                     account.updatedAt = Date()
-                    changed = true
+                    changed.insert(account.id)
                 }
             }
         }

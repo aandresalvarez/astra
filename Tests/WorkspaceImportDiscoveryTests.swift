@@ -277,6 +277,43 @@ struct WorkspaceImportOrchestratorTests {
         #expect(result.imported.last?.skills.count == 3)
     }
 
+    @Test("a parent Workspaces folder's children keep the shared account they had in common")
+    @MainActor
+    func batchImportKeepsSharedAccountShared() throws {
+        let root = try makeTemporaryDirectory(named: "Workspaces")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let source = try makeWorkspaceImportContainer()
+        let account = Connector(name: "Team API", serviceType: "custom", baseURL: "https://api.example.invalid")
+        account.isGlobal = true
+        source.mainContext.insert(account)
+        for name in ["alpha", "beta"] {
+            let folder = try makeDirectory(name, in: root)
+            let workspace = Workspace(name: name.capitalized, primaryPath: folder.path)
+            source.mainContext.insert(workspace)
+            CapabilitySharing.enableShared(account, in: workspace)
+            try source.mainContext.save()
+            try WorkspaceConfigManager.exportToFile(
+                workspace: workspace, modelContext: source.mainContext,
+                url: folder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+            )
+        }
+
+        let target = try makeWorkspaceImportContainer()
+        let context = target.mainContext
+        let result = WorkspaceImportOrchestrator(modelContext: context, taskQueue: TaskQueue())
+            .importWorkspaces(from: [root], existingWorkspaces: []) { _, _ in .skip }
+
+        #expect(result.imported.map(\.name) == ["Alpha", "Beta"])
+        let rows = try context.fetch(FetchDescriptor<Connector>()).filter { $0.name == "Team API" }
+        #expect(rows.count == 1)
+        #expect(rows.first?.isGlobal == true)
+        // A fresh ID: it can't read the source row's credentials.
+        #expect(rows.first?.id != account.id)
+        for workspace in result.imported {
+            #expect(workspace.enabledGlobalConnectorIDs == rows.map(\.id.uuidString))
+        }
+    }
+
     @Test("duplicate imports use the supplied duplicate policy")
     @MainActor
     func duplicateImportsUseSuppliedPolicy() throws {
