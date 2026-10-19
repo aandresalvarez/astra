@@ -833,6 +833,12 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
 - **Old files keep their name links.** The importer keys connectors by the
   file's own account name as well as the cleaned row name, so a pre-ID
   file's skill still reattaches through `connectorNames`.
+- **An external connector's base URL is account structure.** A field a
+  non-bundled plugin declares as `storage: account.baseURL` lands on the
+  account's `baseURL` after the credential-transport check (https only, no
+  credentials in the URL; an invalid one is a visible problem), and the
+  mirror reconstructs it; every other field of such a connector still goes
+  to the Keychain.
 
 ### How R4 was built (2026-10-16)
 
