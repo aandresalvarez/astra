@@ -122,12 +122,12 @@ extension PluginConnectorFieldTrust: ConnectorSettingStorageResolving {
         originPackageID: String, originComponentID: String?, accountKeys: [String], definitions: [PluginPackage]
     ) -> Set<String> {
         let bundled = bundledPlainAccountKeys[originPackageID] ?? [:]
-        let component = originComponentID.map { stamp in
+        let componentID = originComponentID.map { stamp in
             definitions.first { $0.id == originPackageID }
-                .flatMap { component(stampedWith: stamp, in: $0) }
+                .flatMap { Self.component(stampedWith: stamp, in: $0) }
                 .map(CapabilityResourceOrigin.componentID(for:)) ?? stamp
         }
-        let plain = component.flatMap { bundled[$0] } ?? bundled.values.reduce(into: Set()) { $0.formUnion($1) }
+        let plain = componentID.flatMap { bundled[$0] } ?? bundled.values.reduce(into: Set()) { $0.formUnion($1) }
         return Set(accountKeys).subtracting(plain)
     }
 
