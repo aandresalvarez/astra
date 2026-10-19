@@ -2265,12 +2265,11 @@ struct PluginInstallSheet: View {
         }
         .frame(width: 560, height: 600)
         .onAppear {
-            // Pre-populate base URLs from connector defaults
-            for conn in package.connectors {
-                if !conn.baseURL.isEmpty {
-                    baseURLValues[conn.setupComponentID] = conn.baseURL
-                }
-            }
+            // Pre-populate from the account the workspace already binds to
+            // each component (Add again keeps its setup), else its defaults.
+            let initial = CapabilitySetupPresentation.initialValues(for: package, in: workspace)
+            baseURLValues.merge(initial.baseURLs) { current, _ in current }
+            configValues.merge(initial.config) { current, _ in current }
         }
         // Keyed so the sweep runs once per real change to the source
         // workspaces, rather than three times per keystroke into the credential
