@@ -397,6 +397,91 @@ struct PluginSourcesTests {
         #expect(throws: PluginSourceReadError.self) { try PluginSourcePluginReader.normalized("a/../../b") }
     }
 
+    @Test("T4: a directory or file swapped for a symlink after the check never yields bytes from outside the source")
+    func swappedSymlinksNeverEscape() throws {
+        let fixture = try Fixture()
+        let fm = FileManager.default
+        let secret = Data("host secret".utf8)
+        let outside = fixture.root.appendingPathComponent("outside", isDirectory: true)
+        try fixture.write(["capability.json": secret, "skills/s/SKILL.md": secret], in: outside)
+        let folder = fixture.root.appendingPathComponent("source", isDirectory: true)
+        let original = Data("original".utf8)
+        try fixture.write(["p/capability.json": original, "p/skills/s/SKILL.md": original], in: folder)
+        let plugin = folder.appendingPathComponent("p", isDirectory: true)
+        let moved = folder.appendingPathComponent("p-moved", isDirectory: true)
+        var reader = BrokeredPluginDirectory(root: folder, kind: .folder)
+
+        // The plugin directory, already scoped (checked), is swapped for a
+        // symlink out: reads go through the directory already open.
+        let scoped = try #require(reader.scoped(to: "p"))
+        try fm.moveItem(at: plugin, to: moved)
+        try fm.createSymbolicLink(at: plugin, withDestinationURL: outside)
+        #expect(scoped.read("capability.json", limit: 1024) == .data(original))
+        #expect(scoped.read("skills/s/SKILL.md", limit: 1024) == .data(original))
+        // A fresh walk meets the symlink and refuses it.
+        #expect(reader.read("p/capability.json", limit: 1024) == .refused)
+        #expect(reader.scoped(to: "p") == nil)
+        #expect(reader.entries(in: "p").isEmpty)
+        try fm.removeItem(at: plugin)
+        try fm.moveItem(at: moved, to: plugin)
+
+        // Between opening the directories and opening the file: a directory
+        // on the path swapped out still reads the one held ...
+        let skills = plugin.appendingPathComponent("skills", isDirectory: true)
+        reader.willOpen = { path in
+            guard path == "p/skills/s/SKILL.md" else { return }
+            try? fm.moveItem(at: skills, to: plugin.appendingPathComponent("skills-moved", isDirectory: true))
+            try? fm.createSymbolicLink(at: skills, withDestinationURL: outside.appendingPathComponent("skills", isDirectory: true))
+        }
+        #expect(reader.read("p/skills/s/SKILL.md", limit: 1024) == .data(original))
+        // ... and the file itself swapped for a symlink is refused.
+        let manifest = plugin.appendingPathComponent("capability.json")
+        reader.willOpen = { path in
+            guard path == "p/capability.json" else { return }
+            try? fm.removeItem(at: manifest)
+            try? fm.createSymbolicLink(at: manifest, withDestinationURL: outside.appendingPathComponent("capability.json"))
+        }
+        #expect(reader.read("p/capability.json", limit: 1024) == .refused)
+
+        // No path climbs out of the directory it is read from.
+        reader.willOpen = nil
+        #expect(reader.read("../outside/capability.json", limit: 1024) == .refused)
+        #expect(reader.scoped(to: "p")?.read("../../outside/capability.json", limit: 1024) == .refused)
+        #expect(reader.scoped(to: "..") == nil)
+
+        // The source root itself moved and replaced by a symlink after the
+        // reader opened it: everything still comes from the root it opened.
+        try fixture.write(["p/capability.json": secret], in: outside)
+        try fm.removeItem(at: manifest)
+        try original.write(to: manifest)
+        let movedRoot = fixture.root.appendingPathComponent("source-moved", isDirectory: true)
+        let rootReader = BrokeredPluginDirectory(root: folder, kind: .folder)
+        try fm.moveItem(at: folder, to: movedRoot)
+        try fm.createSymbolicLink(at: folder, withDestinationURL: outside)
+        #expect(rootReader.scoped(to: "p")?.read("capability.json", limit: 1024) == .data(original))
+        #expect(rootReader.read("p/capability.json", limit: 1024) == .data(original))
+        try fm.removeItem(at: folder)
+        try fm.moveItem(at: movedRoot, to: folder)
+
+        // A FIFO is refused without blocking, and a symlinked skill never
+        // reaches a listed package.
+        #expect(mkfifo(plugin.appendingPathComponent("fifo").path, 0o600) == 0)
+        #expect(reader.read("p/fifo", limit: 1024) == .refused)
+        let claude = fixture.root.appendingPathComponent("claude", isDirectory: true)
+        try fixture.write([".claude-plugin/plugin.json": Data(#"{"name":"Linked"}"#.utf8)], in: claude)
+        try fm.createDirectory(at: claude.appendingPathComponent("skills/leak"), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(
+            at: claude.appendingPathComponent("skills/leak/SKILL.md"),
+            withDestinationURL: outside.appendingPathComponent("skills/s/SKILL.md")
+        )
+        let source = try #require(PluginSource.make(from: claude.path))
+        let listed = try #require(PluginSourceCatalog.listing(for: source, store: fixture.store, installed: []).plugins.first)
+        #expect(listed.canAdd == false)
+        #expect(listed.problem?.contains("SKILL.md") == true)
+        let encoded = try JSONEncoder().encode(try #require(listed.package))
+        #expect(!String(decoding: encoded, as: UTF8.self).contains("host secret"))
+    }
+
     // MARK: - T5, T6: identity
 
     @Test("T5: a built-in's ID is refused; an ID installed from elsewhere is a conflict with no Add")

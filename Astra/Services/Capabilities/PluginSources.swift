@@ -648,54 +648,152 @@ struct PluginSourceFetcher {
     }
 }
 
-/// A source's files through the file-access broker (T4, T11). A path is read
-/// only when it resolves, symlinks followed, inside the root; only regular
-/// files are read, and only when they are under the caller's size limit.
+/// A source's files, read through directory descriptors (T4, T11). The
+/// root is opened once, after the file-access broker allows it; every path
+/// below it is opened one component at a time with `openat` and
+/// `O_NOFOLLOW`, from the descriptor of the directory above, so a symlink
+/// anywhere inside the source is refused, never followed, and a directory
+/// swapped for a symlink after it was opened can't redirect a read: the
+/// read goes through the descriptor already held. Only regular files are
+/// read (`fstat` on the open descriptor), opened non-blocking so a FIFO
+/// can't hang a listing, and no more than the caller's limit.
 struct BrokeredPluginDirectory: PluginDirectoryReading {
     let root: URL
-    let intent: HostFileAccessIntent
-    var broker = HostFileAccessBroker()
+    private let directory: OpenDirectory?
+    /// Called with each relative path after its directories are open and
+    /// before the file itself is: tests swap things in here.
+    var willOpen: ((String) -> Void)?
 
-    init(root: URL, kind: PluginSource.Kind) {
+    init(root: URL, kind: PluginSource.Kind, broker: HostFileAccessBroker = HostFileAccessBroker()) {
         let resolved = root.resolvingSymlinksInPath().standardizedFileURL
-        self.init(resolvedRoot: resolved, intent: kind == .folder ? .explicitUserSelection : .astraManagedStorage(root: resolved))
+        let intent: HostFileAccessIntent = kind == .folder ? .explicitUserSelection : .astraManagedStorage(root: resolved)
+        self.root = resolved
+        let allowed = !broker.shouldSkip(resolved, intent: intent)
+        self.directory = allowed ? OpenDirectory(path: resolved.path) : nil
     }
 
-    private init(resolvedRoot: URL, intent: HostFileAccessIntent) {
-        self.root = resolvedRoot
-        self.intent = intent
+    private init(root: URL, directory: OpenDirectory?, willOpen: ((String) -> Void)?) {
+        self.root = root
+        self.directory = directory
+        self.willOpen = willOpen
     }
 
     func read(_ relativePath: String, limit: Int) -> PluginSourceFileRead {
-        guard let url = contained(relativePath) else { return .refused }
-        let type: FileAttributeType?
-        do {
-            type = try broker.itemType(at: url, intent: intent)
-        } catch {
-            return .refused
+        guard let directory, let components = Self.components(relativePath), let name = components.last else { return .refused }
+        let parent: OpenDirectory
+        switch directory.descend(components.dropLast()) {
+        case .opened(let opened): parent = opened
+        case .missing: return .missing
+        case .refused: return .refused
         }
-        guard let type else { return .missing }
-        guard type == .typeRegular else { return .refused }
-        guard let size = broker.fileSize(at: url, intent: intent) else { return .refused }
-        guard size <= limit else { return .tooLarge }
-        guard let data = try? broker.readData(at: url, intent: intent) else { return .refused }
-        return data.count <= limit ? .data(data) : .tooLarge
+        willOpen?(relativePath)
+        let descriptor = name.withCString { openat(parent.descriptor, $0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) }
+        guard descriptor >= 0 else { return parent.failure(opening: name, errno: errno) }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return .refused }
+        guard Int(info.st_size) <= limit else { return .tooLarge }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count < 0 { return .refused }
+            if count == 0 { break }
+            data.append(buffer, count: count)
+            // A file grown since the `fstat` is still read only to its limit.
+            if data.count > limit { return .tooLarge }
+        }
+        return .data(data)
     }
 
     func entries(in relativeDirectory: String) -> [String] {
-        guard let url = contained(relativeDirectory) else { return [] }
-        return ((try? broker.contentsOfDirectory(at: url, intent: intent)) ?? []).map(\.lastPathComponent)
+        guard let directory, let components = Self.components(relativeDirectory),
+              case .opened(let opened) = directory.descend(components[...]) else { return [] }
+        return opened.names()
     }
 
     func scoped(to relativeDirectory: String) -> PluginDirectoryReading? {
-        guard let url = contained(relativeDirectory) else { return nil }
-        return BrokeredPluginDirectory(resolvedRoot: url, intent: intent)
+        guard let directory, let components = Self.components(relativeDirectory),
+              case .opened(let opened) = directory.descend(components[...]) else { return nil }
+        return BrokeredPluginDirectory(
+            root: components.reduce(root) { $0.appendingPathComponent($1, isDirectory: true) },
+            directory: opened,
+            willOpen: willOpen
+        )
     }
 
-    private func contained(_ relativePath: String) -> URL? {
-        let url = (relativePath.isEmpty ? root : root.appendingPathComponent(relativePath))
-            .resolvingSymlinksInPath().standardizedFileURL
-        let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        return url.path == root.path || url.path.hasPrefix(rootPath) ? url : nil
+    /// The path's components: no `..`, nothing absolute; "" and "." are the
+    /// directory itself.
+    private static func components(_ relativePath: String) -> [String]? {
+        guard !relativePath.hasPrefix("/") else { return nil }
+        let parts = relativePath.split(separator: "/").map(String.init).filter { $0 != "." }
+        return parts.contains("..") ? nil : parts
+    }
+}
+
+/// An open directory descriptor, closed with its last reference.
+private final class OpenDirectory {
+    enum Descent {
+        case opened(OpenDirectory)
+        case missing
+        case refused
+    }
+
+    let descriptor: Int32
+
+    init?(path: String) {
+        let descriptor = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        self.descriptor = descriptor
+    }
+
+    private init(descriptor: Int32) {
+        self.descriptor = descriptor
+    }
+
+    deinit { close(descriptor) }
+
+    /// Opens each component below this one without following a symlink.
+    func descend(_ components: ArraySlice<String>) -> Descent {
+        var current = self
+        for name in components {
+            let next = name.withCString { openat(current.descriptor, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+            guard next >= 0 else {
+                switch current.failure(opening: name, errno: errno) {
+                case .missing: return .missing
+                default: return .refused
+                }
+            }
+            current = OpenDirectory(descriptor: next)
+        }
+        return .opened(current)
+    }
+
+    /// Why `name` here could not be opened: missing only when nothing is
+    /// there (or a file stands where a directory was named); a symlink or
+    /// anything else is refused.
+    func failure(opening name: String, errno code: Int32) -> PluginSourceFileRead {
+        var info = stat()
+        let found = name.withCString { fstatat(descriptor, $0, &info, AT_SYMLINK_NOFOLLOW) } == 0
+        if !found { return code == ENOENT || code == ENOTDIR ? .missing : .refused }
+        if info.st_mode & S_IFMT == S_IFLNK { return .refused }
+        return code == ENOTDIR && info.st_mode & S_IFMT == S_IFREG ? .missing : .refused
+    }
+
+    func names() -> [String] {
+        let copy = dup(descriptor)
+        guard copy >= 0, let stream = fdopendir(copy) else {
+            if copy >= 0 { close(copy) }
+            return []
+        }
+        defer { closedir(stream) }
+        var names: [String] = []
+        while let entry = readdir(stream) {
+            let name = withUnsafePointer(to: entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { String(cString: $0) }
+            }
+            if name != "." && name != ".." { names.append(name) }
+        }
+        return names
     }
 }
