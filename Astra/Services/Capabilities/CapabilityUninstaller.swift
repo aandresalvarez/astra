@@ -224,6 +224,10 @@ struct CapabilityUninstaller {
             .filter { template in
                 !remainingWorkspacePackages.contains(where: { claims(template, package: $0) })
             }
+            // The IDs of the stamped templates deleted here are kept, so the
+            // next Add writes each component's template under its old ID and
+            // a schedule naming it resolves again.
+            var deletedTemplateIDs: [String: UUID] = [:]
             for template in workspaceTemplates {
                 // A plugin template the person edited is theirs: it stays,
                 // no longer the plugin's, as Update would leave it.
@@ -232,9 +236,14 @@ struct CapabilityUninstaller {
                     PluginTemplateSync.unstamp(template)
                     continue
                 }
+                if CapabilityResourceOrigin.isOwnedBy(template, packageID: package.id),
+                   let componentID = template.originComponentID, !componentID.isEmpty {
+                    deletedTemplateIDs[componentID] = template.id
+                }
                 result.removedTemplateIDs.append(template.id)
                 modelContext.delete(template)
             }
+            WorkspaceCapabilityActivation.retainTemplateIDs(deletedTemplateIDs, pluginID: package.id, in: workspace)
 
             if wasPackageEnabled || wasPackageRecorded || hadPackageGlobals || !workspaceTemplates.isEmpty {
                 workspace.updatedAt = Date()

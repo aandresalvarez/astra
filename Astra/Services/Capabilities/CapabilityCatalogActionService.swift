@@ -435,6 +435,7 @@ struct CapabilityCatalogActionService {
             WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs.contains(connector.id.uuidString)
         )
         AppLogger.audit(.connectorUpdated, category: "Capabilities", fields: fields)
+        PluginStateMirrors.exportAfterSave(workspace: workspace, accounts: [connector], modelContext: modelContext)
         CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return true
     }

@@ -261,6 +261,7 @@ struct CapabilityInstaller {
             // The accounts its components created here before a Remove come
             // back bound, stamped again, rather than as duplicates.
             let retainedAccounts = WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: workspace)
+            let retainedTemplateIDs = WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: workspace)
             WorkspaceCapabilityActivation.reinstateRetired(on: activation, declaring: componentIDs, in: workspace)
             for retained in retainedAccounts
             where componentIDs.contains(retained.componentID) && activation.accounts(forComponent: retained.componentID).isEmpty {
@@ -388,7 +389,7 @@ struct CapabilityInstaller {
                 )
             }
 
-            for template in PluginTemplateSync.sync(package, in: workspace, modelContext: modelContext) {
+            for template in PluginTemplateSync.sync(package, in: workspace, modelContext: modelContext, reusingIDs: retainedTemplateIDs) {
                 appendUnique(template.id, to: &templateIDs)
             }
 

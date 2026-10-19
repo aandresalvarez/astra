@@ -711,6 +711,9 @@ struct ConnectorEditorView: View {
                 workspace: workspace ?? connector.workspace,
                 modelContext: modelContext
             )
+            // An account other workspaces carry (a binding, a shared list, a
+            // skill) is in their mirrors too.
+            PluginStateMirrors.exportAfterSave(workspace: workspace ?? connector.workspace, accounts: [connector], modelContext: modelContext)
         }
         .confirmationDialog(
             pendingDeletion?.title ?? "",
@@ -1172,11 +1175,12 @@ struct ConnectorEditorView: View {
     }
 
     private func saveSharingChange() {
-        CapabilityPersistence.saveResourceMutation(
+        guard CapabilityPersistence.saveResourceMutation(
             workspace: workspace ?? connector.workspace,
             isGlobal: connector.isGlobal,
             modelContext: modelContext
-        )
+        ) else { return }
+        PluginStateMirrors.exportAfterSave(workspace: workspace ?? connector.workspace, accounts: [connector], modelContext: modelContext)
     }
 
     private func applyServiceDefaults(for type: String) {
