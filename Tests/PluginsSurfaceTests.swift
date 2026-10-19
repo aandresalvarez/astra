@@ -411,9 +411,14 @@ struct PluginsSurfaceTests {
 
     @Test("A pending account offers Reconnect only when Add can sign in to it")
     func pendingAccountOffersReconnectOnlyForSupportedProviders() throws {
+        // R4 has no sign-in flow for any provider (`supportedOAuthProviders`
+        // is empty), so even the Google account gets the reason, no button.
         let google = try builtIn("google-workspace")
-        #expect(PluginsSurfacePresentation.pendingAccountAction(for: google) == .reconnect)
         let googleAccount = try #require(google.setupRequirements.first)
+        let googleRefused = CapabilityAccountSetupError.unsupportedProvider(
+            account: googleAccount.displayName, provider: googleAccount.provider
+        )
+        #expect(PluginsSurfacePresentation.pendingAccountAction(for: google) == .unsupported(try #require(googleRefused.errorDescription)))
         for provider in ["salesforce", nil] {
             let account = PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: provider)
             // Alone, or beside a Google account Add could connect: Add
@@ -422,7 +427,10 @@ struct PluginsSurfaceTests {
                 var crm = package("imported-crm", name: "CRM")
                 crm.setupRequirements = requirements
                 #expect(!PluginsSurfacePresentation.pendingAccounts(for: crm, googleAccountConnected: false).isEmpty)
-                let expected = CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)
+                // Add names the first account it can't sign in to.
+                let expected = requirements.first?.id == googleAccount.id
+                    ? googleRefused
+                    : CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)
                 #expect(PluginsSurfacePresentation.pendingAccountAction(for: crm) == .unsupported(try #require(expected.errorDescription)))
                 #expect(throws: expected) { try CapabilityCatalogActionService.addRoute(for: crm) }
             }
