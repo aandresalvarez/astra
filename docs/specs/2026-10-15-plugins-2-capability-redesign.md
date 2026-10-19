@@ -413,7 +413,13 @@ Each is a decision R1 implements and its fixture tests.
     projected skill are remapped from the file's own workspace ID to the
     IDs the new activation derives, also when the copy gets a fresh
     workspace UUID (Duplicate), so they keep resolving. Recovery from the
-    workspace's own mirror keeps account IDs.
+    workspace's own mirror keeps account IDs. An Import
+    Workspace action that imports several workspaces at once (a parent
+    `Workspaces` folder) shares one import session: each exported shared
+    account gets one fresh row for the whole action, stays shared, and every
+    imported activation that named it binds that row; the fresh ID still never
+    resolves an existing Keychain credential, and a single-workspace import or
+    mirror recovery is unchanged.
 
 9. **Legacy component IDs.** Rows made by the current installer carry
    `originComponentID` values from `CapabilityResourceOrigin.componentID(for:)`
