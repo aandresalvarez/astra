@@ -509,7 +509,10 @@ struct PluginActivationReviewTests {
     }
 
     /// One runtime copy serves a run scoped to either binder, so with no
-    /// creator to read it keeps only the settings both declare.
+    /// creator to read it keeps only the settings both declare: the skill
+    /// settings an account carries plain. A binder's own connector setting
+    /// is a credential of a third-party plugin, so a plain value the row
+    /// still holds for it reaches no run.
     @Test("A shared account whose creator can't be found keeps only the settings every binder declares")
     func sharedAccountWithUnresolvableCreatorKeepsCommonSettings() throws {
         let env = try Fixtures.Environment()
@@ -517,11 +520,14 @@ struct PluginActivationReviewTests {
         let account = try #require(env.workspace.connectors.first { $0.originPackageID == "ops.report" })
         account.setConfigValue("ONLY_B", value: "b-value")
         account.setConfigValue("SHARED", value: "shared-value")
-        func binder(_ id: String, configKeys: [String]) throws -> PluginPackage {
+        account.setConfigValue("TRACKER_REGION", value: "plain-region")
+        func binder(_ id: String, settings: [String]) throws -> PluginPackage {
             var package = Fixtures.package(version: "1.0.0")
             package.id = id
             package.skills[0].name = "\(id) Agent"
-            package.connectors[0].configHints = configKeys.map { .init(key: $0, hint: $0, isList: false) }
+            package.skills[0].environmentKeys = settings
+            package.skills[0].environmentValues = settings.map { _ in "" }
+            package.connectors[0].configHints = [.init(key: "TRACKER_REGION", hint: "Region", isList: false)]
             WorkspaceCapabilityActivation.mutate(env.workspace) { $0.enableCapability(id) }
             let activation = try #require(WorkspaceCapabilityActivation.activation(for: id, in: env.workspace))
             WorkspaceCapabilityActivation.bind(
@@ -529,8 +535,8 @@ struct PluginActivationReviewTests {
             )
             return package
         }
-        let b = try binder("ops.b", configKeys: ["ONLY_B", "SHARED"])
-        let c = try binder("ops.c", configKeys: ["SHARED"])
+        let b = try binder("ops.b", settings: ["ONLY_B", "SHARED"])
+        let c = try binder("ops.c", settings: ["SHARED"])
         WorkspaceCapabilityActivation.mutate(env.workspace) { $0.capabilityIDs.removeAll { $0 == "ops.report" } }
 
         // Either order of the binders: the first one no longer decides.
@@ -540,9 +546,10 @@ struct PluginActivationReviewTests {
             ).connectors.first { $0.id == account.id })
             #expect(copy.configKeys.contains("SHARED"))
             #expect(!copy.configKeys.contains("ONLY_B") && !copy.configValues.contains("b-value"))
+            #expect(!copy.configKeys.contains("TRACKER_REGION") && !copy.configValues.contains("plain-region"))
             #expect(copy.credentialKeys.isEmpty)
         }
-        #expect(account.config["ONLY_B"] == "b-value")
+        #expect(account.config["ONLY_B"] == "b-value" && account.config["TRACKER_REGION"] == "plain-region")
     }
 
     @Test("A queued launch keeps its frozen acceptance with its frozen definitions, and takes the live one without them")
