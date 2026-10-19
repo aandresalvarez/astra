@@ -34,12 +34,30 @@ extension CapabilityCatalogActionService {
     /// Imports the exact package that was reviewed into the library, after
     /// confirming its source still offers that digest (T8). Adding it to a
     /// workspace is the row's Add, as for an imported file.
+    ///
+    /// The check and the writes run as one step for the plugin's ID across
+    /// every source (`PluginSourceStore.exclusively`, T5, T13): another
+    /// source's Add of the same ID, a file import or a Remove can't run
+    /// between them, so the conflict check below sees the library the
+    /// writes change.
     @discardableResult
     func importReviewed(
         _ plugin: SourcedPlugin,
         workspace: Workspace,
         modelContext: ModelContext,
         coordinator: PluginSourceCoordinator = .shared
+    ) throws -> CapabilityPackageImportResult {
+        guard let id = plugin.package?.id else { throw PluginSourceCatalogError.noLongerOffered }
+        return try sourceStore.exclusively(pluginID: id) {
+            try importReviewedExclusively(plugin, workspace: workspace, modelContext: modelContext, coordinator: coordinator)
+        }
+    }
+
+    private func importReviewedExclusively(
+        _ plugin: SourcedPlugin,
+        workspace: Workspace,
+        modelContext: ModelContext,
+        coordinator: PluginSourceCoordinator
     ) throws -> CapabilityPackageImportResult {
         let package = try PluginSourceCatalog.confirmReviewed(
             plugin,

@@ -73,14 +73,19 @@ struct CapabilityCatalogActionService {
     /// source's: a Remove, or a file import or Create. A provenance record
     /// left behind would make a later file copy with the same bytes look
     /// like that source's own, so the forget is journaled around the write
-    /// (`PluginSourceStore.forgettingProvenance`).
+    /// (`PluginSourceStore.forgettingProvenance`). It runs with no source
+    /// import, other local install or Remove of the same ID in between
+    /// (`PluginSourceStore.exclusively`); the library write validates
+    /// against the library as it is then.
     private func forgettingSource<Result>(
         of packageID: String?,
         leaving intent: PluginSourceStore.Provenance.PendingForget,
         _ libraryWrite: () throws -> Result
     ) throws -> Result {
         guard let packageID else { return try libraryWrite() }
-        return try sourceStore.forgettingProvenance(pluginID: packageID, leaving: intent, libraryWrite)
+        return try sourceStore.exclusively(pluginID: packageID) {
+            try sourceStore.forgettingProvenance(pluginID: packageID, leaving: intent, libraryWrite)
+        }
     }
 
     /// Writes the package's shareable source JSON to `url`. The exported

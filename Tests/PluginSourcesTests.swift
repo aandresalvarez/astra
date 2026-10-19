@@ -463,6 +463,30 @@ struct PluginSourcesTests {
         try fm.removeItem(at: folder)
         try fm.moveItem(at: movedRoot, to: folder)
 
+        // The source root swapped between the broker check and its open:
+        // for a symlink out, or for another directory, nothing is read.
+        let swaps: [(String, () throws -> Void)] = [
+            ("symlink", { try fm.createSymbolicLink(at: folder, withDestinationURL: outside) }),
+            ("directory", { try fm.copyItem(at: outside, to: folder) })
+        ]
+        for (kind, swapIn) in swaps {
+            var swapError: Error?
+            let swapped = BrokeredPluginDirectory(root: folder, kind: .folder, willOpenRoot: {
+                do {
+                    try fm.moveItem(at: folder, to: movedRoot)
+                    try swapIn()
+                } catch { swapError = error }
+            })
+            #expect(swapError == nil, "\(kind)")
+            #expect(swapped.read("p/capability.json", limit: 1024) == .refused, "\(kind)")
+            #expect(swapped.scoped(to: "p") == nil, "\(kind)")
+            #expect(swapped.entries(in: "").isEmpty, "\(kind)")
+            try fm.removeItem(at: folder)
+            try fm.moveItem(at: movedRoot, to: folder)
+        }
+        // Unswapped, the same reader reads the source.
+        #expect(BrokeredPluginDirectory(root: folder, kind: .folder, willOpenRoot: {}).read("p/capability.json", limit: 1024) == .data(original))
+
         // A FIFO is refused without blocking, and a symlinked skill never
         // reaches a listed package.
         #expect(mkfifo(plugin.appendingPathComponent("fifo").path, 0o600) == 0)
@@ -720,6 +744,81 @@ struct PluginSourcesTests {
         let record = try #require(fixture.store.provenance()[old.id])
         #expect(record.pendingForget == nil)
         #expect(PluginSourceCatalog.isOwnCopy(old, of: source, provenance: fixture.store.provenance()))
+    }
+
+    @Test("T5, T13: installs of one plugin ID are one at a time across sources; the second meets the first's copy as a conflict")
+    func installsOfOneIDAreSerializedAcrossSources() throws {
+        let fixture = try Fixture()
+        let (library, files) = fixture.journaledLibrary()
+        let first = fixture.root.appendingPathComponent("first", isDirectory: true)
+        let second = fixture.root.appendingPathComponent("second", isDirectory: true)
+        try fixture.write(["capability.json": try Self.packageJSON(id: "raced", version: "1.0.0")], in: first)
+        // The other source's copy is newer: a file import of it would be an Update.
+        try fixture.write(["capability.json": try Self.packageJSON(id: "raced", version: "2.0.0")], in: second)
+        let sourceA = try #require(PluginSource.make(from: first.path))
+        let sourceB = try #require(PluginSource.make(from: second.path))
+        try fixture.store.save([sourceA, sourceB])
+        let coordinator = PluginSourceCoordinator(store: fixture.store, installedPackages: { library.installedPackages() })
+        coordinator.reload()
+        let plugins = coordinator.listings.flatMap(\.plugins)
+        let fromA = try #require(plugins.first { $0.source.id == sourceA.id })
+        let fromB = try #require(plugins.first { $0.source.id == sourceB.id })
+        #expect(fromA.canAdd && fromB.canAdd)
+        let workspace = Workspace(name: "Raced", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        fixture.context.insert(workspace)
+        let service = CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
+
+        // While A's library write is under way, B's Add of the same ID (in
+        // another case too), a file import and a Remove are each refused,
+        // not run over it.
+        var refusals: [Error] = []
+        files.duringNextLibraryWrite = {
+            MainActor.assumeIsolated {
+                do {
+                    try service.importReviewed(fromB, workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
+                } catch { refusals.append(error) }
+                do {
+                    let file = try Self.package(id: "Raced", version: "3.0.0")
+                    let report = CapabilityPackageValidator.validate(package: file, installedPackages: [], checkPrerequisites: false)
+                    try service.importPlugin(report, workspace: workspace, modelContext: fixture.context, traceID: AuditTrace.make("test"))
+                } catch { refusals.append(error) }
+                do {
+                    _ = try service.remove(try Self.package(id: "raced", version: "1.0.0"), modelContext: fixture.context)
+                } catch { refusals.append(error) }
+            }
+        }
+        try service.importReviewed(fromA, workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
+        #expect(files.duringNextLibraryWrite == nil)
+        #expect(refusals.count == 3)
+        #expect(refusals.allSatisfy { error in
+            if case .pluginBusy? = error as? PluginSourceStoreError { return true }
+            return false
+        }, "\(refusals)")
+        #expect(library.installedPackage(id: "raced")?.version == "1.0.0")
+        #expect(fixture.store.provenance()["raced"] == PluginSourceStore.Provenance(
+            sourceID: sourceA.id, digest: fromA.digest
+        ))
+
+        // Once A is done, B's Add checks again and meets A's copy: a conflict.
+        let refused = try #require(coordinator.listings.flatMap(\.plugins).first { $0.source.id == sourceB.id })
+        #expect(!refused.canAdd)
+        #expect(throws: PluginSourceCatalogError.self) {
+            try service.importReviewed(fromB, workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
+        }
+        #expect(library.installedPackage(id: "raced")?.version == "1.0.0")
+        #expect(fixture.store.provenance()["raced"]?.sourceID == sourceA.id)
+
+        // Another process holding the ID's lock refuses it here as well.
+        let lockURL = fixture.store.pluginLockURL(forKey: "raced")
+        let held = open(lockURL.path, O_RDWR | O_CLOEXEC)
+        #expect(held >= 0)
+        defer { close(held) }
+        #expect(flock(held, LOCK_EX | LOCK_NB) == 0)
+        #expect(throws: PluginSourceStoreError.pluginBusy("RACED")) {
+            try fixture.store.exclusively(pluginID: "RACED") {}
+        }
+        flock(held, LOCK_UN)
+        #expect(try fixture.store.exclusively(pluginID: "RACED") { true })
     }
 
     @Test("T5: a chosen workspace file enables a source plugin's activation only where the same source installed that copy")
@@ -1523,6 +1622,9 @@ final class ProvenanceSnapshotFileManager: FileManager {
     let provenanceURL: URL
     var snapshots: [Data?] = []
     var failLibraryWrites = false
+    /// Runs once, at the next library write, before it: what arrives while
+    /// a write is under way.
+    var duringNextLibraryWrite: (() -> Void)?
 
     init(libraryDirectory: URL, provenanceURL: URL) {
         self.libraryDirectory = libraryDirectory.standardizedFileURL
@@ -1547,6 +1649,10 @@ final class ProvenanceSnapshotFileManager: FileManager {
     override func createDirectory(at url: URL, withIntermediateDirectories: Bool, attributes: [FileAttributeKey: Any]? = nil) throws {
         if url.standardizedFileURL.path == libraryDirectory.path {
             snapshot()
+            if let during = duringNextLibraryWrite {
+                duringNextLibraryWrite = nil
+                during()
+            }
             if failLibraryWrites { throw CocoaError(.fileWriteNoPermission) }
         }
         try super.createDirectory(at: url, withIntermediateDirectories: withIntermediateDirectories, attributes: attributes)

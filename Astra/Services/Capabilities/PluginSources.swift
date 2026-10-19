@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 import ASTRACore
@@ -117,9 +118,17 @@ enum PluginSourceStoreError: Error, Equatable, LocalizedError {
     /// `sources.json` exists but can't be read: it is reported and never
     /// overwritten (T11).
     case listUnreadable
+    /// Another Add, file import, Create or Remove of the same plugin ID is
+    /// running, here or in another ASTRA process (`exclusively`).
+    case pluginBusy(String)
 
     var errorDescription: String? {
-        "The list of plugin sources can't be read, so it was left as it is."
+        switch self {
+        case .listUnreadable:
+            "The list of plugin sources can't be read, so it was left as it is."
+        case .pluginBusy:
+            "This plugin is being added, imported or removed already. Try again when that finishes."
+        }
     }
 }
 
@@ -356,6 +365,42 @@ struct PluginSourceStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(records).write(to: provenanceURL, options: .atomic)
+    }
+
+    /// Runs one Add from a source, file import, Create or Remove of a
+    /// plugin (`body`), with no other for the same ID running across
+    /// sources (T5, T13): an install from one source can't pass its
+    /// conflict check while another source's install of that ID is between
+    /// its check and its writes, so `body` checks again and writes as one
+    /// step. IDs are keyed as the library names their files (case and
+    /// separators folded), so two IDs that would share a file share the
+    /// key. Held in this process (a set of keys) and across processes (an
+    /// exclusive `flock` on `locks/<key digest>.lock` under the store). A
+    /// second operation is refused, not queued: the paths are synchronous
+    /// on the main actor, so one that arrives meanwhile is re-entering
+    /// from inside the first, or comes from another process.
+    func exclusively<Result>(pluginID: String, _ body: () throws -> Result) throws -> Result {
+        let key = CapabilityLibrary.safeFileName(for: pluginID).lowercased()
+        guard Self.heldPluginKeys.withLock({ $0.insert(key).inserted }) else {
+            throw PluginSourceStoreError.pluginBusy(pluginID)
+        }
+        defer { _ = Self.heldPluginKeys.withLock { $0.remove(key) } }
+        let lockURL = pluginLockURL(forKey: key)
+        try fileManager.createDirectory(at: lockURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let descriptor = open(lockURL.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: lockURL.path]) }
+        defer { close(descriptor) }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw PluginSourceStoreError.pluginBusy(pluginID) }
+        defer { flock(descriptor, LOCK_UN) }
+        return try body()
+    }
+
+    /// The plugin keys `exclusively` holds in this process.
+    private static let heldPluginKeys = OSAllocatedUnfairLock(initialState: Set<String>())
+
+    func pluginLockURL(forKey key: String) -> URL {
+        let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+        return root.appendingPathComponent("locks", isDirectory: true).appendingPathComponent("\(digest).lock")
     }
 
     func cloneDirectory(for source: PluginSource) -> URL {
@@ -649,14 +694,18 @@ struct PluginSourceFetcher {
 }
 
 /// A source's files, read through directory descriptors (T4, T11). The
-/// root is opened once, after the file-access broker allows it; every path
-/// below it is opened one component at a time with `openat` and
-/// `O_NOFOLLOW`, from the descriptor of the directory above, so a symlink
-/// anywhere inside the source is refused, never followed, and a directory
-/// swapped for a symlink after it was opened can't redirect a read: the
-/// read goes through the descriptor already held. Only regular files are
-/// read (`fstat` on the open descriptor), opened non-blocking so a FIFO
-/// can't hang a listing, and no more than the caller's limit.
+/// root is opened once, after the file-access broker allows it, without
+/// following a link (`O_NOFOLLOW`) and only when the descriptor is the very
+/// directory the broker was asked about (its device and inode, taken
+/// before the check), so a root swapped for a symlink or another directory
+/// between the check and the open is refused. Every path below it is
+/// opened one component at a time with `openat` and `O_NOFOLLOW`, from the
+/// descriptor of the directory above, so a symlink anywhere inside the
+/// source is refused, never followed, and a directory swapped for a symlink
+/// after it was opened can't redirect a read: the read goes through the
+/// descriptor already held. Only regular files are read (`fstat` on the
+/// open descriptor), opened non-blocking so a FIFO can't hang a listing,
+/// and no more than the caller's limit.
 struct BrokeredPluginDirectory: PluginDirectoryReading {
     let root: URL
     private let directory: OpenDirectory?
@@ -664,12 +713,23 @@ struct BrokeredPluginDirectory: PluginDirectoryReading {
     /// before the file itself is: tests swap things in here.
     var willOpen: ((String) -> Void)?
 
-    init(root: URL, kind: PluginSource.Kind, broker: HostFileAccessBroker = HostFileAccessBroker()) {
+    /// `willOpenRoot` runs after the broker check and before the root is
+    /// opened: tests swap things in there.
+    init(
+        root: URL,
+        kind: PluginSource.Kind,
+        broker: HostFileAccessBroker = HostFileAccessBroker(),
+        willOpenRoot: (() -> Void)? = nil
+    ) {
         let resolved = root.resolvingSymlinksInPath().standardizedFileURL
         let intent: HostFileAccessIntent = kind == .folder ? .explicitUserSelection : .astraManagedStorage(root: resolved)
         self.root = resolved
-        let allowed = !broker.shouldSkip(resolved, intent: intent)
-        self.directory = allowed ? OpenDirectory(path: resolved.path) : nil
+        // The directory the broker is asked about, as it is now; a symlink
+        // there is no directory and is refused.
+        let checked = OpenDirectory.identity(atPath: resolved.path)
+        let allowed = checked != nil && !broker.shouldSkip(resolved, intent: intent)
+        willOpenRoot?()
+        self.directory = allowed ? checked.flatMap { OpenDirectory(root: resolved.path, identity: $0) } : nil
     }
 
     private init(root: URL, directory: OpenDirectory?, willOpen: ((String) -> Void)?) {
@@ -739,11 +799,35 @@ private final class OpenDirectory {
         case refused
     }
 
+    /// Which directory a descriptor or path names.
+    struct Identity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+    }
+
     let descriptor: Int32
 
-    init?(path: String) {
-        let descriptor = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    /// The directory at `path` now, its last component not followed: nil
+    /// when that is a symlink or anything but a directory.
+    static func identity(atPath path: String) -> Identity? {
+        var info = stat()
+        guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { return nil }
+        return Identity(device: info.st_dev, inode: info.st_ino)
+    }
+
+    /// Opens the root without following a link at its last component, and
+    /// keeps it only when it is still the directory `identity` names: one
+    /// swapped for a symlink fails the open, and one swapped for another
+    /// directory (or reached through a swapped parent) fails the match.
+    init?(root path: String, identity: Identity) {
+        let descriptor = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+              Identity(device: info.st_dev, inode: info.st_ino) == identity else {
+            close(descriptor)
+            return nil
+        }
         self.descriptor = descriptor
     }
 
