@@ -195,14 +195,21 @@ enum PluginSourceCatalog {
     }
 
     /// Whether `installed` is the copy `source` installed: its provenance
-    /// names the source, for exactly this content.
+    /// names the source, for exactly this content. A forget an exit left
+    /// pending is settled by this copy first (`Provenance.resolved`).
     static func isOwnCopy(
         _ installed: PluginPackage,
         of source: PluginSource,
         provenance: [String: PluginSourceStore.Provenance]
     ) -> Bool {
-        guard let record = provenance[installed.id] else { return false }
-        return record.sourceID == source.id && record.names(contentDigest(installed))
+        let digest = contentDigest(installed)
+        guard let record = provenance[installed.id]?.resolved(installedDigest: digest) else { return false }
+        return record.sourceID == source.id && record.names(digest)
+    }
+
+    /// Plugin ID → `contentDigest` of each installed copy.
+    static func installedDigests(_ installed: [PluginPackage]) -> [String: String] {
+        Dictionary(installed.map { ($0.id, contentDigest($0)) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// Only from the plugin's own source, only a strictly greater version or
@@ -278,6 +285,9 @@ final class PluginSourceCoordinator: ObservableObject {
         do {
             let sources = try store.sources()
             let installed = installedPackages()
+            // A forget an exit left pending is settled against the library
+            // before anything reads the records (T5).
+            try? store.resolvePendingForgets(installedDigests: PluginSourceCatalog.installedDigests(installed))
             let previous = listings
             listings = sources.map { source in
                 let listing = PluginSourceCatalog.listing(for: source, store: store, installed: installed)

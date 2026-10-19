@@ -69,18 +69,18 @@ struct CapabilityCatalogActionService {
         self.sourceStore = sourceStore
     }
 
-    /// The copy now in the library is no source's: removed, or installed
-    /// from a file or Create. A provenance record left behind would make a
-    /// later file copy with the same bytes look like that source's own.
-    private func forgetSource(of packageID: String) {
-        do {
-            try sourceStore.forgetProvenance(pluginID: packageID)
-        } catch {
-            AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
-                "source": "plugin_source_provenance", "package_id": packageID,
-                "result": "forget_failed", "error_type": String(describing: type(of: error))
-            ], level: .error)
-        }
+    /// Runs a library write after which the copy in the library is no
+    /// source's: a Remove, or a file import or Create. A provenance record
+    /// left behind would make a later file copy with the same bytes look
+    /// like that source's own, so the forget is journaled around the write
+    /// (`PluginSourceStore.forgettingProvenance`).
+    private func forgettingSource<Result>(
+        of packageID: String?,
+        leaving intent: PluginSourceStore.Provenance.PendingForget,
+        _ libraryWrite: () throws -> Result
+    ) throws -> Result {
+        guard let packageID else { return try libraryWrite() }
+        return try sourceStore.forgettingProvenance(pluginID: packageID, leaving: intent, libraryWrite)
     }
 
     /// Writes the package's shareable source JSON to `url`. The exported
@@ -153,17 +153,24 @@ struct CapabilityCatalogActionService {
     ) throws -> CapabilityCatalogCreateActionResult {
         let source = enableHere ? "create_and_enable" : "create_install_only"
         do {
-            let result = try creationService.create(
-                package,
-                enableHere: enableHere,
-                sourceURL: sourceURL,
-                workspace: workspace,
-                modelContext: modelContext,
-                allowCredentialUserInteraction: allowCredentialUserInteraction,
-                policyContext: policyContext,
-                traceID: traceID
-            )
-            forgetSource(of: result.package.id)
+            // The copy Create writes is the validated package.
+            let written = CapabilityPackageValidator.validate(
+                package: package, installedPackages: library.installedPackages(), checkPrerequisites: false
+            ).package ?? package
+            let result = try forgettingSource(
+                of: package.id, leaving: .install(digest: PluginSourceCatalog.contentDigest(written))
+            ) {
+                try creationService.create(
+                    package,
+                    enableHere: enableHere,
+                    sourceURL: sourceURL,
+                    workspace: workspace,
+                    modelContext: modelContext,
+                    allowCredentialUserInteraction: allowCredentialUserInteraction,
+                    policyContext: policyContext,
+                    traceID: traceID
+                )
+            }
             // Creation always changes the global library. The creation service
             // owns that event; this additional scoped event represents only
             // the optional workspace enablement.
@@ -193,9 +200,9 @@ struct CapabilityCatalogActionService {
         _ package: PluginPackage,
         modelContext: ModelContext
     ) throws -> CapabilityUninstaller.RemovalResult {
-        let result = try uninstaller.remove(package, modelContext: modelContext)
-        forgetSource(of: package.id)
-        return result
+        try forgettingSource(of: package.id, leaving: .remove) {
+            try uninstaller.remove(package, modelContext: modelContext)
+        }
     }
 
     /// Plugins 2.0 one-step Add: install, approve and enable in this workspace.
@@ -399,8 +406,11 @@ struct CapabilityCatalogActionService {
             throw CapabilityPackageImportError(report: report)
         }
         do {
-            let result = try CapabilityPackageImporter(library: library).importValidatedPackage(report, modelContext: modelContext)
-            forgetSource(of: result.package.id)
+            let result = try forgettingSource(
+                of: report.package?.id, leaving: .install(digest: report.package.map(PluginSourceCatalog.contentDigest) ?? "")
+            ) {
+                try CapabilityPackageImporter(library: library).importValidatedPackage(report, modelContext: modelContext)
+            }
             AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
                 "source": "import_json",
                 "trace_id": traceID,

@@ -414,6 +414,132 @@ struct PluginSourcesTests {
         #expect(fixture.store.provenance()[package.id] == nil)
     }
 
+    @Test("T5: a file import that exits after its library write leaves the copy no source's, even with the same bytes")
+    func fileImportExitAfterWriteForgets() throws {
+        let fixture = try Fixture()
+        let (library, files) = fixture.journaledLibrary()
+        let source = try #require(PluginSource.make(from: fixture.root.appendingPathComponent("source").path))
+        let package = try Self.package(id: "reimported", version: "1.0.0")
+        // The source's copy was removed, but its record survived (an exit
+        // before the forget); the file brings back the same bytes.
+        let digest = PluginSourceCatalog.contentDigest(package)
+        try fixture.store.recordProvenance(pluginID: package.id, sourceID: source.id, digest: digest)
+        let workspace = Workspace(name: "Sources", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        fixture.context.insert(workspace)
+        let service = CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
+
+        files.snapshots = []
+        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        _ = try service.importPlugin(report, workspace: workspace, modelContext: fixture.context, traceID: AuditTrace.make("test"))
+        // The exit: the library holds the file's copy, the forget never ran.
+        try files.restoreLastSnapshot()
+        #expect(fixture.store.provenance()[package.id]?.pendingForget == .install(digest: digest))
+        let installed = try #require(library.installedPackage(id: package.id))
+        #expect(PluginSourceCatalog.contentDigest(installed) == digest)
+        #expect(!PluginSourceCatalog.isOwnCopy(installed, of: source, provenance: fixture.store.provenance()))
+        // The next load settles it for good.
+        PluginSourceCoordinator(store: fixture.store, installedPackages: { library.installedPackages() }).reload()
+        #expect(fixture.store.provenance()[package.id] == nil)
+    }
+
+    @Test("T5: a Remove that exits after its library write forgets the source; one that exits before keeps it")
+    func removeExitForgetsOnlyOnceRemoved() throws {
+        let fixture = try Fixture()
+        let (library, files) = fixture.journaledLibrary()
+        let source = try #require(PluginSource.make(from: fixture.root.appendingPathComponent("source").path))
+        let package = try Self.package(id: "removed", version: "1.0.0")
+        try library.install(package, sourceMetadata: .localLibrary())
+        try fixture.store.recordProvenance(pluginID: package.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(package))
+
+        // Before the write: the intent is on disk, the plugin still there.
+        try fixture.store.forgettingProvenance(pluginID: package.id, leaving: .remove) { files.snapshot() }
+        try files.restoreLastSnapshot()
+        #expect(PluginSourceCatalog.isOwnCopy(package, of: source, provenance: fixture.store.provenance()))
+        PluginSourceCoordinator(store: fixture.store, installedPackages: { library.installedPackages() }).reload()
+        #expect(fixture.store.provenance()[package.id]?.pendingForget == nil)
+        #expect(fixture.store.provenance()[package.id]?.sourceID == source.id)
+
+        // After the write: the plugin is gone, so the record goes too.
+        files.snapshots = []
+        _ = try CapabilityCatalogActionService(library: library, sourceStore: fixture.store).remove(package, modelContext: fixture.context)
+        try files.restoreLastSnapshot()
+        #expect(fixture.store.provenance()[package.id]?.pendingForget == .remove)
+        PluginSourceCoordinator(store: fixture.store, installedPackages: { library.installedPackages() }).reload()
+        #expect(fixture.store.provenance()[package.id] == nil)
+    }
+
+    @Test("T5: a Create that exits after its library write forgets the source")
+    func createExitAfterWriteForgets() throws {
+        let fixture = try Fixture()
+        let (library, files) = fixture.journaledLibrary()
+        let source = try #require(PluginSource.make(from: fixture.root.appendingPathComponent("source").path))
+        let package = try Self.package(id: "created", version: "1.0.0")
+        // A record from the source's earlier copy, since removed by hand.
+        try fixture.store.recordProvenance(pluginID: package.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(package))
+        let workspace = Workspace(name: "Sources", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        fixture.context.insert(workspace)
+        files.snapshots = []
+        _ = try CapabilityCatalogActionService(library: library, sourceStore: fixture.store).create(
+            package, enableHere: false, sourceURL: nil, workspace: workspace, modelContext: fixture.context,
+            policyContext: .workspaceUser(workspace: workspace, isAdmin: true, currentAppVersion: SemanticVersion(1, 0, 0), approvalRecords: []),
+            traceID: AuditTrace.make("test")
+        )
+        try files.restoreLastSnapshot()
+        let installed = try #require(library.installedPackage(id: package.id))
+        #expect(fixture.store.provenance()[package.id]?.pendingForget != nil)
+        #expect(!PluginSourceCatalog.isOwnCopy(installed, of: source, provenance: fixture.store.provenance()))
+        PluginSourceCoordinator(store: fixture.store, installedPackages: { library.installedPackages() }).reload()
+        #expect(fixture.store.provenance()[package.id] == nil)
+    }
+
+    @Test("T5: a local install that exits before its library write keeps the old copy the source's own")
+    func localInstallExitBeforeWriteKeepsOwnership() throws {
+        let fixture = try Fixture()
+        let (library, files) = fixture.journaledLibrary()
+        let source = try #require(PluginSource.make(from: fixture.root.appendingPathComponent("source").path))
+        let old = try Self.package(id: "kept", version: "1.0.0")
+        let local = try Self.package(id: "kept", version: "1.0.0", description: "Edited locally")
+        try library.install(old, sourceMetadata: .localLibrary())
+        try fixture.store.recordProvenance(pluginID: old.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(old))
+        try fixture.store.forgettingProvenance(
+            pluginID: old.id, leaving: .install(digest: PluginSourceCatalog.contentDigest(local))
+        ) { files.snapshot() }
+        try files.restoreLastSnapshot()
+        #expect(PluginSourceCatalog.isOwnCopy(old, of: source, provenance: fixture.store.provenance()))
+        PluginSourceCoordinator(store: fixture.store, installedPackages: { library.installedPackages() }).reload()
+        let record = try #require(fixture.store.provenance()[old.id])
+        #expect(record.pendingForget == nil)
+        #expect(record.sourceID == source.id)
+        // With the same bytes the copies can't be told apart, so the intent
+        // forgets: the safe side, since an unowned copy only refuses more.
+        #expect(PluginSourceStore.Provenance(sourceID: source.id, digest: "d", pendingForget: .install(digest: "d"))
+            .resolved(installedDigest: "d") == nil)
+    }
+
+    @Test("T5: a local install whose library write fails clears its intent and keeps the source's ownership")
+    func failedLocalInstallKeepsOwnership() throws {
+        let fixture = try Fixture()
+        let (library, files) = fixture.journaledLibrary()
+        let source = try #require(PluginSource.make(from: fixture.root.appendingPathComponent("source").path))
+        let old = try Self.package(id: "failing", version: "1.0.0")
+        try library.install(old, sourceMetadata: .localLibrary())
+        try fixture.store.recordProvenance(pluginID: old.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(old))
+        let workspace = Workspace(name: "Sources", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        fixture.context.insert(workspace)
+        files.failLibraryWrites = true
+        let newer = try Self.package(id: "failing", version: "2.0.0")
+        let report = CapabilityPackageValidator.validate(package: newer, installedPackages: [], checkPrerequisites: false)
+        #expect(throws: (any Error).self) {
+            try CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
+                .importPlugin(report, workspace: workspace, modelContext: fixture.context, traceID: AuditTrace.make("test"))
+        }
+        // The intent was journaled before the write, and cleared after it failed.
+        #expect(files.snapshots.contains { $0.map { String(decoding: $0, as: UTF8.self).contains("pendingForget") } == true })
+        let record = try #require(fixture.store.provenance()[old.id])
+        #expect(record.pendingForget == nil)
+        #expect(PluginSourceCatalog.isOwnCopy(old, of: source, provenance: fixture.store.provenance()))
+    }
+
     @Test("T8: a folder edited after review can't be added")
     func addInstallsWhatWasReviewed() throws {
         let fixture = try Fixture()
@@ -868,6 +994,16 @@ struct PluginSourcesTests {
             context = container.mainContext
         }
 
+        /// A library whose writes copy `provenance.json` as it is on disk at
+        /// that moment: what an exit right after the write would leave.
+        func journaledLibrary() -> (CapabilityLibrary, ProvenanceSnapshotFileManager) {
+            let directory = root.appendingPathComponent("JournaledCapabilities", isDirectory: true)
+            let files = ProvenanceSnapshotFileManager(
+                libraryDirectory: directory, provenanceURL: store.root.appendingPathComponent("provenance.json")
+            )
+            return (CapabilityLibrary(directory: directory, fileManager: files), files)
+        }
+
         func write(_ files: [String: Data], in directory: URL) throws {
             for (path, data) in files {
                 let url = directory.appendingPathComponent(path)
@@ -909,6 +1045,52 @@ struct PluginSourcesTests {
                 throw CocoaError(.executableLoad, userInfo: [NSLocalizedDescriptionKey: "git \(args.joined(separator: " ")) failed"])
             }
         }
+    }
+}
+
+/// Copies `provenance.json` each time the library directory is created
+/// (every install) or something in it is removed (Remove): the provenance
+/// an exit right after that library write would leave behind.
+final class ProvenanceSnapshotFileManager: FileManager {
+    let libraryDirectory: URL
+    let provenanceURL: URL
+    var snapshots: [Data?] = []
+    var failLibraryWrites = false
+
+    init(libraryDirectory: URL, provenanceURL: URL) {
+        self.libraryDirectory = libraryDirectory.standardizedFileURL
+        self.provenanceURL = provenanceURL
+        super.init()
+    }
+
+    func snapshot() {
+        snapshots.append(try? Data(contentsOf: provenanceURL))
+    }
+
+    /// Puts back the provenance of the last snapshot, as an exit then would.
+    func restoreLastSnapshot() throws {
+        guard let last = snapshots.last else { throw CocoaError(.fileReadNoSuchFile) }
+        if let last {
+            try last.write(to: provenanceURL)
+        } else {
+            try? super.removeItem(at: provenanceURL)
+        }
+    }
+
+    override func createDirectory(at url: URL, withIntermediateDirectories: Bool, attributes: [FileAttributeKey: Any]? = nil) throws {
+        if url.standardizedFileURL.path == libraryDirectory.path {
+            snapshot()
+            if failLibraryWrites { throw CocoaError(.fileWriteNoPermission) }
+        }
+        try super.createDirectory(at: url, withIntermediateDirectories: withIntermediateDirectories, attributes: attributes)
+    }
+
+    override func removeItem(at url: URL) throws {
+        if url.standardizedFileURL.path.hasPrefix(libraryDirectory.path + "/") {
+            snapshot()
+            if failLibraryWrites { throw CocoaError(.fileWriteNoPermission) }
+        }
+        try super.removeItem(at: url)
     }
 }
 

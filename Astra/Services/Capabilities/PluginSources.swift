@@ -165,9 +165,40 @@ struct PluginSourceStore {
         var sourceID: String
         var digest: String
         var pendingDigest: String?
+        /// A local install or Remove that will end this record, journaled
+        /// before its library write (`forgettingProvenance`). Left behind by
+        /// an exit, it is settled by what the library holds (`resolved`).
+        var pendingForget: PendingForget?
+
+        enum PendingForget: Codable, Equatable, Sendable {
+            /// Remove: the plugin leaves the library.
+            case remove
+            /// A file import or Create writing the copy with this digest.
+            case install(digest: String)
+        }
 
         func names(_ digest: String) -> Bool {
             !digest.isEmpty && (self.digest == digest || pendingDigest == digest)
+        }
+
+        /// The record once a pending forget is settled by the digest of the
+        /// copy the library holds (nil when there is none): nil when the
+        /// forget took effect, that is the plugin is gone after a Remove or
+        /// the library holds the local install's copy, byte-identical or
+        /// not. It is kept, the intent dropped, only when the library still
+        /// holds a copy this record names that the local install would not
+        /// have written.
+        func resolved(installedDigest: String?) -> Provenance? {
+            guard let intent = pendingForget else { return self }
+            switch intent {
+            case .remove:
+                guard installedDigest != nil else { return nil }
+            case .install(let local):
+                guard let installed = installedDigest, installed != local, names(installed) else { return nil }
+            }
+            var kept = self
+            kept.pendingForget = nil
+            return kept
         }
     }
 
@@ -209,6 +240,55 @@ struct PluginSourceStore {
         var records = provenance()
         guard records.removeValue(forKey: pluginID) != nil else { return }
         try write(records)
+    }
+
+    /// Runs a local install or Remove (`libraryWrite`) that ends a plugin's
+    /// provenance, journaled like a source import (T5): the intent is
+    /// recorded before the write, the record dropped after it, and the
+    /// intent cleared, ownership kept, when the write throws. An exit
+    /// between the steps leaves the intent for `resolvePendingForgets`.
+    /// A plugin with no record runs the write alone. A forget that fails
+    /// after a successful write is logged; its intent still settles it.
+    func forgettingProvenance<Result>(
+        pluginID: String,
+        leaving intent: Provenance.PendingForget,
+        _ libraryWrite: () throws -> Result
+    ) throws -> Result {
+        var records = provenance()
+        guard records[pluginID] != nil else { return try libraryWrite() }
+        records[pluginID]?.pendingForget = intent
+        try write(records)
+        let result: Result
+        do {
+            result = try libraryWrite()
+        } catch {
+            var current = provenance()
+            current[pluginID]?.pendingForget = nil
+            try? write(current)
+            throw error
+        }
+        do {
+            try forgetProvenance(pluginID: pluginID)
+        } catch {
+            AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
+                "source": "plugin_source_provenance", "package_id": pluginID,
+                "result": "forget_failed", "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
+        return result
+    }
+
+    /// Settles every intent an exit left (`Provenance.resolved`) against
+    /// the digests of the copies the library holds, by plugin ID. Writes
+    /// only when one was pending.
+    func resolvePendingForgets(installedDigests: [String: String]) throws {
+        let records = provenance()
+        guard records.values.contains(where: { $0.pendingForget != nil }) else { return }
+        var resolved: [String: Provenance] = [:]
+        for (id, record) in records {
+            resolved[id] = record.resolved(installedDigest: installedDigests[id])
+        }
+        try write(resolved)
     }
 
     private func write(_ records: [String: Provenance]) throws {
