@@ -282,6 +282,23 @@ struct PluginSecretCleanupOutbox {
         "\(key.skillID.uuidString)#\(key.key)"
     }
 
+    /// Records single secrets about to be written for an activation not yet
+    /// saved (`PluginSecretSettingWriter.writeJournaled`): settled with its
+    /// save (dropped while the activation records them), cleaned at launch
+    /// when a quit came first.
+    func journal(_ keys: [PluginUpdateService.StaleSecret]) throws {
+        let pending = try entries()
+        try writeEntries(Array(Set(pending + keys.map(Self.entry))))
+    }
+
+    /// Takes back single secrets `journal` recorded, for a write that
+    /// didn't happen or was undone.
+    func forget(_ keys: [PluginUpdateService.StaleSecret]) {
+        let dropped = Set(keys.map(Self.entry))
+        guard let pending = try? entries() else { return }
+        try? writeEntries(pending.filter { !dropped.contains($0) })
+    }
+
     /// Skill IDs whose namespaces something still reads: stored skill rows,
     /// and every live activation's projected skills; nil when the store
     /// can't be read.

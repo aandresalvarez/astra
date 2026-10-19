@@ -55,11 +55,13 @@ enum PluginOperations {
         return skill.environmentValues[index]
     }
 
-    /// Sets a plugin skill's setting for this workspace. An empty secret
-    /// clears it from the Keychain; a clear the Keychain refuses throws, so
-    /// the old credential is never reported gone while still in use. An
-    /// emptied non-secret setting is kept as empty. A failed save puts the
-    /// Keychain back too; one it can't put back is reported as such.
+    /// Sets a plugin skill's setting for this workspace. A secret value is
+    /// written through `PluginSecretSettingWriter`: the activation records
+    /// it, durably, before the Keychain has it. An empty secret clears it
+    /// from the Keychain first; a clear the Keychain refuses throws, so the
+    /// old credential is never reported gone while still in use, and a
+    /// failed save after it puts the value back (one it can't put back is
+    /// reported as such). An emptied non-secret setting is kept as empty.
     static func setSetting(
         _ key: String,
         to value: String,
@@ -79,27 +81,32 @@ enum PluginOperations {
         if Skill.isSecretEnvironmentKey(key) {
             let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
             let persistence = secrets ?? SkillSecretSeam.required
-            let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
-            if value.isEmpty {
-                guard persistence.deleteSecret(key: key, skillID: skillID) else {
-                    throw OperationError.secretDeleteFailed(key: key)
+            guard value.isEmpty else {
+                try PluginSecretSettingWriter.write(
+                    value, key: key, skillName: skill.name, settingKey: settingKey, skillID: skillID,
+                    on: activation, persistence: persistence
+                ) {
+                    workspace.updatedAt = Date()
+                    try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
                 }
-            } else if !persistence.saveSecretValue(value, key: key, skillID: skillID, skillName: skill.name, allowUserInteraction: true) {
-                throw OperationError.secretSaveFailed(key: key)
+                return
             }
-            // Which secrets exist is recorded, so cleanup and Update find them.
-            WorkspaceCapabilityActivation.setSecretRecorded(!value.isEmpty, forKey: settingKey, on: activation)
+            let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
+            guard persistence.deleteSecret(key: key, skillID: skillID) else {
+                throw OperationError.secretDeleteFailed(key: key)
+            }
+            // The record goes only once the Keychain value has.
+            WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: settingKey, on: activation)
             do {
                 try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
             } catch {
                 // The record went back to what it was; so does the Keychain.
                 // A value it can't take back no longer matches the record.
-                let restored = if let previous {
-                    persistence.saveSecretValue(previous, key: key, skillID: skillID, skillName: skill.name, allowUserInteraction: false)
-                } else {
-                    persistence.deleteSecret(key: key, skillID: skillID)
+                if let previous, !persistence.saveSecretValue(
+                    previous, key: key, skillID: skillID, skillName: skill.name, allowUserInteraction: false
+                ) {
+                    throw OperationError.secretRestoreFailed(key: key)
                 }
-                guard restored else { throw OperationError.secretRestoreFailed(key: key) }
                 throw error
             }
             return
