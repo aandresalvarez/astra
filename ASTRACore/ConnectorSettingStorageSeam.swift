@@ -20,6 +20,19 @@ public protocol ConnectorSettingStorageResolving: Sendable {
     static func settingKeysStoredAsCredentials(
         originPackageID: String, originComponentID: String?, accountKeys: [String]
     ) -> Set<String>
+
+    /// The setting keys the creator's installed definition stores as
+    /// credentials, or nil when that definition can't be found. Only this
+    /// definite answer moves a plain value into the Keychain
+    /// (`Connector.moveSettingsStoredAsCredentials`): the fail-closed answer
+    /// above also covers settings that stay plain once the creator is back.
+    static func declaredSettingKeysStoredAsCredentials(originPackageID: String, originComponentID: String?) -> Set<String>?
+}
+
+extension ConnectorSettingStorageResolving {
+    public static func declaredSettingKeysStoredAsCredentials(originPackageID: String, originComponentID: String?) -> Set<String>? {
+        nil
+    }
 }
 
 public enum ConnectorSettingStorageSeam {

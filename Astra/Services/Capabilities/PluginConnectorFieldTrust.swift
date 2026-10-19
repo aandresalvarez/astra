@@ -76,14 +76,20 @@ extension PluginConnectorFieldTrust: ConnectorSettingStorageResolving {
     static func settingKeysStoredAsCredentials(
         originPackageID: String, originComponentID: String?, accountKeys: [String]
     ) -> Set<String> {
-        if let package = CapabilityRuntimeResourceMatcher.packageDefinitions().first(where: { $0.id == originPackageID }),
-           let stamp = originComponentID,
-           let spec = package.connectors.first(where: { CapabilityResourceOrigin.componentID(for: $0) == stamp })
-            ?? package.connectors.first(where: { CapabilityResourceOrigin.replacedComponentIDs(for: $0).contains(stamp) }) {
-            return settingsStoredAsCredentials(of: spec, in: package)
+        if let declared = declaredSettingKeysStoredAsCredentials(originPackageID: originPackageID, originComponentID: originComponentID) {
+            return declared
         }
         let bundled = bundledPlainSettingKeys[originPackageID] ?? [:]
         let plain = originComponentID.flatMap { bundled[$0] } ?? bundled.values.reduce(into: Set()) { $0.formUnion($1) }
         return Set(accountKeys).subtracting(plain)
+    }
+
+    static func declaredSettingKeysStoredAsCredentials(originPackageID: String, originComponentID: String?) -> Set<String>? {
+        guard let package = CapabilityRuntimeResourceMatcher.packageDefinitions().first(where: { $0.id == originPackageID }),
+              let stamp = originComponentID,
+              let spec = package.connectors.first(where: { CapabilityResourceOrigin.componentID(for: $0) == stamp })
+                ?? package.connectors.first(where: { CapabilityResourceOrigin.replacedComponentIDs(for: $0).contains(stamp) })
+        else { return nil }
+        return settingsStoredAsCredentials(of: spec, in: package)
     }
 }

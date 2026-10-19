@@ -544,15 +544,15 @@ enum PluginUpdateService {
         var changed = false
         for declared in package.connectors {
             // Settings only a bundled definition keeps plain; any other is a
-            // credential key. A row that still holds one as plain text keeps
-            // it there until Add moves it to the Keychain.
+            // credential key. A row that still holds one as plain text moves
+            // it to the Keychain here; one whose move fails keeps it.
             let spec = PluginConnectorFieldTrust.asStored(declared, in: package)
             let moved = PluginConnectorFieldTrust.settingsStoredAsCredentials(of: declared, in: package)
             let componentID = CapabilityResourceOrigin.componentID(for: spec)
             let predecessors = Set(CapabilityResourceOrigin.replacedComponentIDs(for: spec))
             for account in activation.accounts(forComponent: componentID)
             where !account.isDeleted && account.originPackageID == package.id {
-                var touched = false
+                var touched = !account.moveSettingsToKeychain(moved).isEmpty
                 if let stamp = account.originComponentID, predecessors.contains(stamp) {
                     account.originComponentID = componentID
                     touched = true

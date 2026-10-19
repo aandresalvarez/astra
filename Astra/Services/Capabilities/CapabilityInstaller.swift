@@ -294,19 +294,27 @@ struct CapabilityInstaller {
 
             for pluginConnector in package.connectors {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginConnector)
-                let fields = StoredConnectorFields(pluginConnector, in: package, credentialInputs: credentialInputs, configInputs: configInputs)
+                // This component's own inputs over the shared ones: two
+                // connectors with one name or field key never trade values.
+                let ownConfigInputs = PluginSetupInputs.view(configInputs, component: componentID)
+                let fields = StoredConnectorFields(
+                    pluginConnector, in: package,
+                    credentialInputs: PluginSetupInputs.view(credentialInputs, component: componentID),
+                    configInputs: ownConfigInputs
+                )
                 let configKeys = connectorConfigKeys(
                     hints: fields.connector.configHints,
                     extraConfigKeys: packageEnvironmentKeys,
-                    configInputs: configInputs
+                    configInputs: ownConfigInputs
                 )
-                let baseURL = baseURLOverrides[pluginConnector.name] ?? pluginConnector.baseURL
+                let overriddenBaseURL = PluginSetupInputs.baseURL(in: baseURLOverrides, for: pluginConnector)
+                let baseURL = overriddenBaseURL ?? pluginConnector.baseURL
                 let hasScopedInputs = connectorHasScopedInputs(
                     fields.connector,
                     configKeys: configKeys,
                     credentialInputs: fields.credentialInputs,
-                    configInputs: configInputs,
-                    baseURLOverridden: baseURLOverrides[pluginConnector.name] != nil
+                    configInputs: ownConfigInputs,
+                    baseURLOverridden: overriddenBaseURL != nil
                 )
                 let bound = activation.accounts(forComponent: componentID).first
                 // The account replacing this component's default takes its
@@ -329,7 +337,7 @@ struct CapabilityInstaller {
                         workspace: workspace,
                         existing: bound.flatMap { $0.isGlobal ? nil : $0 },
                         modelContext: modelContext,
-                        configInputs: configInputs,
+                        configInputs: ownConfigInputs,
                         extraConfigKeys: packageEnvironmentKeys,
                         baseURL: baseURL,
                         allowCredentialUserInteraction: allowCredentialUserInteraction
@@ -871,7 +879,7 @@ struct CapabilityInstaller {
         baseURLOverrides: [String: String]
     ) -> [String] {
         package.connectors.compactMap { connector in
-            let baseURL = baseURLOverrides[connector.name] ?? connector.baseURL
+            let baseURL = PluginSetupInputs.baseURL(in: baseURLOverrides, for: connector) ?? connector.baseURL
             guard let violation = ConnectorSecurityPolicy.credentialTransportViolation(
                 baseURL: baseURL,
                 authMethod: connector.authMethod,

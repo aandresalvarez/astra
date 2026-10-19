@@ -163,6 +163,48 @@ struct PluginConnectorFieldTrustTests {
         ) -> Set<String> {
             originPackageID == "imported.tracker" ? ["TRACKER_PROJECT"] : []
         }
+        static func declaredSettingKeysStoredAsCredentials(originPackageID: String, originComponentID: String?) -> Set<String>? {
+            originPackageID == "imported.tracker" ? ["TRACKER_PROJECT"] : nil
+        }
+    }
+
+    /// An older row of a third-party plugin holding a setting the mirror now
+    /// withholds: the value moves to the Keychain before the mirror is its
+    /// only other copy, and only once the Keychain has it.
+    @Test("A withheld plain setting moves to the Keychain, and stays on the row when the move fails")
+    func withheldPlainSettingMovesToTheKeychain() {
+        func legacyRow(_ origin: String = "imported.tracker") -> Connector {
+            let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
+            row.originPackageID = origin
+            row.originComponentID = "connector:tracker:tracker-api"
+            row.configKeys = ["TRACKER_PROJECT", "TRACKER_BASE_URL"]
+            row.configValues = ["ENG-1", "https://tracker.example.com"]
+            return row
+        }
+        // The Keychain refuses the write: nothing leaves the row.
+        let refusing = MockSecretStore()
+        refusing.failsWrites = true
+        let kept = legacyRow()
+        #expect(kept.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: refusing).isEmpty)
+        #expect(kept.configValue("TRACKER_PROJECT") == "ENG-1" && kept.credentialKeys.isEmpty)
+        // A creator that can't be found moves nothing either.
+        let unknown = legacyRow("gone.tracker")
+        #expect(unknown.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: MockSecretStore()).isEmpty)
+        #expect(unknown.configKeys.count == 2)
+
+        let store = MockSecretStore()
+        let row = legacyRow()
+        #expect(row.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: store) == ["TRACKER_PROJECT"])
+        #expect(row.configKeys == ["TRACKER_BASE_URL"] && row.credentialKeys == ["TRACKER_PROJECT"])
+        #expect(row.credentials(store: store)["TRACKER_PROJECT"] == "ENG-1")
+        // The mirror now names it as a credential, and the Keychain holds it.
+        let mirrored = ConnectorSettingStorageSeam.exportableConfig(
+            keys: row.configKeys, values: row.configValues, originPackageID: row.originPackageID,
+            originComponentID: row.originComponentID, resolver: StubCreator.self
+        )
+        #expect(mirrored.keys == ["TRACKER_BASE_URL"])
+        // Idempotent: a second pass has nothing to move.
+        #expect(row.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: store).isEmpty)
     }
 
     @Test("The mirror withholds a plain value an older row holds for a setting stored as a credential")

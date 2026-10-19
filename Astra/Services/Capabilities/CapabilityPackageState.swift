@@ -129,8 +129,11 @@ struct CapabilityPackageState {
         }
 
         let activeConnectors = activeLinkedConnectors
+        // The same sign-in drift `attentionMessages` reports, so a component
+        // that says reconnect never sits under a plugin that says ready.
         let messages = missingPackageConnectorMessages(activeLinkedConnectors: activeConnectors)
             + activeConnectors.flatMap(readinessMessages(for:))
+            + linkedConnectors.flatMap(authMethodMessages(for:))
 
         return messages.isEmpty
             ? .ready
