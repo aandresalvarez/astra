@@ -295,7 +295,7 @@ struct PluginRepairTests {
             #expect(RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
         }
         #expect(!RepairAction.isSafeTerminalCommand("brew install --HEAD gh", binary: "gh", allowsInstaller: true))
-        #expect(RepairAction.isSafeTerminalCommand("brew install --formula gh", binary: "gh", allowsInstaller: true))
+        #expect(!RepairAction.isSafeTerminalCommand("brew install --formula gh", binary: "gh", allowsInstaller: true))
     }
 
     @Test("Prerequisites that share a check ID keep their own components and repairs")
@@ -418,11 +418,11 @@ struct PluginRepairTests {
         repair.checkArguments = ["--version"]
         // Only the projected PATH has the CLI; ASTRA's own lookup does not.
         repair.checkEnvironment = ["PATH": "\(working):/usr/bin:/bin"]
-        #expect(await PluginRepairCoordinator.liveCheck(repair))
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: { _ in true }))
         // The first match on that PATH is the one the shell runs.
         repair.checkEnvironment = ["PATH": "\(broken):\(working):/usr/bin:/bin"]
         #expect(PluginRepairCoordinator.checkExecutablePath(name, environment: repair.checkEnvironment ?? [:]) == "\(broken)/\(name)")
-        #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: { _ in true }) == false)
     }
 
     @Test("A relative or empty projected PATH entry is resolved from the run's directory, not ASTRA's")
@@ -447,15 +447,15 @@ struct PluginRepairTests {
         repair.checkEnvironment = ["PATH": "./tools:/usr/bin:/bin"]
         let found = PluginRepairCoordinator.checkExecutablePath(name, environment: ["PATH": "./tools:/usr/bin"], workingDirectory: root.path)
         #expect(URL(fileURLWithPath: found).standardizedFileURL == tools.appendingPathComponent(name).standardizedFileURL)
-        #expect(await PluginRepairCoordinator.liveCheck(repair))
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: { _ in true }))
         // An empty entry is the run's directory itself, wherever it sits.
         repair.checkEnvironment = ["PATH": "/usr/bin::/bin"]
         #expect(PluginRepairCoordinator.checkExecutablePath(name, environment: repair.checkEnvironment ?? [:], workingDirectory: root.path)
             == root.appendingPathComponent(name).path)
-        #expect(await PluginRepairCoordinator.liveCheck(repair))
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: { _ in true }))
         // Without the run's directory, relative entries resolve to nothing.
         repair.checkWorkingDirectory = nil
-        #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: { _ in true }) == false)
     }
 
     @Test("A repair check applies its semantic test to stderr too: a down Docker daemon is not verified")
@@ -476,9 +476,9 @@ struct PluginRepairTests {
         repair.checkExpect = SemanticCheck.stderrNoDaemonError.rawValue
         repair.checkEnvironment = ["PATH": "\(root.path):/usr/bin:/bin"]
         try script(stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?")
-        #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: { _ in true }) == false)
         try script(stderr: "")
-        #expect(await PluginRepairCoordinator.liveCheck(repair))
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: { _ in true }))
     }
 }
 

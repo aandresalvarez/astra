@@ -39,13 +39,41 @@ enum CLISessionExpiryClassifier {
         /// Chosen only when every Google Cloud call in the command reads
         /// Application Default Credentials (`readsOnlyApplicationDefault`).
         var readsApplicationDefault = false
+        /// Credential-store selectors the failed call set on itself
+        /// (`CLOUDSDK_CONFIG=/team gcloud …`): Sign in and the check use that
+        /// store, not the launch's (`RepairAction.checkSelectors`).
+        var storeSelectors: [String: String] = [:]
+        /// Credential variables the failed call set on itself that ASTRA
+        /// can't carry (`GH_TOKEN=… gh …`, another account): nothing signs in
+        /// to or checks an unrelated store, so Resume doesn't wait.
+        var ownCredentials: [String] = []
 
         var stopMessage: String {
-            guard let customStopMessage else {
-                return "The \(displayName) sign-in expired while the agent was using it. Run `\(signInCommand)`, then resume."
+            guard ownCredentials.isEmpty else {
+                return "The \(displayName) credentials that command set itself (\(ownCredentials.joined(separator: ", "))) were rejected. "
+                    + "ASTRA can't sign in to or check those for you: fix them where the command sets them, then resume."
             }
-            guard namesCheck else { return customStopMessage }
-            return "\(customStopMessage) Resume first checks `\(checkBinary) \(checkArguments.joined(separator: " "))`."
+            var message: String
+            if let customStopMessage {
+                message = namesCheck
+                    ? "\(customStopMessage) Resume first checks `\(checkBinary) \(checkArguments.joined(separator: " "))`."
+                    : customStopMessage
+            } else {
+                message = "The \(displayName) sign-in expired while the agent was using it. Run `\(signInCommand)`, then resume."
+            }
+            if !storeSelectors.isEmpty {
+                message += CLISessionExpiryClassifier.storeSelectorsLead
+                    + storeSelectors.sorted { $0.key < $1.key }.map { "\($0.key)=`\($0.value)`" }.joined(separator: ", ") + "."
+            }
+            return message
+        }
+
+        /// The same family for a call that set its own credentials.
+        func withOwnCredentials(_ names: [String]) -> Family {
+            var family = self
+            family.ownCredentials = names
+            family.offersSignIn = false
+            return family
         }
 
         /// The sign-in repair, or for a family whose fix is outside ASTRA
@@ -53,20 +81,23 @@ enum CLISessionExpiryClassifier {
         /// family's own: Resume still re-runs the check, and a failed check
         /// repeats what actually fixes it.
         var repair: RepairAction {
-            RepairAction(
+            let checks = ownCredentials.isEmpty
+            var repair = RepairAction(
                 strategy: .terminal,
                 componentName: "\(displayName) login",
                 title: offersSignIn ? "Sign in to \(displayName)" : "Fix \(displayName) access",
                 verb: offersSignIn ? "Sign in" : "Check",
-                detail: offersSignIn || customStopMessage == nil
+                detail: offersSignIn || (customStopMessage == nil && checks)
                     ? "Run `\(signInCommand)` in Terminal, then resume the task."
                     : stopMessage,
                 command: offersSignIn ? signInCommand : nil,
-                checkBinary: checkBinary,
-                checkArguments: checkArguments,
-                checkExpect: (checkBinary as NSString).lastPathComponent == "gcloud" && !readsApplicationDefault
+                checkBinary: checks ? checkBinary : nil,
+                checkArguments: checks ? checkArguments : nil,
+                checkExpect: checks && (checkBinary as NSString).lastPathComponent == "gcloud" && !readsApplicationDefault
                     ? SemanticCheck.stdoutNonEmpty.rawValue : nil
             )
+            repair.checkSelectors = storeSelectors.isEmpty ? nil : storeSelectors
+            return repair
         }
 
         /// The same family signing in to and checking a GitHub Enterprise
@@ -227,7 +258,7 @@ enum CLISessionExpiryClassifier {
         guard let command, !command.isEmpty else { return nil }
         let lowered = content.lowercased()
         guard var family = families.first(where: { family in
-            family.commands.contains { failed ? runs($0, in: command) : masksExitStatus(of: $0, in: command) }
+            family.commands.contains { failed ? failureReaches(from: $0, in: command) : masksExitStatus(of: $0, in: command) }
                 && family.patterns.contains { lowered.contains($0) }
                 && (!family.readsApplicationDefault || readsOnlyApplicationDefault(command))
         }) else { return nil }
@@ -246,6 +277,14 @@ enum CLISessionExpiryClassifier {
             } else if !leavesGitHubHostToCheckout(command) {
                 family = family.onEveryHost()
             }
+        }
+        // A store the call selected itself is the one to sign in to and
+        // check; credentials it set itself are not ASTRA's to check.
+        let local = commandLocalCredentials(of: family, in: command)
+        if !local.own.isEmpty {
+            family = family.withOwnCredentials(local.own)
+        } else {
+            family.storeSelectors = local.selectors
         }
         // So is the installation it ran by path: another one on PATH may be
         // signed in while this one is not.
@@ -289,8 +328,17 @@ enum CLISessionExpiryClassifier {
     }
 
     /// The family whose stop message this is; the message is ASTRA's own.
-    static func family(forStopMessage message: String?) -> Family? {
-        guard let message else { return nil }
+    static func family(forStopMessage fullMessage: String?) -> Family? {
+        guard let fullMessage else { return nil }
+        // A store the call selected comes last; the rest is read without it.
+        let selectorsStart = fullMessage.range(of: storeSelectorsLead)
+        let message = selectorsStart.map { String(fullMessage[..<$0.lowerBound]) } ?? fullMessage
+        let selectors = selectorsStart.map { storeSelectors(in: String(fullMessage[$0.upperBound...])) } ?? [:]
+        let ownCredentials = message.range(of: " credentials that command set itself (").flatMap { start in
+            message[start.upperBound...].firstIndex(of: ")").map {
+                message[start.upperBound..<$0].components(separatedBy: ", ")
+            }
+        }
         // An enterprise stop names its host, and a stop for an installation
         // run by path names that path, in the sign-in or check command.
         let host = message.range(of: " --hostname ").flatMap { start in
@@ -316,12 +364,85 @@ enum CLISessionExpiryClassifier {
                 if message.contains(" --hostname github.com`") { candidates.append(family.onHost("github.com")) }
                 candidates.append(family.onEveryHost())
             }
+            if let ownCredentials { candidates += candidates.map { $0.withOwnCredentials(ownCredentials) } }
+            if !selectors.isEmpty {
+                candidates = candidates.map { candidate in
+                    var selected = candidate
+                    selected.storeSelectors = selectors
+                    return selected
+                }
+            }
             if let executable, (executable as NSString).lastPathComponent == family.checkBinary {
                 candidates += candidates.map { $0.at(executable) }
             }
-            if let match = candidates.first(where: { $0.stopMessage == message }) { return match }
+            if let match = candidates.first(where: { $0.stopMessage == fullMessage }) { return match }
         }
         return nil
+    }
+
+    /// Where a stop message names the store the failed call selected.
+    static let storeSelectorsLead = " That command used its own credential store: "
+
+    /// The `NAME=`value`` pairs after `storeSelectorsLead`.
+    private static func storeSelectors(in text: String) -> [String: String] {
+        var selectors: [String: String] = [:]
+        for pair in text.dropLast().components(separatedBy: ", ") {
+            guard let equals = pair.range(of: "=`"), pair.hasSuffix("`") else { return [:] }
+            selectors[String(pair[..<equals.lowerBound])] = String(pair[equals.upperBound...].dropLast())
+        }
+        return selectors
+    }
+
+    /// Variables that pick the store a CLI's sign-in lives in and hold no
+    /// secret: carried into Sign in and the check (as
+    /// `RepairAction.credentialStoreSelectors` carries the launch's).
+    private static let storeSelectorNames: [String: Set<String>] = [
+        "gcloud": ["CLOUDSDK_CONFIG"], "gh": ["GH_CONFIG_DIR", "XDG_CONFIG_HOME"]
+    ]
+
+    /// Variables that hold or pick a credential ASTRA can't carry: a token,
+    /// a credential file, or another account or configuration.
+    private static let credentialNames: [String: Set<String>] = [
+        "gcloud": [
+            "CLOUDSDK_CORE_ACCOUNT", "CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_AUTH_ACCESS_TOKEN",
+            "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
+            "CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT", "GOOGLE_APPLICATION_CREDENTIALS"
+        ],
+        "gh": ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]
+    ]
+
+    /// The credential variables the family's calls in `command` set on
+    /// themselves (`CLOUDSDK_CONFIG=/team gcloud …`, `env GH_CONFIG_DIR=/x gh
+    /// …`): store selectors to carry, when every call sets the same plain
+    /// absolute path, and the names of any it can't carry (`own`), which
+    /// include a selector the calls disagree on or that is not such a path.
+    static func commandLocalCredentials(of family: Family, in command: String) -> (selectors: [String: String], own: [String]) {
+        let cli = (family.checkBinary as NSString).lastPathComponent
+        let selectorNames = storeSelectorNames[cli] ?? []
+        let watched = selectorNames.union(credentialNames[cli] ?? [])
+        let calls: [[String: String]] = segments(command).compactMap { segment in
+            var rest = segment.words
+            var assignments: [String] = []
+            stripWrappers(&rest, assignments: &assignments)
+            guard let executable = rest.first, family.commands.contains((executable as NSString).lastPathComponent) else { return nil }
+            var set: [String: String] = [:]
+            for assignment in assignments {
+                let name = String(assignment.prefix { $0 != "=" })
+                if watched.contains(name) { set[name] = String(assignment.dropFirst(name.count + 1)) }
+            }
+            return set
+        }
+        var selectors: [String: String] = [:]
+        var own: Set<String> = []
+        for name in Set(calls.flatMap(\.keys)) {
+            let values = Set(calls.map { $0[name] })
+            guard selectorNames.contains(name), values.count == 1, let value = values.first ?? nil,
+                  value.hasPrefix("/"), value.count <= 1024, !value.contains("`"), !value.contains(", "),
+                  !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            else { own.insert(name); continue }
+            selectors[name] = value
+        }
+        return (selectors, own.sorted())
     }
 
     /// The absolute path `command` runs `cli` by (`/opt/team/bin/gh api
@@ -339,24 +460,13 @@ enum CLISessionExpiryClassifier {
         return exactExecutable(executable)
     }
 
-    /// Where an installed CLI lives: system and package-manager prefixes,
-    /// never a home, workspace or temporary folder. The path comes from the
-    /// agent's own command, and Resume runs it and Sign in opens it in
-    /// Terminal, so one the agent could have just written (`/tmp/x/gh`) is
-    /// not carried; such a call is checked and repaired by name on PATH.
-    static let installedExecutablePrefixes = ["/usr/", "/bin/", "/sbin/", "/opt/", "/Applications/", "/Library/"]
-
-    /// `candidate` when it is an absolute path of plain components (no
-    /// `.` or `..`, no shell syntax), so it is safe as one Terminal word,
-    /// under an installed-CLI prefix.
+    /// `candidate` when it is an installed path (`TrustedExecutablePath`):
+    /// the path comes from the agent's own command, and Resume runs it and
+    /// Sign in opens it in Terminal, so one the agent could have just
+    /// written (`/tmp/x/gh`) is not carried; such a call is checked and
+    /// repaired by name on PATH.
     private static func exactExecutable(_ candidate: String) -> String? {
-        let components = candidate.split(separator: "/", omittingEmptySubsequences: false).dropFirst()
-        guard candidate.hasPrefix("/"), candidate.count <= 1024,
-              installedExecutablePrefixes.contains(where: { candidate.hasPrefix($0) }),
-              candidate.range(of: #"^(/[A-Za-z0-9._+-]+)+$"#, options: .regularExpression) != nil,
-              !components.contains(where: { $0 == "." || $0 == ".." })
-        else { return nil }
-        return candidate
+        TrustedExecutablePath.installedPath(candidate)
     }
 
     /// The GitHub Enterprise host a `gh` call in `command` targets: its
@@ -588,6 +698,32 @@ enum CLISessionExpiryClassifier {
         }
     }
 
+    /// Separators after which a command's failure still reaches the line's
+    /// status: `&&` ends the line at a failure, a pipe hands its output on,
+    /// and a parenthesis or backtick only opens or closes a group.
+    private static let failurePassingSeparators: Set<String> = ["&&", "|", "|&", "(", ")", "`"]
+
+    /// True when a failed line's status could be `cli`'s failure: a call to
+    /// it whose status the line reaches (only `&&`, pipes, the end of a
+    /// compound command, or a substitution's parentheses after it; not
+    /// negated, not a condition or in the background), so a substitution
+    /// counts when the command it feeds is the one that failed.
+    /// `gh --version; cat incident.txt; false` failed on `false`.
+    static func failureReaches(from cli: String, in command: String) -> Bool {
+        let segments = segments(command)
+        return segments.indices.contains { index in
+            let segment = segments[index]
+            guard executes(cli, segment.words), !negates(segment.words), !isCondition(segment.words) else { return false }
+            var position = index
+            while position < segments.count - 1 {
+                guard failurePassingSeparators.contains(segments[position].separator)
+                    || closes(segments[position + 1].words) else { return false }
+                position += 1
+            }
+            return segments[position].separator != "&"
+        }
+    }
+
     /// Shell reserved words that open or continue a compound command: the
     /// word after one is a command (`if gh auth status; then …; fi`, `{ gh
     /// auth status; } 2>&1`).
@@ -655,7 +791,9 @@ enum CLISessionExpiryClassifier {
         var scope: [Int] = []
     }
 
-    static func segments(_ line: String) -> [Segment] {
+    /// `depth` bounds the nesting a shell `-c` payload or a here-document's
+    /// substitution parses into.
+    static func segments(_ line: String, depth: Int = 0) -> [Segment] {
         var segments: [Segment] = []
         var words: [String] = []
         var word = ""
@@ -672,23 +810,35 @@ enum CLISessionExpiryClassifier {
         var groups: [(closer: Character, command: [String]?, id: Int)] = []
         var groupCount = 0
         // Here-documents whose bodies follow this line, in order: the
-        // delimiter and whether `<<-` strips leading tabs. A body is text
-        // (`cat <<'EOF'` printing `$ gh auth status`), never commands.
-        var heredocs: [(delimiter: String, stripsTabs: Bool)] = []
+        // delimiter, whether `<<-` strips leading tabs, whether the body
+        // expands (its delimiter unquoted), and the command it feeds. A body
+        // is text (`cat <<'EOF'` printing `$ gh auth status`), but an
+        // expanding one still runs its substitutions (`$(gh auth status)`).
+        var heredocs: [(delimiter: String, stripsTabs: Bool, expands: Bool, command: [String])] = []
         // Where the current word's delimiter starts, after an unquoted `<<`;
-        // a bare `<<` takes the next word.
+        // a bare `<<` takes the next word. A quote or backslash in the
+        // delimiter makes the body literal.
         var heredocStart: (offset: Int, stripsTabs: Bool)?
         var heredocAwaitsWord: Bool?
+        var heredocQuoted = false
         let characters = Array(line)
         var index = 0
         func endWord() {
+            var feeds = words
+            stripWrappers(&feeds)
             if let start = heredocStart {
                 let delimiter = String(word.dropFirst(start.offset))
-                if delimiter.isEmpty { heredocAwaitsWord = start.stripsTabs } else { heredocs.append((delimiter, start.stripsTabs)) }
+                if delimiter.isEmpty {
+                    heredocAwaitsWord = start.stripsTabs
+                } else {
+                    heredocs.append((delimiter, start.stripsTabs, !heredocQuoted, feeds))
+                    heredocQuoted = false
+                }
                 heredocStart = nil
             } else if inWord, let stripsTabs = heredocAwaitsWord {
-                heredocs.append((word, stripsTabs))
+                heredocs.append((word, stripsTabs, !heredocQuoted, feeds))
                 heredocAwaitsWord = nil
+                heredocQuoted = false
             }
             if inWord { words.append(word) }
             word = ""
@@ -710,7 +860,9 @@ enum CLISessionExpiryClassifier {
         // that command runs a program (`echo`, not `token=`).
         func openGroup(_ opener: Character, closer: Character) {
             var enclosing = words + (inWord ? [word] : [])
-            let substitutes = opener == "`" || enclosing.last?.hasSuffix("$") == true
+            // `$(…)`, and `<(…)` or `>(…)`, a process substitution, whose
+            // command's status the line takes, not the substituted one's.
+            let substitutes = opener == "`" || ["$", "<", ">"].contains { enclosing.last?.hasSuffix($0) == true }
             if opener == "(", substitutes { enclosing[enclosing.count - 1].removeLast() }
             enclosing.removeAll(where: \.isEmpty)
             stripWrappers(&enclosing)
@@ -759,9 +911,11 @@ enum CLISessionExpiryClassifier {
             switch character {
             case "\\":
                 escaped = true
+                if heredocStart != nil || heredocAwaitsWord != nil { heredocQuoted = true }
             case "'", "\"":
                 quote = character
                 inWord = true
+                if heredocStart != nil || heredocAwaitsWord != nil { heredocQuoted = true }
             case " ", "\t":
                 endWord()
             case "&" where word.hasSuffix(">") || word.hasSuffix("<") || next == ">":
@@ -796,11 +950,24 @@ enum CLISessionExpiryClassifier {
                 guard character == "\n" else { break }
                 // Each pending here-document's body runs to its delimiter line.
                 for heredoc in heredocs {
+                    var body: [String] = []
                     while index < characters.count {
                         let end = characters[index...].firstIndex(of: "\n") ?? characters.count
                         let line = String(characters[index..<end])
                         index = min(end + 1, characters.count)
                         if (heredoc.stripsTabs ? String(line.drop { $0 == "\t" }) : line) == heredoc.delimiter { break }
+                        body.append(line)
+                    }
+                    // An expanding body's substitutions run, feeding the
+                    // command the here-document is for.
+                    guard heredoc.expands, depth < maxShellDepth else { continue }
+                    for substitution in heredocSubstitutions(body.joined(separator: "\n")) {
+                        segments += Self.segments(substitution, depth: depth + 1).map { nested in
+                            var nested = nested
+                            nested.enclosingCommands = groups.compactMap(\.command) + [heredoc.command] + nested.enclosingCommands
+                            nested.scope = groups.map(\.id) + [-1] + nested.scope
+                            return nested
+                        }
                     }
                 }
                 heredocs.removeAll()
@@ -813,6 +980,7 @@ enum CLISessionExpiryClassifier {
                 word += stripsTabs ? "<<-" : "<<"
                 inWord = true
                 heredocStart = (word.count, stripsTabs)
+                heredocQuoted = false
             default:
                 // `$(` ends at the `(`, which starts the substituted command.
                 word.append(character)
@@ -820,7 +988,85 @@ enum CLISessionExpiryClassifier {
             }
         }
         endCommand("")
-        return segments
+        return depth < maxShellDepth ? segments.flatMap { shellPayloadSegments($0, depth: depth) } : segments
+    }
+
+    /// How deeply a shell `-c` payload or a here-document substitution is
+    /// parsed into its commands.
+    private static let maxShellDepth = 4
+
+    /// A `sh`, `bash` or `zsh -c` call as the commands of its literal payload
+    /// (`bash -lc 'gh auth status'`), which the shell runs, its status the
+    /// last one's; any other command as itself. The payload's last command
+    /// takes the call's separator, and all of them its substitution and
+    /// scope, in a scope of their own.
+    private static func shellPayloadSegments(_ segment: Segment, depth: Int) -> [Segment] {
+        guard let payload = shellPayload(segment.words) else { return [segment] }
+        var nested = segments(payload, depth: depth + 1)
+        guard !nested.isEmpty else { return [segment] }
+        for index in nested.indices {
+            nested[index].enclosingCommands = segment.enclosingCommands + nested[index].enclosingCommands
+            nested[index].scope = segment.scope + [-2 - depth] + nested[index].scope
+        }
+        nested[nested.count - 1].separator = segment.separator
+        return nested
+    }
+
+    /// The payload of `sh`, `bash` or `zsh` called with `-c` (alone or in a
+    /// cluster such as `-lc`): its first operand after the options.
+    static func shellPayload(_ words: [String]) -> String? {
+        var rest = words
+        stripWrappers(&rest)
+        guard let shell = rest.first, ["sh", "bash", "zsh"].contains((shell as NSString).lastPathComponent) else { return nil }
+        var runsPayload = false
+        var index = 1
+        while index < rest.count {
+            let word = rest[index]
+            index += 1
+            if word == "-o" || word == "+o" {
+                index += 1
+            } else if word == "--" || word == "-" {
+                break
+            } else if word.hasPrefix("--") {
+                continue
+            } else if word.hasPrefix("-") || word.hasPrefix("+") {
+                if word.hasPrefix("-"), word.dropFirst().contains("c") { runsPayload = true }
+            } else {
+                return runsPayload ? word : nil
+            }
+        }
+        return runsPayload && index < rest.count ? rest[index] : nil
+    }
+
+    /// The commands an expanding here-document body substitutes: each
+    /// `$(…)` (to its matching parenthesis) and backtick span; a backslash
+    /// escapes the character after it.
+    static func heredocSubstitutions(_ body: String) -> [String] {
+        let characters = Array(body)
+        var found: [String] = []
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            if character == "\\" {
+                index += 2
+            } else if character == "$", index + 1 < characters.count, characters[index + 1] == "(" {
+                var depth = 1
+                var end = index + 2
+                while end < characters.count, depth > 0 {
+                    if characters[end] == "(" { depth += 1 } else if characters[end] == ")" { depth -= 1 }
+                    end += 1
+                }
+                found.append(String(characters[(index + 2)..<max(index + 2, end - (depth == 0 ? 1 : 0))]))
+                index = end
+            } else if character == "`" {
+                let end = characters[(index + 1)...].firstIndex(of: "`") ?? characters.count
+                found.append(String(characters[(index + 1)..<end]))
+                index = end + 1
+            } else {
+                index += 1
+            }
+        }
+        return found
     }
 
     /// Wrappers and the options each takes a value for, so `env -i gcloud`

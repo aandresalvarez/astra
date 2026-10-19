@@ -31,7 +31,7 @@ enum TaskRunStopEvidence {
     @MainActor
     static func signInRepair(events: [TaskEventSnapshot], runID: UUID?, task: AgentTask) async -> RepairAction? {
         guard var repair = repair(events: events, runID: runID) else { return nil }
-        repair.checkEnvironment = TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
+        repair = repair.checking(in: TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: repair.checkBinary))
         repair.checkWorkingDirectory = TaskLifecycleCoordinator.checkWorkingDirectory(for: task)
         repair = CLISessionExpiryClassifier.checkingCredentialFile(CLISessionExpiryClassifier.checkingLaunchHost(repair))
         return await CLISessionExpiryClassifier.checkingCheckoutHost(repair).targetingCredentialStore(repair.checkEnvironment)
