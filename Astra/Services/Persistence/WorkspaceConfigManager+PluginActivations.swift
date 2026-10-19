@@ -296,4 +296,34 @@ extension WorkspaceConfigManager {
         WorkspaceAutoExportGate.shared.retire(workspaceID: workspace.id.uuidString)
         return exportToFileResult(workspace: workspace, modelContext: modelContext, url: url).didExport
     }
+
+    /// Rewrites each of `workspaces`' mirrors now (`exportMirrorNow`), the
+    /// rest too after one fails. True when every one was written.
+    @MainActor
+    public static func exportMirrorsNow(_ workspaces: [Workspace], modelContext: ModelContext) -> Bool {
+        var seen = Set<UUID>()
+        return workspaces.filter { seen.insert($0.id).inserted }.reduce(true) { written, workspace in
+            exportMirrorNow(workspace: workspace, modelContext: modelContext) && written
+        }
+    }
+
+    /// Those of `workspaces` whose mirror carries any of `accountIDs`, as
+    /// `export` collects its rows: the workspace's own, its skills', a
+    /// shared one it lists, and an account any plugin's binding names
+    /// there. The one answer to which mirrors a changed account leaves stale.
+    @MainActor
+    public static func workspacesMirroring(
+        accountIDs: Set<UUID>, among workspaces: [Workspace], modelContext: ModelContext
+    ) -> [Workspace] {
+        guard !accountIDs.isEmpty else { return [] }
+        let globalSkills = fetchGlobalSkills(modelContext: modelContext)
+        let globalConnectors = fetchGlobalConnectors(modelContext: modelContext)
+        return workspaces.filter { workspace in
+            !workspace.isDeleted && connectorsForExport(
+                workspace: workspace,
+                skills: skillsForExport(workspace: workspace, globalSkills: globalSkills),
+                globalConnectors: globalConnectors
+            ).contains { accountIDs.contains($0.id) }
+        }
+    }
 }

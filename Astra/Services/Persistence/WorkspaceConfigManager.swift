@@ -1466,12 +1466,12 @@ public enum WorkspaceConfigManager {
         try data.write(to: url)
     }
 
-    private static func fetchGlobalSkills(modelContext: ModelContext) -> [Skill] {
+    static func fetchGlobalSkills(modelContext: ModelContext) -> [Skill] {
         let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal })
         return (try? modelContext.fetch(descriptor)) ?? []
     }
 
-    private static func fetchGlobalConnectors(modelContext: ModelContext) -> [Connector] {
+    static func fetchGlobalConnectors(modelContext: ModelContext) -> [Connector] {
         let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal })
         return (try? modelContext.fetch(descriptor)) ?? []
     }
@@ -1600,7 +1600,7 @@ public enum WorkspaceConfigManager {
         []
     }
 
-    private static func skillsForExport(workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
+    static func skillsForExport(workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalSkillIDs.compactMap(UUID.init(uuidString:)))
         let taskSkills = workspace.tasks.flatMap(\.skills)
         let enabledGlobals = globalSkills.filter { enabledGlobalIDs.contains($0.id) }
@@ -1608,7 +1608,7 @@ public enum WorkspaceConfigManager {
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 
-    private static func connectorsForExport(
+    static func connectorsForExport(
         workspace: Workspace,
         skills: [Skill],
         globalConnectors: [Connector]

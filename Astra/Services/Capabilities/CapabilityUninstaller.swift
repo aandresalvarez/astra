@@ -212,11 +212,18 @@ struct CapabilityUninstaller {
             modelContext.delete(skill)
         }
 
-        // Recorded with the workspaces it changes, whose mirrors are
-        // rewritten before it is cleared.
+        // Recorded with the workspaces whose mirrors it changes: those it
+        // disabled, and each one carrying an account whose provenance it
+        // released (another plugin's binding, a shared list). They are
+        // rewritten before any secret is cleaned or the intent is cleared.
+        let affected = result.disabledWorkspaceIDs + WorkspaceConfigManager.workspacesMirroring(
+            accountIDs: Set(stampedAccounts.map(\.id)), among: workspaces, modelContext: modelContext
+        ).map(\.id).filter { !result.disabledWorkspaceIDs.contains($0) }
+        let intent = PluginRemoveJournal.Intent(pluginID: package.id, workspaceIDs: affected)
+        var mirrorsWritten = false
         let recordedIntent: Bool
         do {
-            recordedIntent = try removeJournal?.begin(package.id, affecting: result.disabledWorkspaceIDs) ?? false
+            recordedIntent = try removeJournal?.begin(package.id, affecting: affected) ?? false
         } catch {
             modelContext.rollback()
             membershipSnapshots.forEach { WorkspaceCapabilityActivation.restore($1, to: $0) }
@@ -229,9 +236,14 @@ struct CapabilityUninstaller {
         guard ConnectorCredentialCleanup.deleteThenClean(
             pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
             save: {
-                PluginSecretCleanupOutbox.deleteThenClean(activationSecretSkillIDs, modelContext: modelContext) {
-                    persist(nil, modelContext)
-                }
+                PluginSecretCleanupOutbox.deleteThenClean(
+                    activationSecretSkillIDs, modelContext: modelContext,
+                    save: { persist(nil, modelContext) },
+                    rewriteMirrors: {
+                        mirrorsWritten = PluginRemoveJournal.rewriteMirrors(of: intent, modelContext: modelContext)
+                        return mirrorsWritten
+                    }
+                )
             }
         ) else {
             // Abort before touching the keychain or the library file: the
@@ -245,11 +257,9 @@ struct CapabilityUninstaller {
             throw UninstallError.saveFailed(packageID: package.id)
         }
         pendingKeychainCleanups.forEach { $0() }
-        // Written now, not queued: the intent is cleared only once no mirror
-        // still names what the Remove deleted, else launch rewrites them.
-        let mirrorsWritten = PluginRemoveJournal.rewriteMirrors(
-            of: .init(pluginID: package.id, workspaceIDs: result.disabledWorkspaceIDs), modelContext: modelContext
-        )
+        // The mirrors were written then, not queued: the intent is cleared
+        // only once none still names what the Remove deleted, else launch
+        // rewrites them.
 
         // File removal is the last step and deliberately non-throwing: the
         // deletes are committed and the keychain is wiped, so the package is

@@ -383,6 +383,19 @@ enum CapabilityPackageValidator {
             }
         }
 
+        // Two servers of one package with one ID: the projection keeps only
+        // the first, so the other's tools would silently be missing.
+        let serverIDs = package.mcpServers.map { $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        for duplicate in Dictionary(grouping: serverIDs, by: { $0 }).filter({ $0.value.count > 1 }).keys.sorted() {
+            issues.append(issue(
+                .blocker,
+                .duplicateMCPServerID,
+                "Duplicate MCP server ID",
+                "Two MCP servers in \(package.name) share the ID \(duplicate); give one of them its own.",
+                component: duplicate
+            ))
+        }
+
         // A setting is stored under `componentID#KEY`
         // (`PluginActivation.settingKey`) and split at the last `#`, so a key
         // containing one would be read back under the wrong component.

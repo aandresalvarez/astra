@@ -229,7 +229,7 @@ struct PluginOperationsTests {
         #expect(activation.knownComponentIDs.contains("skill:summary-agent"))
         #expect(!activation.knownComponentIDs.contains("skill:report-agent"))
 
-        try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [v2], mode: .release)
+        try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [v2], mode: .release, approvalRecords: PluginOperationsTests.approvals([v2]))
         #expect(activation.bindings.isEmpty)
         #expect(activation.recordedVersion == "2.0.0")
         #expect(!PluginUpdateService.needsReconcile(activation, to: v2))
@@ -526,7 +526,7 @@ struct PluginOperationsTests {
         }
         let twoActivation = try #require(WorkspaceCapabilityActivation.activation(for: ab.id, in: twoLive.workspace))
         #expect(throws: PluginUpdateService.UpdateError.ambiguousRename(component: "skill:c-agent")) {
-            try PluginUpdateService.reconcileAll(modelContext: twoLive.context, packages: [chained], mode: .release)
+            try PluginUpdateService.reconcileAll(modelContext: twoLive.context, packages: [chained], mode: .release, approvalRecords: PluginOperationsTests.approvals([chained]))
         }
         #expect(twoActivation.recordedVersion == "1.0.0")
         #expect(twoActivation.configuration(forComponent: "skill:report-agent") == ["PROJECT": "Report Agent"])
@@ -712,6 +712,17 @@ struct PluginOperationsTests {
         )
     }
 
+    /// An approval of each of `packages` as it is: a local plugin read back
+    /// from the library is a draft until one covers its digest.
+    static func approvals(_ packages: [PluginPackage]) -> [CapabilityApprovalRecord] {
+        packages.map { package in
+            CapabilityApprovalRecord(
+                packageID: package.id, packageVersion: package.version, status: .approved, approvedBy: "Tests",
+                approvedAt: Date(), reviewNotes: "", sourceDigest: PluginUpdateService.digest(of: package)
+            )
+        }
+    }
+
     static func package(version: String) -> PluginPackage {
         PluginPackage(
             id: "ops.report",
@@ -781,7 +792,7 @@ struct PluginOperationsTests {
                 throw refusal
             }
             try library.install(package, sourceMetadata: .builtIn())
-            try PluginUpdateService.reconcileAll(modelContext: context, packages: library.installedPackages(), mode: mode)
+            try PluginUpdateService.reconcileAll(modelContext: context, packages: library.installedPackages(), mode: mode, approvalRecords: PluginOperationsTests.approvals(library.installedPackages()))
         }
     }
 }
