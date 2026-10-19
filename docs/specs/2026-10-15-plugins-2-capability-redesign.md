@@ -939,19 +939,22 @@ Plugins 2.0 makes the model explicit:
   more than one account of a service, it names a default. The resolver uses
   the alias named in the task text, else the default, else it asks *before
   launch*. The broker's refusal stays as the last line. *(As built in R1
-  and R3: a workspace with any bound account of a service always has
-  exactly one default for it, across plugins, held only in
-  `AccountBinding.isDefault`: `bind` makes the first one the default,
-  `unbind` promotes the oldest remaining, and Make default moves it.
-  `PluginRuntimeProjection` derives the projected defaults from the enabled
-  activations' bindings, and the launch marks those accounts `isDefault` in
-  `ASTRA_CONNECTORS` (an optional field, absent otherwise). A brokered call
-  that names no alias uses the one account of that service marked default;
-  a named alias, name or ID always wins. With no default, more than one, or
-  only accounts enabled outside a plugin (which carry no default), the broker
-  still refuses and lists the aliases. Choosing the account from an alias in
-  the task text, and asking before launch, are the resolver's and are not
-  built in R1-R5.)*
+  and R3: a workspace has at most one stored default account per service,
+  held only in `AccountBinding.isDefault`: the first account bound becomes
+  the default, Make default moves it, and removing a binding promotes the
+  oldest remaining one. Turning a plugin off keeps its bindings, default
+  included, so turning it back on restores the default.
+  `PluginRuntimeProjection` derives the projected default per service: the
+  projected account a binding marks default, else the oldest projected
+  binding (by creation time, then ID), so turning off the default's plugin
+  never leaves the other plugins' accounts without one. The launch marks
+  those accounts `isDefault` in `ASTRA_CONNECTORS` (an optional field, absent
+  otherwise). A brokered call that names no alias uses the one account of
+  that service marked default; a named alias, name or ID always wins. With
+  more than one marked default, or only accounts enabled outside a plugin
+  (which carry no mark), the broker still refuses and lists the aliases.
+  Choosing the account from an alias in the task text, and asking before
+  launch, are the resolver's and are not built in R1-R5.)*
 - **Alias is required and visible** as soon as a service has two accounts,
   which is the broker's rule promoted to the UI. Aliases are unique per
   normalized service among the accounts a workspace can see, so a name
