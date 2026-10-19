@@ -67,8 +67,8 @@ struct PluginSourcesSection: View {
                 Image(systemName: listing.source.kind == .git ? "arrow.triangle.branch" : "folder")
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(listing.source.displayName).font(Stanford.ui(13, weight: .semibold))
-                    Text(listing.source.location)
+                    Text(listing.source.shownName).font(Stanford.ui(13, weight: .semibold))
+                    Text(listing.source.shownLocation)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -133,7 +133,7 @@ struct PluginSourcesSection: View {
     private func subtitle(_ plugin: SourcedPlugin) -> String {
         let contents = plugin.package?.contentParts.joined(separator: ", ") ?? ""
         let skipped = plugin.unsupported.isEmpty ? "" : " · not brought over: " + plugin.unsupported.joined(separator: ", ")
-        return (contents.isEmpty ? "From \(plugin.source.displayName)" : contents) + skipped
+        return (contents.isEmpty ? "From \(plugin.source.shownName)" : contents) + skipped
     }
 
     // MARK: - Actions
@@ -173,7 +173,7 @@ struct PluginSourcesSection: View {
         guard let report = actions.review(plugin) else { return }
         reviewing = (plugin, CapabilityImportReview(
             report: report,
-            origin: "From \(plugin.source.displayName) · \(plugin.source.location)",
+            origin: "From \(plugin.source.shownName) · \(plugin.source.shownLocation)",
             digest: plugin.digest,
             unsupported: plugin.unsupported
         ))

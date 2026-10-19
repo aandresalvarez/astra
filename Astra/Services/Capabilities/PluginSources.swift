@@ -37,10 +37,12 @@ struct PluginSource: Codable, Identifiable, Equatable, Sendable {
         else { return nil }
         if trimmed.hasPrefix("/") {
             let path = URL(fileURLWithPath: trimmed).standardizedFileURL.path
-            return PluginSource(
+            let source = PluginSource(
                 id: identifier(for: path), kind: .folder, location: path,
                 displayName: URL(fileURLWithPath: path).lastPathComponent, addedAt: now
             )
+            // Shown beside every plugin from it, so it must show as typed (T14).
+            return source.displayTextChange == nil ? source : nil
         }
         guard !trimmed.contains(where: \.isWhitespace) else { return nil }
         let location: String
@@ -71,7 +73,8 @@ struct PluginSource: Codable, Identifiable, Equatable, Sendable {
             .split(whereSeparator: { $0 == "/" || $0 == ":" })
             .suffix(2)
             .joined(separator: "/")
-        return PluginSource(id: identifier(for: location), kind: .git, location: location, displayName: name, addedAt: now)
+        let source = PluginSource(id: identifier(for: location), kind: .git, location: location, displayName: name, addedAt: now)
+        return source.displayTextChange == nil ? source : nil
     }
 
     /// A stable, file-name-safe ID for a location.
@@ -89,7 +92,7 @@ struct PluginSource: Codable, Identifiable, Equatable, Sendable {
     var metadata: CapabilitySourceMetadata {
         CapabilitySourceMetadata(
             id: "plugin-source:\(id)",
-            displayName: displayName,
+            displayName: shownName,
             kind: Self.metadataKind,
             url: kind == .git ? URL(string: location) : URL(fileURLWithPath: location),
             trustLevel: "unreviewed"
@@ -203,6 +206,16 @@ struct PluginSourceStore {
     }
 
     private var provenanceURL: URL { root.appendingPathComponent("provenance.json") }
+
+    /// What a workspace mirror records as the source of a plugin's copy
+    /// (`InstalledPluginRef.source`, T5): `plugin-source:<id>` when the
+    /// provenance names the copy with `digest` (a pending forget settled by
+    /// it first), nil for a local copy. The mirror's export and the import
+    /// check both read it here.
+    static func mirrorIdentity(pluginID: String, digest: String, provenance: [String: Provenance]) -> String? {
+        guard let record = provenance[pluginID]?.resolved(installedDigest: digest), record.names(digest) else { return nil }
+        return "plugin-source:\(record.sourceID)"
+    }
 
     /// Plugin ID → provenance. An unreadable record reads as empty: no
     /// installed plugin then counts as a source's own copy, which only
@@ -349,6 +362,12 @@ struct PluginSourceFetcher {
     var maxDownloadBytes: Int = 64 * 1024 * 1024
     var maxCheckoutBytes: Int = 64 * 1024 * 1024
     var maxCheckoutFiles: Int = 10_000
+    /// The objects a fetched pack may hold, read from its header while git
+    /// indexes it (T11). `index-pack` keeps about 80 bytes per object, so a
+    /// pack under the download bound made of millions of tiny objects
+    /// would otherwise cost hundreds of megabytes before the tree is
+    /// measured. A checkout within `maxCheckoutFiles` needs far fewer.
+    var maxPackObjects: Int = 100_000
 
     func fetch(_ source: PluginSource, store: PluginSourceStore) async throws {
         guard source.kind == .git else { return }
@@ -369,6 +388,8 @@ struct PluginSourceFetcher {
         guard result.exitCode == 0, fileManager.fileExists(atPath: staging.path) else {
             throw PluginSourceFetchError.cloneFailed(Self.detail(result))
         }
+        // The watcher may not have seen a pack indexed between two polls.
+        guard Self.packObjectCount(in: staging) <= maxPackObjects else { throw PluginSourceFetchError.tooLarge }
         // 2. Measure what a checkout would write, from the tree, first.
         let tree = await runner.run(
             path: git,
@@ -400,8 +421,9 @@ struct PluginSourceFetcher {
         }
     }
 
-    /// Runs git while watching how much `directory` holds; past
-    /// `maxDownloadBytes` the run is cancelled and the fetch refused.
+    /// Runs git while watching how much `directory` holds and how many
+    /// objects its packs declare; past `maxDownloadBytes` or
+    /// `maxPackObjects` the run is cancelled and the fetch refused.
     private func runBounded(
         _ git: String,
         _ args: [String],
@@ -409,7 +431,7 @@ struct PluginSourceFetcher {
         environment: [String: String],
         fileManager: FileManager
     ) async throws -> RunResult {
-        let limit = maxDownloadBytes
+        let (limit, objectLimit) = (maxDownloadBytes, maxPackObjects)
         let (runner, timeout) = (self.runner, self.timeout)
         return try await withThrowingTaskGroup(of: RunResult?.self) { group in
             group.addTask {
@@ -418,7 +440,9 @@ struct PluginSourceFetcher {
             group.addTask {
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 200_000_000)
-                    if Self.size(of: directory) > limit { throw PluginSourceFetchError.tooLarge }
+                    if Self.size(of: directory) > limit || Self.packObjectCount(in: directory) > objectLimit {
+                        throw PluginSourceFetchError.tooLarge
+                    }
                 }
                 return nil
             }
@@ -439,6 +463,23 @@ struct PluginSourceFetcher {
             total += (try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0
         }
         return total
+    }
+
+    /// The objects the packs under a clone's `.git/objects/pack` declare,
+    /// finished (`*.pack`) or still being indexed (`tmp_pack_*`): bytes 8–11
+    /// of a pack, big-endian, after the `PACK` signature and version. Git
+    /// writes the header first and indexes exactly that many objects, so
+    /// the count is known as soon as the first bytes arrive.
+    static func packObjectCount(in clone: URL) -> Int {
+        let packs = clone.appendingPathComponent(".git/objects/pack", isDirectory: true)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: packs.path)) ?? []
+        return names.filter { $0.hasSuffix(".pack") || $0.hasPrefix("tmp_pack_") }.reduce(0) { total, name in
+            guard let handle = FileHandle(forReadingAtPath: packs.appendingPathComponent(name).path) else { return total }
+            defer { try? handle.close() }
+            let header = [UInt8]((try? handle.read(upToCount: 12)) ?? Data())
+            guard header.count == 12, header.prefix(4) == [0x50, 0x41, 0x43, 0x4B] else { return total }
+            return total + header[8..<12].reduce(0) { $0 << 8 | Int($1) }
+        }
     }
 
     /// Blob sizes from `git ls-tree -r -l`: `<mode> blob <sha> <size>\t<path>`.

@@ -277,6 +277,66 @@ struct PluginSourcesTests {
         #expect(leftovers.allSatisfy { !$0.hasPrefix(".") })
     }
 
+    @Test("T11: a pack's object count is read from its header, finished or still being indexed")
+    func packObjectCountReadsHeaders() throws {
+        let fixture = try Fixture()
+        let clone = fixture.root.appendingPathComponent("clone", isDirectory: true)
+        func header(_ count: UInt32) -> Data {
+            Data("PACK".utf8) + Data([0, 0, 0, 2]) + withUnsafeBytes(of: count.bigEndian) { Data($0) } + Data(repeating: 7, count: 20)
+        }
+        try fixture.write([
+            ".git/objects/pack/pack-1.pack": header(40_000),
+            ".git/objects/pack/tmp_pack_ab12": header(70_001),
+            ".git/objects/pack/pack-1.idx": header(9_999_999),
+            ".git/objects/pack/tmp_pack_short": Data("PACK".utf8),
+            ".git/objects/pack/pack-2.pack": Data("JUNK0000".utf8) + header(5)
+        ], in: clone)
+        #expect(PluginSourceFetcher.packObjectCount(in: clone) == 110_001)
+        #expect(PluginSourceFetcher.packObjectCount(in: fixture.root) == 0)
+    }
+
+    @Test("T11: git is stopped while it indexes a pack that declares more objects than the bound")
+    func packOverObjectBoundIsStoppedWhileIndexing() async throws {
+        let fixture = try Fixture()
+        let source = try #require(PluginSource.make(from: "https://example.com/acme/many.git"))
+        let clone = fixture.store.cloneDirectory(for: source)
+        try fixture.write(["capability.json": try Self.packageJSON(id: "kept", version: "1.0.0")], in: clone)
+        let runner = IndexingRunner(objects: 100_001)
+        let fetcher = PluginSourceFetcher(runner: runner, gitPath: { "/usr/bin/git" })
+        await #expect(throws: PluginSourceFetchError.tooLarge) { try await fetcher.fetch(source, store: fixture.store) }
+        // Refused by the watcher, mid-index, not after git finished.
+        #expect(runner.wasCancelled)
+        #expect(FileManager.default.fileExists(atPath: clone.appendingPathComponent("capability.json").path))
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: fixture.store.root.path).filter { $0.hasPrefix(".") }
+        #expect(leftovers.isEmpty)
+
+        // At the bound it is not refused by the count.
+        let atBound = IndexingRunner(objects: 100_000)
+        await #expect(throws: PluginSourceFetchError.self) {
+            try await PluginSourceFetcher(runner: atBound, gitPath: { "/usr/bin/git" }).fetch(source, store: fixture.store)
+        }
+        #expect(!atBound.wasCancelled)
+    }
+
+    @Test("T11: a fetched pack over the object bound is refused before the tree is read, whatever its size")
+    func fetchedPackOverObjectBoundIsRefused() async throws {
+        guard let git = Self.git() else { return }
+        let fixture = try Fixture()
+        // 120 small files: a pack (git unpacks fewer than 100 objects loose).
+        var files = ["capability.json": try Self.packageJSON(id: "many", version: "1.0.0")]
+        for index in 0..<120 { files["f/\(index).txt"] = Data("\(index)\n".utf8) }
+        let repository = try fixture.bareRepository(with: files)
+        var fetcher = PluginSourceFetcher(gitPath: { git })
+        fetcher.allowedProtocols = ["file"]
+        fetcher.maxPackObjects = 100
+        let source = PluginSource(id: "many", kind: .git, location: repository.path, displayName: "many", addedAt: Date())
+        await #expect(throws: PluginSourceFetchError.tooLarge) { try await fetcher.fetch(source, store: fixture.store) }
+        #expect(!FileManager.default.fileExists(atPath: fixture.store.cloneDirectory(for: source).path))
+        fetcher.maxPackObjects = 200
+        try await fetcher.fetch(source, store: fixture.store)
+        #expect(FileManager.default.fileExists(atPath: fixture.store.cloneDirectory(for: source).appendingPathComponent("capability.json").path))
+    }
+
     // MARK: - T4: paths
 
     @Test("T4: an entry or a file outside the plugin's directory is refused")
@@ -538,6 +598,82 @@ struct PluginSourcesTests {
         let record = try #require(fixture.store.provenance()[old.id])
         #expect(record.pendingForget == nil)
         #expect(PluginSourceCatalog.isOwnCopy(old, of: source, provenance: fixture.store.provenance()))
+    }
+
+    @Test("T5: a chosen workspace file enables a source plugin's activation only where the same source installed that copy")
+    func importedActivationIsBoundToItsSource() throws {
+        let fixture = try Fixture()
+        let folder = fixture.root.appendingPathComponent("bound", isDirectory: true)
+        try fixture.write(["capability.json": try Self.packageJSON(id: "source-bound-plugin", version: "1.0.0")], in: folder)
+        let source = try #require(PluginSource.make(from: folder.path))
+        try fixture.store.save([source])
+        let coordinator = PluginSourceCoordinator(store: fixture.store, installedPackages: { fixture.library.installedPackages() })
+        coordinator.reload()
+        let offered = try #require(coordinator.listings.first?.plugins.first)
+        let workspace = Workspace(name: "Bound", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        fixture.context.insert(workspace)
+        let service = CapabilityCatalogActionService(library: fixture.library, sourceStore: fixture.store)
+        try service.importReviewed(offered, workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
+        let installed = try #require(fixture.library.installedPackage(id: "source-bound-plugin"))
+        let approvals = CapabilityApprovalStore(directory: fixture.root.appendingPathComponent("approvals", isDirectory: true))
+        _ = try service.add(
+            installed, workspace: workspace, modelContext: fixture.context,
+            policyContext: .workspaceUser(workspace: workspace, isAdmin: true, currentAppVersion: SemanticVersion(1, 0, 0), approvalRecords: []),
+            approvalStore: approvals, traceID: "test"
+        )
+        let digest = PluginSourceCatalog.contentDigest(installed)
+
+        // The export records the source the copy came from.
+        let refs = WorkspaceConfigManager.installedPluginRefs(for: workspace) { id, digest in
+            PluginSourceStore.mirrorIdentity(pluginID: id, digest: digest, provenance: fixture.store.provenance())
+        }
+        let ref = try #require(refs.first { $0.id == installed.id })
+        #expect(ref.source == "plugin-source:\(source.id)")
+        #expect(ref.digest == digest)
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: fixture.context))
+        config.installedPlugins = refs
+
+        func imported(
+            _ config: WorkspaceConfigManager.WorkspaceConfig, installedFrom sourceID: String?,
+            trust: (WorkspaceConfigManager.CapabilityImportVerifier) -> WorkspaceConfigManager.CapabilityImportTrustPolicy = { .validate($0) }
+        ) throws -> (enabled: Bool, settled: Bool, report: WorkspaceConfigManager.CapabilityImportTrustReport) {
+            let here = PluginSourceStore(root: fixture.root.appendingPathComponent("here-\(UUID().uuidString)", isDirectory: true))
+            if let sourceID { try here.recordProvenance(pluginID: installed.id, sourceID: sourceID, digest: digest) }
+            let verifier = WorkspaceConfigManager.CapabilityImportVerifier.live(
+                library: fixture.library, approvalRecords: approvals.records(), sourceStore: here
+            )
+            let target = try ModelContainer(
+                for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            )
+            Fixture.retained.append(target)
+            let result = WorkspaceConfigManager.importWorkspaceResult(from: config, modelContext: target.mainContext, capabilityTrust: trust(verifier))
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: installed.id, in: result.workspace))
+            return (activation.isEnabled, !activation.recordedDigest.isEmpty, result.capabilityTrust)
+        }
+
+        // The same source installed it here: on, as recorded.
+        let same = try imported(config, installedFrom: source.id)
+        #expect(same.enabled && same.settled)
+        #expect(same.report.pluginsChanged.isEmpty)
+        // The same bytes from another source, or installed locally: off, with the reason.
+        for other in ["acme-other-123abc", nil] as [String?] {
+            let result = try imported(config, installedFrom: other)
+            #expect(!result.enabled && !result.settled, "\(other ?? "local")")
+            #expect(result.report.pluginsChanged == [installed.id])
+            #expect(result.report.pluginsFromAnotherSource == [installed.id])
+            #expect(result.report.auditFields["plugins_from_another_source"] == installed.id)
+        }
+        // A file written before sources counts as local.
+        var older = config
+        older.installedPlugins = refs.map { var ref = $0; ref.source = nil; return ref }
+        #expect(try imported(older, installedFrom: nil).enabled)
+        #expect(try !imported(older, installedFrom: source.id).enabled)
+        var spelled = config
+        spelled.installedPlugins = refs.map { var ref = $0; ref.source = "local"; return ref }
+        #expect(try imported(spelled, installedFrom: nil).enabled)
+        // The workspace's own mirror is restored as recorded.
+        #expect(try imported(config, installedFrom: "acme-other-123abc", trust: { _ in .preserveRecordedState }).enabled)
     }
 
     @Test("T8: a folder edited after review can't be added")
@@ -844,6 +980,49 @@ struct PluginSourcesTests {
         #expect(listing.plugins.contains { $0.package == nil && $0.entryName == "entryname" })
     }
 
+    @Test("T14: a source's location and name are cleaned wherever shown, and a source that needed it is refused")
+    func sourceLocationIsDisplayText() throws {
+        // Refused when added: a line separator passes the URL and path shape checks.
+        #expect(PluginSource.make(from: "/tmp/plugins\u{2028}Approved by ASTRA") == nil)
+        #expect(PluginSource.make(from: "/tmp/" + String(repeating: "p", count: PluginSourceDisplayText.textLimit)) == nil)
+        #expect(PluginSource.make(from: "/tmp/plain plugins") != nil)
+
+        // A stored one (an older or edited sources.json) is shown cleaned and refused.
+        let fixture = try Fixture()
+        let folder = fixture.root.appendingPathComponent("evil\u{202E}gnp.exe", isDirectory: true)
+        try fixture.write(["capability.json": try Self.packageJSON(id: "located", version: "1.0.0")], in: folder)
+        let stored = PluginSource(
+            id: "stored", kind: .folder, location: folder.path, displayName: folder.lastPathComponent, addedAt: Date()
+        )
+        #expect(stored.shownLocation == fixture.root.path + "/evilgnp.exe")
+        #expect(stored.shownName == "evilgnp.exe")
+        #expect(stored.metadata.displayName == "evilgnp.exe")
+        let listing = PluginSourceCatalog.listing(for: stored, store: fixture.store, installed: [])
+        #expect(listing.problem == PluginSourceDisplayText.Change.controlCharacters.problem)
+        #expect(listing.plugins.isEmpty)
+        var reviewed = PluginSourceCatalog.plugin(
+            named: "located", at: "", in: stored, directory: BrokeredPluginDirectory(root: folder, kind: .folder), installed: []
+        )
+        reviewed.problem = nil
+        #expect(throws: PluginSourceCatalogError.notAddable(PluginSourceDisplayText.Change.controlCharacters.problem)) {
+            try PluginSourceCatalog.confirmReviewed(reviewed, store: fixture.store, installed: [])
+        }
+
+        // An installed plugin's origin shows the cleaned name.
+        let package = try #require(reviewed.package)
+        try fixture.store.save([stored])
+        try fixture.store.recordProvenance(pluginID: package.id, sourceID: stored.id, digest: PluginSourceCatalog.contentDigest(package))
+        let coordinator = PluginSourceCoordinator(store: fixture.store, installedPackages: { [package] })
+        coordinator.reload()
+        #expect(coordinator.origin(of: package) == "evilgnp.exe")
+
+        // The Sources section renders only the cleaned forms.
+        let section = try String(contentsOf: Self.repositoryRoot().appendingPathComponent("Astra/Views/Capabilities/PluginSourcesSection.swift"), encoding: .utf8)
+        #expect(!section.contains("source.location"))
+        #expect(!section.contains("source.displayName"))
+        #expect(section.contains("source.shownLocation"))
+    }
+
     @Test("A folder source's plugin imports as the reviewed digest, keeping its source")
     func folderSourceImportsReviewedDigest() throws {
         let fixture = try Fixture()
@@ -963,6 +1142,10 @@ struct PluginSourcesTests {
             files["skills/s\(index)/SKILL.md"] = Data("---\nname: Skill \(index)\ndescription: Does \(index)\n---\nDo \(index).".utf8)
         }
         return files
+    }
+
+    static func repositoryRoot() -> URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
     }
 
     static func marketplace(_ entries: [(String, String)]) -> Data {
@@ -1091,6 +1274,38 @@ final class ProvenanceSnapshotFileManager: FileManager {
             if failLibraryWrites { throw CocoaError(.fileWriteNoPermission) }
         }
         try super.removeItem(at: url)
+    }
+}
+
+/// Plays git indexing a fetched pack: writes a `tmp_pack_` whose header
+/// declares `objects`, then waits until cancelled, as a long index would.
+private final class IndexingRunner: BinaryRunner, @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    let objects: UInt32
+
+    init(objects: UInt32) {
+        self.objects = objects
+    }
+
+    var wasCancelled: Bool { lock.withLock { cancelled } }
+
+    func run(path: String, args: [String], timeout: TimeInterval, environment: [String: String]?) async -> RunResult {
+        guard args.contains("clone"), let staging = args.last else {
+            return RunResult(outcome: .exited(code: 128), stdout: "", stderr: "fatal: refused", elapsedTime: 0)
+        }
+        let packs = URL(fileURLWithPath: staging).appendingPathComponent(".git/objects/pack", isDirectory: true)
+        try? FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+        let header = Data("PACK".utf8) + Data([0, 0, 0, 2]) + withUnsafeBytes(of: objects.bigEndian) { Data($0) }
+        try? header.write(to: packs.appendingPathComponent("tmp_pack_x1y2z3"))
+        for _ in 0..<200 {
+            if Task.isCancelled {
+                lock.withLock { cancelled = true }
+                return RunResult(outcome: .cancelled, stdout: "", stderr: "", elapsedTime: 0)
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        return RunResult(outcome: .exited(code: 128), stdout: "", stderr: "fatal: index-pack failed", elapsedTime: 0)
     }
 }
 

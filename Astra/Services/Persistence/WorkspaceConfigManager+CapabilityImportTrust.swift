@@ -36,6 +36,11 @@ extension WorkspaceConfigManager {
         /// recorded against another digest (another copy under the same ID)
         /// stays off and brings none of its settings or accounts.
         public var installedDigests: [String: String]
+        /// Where each installed package's copy came from, by plugin ID, in
+        /// `InstalledPluginRef.source`'s form; a local copy has no entry. An
+        /// imported activation from another source (or a local one where
+        /// the copy here came from a source) stays off like another copy.
+        public var installedSources: [String: String]
         /// Each installed package's connector components, by component ID.
         /// An imported account is bound only to a component it is an account
         /// of (`acceptsAccount`).
@@ -57,6 +62,7 @@ extension WorkspaceConfigManager {
             availablePackIDs: Set<String>,
             declaredComponentIDs: [String: Set<String>] = [:],
             installedDigests: [String: String] = [:],
+            installedSources: [String: String] = [:],
             connectorComponents: [String: [String: ConnectorComponent]] = [:]
         ) {
             self.approvedPackageIDs = approvedPackageIDs
@@ -64,6 +70,7 @@ extension WorkspaceConfigManager {
             self.availablePackIDs = availablePackIDs
             self.declaredComponentIDs = declaredComponentIDs
             self.installedDigests = installedDigests
+            self.installedSources = installedSources
             self.connectorComponents = connectorComponents
         }
 
@@ -92,6 +99,10 @@ extension WorkspaceConfigManager {
         /// Plugins whose activation names another copy than the installed
         /// one: kept, but off and without their details.
         public var pluginsChanged: [String] = []
+        /// Of `pluginsChanged`, those whose copy matches but whose source
+        /// differs: recorded from one source, installed here from another
+        /// (or locally).
+        public var pluginsFromAnotherSource: [String] = []
         public var unknownSharedRowIDs: [String] = []
         public var originStampsStripped = 0
         public var sharedRowsLocalized = 0
@@ -106,6 +117,7 @@ extension WorkspaceConfigManager {
                 "packs_unavailable": packsUnavailable.joined(separator: ", "),
                 "plugins_unavailable": pluginsUnavailable.joined(separator: ", "),
                 "plugins_changed": pluginsChanged.joined(separator: ", "),
+                "plugins_from_another_source": pluginsFromAnotherSource.joined(separator: ", "),
                 "unknown_shared_row_count": String(unknownSharedRowIDs.count),
                 "origin_stamps_stripped": String(originStampsStripped),
                 "shared_rows_localized": String(sharedRowsLocalized)
@@ -130,11 +142,20 @@ extension WorkspaceConfigManager {
     /// and approved, packs it does not have, and shared rows that do not exist
     /// here. Shared rows the import itself reuses are re-enabled afterwards.
     /// True when a chosen file's activation was recorded against the copy
-    /// installed here. The workspace's own mirror is always its own copy.
+    /// installed here, from the same source: a digest proves the content,
+    /// not which source owns its updates (T5). The workspace's own mirror is
+    /// always its own copy.
     static func isAcceptedCopy(_ ref: InstalledPluginRef, trust: CapabilityImportTrustPolicy) -> Bool {
         guard case .validate(let verifier) = trust else { return true }
         guard let digest = ref.digest, !digest.isEmpty else { return false }
-        return verifier.installedDigests[ref.id] == digest
+        return verifier.installedDigests[ref.id] == digest && isSameSource(ref, verifier: verifier)
+    }
+
+    /// The file's source for the activation against the installed copy's;
+    /// nil and "local" both mean local.
+    static func isSameSource(_ ref: InstalledPluginRef, verifier: CapabilityImportVerifier) -> Bool {
+        func identity(_ value: String?) -> String? { value == "local" || value?.isEmpty == true ? nil : value }
+        return identity(ref.source) == identity(verifier.installedSources[ref.id])
     }
 
     @MainActor
@@ -155,6 +176,9 @@ extension WorkspaceConfigManager {
             verifier.installedPackageIDs.contains($0.id) && !isAcceptedCopy($0, trust: trust)
         }.map(\.id))
         report.pluginsChanged = state.pluginIDs.filter(changed.contains)
+        report.pluginsFromAnotherSource = report.pluginsChanged.filter { id in
+            pluginRefs.contains { $0.id == id && !isSameSource($0, verifier: verifier) }
+        }
         state.capabilityIDs.removeAll(where: changed.contains)
 
         var keptIDs: [String] = []

@@ -27,7 +27,8 @@ extension WorkspaceConfigManager {
             namespaceSeed: String? = nil,
             digest: String? = nil,
             templateDigests: [String]? = nil,
-            awaitingUpdate: Bool? = nil
+            awaitingUpdate: Bool? = nil,
+            source: String? = nil
         ) {
             self.id = id
             self.activationID = activationID
@@ -43,6 +44,7 @@ extension WorkspaceConfigManager {
             self.digest = digest
             self.templateDigests = templateDigests
             self.awaitingUpdate = awaitingUpdate
+            self.source = source
         }
 
         public var id: String
@@ -76,6 +78,13 @@ extension WorkspaceConfigManager {
         /// Whether an automatic reconcile held the activation back from its
         /// library definition; restored only from the workspace's own mirror.
         public var awaitingUpdate: Bool?
+        /// Where the copy `digest` names came from when the mirror was
+        /// written: `plugin-source:<id>` for a plugin source (its ID hashes
+        /// the full location, so it also fixes the kind), nil for a local
+        /// copy, as in a file written before sources. A chosen file's
+        /// activation is accepted only where the installed copy has the same
+        /// source (`CapabilityImportVerifier.installedSources`).
+        public var source: String?
     }
 
     public struct PluginAccountRef: Codable, Sendable, Equatable {
@@ -117,7 +126,12 @@ extension WorkspaceConfigManager {
         return rows.filter { ids.contains($0.id) }
     }
 
-    static func installedPluginRefs(for workspace: Workspace) -> [InstalledPluginRef] {
+    /// `sourceIdentity` answers where the copy an activation recorded came
+    /// from (`PluginSourceIdentitySeam` in the export).
+    static func installedPluginRefs(
+        for workspace: Workspace,
+        sourceIdentity: (_ pluginID: String, _ digest: String) -> String?
+    ) -> [InstalledPluginRef] {
         WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
             let accounts = activation.bindings
                 .filter { !$0.isDeleted }
@@ -143,7 +157,8 @@ extension WorkspaceConfigManager {
                 namespaceSeed: activation.namespaceSeed.isEmpty ? nil : activation.namespaceSeed,
                 digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest,
                 templateDigests: activation.templateDigests.isEmpty ? nil : activation.templateDigests,
-                awaitingUpdate: activation.awaitingUpdate ? true : nil
+                awaitingUpdate: activation.awaitingUpdate ? true : nil,
+                source: activation.recordedDigest.isEmpty ? nil : sourceIdentity(activation.pluginID, activation.recordedDigest)
             )
         }
     }

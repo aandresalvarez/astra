@@ -67,6 +67,11 @@ enum PluginSourceCatalog {
         store: PluginSourceStore,
         installed: [PluginPackage]
     ) -> PluginSourceListing {
+        // A source whose own name or location needed cleaning is refused
+        // before anything in it is read (T14).
+        if let change = source.displayTextChange {
+            return PluginSourceListing(source: source, plugins: [], problem: change.problem)
+        }
         let root = store.contentRoot(for: source)
         guard FileManager.default.fileExists(atPath: root.path) else {
             return PluginSourceListing(
@@ -307,7 +312,7 @@ final class PluginSourceCoordinator: ObservableObject {
     /// The name of the source an installed plugin came from, when it did.
     func origin(of package: PluginPackage) -> String? {
         listings.first { PluginSourceCatalog.isOwnCopy(package, of: $0.source, provenance: provenance) }?
-            .source.displayName
+            .source.shownName
     }
 
     /// Records that `package` (as the library now holds it) came from

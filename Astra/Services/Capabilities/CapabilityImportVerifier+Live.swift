@@ -11,9 +11,11 @@ extension WorkspaceConfigManager.CapabilityImportVerifier {
     static func live(
         library: CapabilityLibrary = CapabilityLibrary(),
         approvalRecords: [CapabilityApprovalRecord] = CapabilityApprovalStore().records(),
-        packCatalog: AstraPackCatalog = AstraPackCatalog()
+        packCatalog: AstraPackCatalog = AstraPackCatalog(),
+        sourceStore: PluginSourceStore = PluginSourceStore()
     ) -> Self {
         let installed = library.installedPackages()
+        let provenance = sourceStore.provenance()
         return Self(
             approvedPackageIDs: Set(installed
                 .filter { WorkspacePackageCapabilityApproval.isEffectivelyApproved($0, records: approvalRecords) }
@@ -33,6 +35,14 @@ extension WorkspaceConfigManager.CapabilityImportVerifier {
             installedDigests: Dictionary(
                 installed.compactMap { package in
                     (try? CapabilityApprovalDigest.digest(for: package)).map { (package.id, $0) }
+                },
+                uniquingKeysWith: { first, _ in first }
+            ),
+            installedSources: Dictionary(
+                installed.compactMap { package in
+                    PluginSourceStore.mirrorIdentity(
+                        pluginID: package.id, digest: PluginSourceCatalog.contentDigest(package), provenance: provenance
+                    ).map { (package.id, $0) }
                 },
                 uniquingKeysWith: { first, _ in first }
             ),

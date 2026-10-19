@@ -102,3 +102,23 @@ enum PluginSourceDisplayText {
         if let change = result.change { changes.append(change) }
     }
 }
+
+/// A source's own name and location are display text too (T14): typed by
+/// the person, but a folder or URL path can still carry a line separator,
+/// and `sources.json` is read as stored. Every place that shows a source
+/// shows these, and a source whose name or location needed cleaning is
+/// refused with the same problem as an entry.
+extension PluginSource {
+    var shownName: String {
+        PluginSourceDisplayText.clean(displayName, limit: PluginSourceDisplayText.nameLimit).text
+    }
+
+    var shownLocation: String {
+        PluginSourceDisplayText.clean(location, limit: PluginSourceDisplayText.textLimit).text
+    }
+
+    var displayTextChange: PluginSourceDisplayText.Change? {
+        PluginSourceDisplayText.clean(location, limit: PluginSourceDisplayText.textLimit).change
+            ?? PluginSourceDisplayText.clean(displayName, limit: PluginSourceDisplayText.nameLimit).change
+    }
+}

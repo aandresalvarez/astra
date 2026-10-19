@@ -974,7 +974,7 @@ public enum WorkspaceConfigManager {
             .map(workspaceAppAutomationStateConfig)
         let googleOAuthProfileConfigs = googleOAuthProfilesForExport(workspace: workspace).map(googleOAuthAccountProfileConfig)
 
-        let pluginRefs = installedPluginRefs(for: workspace)
+        let pluginRefs = installedPluginRefs(for: workspace, sourceIdentity: PluginSourceIdentitySeam.required.mirrorIdentity)
 
         return WorkspaceConfig(
             id: workspace.id.uuidString,

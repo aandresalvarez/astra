@@ -46,6 +46,15 @@ enum RuntimeSeamRegistration {
         TaskPlanReconstructionSeam.register(TaskPlanService.self)
         TaskForkSourcePointerSeam.register(TaskForkManifestService.self)
         TaskGeneratedFileQuerySeam.register(TaskGeneratedFiles.self)
+        PluginSourceIdentitySeam.register(PluginSourceMirrorIdentity.self)
+    }
+}
+
+/// The mirror's source identity for a plugin's copy, from this channel's
+/// plugin source store (`PluginSourceStore.mirrorIdentity`).
+enum PluginSourceMirrorIdentity: PluginSourceIdentityResolving {
+    static func mirrorIdentity(pluginID: String, digest: String) -> String? {
+        PluginSourceStore.mirrorIdentity(pluginID: pluginID, digest: digest, provenance: PluginSourceStore().provenance())
     }
 }
 
