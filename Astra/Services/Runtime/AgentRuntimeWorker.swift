@@ -8,6 +8,7 @@ import ASTRAPersistence
 final class AgentRuntimeWorker {
     private(set) var isRunning = false
     private var cancellationRequested = false
+    private var capabilityPreparationTask: Task<CopilotCLICapabilities, Error>?
     private var runtimeConfiguration = AgentRuntimeConfiguration()
     private let processRunner: any AgentRuntimeProcessRunning
     private let providerSettingsSnapshotProvider: () -> ProviderSettingsSnapshot
@@ -347,6 +348,20 @@ final class AgentRuntimeWorker {
         }
 
         await CodexMCPPolicyService.warmBeforeLaunch(configuration: runtimeConfiguration)
+        guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
+            settlePrelaunchCancellation(task: task, modelContext: modelContext)
+            return
+        }
+        if selectedRuntime == .copilotCLI {
+            guard let capabilities = await prepareCopilotCapabilities(
+                executablePath: launchSettings.executablePath, task: task, modelContext: modelContext
+            ) else { return }
+            executionPolicy.copilotCapabilityResolution = capabilities
+        }
+        guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
+            settlePrelaunchCancellation(task: task, modelContext: modelContext)
+            return
+        }
         let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
             task: launchTask,
             requestedRuntime: selectedRuntime,
@@ -389,7 +404,8 @@ final class AgentRuntimeWorker {
         // than the one that was asked for.
         let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(
             for: selectedRuntime,
-            executablePath: launchSettings.executablePath
+            executablePath: launchSettings.executablePath,
+            copilotCapabilities: executionPolicy.copilotCapabilities
         )
         executionPolicy = executionPolicy.withRuntimeCapabilityProfile(runtimeCapabilityProfile)
 
@@ -719,7 +735,10 @@ final class AgentRuntimeWorker {
             repositoryStatus: githubRepositoryStatus
         )
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
-        let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
+        let providerCapabilities = selectedRuntime == .copilotCLI
+            ? executionPolicy.copilotCapabilities.map { AgentRuntimePolicyCapabilities(copilotCLI: $0) }
+                ?? policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
+            : policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
         let runPermissionPolicy = launchPermissionPolicy
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
@@ -1237,8 +1256,50 @@ final class AgentRuntimeWorker {
     @MainActor
     func cancel() {
         cancellationRequested = true
+        capabilityPreparationTask?.cancel()
         processRunner.cancel()
     }
+    @MainActor
+    private func settlePrelaunchCancellation(task: AgentTask, modelContext: ModelContext) {
+        if task.status != .cancelled {
+            TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        }
+    }
+
+    @MainActor
+    private func prepareCopilotCapabilities(
+        executablePath: String, task: AgentTask, modelContext: ModelContext
+    ) async -> CopilotCapabilityResolution? {
+        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
+            return .unavailable("Copilot executable is missing or is not executable.")
+        }
+        let preparation = Task {
+            try await CopilotCLIRuntime.requiredCapabilities(
+                executablePath: executablePath, timeout: min(timeoutSeconds, 60))
+        }
+        capabilityPreparationTask = preparation
+        defer { capabilityPreparationTask = nil }
+        do {
+            let capabilities = try await withTaskCancellationHandler {
+                try await preparation.value
+            } onCancel: { preparation.cancel() }
+            guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
+                settlePrelaunchCancellation(task: task, modelContext: modelContext)
+                return nil
+            }
+            return .answered(capabilities)
+        } catch {
+            if cancellationRequested || Task.isCancelled || error is CancellationError || task.status == .cancelled {
+                settlePrelaunchCancellation(task: task, modelContext: modelContext)
+                return nil
+            }
+            // Admission owns durable launch blocks and their TaskRun history,
+            // including a binary removed after a cached readiness verdict.
+            return .unavailable(error.localizedDescription)
+        }
+    }
+
     // MARK: - Private
 
     private func runtimeReadinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {

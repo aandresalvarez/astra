@@ -147,9 +147,21 @@ target_for_path() {
       add_target "LogDiagnosticsTests"
       add_target "FeedbackEvidencePrivacyTests"
       ;;
-    Astra/Services/Runtime/CopilotCLIRuntime.swift)
+    Astra/Services/Runtime/CopilotCLIRuntime.swift|Astra/Services/Runtime/CopilotCapabilityProbe.swift|Astra/Services/Runtime/CopilotCapabilityResolution.swift|Astra/Services/Runtime/CopilotCLIRuntimeAdapter+Readiness.swift|Tests/CopilotCLICapabilityProbeTests.swift|Tests/CopilotLaunchDiscoveryTests.swift|Tests/CopilotDiscoveryAdmissionTests.swift|Tests/CopilotCapabilityFlightDeadlineTests.swift)
       add_target "CopilotCLICommandPlanningTests"
+      add_target "CopilotCLICapabilityProbeTests"
+      add_target "CopilotWorkerExecutionTests"
+      add_target "CopilotLaunchDiscoveryTests"
+      add_target "CopilotDiscoveryAdmissionTests"
+      add_target "CopilotCapabilityFlightDeadlineTests"
+      add_target "AgentUtilityRuntimeTests"
+      add_target "AgentRuntimeCapabilityProfileTests"
+      add_target "RuntimeReadinessServiceTests"
       add_target "PendingP2RegressionTests"
+      ;;
+    Tests/AgentRuntimeAdapterCopilotFixture.swift)
+      add_target "AgentRuntimeAdapterTests"
+      add_target "NativeContinuationFallbackTests"
       ;;
     Astra/Services/Tasks/TaskTitleGenerationService.swift|Astra/Services/Tasks/SpecEngine.swift|Astra/Services/Runtime/AntigravityCLIRuntime.swift|Astra/Services/Diagnostics/CopilotStartupEvidence.swift|Tests/PendingP2RegressionTests.swift)
       add_target "PendingP2RegressionTests"
