@@ -74,6 +74,18 @@ struct WorkspaceCapabilities {
         WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills).activeSkills
     }
 
+    /// The same, against a catalog an editor loaded once
+    /// (`RoutineSkillCatalog`), so its `body` never scans the library.
+    static func routineSkills(in workspace: Workspace, globalSkills: [Skill], catalog: RoutineSkillCatalog) -> [Skill] {
+        WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            packageDefinitions: catalog.packages,
+            approvalRecords: catalog.approvalRecords,
+            packPolicy: catalog.packPolicy
+        ).activeSkills
+    }
+
     var workspaceConnectors: [Connector] {
         sortedConnectors(workspace.connectors.filter { !$0.isGlobal })
     }

@@ -55,6 +55,43 @@ struct AccountDisplayNameTests {
         withExtendedLifetime((container, target)) {}
     }
 
+    @Test("An older file's skill still finds the account it names by its unsanitized name")
+    @MainActor
+    func legacyNameReferenceSurvivesSanitizing() throws {
+        let container = try Self.container()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Legacy Names", primaryPath: "/tmp/account-legacy-names-\(UUID().uuidString)")
+        context.insert(workspace)
+        let account = Connector(name: "Work Jira", serviceType: "jira")
+        account.workspace = workspace
+        let skill = Skill(name: "Ticket Triage", allowedTools: ["Read"])
+        skill.workspace = workspace
+        context.insert(account)
+        context.insert(skill)
+        account.skill = skill
+        try context.save()
+
+        // As a file written before row IDs: names only, and spacing the
+        // sanitizer collapses.
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let fileName = "Work  Jira"
+        let connectorIndex = try #require(config.connectors?.firstIndex { $0.name == "Work Jira" })
+        config.connectors?[connectorIndex].id = nil
+        config.connectors?[connectorIndex].name = fileName
+        let skillIndex = try #require(config.skills.firstIndex { $0.name == "Ticket Triage" })
+        config.skills[skillIndex].connectorIDs = nil
+        config.skills[skillIndex].connectorNames = [fileName]
+
+        let target = try Self.container()
+        let recovered = WorkspaceConfigManager.importWorkspaceResult(
+            from: config, modelContext: target.mainContext, capabilityTrust: .preserveRecordedState
+        ).workspace
+        let row = try #require(recovered.connectors.first { $0.serviceType == "jira" })
+        #expect(row.name == "Work Jira")
+        #expect(row.skill?.name == "Ticket Triage")
+        withExtendedLifetime((container, target)) {}
+    }
+
     private static func container() throws -> ModelContainer {
         try ModelContainer(
             for: ASTRASchema.current,

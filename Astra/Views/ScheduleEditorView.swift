@@ -48,8 +48,11 @@ struct ScheduleEditorView: View {
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
     private var globalSkills: [Skill]
 
+    /// Loaded once in `.task`, so rendering never scans the plugin library.
+    @State private var routineCatalog = RoutineSkillCatalog.builtIns
+
     private var availableSkills: [Skill] {
-        WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills)
+        WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills, catalog: routineCatalog)
     }
 
     private let budgetPresets = TaskExecutionDefaults.budgetPresets
@@ -453,6 +456,9 @@ struct ScheduleEditorView: View {
             .padding(.vertical, 14)
         }
         .frame(width: 560, height: 760)
+        .task(id: workspace.id) {
+            routineCatalog = await RoutineSkillCatalog.load(enabledPackIDs: WorkspaceCapabilityActivation.state(of: workspace).packIDs)
+        }
         .alert("Delete Routine", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) { deleteSchedule() }

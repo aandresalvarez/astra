@@ -323,27 +323,24 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
-    /// Re-elects defaults after `account`'s service changed from
-    /// `oldService`, in every workspace that binds it: each service keeps
-    /// exactly one default account. The service it left gets its oldest
-    /// remaining account when it took the default with it; the one it joined
-    /// keeps the default it had, else this account (or its oldest) gets it.
-    public static func serviceChanged(of account: Connector, from oldService: String) {
-        guard normalizedService(oldService) != normalizedService(account.serviceType) else { return }
-        for workspace in workspacesBinding(account) {
-            for service in [oldService, account.serviceType] {
-                let bindings = activations(of: workspace).flatMap(\.bindings)
-                    .filter { !$0.isDeleted && normalizedService($0.account?.serviceType) == normalizedService(service) }
-                    .sorted { $0.createdAt == $1.createdAt ? $0.id.uuidString < $1.id.uuidString : $0.createdAt < $1.createdAt }
-                let defaults = bindings.filter(\.isDefault)
-                guard let keep = defaults.first(where: { $0.account?.id != account.id }) ?? defaults.first ?? bindings.first
-                else { continue }
-                let changed = bindings.contains { $0.isDefault != ($0.account?.id == keep.account?.id) }
-                guard changed else { continue }
-                makeDefault(keep, among: bindings)
-                if let owner = keep.activation { touch(owner) }
-            }
-        }
+    /// Whether `account`'s service may change: not while a plugin binds it.
+    /// A binding names a connector component, whose ID carries its service
+    /// (`connector:<service>:<name>`), so a bound account of another service
+    /// would be projected as that component's, and no binding crosses
+    /// services. Unbind it first (Delete account, Remove, or an Update that
+    /// drops the component).
+    public static func canChangeService(of account: Connector) -> Bool {
+        !account.accountBindings.contains { !$0.isDeleted && $0.activation != nil }
+    }
+
+    /// Sets `account`'s service, refusing (false) while a plugin binds it
+    /// (`canChangeService`).
+    @discardableResult
+    public static func changeService(of account: Connector, to serviceType: String) -> Bool {
+        guard account.serviceType != serviceType else { return true }
+        guard canChangeService(of: account) else { return false }
+        account.serviceType = serviceType
+        return true
     }
 
     /// The workspace's default account for `serviceType`, if one is bound.

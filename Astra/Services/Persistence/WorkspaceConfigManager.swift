@@ -1297,8 +1297,9 @@ public enum WorkspaceConfigManager {
             if connector.modelContext == nil { modelContext.insert(connector) }
             connectorsByID[connector.id.uuidString] = connector
             if let fileID = cc.id { connectorsByID[fileID] = connector }
-            if connectorsByName[connector.name] == nil {
-                connectorsByName[connector.name] = connector
+            // Skills name it as the file does (`connectorNames`), sanitized or not.
+            for name in [cc.name, connector.name] where connectorsByName[name] == nil {
+                connectorsByName[name] = connector
             }
         }
 
@@ -2977,8 +2978,8 @@ public enum WorkspaceConfigManager {
             modelContext.insert(connector)
             connectorsByID[connector.id.uuidString] = connector
             connectorsByID[id] = connector
-            if connectorsByName[connector.name] == nil {
-                connectorsByName[connector.name] = connector
+            for name in [connectorSnapshot.name, connector.name] where connectorsByName[name] == nil {
+                connectorsByName[name] = connector
             }
         }
         for toolSnapshot in snapshot.localToolSnapshots ?? [] {

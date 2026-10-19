@@ -554,34 +554,31 @@ struct WorkspaceCapabilityActivationTests {
         withExtendedLifetime((container, recovered)) {}
     }
 
-    @Test("An account moved to another service leaves one default on each side")
+    @Test("A bound account keeps its component's service; unbound, its type can change")
     @MainActor
-    func serviceChangeReelectsDefaults() throws {
+    func boundAccountServiceIsFixed() throws {
         let (container, workspace) = try makeManagedWorkspace()
         let context = container.mainContext
-        let jiraDefault = Connector(name: "Jira main", serviceType: "jira")
-        let jiraOther = Connector(name: "Jira other", serviceType: "jira")
-        let github = Connector(name: "GitHub", serviceType: "github")
-        [jiraDefault, jiraOther, github].forEach(context.insert)
-        WorkspaceCapabilityActivation.mutate(workspace) {
-            $0.enableCapability("jira-workflow")
-            $0.enableCapability("github-workflow")
-        }
+        let bound = Connector(name: "Jira main", serviceType: "jira")
+        let free = Connector(name: "Free", serviceType: "jira")
+        [bound, free].forEach(context.insert)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability("jira-workflow") }
         let jira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
-        let githubActivation = try #require(WorkspaceCapabilityActivation.activation(for: "github-workflow", in: workspace))
-        WorkspaceCapabilityActivation.bind(jiraDefault, toComponent: "connector:jira:a", of: jira)
-        WorkspaceCapabilityActivation.bind(jiraOther, toComponent: "connector:jira:b", of: jira)
-        WorkspaceCapabilityActivation.bind(github, toComponent: "connector:github:a", of: githubActivation)
-        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == jiraDefault.id)
+        WorkspaceCapabilityActivation.bind(bound, toComponent: "connector:jira:jira", of: jira)
 
-        // The person changes the Jira default's Type to GitHub.
-        jiraDefault.serviceType = "github"
-        WorkspaceCapabilityActivation.serviceChanged(of: jiraDefault, from: "jira")
-        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == jiraOther.id)
-        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "github", in: workspace)?.id == github.id)
-        let githubDefaults = WorkspaceCapabilityActivation.activations(of: workspace).flatMap(\.bindings)
-            .filter { $0.isDefault && $0.account?.serviceType == "github" }
-        #expect(githubDefaults.map { $0.account?.id } == [github.id])
+        // Its binding names a Jira component: a GitHub account there would
+        // be projected as Jira's.
+        #expect(!WorkspaceCapabilityActivation.canChangeService(of: bound))
+        #expect(!WorkspaceCapabilityActivation.changeService(of: bound, to: "github"))
+        #expect(bound.serviceType == "jira")
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == bound.id)
+        #expect(WorkspaceCapabilityActivation.changeService(of: free, to: "github"))
+        #expect(free.serviceType == "github")
+
+        // Released from the plugin, it may move.
+        WorkspaceCapabilityActivation.unbind(bound, from: jira)
+        #expect(WorkspaceCapabilityActivation.changeService(of: bound, to: "github"))
+        #expect(bound.serviceType == "github")
         withExtendedLifetime(container) {}
     }
 

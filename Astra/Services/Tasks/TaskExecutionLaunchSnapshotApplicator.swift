@@ -70,9 +70,11 @@ enum TaskExecutionLaunchSnapshotApplicator {
             applyFrozenAccounts(snapshot.pluginAccounts, to: workspace)
             // So are the override rows' contents: an override edited or
             // deleted while it waited runs as submitted.
+            var lateAttachments = LateAttachments()
             let frozenRowIDs = applyFrozenOverrides(
-                snapshot.pluginOverrides, to: workspace, skillsByID: capabilityGraph.skillsByID
+                snapshot.pluginOverrides, to: workspace, skillsByID: capabilityGraph.skillsByID, unlinked: &lateAttachments
             )
+            pruneLateAttachments(lateAttachments, of: snapshot, from: workspace, keeping: frozenRowIDs)
             workspace.launchPluginDefinitions = snapshot.pluginDefinitions
             // The activations frozen at submission, when the request has
             // them: a plugin turned off, on or reconfigured while it waited
@@ -271,7 +273,8 @@ enum TaskExecutionLaunchSnapshotApplicator {
     private static func applyFrozenOverrides(
         _ records: PluginOverrideRecords?,
         to workspace: Workspace,
-        skillsByID: [UUID: Skill]
+        skillsByID: [UUID: Skill],
+        unlinked: inout LateAttachments
     ) -> Set<UUID> {
         guard let records else { return [] }
         var skills = skillsByID
@@ -280,7 +283,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             record.apply(to: copy)
             if !workspace.skills.contains(where: { $0 === copy }) { workspace.skills.append(copy) }
             skills[record.id] = copy
-            applyFrozenAttachments(of: record, to: copy, in: workspace)
+            applyFrozenAttachments(of: record, to: copy, in: workspace, unlinked: &unlinked)
         }
         for record in records.localTools {
             let copy = workspace.localTools.first { $0.id == record.id }
@@ -300,9 +303,12 @@ enum TaskExecutionLaunchSnapshotApplicator {
     private static func applyFrozenAttachments(
         of record: PluginOverrideRecords.SkillRecord,
         to skill: Skill,
-        in workspace: Workspace
+        in workspace: Workspace,
+        unlinked: inout LateAttachments
     ) {
         if let connectorRecords = record.attachedConnectors {
+            let frozenIDs = Set(connectorRecords.map(\.id))
+            unlinked.connectorIDs.formUnion(skill.connectors.map(\.id).filter { !frozenIDs.contains($0) })
             skill.connectors = connectorRecords.map { attached in
                 let existing = skill.connectors.first { $0.id == attached.id }
                     ?? workspace.connectors.first { $0.id == attached.id }
@@ -314,6 +320,8 @@ enum TaskExecutionLaunchSnapshotApplicator {
             }
         }
         if let toolRecords = record.attachedTools {
+            let frozenIDs = Set(toolRecords.map(\.id))
+            unlinked.toolIDs.formUnion(skill.localTools.map(\.id).filter { !frozenIDs.contains($0) })
             skill.localTools = toolRecords.map { attached in
                 let existing = skill.localTools.first { $0.id == attached.id }
                     ?? workspace.localTools.first { $0.id == attached.id }
@@ -324,6 +332,47 @@ enum TaskExecutionLaunchSnapshotApplicator {
                 return copy
             }
         }
+    }
+
+    /// Drops from the launch workspace the copies of rows `unlinked` names:
+    /// attached to an override skill live but not in its frozen attachments
+    /// (attached after submission). A connector or tool belongs to one skill,
+    /// so the live store had it only as that skill's attachment; left in the
+    /// copy unlinked, it would read as the workspace's own. Kept: an account
+    /// a frozen activation binds, an override row itself, and a shared row
+    /// the workspace lists on its own.
+    private static func pruneLateAttachments(
+        _ unlinked: LateAttachments,
+        of snapshot: AgentTaskLaunchSnapshot,
+        from workspace: Workspace,
+        keeping frozenRowIDs: Set<UUID>
+    ) {
+        guard !unlinked.connectorIDs.isEmpty || !unlinked.toolIDs.isEmpty else { return }
+        // One another frozen override still has attached is its row there.
+        let records = snapshot.pluginOverrides?.skills ?? []
+        let frozenConnectors = Set(records.flatMap { $0.attachedConnectors?.map(\.id) ?? [] })
+        let frozenTools = Set(records.flatMap { $0.attachedTools?.map(\.id) ?? [] })
+        let bound = Set((snapshot.pluginActivations ?? []).flatMap(\.bindings).compactMap(\.accountID))
+            .union((snapshot.pluginAccounts ?? []).map(\.id))
+            .union(frozenConnectors)
+        let state = WorkspaceCapabilityActivation.state(of: workspace)
+        let listedConnectors = Set(state.globalConnectorIDs)
+        let listedTools = Set(state.globalToolIDs)
+        workspace.connectors.removeAll { connector in
+            unlinked.connectorIDs.contains(connector.id) && !bound.contains(connector.id)
+                && !frozenRowIDs.contains(connector.id)
+                && !(connector.isGlobal && listedConnectors.contains(connector.id.uuidString))
+        }
+        workspace.localTools.removeAll { tool in
+            unlinked.toolIDs.contains(tool.id) && !frozenRowIDs.contains(tool.id) && !frozenTools.contains(tool.id)
+                && !(tool.isGlobal && listedTools.contains(tool.id.uuidString))
+        }
+    }
+
+    /// The live attachments the frozen override records left off.
+    private struct LateAttachments {
+        var connectorIDs = Set<UUID>()
+        var toolIDs = Set<UUID>()
     }
 
     /// The definitions a request should freeze for `task`: a launch copy's
