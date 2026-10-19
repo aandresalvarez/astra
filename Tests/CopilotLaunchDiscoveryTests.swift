@@ -143,7 +143,16 @@ struct CopilotLaunchDiscoveryTests {
 
         let task = harness.makeTask(runtime: .copilotCLI, goal: "Say hello", model: "gpt-5")
         let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
-        let launch = Task { await harness.execute(task: task, worker: worker) }
+        // Keep the worker deadline beyond the escape guard: otherwise its own
+        // timeout could release the wait and hide broken cancellation.
+        worker.timeoutSeconds = 600
+        var returned = false
+        let launch = Task {
+            let result = await harness.execute(task: task, worker: worker)
+            returned = true
+            return result
+        }
+        defer { launch.cancel(); try? Data().write(to: release) }
         // Polls, not seconds: a hang breaker that load can only push later.
         var polls = 0
         while probeCount() == probesBeforeLaunch, polls < 2_400 {
@@ -154,7 +163,16 @@ struct CopilotLaunchDiscoveryTests {
 
         // The stop has no process to terminate yet; the warm-up then gets its answer.
         worker.cancel()
-        // Do not release help: Stop must itself release the worker and settle durable state.
+        // Stop must release the worker without depending on help's natural exit.
+        // This is a generous escape guard, not a startup performance threshold.
+        for _ in 0..<400 {
+            if returned { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        if !returned {
+            Issue.record("Stop still waits for the capability helper to exit")
+            try Data().write(to: release)
+        }
         _ = await launch.value
         #expect(task.status == .cancelled)
         #expect(!worker.isRunning)

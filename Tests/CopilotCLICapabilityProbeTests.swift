@@ -155,7 +155,13 @@ struct CopilotCLICapabilityProbeTests {
         do {
             _ = try await CopilotCLIRuntime.requiredCapabilities(executablePath: executable.path, timeout: 0.1)
             Issue.record("An unreleased probe exceeded its consumer deadline")
-        } catch { #expect(error is CopilotCapabilityProbe.Failure) }
+        } catch {
+            guard let failure = error as? CopilotCapabilityProbe.Failure,
+                  case .timedOut = failure else {
+                Issue.record("Consumer deadline must expire independently of the helper's exit: \(error)")
+                return
+            }
+        }
         try Data().write(to: release)
         #expect(try await survivor.value.supportsOutputFormatJSON)
         #expect(try Self.probeCount(at: counter) == 1)
