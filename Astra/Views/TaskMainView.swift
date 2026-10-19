@@ -3963,7 +3963,7 @@ struct TaskMainView: View {
         case .resume:
             onResumeTask?(task)
         case .runRepair:
-            RepairActionRunner.run(TaskRunStopEvidence.signInRepair(events: sortedEvents, runID: latestRun?.id, task: task))
+            Task { RepairActionRunner.run(await TaskRunStopEvidence.signInRepair(events: sortedEvents, runID: latestRun?.id, task: task)) }
         case .reportProblem:
             reportCurrentFailure()
         case .openArtifact:
