@@ -133,6 +133,30 @@ struct PluginRepairTests {
         #expect(install?.url?.host == "docs.docker.com")
     }
 
+    @Test("The rail shows a prose-only repair's guidance before its check starts, and a command before it runs")
+    func railShowsProseGuidanceBeforeChecking() throws {
+        var package = try gcloudPackage()
+        let docker = CommonCLIPrerequisites.docker
+        package.prerequisites = [docker]
+        let check = try #require(CapabilityRailRepair.repair(for: package, statuses: [
+            docker.id: .unresponsive(detail: "Cannot connect to the Docker daemon")
+        ]))
+        let guidance = try #require(CapabilityRailRow.repairGuidance(for: check))
+        #expect(guidance.text == "Start Docker Desktop if the daemon is unreachable.")
+        #expect(!guidance.isCommand)
+        var signIn = check
+        signIn.command = "docker login"
+        #expect(CapabilityRailRow.repairGuidance(for: signIn)?.text == "docker login")
+        #expect(CapabilityRailRow.repairGuidance(for: signIn)?.isCommand == true)
+        // A page opens on its own: nothing to confirm first.
+        #expect(CapabilityRailRow.repairGuidance(for: CapabilityRailRepair.repair(for: package, statuses: [docker.id: .missingBinary])) == nil)
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let rail = try String(contentsOf: root.appendingPathComponent("Astra/Views/WorkspaceRightRailView.swift"), encoding: .utf8)
+        #expect(rail.contains("repairGuidance: CapabilityRailRow.repairGuidance(for: item.repair),"))
+        let row = try String(contentsOf: root.appendingPathComponent("Astra/Views/Components/ContextRailRows.swift"), encoding: .utf8)
+        #expect(row.contains("if repairGuidance == nil { onRepair() } else { isConfirmingCommand.toggle() }"))
+    }
+
     @Test("A failing prerequisite gets its own repair when another shares its name")
     func railMatchesPrerequisitesByCheckIdentity() throws {
         var package = try gcloudPackage()
@@ -242,6 +266,37 @@ struct PluginRepairTests {
         // The first match on that PATH is the one the shell runs.
         repair.checkEnvironment = ["PATH": "\(broken):\(working):/usr/bin:/bin"]
         #expect(PluginRepairCoordinator.checkExecutablePath(name, environment: repair.checkEnvironment ?? [:]) == "\(broken)/\(name)")
+        #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+    }
+
+    @Test("A relative or empty projected PATH entry is resolved from the run's directory, not ASTRA's")
+    func liveCheckResolvesRelativePATHFromTheRunDirectory() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-repair-relative-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let name = "astra-check-\(UUID().uuidString.prefix(8))"
+        let tools = root.appendingPathComponent("tools", isDirectory: true)
+        try FileManager.default.createDirectory(at: tools, withIntermediateDirectories: true)
+        for folder in [root, tools] {
+            let file = folder.appendingPathComponent(name)
+            try "#!/bin/sh\nexit 0\n".write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        }
+        var repair = RepairAction(strategy: .terminal, componentName: "CLI login", title: "Check", verb: "Check", detail: "")
+        repair.checkBinary = name
+        repair.checkArguments = []
+        repair.checkWorkingDirectory = root.path
+        repair.checkEnvironment = ["PATH": "./tools:/usr/bin:/bin"]
+        let found = PluginRepairCoordinator.checkExecutablePath(name, environment: ["PATH": "./tools:/usr/bin"], workingDirectory: root.path)
+        #expect(URL(fileURLWithPath: found).standardizedFileURL == tools.appendingPathComponent(name).standardizedFileURL)
+        #expect(await PluginRepairCoordinator.liveCheck(repair))
+        // An empty entry is the run's directory itself, wherever it sits.
+        repair.checkEnvironment = ["PATH": "/usr/bin::/bin"]
+        #expect(PluginRepairCoordinator.checkExecutablePath(name, environment: repair.checkEnvironment ?? [:], workingDirectory: root.path)
+            == root.appendingPathComponent(name).path)
+        #expect(await PluginRepairCoordinator.liveCheck(repair))
+        // Without the run's directory, relative entries resolve to nothing.
+        repair.checkWorkingDirectory = nil
         #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
     }
 

@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 
 @Suite("Workspace capability activation owner")
@@ -362,6 +363,110 @@ struct WorkspaceCapabilityActivationTests {
         #expect(activation.configuration(forComponent: "skill:c# helper") == ["K": "y"])
         WorkspaceCapabilityActivation.setConfigValue(nil, forKey: key, on: activation)
         #expect(activation.configuration(forComponent: "skill:a.b").isEmpty)
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("Binding a shared account another workspace turned on by itself never renames it there")
+    @MainActor
+    func sharedAccountEnabledElsewhereKeepsItsAlias() throws {
+        let (container, joining) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let other = Workspace(name: "Other", primaryPath: "/tmp/other-\(UUID().uuidString)")
+        context.insert(other)
+        let shared = Connector(name: "Stanford", serviceType: "jira")
+        shared.isGlobal = true
+        let local = Connector(name: "Stanford", serviceType: "jira")
+        [shared, local].forEach(context.insert)
+        local.workspace = joining
+        // The other workspace uses the shared row directly: no binding.
+        WorkspaceCapabilityActivation.mutate(other) { $0.enableGlobalConnector(shared.id.uuidString) }
+        WorkspaceCapabilityActivation.mutate(joining) { $0.enableCapability("jira-workflow") }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: joining))
+        WorkspaceCapabilityActivation.bind(shared, toComponent: "connector:jira:jira", of: activation)
+        #expect(shared.name == "Stanford")
+        // A shared row no other workspace uses is still told apart.
+        let unused = Connector(name: "Stanford", serviceType: "jira")
+        unused.isGlobal = true
+        context.insert(unused)
+        WorkspaceCapabilityActivation.bind(unused, toComponent: "connector:jira:ops", of: activation)
+        #expect(unused.name == "Stanford 2")
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("A recovered mirror keeps each binding's age, so the same account succeeds a deleted default")
+    @MainActor
+    func mirrorKeepsBindingAgeForDefaultElection() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let accounts = ["Default", "Older", "Newer"].map { name -> Connector in
+            let account = Connector(name: name, serviceType: "jira")
+            account.workspace = workspace
+            context.insert(account)
+            return account
+        }
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableCapability("first-plugin")
+            $0.enableCapability("second-plugin")
+        }
+        let first = try #require(WorkspaceCapabilityActivation.activation(for: "first-plugin", in: workspace))
+        let second = try #require(WorkspaceCapabilityActivation.activation(for: "second-plugin", in: workspace))
+        let start = Date()
+        // The later plugin's account was bound first: it is next in line.
+        WorkspaceCapabilityActivation.bind(accounts[0], toComponent: "connector:jira:a", of: first, createdAt: start)
+        WorkspaceCapabilityActivation.bind(accounts[1], toComponent: "connector:jira:b", of: second, createdAt: start.addingTimeInterval(0.1))
+        WorkspaceCapabilityActivation.bind(accounts[2], toComponent: "connector:jira:c", of: first, createdAt: start.addingTimeInterval(0.2))
+        try context.save()
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let data = try { () throws -> Data in
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            return try encoder.encode(config)
+        }()
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(WorkspaceConfigManager.WorkspaceConfig.self, from: data)
+
+        let recovered = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let restored = WorkspaceConfigManager.importWorkspaceResult(from: decoded, modelContext: recovered.mainContext).workspace
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: restored)?.name == "Default")
+        let deleted = try #require(restored.connectors.first { $0.name == "Default" })
+        WorkspaceCapabilityActivation.releaseAccount(deleted)
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: restored)?.name == "Older")
+        withExtendedLifetime((container, recovered)) {}
+    }
+
+    @Test("An account moved to another service leaves one default on each side")
+    @MainActor
+    func serviceChangeReelectsDefaults() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let jiraDefault = Connector(name: "Jira main", serviceType: "jira")
+        let jiraOther = Connector(name: "Jira other", serviceType: "jira")
+        let github = Connector(name: "GitHub", serviceType: "github")
+        [jiraDefault, jiraOther, github].forEach(context.insert)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableCapability("jira-workflow")
+            $0.enableCapability("github-workflow")
+        }
+        let jira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        let githubActivation = try #require(WorkspaceCapabilityActivation.activation(for: "github-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(jiraDefault, toComponent: "connector:jira:a", of: jira)
+        WorkspaceCapabilityActivation.bind(jiraOther, toComponent: "connector:jira:b", of: jira)
+        WorkspaceCapabilityActivation.bind(github, toComponent: "connector:github:a", of: githubActivation)
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == jiraDefault.id)
+
+        // The person changes the Jira default's Type to GitHub.
+        jiraDefault.serviceType = "github"
+        WorkspaceCapabilityActivation.serviceChanged(of: jiraDefault, from: "jira")
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == jiraOther.id)
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "github", in: workspace)?.id == github.id)
+        let githubDefaults = WorkspaceCapabilityActivation.activations(of: workspace).flatMap(\.bindings)
+            .filter { $0.isDefault && $0.account?.serviceType == "github" }
+        #expect(githubDefaults.map { $0.account?.id } == [github.id])
         withExtendedLifetime(container) {}
     }
 

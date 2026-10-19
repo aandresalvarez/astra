@@ -177,7 +177,8 @@ struct CapabilityInstaller {
         policyContext: CapabilityCatalogPolicyContext? = nil,
         auditSource: String = "enable",
         traceID: String? = nil,
-        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
+        exportMirror: (@MainActor (Workspace) -> Void)? = nil
     ) throws -> InstallationResult {
         var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
         if let traceID { startFields["trace_id"] = traceID }
@@ -322,6 +323,10 @@ struct CapabilityInstaller {
                 let inheritsDefault = activation.bindings.contains {
                     !$0.isDeleted && $0.componentID == componentID && $0.isDefault
                 }
+                // And its age, which elects the next default.
+                let boundAge = activation.bindings.first {
+                    !$0.isDeleted && $0.componentID == componentID && $0.account?.id == bound?.id
+                }?.createdAt
                 let account: Connector
                 if let bound, !hasScopedInputs {
                     // Adding again keeps the account the workspace chose.
@@ -348,7 +353,7 @@ struct CapabilityInstaller {
                         WorkspaceCapabilityActivation.unbind(bound, from: activation, componentID: componentID)
                     }
                 }
-                WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: inheritsDefault)
+                WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: inheritsDefault, createdAt: boundAge)
                 appendUnique(account.id, to: &connectorIDs)
             }
 
@@ -369,6 +374,16 @@ struct CapabilityInstaller {
                 persist(workspace, modelContext)
             }) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
+            }
+            // `persist` exports the clicked workspace; the others whose
+            // pending rows became overrides in the same save are exported
+            // here, or their mirrors would restore the rows as before.
+            for (other, _) in pendingSnapshots {
+                if let exportMirror {
+                    exportMirror(other)
+                } else if !WorkspacePersistenceCoordinator.shouldSkipAutoExport() {
+                    WorkspaceConfigManager.autoExport(workspace: other, modelContext: modelContext)
+                }
             }
             var enabledFields = [
                 "package_id": package.id,

@@ -59,7 +59,14 @@ enum PluginsSurfacePresentation {
         /// Why a plugin that is not on can't be added, when approval would
         /// not clear it: shown in place of Add, which could only fail.
         var blocker: String?
+        /// On, but the installed definition is not the one this workspace
+        /// accepted (`CapabilityPackageState.awaitsUpdate`): nothing of it
+        /// runs here until Update accepts it, so the row needs action and
+        /// offers Update.
+        var awaitsUpdate = false
     }
+
+    static let awaitsUpdateMessage = "A new version is installed. Update it to use it here."
 
     /// Whether a package is listed and what keeps it from being added. Listed
     /// when policy shows it and it is on, can be turned on, or needs only the
@@ -80,6 +87,9 @@ enum PluginsSurfacePresentation {
             .filter { $0.isVisible && matches($0.package, query: query) }
             .sorted { $0.package.name.localizedCaseInsensitiveCompare($1.package.name) == .orderedAscending }
         for input in sorted {
+            // An activation awaiting the installed definition is one Update
+            // settles, so it offers Update rather than Add again.
+            let offersUpdate = input.needsUpdate || input.awaitsUpdate
             let row = PluginsSurfaceRow(
                 id: input.package.id,
                 name: input.package.name,
@@ -88,11 +98,11 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: !input.isEnabled ? (input.blocker == nil ? .add : nil) : (input.needsUpdate ? .update : nil)
+                verb: !input.isEnabled ? (input.blocker == nil ? .add : nil) : (offersUpdate ? .update : nil)
             )
             if !input.isEnabled {
                 state.available.append(row)
-            } else if input.pendingSteps > 0 || input.needsUpdate {
+            } else if input.pendingSteps > 0 || offersUpdate {
                 state.actionNeeded.append(row)
             } else {
                 state.ready.append(row)
@@ -105,6 +115,7 @@ enum PluginsSurfacePresentation {
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
         if !input.isEnabled, let blocker = input.blocker { return blocker }
+        if input.isEnabled, input.awaitsUpdate { return awaitsUpdateMessage }
         let contents = input.package.contentParts.joined(separator: ", ")
         if input.isEnabled, input.needsUpdate {
             return contents.isEmpty ? "Update to \(input.package.version)" : "Update to \(input.package.version) · \(contents)"

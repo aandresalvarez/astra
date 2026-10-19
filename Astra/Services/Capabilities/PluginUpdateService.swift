@@ -474,6 +474,10 @@ enum PluginUpdateService {
             return result
         }
 
+        // A row replacing a component this definition no longer declares is
+        // the workspace's own again (a shared one back on its lists) before
+        // the component's state goes, as at Add.
+        WorkspaceCapabilityActivation.releaseUndeclaredOverrides(on: activation, declaring: current, in: workspace)
         for component in dropped {
             if component.hasPrefix("skill:") {
                 let oldID = PluginRuntimeProjection.derivedID(of: activation, componentID: component)

@@ -105,6 +105,15 @@ struct CapabilityPackageState {
         return false
     }
 
+    /// Whether this workspace's activation is on but accepted another
+    /// definition than `package` (`PluginRuntimeProjection.awaitsUpdate`):
+    /// the library holds one for every workspace, and until Add accepts this
+    /// one nothing of the plugin runs here.
+    var awaitsUpdate: Bool {
+        guard let activation, activation.isEnabled else { return false }
+        return PluginRuntimeProjection.awaitsUpdate(activation, to: package)
+    }
+
     private var isProjectedResourceCapability: Bool {
         guard package.id.hasPrefix("skill.") else { return false }
         let kind = package.sourceMetadata?.kind
@@ -126,6 +135,9 @@ struct CapabilityPackageState {
     var readiness: CapabilityReadiness {
         guard isEnabled else {
             return .inactive
+        }
+        if awaitsUpdate {
+            return CapabilityReadiness(level: .needsAttention, messages: [PluginsSurfacePresentation.awaitsUpdateMessage])
         }
 
         let activeConnectors = activeLinkedConnectors

@@ -205,6 +205,32 @@ struct PluginManifestTests {
         #expect(checked.connectors.last?.replaces?.count == 1)
     }
 
+    @Test("A component name or summary its payload doesn't share is refused, not replaced by the payload's")
+    func unrepresentableComponentLabelsAreRefused() throws {
+        let jira = PluginManifestConverter.manifest(from: try builtIn("jira-workflow"))
+        let workspace = PluginManifestConverter.manifest(from: try builtIn("google-workspace"))
+        for (manifest, kind) in [(jira, PluginComponent.Kind.skill), (jira, .connector), (workspace, .mcp)] {
+            let index = try #require(manifest.components.firstIndex { $0.kind == kind })
+            var renamed = manifest
+            renamed.components[index].name += " (team)"
+            #expect(throws: PluginManifestError.unrepresentableComponentLabel(component: renamed.components[index].name), "\(kind)") {
+                try PluginManifestConverter.checkedPackage(from: renamed)
+            }
+            var described = manifest
+            described.components[index].summary = "A summary only the manifest has"
+            #expect(throws: PluginManifestError.unrepresentableComponentLabel(component: described.components[index].name), "\(kind)") {
+                try PluginManifestConverter.checkedPackage(from: described)
+            }
+        }
+        // An account's label is its requirement's.
+        let requirement = PluginSetupRequirement(id: "jira-account", kind: .oauthAccount, displayName: "Jira account")
+        var account = jira
+        account.components.append(PluginComponent(kind: .setup, id: requirement.id, name: "Atlassian login", requirement: requirement))
+        #expect(throws: PluginManifestError.unrepresentableComponentLabel(component: "Atlassian login")) {
+            try PluginManifestConverter.checkedPackage(from: account)
+        }
+    }
+
     @Test("A setup component ID the package would re-derive is refused, not silently replaced")
     func undeclarableSetupIDsAreRefused() throws {
         // A CLI check comes back with its name's slug.

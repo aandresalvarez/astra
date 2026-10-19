@@ -34,6 +34,10 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
     let pluginDefinitions: [PluginPackage]?
     let pluginAccounts: [PluginAccountRecord]?
     let pluginOverrides: PluginOverrideRecords?
+    /// The removed activations' record frozen with them
+    /// (`TaskExecutionPolicySnapshotV1.retiredPluginActivations`); nil reads
+    /// the live workspace's.
+    let retiredPluginActivations: [RetiredPluginActivation]?
 
     init(task: AgentTask) {
         id = task.id
@@ -62,6 +66,7 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         pluginDefinitions = task.workspace?.launchPluginDefinitions
         pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
         pluginOverrides = task.workspace.map(PluginOverrideRecords.init(workspace:))
+        retiredPluginActivations = task.workspace.map(WorkspaceCapabilityActivation.retiredActivations(of:))
     }
 
     init(
@@ -86,7 +91,8 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         pluginActivations: [PluginActivationRecord]? = nil,
         pluginDefinitions: [PluginPackage]? = nil,
         pluginAccounts: [PluginAccountRecord]? = nil,
-        pluginOverrides: PluginOverrideRecords? = nil
+        pluginOverrides: PluginOverrideRecords? = nil,
+        retiredPluginActivations: [RetiredPluginActivation]? = nil
     ) {
         self.id = id
         self.model = model
@@ -110,5 +116,6 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         self.pluginDefinitions = pluginDefinitions
         self.pluginAccounts = pluginAccounts
         self.pluginOverrides = pluginOverrides
+        self.retiredPluginActivations = retiredPluginActivations
     }
 }
