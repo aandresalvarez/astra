@@ -93,7 +93,7 @@ struct PluginsSurfaceView: View {
                 package: package,
                 isEnabled: packageState.isEnabled,
                 pendingSteps: packageState.connectorsNeedingAttention.count + packageState.missingConnectors.count
-                    + failingSetup(for: package).count
+                    + PluginsSurfacePresentation.pendingSetupChecks(for: package, statuses: statuses)
                     + PluginsSurfacePresentation.pendingAccounts(for: package, googleAccountConnected: googleConnected).count,
                 isVisible: listing.isVisible,
                 isRemovable: Self.isRemovable(package),

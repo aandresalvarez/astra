@@ -344,10 +344,15 @@ enum RuntimeTurnOutcomeService {
             TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
         }
 
-        let payload = result.runtimeStopMessage
-            ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
+        // Expired ADC from the run's own GOOGLE_APPLICATION_CREDENTIALS file
+        // is guidance about that file, with no sign-in to offer.
+        let payload = result.runtimeStopMessage.map { message in
+            CLISessionExpiryClassifier.stopMessage(message) {
+                TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gcloud")
+            }
+        } ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
         modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run))
-        if let family = CLISessionExpiryClassifier.family(forStopMessage: result.runtimeStopMessage), family.offersSignIn {
+        if let family = CLISessionExpiryClassifier.family(forStopMessage: payload), family.offersSignIn {
             let event = TaskEventTypes.System.runtimeRepairRequired
             modelContext.insert(TaskEvent(task: task, eventType: event, payload: family.repair.encoded(), run: run))
         }

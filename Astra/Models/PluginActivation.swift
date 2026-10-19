@@ -188,6 +188,12 @@ public final class AccountBinding {
     public var componentID: String
     public var isDefault: Bool
     public var createdAt: Date
+    /// The name this workspace knows the account by, when it isn't the
+    /// row's: a shared account another workspace uses keeps its name there,
+    /// so one whose name another account here already has gets its " 2"
+    /// alias on the binding, durably, rather than a suffix that changes with
+    /// what else is in scope. Empty when the row's name is the alias.
+    public var alias: String = ""
 
     public var activation: PluginActivation?
     public var account: Connector?
@@ -196,11 +202,13 @@ public final class AccountBinding {
         id: UUID = UUID(),
         componentID: String,
         isDefault: Bool = false,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        alias: String = ""
     ) {
         self.id = id
         self.componentID = componentID
         self.isDefault = isDefault
         self.createdAt = createdAt
+        self.alias = alias
     }
 }

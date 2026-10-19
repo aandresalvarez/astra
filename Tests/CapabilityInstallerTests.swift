@@ -130,6 +130,53 @@ struct CapabilityInstallerTests {
         #expect(activation.configKeys.isEmpty)
     }
 
+    @Test("Add takes a template only by its component stamp, never an authored row by its name")
+    func addMatchesTemplatesByStampNotName() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Templates", primaryPath: "/tmp/capability-templates")
+        context.insert(workspace)
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var package = makeAnalystCapabilityPackage()
+        let spec = PluginTemplate(
+            name: "BQ Summary", icon: "doc.text", description: "Summarize BigQuery", mainGoal: "Summarize BigQuery cost",
+            beforeGoal: "", afterGoal: "", mainBudget: 1000, beforeBudget: 0, afterBudget: 0, variablesJSON: "[]",
+            passContextToMain: true, passContextToAfter: false
+        )
+        package.templates = [spec]
+        // The person's own template has the plugin template's name.
+        let authored = TaskTemplate(name: "BQ Summary", mainGoal: "My own goal", workspace: workspace, icon: "star", templateDescription: "")
+        context.insert(authored)
+        try context.save()
+
+        try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+        #expect(authored.mainGoal == "My own goal")
+        #expect(authored.originPackageID == nil)
+        let stamped = try #require(workspace.templates.first { $0.id != authored.id })
+        #expect(stamped.originPackageID == package.id)
+        #expect(stamped.originComponentID == CapabilityResourceOrigin.componentID(for: spec))
+        #expect(workspace.templates.count == 2)
+
+        // A stamped row is found by its component, never by name. One the
+        // person edited since it was written (here, renamed) is theirs
+        // (`PluginTemplateSync`): Add again keeps it, unstamped, and writes
+        // the plugin's template beside it; the authored row stays untouched.
+        stamped.name = "Renamed by me"
+        try context.save()
+        try CapabilityInstaller(library: library).enable(package, in: workspace, modelContext: context)
+        #expect(workspace.templates.count == 3)
+        #expect(authored.mainGoal == "My own goal" && authored.originPackageID == nil)
+        #expect(stamped.name == "Renamed by me" && stamped.originPackageID == nil)
+        let rewritten = try #require(workspace.templates.first { $0.originPackageID == package.id })
+        #expect(rewritten.originComponentID == CapabilityResourceOrigin.componentID(for: spec))
+        // An unedited stamped row is the one Add again writes, not another.
+        try CapabilityInstaller(library: library).enable(package, in: workspace, modelContext: context)
+        #expect(workspace.templates.count == 3)
+        #expect(workspace.templates.filter { $0.originPackageID == package.id }.map(\.id) == [rewritten.id])
+        withExtendedLifetime(container) {}
+    }
+
     @Test("install records exact origin metadata on projected resources, accounts and templates")
     func installRecordsOriginMetadataOnResources() throws {
         let container = try makeCapabilityInstallerContainer()

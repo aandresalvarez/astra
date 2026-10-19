@@ -165,6 +165,13 @@ enum PluginsSurfacePresentation {
         return (repair.detail, false)
     }
 
+    /// The setup checks an added plugin's prerequisites failed, a pending step
+    /// each. A check the read-only policy refused (`notChecked`) is pending
+    /// too: it never passed. It just offers no repair.
+    static func pendingSetupChecks(for package: PluginPackage, statuses: [String: HealthStatus]) -> Int {
+        package.prerequisites.filter { statuses[$0.id].map { !$0.isUsable } ?? false }.count
+    }
+
     /// The required accounts an added plugin has no working sign-in for: a
     /// pending step each. Google is the only provider ASTRA signs in to, so
     /// any other stays pending.

@@ -261,6 +261,25 @@ struct PluginMirrorRewriteTests {
         #expect(after.credentialKeys.count == after.credentialValues.count)
     }
 
+    /// R1's binding alias (`AccountBinding.alias`) is the name a workspace
+    /// knows an account by: a rename that merges two bindings of one
+    /// account keeps it.
+    @Test("A rename that merges an account's bindings keeps the alias it had")
+    func renameMergeKeepsBindingAlias() throws {
+        let env = try Fixtures.Environment()
+        try env.install(Fixtures.package(version: "1.0.0"))
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "ops.report", in: env.workspace))
+        let account = try #require(env.workspace.connectors.first)
+        let old = "connector:tracker:tracker-api", new = "connector:tracker:tracker"
+        WorkspaceCapabilityActivation.bind(account, toComponent: new, of: activation)
+        for binding in activation.bindings { binding.alias = binding.componentID == old ? "Tracker 2" : "" }
+        WorkspaceCapabilityActivation.moveComponentState(from: old, to: new, on: activation)
+        let merged = activation.bindings.filter { !$0.isDeleted }
+        #expect(merged.map(\.componentID) == [new])
+        #expect(merged.first?.alias == "Tracker 2")
+        #expect(WorkspaceCapabilityActivation.alias(of: account, in: env.workspace) == "Tracker 2")
+    }
+
     @Test("Two MCP servers of one package can't share an ID")
     func duplicateMCPServerIDsInOnePackageAreBlocked() {
         var package = Fixtures.package(version: "1.0.0")

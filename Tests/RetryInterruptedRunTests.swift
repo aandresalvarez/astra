@@ -517,6 +517,58 @@ struct RetryInterruptedRunTests {
         #expect(await PluginRepairCoordinator.liveCheck(repair))
     }
 
+    @Test("Resume checks the Enterprise host the run's checkout names, and an ADC file the run selects without a sign-in")
+    func resumeChecksTheCheckoutHostAndCredentialFile() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            for arguments in [["init", "-q"], ["remote", "add", "origin", "https://ghe.example.com/team/app.git"]] {
+                let git = Process()
+                git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                git.arguments = ["-C", env.root] + arguments
+                try git.run()
+                git.waitUntilExit()
+            }
+            let workspace = Workspace(name: "Checkout", primaryPath: env.root)
+            let task = AgentTask(title: "Pulls", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            task.skillSnapshots = [SkillSnapshotConfig(
+                id: UUID().uuidString, name: "Cloud Agent", icon: "cloud", description: "GitHub pull requests and Google Cloud",
+                allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+                environmentKeys: ["GOOGLE_APPLICATION_CREDENTIALS"], environmentValues: ["/tmp/team-adc.json"], isGlobal: false,
+                connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+                createdAt: Date(), updatedAt: Date()
+            )]
+            env.context.insert(workspace)
+            env.context.insert(task)
+            var checked: [RepairAction] = []
+            env.coordinator.repairCheck = { repair in
+                checked.append(repair)
+                return false
+            }
+            for repair in [CLISessionExpiryClassifier.gitHub.repair, CLISessionExpiryClassifier.googleCloudApplicationDefault.repair] {
+                let run = TaskRun(task: task)
+                run.status = .failed
+                run.stopReason = "capability_session_expired"
+                run.completedAt = Date()
+                env.context.insert(run)
+                env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeRepairRequired, payload: repair.encoded(), run: run))
+                try env.context.save()
+                if useRetry {
+                    await env.coordinator.retryTask(task)?.value
+                } else {
+                    await env.coordinator.resumeTask(task)?.value
+                }
+            }
+            try #require(checked.count == 2, "retry: \(useRetry)")
+            #expect(checked[0].checkArguments == ["auth", "status", "--hostname", "ghe.example.com"], "retry: \(useRetry)")
+            #expect(checked[0].command == "gh auth login --hostname ghe.example.com")
+            #expect(checked[1].command == nil, "retry: \(useRetry)")
+            #expect(checked[1].detail.contains("`/tmp/team-adc.json`"))
+        }
+    }
+
     @Test("Without a provider session Retry still relaunches from scratch")
     func noSessionRelaunches() async throws {
         let submitted = try await retry(sessionID: nil, stopReason: "cancelled")

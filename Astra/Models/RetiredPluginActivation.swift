@@ -213,6 +213,21 @@ extension WorkspaceCapabilityActivation {
         }
     }
 
+    /// Takes the shared accounts the workspace's activations bind off its
+    /// shared list unless `listed` (what the mirror's own shared list named)
+    /// has them. A mirror carries a bound account so the binding can be
+    /// restored, and an import turns on every shared row it reads; left on,
+    /// the account would stay in scope after an Update or Add releases it,
+    /// though the person never turned it on. A mirror without a list names
+    /// none, so its bound accounts come back binding-only.
+    public static func takeBindingOnlyAccountsOffSharedList(in workspace: Workspace, listed: Set<String>) {
+        let bound = Set(activations(of: workspace).flatMap(\.bindings).filter { !$0.isDeleted }
+            .compactMap { $0.account?.id.uuidString })
+            .subtracting(listed)
+        guard state(of: workspace).globalConnectorIDs.contains(where: bound.contains) else { return }
+        mutate(workspace) { $0.globalConnectorIDs.removeAll(where: bound.contains) }
+    }
+
     /// Restores what a workspace's own mirror kept, for plugins it has no
     /// activation of; for one it has, only the rows still pending as its
     /// overrides.
