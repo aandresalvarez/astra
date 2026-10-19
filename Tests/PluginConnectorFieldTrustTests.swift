@@ -429,7 +429,7 @@ struct PluginConnectorFieldTrustTests {
             #expect(throws: PluginUpdateService.UpdateError.secretCleanupPending(key: "API_TOKEN")) {
                 try PluginUpdateService.reconcileAll(
                     modelContext: context, packages: library.installedPackages(), mode: .release, secrets: RefusingSkillDeletes.self,
-                    connectorStore: store
+                    connectorStore: store, approvalRecords: PluginOperationsTests.approvals(library.installedPackages())
                 )
             }
             #expect(legacy.configKeys == ["TRACKER_PROJECT"] && legacy.configValues == ["ENG-1"])
@@ -439,7 +439,7 @@ struct PluginConnectorFieldTrustTests {
             legacy.configValues = ["ENG-2"]
             try PluginUpdateService.reconcileAll(
                 modelContext: context, packages: library.installedPackages(), mode: .release, secrets: AcceptingSkillDeletes.self,
-                connectorStore: store
+                connectorStore: store, approvalRecords: PluginOperationsTests.approvals(library.installedPackages())
             )
             #expect(legacy.configKeys.isEmpty && legacy.credentialKeys.contains("TRACKER_PROJECT"))
             #expect(Self.held("TRACKER_PROJECT", of: legacy, in: store) == "ENG-2")

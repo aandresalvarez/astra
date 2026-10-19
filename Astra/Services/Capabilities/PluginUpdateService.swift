@@ -246,9 +246,9 @@ enum PluginUpdateService {
     /// journaling released secret namespaces before the save, and rewriting
     /// every mirror it changed (the reconciled workspaces', and each one
     /// carrying a changed account) before they are cleaned. A definition
-    /// awaiting its review (`approvalRecords`) is reconciled but not
-    /// recorded as accepted: the activation stays awaiting Update. Returns
-    /// how many activations changed. Nothing is saved, and copied secrets
+    /// awaiting its review (`approvalRecords`) changes nothing but marking
+    /// the activation awaiting Update, until an approval covers its digest.
+    /// Returns how many activations changed. Nothing is saved, and copied secrets
     /// are put back, when a secret can't move or the save fails.
     @discardableResult
     static func reconcileAll(
@@ -408,7 +408,10 @@ enum PluginUpdateService {
     /// Reconciles one activation in memory. Secret settings of a renamed
     /// skill are copied to the new namespace first (recorded in `copied`, for
     /// the caller to `undo` if its save fails); a copy that fails throws
-    /// before anything is released.
+    /// before anything is released. A definition awaiting its review
+    /// (`awaitsReview`) moves nothing: no rename, account sync, release or
+    /// template, in either mode. Its manifest's `replaces` is not yet the
+    /// person's word, and a draft rejected later couldn't move state back.
     static func reconcile(
         _ activation: PluginActivation,
         in workspace: Workspace,
@@ -422,6 +425,11 @@ enum PluginUpdateService {
     ) throws -> Reconciliation {
         let persistence = secrets ?? SkillSecretSeam.required
         var result = Reconciliation()
+        guard !awaitsReview else {
+            result.withheld = ["review"]
+            result.marked = WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
+            return result
+        }
         let current = componentIDs(of: package)
         let currentSet = Set(current)
         let stateIDs = Set(activation.configKeys.compactMap(PluginActivation.componentID(ofSettingKey:)))
@@ -552,12 +560,6 @@ enum PluginUpdateService {
         }
 
         WorkspaceCapabilityActivation.setKnownComponents(current, on: activation)
-        // Reconciled, but a definition still awaiting its review isn't the
-        // one the activation runs: it stays awaiting until it is approved.
-        if awaitsReview {
-            result.marked = WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
-            return result
-        }
         WorkspaceCapabilityActivation.recordAccepted(
             pluginID: package.id,
             version: package.version,

@@ -318,13 +318,18 @@ struct PluginActivationReviewTests {
         // A_TOKEN is copied, B_TOKEN can't be, and A_TOKEN's copy can't be deleted.
         #expect(throws: PluginUpdateService.UpdateError.credentialRestoreFailed(keys: ["A_TOKEN"])) {
             try PluginUpdateService.reconcileAll(
-                modelContext: env.context, packages: env.library.installedPackages(), mode: .release, secrets: CopyFailingSecrets.self
+                modelContext: env.context, packages: env.library.installedPackages(), mode: .release, secrets: CopyFailingSecrets.self,
+                approvalRecords: PluginOperationsTests.approvals(env.library.installedPackages())
             )
         }
         #expect(activation.recordedVersion == "1.0.0")
     }
 
-    @Test("A setting whose save fails and whose Keychain value can't be put back says so")
+    /// A cleared secret leaves the Keychain before the record does; a save
+    /// that fails after puts the value back, and one it can't is reported.
+    /// (A set never gets this far: its record is saved before the write,
+    /// `PluginSecretSettingWriterTests`.)
+    @Test("A cleared setting whose save fails and whose Keychain value can't be put back says so")
     func settingRollbackReportsUnrestoredSecret() throws {
         let env = try Fixtures.Environment()
         var package = Fixtures.package(version: "1.0.0")
@@ -333,7 +338,7 @@ struct PluginActivationReviewTests {
         try env.install(package)
         #expect(throws: PluginOperations.OperationError.secretRestoreFailed(key: "API_TOKEN")) {
             try PluginOperations.setSetting(
-                "API_TOKEN", to: "new", of: package.skills[0], pluginID: package.id, in: env.workspace, modelContext: env.context,
+                "API_TOKEN", to: "", of: package.skills[0], pluginID: package.id, in: env.workspace, modelContext: env.context,
                 secrets: UnrestorableSecrets.self, persist: { _, _ in throw CocoaError(.fileWriteUnknown) }
             )
         }
@@ -623,14 +628,14 @@ private enum CopyFailingSecrets: SkillSecretPersisting {
     static func deleteAllSecrets(skillID: UUID) {}
 }
 
-/// Skill secrets whose every value is "previous": a new value saves, the
-/// previous one can't be written back, nothing can be deleted.
+/// Skill secrets whose every value is "previous": it can be deleted, but
+/// not written back.
 private enum UnrestorableSecrets: SkillSecretPersisting {
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? { "previous" }
     static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool {
         value != "previous"
     }
-    static func deleteSecret(key: String, skillID: UUID) -> Bool { false }
+    static func deleteSecret(key: String, skillID: UUID) -> Bool { true }
     static func secretExists(key: String, skillID: UUID) -> Bool { true }
     static func deleteAllSecrets(skillID: UUID) {}
 }
