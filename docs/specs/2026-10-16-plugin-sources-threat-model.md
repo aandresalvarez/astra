@@ -55,7 +55,7 @@ than findings.
 | T6 | Two entries in one marketplace share an ID, or a plugin declares two components with one identity | Duplicate plugin IDs in one source: both are listed with a problem and neither is offered. Component identities are validated as for any package (R3) | Duplicate IDs flagged; duplicate component refused |
 | T7 | Rollback: a source serves an older version to replace a newer installed one | An Update is offered only for a strictly greater semantic version from the plugin's own source. Equal version with a different digest is shown as changed and needs review; lower is never offered | Lower and equal versions are not offered as Update |
 | T8 | What was reviewed is not what gets installed (folder edited, clone refetched) | Review shows the digest; Add installs the exact package bytes that were reviewed, copied into the library. The runtime never reads a source checkout | Changing the folder after review makes Add refuse with "changed since review" |
-| T9 | A source plugin's checks or repairs run host commands | Checks from a source plugin are not run (shown as "not checked") until the read-only rule (parent spec, Health and repair) is enforced against them. Terminal repairs must be a plain call to the component's own CLI, exactly as the check declares it, with no line breaks, control characters or shell metacharacters (`;|&` `` ` `` `$<>()` are refused through `LocalToolSecurityPolicy`, `RepairAction.isSafeTerminalCommand`) (R0), and it must be a sign-in: the non-flag words after the CLI must spell exactly one of its sign-in commands (`gh auth login|refresh|status`, `gcloud auth login`, `gcloud auth application-default login`, `az login`, `aws sso login`, `aws configure sso`; a CLI without its own list may use only `auth`, `login`, `sso`). Flags are allowed; a flag's separate value word counts as a positional unless that flag is listed as taking one (`TerminalRepairPolicy`). The rule is enforced at launch by every repair button and at import by `CapabilityPackageValidator` ("Unsafe repair command"), so `gcloud projects delete victim --quiet` is never offered. Nothing a source declares runs without a person's click | A source plugin's `exec` check is never invoked; `gcloud auth login; rm -rf ~`, a lookalike path, `gcloud projects delete victim --quiet`, `gh repo delete x --yes` and `gh api -X DELETE /repos/x` are refused as repairs; every bundled repair passes |
+| T9 | A source plugin's checks or repairs run host commands | Checks from a source plugin are not run (shown as "not checked") until the read-only rule (parent spec, Health and repair) is enforced against them. Terminal repairs must be a plain call to the component's own CLI, exactly as the check declares it, with no line breaks, control characters or shell metacharacters (`;|&` `` ` `` `$<>()` are refused through `LocalToolSecurityPolicy`, `RepairAction.isSafeTerminalCommand`) (R0), and it must be a sign-in command of that CLI (`TerminalRepairPolicy`, matched by `CLICommandShape`): positionals must spell a listed sign-in exactly, and each flag must be one that sign-in lists, with a value it accepts (a flag's separate value counts as a positional unless the flag takes one). Allowed: `gh auth login` (`--hostname`/`-h`, `--git-protocol`/`-p https|ssh`, `--web`/`-w`); `gh auth refresh` and `gh auth status` (`--hostname`/`-h`); `gcloud auth login` (`--no-launch-browser`, `--update-adc`, `--account`, `--project`, `--configuration`); `gcloud auth application-default login` (`--no-launch-browser`, `--account`, `--project`, `--configuration`); `az login` (`--tenant`/`-t`, `--use-device-code`); `aws sso login` (`--profile`, `--sso-session`, `--use-device-code`); `aws configure sso` (`--profile`, `--use-device-code`); any other CLI only the words `auth`, `login`, `sso`, with no flags; an install step `brew install <names>` with only `--cask` or `--formula`. Anything unlisted refuses the repair, including `--insecure-storage`, `--scopes`/`-s`, `--with-token`, `--brief`, `--cred-file` and `--impersonate-service-account`. The rule is enforced at launch by every repair button and at import by `CapabilityPackageValidator` ("Unsafe repair command"), so `gcloud projects delete victim --quiet` is never offered. A source plugin's checks are not run at all; any other plugin's checks follow the read-only check rule (parent spec, Health and repair). Nothing a source declares runs without a person's click | A source plugin's `exec` check is never invoked; `gcloud auth login; rm -rf ~`, a lookalike path, `gcloud projects delete victim --quiet`, `gh repo delete x --yes` and `gh api -X DELETE /repos/x` are refused as repairs, as are `gh auth refresh --insecure-storage` and `gh auth refresh --scopes admin:org`; every bundled and ASTRA-built repair passes |
 | T10 | MCP servers and local tools from sources run arbitrary commands or reach plaintext endpoints | The package validator's rules apply unchanged: `LocalToolSecurityPolicy` for commands and default arguments, https (or loopback http) for remote MCP, declared environment keys only; unsupported headers are reported, not dropped | Unsafe command, http remote and undeclared env refused |
 | T11 | Malformed or oversized input is dropped silently or exhausts memory or disk (one huge blob, or many files the marketplace never names) | The download is watched and cancelled past 64 MB, and objects over 1 MB are streamed rather than inflated in memory (`core.bigFileThreshold=1m`), so a small pack of a huge compressible blob can't exhaust memory before the tree is measured (128 MiB zero blob: 139 MB peak without, 3.6 MB with); the clone has no checkout until `git ls-tree -r -l` shows the tip's files total at most 64 MB and 10,000 files; past either, the fetch is refused and its staging folder removed, keeping the previous checkout. Files over a size limit (marketplace 256 KB, manifest 512 KB, skill text 256 KB, icon 512 KB), more than 200 entries, or undecodable files are listed with a problem, never skipped silently. One listing of a source, folder or git, reads at most 64 MB and 10,000 files in all (`PluginSourceReadBudget`, shared by every plugin's scoped reader): a folder source has no download or checkout bound, and entries naming the same files could otherwise re-read a checkout many times over. Every path that exists counts as one file, whether read, refused or only found too large, and no read asks for more bytes than the budget has left. Past either bound the source is refused with "This source holds more than ASTRA reads for plugins (64 MB or 10,000 files), so it wasn't listed."; the entries listed before stay shown under that problem, and import, which re-lists the source, is refused. An unreadable `sources.json` is reported and never overwritten | Each limit; an oversized repository is refused before any checkout and leaves nothing behind; a corrupt `sources.json` survives a save attempt; a folder source whose 200 entries name one 1 MB plugin is refused, as are 200 entries × 61 files, and a folder that grows over the limit keeps its previous listing and refuses import |
 | T12 | A refetch fails halfway and leaves no usable checkout | Fetch into a temporary directory, then replace the previous checkout atomically; the previous one stays until the new one is complete | A failed fetch keeps the previous checkout |
@@ -100,23 +100,31 @@ R5 is on `plugins2-r5`, stacked on R4. Each row above has a test in
 - **Provenance (T5).** The library files every installed plugin as local
   on load (`CapabilityGovernanceNormalizer`), so a file on disk can never
   claim a source. Where an installed plugin came from is a separate record,
-  `PluginSources/provenance.json`, keyed by plugin ID with the content
-  digest of the copy the source installed
-  (`PluginSourceCatalog.contentDigest`). A record whose digest no longer
-  matches the installed copy, say after a file was imported over it, does
-  not count, so only that source's own copy is "from" it. An import
-  journals the record before the library write: `beginProvenance` keeps the
-  copy the record names and adds the incoming one as `pendingDigest`, and
-  only after the library write does `recordProvenance` settle on the new
-  digest. An exit between the two leaves whichever copy the library holds
-  recognised as the source's own, so it can still be updated from there.
-  Digest matching alone is not enough when the same bytes come back by
-  another route, so a local install also forgets the record: Remove drops it
-  after the uninstall, and a file import or Create drops it for the plugin
-  it installs (`PluginSourceStore.forgetProvenance`, through
-  `CapabilityCatalogActionService.forgetSource`). A removed source plugin
-  imported again from a file is local, with no updates from the old source
-  and no conflict shown to other sources.
+  `PluginSources/provenance.json`, keyed by plugin ID, holding the content
+  digest of the copy the source installed (`PluginSourceCatalog.contentDigest`).
+  A record whose digest no longer matches the installed copy does not
+  count, so only that source's own copy is "from" it. Both directions of
+  the cross-store transition are journaled before the library write. A
+  source import calls `beginProvenance`, which keeps the copy the record
+  names and adds the incoming one as `pendingDigest`; only after the
+  library write does `recordProvenance` settle on the new digest, so an exit
+  between the two leaves whichever copy the library holds recognised as the
+  source's own. A local install or Remove ends the record (Remove, a file
+  import or Create, through `PluginSourceStore.forgettingProvenance`): before
+  the library write it records a `pendingForget` intent (`remove`, or
+  `install(digest)` with the digest of the copy being written); after the
+  write succeeds the record is dropped; if the write fails the intent is
+  cleared and ownership kept. An intent left by an exit is settled by what
+  the library holds (`Provenance.resolved`): the record is forgotten when
+  the plugin is gone after a Remove or the library holds the local
+  install's copy, byte-identical or not, and kept (intent dropped) only when
+  the library still holds a copy the record names that the local install
+  would not have written. With identical bytes the two copies can't be told
+  apart, so the intent forgets; an unowned copy only refuses more.
+  `isOwnCopy` applies this at every read and the next load writes it
+  (`PluginSourceCoordinator.reload`). A removed source plugin imported again
+  from a file is local, with no updates from the old source and no conflict
+  shown to other sources, even after an exit at any step.
 - **Updates (T7).** Shown in the Sources section: "Review update" for a
   greater version, "Changed: review" for the same version with another
   digest. The import replaces only the copy installed from the same source.

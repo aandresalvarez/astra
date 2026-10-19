@@ -429,8 +429,8 @@ Each is a decision R1 implements and its fixture tests.
   connector; for a CLI, its session-reading check). If it fails, stop with
   the component's repair. Text patterns only pick which component to check.
 - As built (`plugins2-repair`, merged into R1 and R3):
-  `CLISessionExpiryClassifier` has three built-in families (`googleCloud`, `gitHubEnvironmentToken`,
-  `gitHub`) and matches only a failed structured tool result of a command
+  `CLISessionExpiryClassifier` has four built-in families (`googleCloud`,
+  `googleCloudApplicationDefault`, `gitHubEnvironmentToken`, `gitHub`) and matches only a failed structured tool result of a command
   that starts one of those CLIs, never agent text. Expiry for connector
   components (the broker's structured auth failure) and for patterns a
   manifest declares is not built: those components still fail the run
@@ -439,6 +439,26 @@ Each is a decision R1 implements and its fixture tests.
   connector expiry needs connector `verify` first (see Health and repair
   below).
 - Checks are read-only probes gated by approval and `canRun` (see Rules).
+- As built: a check runs on every scan (rail, Plugins surface, launch
+  preflight, repair polling) with no click, so ASTRA runs it only when it is
+  a known read-only status command for that CLI (`HealthCheckPolicy`,
+  matched by `CLICommandShape`). Its positional words must match a listed
+  status command exactly and every flag must be one that command lists; a
+  flag's separate value counts as a positional unless the flag takes one.
+  Allowed: `--version`/`version` for any CLI; `gh auth status` (`--hostname`,
+  `--active`); `gcloud auth list` (`--format`, `--filter`); `gcloud config
+  get-value <property>` (`--format`); `az account show` (`--output`,
+  `--query`); `aws sts get-caller-identity` (`--output`, `--profile`,
+  `--query`, `--region`); `docker version|info` (`--format`); `docker ps`
+  (`--format`, `--quiet`). Only in their exact forms, because their default
+  output is a token or a script: `gcloud config config-helper
+  --format=value(credential.token_expiry)`, `gcloud auth application-default
+  print-access-token --format=value(expiry)` and `osascript -e 'return
+  "ok"'`. A check that fails the rule is never executed: its status is
+  `notChecked`, shown as "Not checked" (not a pass) with no repair offered;
+  a repair's re-check applies the same rule; `CapabilityPackageValidator`
+  refuses it at import ("Unsafe health check"). The rule is the same for
+  every plugin, and every bundled check passes it (test-pinned).
 - Retry after a repair resumes the provider session (already on `#508`).
 
 ### UI
