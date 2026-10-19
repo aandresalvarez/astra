@@ -432,6 +432,25 @@ enum CapabilityCreationPresentation {
 }
 
 enum CapabilitySetupPresentation {
+    /// What a setup sheet starts from: the account the workspace's
+    /// activation already binds to each connector component (Add again
+    /// keeps its URL and settings), else the definition's default URL.
+    @MainActor
+    static func initialValues(for package: PluginPackage, in workspace: Workspace) -> (baseURLs: [String: String], config: [String: String]) {
+        let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
+        var baseURLs: [String: String] = [:]
+        var config: [String: String] = [:]
+        for connector in package.connectors {
+            let bound = activation?.accounts(forComponent: CapabilityResourceOrigin.componentID(for: connector)).first
+            let url = bound.map(\.baseURL).flatMap { $0.isEmpty ? nil : $0 } ?? connector.baseURL
+            if !url.isEmpty { baseURLs[connector.name] = url }
+            for hint in connector.configHints where config[hint.key] == nil {
+                if let value = bound?.config[hint.key], !value.isEmpty { config[hint.key] = value }
+            }
+        }
+        return (baseURLs, config)
+    }
+
     static func fieldLabel(for key: String) -> String {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let tokens = normalizedTokens(from: trimmed)

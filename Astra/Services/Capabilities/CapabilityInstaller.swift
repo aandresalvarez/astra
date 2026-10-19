@@ -293,20 +293,27 @@ struct CapabilityInstaller {
 
             for pluginConnector in package.connectors {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginConnector)
+                let bound = activation.accounts(forComponent: componentID).first
+                // What the inputs change: with a bound account, only what
+                // differs from it (`AccountSetupEdits`); the rest it keeps.
+                let edits = AccountSetupEdits(
+                    pluginConnector, bound: bound, configInputs: configInputs,
+                    baseURLOverride: baseURLOverrides[pluginConnector.name]
+                )
                 let configKeys = connectorConfigKeys(
                     hints: pluginConnector.configHints,
                     extraConfigKeys: packageEnvironmentKeys,
-                    configInputs: configInputs
+                    configInputs: edits.config
                 )
-                let baseURL = baseURLOverrides[pluginConnector.name] ?? pluginConnector.baseURL
+                let boundURL = bound.map(\.baseURL).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+                let baseURL = edits.baseURL ?? boundURL ?? pluginConnector.baseURL
                 let hasScopedInputs = connectorHasScopedInputs(
                     pluginConnector,
                     configKeys: configKeys,
                     credentialInputs: credentialInputs,
-                    configInputs: configInputs,
-                    baseURLOverridden: baseURLOverrides[pluginConnector.name] != nil
+                    configInputs: edits.config,
+                    baseURLOverridden: edits.baseURL != nil
                 )
-                let bound = activation.accounts(forComponent: componentID).first
                 // The account replacing this component's default takes its
                 // place as the workspace's default for the service.
                 let inheritsDefault = activation.bindings.contains {
@@ -328,7 +335,7 @@ struct CapabilityInstaller {
                         existing: bound.flatMap { $0.isGlobal ? nil : $0 },
                         modelContext: modelContext,
                         credentialInputs: credentialInputs,
-                        configInputs: configInputs,
+                        configInputs: edits.accountConfig,
                         extraConfigKeys: packageEnvironmentKeys,
                         baseURL: baseURL,
                         allowCredentialUserInteraction: allowCredentialUserInteraction
@@ -742,6 +749,41 @@ struct CapabilityInstaller {
             keys.append(key)
         }
         return keys
+    }
+
+    /// The setup inputs that change a component's bound account. A setup
+    /// sheet submits every field it shows, prefilled, so a value equal to
+    /// what the account has, or to the definition's default where the
+    /// account has its own, is no edit; a setting the inputs don't name, or
+    /// leave empty, keeps the account's value (`accountConfig`). Without a
+    /// bound account every input is the new account's.
+    struct AccountSetupEdits {
+        /// The settings and URL the person changed.
+        let config: [String: String]
+        let baseURL: String?
+        /// The account's settings with the changes applied.
+        let accountConfig: [String: String]
+
+        init(_ pluginConnector: PluginConnector, bound: Connector?, configInputs: [String: String], baseURLOverride: String?) {
+            guard let bound else {
+                config = configInputs
+                baseURL = baseURLOverride
+                accountConfig = configInputs
+                return
+            }
+            func trimmed(_ value: String?) -> String { (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+            let defaultURL = trimmed(pluginConnector.baseURL)
+            let current = bound.config
+            config = configInputs.filter { key, value in
+                let value = trimmed(value)
+                let existing = trimmed(current[key])
+                return !value.isEmpty && value != existing && !(value == defaultURL && !existing.isEmpty)
+            }
+            let url = trimmed(baseURLOverride)
+            let boundURL = trimmed(bound.baseURL)
+            baseURL = url.isEmpty || url == boundURL || (url == defaultURL && !boundURL.isEmpty) ? nil : url
+            accountConfig = current.merging(config) { _, edited in edited }
+        }
     }
 
     private func connectorHasScopedInputs(
