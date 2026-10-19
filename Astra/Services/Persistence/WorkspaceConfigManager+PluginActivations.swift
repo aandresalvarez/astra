@@ -173,21 +173,13 @@ extension WorkspaceConfigManager {
             if case .validate = trust {
                 WorkspaceCapabilityActivation.setNamespaceSeed(UUID().uuidString, on: activation)
             }
-            // A chosen file's activation for another copy of the plugin than
-            // the one installed here (or for an unrecorded one) restores
-            // nothing: `reconcile` already left it off.
-            guard isAcceptedCopy(ref, trust: trust) else { continue }
-            if let digest = ref.digest, !digest.isEmpty {
-                WorkspaceCapabilityActivation.recordAccepted(
-                    pluginID: ref.id, version: activation.recordedVersion, digest: digest, in: workspace
-                )
-            }
-            let declared: Set<String>?
+            // The file's projected IDs (its workspace, its seed) name the
+            // installed definition's components under the fresh seed. Mapped
+            // even for an activation the file recorded against another copy:
+            // its templates and schedules then name what an Add of the
+            // installed copy here projects.
             if case .validate(let verifier) = trust {
-                declared = verifier.declaredComponentIDs[ref.id] ?? []
-                // The file's projected IDs (its workspace, its seed) name the
-                // same components under the fresh seed.
-                for componentID in declared ?? [] {
+                for componentID in verifier.declaredComponentIDs[ref.id] ?? [] {
                     let old = PluginActivation.projectedID(
                         workspaceID: fileWorkspaceID ?? workspace.id, pluginID: ref.id,
                         componentID: componentID, seed: ref.namespaceSeed ?? ""
@@ -197,6 +189,19 @@ extension WorkspaceConfigManager {
                     )
                     projectedIDs[old.uuidString] = new.uuidString
                 }
+            }
+            // A chosen file's activation for another copy of the plugin than
+            // the one installed here (or for an unrecorded one) restores
+            // nothing else: `reconcile` already left it off.
+            guard isAcceptedCopy(ref, trust: trust) else { continue }
+            if let digest = ref.digest, !digest.isEmpty {
+                WorkspaceCapabilityActivation.recordAccepted(
+                    pluginID: ref.id, version: activation.recordedVersion, digest: digest, in: workspace
+                )
+            }
+            let declared: Set<String>?
+            if case .validate(let verifier) = trust {
+                declared = verifier.declaredComponentIDs[ref.id] ?? []
             } else {
                 if let seed = ref.namespaceSeed, !seed.isEmpty {
                     WorkspaceCapabilityActivation.setNamespaceSeed(seed, on: activation)

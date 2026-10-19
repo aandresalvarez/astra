@@ -244,7 +244,7 @@ struct CapabilityInstaller {
             WorkspaceCapabilityActivation.recordAccepted(
                 pluginID: package.id,
                 version: package.version,
-                digest: (try? CapabilityApprovalDigest.digest(for: package)) ?? "",
+                digest: PluginDefinitionDigest.content(of: package),
                 in: workspace
             )
             guard let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) else {

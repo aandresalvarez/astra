@@ -12,8 +12,8 @@ import ASTRAPersistence
 /// enablement arrays and no plugin-origin skill or tool rows is left alone.
 ///
 /// - Each workspace gets one activation per plugin in its legacy installed or
-///   enabled lists, on when it was enabled, with the recorded version and the
-///   library digest.
+///   enabled lists, on when it was enabled, accepting the definition it
+///   migrates against (its version and `PluginDefinitionDigest`).
 /// - A plugin-origin connector stays a row and becomes an account: a
 ///   workspace-owned one is bound to its workspace's activation, a shared one
 ///   to every activation of its plugin. Credentials stored only under the
@@ -185,12 +185,19 @@ enum PluginActivationMigration {
                 guard let owner else { return all }
                 return all.filter { $0.0.id == owner.id }
             }
+            // A workspace that lists a shared plugin row with the plugin not
+            // on there turned it on by itself: V19's Disable took a plugin's
+            // rows off the lists, so one listed beside an off activation was
+            // turned on again on its own. It keeps the row on, as its own.
+            func usesOnItsOwn(_ workspace: Workspace, _ pluginID: String, _ list: KeyPath<WorkspaceCapabilityActivationState, [String]>, _ rowID: UUID) -> Bool {
+                WorkspaceCapabilityActivation.state(of: workspace)[keyPath: list].contains(rowID.uuidString)
+                    && WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace)?.isEnabled != true
+            }
             // Shared plugin skills a workspace turned on without the plugin
             // are kept as authored rows there, with their tools and accounts.
             let independentSkillIDs = Set(skills.filter { skill in
                 guard isPluginOrigin(skill), skill.isGlobal, !skill.isSystemBuiltIn else { return false }
-                let usingIDs = Set(targets(pluginID: trimmed(skill.originPackageID), owner: nil).map(\.0.id))
-                return workspaces.contains { !usingIDs.contains($0.id) && $0.enabledGlobalSkillIDs.contains(skill.id.uuidString) }
+                return workspaces.contains { usesOnItsOwn($0, trimmed(skill.originPackageID), \.globalSkillIDs, skill.id) }
             }.map(\.id))
             // A workspace that gave a component its own account (scoped
             // inputs) stopped listing the shared one: it isn't bound there.
@@ -219,6 +226,9 @@ enum PluginActivationMigration {
                 let componentID = connectorComponentID(connector, package: packagesByID[pluginID])
                 let bindTo = targets(pluginID: pluginID, owner: connector.isGlobal ? nil : connector.workspace)
                     .filter { !replacedShared(connector, componentID: componentID, in: $0.0) }
+                    // Listed there on its own, it stays the workspace's
+                    // shared row: bound, the off activation would hide it.
+                    .filter { !usesOnItsOwn($0.0, pluginID, \.globalConnectorIDs, connector.id) }
                 guard !bindTo.isEmpty else { continue }
                 KeychainService.synchronizeConnectorCredentialNamespaces(connector: connector)
                 // An account of a skill kept for a workspace without the
@@ -260,7 +270,7 @@ enum PluginActivationMigration {
                     // workspace's own row stays in its lists but out of its
                     // ambient inventory (`WorkspaceCapabilities`).
                     let skillID = skill.id.uuidString
-                    for (workspace, activation) in using {
+                    for (workspace, activation) in using where !usesOnItsOwn(workspace, pluginID, \.globalSkillIDs, skill.id) {
                         WorkspaceCapabilityActivation.setOverridden(true, componentID: componentID, rowID: skill.id, on: activation)
                         WorkspaceCapabilityActivation.mutate(workspace) { $0.globalSkillIDs.removeAll { $0 == skillID } }
                     }
@@ -278,12 +288,14 @@ enum PluginActivationMigration {
                         secrets: secrets,
                         copied: &copiedSecrets
                     )
-                    retarget(skillID: skill.id, to: projectedID, in: workspace)
+                    // Where the row stays on by itself, what names it keeps it.
+                    if !usesOnItsOwn(workspace, pluginID, \.globalSkillIDs, skill.id) {
+                        retarget(skillID: skill.id, to: projectedID, in: workspace)
+                    }
                 }
                 let skillID = skill.id.uuidString
-                let usingIDs = Set(using.map(\.0.id))
-                for workspace in workspaces
-                where workspace.enabledGlobalSkillIDs.contains(skillID) && usingIDs.contains(workspace.id) {
+                for (workspace, _) in using
+                where workspace.enabledGlobalSkillIDs.contains(skillID) && !usesOnItsOwn(workspace, pluginID, \.globalSkillIDs, skill.id) {
                     WorkspaceCapabilityActivation.mutate(workspace) { $0.globalSkillIDs.removeAll { $0 == skillID } }
                 }
                 // A workspace that turned this one shared row on without its
@@ -328,7 +340,7 @@ enum PluginActivationMigration {
                     // the runtime's copy to the plugin's first skill instead.
                     if !keptForIndependentSkill { tool.skill = nil }
                     let toolID = tool.id.uuidString
-                    for (workspace, activation) in using {
+                    for (workspace, activation) in using where !usesOnItsOwn(workspace, pluginID, \.globalToolIDs, tool.id) {
                         WorkspaceCapabilityActivation.setOverridden(true, componentID: componentID, rowID: tool.id, on: activation)
                         WorkspaceCapabilityActivation.mutate(workspace) { $0.globalToolIDs.removeAll { $0 == toolID } }
                     }
@@ -336,12 +348,11 @@ enum PluginActivationMigration {
                     continue
                 }
                 let toolID = tool.id.uuidString
-                let usingIDs = Set(using.map(\.0.id))
-                for workspace in workspaces
-                where workspace.enabledGlobalToolIDs.contains(toolID) && usingIDs.contains(workspace.id) {
+                for (workspace, _) in using
+                where workspace.enabledGlobalToolIDs.contains(toolID) && !usesOnItsOwn(workspace, pluginID, \.globalToolIDs, tool.id) {
                     WorkspaceCapabilityActivation.mutate(workspace) { $0.globalToolIDs.removeAll { $0 == toolID } }
                 }
-                if workspaces.contains(where: { !usingIDs.contains($0.id) && $0.enabledGlobalToolIDs.contains(toolID) }) {
+                if workspaces.contains(where: { usesOnItsOwn($0, pluginID, \.globalToolIDs, tool.id) }) {
                     clearOrigin(tool)
                     tool.skill = nil
                     report.toolsKeptAsAuthored += 1
@@ -354,21 +365,23 @@ enum PluginActivationMigration {
             // The deleted rows' secret namespaces are recorded before the
             // save: once it lands, nothing in the store names them.
             var saveError: Error?
-            let saved = PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, modelContext: modelContext) {
+            let saved = PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, modelContext: modelContext, save: {
                 do {
                     try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: nil, modelContext: modelContext)
-                    // Every mirror is rewritten before the cleanup settles: a
-                    // V19 one still names the deleted rows, and a recovery
-                    // from it would bring them back without their secrets.
-                    for workspace in workspaces {
-                        WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext)
-                    }
                     return true
                 } catch {
                     saveError = error
                     return false
                 }
-            }
+            }, beforeSettling: {
+                // Every mirror is rewritten before the cleanup settles: a V19
+                // one still names the deleted rows, and a recovery from it
+                // would bring them back without their secrets. One that can't
+                // be written keeps the cleanup pending (`resumePending`).
+                workspaces.reduce(true) { written, workspace in
+                    WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext) && written
+                }
+            })
             guard saved else { throw saveError ?? MigrationError.cleanupUnrecordable }
         } catch {
             modelContext.rollback()
@@ -448,7 +461,7 @@ enum PluginActivationMigration {
             WorkspaceCapabilityActivation.recordAccepted(
                 pluginID: id,
                 version: package.version,
-                digest: (try? CapabilityApprovalDigest.digest(for: package)) ?? "",
+                digest: PluginDefinitionDigest.content(of: package),
                 in: workspace
             )
         }

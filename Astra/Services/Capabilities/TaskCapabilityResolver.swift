@@ -187,8 +187,11 @@ struct TaskCapabilityResolver {
         // Enabled package definitions are authoritative over stale live task
         // references with the same package/component identity.
         var combined = enabledPackageSkills() + pinnedSkills()
+        // An override row comes in only through the projection, never as
+        // the skill of a connector a shared list turned on.
+        let overriding = overridingRowIDs()
         for connector in connectors {
-            guard let skill = connector.skill else { continue }
+            guard let skill = connector.skill, !overriding.contains(skill.id) else { continue }
             combined.append(skill)
         }
         return uniqueSkills(combined)
@@ -248,7 +251,7 @@ struct TaskCapabilityResolver {
 
         if let ws = task.workspace, !ws.enabledGlobalToolIDs.isEmpty {
             let enabledIDs = Set(ws.enabledGlobalToolIDs)
-            all += globalLocalTools().filter { enabledIDs.contains($0.id.uuidString) }
+            all += globalLocalTools().filter { enabledIDs.contains($0.id.uuidString) && !overriding.contains($0.id) }
         }
 
         var seen = Set<UUID>()

@@ -36,6 +36,11 @@ extension WorkspaceConfigManager {
         /// recorded against another digest (another copy under the same ID)
         /// stays off and brings none of its settings or accounts.
         public var installedDigests: [String: String]
+        /// Each installed package's content digest (`PluginDefinitionDigest`),
+        /// which activations record now: one recorded against it accepted
+        /// this definition, from whichever copy. `installedDigests` judges a
+        /// file written before content digests.
+        public var installedContentDigests: [String: String]
         /// Each installed package's connector components, by component ID.
         /// An imported account is bound only to a component it is an account
         /// of (`acceptsAccount`).
@@ -57,6 +62,7 @@ extension WorkspaceConfigManager {
             availablePackIDs: Set<String>,
             declaredComponentIDs: [String: Set<String>] = [:],
             installedDigests: [String: String] = [:],
+            installedContentDigests: [String: String] = [:],
             connectorComponents: [String: [String: ConnectorComponent]] = [:]
         ) {
             self.approvedPackageIDs = approvedPackageIDs
@@ -64,6 +70,7 @@ extension WorkspaceConfigManager {
             self.availablePackIDs = availablePackIDs
             self.declaredComponentIDs = declaredComponentIDs
             self.installedDigests = installedDigests
+            self.installedContentDigests = installedContentDigests
             self.connectorComponents = connectorComponents
         }
 
@@ -134,7 +141,7 @@ extension WorkspaceConfigManager {
     static func isAcceptedCopy(_ ref: InstalledPluginRef, trust: CapabilityImportTrustPolicy) -> Bool {
         guard case .validate(let verifier) = trust else { return true }
         guard let digest = ref.digest, !digest.isEmpty else { return false }
-        return verifier.installedDigests[ref.id] == digest
+        return verifier.installedContentDigests[ref.id] == digest || verifier.installedDigests[ref.id] == digest
     }
 
     @MainActor

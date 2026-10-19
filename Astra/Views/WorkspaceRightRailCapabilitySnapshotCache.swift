@@ -158,6 +158,9 @@ struct CapabilityRailPackageSignature: Hashable, Comparable {
     let governanceStatus: String
     let resourceCounts: [Int]
     let requirementNames: [String]
+    /// What an activation accepts (`PluginDefinitionDigest`): a definition
+    /// replaced under the same version changes whether one awaits Add.
+    let contentDigest: String
 
     init(package: PluginPackage) {
         id = package.id
@@ -168,6 +171,7 @@ struct CapabilityRailPackageSignature: Hashable, Comparable {
         governanceStatus = package.governance.approvalStatus.rawValue
         resourceCounts = CapabilityPackageResourceSummary(package: package).resourceCountsForCacheSignature
         requirementNames = package.prerequisites.map(\.displayName).sorted()
+        contentDigest = PluginDefinitionDigest.content(of: package)
     }
 
     static func < (lhs: CapabilityRailPackageSignature, rhs: CapabilityRailPackageSignature) -> Bool {
@@ -401,6 +405,7 @@ struct CapabilityRailWorkspaceResourceIndex {
             // activation that names it.
             let overrides = Set(activation.overridingRowIDs.compactMap(UUID.init(uuidString:)))
             activations[activation.pluginID] = CapabilityRailActivationResources(
+                record: activation,
                 isEnabled: activation.isEnabled,
                 skills: projection.skills.filter { $0.originPackageID == activation.pluginID || overrides.contains($0.id) },
                 tools: projection.tools.filter { $0.originPackageID == activation.pluginID || overrides.contains($0.id) },
@@ -413,6 +418,7 @@ struct CapabilityRailWorkspaceResourceIndex {
 }
 
 struct CapabilityRailActivationResources {
+    let record: PluginActivation
     let isEnabled: Bool
     let skills: [Skill]
     let tools: [LocalTool]
@@ -556,6 +562,12 @@ struct CapabilityRailPackageSnapshotState {
         index: CapabilityRailWorkspaceResourceIndex
     ) -> CapabilityReadiness {
         guard isEnabled else { return .inactive }
+        // On, but awaiting Add of the installed definition: nothing of it
+        // runs (`CapabilityPackageState.readiness`).
+        if let activation = index.activations[package.id], activation.isEnabled,
+           PluginRuntimeProjection.awaitsUpdate(activation.record, to: package) {
+            return CapabilityReadiness(level: .needsAttention, messages: [PluginsSurfacePresentation.awaitsUpdateMessage])
+        }
         let hasActivation = index.activations[package.id] != nil
         let activeLinkedConnectors = linkedConnectors.filter { connector in
             index.activeConnectorIDs.contains(connector.id)
