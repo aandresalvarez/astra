@@ -745,6 +745,38 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   covers the library digest, the next Update or launch pass reconciles it as
   usual, so a `replaces` declared by an unreviewed file never redirects the
   person's state and rejecting the draft needs nothing put back.
+- **Staged drafts.** A file import of an unapproved draft over an approved
+  plugin is staged beside the library; the approved copy keeps resolving in
+  every workspace until the draft is approved, and approval ("Approve and
+  update") is the only step that replaces it. "Discard" drops the draft.
+- **Renames.** A component's `replaces` may list several earlier IDs of one
+  lineage (A→B→C: C replaces [B, A]), and reconcile moves state from
+  whichever one the activation holds; it refuses, moving nothing, when the
+  activation holds two of them, or already holds the destination as a
+  component of its own (`renameIntoKnownComponent`); the automatic pass
+  then leaves the activation awaiting Update. Before any secret is copied to
+  the new component the copy is recorded in the cleanup outbox
+  (`namespace#KEY`); the successor records it and the record settles with
+  the activation save.
+- **Secrecy changes.** On an approved Update, a plain value kept for a
+  setting the definition now treats as secret moves through the journal
+  into the Keychain and leaves plain settings in the same save; a secret
+  kept under a key now plain stays in the Keychain, unread, until the person
+  enters the setting again.
+- **Withdrawn sign-in methods.** An account whose sign-in method the current
+  definition no longer declares stays bound but is left out of runs and
+  readiness, shown as "reconnect", until it signs in with a declared method.
+  This is derived from the definition, not stored.
+- **Missing plugins.** An activation whose plugin has no readable library
+  entry is listed under "Action needed" with Remove, which forgets it
+  through the normal path (journal, cleanup outbox, mirror rewrites); an
+  unreadable entry is moved into a quarantine folder before the intent
+  clears. Bundled plugins are never forgotten this way.
+- **Remove.** Remove refuses while another installed plugin `requires` the
+  one being removed, naming the dependents. It records the workspace-owned
+  accounts each component created, and the next Add binds them back,
+  stamped again, instead of creating duplicates; rows the person authored
+  are never taken.
 
 ### How R4 was built (2026-10-16)
 
