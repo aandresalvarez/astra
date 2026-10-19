@@ -122,14 +122,70 @@ struct PluginSecretCleanupOutbox {
     /// workspaces whose own mirror lists one are written again; nil when a
     /// mirror can't be read.
     private static func namedByMirrors(_ pending: [UUID], modelContext: ModelContext) -> Set<UUID>? {
-        guard let before = ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: modelContext) else { return nil }
-        let named = Set(pending).intersection(before.skillIDs)
+        guard let before = ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: modelContext),
+              let beforeActivations = activationNamespacesInStoredMirrors(modelContext: modelContext) else { return nil }
+        let named = Set(pending).intersection(before.skillIDs.union(beforeActivations.flatMap(\.1)))
         guard !named.isEmpty else { return [] }
-        for (workspace, listed) in before.skillsByWorkspace where !listed.isDisjoint(with: named) {
+        var exported = Set<UUID>()
+        for (workspace, listed) in before.skillsByWorkspace + beforeActivations
+        where !listed.isDisjoint(with: named) && exported.insert(workspace.id).inserted {
             WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext)
         }
-        guard let after = ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: modelContext) else { return nil }
-        return named.intersection(after.skillIDs)
+        guard let after = ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: modelContext),
+              let afterActivations = activationNamespacesInStoredMirrors(modelContext: modelContext) else { return nil }
+        return named.intersection(after.skillIDs.union(afterActivations.flatMap(\.1)))
+    }
+
+    /// The secret namespaces each stored workspace's own mirror would give
+    /// back with the activations it lists (`InstalledPluginRef`: every
+    /// component it records, under its seed), which a launch recovery
+    /// restores with the workspace's ID. Nil when a mirror can't be read.
+    static func activationNamespacesInStoredMirrors(modelContext: ModelContext) -> [(Workspace, Set<UUID>)]? {
+        struct Listed: Decodable {
+            struct Plugin: Decodable {
+                let id: String
+                let settings: [String: String]?
+                let overriddenComponentIDs: [String]?
+                let knownComponentIDs: [String]?
+                let secretSettingKeys: [String]?
+                let namespaceSeed: String?
+            }
+            let installedPlugins: [Plugin]?
+        }
+        guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()) else { return nil }
+        var result: [(Workspace, Set<UUID>)] = []
+        for workspace in workspaces {
+            // Recovery reads the legacy mirror only without the current one.
+            let files = [
+                WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath),
+                WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspace.primaryPath)
+            ].filter { !$0.isEmpty }
+            for file in files {
+                let data: Data
+                do {
+                    data = try Data(contentsOf: URL(fileURLWithPath: file))
+                } catch {
+                    if WorkspaceFileLayout.isMissingFile(error) { continue }
+                    return nil
+                }
+                guard let listed = try? JSONDecoder().decode(Listed.self, from: data) else { return nil }
+                var namespaces = Set<UUID>()
+                for plugin in listed.installedPlugins ?? [] {
+                    let settingKeys = Array((plugin.settings ?? [:]).keys) + (plugin.secretSettingKeys ?? [])
+                    let components = (plugin.knownComponentIDs ?? []) + (plugin.overriddenComponentIDs ?? [])
+                        + settingKeys.compactMap(PluginActivation.componentID(ofSettingKey:))
+                    for componentID in Set(components) {
+                        namespaces.insert(PluginActivation.projectedID(
+                            workspaceID: workspace.id, pluginID: plugin.id, componentID: componentID,
+                            seed: plugin.namespaceSeed ?? ""
+                        ))
+                    }
+                }
+                result.append((workspace, namespaces))
+                break
+            }
+        }
+        return result
     }
 
     /// Settles what a Remove left pending before `package` is added to

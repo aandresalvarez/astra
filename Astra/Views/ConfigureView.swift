@@ -2173,11 +2173,12 @@ struct TemplateEditorView: View {
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
     private var globalSkills: [Skill]
 
+    /// Loaded once in `.task`, so rendering never scans the plugin library.
+    @State private var routineCatalog = RoutineSkillCatalog.builtIns
+
     private var availableSkills: [Skill] {
-        let workspaceSkills = template.workspace?.skills ?? []
-        let enabledIDs = Set(template.workspace?.enabledGlobalSkillIDs ?? [])
-        let enabledGlobals = globalSkills.filter { enabledIDs.contains($0.id.uuidString) }
-        return (workspaceSkills.filter { !$0.isGlobal } + enabledGlobals).sorted { $0.name < $1.name }
+        guard let workspace = template.workspace else { return [] }
+        return WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills, catalog: routineCatalog)
     }
 
     enum TemplatePhase: String, CaseIterable {
@@ -2310,6 +2311,10 @@ struct TemplateEditorView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { if template.name == "New Template" { isNameFocused = true } }
+        .task(id: template.workspace?.id) {
+            guard let workspace = template.workspace else { return }
+            routineCatalog = await RoutineSkillCatalog.load(enabledPackIDs: WorkspaceCapabilityActivation.state(of: workspace).packIDs)
+        }
         .alert("Delete Template?", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) { onDelete() }

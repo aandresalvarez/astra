@@ -30,9 +30,13 @@ enum PluginTemplateSync {
     }
 
     /// Writes every declared template and unstamps the dropped and the
-    /// edited ones, then records what it wrote.
+    /// edited ones, then records what it wrote. A template written new takes
+    /// the ID `reusingIDs` names for its component (one a Remove deleted, so
+    /// a schedule naming it resolves again) when no row has that ID.
     @discardableResult
-    static func sync(_ package: PluginPackage, in workspace: Workspace, modelContext: ModelContext) -> [TaskTemplate] {
+    static func sync(
+        _ package: PluginPackage, in workspace: Workspace, modelContext: ModelContext, reusingIDs: [String: UUID] = [:]
+    ) -> [TaskTemplate] {
         let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
         let specs = Dictionary(
             package.templates.map { (CapabilityResourceOrigin.componentID(for: $0), $0) },
@@ -48,7 +52,10 @@ enum PluginTemplateSync {
                 unstamp(row)
             }
         }
-        let written = package.templates.map { upsert($0, package: package, in: workspace, modelContext: modelContext) }
+        let written = package.templates.map { spec in
+            upsert(spec, package: package, in: workspace, modelContext: modelContext,
+                   reusingID: reusingIDs[CapabilityResourceOrigin.componentID(for: spec)])
+        }
         if let activation {
             WorkspaceCapabilityActivation.setTemplateDigests(
                 Dictionary(
@@ -127,7 +134,8 @@ enum PluginTemplateSync {
         _ spec: PluginTemplate,
         package: PluginPackage,
         in workspace: Workspace,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        reusingID: UUID? = nil
     ) -> TaskTemplate {
         let componentID = CapabilityResourceOrigin.componentID(for: spec)
         let template = workspace.templates.first { !$0.isDeleted && $0.originPackageID == package.id && $0.originComponentID == componentID }
@@ -139,6 +147,10 @@ enum PluginTemplateSync {
                 templateDescription: spec.description
             )
         if template.modelContext == nil {
+            // Never an ID a stored row still has: the person's rows are theirs.
+            if let reusingID, ((try? modelContext.fetch(FetchDescriptor<TaskTemplate>(predicate: #Predicate { $0.id == reusingID })))?.isEmpty ?? false) {
+                template.id = reusingID
+            }
             modelContext.insert(template)
         }
         template.name = spec.name

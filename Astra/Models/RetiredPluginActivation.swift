@@ -27,6 +27,12 @@ import SwiftData
 ///   plugin's: Add binds each one back, stamped again, rather than making a
 ///   duplicate that needs the same sign-in again.
 ///
+/// - The IDs of the plugin templates it deleted, by component
+///   (`retainedTemplateIDs`). A schedule names its template by ID, so the
+///   next Add writes the component's template under the same one and the
+///   schedule resolves again. A template the person edited is kept as
+///   theirs instead, and never recorded here.
+///
 /// Secret settings are not kept: Remove cleans their namespaces, and a later
 /// Add starts with none, as it always has.
 public struct RetiredPluginActivation: Codable, Equatable, Sendable {
@@ -103,6 +109,8 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
     /// The workspace-owned accounts the plugin's components created, bound
     /// when it was removed.
     public var retainedAccounts: [RetainedAccount]?
+    /// The deleted plugin templates' IDs, by component ID.
+    public var retainedTemplateIDs: [String: String]?
 
     /// An account a component created, and whether it was its default.
     public struct RetainedAccount: Codable, Equatable, Sendable {
@@ -137,7 +145,7 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
     var keepsAnything: Bool {
         !namespaceSeed.isEmpty || overridingRowIDs.contains { UUID(uuidString: $0) != nil } || !(pendingOverrides ?? []).isEmpty
             || pendingImport != nil
-            || !(retainedAccounts ?? []).isEmpty
+            || !(retainedAccounts ?? []).isEmpty || !(retainedTemplateIDs ?? [:]).isEmpty
     }
 
     /// Each kept override's component and row.
@@ -240,6 +248,32 @@ extension WorkspaceCapabilityActivation {
             else { return nil }
             return (retained.componentID, account, retained.isDefault)
         }
+    }
+
+    /// Records the IDs of the plugin templates Remove deleted from
+    /// `workspace`, by component, on the plugin's retired record.
+    public static func retainTemplateIDs(_ ids: [String: UUID], pluginID: String, in workspace: Workspace) {
+        guard !ids.isEmpty else { return }
+        var all = retiredActivations(of: workspace)
+        let recorded = ids.mapValues(\.uuidString)
+        if let index = all.firstIndex(where: { $0.pluginID == pluginID }) {
+            all[index].retainedTemplateIDs = (all[index].retainedTemplateIDs ?? [:]).merging(recorded) { _, new in new }
+        } else {
+            var entry = RetiredPluginActivation(
+                pluginID: pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: []
+            )
+            entry.retainedTemplateIDs = recorded
+            all.append(entry)
+        }
+        setRetired(all, on: workspace)
+    }
+
+    /// The template IDs Remove recorded for `pluginID` in `workspace`, by
+    /// component, for Add to write its templates under again.
+    public static func retainedTemplateIDs(of pluginID: String, in workspace: Workspace) -> [String: UUID] {
+        guard let recorded = retiredActivations(of: workspace).first(where: { $0.pluginID == pluginID })?.retainedTemplateIDs
+        else { return [:] }
+        return recorded.compactMapValues(UUID.init(uuidString:))
     }
 
     /// The plugins whose kept rows are pending as overrides in `workspace`.
@@ -356,9 +390,7 @@ extension WorkspaceCapabilityActivation {
     /// though the person never turned it on. A mirror without a list names
     /// none, so its bound accounts come back binding-only.
     public static func takeBindingOnlyAccountsOffSharedList(in workspace: Workspace, listed: Set<String>) {
-        let bound = Set(activations(of: workspace).flatMap(\.bindings).filter { !$0.isDeleted }
-            .compactMap { $0.account?.id.uuidString })
-            .subtracting(listed)
+        let bound = Set(boundAccountIDs(of: workspace).map(\.uuidString)).subtracting(listed)
         guard state(of: workspace).globalConnectorIDs.contains(where: bound.contains) else { return }
         mutate(workspace) { $0.globalConnectorIDs.removeAll(where: bound.contains) }
     }

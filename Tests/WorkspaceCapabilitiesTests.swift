@@ -14,6 +14,48 @@ private func makeCapabilitiesPersistenceContainer() throws -> ModelContainer {
 
 @Suite("Workspace Capabilities")
 struct WorkspaceCapabilitiesTests {
+    @Test("A shared account the workspace lists on its own stays in scope with the plugin that binds it off")
+    @MainActor
+    func listedSharedAccountSurvivesItsPluginTurnedOff() throws {
+        let container = try makeCapabilitiesPersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Listed Shared", primaryPath: "/tmp/listed-shared-account")
+        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
+        context.insert(workspace)
+        func sharedJira(_ name: String) -> Connector {
+            let connector = Connector(
+                name: name, serviceType: "jira", connectorDescription: "Jira",
+                baseURL: "https://\(name.lowercased()).atlassian.net", authMethod: "none"
+            )
+            connector.isGlobal = true
+            context.insert(connector)
+            return connector
+        }
+        let listed = sharedJira("Listed")
+        let bindingOnly = sharedJira("Bound")
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(listed, toComponent: "connector:jira:jira", of: activation)
+        WorkspaceCapabilityActivation.bind(bindingOnly, toComponent: "connector:jira:jira", of: activation)
+        // The person turned the shared row on here by itself, too.
+        CapabilitySharing.enableShared(listed, in: workspace)
+        let task = AgentTask(title: "Use Jira", goal: "List Jira tickets", workspace: workspace)
+        context.insert(task)
+        try context.save()
+        func runtimeIDs() -> Set<UUID> { Set(TaskCapabilityResolver(task: task).allConnectors.map(\.id)) }
+        func railIDs() -> Set<UUID> {
+            Set(WorkspaceCapabilities(workspace: workspace, globalConnectors: [listed, bindingOnly]).activeConnectors.map(\.id))
+        }
+        #expect(runtimeIDs() == [listed.id, bindingOnly.id])
+
+        workspace.testEnabledCapabilityIDs = []
+        #expect(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace)?.isEnabled == false)
+        // The binding-only account leaves with its plugin; the listed one
+        // stays through the shared list, in the run and on the rail alike.
+        #expect(runtimeIDs() == [listed.id])
+        #expect(railIDs() == [listed.id])
+        #expect(WorkspaceCapabilityActivation.bindingOnlyAccountIDs(of: workspace) == [bindingOnly.id])
+    }
+
     @Test("active skills merge workspace and enabled shared skills")
     @MainActor
     func activeSkillsMergeWorkspaceAndEnabledShared() {

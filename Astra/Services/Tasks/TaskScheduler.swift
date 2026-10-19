@@ -207,8 +207,7 @@ final class TaskScheduler {
         guard !effectiveSkillIDs.isEmpty else { return [] }
 
         let idSet = Set(effectiveSkillIDs)
-        return WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills)
-            .activeSkills
+        return WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills)
             .filter { idSet.contains($0.id.uuidString) }
     }
 }

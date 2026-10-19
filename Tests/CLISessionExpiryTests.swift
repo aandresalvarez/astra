@@ -59,6 +59,180 @@ struct CLISessionExpiryTests {
         #expect(CLISessionExpiryClassifier.runs("gh", in: "cd 'my repo' && \"gh\" pr list"))
     }
 
+    @Test("A process substitution's CLI runs, and the command it feeds decides the status")
+    func processSubstitutionsMaskTheCLI() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in ["cat <(gh auth status)", "diff <(gh api a) <(gh api b)", "gh auth status > >(tee log.txt)", "echo x | tee >(gh api user)"] {
+            #expect(CLISessionExpiryClassifier.runs("gh", in: command) || command.hasPrefix("gh"), "\(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) != nil || command.hasPrefix("gh"), "\(command)")
+        }
+        #expect(CLISessionExpiryClassifier.masksExitStatus(of: "gh", in: "cat <(gh auth status)"))
+        #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: "cat <(gh auth status)") != nil)
+        #expect(!CLISessionExpiryClassifier.masksExitStatus(of: "gh", in: "gh auth status < notes.txt"))
+    }
+
+    @Test("A sh, bash or zsh -c payload's commands run, in the shell's place")
+    func shellPayloadsRun() throws {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in [
+            "bash -lc 'gh auth status'", "sh -c \"gh api user\"", "zsh -c 'cd repo && gh pr list'",
+            "bash -o pipefail -c 'gh api user | jq .'", "env -i bash -c 'gh auth status'", "/bin/bash -ec 'gh auth status'"
+        ] {
+            #expect(CLISessionExpiryClassifier.runs("gh", in: command), "\(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) != nil, "\(command)")
+        }
+        // Masked inside the payload, or by what follows the shell.
+        #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: "bash -c 'gh auth status; true'", failed: false) != nil)
+        #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: "bash -c 'gh auth status' | cat", failed: false) != nil)
+        // Text, or a script file, is not a payload.
+        for command in ["bash -c 'echo gh auth status'", "bash script.sh gh", "bash -x gh", "echo bash -c 'gh auth status'"] {
+            #expect(!CLISessionExpiryClassifier.runs("gh", in: command), "\(command)")
+        }
+        // Its exports stay inside it, and reach its own later calls.
+        let output = "HTTP 401: Bad credentials (https://ghe.example.com/api/v3/user)"
+        let family = try #require(CLISessionExpiryClassifier.family(content: output, command: "bash -c 'export GH_HOST=ghe.example.com; gh api user'"))
+        #expect(family.repair.checkArguments?.last == "ghe.example.com")
+        let outside = try #require(CLISessionExpiryClassifier.family(content: output, command: "bash -c 'export GH_HOST=ghe.example.com'; gh api user"))
+        #expect(outside.repair.checkArguments?.last == "github.com")
+    }
+
+    @Test("A failed line stops only when the CLI's own failure could be the line's")
+    func failedLinesCorrelateWithTheCLI() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in [
+            "gh --version; cat incident.txt; false", "gh auth status; cat notes.md", "gh auth status || cat notes.md", "! gh auth status",
+            "echo \"$(gh auth token)\"; false", "cat <<EOF\n$(gh auth status)\nEOF\nfalse"
+        ] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) == nil, "\(command)")
+        }
+        for command in [
+            "gh api user", "gh api user && echo ok", "gh api user | jq .", "cd repo && gh pr list",
+            "curl -H \"Authorization: Bearer $(gh auth token)\" https://api.github.com", "{ gh auth status; } 2>&1", "if true; then gh api user; fi"
+        ] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) != nil, "\(command)")
+        }
+    }
+
+    @Test("An unquoted here-document's substitutions run; a quoted one's are text")
+    func heredocSubstitutionsRun() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in ["cat <<EOF\n$(gh auth status)\nEOF", "cat <<EOF > out.txt\nstatus: `gh auth status`\nEOF", "cat <<-EOF\n\t$(gh api user)\n\tEOF"] {
+            #expect(CLISessionExpiryClassifier.runs("gh", in: command), "\(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) != nil, "\(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) != nil, "\(command)")
+        }
+        for command in ["cat <<'EOF'\n$(gh auth status)\nEOF", "cat <<\"EOF\"\n$(gh auth status)\nEOF", "cat <<\\EOF\n$(gh auth status)\nEOF", "cat <<EOF\n\\$(gh auth status)\nEOF"] {
+            #expect(!CLISessionExpiryClassifier.runs("gh", in: command), "\(command)")
+        }
+    }
+
+    @Test("What a shell runs under reaches the commands of its payload")
+    func shellPayloadsCarryTheirWrapperAssignments() throws {
+        let output = "HTTP 401: Bad credentials"
+        let selected = try #require(CLISessionExpiryClassifier.family(content: output, command: "env GH_CONFIG_DIR=/tmp/team bash -c 'gh api user'"))
+        #expect(selected.repair.checkSelectors == ["GH_CONFIG_DIR": "/tmp/team"])
+        let exported = try #require(CLISessionExpiryClassifier.family(content: output, command: "export GH_CONFIG_DIR=/tmp/team; gh api user"))
+        #expect(exported.repair.checkSelectors == ["GH_CONFIG_DIR": "/tmp/team"])
+        for command in ["GH_TOKEN=abc bash -c 'gh api user'", "env -u GH_TOKEN sh -c 'gh api user'"] {
+            let family = try #require(CLISessionExpiryClassifier.family(content: output, command: command), "\(command)")
+            #expect(!family.offersSignIn, "\(command)")
+            #expect(family.repair.checkBinary == nil, "\(command)")
+        }
+        // Its own reserved words still read as its own.
+        #expect(CLISessionExpiryClassifier.stop(content: output, command: "env X=1 bash -c '! gh api user'", failed: false) != nil)
+    }
+
+    @Test("Variables env removes, and gcloud's own account flags, leave the repair check-free and with no sign-in")
+    func removedVariablesAndAccountFlagsAreNotReproduced() throws {
+        let ghOutput = "HTTP 401: Bad credentials"
+        let gcloudExpired = "ERROR: (gcloud.projects.list) Reauthentication required."
+        for (command, output, named) in [
+            ("env -u GH_TOKEN gh api user", ghOutput, "env -u GH_TOKEN"), ("env -i gh api user", ghOutput, "env -i"),
+            ("env --unset=GH_TOKEN gh api user", ghOutput, "env -u GH_TOKEN"),
+            ("gcloud projects list --account stale@example.com", gcloudExpired, "--account"),
+            ("gcloud --configuration=team projects list", gcloudExpired, "--configuration"),
+            ("gcloud projects list --impersonate-service-account svc@p.iam.gserviceaccount.com", gcloudExpired, "--impersonate-service-account")
+        ] {
+            let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "\(command)")
+            let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
+            #expect(!family.offersSignIn, "\(command)")
+            #expect(family.repair.command == nil, "\(command)")
+            #expect(family.repair.checkBinary == nil, "\(command)")
+            #expect(stop.message.contains(named), "\(command)")
+        }
+        // Unrelated variables and flags change nothing.
+        for (command, output) in [("env -u PAGER gh api user", ghOutput), ("gcloud projects list --project p --format=json", gcloudExpired)] {
+            #expect(CLISessionExpiryClassifier.family(content: output, command: command)?.offersSignIn == true, "\(command)")
+        }
+    }
+
+    @Test("A failure an `|| exit` passes on still reaches the line, and a later command's assignment substitution is masked")
+    func exitFallbacksAndAssignmentSubstitutions() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in ["gh api user || exit 1", "gh api user || exit", "gh api user || return 2", "gh api user || { echo failed >&2; exit 1; }"] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) != nil, "\(command)")
+        }
+        for command in ["gh api user || exit 0", "gh api user || echo fallback", "gh api user || { echo failed; }"] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) == nil, "\(command)")
+        }
+        // `TOKEN=$(gh …) echo ok` exits with echo's status; alone, with gh's.
+        for command in ["TOKEN=$(gh auth token) echo ok", "TOKEN=\"$(gh auth token)\" curl -s x", "A=$(gh auth token) B=$(true) echo ok"] {
+            #expect(CLISessionExpiryClassifier.masksExitStatus(of: "gh", in: command), "\(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) != nil, "\(command)")
+        }
+        #expect(!CLISessionExpiryClassifier.masksExitStatus(of: "gh", in: "TOKEN=$(gh auth token)"))
+        // An assignment that ended its own command feeds nothing after it.
+        #expect(!CLISessionExpiryClassifier.masksExitStatus(of: "gh", in: "TOKEN=$(gh auth token) && echo ok"))
+    }
+
+    @Test("Only a shell tool's command is classified: another tool's command input ran nothing")
+    func onlyShellToolsAreClassified() {
+        for name in ["Bash", "shell", "command_execution", "shellToolCall", "run_command", "run_shell_command", "bash(gh)"] {
+            #expect(CLISessionExpiryClassifier.isShellTool(name), "\(name)")
+        }
+        for name in ["mcp__github__run", "Read", "WebFetch", "Task", "astra_host_github"] {
+            #expect(!CLISessionExpiryClassifier.isShellTool(name), "\(name)")
+        }
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        _ = monitor.processEvent(.toolUse(name: "mcp__docs__search", id: "toolu_docs", input: ["command": "gcloud projects list"]), process: nil)
+        #expect(monitor.processEvent(.toolResult(toolId: "toolu_docs", content: gcloudReauth, isError: true), process: nil) == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
+    @Test("A credential store the failed call selected itself is carried; credentials it set itself are not checked")
+    func commandLocalSelectors() throws {
+        let gcloudExpired = "ERROR: (gcloud.projects.list) Reauthentication required."
+        for (command, name, value) in [
+            ("CLOUDSDK_CONFIG=/tmp/team gcloud projects list", "CLOUDSDK_CONFIG", "/tmp/team"),
+            ("env CLOUDSDK_CONFIG=/Users/me/.config/team gcloud projects list", "CLOUDSDK_CONFIG", "/Users/me/.config/team")
+        ] {
+            let stop = try #require(CLISessionExpiryClassifier.stop(content: gcloudExpired, command: command), "\(command)")
+            let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
+            let repair = family.repair
+            #expect(repair.checkSelectors == [name: value])
+            #expect(RepairAction.decode(from: repair.encoded())?.checkSelectors == [name: value])
+            let checked = repair.checking(in: ["CLOUDSDK_CONFIG": "/launch/config", "PATH": "/usr/bin"])
+            #expect(checked.checkEnvironment == [name: value, "PATH": "/usr/bin"])
+            #expect(checked.targetingCredentialStore(checked.checkEnvironment).command == "env CLOUDSDK_CONFIG='\(value)' gcloud auth login")
+        }
+        let gh = try #require(CLISessionExpiryClassifier.family(content: "HTTP 401: Bad credentials", command: "env GH_CONFIG_DIR=/tmp/gh gh api user"))
+        #expect(gh.repair.checkSelectors == ["GH_CONFIG_DIR": "/tmp/gh"])
+        // Credentials ASTRA can't carry: no sign-in and no check of another store.
+        for (command, output) in [
+            ("GH_TOKEN=abc gh api user", "HTTP 401: Bad credentials"),
+            ("CLOUDSDK_CORE_ACCOUNT=other@x.org gcloud projects list", gcloudExpired),
+            ("CLOUDSDK_CONFIG=team gcloud projects list", gcloudExpired),
+            ("CLOUDSDK_CONFIG=/a gcloud projects list && CLOUDSDK_CONFIG=/b gcloud projects list", gcloudExpired)
+        ] {
+            let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "\(command)")
+            let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
+            #expect(!family.offersSignIn, "\(command)")
+            #expect(family.repair.command == nil)
+            #expect(family.repair.checkBinary == nil, "\(command)")
+            #expect(stop.message.contains("chose itself"))
+        }
+    }
+
     @Test("An unquoted # that begins a word starts a comment, to the end of the line")
     func shellCommentsRunNothing() {
         let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
@@ -387,7 +561,7 @@ struct CLISessionExpiryTests {
             ("( export GH_HOST=github.example.com ); gh api user", "github.com"),
             ("echo $(export GH_HOST=github.example.com); gh api user", "github.com"),
             ("export GH_HOST=github.example.com; unset GH_HOST; gh api user", "github.com"),
-            ("gh api user; export GH_HOST=github.example.com", "github.com"),
+            ("gh api user && export GH_HOST=github.example.com", "github.com"),
             ("export GH_HOST=github.example.com; GH_HOST=other.example.com gh api user", "other.example.com"),
             ("export GH_HOST=github.example.com; gh api user --hostname other.example.com", "other.example.com")
         ] {
@@ -411,15 +585,18 @@ struct CLISessionExpiryTests {
         }
         var repair = CLISessionExpiryClassifier.googleCloudApplicationDefault.repair
         repair.checkEnvironment = ["PATH": "\(root.path):/usr/bin:/bin"]
+        // The fake lives in a temporary folder, not an installed path.
+        let anywhere: @Sendable (String) -> Bool = { _ in true }
         try install(exitCode: 0)
-        #expect(await PluginRepairCoordinator.liveCheck(repair))
-        try install(exitCode: 1)
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: anywhere))
         #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+        try install(exitCode: 1)
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: anywhere) == false)
         // The credential-file guidance checks the same way.
         repair = CLISessionExpiryClassifier.googleCloudApplicationDefault.credentialFile("/tmp/adc.json").repair
         repair.checkEnvironment = ["PATH": "\(root.path):/usr/bin:/bin"]
         try install(exitCode: 0)
-        #expect(await PluginRepairCoordinator.liveCheck(repair))
+        #expect(await PluginRepairCoordinator.liveCheck(repair, isInstalled: anywhere))
     }
 
     @Test("Expired Application Default Credentials are repaired and checked as ADC, not as the CLI's account")
@@ -830,7 +1007,8 @@ struct CLISessionExpiryTests {
             "if gh auth status && echo signed-in; then :; fi"
         ] {
             #expect(CLISessionExpiryClassifier.runs("gh", in: command), "not run: \(command)")
-            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) != nil, "missed failed: \(command)")
+            // A condition's failure never fails the line: a failed line
+            // failed elsewhere, so only the succeeding line stops.
             #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) != nil, "missed: \(command)")
         }
         // A CLI in a branch body runs too.

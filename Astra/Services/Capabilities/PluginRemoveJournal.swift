@@ -138,6 +138,15 @@ struct PluginRemoveJournal {
                 journal.finish(pluginID)
                 continue
             }
+            // A draft staged beside the removed plugin goes with it first.
+            do {
+                try library.removeStaged(id: pluginID)
+            } catch {
+                AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                    "source": "plugin_remove_resume", "package_id": pluginID, "result": "staged_draft_kept"
+                ], level: .error)
+                continue
+            }
             if !library.installedPackages().contains(where: { $0.id == pluginID }) {
                 // An entry still on disk that doesn't decode is not gone: it
                 // would block a reinstall under its name, so it is moved

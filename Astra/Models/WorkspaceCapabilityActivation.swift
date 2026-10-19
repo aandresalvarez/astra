@@ -287,7 +287,9 @@ public enum WorkspaceCapabilityActivation {
             touch(activation)
             return
         }
-        let bindingAlias = alias ?? existingAlias(of: account, in: activation) ?? disambiguateAlias(of: account, joining: activation)
+        // A name from a workspace file is cleaned the way every alias is.
+        let bindingAlias = alias.flatMap(AccountDisplayName.sanitized)
+            ?? existingAlias(of: account, in: activation) ?? disambiguateAlias(of: account, joining: activation)
         let hasDefault = sameService.contains { $0.isDefault && $0.account?.id != account.id }
         let accountIsDefault = sameService.contains { $0.isDefault && $0.account?.id == account.id }
         let binding = AccountBinding(
@@ -323,6 +325,27 @@ public enum WorkspaceCapabilityActivation {
             .filter { seen.insert($0.id).inserted }
     }
 
+    /// The connector rows bound as accounts to any of the workspace's
+    /// activations, on or off.
+    public static func boundAccountIDs(of workspace: Workspace) -> Set<UUID> {
+        Set(activations(of: workspace).flatMap(\.bindings).filter { !$0.isDeleted }.compactMap { $0.account?.id })
+    }
+
+    /// The accounts that reach `workspace` only through a binding, so they
+    /// are in scope exactly while their plugin is on: every bound account
+    /// but a shared one the workspace also lists on its own (the Shared
+    /// Library, or a Plugins "Turn on"), which stays in scope through that
+    /// list with its plugin off. A binding never puts an account on the
+    /// list (`takeBindingOnlyAccountsOffSharedList`, `promoteToShared`), so
+    /// a listed one was turned on independently. The runtime and the rail
+    /// both leave these out of their authored paths.
+    public static func bindingOnlyAccountIDs(of workspace: Workspace) -> Set<UUID> {
+        let listed = Set(workspace.enabledGlobalConnectorIDs)
+        return Set(activations(of: workspace).flatMap(\.bindings).filter { !$0.isDeleted }.compactMap(\.account)
+            .filter { !($0.isGlobal && listed.contains($0.id.uuidString)) }
+            .map(\.id))
+    }
+
     /// Unbinds `account` from every activation, before it is deleted: the
     /// cascade would drop its bindings without electing a new default.
     public static func releaseAccount(_ account: Connector) {
@@ -356,27 +379,24 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
-    /// Re-elects defaults after `account`'s service changed from
-    /// `oldService`, in every workspace that binds it: each service keeps
-    /// exactly one default account. The service it left gets its oldest
-    /// remaining account when it took the default with it; the one it joined
-    /// keeps the default it had, else this account (or its oldest) gets it.
-    public static func serviceChanged(of account: Connector, from oldService: String) {
-        guard normalizedService(oldService) != normalizedService(account.serviceType) else { return }
-        for workspace in workspacesBinding(account) {
-            for service in [oldService, account.serviceType] {
-                let bindings = activations(of: workspace).flatMap(\.bindings)
-                    .filter { !$0.isDeleted && normalizedService($0.account?.serviceType) == normalizedService(service) }
-                    .sorted { $0.createdAt == $1.createdAt ? $0.id.uuidString < $1.id.uuidString : $0.createdAt < $1.createdAt }
-                let defaults = bindings.filter(\.isDefault)
-                guard let keep = defaults.first(where: { $0.account?.id != account.id }) ?? defaults.first ?? bindings.first
-                else { continue }
-                let changed = bindings.contains { $0.isDefault != ($0.account?.id == keep.account?.id) }
-                guard changed else { continue }
-                makeDefault(keep, among: bindings)
-                if let owner = keep.activation { touch(owner) }
-            }
-        }
+    /// Whether `account`'s service may change: not while a plugin binds it.
+    /// A binding names a connector component, whose ID carries its service
+    /// (`connector:<service>:<name>`), so a bound account of another service
+    /// would be projected as that component's, and no binding crosses
+    /// services. Unbind it first (Delete account, Remove, or an Update that
+    /// drops the component).
+    public static func canChangeService(of account: Connector) -> Bool {
+        !account.accountBindings.contains { !$0.isDeleted && $0.activation != nil }
+    }
+
+    /// Sets `account`'s service, refusing (false) while a plugin binds it
+    /// (`canChangeService`).
+    @discardableResult
+    public static func changeService(of account: Connector, to serviceType: String) -> Bool {
+        guard account.serviceType != serviceType else { return true }
+        guard canChangeService(of: account) else { return false }
+        account.serviceType = serviceType
+        return true
     }
 
     /// The workspace's default account for `serviceType`, if one is bound.
@@ -835,20 +855,31 @@ public enum WorkspaceCapabilityActivation {
         return ""
     }
 
-    /// The accounts of a service the workspaces' plugins are bound to, plus
-    /// the workspaces' own connector rows of that service.
+    /// The accounts of a service the workspaces' plugins are bound to, the
+    /// workspaces' own connector rows of that service, and the shared rows
+    /// they list on their own: a listed shared account is in the
+    /// workspace's scope too, so its name selects it there.
     private static func visibleAccounts(ofService serviceType: String, in workspaces: [Workspace]) -> [Connector] {
         let service = normalizedService(serviceType)
         var seen = Set<UUID>()
         var accounts: [Connector] = []
         for workspace in workspaces {
             let bound = activations(of: workspace).flatMap(\.bindings).filter { !$0.isDeleted }.compactMap(\.account)
-            for account in bound + workspace.connectors
+            for account in bound + workspace.connectors + listedSharedAccounts(of: workspace)
             where !account.isDeleted && normalizedService(account.serviceType) == service && seen.insert(account.id).inserted {
                 accounts.append(account)
             }
         }
         return accounts
+    }
+
+    /// The shared rows `workspace`'s shared list names. A launch copy (no
+    /// context) has none of them.
+    private static func listedSharedAccounts(of workspace: Workspace) -> [Connector] {
+        let listed = Set(workspace.enabledGlobalConnectorIDs.compactMap(UUID.init(uuidString:)))
+        guard !listed.isEmpty, let context = workspace.modelContext else { return [] }
+        let shared = (try? context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true }))) ?? []
+        return shared.filter { listed.contains($0.id) }
     }
 
     private static func uniqueName(_ name: String, avoiding taken: Set<String>) -> String {

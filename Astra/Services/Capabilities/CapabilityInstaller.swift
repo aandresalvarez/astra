@@ -266,6 +266,7 @@ struct CapabilityInstaller {
             // The accounts its components created here before a Remove come
             // back bound, stamped again, rather than as duplicates.
             let retainedAccounts = WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: workspace)
+            let retainedTemplateIDs = WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: workspace)
             // A chosen file's activation that waited for this copy (same
             // digest, same source) gets its settings, overrides and accounts,
             // before reinstating forgets the plugin's retired record.
@@ -296,6 +297,18 @@ struct CapabilityInstaller {
                 copied: &renamedSecrets
             )
             let releasedSkillIDs = reconciliation.released
+            // An account bound to a connector component this version no
+            // longer declares is released (the account itself stays, listed
+            // under "Accounts not used by a plugin"). The workspace's own
+            // account is one of its connectors again; a shared one stays in
+            // scope only if the workspace lists it on its own, since a
+            // binding never turned it on there (`bindingOnlyAccountIDs`).
+            let declaredConnectors = Set(package.connectors.map { CapabilityResourceOrigin.componentID(for: $0) })
+            for binding in activation.bindings where !binding.isDeleted && !declaredConnectors.contains(binding.componentID) {
+                if let account = binding.account {
+                    WorkspaceCapabilityActivation.unbind(account, from: activation, componentID: binding.componentID)
+                }
+            }
 
             let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
             // A skill setting an account carries as a plain setting, unless a
@@ -397,7 +410,7 @@ struct CapabilityInstaller {
                 )
             }
 
-            for template in PluginTemplateSync.sync(package, in: workspace, modelContext: modelContext) {
+            for template in PluginTemplateSync.sync(package, in: workspace, modelContext: modelContext, reusingIDs: retainedTemplateIDs) {
                 appendUnique(template.id, to: &templateIDs)
             }
 
