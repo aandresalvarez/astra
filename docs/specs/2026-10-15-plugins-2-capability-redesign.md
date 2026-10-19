@@ -426,6 +426,13 @@ Each is a decision R1 implements and its fixture tests.
     fresh row; the fresh ID still never
     resolves an existing Keychain credential, and a single-workspace import or
     mirror recovery is unchanged.
+    Every account name a file supplies, the row's name and a binding's
+    alias, from a chosen file or the workspace's own mirror, is one line of
+    visible text before any row exists (`AccountDisplayName`): format
+    characters (bidirectional controls, zero-width characters) are dropped,
+    controls and line breaks become spaces, whitespace collapses, and the
+    length is capped; a name with nothing visible left falls back to the
+    service. `bind` applies the same rule to every alias.
 
 9. **Legacy component IDs.** Rows made by the current installer carry
    `originComponentID` values from `CapabilityResourceOrigin.componentID(for:)`
@@ -777,6 +784,22 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   accounts each component created, and the next Add binds them back,
   stamped again, instead of creating duplicates; rows the person authored
   are never taken.
+- **Template identity across Remove.** Remove keeps a template the person
+  edited as theirs, unstamped and under its ID, by the same edit rule as
+  Update's drift check (`PluginTemplateSync.isEdited`). It deletes the
+  plugin's unedited templates and records their IDs by component; the next
+  Add writes each template under its old ID, never one a stored template
+  still has, so schedules naming it resolve again.
+- **Staged drafts follow Remove.** A draft staged beside an approved plugin
+  is deleted (quarantined if it can't be read) as part of Remove. The
+  Remove record stays until that's done, and launch completes an
+  interrupted Remove the same way.
+- **One post-save mirror export.** Every save of plugin state goes through
+  `PluginStateMirrors.exportAfterSave`: activation settings, bindings (Add
+  account, Make default), account edits (fields, name, service, sharing)
+  and turning on a shared account. It writes the mirror of the saving
+  workspace and of every workspace that carries a changed account. Paths
+  that also delete secrets still write their mirrors before the deletion.
 
 ### How R4 was built (2026-10-16)
 
