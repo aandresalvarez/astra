@@ -172,7 +172,7 @@ struct RuntimeEligibilityPreviewRequest {
             selectedRuntime: task.resolvedRuntimeID
         ) { candidateRuntimes in
             let intent = TaskTurnIntentResolver.preview(for: task, acceptedTurn: acceptedTurn)
-            return evaluate(
+            return await evaluate(
                 task: task,
                 intent: intent,
                 requestedRuntime: task.resolvedRuntimeID,
@@ -272,7 +272,7 @@ struct RuntimeEligibilityPreviewRequest {
                 for: draftTask ?? previewTask,
                 acceptedTurn: acceptedTurn
             )
-            return evaluate(
+            return await evaluate(
                 task: previewTask,
                 intent: intent,
                 requestedRuntime: requestedRuntime,
@@ -294,9 +294,19 @@ struct RuntimeEligibilityPreviewRequest {
         providerSettings: ProviderSettingsSnapshot,
         readinessStates: [AgentRuntimeID: RuntimeReadinessState],
         candidateRuntimes: [AgentRuntimeID]?
-    ) -> TaskRuntimeEligibilitySnapshot? {
+    ) async -> TaskRuntimeEligibilitySnapshot? {
         guard !Task.isCancelled else { return nil }
-        let executionPolicy = AgentRuntimeExecutionPolicy.default.withTurnIntentSnapshot(intent)
+        var executionPolicy = AgentRuntimeExecutionPolicy.default.withTurnIntentSnapshot(intent)
+        let configuration = AgentRuntimeConfiguration(
+            providerSettings: providerSettings.providerSettings, defaultRuntimeID: requestedRuntime)
+        if (candidateRuntimes ?? AgentRuntimeAdapterRegistry.runtimeIDs).contains(.copilotCLI) {
+            let settings = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).launchSettings(configuration: configuration)
+            if FileManager.default.isExecutableFile(atPath: settings.executablePath) {
+                executionPolicy.copilotCapabilities = try? await CopilotCLIRuntime.requiredCapabilities(
+                    executablePath: settings.executablePath)
+            }
+        }
+        guard !Task.isCancelled else { return nil }
         return TaskLaunchAdmissionService.evaluate(
             task: task,
             intent: intent,

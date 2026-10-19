@@ -409,7 +409,8 @@ struct NativeContinuationFallbackTests {
         worker.permissionPolicy = .autonomous
         worker.defaultAgentPolicyLevelRaw = AgentPolicyLevel.autonomous.rawValue
         worker.defaultRuntimeID = .copilotCLI
-        worker.setExecutablePath("/bin/sh", for: .copilotCLI)
+        let executable = try await CopilotAdapterFixture.writeExecutable(in: URL(fileURLWithPath: testDir))
+        worker.setExecutablePath(executable, for: .copilotCLI)
 
         DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: context)
         await worker.continueSession(task: task, message: "Pick up where we left off.", modelContext: context) { _ in }

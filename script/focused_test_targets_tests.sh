@@ -249,7 +249,7 @@ assert_targets $'DiagnosticCoverageRegressionTests\nPendingP2RegressionTests\nLo
   "Astra/Services/Diagnostics/LogDiagnosticsCollection.swift" \
   "Astra/Services/Diagnostics/LogDiagnosticsPreparationService.swift"
 
-assert_targets $'CopilotCLICommandPlanningTests\nPendingP2RegressionTests' \
+assert_targets $'CopilotCLICommandPlanningTests\nCopilotCLICapabilityProbeTests\nCopilotWorkerExecutionTests\nCopilotLaunchDiscoveryTests\nAgentUtilityRuntimeTests\nAgentRuntimeCapabilityProfileTests\nRuntimeReadinessServiceTests\nPendingP2RegressionTests' \
   "Astra/Services/Runtime/CopilotCLIRuntime.swift"
 
 assert_targets $'ShelfFileIndexControllerTests\nFilesShelfResponsivenessTelemetryTests\nUIResponsivenessDiagnosticsTests\nShelfAttachmentHistoryTests' \
@@ -284,3 +284,6 @@ assert_targets $'RuntimeHomeAccessTests\nRuntimeHomeAccessEdgeCaseTests\nRuntime
 assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nCopilotPostFailureHomeInspectionTests' \
   "Astra/Services/Runtime/CopilotPostFailureHomeInspection.swift" \
   "Tests/CopilotPostFailureHomeInspectionTests.swift"
+
+assert_targets $'AgentRuntimeAdapterTests\nNativeContinuationFallbackTests' \
+  "Tests/AgentRuntimeAdapterCopilotFixture.swift"

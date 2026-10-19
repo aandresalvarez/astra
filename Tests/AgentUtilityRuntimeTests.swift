@@ -22,6 +22,31 @@ struct AgentUtilityRuntimeTests {
     private static let longRunningHelperSleepSeconds = 30
     private static let fullSuiteUtilityDeadlineSeconds: TimeInterval = 20
 
+    @Test("Copilot discovery respects the utility deadline without launching the prompt")
+    func copilotDiscoveryConsumesUtilityDeadline() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appendingPathComponent("copilot")
+        let launched = root.appendingPathComponent("launched")
+        let release = root.appendingPathComponent("release")
+        try writeExecutableScript(at: executable, contents: """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+        \(CopilotCLICapabilityProbeTests.helpWaitingFor(release, then: "echo --output-format=FORMAT"))
+          exit 0
+        fi
+        touch '\(launched.path)'
+        """)
+        let result = await AgentUtilityRuntimeRunner.runPrompt("hello", workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(runtime: .copilotCLI, model: "gpt-5",
+                copilotPath: executable.path, timeoutSeconds: 0.1), toolMode: .readOnly)
+        #expect(result.exitCode != 0)
+        #expect(result.error.contains("timed out"))
+        #expect(!FileManager.default.fileExists(atPath: launched.path))
+        #expect(await CopilotCapabilityProbe.shared.waiterCount(executablePath: executable.path) == 0)
+    }
+
     @Test("Utility runtime preserves arbitrary provider settings")
     func utilityRuntimePreservesArbitraryProviderSettings() throws {
         let futureRuntime = try #require(AgentRuntimeID(rawValue: "future_cli"))
@@ -456,7 +481,7 @@ struct AgentUtilityRuntimeTests {
         try writeExecutableScript(at: fakeCopilot, contents: script)
 
         // Answer the capability probe before the clock starts: the budget below is for the run.
-        _ = await CopilotCLIRuntime.answeredCapabilities(executablePath: fakeCopilot.path)
+        _ = try await CopilotCLIRuntime.requiredCapabilities(executablePath: fakeCopilot.path)
         let start = Date()
         let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
             "Summarize diff",
@@ -579,7 +604,7 @@ struct AgentUtilityRuntimeTests {
         try writeExecutableScript(at: fakeCopilot, contents: script)
 
         // Answer the capability probe before the clock starts: the budget below is for the run.
-        _ = await CopilotCLIRuntime.answeredCapabilities(executablePath: fakeCopilot.path)
+        _ = try await CopilotCLIRuntime.requiredCapabilities(executablePath: fakeCopilot.path)
         let start = Date()
         let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
             "Define the executable goal and plan now",
@@ -694,7 +719,7 @@ struct AgentUtilityRuntimeTests {
         try writeExecutableScript(at: fakeCopilot, contents: script)
 
         // Answer the capability probe before the clock starts: the budget below is for the run.
-        _ = await CopilotCLIRuntime.answeredCapabilities(executablePath: fakeCopilot.path)
+        _ = try await CopilotCLIRuntime.requiredCapabilities(executablePath: fakeCopilot.path)
         let start = Date()
         let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
             "Define the executable goal and plan now",

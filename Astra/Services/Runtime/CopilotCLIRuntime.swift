@@ -1,7 +1,7 @@
 import Foundation
 import ASTRACore
 
-struct CopilotCLICapabilities: Equatable {
+struct CopilotCLICapabilities: Equatable, Sendable {
     var supportsOutputFormatJSON: Bool
     var supportsStreamingFlag: Bool
     var supportsNoAskUser: Bool
@@ -140,185 +140,21 @@ enum CopilotCLIRuntime {
         RuntimePathResolver.detectCopilotPath()
     }
 
-    /// Capability probing spawns `copilot help`. Admission evaluation calls it twice per
-    /// runtime on every debounced composer keystroke, so the result is memoised per
-    /// executable and only re-probed when the binary itself changes.
-    ///
-    /// Only an answer `copilot help` actually gave is memoised as the binary's
-    /// capabilities. A probe that ran out of time says how busy the machine was, not what
-    /// the binary supports, and acting on it launches every later run without the JSON,
-    /// tool-surface, and secret-redaction flags. It is kept as an unanswered entry so a
-    /// hung CLI still cannot stall the main actor on every keystroke, and the next caller
-    /// that can afford to wait (`answeredCapabilities`) asks again.
-    private static let capabilitiesLock = NSLock()
-    nonisolated(unsafe) private static var cachedCapabilities: [String: MemoisedCapabilities] = [:]
-    /// What a main-actor caller can afford to block on a cold probe.
-    private static let briefProbeTimeout: TimeInterval = 5
-    /// Only breaks a `copilot help` that hangs outright. It is the deadline a utility run
-    /// gets by default, so the probe is never stricter than the run it precedes.
-    private static let answerProbeTimeout = AgentUtilityRuntimeConfiguration.defaultTimeoutSeconds
-
-    private struct MemoisedCapabilities {
-        var fingerprint: String
-        var capabilities: CopilotCLICapabilities
-        var answered: Bool
-    }
-
-    /// The main actor's read: the memoised answer, or a probe bounded by
-    /// `briefProbeTimeout` that answers `.conservative` if `copilot help` is too slow.
+    /// Presentation reads never launch or wait for a subprocess. A launch must acquire
+    /// an explicit answer through `requiredCapabilities` before constructing its policy.
     static func capabilities(executablePath: String) -> CopilotCLICapabilities {
-        resolveCapabilities(
-            executablePath: executablePath,
-            probeTimeout: briefProbeTimeout,
-            acceptsUnanswered: true
-        )
+        CopilotCapabilityProbe.cached(executablePath: executablePath) ?? .conservative
     }
 
-    /// The read for a caller that is off the main actor and about to run the binary: it
-    /// waits for `copilot help` to answer instead of acting on a probe that ran out of time.
-    static func answeredCapabilities(executablePath: String) async -> CopilotCLICapabilities {
-        if let memoised = memoisedCapabilities(executablePath: executablePath, acceptsUnanswered: false) {
-            return memoised
-        }
-        // The probe blocks its thread until the CLI answers; keep that wait off the
-        // cooperative pool.
-        return await withCheckedContinuation { continuation in
-            Thread.detachNewThread {
-                continuation.resume(returning: resolveCapabilities(
-                    executablePath: executablePath,
-                    probeTimeout: answerProbeTimeout,
-                    acceptsUnanswered: false
-                ))
-            }
-        }
-    }
-
-    /// Populates the memo from a background context so the `@MainActor` composer path
-    /// reads a cached answer. Readiness checking already resolved and ran this binary.
-    static func warmCapabilities(executablePath: String) async {
-        _ = await answeredCapabilities(executablePath: executablePath)
-    }
-
-    /// Gets an answer before a Copilot launch so the main-actor reads that follow
-    /// (admission, policy, launch plan) do not probe briefly and launch on the fallback.
-    /// Admission reads every runtime's profile, so this is scoped to the requested
-    /// runtime: another runtime's launch never waits on `copilot help`.
-    static func warmBeforeLaunch(runtime: AgentRuntimeID, executablePath: String) async {
-        guard runtime == .copilotCLI else { return }
-        await warmCapabilities(executablePath: executablePath)
-    }
-
-    private static func memoisedCapabilities(
+    static func requiredCapabilities(
         executablePath: String,
-        acceptsUnanswered: Bool
-    ) -> CopilotCLICapabilities? {
-        // Nothing to probe, so nothing to wait for.
-        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
-            return .conservative
-        }
-        let fingerprint = executableFingerprint(executablePath)
-        capabilitiesLock.lock()
-        defer { capabilitiesLock.unlock() }
-        guard let memoised = cachedCapabilities[executablePath],
-              memoised.fingerprint == fingerprint,
-              memoised.answered || acceptsUnanswered else {
-            return nil
-        }
-        return memoised.capabilities
+        timeout: TimeInterval = AgentUtilityRuntimeConfiguration.defaultTimeoutSeconds
+    ) async throws -> CopilotCLICapabilities {
+        try await CopilotCapabilityProbe.shared.answer(executablePath: executablePath, timeout: timeout)
     }
 
-    private static func resolveCapabilities(
-        executablePath: String,
-        probeTimeout: TimeInterval,
-        acceptsUnanswered: Bool
-    ) -> CopilotCLICapabilities {
-        if let memoised = memoisedCapabilities(executablePath: executablePath, acceptsUnanswered: acceptsUnanswered) {
-            return memoised
-        }
-
-        let fingerprint = executableFingerprint(executablePath)
-        let answer = probeCapabilities(executablePath: executablePath, timeout: probeTimeout)
-        capabilitiesLock.lock()
-        defer { capabilitiesLock.unlock() }
-        if let answer {
-            cachedCapabilities[executablePath] = MemoisedCapabilities(
-                fingerprint: fingerprint,
-                capabilities: answer,
-                answered: true
-            )
-            return answer
-        }
-        // A concurrent probe may have answered while this one ran out of time.
-        if let memoised = cachedCapabilities[executablePath],
-           memoised.fingerprint == fingerprint,
-           memoised.answered {
-            return memoised.capabilities
-        }
-        cachedCapabilities[executablePath] = MemoisedCapabilities(
-            fingerprint: fingerprint,
-            capabilities: .conservative,
-            answered: false
-        )
-        return .conservative
-    }
-
-    /// Drops one binary's memoised probe. Reinstalling or upgrading the CLI in place is
-    /// already covered by the fingerprint, so this exists for explicit re-detection and
-    /// tests. It is per binary so one test cannot wipe the memo another is relying on.
     static func invalidateCapabilitiesCache(executablePath: String) {
-        capabilitiesLock.lock()
-        cachedCapabilities[executablePath] = nil
-        capabilitiesLock.unlock()
-    }
-
-    /// Identity of the binary behind `executablePath`, so an in-place upgrade re-probes.
-    private static func executableFingerprint(_ executablePath: String) -> String {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: executablePath)
-        let size = (attributes?[.size] as? NSNumber)?.int64Value ?? -1
-        let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
-        return "\(size)|\(modified)"
-    }
-
-    /// Nil when `copilot help` gave no answer: it failed to launch or ran out of time.
-    private static func probeCapabilities(
-        executablePath: String,
-        timeout: TimeInterval
-    ) -> CopilotCLICapabilities? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = ["help"]
-        process.environment = RuntimeProcessEnvironment.enriched()
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        // Drain stdout on a separate queue: `copilot help` can exceed the pipe buffer, and
-        // reading only after the process exits would deadlock the child on a full pipe.
-        let buffer = ProbeOutputBuffer()
-        let readerHandle = pipe.fileHandleForReading
-        DispatchQueue.global(qos: .userInitiated).async {
-            buffer.finish(readerHandle.readDataToEndOfFile())
-        }
-
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        let deadline = DispatchTime.now() + timeout
-        guard exited.wait(timeout: deadline) == .success else {
-            // A hung CLI must not stall its caller; terminate and fall back.
-            process.terminate()
-            return nil
-        }
-        // The reader can trail the exit, so it gets the rest of the deadline, and at least
-        // a second, before the output counts as lost.
-        guard let data = buffer.wait(timeout: max(deadline, .now() + 1)) else {
-            return nil
-        }
-        return CopilotCLICapabilities(helpText: String(data: data, encoding: .utf8) ?? "")
+        CopilotCapabilityProbe.invalidate(executablePath: executablePath)
     }
 
     static func versionSummary(executablePath: String) -> String? {

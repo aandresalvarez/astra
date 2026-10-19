@@ -212,10 +212,11 @@ enum AgentRuntimeCapabilityProfileService {
     static func profile(
         for runtime: AgentRuntimeID,
         executablePath: String,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        copilotCapabilities: CopilotCLICapabilities? = nil
     ) -> AgentRuntimeCapabilityProfile {
         if runtime == .copilotCLI {
-            let capabilities = CopilotCLIRuntime.capabilities(executablePath: executablePath)
+            let capabilities = copilotCapabilities ?? CopilotCLIRuntime.capabilities(executablePath: executablePath)
             return AgentRuntimeCapabilityProfile.copilotProfile(
                 supportsAdditionalMCPConfig: capabilities.supportsAdditionalMCPConfig
             )

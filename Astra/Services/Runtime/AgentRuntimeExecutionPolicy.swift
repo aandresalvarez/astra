@@ -27,6 +27,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// executable, carried so everything that *describes* the run to the agent
     /// agrees with what the launch actually attaches. The static profile table
     /// is a guess about the installed Copilot binary; this is the answer.
+    var copilotCapabilities: CopilotCLICapabilities?
     var runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?
     /// Provider turns an earlier attempt of the same run already spent. Process
     /// local: a re-run's monitor starts its turn counter at zero, so the task's
@@ -91,6 +92,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         )
         // The adapters read it again at the real launch to withhold the
         // Write bootstrap; dropping it here re-granted Write.
+        rendered.copilotCapabilities = copilotCapabilities
         rendered.followsUpDeliveredRequest = followsUpDeliveredRequest
         return rendered
     }

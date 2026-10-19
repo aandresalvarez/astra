@@ -1942,7 +1942,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? CopilotCLIRuntime.detectPath() : context.executablePath
         let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
-        let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
+        let capabilities = context.executionPolicy.copilotCapabilities
+            ?? CopilotCLIRuntime.capabilities(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let nativeDirectories = AgentRuntimeProcessRunner.copilotNativeDirectoryProjection(for: context.task)
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
@@ -2182,7 +2183,21 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let copilotHome = configuredHome.isEmpty ? CopilotCLIRuntime.channelHome() : configuredHome
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
-        let capabilities = await CopilotCLIRuntime.answeredCapabilities(executablePath: executable)
+        let discoveryStarted = ContinuousClock.now
+        let capabilities: CopilotCLICapabilities
+        do {
+            capabilities = try await CopilotCLIRuntime.requiredCapabilities(
+                executablePath: executable, timeout: configuration.timeoutSeconds)
+            try Task.checkCancellation()
+        } catch {
+            return AgentUtilityRunResult(exitCode: -1, output: "", error: error.localizedDescription)
+        }
+        let elapsed = discoveryStarted.duration(to: .now)
+        let remainingTimeout = configuration.timeoutSeconds - Double(elapsed.components.seconds)
+            - Double(elapsed.components.attoseconds) / 1e18
+        guard remainingTimeout > 0 else {
+            return AgentUtilityRunResult(exitCode: -1, output: "", error: CopilotCapabilityProbe.Failure.timedOut.localizedDescription)
+        }
         let allowedTools = toolMode == .readOnly ? ["Read", "Glob", "Grep"] : []
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
@@ -2226,7 +2241,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             process: processPlan,
             providerHomeDirectory: copilotHome,
             permissionPolicy: .restricted,
-            timeoutSeconds: configuration.timeoutSeconds
+            timeoutSeconds: remainingTimeout
         )
         if plan.parsesJSONLines {
             return await runStreamingCopilotUtilityPrompt(utilityPlan)
