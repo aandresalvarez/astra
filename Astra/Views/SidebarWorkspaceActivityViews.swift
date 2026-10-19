@@ -10,24 +10,19 @@ struct WorkspaceRowActions: View {
     let isRowHovered: Bool
     let activityCounts: SidebarWorkspaceActivityCounts
     let onNewTask: () -> Void
-    let onToggleStarred: () -> Void
-    let onEdit: () -> Void
-    let onRename: () -> Void
-    let onDelete: () -> Void
 
     /// Extra trailing room on the one row that carries the new-task mark, so it
     /// never crowds the star or the running/waiting counts out of the slot. The
     /// row's right edge does not move; its title just truncates a little earlier.
     private static let newTaskTargetExtraWidth: CGFloat = 40
 
-    @FocusState private var isEllipsisFocused: Bool
     @FocusState private var isNewTaskFocused: Bool
     @State private var isNewTaskHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var hoverAnimation: Animation? { reduceMotion ? nil : .easeOut(duration: 0.10) }
 
-    private var showsActions: Bool { isRowHovered || isEllipsisFocused || isNewTaskFocused }
+    private var showsActions: Bool { isRowHovered || isNewTaskFocused }
 
     var body: some View {
         ZStack(alignment: .trailing) {
@@ -63,24 +58,6 @@ struct WorkspaceRowActions: View {
 
     private var actions: some View {
         HStack(spacing: 2) {
-            Menu {
-                Button(action: onToggleStarred) {
-                    Label(workspace.isStarred ? "Unstar Workspace" : "Star Workspace", systemImage: workspace.isStarred ? "star.slash" : "star")
-                }
-                Divider()
-                Button(action: onEdit) { Label("Workspace Details", systemImage: "info.circle") }
-                Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                Divider()
-                Button(role: .destructive, action: onDelete) { Label("Remove", systemImage: "trash") }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(Stanford.ui(12, weight: .medium))
-            }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-            .buttonStyle(SidebarOverflowButtonStyle()).tint(Stanford.textSecondary)
-            .focused($isEllipsisFocused).help("Workspace options")
-            .accessibilityLabel("Options for \(workspace.name)")
-
             Button(action: onNewTask) {
                 accessoryGlyph("square.and.pencil", size: 13, weight: .medium, isHovered: isNewTaskHovered)
             }
