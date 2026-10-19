@@ -94,7 +94,7 @@ final class WorkspaceHoverPresenter {
     private var pending: Task<Void, Never>?
     private var lastExplicitRequest = 0
     private var eventMonitor: Any?
-    private var observers: [NSObjectProtocol] = []
+    private var windowLifetime: WorkspaceHoverWindowLifetime?
 
     func update(rowHovered: Bool, explicitRequest: Int) {
         let changed = rowHovered != state.rowHovered
@@ -172,15 +172,7 @@ final class WorkspaceHoverPresenter {
             }
             return event
         }
-        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification, NSWindow.willCloseNotification] {
-            observers.append(NotificationCenter.default.addObserver(forName: name, object: parent, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.dismiss() }
-            })
-        }
-        observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
-                                                                object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.dismiss() }
-        })
+        windowLifetime = WorkspaceHoverWindowLifetime(parent: parent, panel: panel) { [weak self] in self?.dismiss() }
     }
 
     func dismiss() {
@@ -189,8 +181,8 @@ final class WorkspaceHoverPresenter {
         state.dismiss()
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
         eventMonitor = nil
-        observers.forEach(NotificationCenter.default.removeObserver)
-        observers = []
+        windowLifetime?.invalidate()
+        windowLifetime = nil
         if let panel {
             panel.parent?.removeChildWindow(panel)
             panel.orderOut(nil)

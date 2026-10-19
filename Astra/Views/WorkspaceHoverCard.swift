@@ -17,9 +17,9 @@ struct WorkspaceOptionsMenu: View {
 
     var body: some View {
         Button(action: actions.newTask) { Label("New Task", systemImage: "square.and.pencil") }
-        Button {
-            NSWorkspace.shared.open(URL(fileURLWithPath: workspace.primaryPath))
-        } label: { Label("Open in Finder", systemImage: "folder") }
+        if let url = WorkspaceFinderDestination.url(for: workspace.primaryPath) {
+            Button { NSWorkspace.shared.open(url) } label: { Label("Open in Finder", systemImage: "folder") }
+        }
         Divider()
         Button(action: actions.openConfiguration) { Label("Workspace Configuration", systemImage: "gearshape") }
         Button(action: actions.toggleStarred) {
@@ -50,11 +50,13 @@ struct WorkspaceHoverCard: View {
                 .padding(.horizontal, 8)
                 .padding(.bottom, 4)
             Divider()
-            action((workspace.primaryPath as NSString).abbreviatingWithTildeInPath, icon: "folder") {
-                NSWorkspace.shared.open(URL(fileURLWithPath: workspace.primaryPath))
+            if let url = WorkspaceFinderDestination.url(for: workspace.primaryPath) {
+                action((workspace.primaryPath as NSString).abbreviatingWithTildeInPath, icon: "folder") {
+                    NSWorkspace.shared.open(url)
+                }
+                .help(workspace.primaryPath)
+                Divider()
             }
-            .help(workspace.primaryPath)
-            Divider()
             action("Workspace Configuration", icon: "gearshape", perform: actions.openConfiguration)
             action(workspace.isStarred ? "Unstar Workspace" : "Star Workspace",
                    icon: workspace.isStarred ? "star.slash" : "star", perform: actions.toggleStarred)
