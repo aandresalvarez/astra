@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -225,8 +226,10 @@ struct RetryInterruptedRunTests {
             env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
             try env.context.save()
             var checked: [String] = []
+            var directories: [String?] = []
             env.coordinator.repairCheck = { repair in
                 checked.append(repair.checkBinary ?? "")
+                directories.append(repair.checkWorkingDirectory)
                 return false
             }
 
@@ -237,9 +240,40 @@ struct RetryInterruptedRunTests {
                 await env.coordinator.resumeTask(task)?.value
             }
             #expect(checked == ["gh"])
+            // A relative PATH entry is found from where the run starts.
+            #expect(directories == [TaskWorkspaceAccess(task: task).codeWorkingDirectory])
             #expect(try TaskTurnRequestRepository.requests(for: task, in: env.context).isEmpty)
             #expect(task.events.contains { $0.type == TaskEventTypes.System.info.rawValue && $0.payload.contains("still isn't working") })
         }
+    }
+
+    @Test("A check-only stop is found by timestamp, whatever order the events come back in and whatever other error the run has")
+    func tokenStopIsFoundAmongOtherErrors() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let workspace = Workspace(name: "Token Order", primaryPath: env.root)
+        let task = AgentTask(title: "Token", goal: "Open a PR", workspace: workspace, runtime: .claudeCode)
+        task.status = .failed
+        env.context.insert(workspace)
+        env.context.insert(task)
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "capability_session_expired"
+        env.context.insert(run)
+        let stop = TaskEvent(
+            task: task, eventType: TaskEventTypes.System.error,
+            payload: CLISessionExpiryClassifier.gitHubEnvironmentToken.stopMessage, run: run
+        )
+        env.context.insert(stop)
+        // Listed after the stop but older, as a reloaded store may list it.
+        let older = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "Provider exited with status 1", run: run)
+        older.timestamp = stop.timestamp.addingTimeInterval(-60)
+        env.context.insert(older)
+        #expect(env.coordinator.pendingRepair(for: task)?.checkBinary == "gh")
+        // Newer and unrelated: the stop message is still the one read.
+        older.timestamp = stop.timestamp.addingTimeInterval(60)
+        #expect(env.coordinator.pendingRepair(for: task)?.checkBinary == "gh")
+        withExtendedLifetime(env.container) {}
     }
 
     @Test("The GH_TOKEN check judges a token a detached skill snapshot still delivers")

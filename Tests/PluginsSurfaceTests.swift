@@ -282,6 +282,44 @@ struct PluginsSurfaceTests {
         #expect(failure.contains("package_id=draft-audited"))
     }
 
+    @Test("Turning a plugin off in Plugins is audited like Configure's disable")
+    func turnOffIsAudited() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-plugins-turn-off-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = Workspace(name: "Turn Off", primaryPath: root.path)
+        context.insert(workspace)
+        let plugin = package("turn-off-plugin", name: "Turn Off Plugin")
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs = [plugin.id, "kept-plugin"] }
+        let traceID = AuditTrace.make("turn-off")
+
+        let result = CapabilityCatalogActionService().disable(
+            plugin, workspace: workspace,
+            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: []),
+            modelContext: context, traceID: traceID
+        )
+
+        #expect(result.persisted)
+        AppLogger.flushForTesting()
+        let audit = try #require(AppLogger.entries.map(\.message).first {
+            $0.contains(AuditEvent.capabilityDisabled.rawValue) && $0.contains("trace_id=\(traceID)")
+        })
+        for field in [
+            "source=plugins_turn_off", "package_id=turn-off-plugin", "package_version=1.0.0",
+            "workspace_id=\(workspace.id.uuidString)", "removed_workspace_skills_count=0", "enabled_capability_ids=kept-plugin"
+        ] {
+            #expect(audit.contains(field), "missing \(field)")
+        }
+        withExtendedLifetime(container) {}
+    }
+
     @Test("Add connects a supported account first, and refuses one ASTRA can't sign in to")
     func addRefusesUnsupportedOAuthProviders() throws {
         #expect(try CapabilityCatalogActionService.addRoute(for: builtIn("google-workspace")) == .connectAccount)
