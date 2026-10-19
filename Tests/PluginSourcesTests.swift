@@ -1033,6 +1033,14 @@ struct PluginSourcesTests {
         input.origin = "acme-plugins"
         #expect(PluginsSurfacePresentation.subtitle(for: input).contains("from acme-plugins")
             || PluginsSurfacePresentation.subtitle(for: input).contains("From acme-plugins"))
+        // A missing plugin says so first, then an unavailable one its
+        // reason; only then come the contents with their origin.
+        var unavailable = input
+        unavailable.unavailableReason = "Needs an account sign-in that ASTRA can't do."
+        #expect(PluginsSurfacePresentation.subtitle(for: unavailable) == "Needs an account sign-in that ASTRA can't do.")
+        var missing = unavailable
+        missing.isMissing = true
+        #expect(PluginsSurfacePresentation.subtitle(for: missing) == PluginsSurfacePresentation.missingMessage)
     }
 
     @Test("T14: control and format characters in a source's display text are removed, and the entry says so")

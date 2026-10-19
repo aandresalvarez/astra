@@ -368,7 +368,9 @@ struct PluginActivationOwnershipTests {
                     installedContentDigests: fixture.digests,
                     connectorComponents: WorkspaceConfigManager.CapabilityImportVerifier.connectorComponents(of: fixture.packages)
                 )
-                @MainActor func importAll(session: WorkspaceConfigManager.ImportSession?) throws -> (ModelContext, [Workspace]) {
+                @MainActor func importAll(
+                    session: WorkspaceConfigManager.ImportSession?, configs: [WorkspaceConfigManager.WorkspaceConfig] = configs
+                ) throws -> (ModelContext, [Workspace]) {
                     let target = try ModelContainer(
                         for: ASTRASchema.current,
                         migrationPlan: ASTRAMigrationPlan.self,
@@ -394,6 +396,8 @@ struct PluginActivationOwnershipTests {
                 for workspace in imported {
                     let gcloud = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: workspace))
                     #expect(gcloud.bindings.compactMap { $0.account?.id } == [row.id])
+                    // Neither mirror listed it: it is shared only through the bindings.
+                    #expect(!workspace.enabledGlobalConnectorIDs.contains(row.id.uuidString))
                 }
                 // The fresh ID resolves none of this machine's credentials.
                 #expect(row.missingCredentialKeys() == ["GCP_TOKEN"])
@@ -402,7 +406,73 @@ struct PluginActivationOwnershipTests {
                 // Imported one at a time, each workspace gets its own, as before.
                 let (separate, _) = try importAll(session: nil)
                 #expect(try separate.fetch(FetchDescriptor<Connector>()).filter { $0.serviceType == serviceType }.count == 2)
+
+                // Two files that give the ID to different accounts aren't
+                // merged: each workspace binds its own row.
+                var conflicting = configs
+                conflicting[1].connectors = conflicting[1].connectors?.map { cc in
+                    var cc = cc
+                    if cc.id == fixture.sharedGCloudID.uuidString { cc.configValues = cc.configValues.map { _ in "other-tenant" } }
+                    return cc
+                }
+                #expect(conflicting[1].connectors?.first { $0.id == fixture.sharedGCloudID.uuidString }?.configValues.isEmpty == false)
+                let (split, splitWorkspaces) = try importAll(session: WorkspaceConfigManager.ImportSession(), configs: conflicting)
+                let splitRows = try split.fetch(FetchDescriptor<Connector>()).filter { $0.serviceType == serviceType }
+                #expect(splitRows.count == 2)
+                let boundIDs = try splitWorkspaces.map { workspace in
+                    try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: workspace))
+                        .bindings.compactMap { $0.account?.id }
+                }
+                #expect(boundIDs.count == 2 && boundIDs.allSatisfy { $0.count == 1 } && Set(boundIDs.flatMap { $0 }).count == 2)
             }
+        }
+    }
+
+    @Test("Mirror recovery keeps a shared account it carries only for a binding off the shared list")
+    func recoveryKeepsBindingOnlyAccountsUnlisted() throws {
+        let fixture = try PluginMigrationFixture()
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let b = try fixture.workspace(fixture.bID)
+        let shared = try #require(try fixture.context.fetch(FetchDescriptor<Connector>()).first { $0.id == fixture.sharedGCloudID })
+        // A also turned the account on by itself; B only binds it.
+        CapabilitySharing.enableShared(shared, in: a)
+        try fixture.context.save()
+        var legacyA = try #require(WorkspaceConfigManager.export(workspace: a, modelContext: fixture.context))
+        let configB = try #require(WorkspaceConfigManager.export(workspace: b, modelContext: fixture.context))
+        #expect(configB.connectors?.contains { $0.id == fixture.sharedGCloudID.uuidString } == true)
+        #expect(configB.enabledGlobalConnectorIDs?.contains(fixture.sharedGCloudID.uuidString) != true)
+        let configA = legacyA
+        // A mirror written before shared lists were exported names none.
+        legacyA.enabledGlobalConnectorIDs = nil
+
+        func recover(_ config: WorkspaceConfigManager.WorkspaceConfig) throws -> (ModelContext, Workspace) {
+            let target = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            )
+            Self.retained.append(target)
+            let workspace = WorkspaceConfigManager.importWorkspaceResult(
+                from: config, modelContext: target.mainContext, capabilityTrust: .preserveRecordedState
+            ).workspace
+            return (target.mainContext, workspace)
+        }
+        func inScope(_ workspace: Workspace, _ context: ModelContext) -> Bool {
+            let task = AgentTask(title: "T", goal: "Google Cloud", workspace: workspace)
+            context.insert(task)
+            return TaskCapabilityResolver(task: task).allConnectors.contains { $0.id == fixture.sharedGCloudID }
+        }
+        let component = CapabilityResourceOrigin.componentID(for: fixture.gcloud.connectors[0])
+        for (config, listed) in [(configB, false), (legacyA, false), (configA, true)] {
+            let (context, recovered) = try recover(config)
+            #expect(recovered.enabledGlobalConnectorIDs.contains(fixture.sharedGCloudID.uuidString) == listed)
+            // An Update releasing the account leaves it in scope only where
+            // the person turned it on.
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: recovered))
+            let account = try #require(activation.accounts(forComponent: component).first { $0.id == fixture.sharedGCloudID })
+            WorkspaceCapabilityActivation.unbind(account, from: activation, componentID: component)
+            #expect(inScope(recovered, context) == listed)
         }
     }
 

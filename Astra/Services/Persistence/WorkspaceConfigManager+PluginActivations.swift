@@ -97,12 +97,16 @@ extension WorkspaceConfigManager {
         /// and the file's ISO-8601 dates keep whole seconds only. Nil in a
         /// file written before it was kept.
         public var boundAt: TimeInterval?
+        /// The binding's alias in this workspace (`AccountBinding.alias`);
+        /// nil when none, or in a file written before it was kept.
+        public var alias: String?
 
-        public init(componentID: String, connectorID: String, isDefault: Bool, boundAt: TimeInterval? = nil) {
+        public init(componentID: String, connectorID: String, isDefault: Bool, boundAt: TimeInterval? = nil, alias: String? = nil) {
             self.componentID = componentID
             self.connectorID = connectorID
             self.isDefault = isDefault
             self.boundAt = boundAt
+            self.alias = alias
         }
     }
 
@@ -140,7 +144,8 @@ extension WorkspaceConfigManager {
                     binding.account.map {
                         PluginAccountRef(
                             componentID: binding.componentID, connectorID: $0.id.uuidString, isDefault: binding.isDefault,
-                            boundAt: binding.createdAt.timeIntervalSinceReferenceDate
+                            boundAt: binding.createdAt.timeIntervalSinceReferenceDate,
+                            alias: binding.alias.isEmpty ? nil : binding.alias
                         )
                     }
                 }
@@ -289,7 +294,10 @@ extension WorkspaceConfigManager {
                     toComponent: account.componentID,
                     of: activation,
                     isDefault: account.isDefault,
-                    createdAt: account.boundAt.map(Date.init(timeIntervalSinceReferenceDate:))
+                    createdAt: account.boundAt.map(Date.init(timeIntervalSinceReferenceDate:)),
+                    // The workspace's own mirror keeps the name it knew the
+                    // account by; a chosen file's account is a new row.
+                    alias: declared == nil ? account.alias : nil
                 )
             }
         }
@@ -301,7 +309,16 @@ extension WorkspaceConfigManager {
         // The import turned on every shared row it read, the overrides the
         // mirror carries only so they can be named again included.
         WorkspaceCapabilityActivation.takeOverridesOffSharedLists(in: workspace)
+        // So did a shared account it carries only because a binding names it.
+        WorkspaceCapabilityActivation.takeBindingOnlyAccountsOffSharedList(
+            in: workspace, listed: listedSharedAccountIDs(of: config, connectorsByID: connectorsByID)
+        )
         return projectedIDs
+    }
+
+    /// The rows the mirror's own shared list names, by their ID here.
+    static func listedSharedAccountIDs(of config: WorkspaceConfig, connectorsByID: [String: Connector]) -> Set<String> {
+        Set(requestedActivation(from: config).globalConnectorIDs.map { connectorsByID[$0]?.id.uuidString ?? $0 })
     }
 
     /// Writes `workspace`'s mirror now, on this thread, registering its

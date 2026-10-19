@@ -24,6 +24,10 @@ struct PluginsSurfaceRow: Equatable, Identifiable {
     let isEnabled: Bool
     let isRemovable: Bool
     let verb: Verb?
+    /// An activation of a plugin the library has no readable entry for:
+    /// nothing of it runs, and Remove forgets it
+    /// (`CapabilityUninstaller.forgetMissing`).
+    var isMissing = false
 }
 
 /// One plugin as the surface acts on it, built once per render with its
@@ -69,6 +73,22 @@ enum PluginsSurfacePresentation {
         /// runs here until Update accepts it, so the row needs action and
         /// offers Update.
         var awaitsUpdate = false
+        /// An activation whose plugin the library no longer has.
+        var isMissing = false
+    }
+
+    static let missingMessage = "Not installed anymore. Add it again from its file, or Remove it to forget its settings here."
+
+    /// The row of an activation whose plugin the library has no readable
+    /// entry for, built from what the activation names: its plugin ID.
+    static func missingInput(pluginID: String, isEnabled: Bool) -> Input {
+        Input(
+            package: PluginPackage(
+                id: pluginID, name: pluginID, icon: "puzzlepiece", description: "", author: "", category: "",
+                tags: [], version: "", skills: [], connectors: [], localTools: [], templates: []
+            ),
+            isEnabled: isEnabled, pendingSteps: 0, isVisible: true, isRemovable: true, isMissing: true
+        )
     }
 
     static let awaitsUpdateMessage = "A new version is installed. Update it to use it here."
@@ -103,9 +123,12 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: input.unavailableReason != nil ? nil : (!input.isEnabled ? (input.blocker == nil ? .add : nil) : (offersUpdate ? .update : nil))
+                verb: input.isMissing || input.unavailableReason != nil ? nil : (!input.isEnabled ? (input.blocker == nil ? .add : nil) : (offersUpdate ? .update : nil)),
+                isMissing: input.isMissing
             )
-            if !input.isEnabled {
+            if input.isMissing {
+                state.actionNeeded.append(row)
+            } else if !input.isEnabled {
                 state.available.append(row)
             } else if input.pendingSteps > 0 || offersUpdate || input.unavailableReason != nil {
                 state.actionNeeded.append(row)
@@ -119,6 +142,7 @@ enum PluginsSurfacePresentation {
     /// "1 step pending · 1 skill, 3 tools" for an added plugin with work left;
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
+        if input.isMissing { return missingMessage }
         if let reason = input.unavailableReason { return reason }
         if !input.isEnabled, let blocker = input.blocker { return blocker }
         if input.isEnabled, input.awaitsUpdate { return awaitsUpdateMessage }
@@ -182,6 +206,13 @@ enum PluginsSurfacePresentation {
     static func repairGuidance(_ repair: RepairAction) -> (text: String, isCommand: Bool) {
         if let command = repair.command { return (command, true) }
         return (repair.detail, false)
+    }
+
+    /// The setup checks an added plugin's prerequisites failed, a pending step
+    /// each. A check the read-only policy refused (`notChecked`) is pending
+    /// too: it never passed. It just offers no repair.
+    static func pendingSetupChecks(for package: PluginPackage, statuses: [String: HealthStatus]) -> Int {
+        package.prerequisites.filter { statuses[$0.id].map { !$0.isUsable } ?? false }.count
     }
 
     /// The required accounts an added plugin has no working sign-in for: a

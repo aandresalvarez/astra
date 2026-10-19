@@ -59,15 +59,20 @@ struct CapabilityInstaller {
     /// Where skill secret settings are stored; nil reads the registered
     /// seam when used, so building an installer never needs it.
     private let skillSecretsOverride: (any SkillSecretPersisting.Type)?
+    /// What the Keychain holds for an account's key; nil reads the
+    /// account's own namespaces (`Connector.currentCredentialValue`).
+    private let heldCredentialOverride: ((Connector, String) -> String?)?
 
     init(
         library: CapabilityLibrary = CapabilityLibrary(),
         appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
-        skillSecrets: (any SkillSecretPersisting.Type)? = nil
+        skillSecrets: (any SkillSecretPersisting.Type)? = nil,
+        heldCredential: ((Connector, String) -> String?)? = nil
     ) {
         self.library = library
         self.appVersion = appVersion
         self.skillSecretsOverride = skillSecrets
+        self.heldCredentialOverride = heldCredential
     }
 
     @discardableResult
@@ -657,10 +662,20 @@ struct CapabilityInstaller {
             modelContext.insert(connector)
         }
         // A row from before its plugin's settings were credentials can hold
-        // one as plain text: it moves to the Keychain with this save.
+        // one as plain text: it moves to the Keychain with this save. One
+        // the Keychain already holds a different value for is not: the
+        // Keychain's is kept, and the row's stays on it as a setting for the
+        // person to settle, as `Connector.moveSettingsToKeychain` leaves it.
         var credentialInputs = fields.credentialInputs
+        var unsettled: [(key: String, value: String)] = []
         for key in fields.movedSettings where (credentialInputs[key] ?? "").isEmpty && !connector.configValue(key).isEmpty {
-            credentialInputs[key] = connector.configValue(key)
+            let plain = connector.configValue(key)
+            let held = heldCredentialOverride.map { $0(connector, key) } ?? connector.currentCredentialValue(forKey: key)
+            if let held, !held.isEmpty, held != plain {
+                unsettled.append((key, plain))
+            } else {
+                credentialInputs[key] = plain
+            }
         }
         connector.name = pluginConnector.name
         connector.serviceType = pluginConnector.serviceType
@@ -677,6 +692,16 @@ struct CapabilityInstaller {
             configInputs: configInputs
         )
         connector.configValues = connector.configKeys.map { configInputs[$0] ?? "" }
+        for (key, value) in unsettled {
+            if let index = connector.credentialKeys.firstIndex(of: key) {
+                connector.credentialKeys.remove(at: index)
+                connector.credentialValues.remove(at: index)
+            }
+            if !connector.configKeys.contains(key) {
+                connector.configKeys.append(key)
+                connector.configValues.append(value)
+            }
+        }
         connector.isGlobal = false
         connector.workspace = workspace
         connector.skill = nil

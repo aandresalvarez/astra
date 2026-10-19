@@ -32,16 +32,52 @@ struct CapabilityUninstaller {
         self.library = library
     }
 
+    /// Forgets a plugin the library no longer has a readable entry for
+    /// (deleted, unreadable, never obtainable again) through the normal
+    /// Remove: its intent journaled, its activations retired with their
+    /// settings released, every secret namespace they name journaled and
+    /// cleaned, its accounts kept and released, every mirror carrying them
+    /// rewritten. A plugin still installed takes the normal Remove; a
+    /// bundled one is never forgotten (the built-in sync brings it back).
+    @discardableResult
+    func forgetMissing(
+        pluginID: String,
+        modelContext: ModelContext,
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
+        removeJournal: PluginRemoveJournal? = nil,
+        skillSecrets: (any SkillSecretPersisting.Type)? = nil
+    ) throws -> RemovalResult {
+        if let installed = library.installedPackages().first(where: { $0.id == pluginID }) {
+            return try remove(installed, modelContext: modelContext, persist: persist, removeJournal: removeJournal, skillSecrets: skillSecrets)
+        }
+        guard !CapabilityLibrary.trustedBuiltInPackageIDs.contains(pluginID) else {
+            throw CapabilityLibrary.RemovalError.builtInPackage(pluginID)
+        }
+        // What is left of the definition is its ID: the activations name
+        // their components, settings and secrets themselves.
+        let missing = PluginPackage(
+            id: pluginID, name: pluginID, icon: "puzzlepiece", description: "", author: "", category: "",
+            tags: [], version: "", skills: [], connectors: [], localTools: [], templates: [], sourceMetadata: .localLibrary()
+        )
+        return try remove(
+            missing, modelContext: modelContext, persist: persist, removeJournal: removeJournal,
+            skillSecrets: skillSecrets, definitionMissing: true
+        )
+    }
+
     @discardableResult
     func remove(
         _ requestedPackage: PluginPackage,
         modelContext: ModelContext,
         persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
         connectorCleanupStore: ConnectorCredentialCleanupStore? = nil,
-        removeJournal: PluginRemoveJournal? = nil
+        removeJournal: PluginRemoveJournal? = nil,
+        skillSecrets: (any SkillSecretPersisting.Type)? = nil,
+        definitionMissing: Bool = false
     ) throws -> RemovalResult {
         let installedPackages = library.installedPackages()
-        guard var package = installedPackages.first(where: { $0.id == requestedPackage.id }) else {
+        guard var package = installedPackages.first(where: { $0.id == requestedPackage.id })
+            ?? (definitionMissing ? requestedPackage : nil) else {
             throw CapabilityLibrary.RemovalError.notInstalled(requestedPackage.id)
         }
         if package.sourceMetadata == nil {
@@ -237,7 +273,7 @@ struct CapabilityUninstaller {
             pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
             save: {
                 PluginSecretCleanupOutbox.deleteThenClean(
-                    activationSecretSkillIDs, modelContext: modelContext,
+                    activationSecretSkillIDs, modelContext: modelContext, secrets: skillSecrets,
                     save: { persist(nil, modelContext) },
                     beforeSettling: {
                         mirrorsWritten = PluginRemoveJournal.rewriteMirrors(of: intent, modelContext: modelContext)
@@ -268,7 +304,8 @@ struct CapabilityUninstaller {
         // finds no resources to delete and just clears it). Throwing would
         // make the caller report a failed uninstall that actually succeeded.
         do {
-            _ = try library.removePackage(id: package.id)
+            // A forgotten plugin has no readable entry to remove.
+            if !definitionMissing { _ = try library.removePackage(id: package.id) }
             if mirrorsWritten { removeJournal?.finish(package.id) }
         } catch {
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [

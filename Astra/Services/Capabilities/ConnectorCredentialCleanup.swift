@@ -126,13 +126,17 @@ enum ConnectorCredentialCleanup {
     /// `resumePending`, by which time an export that landed has dropped it
     /// and one that didn't restores a connector that then owns what it uses.
     /// A process that doesn't track recovery, as a test, cleans at once.
+    /// `beforeSettling` runs once the save has landed (rewriting the mirrors
+    /// that name the deleted rows); when it fails the cleanup stays recorded
+    /// for `resumePending` instead of running.
     @discardableResult
     static func deleteThenClean(
         _ cleanups: [ConnectorKeychainCleanup],
         modelContext: ModelContext,
         store: ConnectorCredentialCleanupStore? = nil,
         cleansNow: Bool? = nil,
-        save: () -> Bool
+        save: () -> Bool,
+        beforeSettling: () -> Bool = { true }
     ) -> Bool {
         let cleansNow = cleansNow ?? (WorkspaceRecoveryTrust.state == .notTracked)
         let store = store ?? ConnectorCredentialCleanupStore(for: modelContext)
@@ -164,6 +168,14 @@ enum ConnectorCredentialCleanup {
         // save never happened. One a quit or a failed write leaves unmarked
         // is still known saved by a retry against the same store.
         store?.markCommitted(cleanups)
+        // A step the cleanup waits on (rewriting the mirrors that still name
+        // the deleted rows) that fails leaves it recorded, for launch.
+        guard beforeSettling() else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "held_for_mirror", "count": String(cleanups.count)
+            ], level: .warning)
+            return true
+        }
         // Without an outbox there is nothing to defer to, so it runs now.
         // Once it has, the matching records go, including one an earlier
         // identical deletion left, which this run has just settled.

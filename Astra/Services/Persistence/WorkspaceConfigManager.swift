@@ -1289,7 +1289,8 @@ public enum WorkspaceConfigManager {
             if reused == nil { sanitizeCreated(connector, trust: capabilityTrust, report: &trustReport) }
             if reused == nil, freshIDs {
                 connector.id = UUID()
-                importSession?.record(connector, for: cc, createdIn: workspace)
+                importSession?.record(connector, for: cc, createdIn: workspace,
+                                      listed: cc.id.map(requestedActivation(from: config).globalConnectorIDs.contains) ?? false)
             }
             connector.workspace = (connector.isGlobal ? nil : workspace)
             if connector.isGlobal { activation.enableGlobalConnector(connector.id.uuidString) }
@@ -1365,8 +1366,7 @@ public enum WorkspaceConfigManager {
 
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)
-            // Skill IDs from the file resolve to the rows it created (fresh
-            // under `.validate`).
+            // Skill IDs from the file resolve to the rows it created (fresh under `.validate`).
             WorkspaceCapabilityActivation.rewriteDefaultSkills(of: template, in: workspace) { ids in
                 ids.map { skillsByID[$0]?.id.uuidString ?? projectedIDs[$0] ?? $0 }
             }

@@ -268,13 +268,17 @@ public enum WorkspaceCapabilityActivation {
     /// broker can name one; an account whose name another one there already
     /// has is renamed " 2", " 3" before it is bound. `createdAt` dates a
     /// new binding (a mirror restoring one keeps its age, which elects the
-    /// next default); an existing binding keeps its own.
+    /// next default); an existing binding keeps its own. A shared account
+    /// another workspace uses keeps its name, and a collision here is
+    /// recorded as the binding's alias instead (`alias(of:in:)`); `alias`
+    /// restores one a mirror or launch record kept.
     public static func bind(
         _ account: Connector,
         toComponent componentID: String,
         of activation: PluginActivation,
         isDefault: Bool = false,
-        createdAt: Date? = nil
+        createdAt: Date? = nil,
+        alias: String? = nil
     ) {
         let existing = activation.bindings.filter { !$0.isDeleted && $0.componentID == componentID }
         let sameService = sameServiceBindings(as: account, in: activation)
@@ -283,13 +287,14 @@ public enum WorkspaceCapabilityActivation {
             touch(activation)
             return
         }
-        disambiguateAlias(of: account, joining: activation)
+        let bindingAlias = alias ?? existingAlias(of: account, in: activation) ?? disambiguateAlias(of: account, joining: activation)
         let hasDefault = sameService.contains { $0.isDefault && $0.account?.id != account.id }
         let accountIsDefault = sameService.contains { $0.isDefault && $0.account?.id == account.id }
         let binding = AccountBinding(
             componentID: componentID,
             isDefault: !hasDefault || isDefault || accountIsDefault,
-            createdAt: createdAt ?? Date()
+            createdAt: createdAt ?? Date(),
+            alias: bindingAlias
         )
         if let context = activation.modelContext {
             context.insert(binding)
@@ -393,8 +398,25 @@ public enum WorkspaceCapabilityActivation {
     ) -> String {
         let taken = Set(visibleAccounts(ofService: serviceType, in: [workspace])
             .filter { $0.id != accountID }
-            .map { normalizedAlias($0.name) })
+            .map { normalizedAlias(self.alias(of: $0, in: workspace)) })
         return uniqueName(name, avoiding: taken)
+    }
+
+    /// The name `workspace` knows `account` by: its bindings' alias there,
+    /// else the row's name.
+    public static func alias(of account: Connector, in workspace: Workspace) -> String {
+        activations(of: workspace).lazy
+            .flatMap(\.bindings)
+            .first { !$0.isDeleted && $0.account?.id == account.id && !$0.alias.isEmpty }?
+            .alias ?? account.name
+    }
+
+    /// The alias another component of the same workspace already gave
+    /// `account`, so one account has one name there.
+    private static func existingAlias(of account: Connector, in activation: PluginActivation) -> String? {
+        guard let workspace = activation.workspace else { return nil }
+        let alias = self.alias(of: account, in: workspace)
+        return alias == account.name ? nil : alias
     }
 
     /// Marks a component as replaced by the authored row `rowID` (or, with
@@ -454,9 +476,10 @@ public enum WorkspaceCapabilityActivation {
         for binding in activation.bindings where !binding.isDeleted && binding.componentID == old {
             if let id = binding.account?.id, let kept = newBindings.first(where: { $0.account?.id == id }) {
                 // The account is bound to `new` already; it keeps the
-                // default and the age it had through `old`.
+                // default, the age and the name (`alias`) it had through `old`.
                 if binding.isDefault { kept.isDefault = true }
                 if binding.createdAt < kept.createdAt { kept.createdAt = binding.createdAt }
+                if kept.alias.isEmpty, !binding.alias.isEmpty { kept.alias = binding.alias }
                 activation.bindings.removeAll { $0 === binding }
                 binding.modelContext?.delete(binding)
             } else {
@@ -630,7 +653,8 @@ public enum WorkspaceCapabilityActivation {
                     id: bindingRecord.id,
                     componentID: bindingRecord.componentID,
                     isDefault: bindingRecord.isDefault,
-                    createdAt: bindingRecord.createdAt
+                    createdAt: bindingRecord.createdAt,
+                    alias: bindingRecord.alias ?? ""
                 )
                 binding.account = account
                 binding.activation = activation
@@ -771,17 +795,22 @@ public enum WorkspaceCapabilityActivation {
     }
 
     /// Renames `account` when another account of its service that some
-    /// workspace it will be visible in already sees has its name.
-    private static func disambiguateAlias(of account: Connector, joining activation: PluginActivation) {
+    /// workspace it will be visible in already sees has its name; returns
+    /// the binding alias for one that can't be renamed ("" when none).
+    private static func disambiguateAlias(of account: Connector, joining activation: PluginActivation) -> String {
         // An account another workspace already uses keeps its name: renaming
         // the shared row would change its alias there too. A collision in
-        // the joining workspace is told apart per launch instead
-        // (`ConnectorRuntimeProjection` suffixes duplicate aliases).
+        // the joining workspace gets an alias on this binding instead.
         let joining = activation.workspace
+        func bindingAlias() -> String {
+            guard let joining else { return "" }
+            let alias = uniqueAlias(account.name, serviceType: account.serviceType, in: joining, excluding: account.id)
+            return alias == account.name ? "" : alias
+        }
         if account.accountBindings.contains(where: { binding in
             guard !binding.isDeleted, let other = binding.activation?.workspace else { return false }
             return other !== joining
-        }) { return }
+        }) { return bindingAlias() }
         // So does a shared row another workspace turned on by itself: it has
         // no binding there, but its name is the one that workspace uses.
         if account.isGlobal, let context = account.modelContext ?? activation.modelContext {
@@ -789,7 +818,7 @@ public enum WorkspaceCapabilityActivation {
             let usedElsewhere = (try? context.fetch(FetchDescriptor<Workspace>())).map { workspaces in
                 workspaces.contains { $0.id != joining?.id && $0.enabledGlobalConnectorIDs.contains(id) }
             } ?? true
-            if usedElsewhere { return }
+            if usedElsewhere { return bindingAlias() }
         }
         var workspaces: [Workspace] = activation.workspace.map { [$0] } ?? []
         for binding in account.accountBindings where !binding.isDeleted {
@@ -799,9 +828,11 @@ public enum WorkspaceCapabilityActivation {
         }
         let others = visibleAccounts(ofService: account.serviceType, in: workspaces).filter { $0.id != account.id }
         let taken = Set(others.map { normalizedAlias($0.name) })
-        guard taken.contains(normalizedAlias(account.name)) else { return }
+            .union(joining.map { workspace in others.map { normalizedAlias(alias(of: $0, in: workspace)) } } ?? [])
+        guard taken.contains(normalizedAlias(account.name)) else { return "" }
         account.name = uniqueName(account.name, avoiding: taken)
         account.updatedAt = Date()
+        return ""
     }
 
     /// The accounts of a service the workspaces' plugins are bound to, plus
@@ -850,6 +881,9 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
         public let accountID: UUID?
         public let isDefault: Bool
         public let createdAt: Date
+        /// The binding's alias (`AccountBinding.alias`); nil when none, and
+        /// in a record written before it was kept.
+        public let alias: String?
     }
 
     public let id: UUID
@@ -923,7 +957,8 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
                     componentID: $0.componentID,
                     accountID: $0.account?.id,
                     isDefault: $0.isDefault,
-                    createdAt: $0.createdAt
+                    createdAt: $0.createdAt,
+                    alias: $0.alias.isEmpty ? nil : $0.alias
                 )
             }
     }
@@ -969,7 +1004,8 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
                     id: record.id,
                     componentID: record.componentID,
                     isDefault: record.isDefault,
-                    createdAt: record.createdAt
+                    createdAt: record.createdAt,
+                    alias: record.alias ?? ""
                 )
                 activation.modelContext?.insert(binding)
                 binding.account = account
@@ -984,11 +1020,11 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
     }
 
     private static func bindingKey(_ binding: AccountBinding) -> String {
-        "\(binding.id)|\(binding.componentID)|\(binding.account?.id.uuidString ?? "")|\(binding.isDefault)"
+        "\(binding.id)|\(binding.componentID)|\(binding.account?.id.uuidString ?? "")|\(binding.isDefault)|\(binding.alias)"
     }
 
     private static func bindingKey(_ binding: Binding) -> String {
-        "\(binding.id)|\(binding.componentID)|\(binding.accountID?.uuidString ?? "")|\(binding.isDefault)"
+        "\(binding.id)|\(binding.componentID)|\(binding.accountID?.uuidString ?? "")|\(binding.isDefault)|\(binding.alias ?? "")"
     }
 
     private static func fetchConnector(_ id: UUID, near activation: PluginActivation) -> Connector? {

@@ -164,11 +164,12 @@ final class TaskLifecycleCoordinator {
             return retryVerifiedTask(task)
         }
         repair.checkEnvironment = Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
-        repair.checkWorkingDirectory = TaskWorkspaceAccess(task: task).codeWorkingDirectory
-        repair = CLISessionExpiryClassifier.checkingLaunchHost(repair)
+        repair.checkWorkingDirectory = Self.checkWorkingDirectory(for: task)
+        repair = CLISessionExpiryClassifier.checkingCredentialFile(CLISessionExpiryClassifier.checkingLaunchHost(repair))
         let check = repairCheck
         let origin = RepairCheckOrigin(task)
         return Task { @MainActor [weak self] in
+            let repair = await CLISessionExpiryClassifier.checkingCheckoutHost(repair)
             let works = await check(repair)
             guard let self, origin.stillHolds(for: task, audit: .taskRetried) else { return }
             if works {
@@ -359,11 +360,12 @@ final class TaskLifecycleCoordinator {
             return resumeVerifiedTask(task)
         }
         repair.checkEnvironment = Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
-        repair.checkWorkingDirectory = TaskWorkspaceAccess(task: task).codeWorkingDirectory
-        repair = CLISessionExpiryClassifier.checkingLaunchHost(repair)
+        repair.checkWorkingDirectory = Self.checkWorkingDirectory(for: task)
+        repair = CLISessionExpiryClassifier.checkingCredentialFile(CLISessionExpiryClassifier.checkingLaunchHost(repair))
         let check = repairCheck
         let origin = RepairCheckOrigin(task)
         return Task { @MainActor [weak self] in
+            let repair = await CLISessionExpiryClassifier.checkingCheckoutHost(repair)
             let works = await check(repair)
             guard let self, origin.stillHolds(for: task, audit: .taskResumed) else { return }
             if works {
@@ -421,7 +423,7 @@ final class TaskLifecycleCoordinator {
     /// The variables the resumed run gives the checked CLI, so a repair check
     /// judges the credentials that run gets: for `gh` its token variables
     /// (which override any sign-in), the GitHub Enterprise host and
-    /// tokens (`GH_HOST`, else `GH_REPO`'s host, picks the host), the
+    /// tokens (`GH_REPO`'s host, else `GH_HOST`, picks the host), the
     /// configuration directory its stored login lives in (`GH_CONFIG_DIR`,
     /// else `XDG_CONFIG_HOME`) and the `PATH` that finds the binary, for
     /// `gcloud` the whole stripped launch environment, where
@@ -449,6 +451,12 @@ final class TaskLifecycleCoordinator {
             binary == "gcloud" || Self.gitHubCheckVariables.contains(key)
         }
         return environment.isEmpty ? nil : environment
+    }
+
+    /// The directory the resumed run starts in, where its checks resolve a
+    /// relative `PATH` entry and `gh` infers its host from the checkout.
+    static func checkWorkingDirectory(for task: AgentTask) -> String? {
+        TaskWorkspaceAccess(task: task).codeWorkingDirectory
     }
 
     /// The repair the task's latest run stopped for, if it stopped for one.

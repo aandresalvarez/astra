@@ -1,0 +1,182 @@
+import Foundation
+import os
+import SwiftData
+import Testing
+@testable import ASTRAModels
+@testable import ASTRAPersistence
+@testable import ASTRA
+import ASTRACore
+
+/// A rename never merges two components an activation holds, and an
+/// activation whose plugin the library lost can be removed through the
+/// normal Remove. Fixtures are `PluginOperationsTests`'s.
+@Suite("Plugin renames into known components and missing plugins")
+@MainActor
+struct PluginRenameAndMissingTests {
+    typealias Fixtures = PluginOperationsTests
+
+    /// v1 with skills A (report-agent) and B (summary-agent) and connectors
+    /// X (tracker-api) and Y (tracker2), each with state of its own.
+    static func twoOfEach() -> PluginPackage {
+        var package = Fixtures.package(version: "1.0.0")
+        package.skills[0].environmentKeys = ["PROJECT", "API_TOKEN"]
+        package.skills[0].environmentValues = ["default-project", ""]
+        var second = package.skills[0]
+        second.id = "summary-agent"
+        second.name = "Summary Agent"
+        package.skills.append(second)
+        var y = package.connectors[0]
+        y.id = "tracker2"
+        y.name = "Tracker Two"
+        package.connectors.append(y)
+        return package
+    }
+
+    @Test("A rename into a component the activation already holds moves nothing and awaits Update with a reason")
+    func renameIntoKnownComponentIsRefused() throws {
+        let env = try Fixtures.Environment()
+        let v1 = Self.twoOfEach()
+        try env.install(v1)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        let secretKey = PluginActivation.settingKey(componentID: "skill:report-agent", key: "API_TOKEN")
+        WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: secretKey, on: activation)
+        let x = CapabilityResourceOrigin.componentID(for: v1.connectors[0])
+        let y = CapabilityResourceOrigin.componentID(for: v1.connectors[1])
+        let xAccounts = activation.accounts(forComponent: x).map(\.id)
+        let yAccounts = activation.accounts(forComponent: y).map(\.id)
+        #expect(!xAccounts.isEmpty && xAccounts != yAccounts)
+        try env.context.save()
+
+        // v2 keeps B and Y, each declaring it takes over A and X.
+        var v2 = v1
+        v2.version = "2.0.0"
+        v2.skills.removeFirst()
+        v2.skills[0].replaces = ["report-agent"]
+        v2.connectors.removeFirst()
+        v2.connectors[0].replaces = [x]
+        #expect(PluginUpdateService.replacesProblems(in: v2).isEmpty)
+
+        func unchanged() {
+            #expect(activation.recordedVersion == "1.0.0")
+            #expect(activation.configuration(forComponent: "skill:report-agent") == ["PROJECT": "alpha"])
+            #expect(activation.secretSettingKeys.contains(secretKey))
+            #expect(activation.accounts(forComponent: x).map(\.id) == xAccounts)
+            #expect(activation.accounts(forComponent: y).map(\.id) == yAccounts)
+            #expect(RecordingCleanup.deleted.isEmpty)
+        }
+        RecordingCleanup.reset()
+        // The first collision, by predecessor ID, is the one named.
+        #expect(throws: PluginUpdateService.UpdateError.renameIntoKnownComponent(component: y, predecessor: x)) {
+            try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [v2], mode: .release, secrets: RecordingCleanup.self)
+        }
+        unchanged()
+        try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [v2], mode: .automatic, secrets: RecordingCleanup.self)
+        unchanged()
+        #expect(activation.awaitingUpdate)
+
+        // The validator names it against the installed version, and only then.
+        let report = CapabilityPackageValidator.validate(package: v2, installedPackages: [v1], checkPrerequisites: false)
+        #expect(report.issues.contains { $0.title == "Rename into an existing component" && $0.component == "skill:summary-agent" })
+        #expect(report.issues.contains { $0.title == "Rename into an existing component" && $0.component == CapabilityResourceOrigin.componentID(for: v2.connectors[0]) })
+        var onlyA = v1
+        onlyA.skills.removeLast()
+        onlyA.connectors.removeLast()
+        #expect(!CapabilityPackageValidator.validate(package: v2, installedPackages: [onlyA], checkPrerequisites: false)
+            .issues.contains { $0.title == "Rename into an existing component" })
+    }
+
+    @Test("A plugin the library lost is removed through Remove: secrets journaled then cleaned, mirror rewritten")
+    func missingPluginIsForgotten() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-missing-\(UUID().uuidString)", isDirectory: true)
+        let folder = root.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: root.appendingPathComponent("default.store"))]
+        )
+        Fixtures.Environment.retained.append(container)
+        let context = container.mainContext
+        let workspace = Workspace(name: "Ops", primaryPath: folder.path)
+        context.insert(workspace)
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
+        var package = Fixtures.package(version: "1.0.0")
+        package.skills[0].environmentKeys = ["PROJECT", "API_TOKEN"]
+        package.skills[0].environmentValues = ["default-project", ""]
+        try CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
+            .install(package, into: workspace, modelContext: context, announceCatalogMutation: false)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        WorkspaceCapabilityActivation.setSecretRecorded(
+            true, forKey: PluginActivation.settingKey(componentID: "skill:report-agent", key: "API_TOKEN"), on: activation
+        )
+        try context.save()
+        let account = try #require(workspace.connectors.first)
+        let namespace = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
+
+        // The library loses it: the row lists it as missing, with Remove.
+        _ = try library.removePackage(id: package.id)
+        #expect(library.installedPackage(id: package.id) == nil)
+        let row = try #require(PluginsSurfacePresentation.makeState(
+            [PluginsSurfacePresentation.missingInput(pluginID: package.id, isEnabled: true)], query: ""
+        ).actionNeeded.first)
+        #expect(row.isMissing && row.isRemovable && row.verb == nil)
+        #expect(row.subtitle == PluginsSurfacePresentation.missingMessage)
+
+        let outbox = try #require(PluginSecretCleanupOutbox(for: context))
+        let journal = PluginRemoveJournal(fileURL: root.appendingPathComponent("PluginRemoveIntents.json"))
+        RecordingCleanup.reset()
+        RecordingCleanup.onClean = { RecordingCleanup.pendingAtClean = (try? outbox.pending()) ?? [] }
+        try CapabilityUninstaller(library: library).forgetMissing(
+            pluginID: package.id, modelContext: context, removeJournal: journal, skillSecrets: RecordingCleanup.self
+        )
+        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) == nil)
+        #expect(RecordingCleanup.pendingAtClean.contains(namespace))
+        #expect(RecordingCleanup.cleaned.contains(namespace))
+        #expect(try outbox.pending().isEmpty)
+        #expect(try journal.pending().isEmpty)
+        // Its account stays, no longer the plugin's, as any Remove leaves it.
+        #expect(workspace.connectors.contains { $0.id == account.id })
+        #expect(account.originPackageID == nil)
+        let mirror = try WorkspaceConfigManager.loadConfig(from: URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path)))
+        #expect(!(mirror.installedPlugins ?? []).contains { $0.id == package.id })
+        // A bundled plugin is never forgotten.
+        let bundled = try #require(PluginCatalog.builtInPackages.first)
+        #expect(throws: CapabilityLibrary.RemovalError.builtInPackage(bundled.id)) {
+            try CapabilityUninstaller(library: library).forgetMissing(pluginID: bundled.id, modelContext: context)
+        }
+    }
+}
+
+/// Skill secrets that record what a cleanup deletes.
+private enum RecordingCleanup: SkillSecretPersisting {
+    private struct State {
+        var deleted: [String] = []
+        var cleaned: [UUID] = []
+    }
+    private static let state = OSAllocatedUnfairLock(initialState: State())
+    nonisolated(unsafe) static var onClean: (() -> Void)?
+    nonisolated(unsafe) static var pendingAtClean: [UUID] = []
+    static var deleted: [String] { state.withLock(\.deleted) }
+    static var cleaned: [UUID] { state.withLock(\.cleaned) }
+    static func reset() {
+        state.withLock { $0 = State() }
+        onClean = nil
+        pendingAtClean = []
+    }
+
+    static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? { nil }
+    static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool { true }
+    static func deleteSecret(key: String, skillID: UUID) -> Bool {
+        state.withLock { $0.deleted.append(key) }
+        return true
+    }
+    static func secretExists(key: String, skillID: UUID) -> Bool { false }
+    static func deleteAllSecrets(skillID: UUID) {}
+    static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool {
+        onClean?()
+        state.withLock { $0.cleaned.append(skillID); $0.deleted.append(skillID.uuidString) }
+        return true
+    }
+}
