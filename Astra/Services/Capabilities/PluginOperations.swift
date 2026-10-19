@@ -180,10 +180,12 @@ enum PluginOperations {
     }
 
     /// Every workspace deleting `account` reaches, for the delete
-    /// confirmation to name: its owner, the workspaces whose plugins bind
-    /// it, and those that list it as a shared connector. Throws when the
-    /// store can't be read: a scope missing the workspaces that only list
-    /// the account must never be confirmed.
+    /// confirmation to name and the deletion to rewrite: each whose mirror
+    /// carries it (`WorkspaceConfigManager.workspacesMirroring`: its owner,
+    /// a plugin's binding, a shared list, a shared skill it is attached
+    /// to), and any that still lists it. Throws when the store can't be
+    /// read: a scope missing a workspace that mirrors the account must never
+    /// be confirmed.
     static func workspacesUsing(_ account: Connector) throws -> [Workspace] {
         try workspacesUsing(account) {
             guard let context = account.modelContext else { throw OperationError.storeUnreadable }
@@ -197,10 +199,12 @@ enum PluginOperations {
     ) throws -> [Workspace] {
         var seen = Set<UUID>()
         let id = account.id.uuidString
-        guard let workspaces = try? fetchWorkspaces() else { throw OperationError.storeUnreadable }
+        guard let workspaces = try? fetchWorkspaces(), let modelContext = account.modelContext else {
+            throw OperationError.storeUnreadable
+        }
         let listing = workspaces.filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) }
-        let bound = account.accountBindings.filter { !$0.isDeleted }.compactMap { $0.activation?.workspace }
-        return ([account.workspace].compactMap { $0 } + bound + listing)
+        let mirroring = WorkspaceConfigManager.workspacesMirroring(accountIDs: [account.id], among: workspaces, modelContext: modelContext)
+        return ([account.workspace].compactMap { $0 } + mirroring + listing)
             .filter { !$0.isDeleted && seen.insert($0.id).inserted }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -209,7 +213,9 @@ enum PluginOperations {
     /// deleted, and its credentials are cleaned through the durable connector
     /// cleanup outbox once the deletion is saved. The only operation that
     /// clears an account's credentials.
-    static func deleteAccount(_ account: Connector, modelContext: ModelContext) throws {
+    static func deleteAccount(
+        _ account: Connector, modelContext: ModelContext, rewriteMirror: ((Workspace) -> Bool)? = nil
+    ) throws {
         // Who lists the account must be known before anything is deleted: a
         // workspace missed here would keep a dangling ID.
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()) else {
@@ -217,14 +223,13 @@ enum PluginOperations {
         }
         let id = account.id.uuidString
         let listing = workspaces.filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) }
-        // Every workspace whose mirror names the account is exported after
-        // the deletion, so recovery can't bring it back.
-        var affected = try listing + workspacesUsing(account) { workspaces }
-        if let owner = account.workspace { affected.append(owner) }
+        // Every workspace whose mirror names the account, the one the
+        // confirmation named, is rewritten once the deletion is saved and
+        // before its credentials are cleaned, so recovery can't bring it back.
+        let affected = try workspacesUsing(account) { workspaces }
         // rollback() doesn't restore bindings and memberships: every
         // workspace the deletion touches is put back by hand if it fails.
-        var seen = Set<UUID>()
-        let snapshots = affected.filter { seen.insert($0.id).inserted }.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
+        let snapshots = affected.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         for workspace in listing {
             WorkspaceCapabilityActivation.mutate(workspace) { $0.globalConnectorIDs.removeAll { $0 == id } }
         }
@@ -235,9 +240,12 @@ enum PluginOperations {
             }
         }
         modelContext.delete(account)
-        let saved = ConnectorCredentialCleanup.deleteThenClean([cleanup], modelContext: modelContext) {
-            (try? WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspaces: affected, modelContext: modelContext)) != nil
-        }
+        let saved = ConnectorCredentialCleanup.deleteThenClean(
+            [cleanup], modelContext: modelContext,
+            save: { WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext) },
+            beforeSettling: { rewriteMirror.map { rewrite in affected.reduce(true) { rewrite($1) && $0 } }
+                ?? WorkspaceConfigManager.exportMirrorsNow(affected, modelContext: modelContext) }
+        )
         guard saved else {
             modelContext.rollback()
             snapshots.forEach { WorkspaceCapabilityActivation.restore($1, to: $0) }
