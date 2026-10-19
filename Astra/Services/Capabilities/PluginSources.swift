@@ -112,6 +112,10 @@ enum PluginSourceMirrorIdentity: PluginSourceIdentityResolving {
         guard let installed = CapabilityLibrary().installedPackage(id: pluginID) else { return nil }
         return PluginSourceStore.mirrorIdentity(recordedDigest: digest, installed: installed, provenance: PluginSourceStore().provenance())
     }
+
+    static func installedCopy(pluginID: String) -> PluginInstalledCopy? {
+        PluginSourceStore().installedCopy(of: CapabilityLibrary().installedPackage(id: pluginID))
+    }
 }
 
 enum PluginSourceStoreError: Error, Equatable, LocalizedError {
@@ -271,6 +275,15 @@ struct PluginSourceStore {
         let digest = PluginSourceCatalog.contentDigest(installed)
         guard recordedDigest == digest || recordedDigest == PluginDefinitionDigest.content(of: installed) else { return nil }
         return mirrorIdentity(pluginID: installed.id, digest: digest, provenance: provenance)
+    }
+
+    /// The library's copy (`installed`, nil when there is none) and where
+    /// it came from, as the mirror names it.
+    func installedCopy(of installed: PluginPackage?) -> PluginInstalledCopy {
+        guard let installed else { return .notInstalled }
+        return .installed(source: Self.mirrorIdentity(
+            pluginID: installed.id, digest: PluginSourceCatalog.contentDigest(installed), provenance: provenance()
+        ))
     }
 
     /// Plugin ID → provenance. An unreadable record reads as empty: no

@@ -66,6 +66,24 @@ public enum HealthCheckPolicy {
         ]
     ]
 
+    /// ASTRA's own read-only check for a known CLI (by basename): its
+    /// sign-in status where ASTRA knows one, else its version report. A
+    /// source plugin's setup check is replaced with it, so what runs is
+    /// never the plugin's text, and a repair's polling still has a check to
+    /// verify with (threat model T9). Nil for a CLI ASTRA doesn't know.
+    public static func ownCheck(forCLI cli: String) -> [String]? {
+        let status: [String: [String]] = [
+            "gh": ["auth", "status"],
+            "gcloud": ["config", "config-helper", "--format=value(credential.token_expiry)"],
+            "az": ["account", "show"],
+            "aws": ["sts", "get-caller-identity"],
+            "docker": ["info"]
+        ]
+        if let check = status[cli] { return check }
+        guard let forms = versionForms[cli] else { return nil }
+        return forms.contains { $0.matches(["--version"]) } ? ["--version"] : ["version"]
+    }
+
     /// The CLIs ASTRA knows: the only ones with a version check, and the only
     /// ones a Terminal repair may sign in with (`TerminalRepairPolicy`).
     public static var knownCLIs: Set<String> { Set(versionForms.keys) }

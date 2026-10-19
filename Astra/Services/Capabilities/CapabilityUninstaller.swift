@@ -32,9 +32,13 @@ struct CapabilityUninstaller {
     }
 
     let library: CapabilityLibrary
+    /// Where the removed copy came from, recorded with the accounts Remove
+    /// keeps (`RetiredPluginActivation.source`).
+    let sourceStore: PluginSourceStore
 
-    init(library: CapabilityLibrary = CapabilityLibrary()) {
+    init(library: CapabilityLibrary = CapabilityLibrary(), sourceStore: PluginSourceStore = PluginSourceStore()) {
         self.library = library
+        self.sourceStore = sourceStore
     }
 
     /// Forgets a plugin the library no longer has a readable entry for
@@ -163,6 +167,12 @@ struct CapabilityUninstaller {
         // released here.
         let pendingConnectorCleanups: [ConnectorKeychainCleanup] = []
         var activationSecretSkillIDs: [UUID] = []
+        // Read before Remove forgets the provenance: the installed copy's
+        // source, or, for a missing definition, the source a record still
+        // names (an unknown copy claims a source, which only binds less).
+        let removedSource = definitionMissing
+            ? sourceStore.provenance()[package.id].map { "\(PluginSource.metadataKind):\($0.sourceID)" }
+            : sourceStore.installedCopy(of: installedPackages.first { $0.id == package.id }).source
 
         for workspace in workspaces {
             let remainingWorkspacePackages = remainingPackages.filter {
@@ -195,7 +205,7 @@ struct CapabilityUninstaller {
             let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
             if let activation {
                 activationSecretSkillIDs += PluginRuntimeProjection.secretNamespaces(of: activation, package: package)
-                WorkspaceCapabilityActivation.retire(activation, in: workspace)
+                WorkspaceCapabilityActivation.retire(activation, in: workspace, source: removedSource)
             }
             // A chosen file's activation waiting for this plugin waits no
             // more: Remove drops it, with or without an activation here.
@@ -248,7 +258,7 @@ struct CapabilityUninstaller {
                 result.removedTemplateIDs.append(template.id)
                 modelContext.delete(template)
             }
-            WorkspaceCapabilityActivation.retainTemplateIDs(deletedTemplateIDs, pluginID: package.id, in: workspace)
+            WorkspaceCapabilityActivation.retainTemplateIDs(deletedTemplateIDs, pluginID: package.id, in: workspace, source: removedSource)
 
             if wasPackageEnabled || wasPackageRecorded || hadPackageGlobals || !workspaceTemplates.isEmpty {
                 workspace.updatedAt = Date()

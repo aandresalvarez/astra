@@ -821,6 +821,182 @@ struct PluginSourcesTests {
         #expect(try fixture.store.exclusively(pluginID: "RACED") { true })
     }
 
+    @Test("T5: recovering the workspace's own mirror holds an activation whose plugin is now installed from another source; its own source's Update is awaited as before")
+    func recoveryHoldsAnActivationFromAnotherSource() throws {
+        let fixture = try Fixture()
+        let folder = fixture.root.appendingPathComponent("recovered", isDirectory: true)
+        var definition = try Self.package(id: "recovered-plugin", version: "1.0.0")
+        definition.skills[0].environmentKeys = ["REGION"]
+        definition.connectors = [PluginConnector(
+            name: "Acme", serviceType: "acme", icon: "key", description: "", baseURL: "https://api.acme.test",
+            authMethod: "api_key", credentialHints: [.init(key: "ACME_TOKEN", hint: "Token")], configHints: [], notes: ""
+        )]
+        try fixture.write(["capability.json": try JSONEncoder().encode(definition)], in: folder)
+        let source = try #require(PluginSource.make(from: folder.path))
+        try fixture.store.save([source])
+        let coordinator = PluginSourceCoordinator(store: fixture.store, installedPackages: { fixture.library.installedPackages() })
+        coordinator.reload()
+        let workspace = Workspace(name: "Recovered", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        fixture.context.insert(workspace)
+        let service = CapabilityCatalogActionService(library: fixture.library, sourceStore: fixture.store)
+        try service.importReviewed(try #require(coordinator.listings.first?.plugins.first), workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
+        let installed = try #require(fixture.library.installedPackage(id: definition.id))
+        _ = try service.add(
+            installed, workspace: workspace, modelContext: fixture.context,
+            policyContext: .workspaceUser(workspace: workspace, isAdmin: true, currentAppVersion: SemanticVersion(1, 0, 0), approvalRecords: []),
+            approvalStore: CapabilityApprovalStore(directory: fixture.root.appendingPathComponent("approvals")), traceID: "test"
+        )
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: installed.id, in: workspace))
+        let components = PluginRuntimeProjection.componentIDs(of: installed)
+        let skillComponent = try #require(components.first { $0.hasPrefix("skill") })
+        WorkspaceCapabilityActivation.setConfigValue("eu", forKey: "\(skillComponent)#REGION", on: activation)
+        let account = try #require(activation.bindings.first { $0.account != nil }?.account)
+        try fixture.context.save()
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: fixture.context))
+        config.installedPlugins = WorkspaceConfigManager.installedPluginRefs(for: workspace) { id, recorded in
+            fixture.library.installedPackage(id: id).flatMap {
+                PluginSourceStore.mirrorIdentity(recordedDigest: recorded, installed: $0, provenance: fixture.store.provenance())
+            }
+        }
+        let identity = "plugin-source:\(source.id)"
+        #expect(config.installedPlugins?.first?.source == identity)
+
+        /// Launch recovery of this mirror on a Mac whose library copy is
+        /// `copy` (nil: nothing, or nothing to tell).
+        func recovered(_ copy: PluginInstalledCopy?) throws -> (Workspace, WorkspaceConfigManager.WorkspaceConfigImportResult) {
+            let target = try ModelContainer(
+                for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            )
+            Fixture.retained.append(target)
+            let result = WorkspaceConfigManager.importWorkspaceResult(
+                from: config, modelContext: target.mainContext, capabilityTrust: .preserveRecordedState, installedCopy: { _ in copy }
+            )
+            return (result.workspace, result)
+        }
+        // The same source's copy, this or a later version: restored as recorded.
+        for same in [PluginInstalledCopy.installed(source: identity), nil] {
+            let (back, result) = try recovered(same)
+            let restored = try #require(WorkspaceCapabilityActivation.activation(for: installed.id, in: back))
+            #expect(restored.isEnabled && restored.configuration["\(skillComponent)#REGION"] == "eu")
+            #expect(restored.bindings.contains { $0.account?.id == account.id })
+            #expect(result.capabilityTrust.pluginsHeldOnRecovery.isEmpty)
+            #expect(WorkspaceCapabilityActivation.pendingImport(pluginID: installed.id, in: back) == nil)
+        }
+        // Installed from another source, or locally: nothing of it is
+        // activated or bound; its payload waits as a held import.
+        for other in [PluginInstalledCopy.installed(source: "plugin-source:acme-other-123abc"), .installed(source: nil)] {
+            let (back, result) = try recovered(other)
+            #expect(WorkspaceCapabilityActivation.activation(for: installed.id, in: back) == nil, "\(other)")
+            #expect(!back.enabledCapabilityIDs.contains(installed.id))
+            #expect(result.capabilityTrust.pluginsHeldOnRecovery == [installed.id])
+            #expect(result.capabilityTrust.auditFields["plugins_held_on_recovery"] == installed.id)
+            let held = try #require(WorkspaceCapabilityActivation.pendingImport(pluginID: installed.id, in: back))
+            #expect(held.recovered == true && held.source == identity)
+            #expect(held.settings?["\(skillComponent)#REGION"] == "eu")
+            #expect(held.accounts?.map(\.connectorID) == [account.id.uuidString])
+            #expect(!(back.retiredPluginActivationsJSON ?? "").contains("ACME_TOKEN"))
+            // It comes back once the same source's copy is installed, at any
+            // version (its Update); never for another source's or a local one.
+            var newer = installed
+            newer.version = "2.0.0"
+            let here = PluginSourceStore(root: fixture.root.appendingPathComponent("here-\(UUID().uuidString)", isDirectory: true))
+            #expect(!PluginPendingImport.matches(held, installed: newer, provenance: here.provenance()))
+            try here.recordProvenance(pluginID: newer.id, sourceID: "acme-other-123abc", digest: PluginSourceCatalog.contentDigest(newer))
+            #expect(!PluginPendingImport.matches(held, installed: newer, provenance: here.provenance()))
+            try here.recordProvenance(pluginID: newer.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(newer))
+            #expect(PluginPendingImport.matches(held, installed: newer, provenance: here.provenance()))
+            // A chosen file's held import still needs the same digest.
+            var chosen = held
+            chosen.recovered = nil
+            #expect(!PluginPendingImport.matches(chosen, installed: newer, provenance: here.provenance()))
+        }
+        // The plugin not installed at all: restored as recorded, as before.
+        let (absent, _) = try recovered(.notInstalled)
+        #expect(WorkspaceCapabilityActivation.activation(for: installed.id, in: absent)?.isEnabled == true)
+
+        // An activation held back from its source's Update records a digest
+        // the installed copy no longer has; the mirror still names its
+        // source, so a recovery meanwhile doesn't read it as local.
+        WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
+        let awaiting = WorkspaceConfigManager.installedPluginRefs(for: workspace, sourceIdentity: { _, _ in nil }, awaitedSource: { _ in identity })
+        #expect(awaiting.first?.source == identity)
+        WorkspaceCapabilityActivation.setAwaitingUpdate(false, on: activation)
+        #expect(WorkspaceConfigManager.installedPluginRefs(for: workspace, sourceIdentity: { _, _ in nil }, awaitedSource: { _ in identity }).first?.source == nil)
+        // The launched app's resolver answers from the plugin source store.
+        #expect(fixture.store.installedCopy(of: nil) == .notInstalled)
+        #expect(fixture.store.installedCopy(of: installed) == .installed(source: identity))
+        #expect(LocalPluginSourceIdentity.installedCopy(pluginID: installed.id) == nil)
+    }
+
+    @Test("T5: a held import is listed under Action needed with why it waits, and Discard drops it through a journaled save")
+    func heldImportsAreListedAndDiscardable() throws {
+        let fixture = try Fixture()
+        let workspace = Workspace(name: "Held", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        fixture.context.insert(workspace)
+        let folder = fixture.root.appendingPathComponent("held", isDirectory: true)
+        try fixture.write(["capability.json": try Self.packageJSON(id: "held-plugin", version: "1.0.0")], in: folder)
+        let source = try #require(PluginSource.make(from: folder.path))
+        try fixture.store.save([source])
+        let coordinator = PluginSourceCoordinator(store: fixture.store, installedPackages: { fixture.library.installedPackages() })
+        coordinator.reload()
+        let service = CapabilityCatalogActionService(library: fixture.library, sourceStore: fixture.store)
+        let identity = "plugin-source:\(source.id)"
+        func hold(_ pluginID: String, digest: String, source: String?, recovered: Bool? = nil) {
+            var pending = RetiredPluginActivation.PendingImport(
+                digest: digest, source: source, settings: ["skill.x#REGION": "eu"], overriddenComponentIDs: nil,
+                overridingRowIDs: nil, accounts: nil, knownComponentIDs: nil
+            )
+            pending.recovered = recovered
+            WorkspaceCapabilityActivation.recordPendingImport(pending, pluginID: pluginID, in: workspace)
+        }
+
+        // Not installed: named by its ID, waiting for its source.
+        hold("held-plugin", digest: "d1", source: identity)
+        hold("zz-other", digest: "d2", source: nil)
+        var rows = service.heldImports(in: workspace, coordinator: coordinator)
+        #expect(rows.map(\.pluginID) == ["held-plugin", "zz-other"])
+        #expect(rows[0].name == "held-plugin" && !rows[0].canAdd)
+        #expect(rows[0].subtitle.contains("waiting for it from \(source.displayName)"))
+        #expect(rows[1].subtitle.contains("waiting for it from a local file"))
+        #expect(rows.allSatisfy { $0.subtitle.hasPrefix("Settings from an imported workspace file") })
+        #expect(rows[0].id == "held-import:held-plugin")
+
+        // Installed from the same source with the digest it waits for: Add brings it back.
+        try service.importReviewed(try #require(coordinator.listings.first?.plugins.first), workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
+        let installed = try #require(fixture.library.installedPackage(id: "held-plugin"))
+        hold("held-plugin", digest: PluginDefinitionDigest.content(of: installed), source: identity, recovered: true)
+        rows = service.heldImports(in: workspace, coordinator: coordinator)
+        #expect(rows[0].name == installed.name && rows[0].canAdd)
+        #expect(rows[0].subtitle == "Settings this workspace had. Add it to bring them back, or discard them.")
+        // Another version of it: no Add.
+        hold("held-plugin", digest: "d-other", source: identity)
+        rows = service.heldImports(in: workspace, coordinator: coordinator)
+        #expect(!rows[0].canAdd && rows[0].subtitle.contains("another version"))
+        // Recorded for a local copy, installed from the source: names both.
+        hold("held-plugin", digest: PluginDefinitionDigest.content(of: installed), source: nil)
+        rows = service.heldImports(in: workspace, coordinator: coordinator)
+        #expect(!rows[0].canAdd)
+        #expect(rows[0].subtitle.contains("copy from a local file") && rows[0].subtitle.contains("installed is from \(source.displayName)"))
+
+        // Discard drops it and saves; a failed save puts it back.
+        #expect(throws: PluginOperations.OperationError.saveFailed) {
+            try PluginOperations.discardPendingImport(pluginID: "held-plugin", in: workspace, modelContext: fixture.context) { _, _ in
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        }
+        #expect(WorkspaceCapabilityActivation.pendingImport(pluginID: "held-plugin", in: workspace) != nil)
+        try service.discardPendingImport(pluginID: "held-plugin", workspace: workspace, modelContext: fixture.context)
+        #expect(WorkspaceCapabilityActivation.pendingImport(pluginID: "held-plugin", in: workspace) == nil)
+        #expect(WorkspaceCapabilityActivation.pendingImport(pluginID: "zz-other", in: workspace) != nil)
+        #expect(service.heldImports(in: workspace, coordinator: coordinator).map(\.pluginID) == ["zz-other"])
+        // Discarding what isn't held changes nothing.
+        try service.discardPendingImport(pluginID: "held-plugin", workspace: workspace, modelContext: fixture.context)
+        // The screen lists them through the service, with Discard and Add.
+        let view = try String(contentsOf: Self.repositoryRoot().appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift"), encoding: .utf8)
+        #expect(view.contains(".heldImports(in: workspace)") && view.contains(".discardPendingImport(pluginID:"))
+    }
+
     @Test("T5: a chosen workspace file enables a source plugin's activation only where the same source installed that copy")
     func importedActivationIsBoundToItsSource() throws {
         let fixture = try Fixture()
@@ -1081,6 +1257,42 @@ struct PluginSourcesTests {
         let plugin = try #require(PluginSourceCatalog.listing(for: source, store: fixture.store, installed: []).plugins.first)
         #expect(plugin.package?.prerequisites.isEmpty == true)
         #expect(plugin.unsupported.contains("1 setup check (not run)"))
+
+        // A known CLI's check is replaced by ASTRA's own read-only check for
+        // it, whatever the plugin wrote, so a repair is still verified and
+        // its sign-in rule still knows the CLI; a path, a semantic test and
+        // a contextual check never come along.
+        package.prerequisites = [
+            CLIPrerequisite(
+                binary: "gh", livenessArgs: ["repo", "delete", "x", "--yes"], semantic: .stdoutNonEmpty,
+                contextualCheck: .githubRepositoryAccess, displayName: "GitHub", purpose: "PRs", installHint: "`brew install gh`",
+                authHint: "Run `gh auth login`."
+            ),
+            CLIPrerequisite(binary: "/tmp/x/gh", livenessArgs: ["--version"], displayName: "Fake gh", purpose: "", installHint: ""),
+            CLIPrerequisite(binary: "jq", livenessArgs: ["-n", "input"], displayName: "jq", purpose: "", installHint: ""),
+            CLIPrerequisite(binary: "touch", livenessArgs: ["version"], displayName: "touch", purpose: "", installHint: "")
+        ]
+        try fixture.write(["capability.json": try JSONEncoder().encode(package)], in: folder)
+        let replaced = try #require(PluginSourceCatalog.listing(for: source, store: fixture.store, installed: []).plugins.first)
+        let kept = try #require(replaced.package?.prerequisites)
+        #expect(kept.map(\.binary) == ["gh", "jq"])
+        #expect(kept[0].livenessArgs == ["auth", "status"] && kept[0].semantic == nil && kept[0].contextualCheck == nil)
+        #expect(kept[0].displayName == "GitHub" && kept[0].authHint == "Run `gh auth login`.")
+        #expect(kept[1].livenessArgs == ["--version"])
+        #expect(replaced.unsupported.contains("2 setup checks (ASTRA runs its own checks instead)"))
+        #expect(replaced.unsupported.contains("2 setup checks (not run)"))
+        // What runs is read-only for every CLI ASTRA knows, and the repair
+        // built from the kept component verifies with that check.
+        for cli in HealthCheckPolicy.knownCLIs {
+            let own = try #require(HealthCheckPolicy.ownCheck(forCLI: cli), "\(cli)")
+            #expect(HealthCheckPolicy.isReadOnly(binary: cli, arguments: own), "\(cli) \(own)")
+        }
+        #expect(HealthCheckPolicy.ownCheck(forCLI: "touch") == nil)
+        let replacedPackage = try #require(replaced.package)
+        let component = try #require(PluginManifestConverter.setupComponents(of: replacedPackage).first?.component)
+        let repair = try #require(RepairAction.from(component))
+        #expect(repair.command == "gh auth login" && repair.checkBinary == "gh" && repair.checkArguments == ["auth", "status"])
+        #expect(HealthCheckPolicy.isReadOnly(binary: repair.checkBinary ?? "", arguments: repair.checkArguments ?? []))
     }
 
     @Test("T10: an unsafe tool from a source is refused")

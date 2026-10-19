@@ -78,6 +78,64 @@ struct PluginStagingAndReAddTests {
         #expect(authored.originPackageID == nil)
     }
 
+    @Test("A retained account is bound back only to a copy from the source the removed one came from (T5)")
+    func retainedAccountsStayWithTheirSource() throws {
+        let env = try Fixtures.Environment()
+        let store = PluginSourceStore(root: env.root.appendingPathComponent("PluginSources", isDirectory: true))
+        let installer = CapabilityInstaller(library: env.library, appVersion: SemanticVersion(1, 0, 0), sourceStore: store)
+        let uninstaller = CapabilityUninstaller(library: env.library, sourceStore: store)
+        let package = Fixtures.package(version: "1.0.0")
+        let componentID = CapabilityResourceOrigin.componentID(for: package.connectors[0])
+        func install() throws -> PluginActivation {
+            try installer.install(package, into: env.workspace, modelContext: env.context, announceCatalogMutation: false)
+            return try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
+        }
+        /// Makes the installed copy source `id`'s own, or local.
+        func installedFrom(_ id: String?) throws {
+            let installed = try #require(env.library.installedPackage(id: package.id))
+            if let id {
+                try store.recordProvenance(pluginID: package.id, sourceID: id, digest: PluginSourceCatalog.contentDigest(installed))
+            } else {
+                try store.forgetProvenance(pluginID: package.id)
+            }
+        }
+        _ = try install()
+        try installedFrom("acme-a")
+        let account = try #require(env.workspace.connectors.first)
+
+        // Removed as source A's copy, added back as a local file's: the
+        // account stays the person's, unbound and unstamped; Add makes its own.
+        try uninstaller.remove(package, modelContext: env.context)
+        #expect(WorkspaceCapabilityActivation.retiredActivations(of: env.workspace).first?.source == "plugin-source:acme-a")
+        try store.forgetProvenance(pluginID: package.id)
+        var activation = try install()
+        #expect(!activation.accounts(forComponent: componentID).map(\.id).contains(account.id))
+        #expect(account.originPackageID == nil && !account.isDeleted)
+        #expect(env.workspace.connectors.filter { !$0.isDeleted }.count == 2)
+        let second = try #require(activation.accounts(forComponent: componentID).first)
+
+        // Removed as a local copy, added back from a source: the same.
+        try uninstaller.remove(package, modelContext: env.context)
+        #expect(WorkspaceCapabilityActivation.retiredActivations(of: env.workspace).first?.source == nil)
+        // The library write of a source import precedes its provenance only
+        // in order, never across an Add: the record names the copy first.
+        try store.recordProvenance(pluginID: package.id, sourceID: "acme-b", digest: PluginSourceCatalog.contentDigest(package))
+        activation = try install()
+        #expect(!activation.accounts(forComponent: componentID).map(\.id).contains(second.id))
+        #expect(env.workspace.connectors.filter { !$0.isDeleted }.count == 3)
+
+        // Removed and added back as the same source's copy: bound back, stamped.
+        let third = try #require(activation.accounts(forComponent: componentID).first)
+        try uninstaller.remove(package, modelContext: env.context)
+        #expect(WorkspaceCapabilityActivation.retiredActivations(of: env.workspace).first?.source == "plugin-source:acme-b")
+        activation = try install()
+        #expect(activation.accounts(forComponent: componentID).map(\.id) == [third.id])
+        #expect(third.originPackageID == package.id)
+        #expect(env.workspace.connectors.filter { !$0.isDeleted }.count == 3)
+        // Nothing else of the record depends on the source: the seed comes back.
+        #expect(WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: env.workspace, addingFrom: "local").isEmpty)
+    }
+
     @Test("Remove is refused while another installed plugin requires it, naming the dependents")
     func removeRefusesWhileRequired() throws {
         let env = try Fixtures.Environment()

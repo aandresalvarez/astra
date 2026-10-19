@@ -974,7 +974,7 @@ public enum WorkspaceConfigManager {
             .map(workspaceAppAutomationStateConfig)
         let googleOAuthProfileConfigs = googleOAuthProfilesForExport(workspace: workspace).map(googleOAuthAccountProfileConfig)
 
-        let pluginRefs = installedPluginRefs(for: workspace, sourceIdentity: PluginSourceIdentitySeam.current.mirrorIdentity)
+        let pluginRefs = installedPluginRefs(for: workspace, sourceIdentity: PluginSourceIdentitySeam.current.mirrorIdentity) { PluginSourceIdentitySeam.current.installedCopy(pluginID: $0)?.source }
 
         return WorkspaceConfig(
             id: workspace.id.uuidString,
@@ -1229,7 +1229,7 @@ public enum WorkspaceConfigManager {
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
         taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
         capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState,
-        sourceWorkspaceID: UUID? = nil, importSession: ImportSession? = nil
+        sourceWorkspaceID: UUID? = nil, importSession: ImportSession? = nil, installedCopy: ((String) -> PluginInstalledCopy?)? = nil
     ) -> WorkspaceConfigImportResult {
         let additionalPaths = config.additionalPaths.filter { !TaskWorktreeCheckoutReservation.isReserved($0) }
         let droppedAdditionalPaths = config.additionalPaths.filter { !additionalPaths.contains($0) }
@@ -1267,7 +1267,7 @@ public enum WorkspaceConfigManager {
         var activation = requestedActivation(from: config)
         var trustReport = CapabilityImportTrustReport()
         reconcile(&activation, pluginRefs: config.installedPlugins ?? [], trust: capabilityTrust,
-                  modelContext: modelContext, report: &trustReport)
+                  modelContext: modelContext, report: &trustReport, installedCopy: installedCopy ?? PluginSourceIdentitySeam.current.installedCopy)
 
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
@@ -1361,7 +1361,7 @@ public enum WorkspaceConfigManager {
         WorkspaceCapabilityActivation.apply(activation, to: workspace)
         let projectedIDs = restoreActivationDetails(from: config, into: workspace, connectorsByID: connectorsByID,
                                  skillsByID: skillsByID, toolsByID: toolsByID, trust: capabilityTrust,
-                                 fileWorkspaceID: sourceWorkspaceID ?? workspace.id, sessionAccountIDs: importSession?.sharedRowIDs(in: workspace) ?? [])
+                                 fileWorkspaceID: sourceWorkspaceID ?? workspace.id, sessionAccountIDs: importSession?.sharedRowIDs(in: workspace) ?? [], held: trustReport.pluginsHeldOnRecovery)
 
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)

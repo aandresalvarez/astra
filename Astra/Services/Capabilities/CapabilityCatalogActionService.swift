@@ -64,7 +64,7 @@ struct CapabilityCatalogActionService {
     ) {
         self.installer = CapabilityInstaller(library: library, appVersion: appVersion, sourceStore: sourceStore)
         self.creationService = CapabilityPackageCreationService(library: library, appVersion: appVersion)
-        self.uninstaller = CapabilityUninstaller(library: library)
+        self.uninstaller = CapabilityUninstaller(library: library, sourceStore: sourceStore)
         self.library = library
         self.sourceStore = sourceStore
     }

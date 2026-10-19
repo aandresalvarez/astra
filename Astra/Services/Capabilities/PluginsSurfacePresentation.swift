@@ -41,6 +41,21 @@ struct PluginRow: Identifiable {
     var id: String { package.id }
 }
 
+/// A held import (`RetiredPluginActivation.pendingImport`): settings an
+/// imported workspace file, or a recovery, kept for a plugin copy this Mac
+/// doesn't have yet. Listed under "Action needed" with Discard, and Add
+/// when the installed copy is the one it waits for.
+struct PluginsSurfaceHeldImport: Equatable, Identifiable {
+    let pluginID: String
+    let name: String
+    let subtitle: String
+    /// The installed copy is the one it waits for and the plugin isn't on
+    /// here: Add brings the settings back.
+    let canAdd: Bool
+
+    var id: String { "held-import:\(pluginID)" }
+}
+
 struct PluginsSurfaceState: Equatable {
     var actionNeeded: [PluginsSurfaceRow] = []
     var ready: [PluginsSurfaceRow] = []
@@ -137,6 +152,45 @@ enum PluginsSurfacePresentation {
             }
         }
         return state
+    }
+
+    /// Each held import in `workspace`, by name. `installed` is the library;
+    /// `source(of:)` names where the installed copy came from
+    /// (`plugin-source:<id>`, nil when local), `matches` whether it is the
+    /// copy a held import waits for (`PluginPendingImport.matches`), and
+    /// `sourceName` turns a recorded source into what the screen shows.
+    static func heldImports(
+        in workspace: Workspace,
+        installed: [PluginPackage],
+        source: (PluginPackage) -> String?,
+        matches: (RetiredPluginActivation.PendingImport, PluginPackage) -> Bool,
+        sourceName: (String?) -> String
+    ) -> [PluginsSurfaceHeldImport] {
+        WorkspaceCapabilityActivation.retiredActivations(of: workspace).compactMap { entry in
+            guard let pending = entry.pendingImport else { return nil }
+            let package = installed.first { $0.id == entry.pluginID }
+            let added = WorkspaceCapabilityActivation.activation(for: entry.pluginID, in: workspace)?.isEnabled == true
+            let kept = pending.recovered == true ? "Settings this workspace had" : "Settings from an imported workspace file"
+            let subtitle: String
+            var canAdd = false
+            if let package {
+                func identity(_ value: String?) -> String? { value == "local" || value?.isEmpty == true ? nil : value }
+                if matches(pending, package) {
+                    canAdd = !added
+                    subtitle = added
+                        ? "\(kept) come back the next time ASTRA starts, or discard them."
+                        : "\(kept). Add it to bring them back, or discard them."
+                } else if identity(pending.source) != identity(source(package)) {
+                    subtitle = "\(kept) are for its copy from \(sourceName(pending.source)), and the one installed is from \(sourceName(source(package))). Discard them, or install that copy."
+                } else {
+                    subtitle = "\(kept) are for another version of it. Discard them, or install that version."
+                }
+            } else {
+                subtitle = "\(kept), waiting for it from \(sourceName(pending.source)). Install it to bring them back, or discard them."
+            }
+            return PluginsSurfaceHeldImport(pluginID: entry.pluginID, name: package?.name ?? entry.pluginID, subtitle: subtitle, canAdd: canAdd)
+        }
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     /// "1 step pending · 1 skill, 3 tools" for an added plugin with work left;

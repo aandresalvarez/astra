@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 import ASTRAModels
 
 /// How `.astra-workspace.json` carries a workspace's plugin activations.
@@ -132,9 +133,16 @@ extension WorkspaceConfigManager {
 
     /// `sourceIdentity` answers where the copy an activation recorded came
     /// from (`PluginSourceIdentitySeam` in the export).
+    ///
+    /// An activation held back from the installed copy's Update
+    /// (`awaitingUpdate`) records a digest the copy no longer has, so its
+    /// source is the installed copy's (`awaitedSource`): the one whose Update
+    /// it awaits. A source can only replace its own copy (T5), so that is
+    /// the source of the copy it recorded too.
     static func installedPluginRefs(
         for workspace: Workspace,
-        sourceIdentity: (_ pluginID: String, _ digest: String) -> String?
+        sourceIdentity: (_ pluginID: String, _ digest: String) -> String?,
+        awaitedSource: (_ pluginID: String) -> String? = { _ in nil }
     ) -> [InstalledPluginRef] {
         WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
             let accounts = activation.bindings
@@ -164,6 +172,7 @@ extension WorkspaceConfigManager {
                 templateDigests: activation.templateDigests.isEmpty ? nil : activation.templateDigests,
                 awaitingUpdate: activation.awaitingUpdate ? true : nil,
                 source: activation.recordedDigest.isEmpty ? nil : sourceIdentity(activation.pluginID, activation.recordedDigest)
+                    ?? (activation.awaitingUpdate ? awaitedSource(activation.pluginID) : nil)
             )
         }
     }
@@ -194,7 +203,8 @@ extension WorkspaceConfigManager {
         toolsByID: [String: LocalTool],
         trust: CapabilityImportTrustPolicy,
         fileWorkspaceID: UUID? = nil,
-        sessionAccountIDs: Set<String> = []
+        sessionAccountIDs: Set<String> = [],
+        held: [String] = []
     ) -> [String: String] {
         var projectedIDs: [String: String] = [:]
         for ref in config.installedPlugins ?? [] {
@@ -317,6 +327,17 @@ extension WorkspaceConfigManager {
         // a chosen file's seeds and row IDs are this workspace's no longer.
         if case .preserveRecordedState = trust, let retired = config.retiredPlugins {
             WorkspaceCapabilityActivation.restoreRetired(retired, to: workspace)
+        }
+        // An activation the workspace's own mirror recorded for a copy from
+        // another source than the one installed (`heldOnRecovery`) waits as a
+        // pending import, restored once the installed copy is from the
+        // recorded source again; recorded after the retired entries, which
+        // would replace it.
+        for ref in config.installedPlugins ?? [] where held.contains(ref.id) {
+            var pending = pendingImport(of: ref, digest: ref.digest ?? "", connectorsByID: connectorsByID, skillsByID: skillsByID,
+                                        toolsByID: toolsByID, sessionAccountIDs: sessionAccountIDs)
+            pending.recovered = true
+            WorkspaceCapabilityActivation.recordPendingImport(pending, pluginID: ref.id, in: workspace)
         }
         // The import turned on every shared row it read, the overrides the
         // mirror carries only so they can be named again included.

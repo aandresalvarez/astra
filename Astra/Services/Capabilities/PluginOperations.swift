@@ -270,6 +270,29 @@ enum PluginOperations {
         }
     }
 
+    // MARK: - Held imports
+
+    /// Discards what a workspace file's activation (or a recovery's) left
+    /// waiting for `pluginID` in `workspace` (`RetiredPluginActivation
+    /// .pendingImport`): its settings, overrides and accounts are never
+    /// restored. The rows it named stay the person's. Saved and mirrored
+    /// like every plugin-state save; a failed save puts it back.
+    static func discardPendingImport(
+        pluginID: String,
+        in workspace: Workspace,
+        modelContext: ModelContext,
+        persist: (Workspace, ModelContext) throws -> Void = persistAndExport
+    ) throws {
+        guard WorkspaceCapabilityActivation.pendingImport(pluginID: pluginID, in: workspace) != nil else { return }
+        let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
+        WorkspaceCapabilityActivation.dropPendingImport(pluginID: pluginID, in: workspace)
+        workspace.updatedAt = Date()
+        try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
+        AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+            "operation": "pending_import_discarded", "package_id": pluginID, "workspace_id": workspace.id.uuidString
+        ])
+    }
+
     // MARK: - Private
 
     private static func save(

@@ -114,6 +114,11 @@ extension WorkspaceConfigManager {
         /// differs: recorded from one source, installed here from another
         /// (or locally).
         public var pluginsFromAnotherSource: [String] = []
+        /// The workspace's own mirror (`.preserveRecordedState`): plugins
+        /// whose installed copy came from another source than the one the
+        /// activation recorded (a source, another source, or a local copy).
+        /// Held as a pending import, not activated (T5).
+        public var pluginsHeldOnRecovery: [String] = []
         public var unknownSharedRowIDs: [String] = []
         public var originStampsStripped = 0
         public var sharedRowsLocalized = 0
@@ -129,6 +134,7 @@ extension WorkspaceConfigManager {
                 "plugins_unavailable": pluginsUnavailable.joined(separator: ", "),
                 "plugins_changed": pluginsChanged.joined(separator: ", "),
                 "plugins_from_another_source": pluginsFromAnotherSource.joined(separator: ", "),
+                "plugins_held_on_recovery": pluginsHeldOnRecovery.joined(separator: ", "),
                 "unknown_shared_row_count": String(unknownSharedRowIDs.count),
                 "origin_stamps_stripped": String(originStampsStripped),
                 "shared_rows_localized": String(sharedRowsLocalized)
@@ -166,8 +172,29 @@ extension WorkspaceConfigManager {
     /// The file's source for the activation against the installed copy's;
     /// nil and "local" both mean local.
     static func isSameSource(_ ref: InstalledPluginRef, verifier: CapabilityImportVerifier) -> Bool {
-        func identity(_ value: String?) -> String? { value == "local" || value?.isEmpty == true ? nil : value }
-        return identity(ref.source) == identity(verifier.installedSources[ref.id])
+        sourceIdentity(ref.source) == sourceIdentity(verifier.installedSources[ref.id])
+    }
+
+    /// A recorded or installed source: nil and "local" both mean local.
+    static func sourceIdentity(_ value: String?) -> String? { value == "local" || value?.isEmpty == true ? nil : value }
+
+    /// The workspace's own mirror restores what it recorded, except an
+    /// activation whose plugin is installed here from another source than
+    /// the copy it recorded came from (a source's copy where it recorded a
+    /// local one, a local copy where it recorded a source's, or another
+    /// source's): that copy would inherit its settings and accounts, so it
+    /// is held as a pending import, kept off (T5). A different digest from
+    /// the same source is an Update the activation awaits, as before. Not
+    /// installed, or nothing to tell (`installedCopy` nil), restores as
+    /// recorded.
+    static func heldOnRecovery(
+        _ pluginRefs: [InstalledPluginRef], installedCopy: (String) -> PluginInstalledCopy?
+    ) -> [String] {
+        pluginRefs.compactMap { ref in
+            guard case .installed(let source)? = installedCopy(ref.id),
+                  sourceIdentity(source) != sourceIdentity(ref.source) else { return nil }
+            return ref.id
+        }
     }
 
     @MainActor
@@ -176,9 +203,18 @@ extension WorkspaceConfigManager {
         pluginRefs: [InstalledPluginRef],
         trust: CapabilityImportTrustPolicy,
         modelContext: ModelContext,
-        report: inout CapabilityImportTrustReport
+        report: inout CapabilityImportTrustReport,
+        installedCopy: (String) -> PluginInstalledCopy? = PluginSourceIdentitySeam.current.installedCopy
     ) {
-        guard case .validate(let verifier) = trust else { return }
+        guard case .validate(let verifier) = trust else {
+            let held = Set(heldOnRecovery(pluginRefs, installedCopy: installedCopy))
+            report.pluginsHeldOnRecovery = state.pluginIDs.filter(held.contains)
+            state.capabilityIDs.removeAll(where: held.contains)
+            let kept = state.pluginIDs.indices.filter { !held.contains(state.pluginIDs[$0]) }
+            state.pluginVersions = kept.map { $0 < state.pluginVersions.count ? state.pluginVersions[$0] : "" }
+            state.pluginIDs = kept.map { state.pluginIDs[$0] }
+            return
+        }
         report.capabilitiesUnavailable = state.capabilityIDs.filter { !verifier.approvedPackageIDs.contains($0) }
         state.capabilityIDs.removeAll { !verifier.approvedPackageIDs.contains($0) }
         report.packsUnavailable = state.packIDs.filter { !verifier.availablePackIDs.contains($0) }

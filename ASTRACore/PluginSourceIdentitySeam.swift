@@ -15,6 +15,27 @@ public protocol PluginSourceIdentityResolving: Sendable {
     /// `plugin-source:<id>` when the copy of `pluginID` with `digest` was
     /// installed by that source, nil when it is local.
     static func mirrorIdentity(pluginID: String, digest: String) -> String?
+    /// The copy of `pluginID` installed now and where it came from; nil
+    /// when nothing here can tell (no plugin source store).
+    static func installedCopy(pluginID: String) -> PluginInstalledCopy?
+}
+
+extension PluginSourceIdentityResolving {
+    public static func installedCopy(pluginID: String) -> PluginInstalledCopy? { nil }
+}
+
+/// The library's copy of a plugin, as the workspace mirror's source
+/// identity names it (R5, T5).
+public enum PluginInstalledCopy: Equatable, Sendable {
+    case notInstalled
+    /// `source` is `plugin-source:<id>`, or nil for a local copy.
+    case installed(source: String?)
+
+    /// The installed copy's source, nil when local or not installed.
+    public var source: String? {
+        if case .installed(let source) = self { return source }
+        return nil
+    }
 }
 
 public enum PluginSourceIdentitySeam {

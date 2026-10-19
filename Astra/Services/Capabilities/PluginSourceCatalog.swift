@@ -159,11 +159,17 @@ enum PluginSourceCatalog {
         let displayChange = PluginSourceDisplayText.clean(&package) ?? nameChange
         package.sourceMetadata = source.metadata
         package.governance = .localDraft()
-        // A source plugin's checks and repairs run commands; none runs until
-        // the read-only rule covers them (T9). It shows as not checked.
-        if !package.prerequisites.isEmpty {
-            unsupported.append(package.prerequisites.count == 1 ? "1 setup check (not run)" : "\(package.prerequisites.count) setup checks (not run)")
-            package.prerequisites = []
+        // A source plugin's own checks never run (T9): a known CLI's is
+        // replaced with ASTRA's own read-only check for it, so a repair is
+        // still verified and its sign-in rule still knows the CLI; any other
+        // is dropped and shows as not checked.
+        let checks = Self.replacingSetupChecks(package.prerequisites)
+        package.prerequisites = checks.kept
+        if checks.replaced > 0 {
+            unsupported.append(checks.replaced == 1 ? "1 setup check (ASTRA runs its own check instead)" : "\(checks.replaced) setup checks (ASTRA runs its own checks instead)")
+        }
+        if checks.dropped > 0 {
+            unsupported.append(checks.dropped == 1 ? "1 setup check (not run)" : "\(checks.dropped) setup checks (not run)")
         }
         let digest = contentDigest(package)
         var plugin = SourcedPlugin(
@@ -187,6 +193,26 @@ enum PluginSourceCatalog {
         )
         plugin.problem = report.blockers.first.map { "\($0.title): \($0.message)" }
         return plugin
+    }
+
+    /// A source plugin's setup checks with each one's check replaced by
+    /// ASTRA's own for its CLI (`HealthCheckPolicy.ownCheck`): kept only for
+    /// a known CLI named bare (found on PATH, as ASTRA's own checks are),
+    /// its contextual check and semantic test dropped. Its name, purpose
+    /// and install and sign-in hints stay: a repair built from them is
+    /// still held to the sign-in rule (`RepairAction.isSafeTerminalCommand`).
+    /// The rest are dropped.
+    static func replacingSetupChecks(_ prerequisites: [CLIPrerequisite]) -> (kept: [CLIPrerequisite], replaced: Int, dropped: Int) {
+        var kept: [CLIPrerequisite] = []
+        for prerequisite in prerequisites {
+            guard !prerequisite.binary.contains("/"), let own = HealthCheckPolicy.ownCheck(forCLI: prerequisite.binary) else { continue }
+            var replaced = prerequisite
+            replaced.livenessArgs = own
+            replaced.semantic = nil
+            replaced.contextualCheck = nil
+            kept.append(replaced)
+        }
+        return (kept, kept.count, prerequisites.count - kept.count)
     }
 
     /// A package's digest as the library holds it: filed as local, with

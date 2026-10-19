@@ -20,7 +20,11 @@ enum PluginPendingImport {
         provenance: [String: PluginSourceStore.Provenance]
     ) -> Bool {
         let approval = (try? CapabilityApprovalDigest.digest(for: package)) ?? ""
-        guard pending.digest == PluginDefinitionDigest.content(of: package) || (!approval.isEmpty && pending.digest == approval) else {
+        // One held on recovery of the workspace's own mirror needs the same
+        // source only: another digest from it is the Update it awaited.
+        guard pending.recovered == true
+            || pending.digest == PluginDefinitionDigest.content(of: package)
+            || (!approval.isEmpty && pending.digest == approval) else {
             return false
         }
         func identity(_ value: String?) -> String? { value == "local" || value?.isEmpty == true ? nil : value }

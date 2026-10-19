@@ -40,15 +40,29 @@ struct PluginTemplateIDsAndMirrorsTests {
 
         try CapabilityUninstaller(library: env.library).remove(package, modelContext: env.context)
         #expect(!env.workspace.templates.contains { $0.id == templateID })
-        #expect(WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: env.workspace) == [
+        #expect(WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: env.workspace, addingFrom: nil) == [
             CapabilityResourceOrigin.componentID(for: package.templates[0]): templateID
         ])
+        // Only a copy from the removed one's source gets the ID back (T5).
+        #expect(WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: env.workspace, addingFrom: "plugin-source:acme").isEmpty)
 
         try env.install(package)
         let back = try #require(env.workspace.templates.first { $0.id == schedule.templateID })
         #expect(back.originPackageID == package.id && back.mainGoal == "Write the weekly report")
         #expect(authored.mainGoal == "My own goal" && authored.originPackageID == nil)
         #expect(env.workspace.templates.filter { !$0.isDeleted }.count == 2)
+
+        // Removed as a source's copy and added back as a local file's: the
+        // schedule's template ID is not reused; the new copy writes its own.
+        let store = PluginSourceStore(root: env.root.appendingPathComponent("PluginSources", isDirectory: true))
+        try store.recordProvenance(pluginID: package.id, sourceID: "acme", digest: PluginSourceCatalog.contentDigest(try #require(env.library.installedPackage(id: package.id))))
+        try CapabilityUninstaller(library: env.library, sourceStore: store).remove(package, modelContext: env.context)
+        #expect(WorkspaceCapabilityActivation.retiredActivations(of: env.workspace).first { $0.pluginID == package.id }?.source == "plugin-source:acme")
+        try store.forgetProvenance(pluginID: package.id)
+        try CapabilityInstaller(library: env.library, appVersion: SemanticVersion(1, 0, 0), sourceStore: store)
+            .install(package, into: env.workspace, modelContext: env.context, announceCatalogMutation: false)
+        #expect(!env.workspace.templates.contains { $0.id == templateID && !$0.isDeleted })
+        #expect(env.workspace.templates.filter { !$0.isDeleted && $0.originPackageID == package.id }.count == 1)
     }
 
     /// Two workspaces, each with a mirror folder: the plugin's own, and one

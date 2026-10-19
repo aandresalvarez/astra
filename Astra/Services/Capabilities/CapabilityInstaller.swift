@@ -264,9 +264,13 @@ struct CapabilityInstaller {
             // migration kept while it was missing included.
             let componentIDs = PluginRuntimeProjection.componentIDs(of: package)
             // The accounts its components created here before a Remove come
-            // back bound, stamped again, rather than as duplicates.
-            let retainedAccounts = WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: workspace)
-            let retainedTemplateIDs = WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: workspace)
+            // back bound, stamped again, rather than as duplicates: only to a
+            // copy from the source the removed one came from (T5).
+            let addingFrom = sourceStore.installedCopy(of: library.installedPackage(id: package.id)).source
+            let retainedAccounts = WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: workspace, addingFrom: addingFrom)
+            // So do its templates' IDs: a schedule names one, and only the
+            // same source's copy may be what it runs.
+            let retainedTemplateIDs = WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: workspace, addingFrom: addingFrom)
             // A chosen file's activation that waited for this copy (same
             // digest, same source) gets its settings, overrides and accounts,
             // before reinstating forgets the plugin's retired record.

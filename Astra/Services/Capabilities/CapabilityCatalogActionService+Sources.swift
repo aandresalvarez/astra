@@ -21,6 +21,33 @@ extension CapabilityCatalogActionService {
         try await coordinator.remove(source)
     }
 
+    /// The imports held in `workspace` (`RetiredPluginActivation
+    /// .pendingImport`) as the Plugins screen lists them under "Action
+    /// needed": what each waits for, whether Add brings it back now, and
+    /// Discard either way (`PluginsSurfacePresentation.heldImports`).
+    func heldImports(in workspace: Workspace, coordinator: PluginSourceCoordinator = .shared) -> [PluginsSurfaceHeldImport] {
+        let provenance = coordinator.store.provenance()
+        let store = coordinator.store
+        return PluginsSurfacePresentation.heldImports(
+            in: workspace,
+            installed: library.installedPackages(),
+            source: { store.installedCopy(of: $0).source },
+            matches: { PluginPendingImport.matches($0, installed: $1, provenance: provenance) },
+            sourceName: { identity in
+                guard let identity, identity != "local" else { return "a local file" }
+                let id = identity.hasPrefix("\(PluginSource.metadataKind):") ? String(identity.dropFirst(PluginSource.metadataKind.count + 1)) : identity
+                return coordinator.listings.first { $0.source.id == id }?.source.shownName ?? "another plugin source"
+            }
+        )
+    }
+
+    /// Discards a held import's payload in `workspace` (an "Action needed"
+    /// row's Discard, `PluginOperations.discardPendingImport`).
+    func discardPendingImport(pluginID: String, workspace: Workspace, modelContext: ModelContext) throws {
+        try PluginOperations.discardPendingImport(pluginID: pluginID, in: workspace, modelContext: modelContext)
+        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+    }
+
     /// The validation report a source plugin's review shows.
     func review(_ plugin: SourcedPlugin) -> CapabilityPackageValidationReport? {
         guard let package = plugin.package else { return nil }
