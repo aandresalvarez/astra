@@ -331,9 +331,12 @@ struct CapabilityInstaller {
                 let bound = activation.accounts(forComponent: componentID).first
                 // What the inputs change: with a bound account, only what
                 // differs from it (`AccountSetupEdits`); the rest it keeps.
+                // The account's structure, entered as declared fields: its
+                // endpoint (validated) and its name, never a setting or secret.
+                let structure = try AccountStructure(pluginConnector, inputs: ownConfigInputs)
                 let edits = AccountSetupEdits(
                     pluginConnector, bound: bound, configInputs: ownConfigInputs,
-                    baseURLOverride: PluginSetupInputs.baseURL(in: baseURLOverrides, for: pluginConnector)
+                    baseURLOverride: PluginSetupInputs.baseURL(in: baseURLOverrides, for: pluginConnector) ?? structure.baseURL
                 )
                 let fields = StoredConnectorFields(
                     pluginConnector, in: package,
@@ -353,7 +356,7 @@ struct CapabilityInstaller {
                     credentialInputs: fields.credentialInputs,
                     configInputs: edits.config,
                     baseURLOverridden: edits.baseURL != nil
-                )
+                ) || structure.alias.map { $0 != bound?.name } ?? false
                 // The account replacing this component's default takes its
                 // place as the workspace's default for the service.
                 let inheritsDefault = activation.bindings.contains {
@@ -381,6 +384,7 @@ struct CapabilityInstaller {
                         configInputs: edits.accountConfig,
                         extraConfigKeys: packageEnvironmentKeys,
                         baseURL: baseURL,
+                        alias: structure.alias,
                         allowCredentialUserInteraction: allowCredentialUserInteraction
                     )
                     if let bound, bound.id != account.id, bound.isGlobal {
@@ -691,6 +695,7 @@ struct CapabilityInstaller {
         configInputs: [String: String],
         extraConfigKeys: [String],
         baseURL: String,
+        alias: String? = nil,
         allowCredentialUserInteraction: Bool
     ) throws -> Connector {
         let pluginConnector = fields.connector
@@ -725,7 +730,7 @@ struct CapabilityInstaller {
                 credentialInputs[key] = plain
             }
         }
-        connector.name = pluginConnector.name
+        connector.name = alias ?? pluginConnector.name
         connector.serviceType = pluginConnector.serviceType
         connector.icon = pluginConnector.icon
         connector.connectorDescription = pluginConnector.description
@@ -862,11 +867,33 @@ struct CapabilityInstaller {
         extraConfigKeys: [String],
         configInputs: [String: String]
     ) -> [String] {
-        var keys = hints.map(\.key)
+        var keys = hints.filter { !$0.isAccountStructure }.map(\.key)
         for key in extraConfigKeys where configInputs[key] != nil && !keys.contains(key) {
             keys.append(key)
         }
         return keys
+    }
+
+    /// The fields a connector declares as its account's structure
+    /// (`account.baseURL`, `account.alias`), from one component's inputs: the
+    /// endpoint must be one credentials can be sent to
+    /// (`PluginConnectorFieldTrust.endpointProblem`), else the setup is
+    /// refused and says why.
+    struct AccountStructure {
+        let baseURL: String?
+        let alias: String?
+
+        init(_ pluginConnector: PluginConnector, inputs: [String: String]) throws {
+            func value(_ field: PluginConnector.ConfigHint?) -> String? {
+                let trimmed = field.flatMap { inputs[$0.key] }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            baseURL = value(pluginConnector.accountBaseURLField)
+            alias = value(pluginConnector.accountAliasField)
+            if let baseURL, let problem = PluginConnectorFieldTrust.endpointProblem(baseURL) {
+                throw InstallationError.blocked(["\(pluginConnector.name): \(problem)"])
+            }
+        }
     }
 
     /// The setup inputs that change a component's bound account. A setup

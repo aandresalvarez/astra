@@ -2636,7 +2636,8 @@ struct PluginInstallSheet: View {
     }
 
     private func resolvedBaseURL(for connector: PluginConnector) -> String {
-        baseURLValues[connector.setupComponentID]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? connector.baseURL
+        baseURLValues[connector.setupComponentID]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? connector.accountBaseURLField.flatMap { configValues[PluginSetupInputs.key($0.key, component: connector.setupComponentID)] } ?? connector.baseURL
     }
 
     private func fieldKey(_ key: String, of connector: PluginConnector) -> String {

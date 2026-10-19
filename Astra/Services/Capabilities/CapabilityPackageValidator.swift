@@ -572,6 +572,15 @@ enum CapabilityPackageValidator {
                     component: name
                 ))
             }
+            // One endpoint and one name per account.
+            for storage in [PluginConnector.ConfigHint.accountBaseURL, PluginConnector.ConfigHint.accountAlias]
+            where connector.configHints.filter({ $0.storage == storage }).count > 1 {
+                let name = displayName(connector.name, fallback: connector.serviceType)
+                issues.append(issue(
+                    .blocker, .invalidComponentIdentity, "Two fields for one account value",
+                    "\(name) declares more than one field stored as \(storage).", component: name
+                ))
+            }
             // Credentials are stored under their canonical key: two that
             // differ only in case would be one Keychain item.
             let stored = connector.credentialHints.map(\.key)
