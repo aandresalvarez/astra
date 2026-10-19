@@ -37,7 +37,9 @@ struct CapabilityUninstaller {
         _ requestedPackage: PluginPackage,
         modelContext: ModelContext,
         persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
-        connectorCleanupStore: ConnectorCredentialCleanupStore? = nil
+        connectorCleanupStore: ConnectorCredentialCleanupStore? = nil,
+        secretCleanupOutbox: PluginSecretCleanupOutbox? = nil,
+        exportMirror: (@MainActor (Workspace) -> Bool)? = nil
     ) throws -> RemovalResult {
         let installedPackages = library.installedPackages()
         guard var package = installedPackages.first(where: { $0.id == requestedPackage.id }) else {
@@ -194,12 +196,23 @@ struct CapabilityUninstaller {
         // The connectors' cleanups are recorded before the save and run, read
         // after it, so a connector sharing a namespace with one removed here
         // keeps its credentials; any that don't clear are retried at launch.
+        let changedWorkspaces = workspaces.filter { result.disabledWorkspaceIDs.contains($0.id) }
+        let exportMirror = exportMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
         guard ConnectorCredentialCleanup.deleteThenClean(
             pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
             save: {
-                PluginSecretCleanupOutbox.deleteThenClean(activationSecretSkillIDs, modelContext: modelContext) {
-                    persist(nil, modelContext)
-                }
+                PluginSecretCleanupOutbox.deleteThenClean(
+                    activationSecretSkillIDs, modelContext: modelContext, outbox: secretCleanupOutbox,
+                    save: { persist(nil, modelContext) },
+                    beforeSettling: {
+                        // Every changed mirror is rewritten before the
+                        // activations' secrets are cleaned: a stale one still
+                        // names the removed activation, and a recovery from it
+                        // would bring it back without them. One that can't be
+                        // written keeps the cleanup pending (`resumePending`).
+                        changedWorkspaces.reduce(true) { written, workspace in exportMirror(workspace) && written }
+                    }
+                )
             }
         ) else {
             // Abort before touching the keychain or the library file: the
@@ -210,9 +223,6 @@ struct CapabilityUninstaller {
             throw UninstallError.saveFailed(packageID: package.id)
         }
         pendingKeychainCleanups.forEach { $0() }
-        for workspace in workspaces where result.disabledWorkspaceIDs.contains(workspace.id) {
-            WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
-        }
 
         // File removal is the last step and deliberately non-throwing: the
         // deletes are committed and the keychain is wiped, so the package is

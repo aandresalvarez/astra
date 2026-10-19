@@ -100,20 +100,19 @@ struct WorkspaceCapabilities {
             return connector.workspace?.id == workspace.id
         }
         // An account bound to one of this workspace's plugins is in scope only
-        // through its binding, so turning the plugin off takes it out.
-        let boundAccountIDs = boundAccountIDs
+        // through its binding, so turning the plugin off takes it out, unless
+        // the workspace also lists it on its own (as the runtime does,
+        // `TaskCapabilityResolver.allConnectors`).
+        let bindingOnly = WorkspaceCapabilityActivation.bindingOnlyAccountIDs(of: workspace)
         let authored = (workspaceConnectors + attached + enabledGlobalConnectors)
-            .filter { !boundAccountIDs.contains($0.id) }
+            .filter { !bindingOnly.contains($0.id) }
         return uniqueConnectors(authored + projection.connectors)
     }
 
     /// Connector rows bound as accounts to any of this workspace's
     /// activations, on or off.
     var boundAccountIDs: Set<UUID> {
-        Set(WorkspaceCapabilityActivation.activations(of: workspace)
-            .flatMap(\.bindings)
-            .filter { !$0.isDeleted }
-            .compactMap { $0.account?.id })
+        WorkspaceCapabilityActivation.boundAccountIDs(of: workspace)
     }
 
     var workspaceTools: [LocalTool] {

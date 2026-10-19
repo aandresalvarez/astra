@@ -204,25 +204,26 @@ struct TaskCapabilityResolver {
         let projectedIDs = Set(enabledPackageConnectors().map(\.id))
         // An account bound to one of this workspace's plugins reaches a run
         // only through its binding (the projection), so turning the plugin
-        // off takes it out of scope.
-        let boundAccountIDs = boundAccountIDs()
+        // off takes it out of scope, unless the workspace also lists it on
+        // its own (`WorkspaceCapabilityActivation.bindingOnlyAccountIDs`).
+        let bindingOnly = bindingOnlyAccountIDs()
         let fromSkills = (pinnedSkills() + packageSkills).flatMap(\.connectors).filter { connector in
             if projectedIDs.contains(connector.id) { return true }
-            guard !boundAccountIDs.contains(connector.id) else { return false }
+            guard !bindingOnly.contains(connector.id) else { return false }
             if connector.isGlobal {
                 return enabledGlobalIDs.contains(connector.id.uuidString)
             }
             return connector.workspace?.id == workspaceID
         }
         let standalone = task.workspace?.connectors.filter {
-            $0.skill == nil && !$0.isGlobal && !boundAccountIDs.contains($0.id)
+            $0.skill == nil && !$0.isGlobal && !bindingOnly.contains($0.id)
         } ?? []
         var all = fromSkills + enabledPackageConnectors() + standalone
 
         if let ws = task.workspace, !ws.enabledGlobalConnectorIDs.isEmpty {
             let enabledIDs = Set(ws.enabledGlobalConnectorIDs)
             all += globalConnectors().filter {
-                enabledIDs.contains($0.id.uuidString) && !boundAccountIDs.contains($0.id)
+                enabledIDs.contains($0.id.uuidString) && !bindingOnly.contains($0.id)
             }
         }
 
@@ -316,12 +317,8 @@ struct TaskCapabilityResolver {
         task.workspace.map(WorkspaceCapabilityActivation.overridingRowIDs(of:)) ?? []
     }
 
-    private func boundAccountIDs() -> Set<UUID> {
-        guard let workspace = task.workspace else { return [] }
-        return Set(WorkspaceCapabilityActivation.activations(of: workspace)
-            .flatMap(\.bindings)
-            .filter { !$0.isDeleted }
-            .compactMap { $0.account?.id })
+    private func bindingOnlyAccountIDs() -> Set<UUID> {
+        task.workspace.map(WorkspaceCapabilityActivation.bindingOnlyAccountIDs(of:)) ?? []
     }
 
     private func enabledCapabilityPackages() -> [PluginPackage] {

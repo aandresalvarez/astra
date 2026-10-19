@@ -264,8 +264,11 @@ struct CapabilityInstaller {
             WorkspaceCapabilityActivation.releaseUndeclaredOverrides(on: activation, declaring: componentIDs, in: workspace)
             WorkspaceCapabilityActivation.setKnownComponents(activation.knownComponentIDs + componentIDs, on: activation)
             // An account bound to a connector component this version no
-            // longer declares is released (the account itself stays), so it
-            // is back in the workspace's own scope rather than unreachable.
+            // longer declares is released (the account itself stays, listed
+            // under "Accounts not used by a plugin"). The workspace's own
+            // account is one of its connectors again; a shared one stays in
+            // scope only if the workspace lists it on its own, since a
+            // binding never turned it on there (`bindingOnlyAccountIDs`).
             let declaredConnectors = Set(package.connectors.map { CapabilityResourceOrigin.componentID(for: $0) })
             for binding in activation.bindings where !binding.isDeleted && !declaredConnectors.contains(binding.componentID) {
                 if let account = binding.account {

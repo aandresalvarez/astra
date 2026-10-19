@@ -395,6 +395,54 @@ struct WorkspaceCapabilityActivationTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("A shared account the workspace lists on its own counts when a new account's name is checked")
+    @MainActor
+    func listedSharedAccountTakesPartInAliasChecks() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        // Listed here directly, bound by no plugin.
+        let listed = Connector(name: "Stanford", serviceType: "jira")
+        listed.isGlobal = true
+        let unlisted = Connector(name: "Other", serviceType: "jira")
+        unlisted.isGlobal = true
+        let local = Connector(name: "stanford", serviceType: "jira")
+        [listed, unlisted, local].forEach(context.insert)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableGlobalConnector(listed.id.uuidString)
+            $0.enableCapability("jira-workflow")
+        }
+        #expect(WorkspaceCapabilityActivation.uniqueAlias("Stanford", serviceType: "jira", in: workspace) == "Stanford 2")
+        #expect(WorkspaceCapabilityActivation.uniqueAlias("Other", serviceType: "jira", in: workspace) == "Other")
+        local.workspace = workspace
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(local, toComponent: "connector:jira:jira", of: activation)
+        #expect(local.name == "stanford 2")
+        #expect(listed.name == "Stanford")
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("Sharing a bound account doesn't list it, so it still leaves with its plugin")
+    @MainActor
+    func promotingABoundAccountKeepsItBindingOnly() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let bound = Connector(name: "Bound", serviceType: "jira")
+        let free = Connector(name: "Free", serviceType: "jira")
+        [bound, free].forEach(context.insert)
+        bound.workspace = workspace
+        free.workspace = workspace
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability("jira-workflow") }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(bound, toComponent: "connector:jira:jira", of: activation)
+        CapabilitySharing.promoteToShared(bound, in: workspace)
+        CapabilitySharing.promoteToShared(free, in: workspace)
+        // The unbound account needs the list to stay in scope; the bound one
+        // has its binding, and listed it would outlive its plugin.
+        #expect(WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs == [free.id.uuidString])
+        #expect(WorkspaceCapabilityActivation.bindingOnlyAccountIDs(of: workspace) == [bound.id])
+        withExtendedLifetime(container) {}
+    }
+
     @Test("A shared account that can't be renamed keeps its collision alias on the binding, durably")
     @MainActor
     func sharedAccountCollisionAliasIsDurable() throws {
@@ -430,9 +478,12 @@ struct WorkspaceCapabilityActivationTests {
         WorkspaceCapabilityActivation.mutate(other) { $0.enableCapability(jira.id) }
         let otherActivation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: other))
         WorkspaceCapabilityActivation.bind(boundElsewhere, toComponent: component, of: otherActivation)
+        // Joining the other workspace, it met the shared row that one lists
+        // by itself under the same name.
+        #expect(boundElsewhere.name == "Stanford 2")
         WorkspaceCapabilityActivation.bind(boundElsewhere, toComponent: "connector:jira:ops", of: activation)
-        #expect(boundElsewhere.name == "Stanford")
-        #expect(WorkspaceCapabilityActivation.alias(of: boundElsewhere, in: joining) == "Stanford 3")
+        #expect(boundElsewhere.name == "Stanford 2")
+        #expect(WorkspaceCapabilityActivation.alias(of: boundElsewhere, in: joining) == "Stanford 2 2")
         WorkspaceCapabilityActivation.unbind(boundElsewhere, from: activation)
         // The other account going away doesn't flip it back.
         context.delete(local)

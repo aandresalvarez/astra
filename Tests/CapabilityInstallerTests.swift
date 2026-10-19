@@ -442,6 +442,56 @@ struct CapabilityInstallerTests {
         #expect(workspace.enabledCapabilityIDs == [package.id])
     }
 
+    @Test("An Update that drops a connector releases a shared account into scope only where the workspace lists it")
+    func updateReleasesSharedAccountsByTheirOwnListing() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Released Shared", primaryPath: "/tmp/released-shared-capability")
+        context.insert(workspace)
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let package = makeAnalystCapabilityPackage()
+        let installer = CapabilityInstaller(library: library)
+        try installer.install(package, into: workspace, modelContext: context)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        let componentID = CapabilityResourceOrigin.componentID(for: package.connectors[0])
+        let own = try #require(activation.accounts(forComponent: componentID).first)
+        func shared(_ name: String) -> Connector {
+            let connector = Connector(name: name, serviceType: "google_cloud", baseURL: "https://bigquery.googleapis.com", authMethod: "none")
+            connector.isGlobal = true
+            context.insert(connector)
+            WorkspaceCapabilityActivation.bind(connector, toComponent: componentID, of: activation)
+            return connector
+        }
+        let listed = shared("Listed GCP")
+        let bindingOnly = shared("Bound GCP")
+        CapabilitySharing.enableShared(listed, in: workspace)
+        try context.save()
+
+        var next = package
+        next.version = "2.0.0"
+        next.connectors = []
+        try installer.install(next, into: workspace, modelContext: context)
+
+        #expect(activation.bindings.filter { !$0.isDeleted }.isEmpty)
+        // A binding never turned a shared account on here, so releasing one
+        // doesn't either; the list keeps only what the person listed.
+        #expect(WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs == [listed.id.uuidString])
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace, globalConnectors: [listed, bindingOnly], packageDefinitions: [next]
+        )
+        let active = Set(capabilities.activeConnectors.map(\.id))
+        #expect(active.contains(listed.id))
+        #expect(!active.contains(bindingOnly.id))
+        // The workspace's own account is one of its connectors again.
+        #expect(active.contains(own.id))
+        let task = AgentTask(title: "Query", goal: "Run a BigQuery query", workspace: workspace)
+        context.insert(task)
+        let runtime = Set(TaskCapabilityResolver(task: task).allConnectors.map(\.id))
+        #expect(runtime.contains(listed.id))
+        #expect(!runtime.contains(bindingOnly.id))
+    }
+
     @Test("Add ignores legacy plugin rows instead of rewriting them")
     func addLeavesLegacyRowsAlone() throws {
         let container = try makeCapabilityInstallerContainer()
