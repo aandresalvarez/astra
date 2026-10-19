@@ -454,6 +454,49 @@ struct CLISessionExpiryTests {
         #expect(monitor.runtimeStopReason == nil)
     }
 
+    @Test("A backgrounded CLI's failure is masked, even with nothing after it")
+    func trailingBackgroundMasksTheCLI() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in ["gh auth status &", "gcloud projects list 2>&1 &", "(gh auth status) &", "{ gh auth status; } &"] {
+            let content = command.hasPrefix("gcloud") ? gcloudReauth : ghLoggedOut
+            #expect(CLISessionExpiryClassifier.stop(content: content, command: command, failed: false) != nil, "missed: \(command)")
+        }
+        // A trailing `;` leaves the CLI's status the line's.
+        #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: "gh auth status;", failed: false) == nil)
+    }
+
+    @Test("A CLI in a brace group runs, and the operator after the group decides whether it is masked")
+    func braceGroupsRunTheCLI() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in ["{ gh auth status; }", "{ gh auth status; } 2>&1", "cd /tmp && { gh auth status; }"] {
+            #expect(CLISessionExpiryClassifier.runs("gh", in: command), "not run: \(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) != nil, "missed failed: \(command)")
+            // The group exits with gh's status: a success is not masked.
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) == nil, "stopped: \(command)")
+        }
+        for command in ["{ gh auth status; } || true", "{ gh auth status; } 2>&1 | cat", "{ echo start; gh auth status; echo end; }"] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) != nil, "missed: \(command)")
+        }
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "{ echo gh; }"))
+    }
+
+    @Test("gh calls that name different hosts leave the stop untargeted")
+    func disagreeingGitHubHostsStayUntargeted() throws {
+        let output = "HTTP 401: Bad credentials (https://second.example.com/api/v3/user)"
+        for command in [
+            "gh auth status --hostname first.example; gh auth status --hostname second.example.com",
+            "gh api user; gh api user --hostname second.example.com",
+            "GH_HOST=first.example gh api user && gh pr list -R second.example.com/team/app"
+        ] {
+            #expect(CLISessionExpiryClassifier.gitHubHost(in: command) == nil, "\(command)")
+            #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.gitHub, "\(command)")
+        }
+        // Calls that agree keep their host.
+        let agreeing = "gh auth status --hostname second.example.com; gh api user --hostname second.example.com"
+        #expect(CLISessionExpiryClassifier.gitHubHost(in: agreeing) == "second.example.com")
+        #expect(CLISessionExpiryClassifier.gitHubHost(in: "cd /tmp && GH_HOST=second.example.com gh api user") == "second.example.com")
+    }
+
     @Test("A shell-negated CLI runs, and its failure is the line's success")
     func shellNegationMasksTheCLI() {
         let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
