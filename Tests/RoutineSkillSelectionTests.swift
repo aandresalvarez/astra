@@ -74,6 +74,33 @@ struct RoutineSkillSelectionTests {
         #expect(!unnamed.contains(pinned.id))
     }
 
+    @Test("A routine's selection is checked against durable state when it is saved")
+    func selectionIsValidatedAtSave() throws {
+        let fixture = try PluginMigrationFixture()
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let globalSkills = try context.fetch(FetchDescriptor<Skill>()).filter(\.isGlobal)
+        let projected = try #require(WorkspaceCapabilities.routineSkills(in: a, globalSkills: globalSkills)
+            .first { $0.modelContext == nil })
+        let authored = Skill(name: "Release notes", skillDescription: "Writes release notes", allowedTools: ["Read"])
+        authored.workspace = a
+        context.insert(authored)
+        let selection = [projected.id.uuidString, authored.id.uuidString]
+        #expect(RoutineSkillCatalog.validatedSelection(selection, in: a, globalSkills: globalSkills) == selection)
+        // The row was deleted while the editor stayed open on its stale catalog.
+        context.delete(authored)
+        try context.save()
+        #expect(RoutineSkillCatalog.validatedSelection(selection, in: a, globalSkills: globalSkills) == [projected.id.uuidString])
+        // The plugin was turned off meanwhile: its skill is no longer offered.
+        _ = CapabilityActivationDisabler().disable(
+            fixture.gcloud, in: a,
+            capabilities: WorkspaceCapabilities(workspace: a, globalSkills: globalSkills, packageDefinitions: fixture.packages),
+            modelContext: context, availablePackages: fixture.packages
+        )
+        #expect(RoutineSkillCatalog.validatedSelection(selection, in: a, globalSkills: globalSkills).isEmpty)
+    }
+
     @Test("Editors resolve routine skills against the catalog they loaded, not the library")
     func editorsResolveAgainstTheirLoadedCatalog() throws {
         let fixture = try PluginMigrationFixture()
