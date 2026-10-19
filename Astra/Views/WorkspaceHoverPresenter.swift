@@ -67,8 +67,10 @@ private struct WorkspaceHoverAnchor<Card: View>: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) {
         let presenter = context.coordinator
         presenter.anchor = view
-        presenter.content = AnyView(card { [weak presenter] in presenter?.dismiss() }
-            .onHover { [weak presenter] in presenter?.updateCardHover($0) })
+        presenter.content.update { [weak presenter] in
+            AnyView(card { [weak presenter] in presenter?.dismiss() }
+                .onHover { [weak presenter] in presenter?.updateCardHover($0) })
+        }
         presenter.update(rowHovered: isHovered, explicitRequest: explicitRequest)
     }
 
@@ -85,9 +87,7 @@ private struct WorkspaceHoverAnchor<Card: View>: NSViewRepresentable {
 @MainActor
 final class WorkspaceHoverPresenter {
     weak var anchor: NSView?
-    var content = AnyView(EmptyView()) {
-        didSet { host?.rootView = content }
-    }
+    let content = WorkspaceHoverContent()
     private(set) var state = WorkspaceHoverState()
     private(set) var panel: NSPanel?
     private var host: NSHostingView<AnyView>?
@@ -139,7 +139,8 @@ final class WorkspaceHoverPresenter {
         }
         guard let anchor, let parent = anchor.window,
               parent.isVisible, NSApp.isActive else { return }
-        let host = WorkspaceHoverHostView(rootView: content)
+        let host = WorkspaceHoverHostView(rootView: AnyView(EmptyView()))
+        content.attach(to: host)
         let size = host.fittingSize
         let row = parent.convertToScreen(anchor.convert(anchor.bounds, to: nil))
         let screen = parent.screen?.visibleFrame ?? row
@@ -189,6 +190,7 @@ final class WorkspaceHoverPresenter {
             panel.contentView = nil
         }
         panel = nil
+        content.detach()
         host = nil
     }
 }
