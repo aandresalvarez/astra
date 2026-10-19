@@ -493,6 +493,13 @@ Each is a decision R1 implements and its fixture tests.
   re-check applies the same rule; `CapabilityPackageValidator` blocks it at
   import ("Unsafe health check"). Every bundled check passes (test-pinned).
 - Retry after a repair resumes the provider session (already on `#508`).
+  A pasted `docker run …` MCP target gets the daemon-aware Docker
+  prerequisite (`docker version`/`info`), never `docker --version`, which
+  reports only the client. A gcloud ADC command is recognized with
+  gcloud-wide flags and their values (`--project team`, `--account …`) and
+  an `alpha`/`beta` track before `auth application-default`. A
+  prerequisite's ID encodes its fields structurally, so an argument value
+  can't collide with the `:semantic=` metadata.
 
 ### UI
 
@@ -800,6 +807,32 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   and turning on a shared account. It writes the mirror of the saving
   workspace and of every workspace that carries a changed account. Paths
   that also delete secrets still write their mirrors before the deletion.
+- **Remove waits for mirrors.** Remove settles the activations' secret
+  cleanup only after every changed workspace mirror is rewritten
+  synchronously; an unwritten mirror keeps the cleanup pending, and
+  `resumePending` re-exports a stored workspace's mirror before cleaning a
+  namespace an activation it lists derives.
+- **Listing is independent of binding.** A binding never turns a shared
+  account on in a workspace, so releasing it (plugin off, Update dropping
+  the component, Remove) doesn't list it either; a shared account the
+  workspace lists on its own stays in scope throughout
+  (`bindingOnlyAccountIDs`, the one rule the runtime resolver and
+  `activeConnectors` share), and `promoteToShared` never lists an account
+  a plugin binds. Alias collision checks see the listed shared rows.
+- **A bound account's service is fixed.** Its binding names a connector
+  component whose ID carries the service, so `changeService` refuses while
+  any binding exists and the editor's Type picker is disabled with a note.
+- **Routine editors use a loaded catalog.** The schedule and template
+  editors load the plugin catalog once (`RoutineSkillCatalog`) and offer
+  `routineSkills` from it, the same rule the scheduler resolves with, so
+  rendering never scans the library.
+- **A launch copy carries only submission-time attachments.** Rows
+  attached to an override skill after submission are dropped from the
+  copy's workspace, not just unlinked; frozen-bound accounts, override rows
+  and independently listed shared rows stay.
+- **Old files keep their name links.** The importer keys connectors by the
+  file's own account name as well as the cleaned row name, so a pre-ID
+  file's skill still reattaches through `connectorNames`.
 
 ### How R4 was built (2026-10-16)
 
