@@ -28,6 +28,9 @@ struct PluginSourceListing: Identifiable, Equatable {
     var source: PluginSource
     var plugins: [SourcedPlugin]
     var problem: String?
+    /// The source holds more than one listing reads (T11): it is refused,
+    /// and the coordinator keeps the entries it listed before.
+    var exceededReadLimit = false
 
     var id: String { source.id }
 }
@@ -71,7 +74,10 @@ enum PluginSourceCatalog {
                 problem: source.kind == .git ? "Not fetched yet." : "The folder is not there."
             )
         }
-        let directory = BrokeredPluginDirectory(root: root, kind: source.kind)
+        // One budget for the whole listing, every plugin's scoped reader
+        // included (T11): a folder source has no download or checkout bound.
+        let budget = PluginSourceReadBudget()
+        let directory = BudgetedPluginDirectory(BrokeredPluginDirectory(root: root, kind: source.kind), budget: budget)
         let provenance = store.provenance()
         let entries: [(name: String, path: String?)]
         switch PluginMarketplace.read(from: directory) {
@@ -85,6 +91,9 @@ enum PluginSourceCatalog {
         var plugins = entries.map { entry in
             plugin(named: entry.name, at: entry.path, in: source, directory: directory, installed: installed, provenance: provenance)
         }
+        guard !budget.exceeded else {
+            return PluginSourceListing(source: source, plugins: [], problem: readLimitProblem, exceededReadLimit: true)
+        }
         // Two entries with one ID: neither is offered, so a row always means
         // one definition (T6).
         let ids = plugins.compactMap { $0.package?.id.lowercased() }
@@ -97,6 +106,9 @@ enum PluginSourceCatalog {
         return PluginSourceListing(source: source, plugins: plugins, problem: nil)
     }
 
+    static let readLimitProblem = "This source holds more than ASTRA reads for plugins "
+        + "(\(PluginSourceLimits.totalBytes / 1024 / 1024) MB or \(PluginSourceLimits.totalFiles.formatted()) files), so it wasn't listed."
+
     static func plugin(
         named name: String,
         at path: String?,
@@ -105,6 +117,22 @@ enum PluginSourceCatalog {
         installed: [PluginPackage],
         provenance: [String: PluginSourceStore.Provenance] = [:]
     ) -> SourcedPlugin {
+        var plugin = rawPlugin(named: name, at: path, in: source, directory: directory, installed: installed, provenance: provenance)
+        // Problems name paths from the source; they are display text too.
+        plugin.problem = plugin.problem.map { PluginSourceDisplayText.clean($0, limit: PluginSourceDisplayText.textLimit).text }
+        return plugin
+    }
+
+    private static func rawPlugin(
+        named rawName: String,
+        at path: String?,
+        in source: PluginSource,
+        directory: PluginDirectoryReading,
+        installed: [PluginPackage],
+        provenance: [String: PluginSourceStore.Provenance]
+    ) -> SourcedPlugin {
+        // Every display field from the source is cleaned here, once (T14).
+        let (name, nameChange) = PluginSourceDisplayText.clean(rawName, limit: PluginSourceDisplayText.nameLimit)
         func problem(_ text: String) -> SourcedPlugin {
             SourcedPlugin(source: source, entryName: name, package: nil, unsupported: [], problem: text, digest: "")
         }
@@ -123,6 +151,7 @@ enum PluginSourceCatalog {
         }
         var package = read.package
         var unsupported = read.unsupported
+        let displayChange = PluginSourceDisplayText.clean(&package) ?? nameChange
         package.sourceMetadata = source.metadata
         package.governance = .localDraft()
         // A source plugin's checks and repairs run commands; none runs until
@@ -134,7 +163,7 @@ enum PluginSourceCatalog {
         let digest = contentDigest(package)
         var plugin = SourcedPlugin(
             source: source, entryName: name, package: package,
-            unsupported: unsupported, problem: read.problems.first, digest: digest
+            unsupported: unsupported, problem: read.problems.first ?? displayChange?.problem, digest: digest
         )
         guard plugin.problem == nil else { return plugin }
         if CapabilityLibrary.trustedBuiltInPackageIDs.contains(where: { $0.lowercased() == package.id.lowercased() }) {
@@ -204,6 +233,7 @@ enum PluginSourceCatalog {
     ) throws -> PluginPackage {
         guard let package = reviewed.package else { throw PluginSourceCatalogError.noLongerOffered }
         let now = listing(for: reviewed.source, store: store, installed: installed)
+        if let problem = now.problem { throw PluginSourceCatalogError.notAddable(problem) }
         guard let current = now.plugins.first(where: { $0.package?.id == package.id }) else {
             throw PluginSourceCatalogError.noLongerOffered
         }
@@ -248,7 +278,14 @@ final class PluginSourceCoordinator: ObservableObject {
         do {
             let sources = try store.sources()
             let installed = installedPackages()
-            listings = sources.map { PluginSourceCatalog.listing(for: $0, store: store, installed: installed) }
+            let previous = listings
+            listings = sources.map { source in
+                let listing = PluginSourceCatalog.listing(for: source, store: store, installed: installed)
+                // A source over the read limit keeps what it listed before,
+                // with the problem shown (T11); importing from it is refused.
+                guard listing.exceededReadLimit, let kept = previous.first(where: { $0.id == source.id }) else { return listing }
+                return PluginSourceListing(source: source, plugins: kept.plugins, problem: listing.problem, exceededReadLimit: true)
+            }
             provenance = store.provenance()
             listProblem = nil
         } catch {

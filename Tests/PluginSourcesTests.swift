@@ -503,6 +503,101 @@ struct PluginSourcesTests {
         #expect(try Data(contentsOf: list) == Data("{damaged".utf8))
     }
 
+    @Test("T11: a folder source reading over 64 MB in all is refused, however many entries name the same files")
+    func folderSourceByteTotalIsBounded() throws {
+        let fixture = try Fixture()
+        let folder = fixture.root.appendingPathComponent("bytes", isDirectory: true)
+        // One plugin of four maximum-size skills (1 MB), named by every entry.
+        var files = [".claude-plugin/plugin.json": Data(#"{"name":"Heavy"}"#.utf8)]
+        for index in 0..<4 {
+            files["skills/s\(index)/SKILL.md"] = Data(repeating: 0x61, count: PluginSourceLimits.skillBytes)
+        }
+        try fixture.write(files, in: folder)
+        let source = try #require(PluginSource.make(from: folder.path))
+        func listing(entries count: Int) throws -> PluginSourceListing {
+            let entries = (0..<count).map { ("e\($0)", "./") }
+            try fixture.write(["astra-marketplace.json": Self.marketplace(entries)], in: folder)
+            return PluginSourceCatalog.listing(for: source, store: fixture.store, installed: [])
+        }
+        // 60 entries read 60 MB: listed (each a duplicate of the others).
+        let under = try listing(entries: 60)
+        #expect(under.problem == nil)
+        #expect(!under.exceededReadLimit)
+        #expect(under.plugins.count == 60)
+        // 200 entries would read 200 MB: the source is refused as a whole.
+        let over = try listing(entries: PluginSourceLimits.maxEntries)
+        #expect(over.exceededReadLimit)
+        #expect(over.problem == PluginSourceCatalog.readLimitProblem)
+        #expect(over.plugins.isEmpty)
+    }
+
+    @Test("T11: a folder source reading over 10,000 files in all is refused")
+    func folderSourceFileTotalIsBounded() throws {
+        let fixture = try Fixture()
+        let folder = fixture.root.appendingPathComponent("files", isDirectory: true)
+        try fixture.write(Self.manySkillsPlugin(skills: 60), in: folder)
+        let source = try #require(PluginSource.make(from: folder.path))
+        func listing(entries count: Int) throws -> PluginSourceListing {
+            try fixture.write(["astra-marketplace.json": Self.marketplace((0..<count).map { ("e\($0)", "./") })], in: folder)
+            return PluginSourceCatalog.listing(for: source, store: fixture.store, installed: [])
+        }
+        // Each entry reads its manifest and 60 skills: 100 entries are 6,101
+        // files with the marketplace, 200 are 12,201.
+        #expect(try listing(entries: 100).exceededReadLimit == false)
+        let over = try listing(entries: PluginSourceLimits.maxEntries)
+        #expect(over.exceededReadLimit)
+        #expect(over.problem == PluginSourceCatalog.readLimitProblem)
+    }
+
+    @Test("T11: a reader under budget never asks for more bytes than the budget has left")
+    func budgetNeverReadsPastTheTotal() {
+        let budget = PluginSourceReadBudget(maxBytes: 10, maxFiles: 3)
+        let reader = BudgetedPluginDirectory(MemoryDirectory(files: ["a": 4, "b": 4, "c": 4, "d": 0]), budget: budget)
+        #expect(reader.read("a", limit: 100) == .data(Data(count: 4)))
+        #expect(reader.read("missing", limit: 100) == .missing)
+        #expect(reader.read("b", limit: 100) == .data(Data(count: 4)))
+        // 2 bytes are left: "c" is over the budget, not over its own limit.
+        #expect(reader.read("c", limit: 100) == .refused)
+        #expect(budget.exceeded)
+        #expect(budget.bytes == 8)
+        #expect(reader.read("d", limit: 100) == .refused)
+        #expect(reader.entries(in: "").isEmpty)
+
+        let counted = PluginSourceReadBudget(maxBytes: 100, maxFiles: 2)
+        let files = BudgetedPluginDirectory(MemoryDirectory(files: ["a": 0, "b": 0, "c": 0]), budget: counted)
+        #expect(files.read("a", limit: 1) == .data(Data()))
+        #expect(files.read("b", limit: 1) == .data(Data()))
+        #expect(files.read("c", limit: 1) == .refused)
+        #expect(counted.exceeded)
+    }
+
+    @Test("T11: a folder source that grows over the limit keeps its previous listing, and nothing is imported from it")
+    func overLimitFolderKeepsPreviousListing() throws {
+        let fixture = try Fixture()
+        let folder = fixture.root.appendingPathComponent("grows", isDirectory: true)
+        try fixture.write(Self.manySkillsPlugin(skills: 60), in: folder)
+        try fixture.write(["astra-marketplace.json": Self.marketplace([("grows", "./")])], in: folder)
+        let source = try #require(PluginSource.make(from: folder.path))
+        try fixture.store.save([source])
+        let coordinator = PluginSourceCoordinator(store: fixture.store, installedPackages: { [] })
+        coordinator.reload()
+        let before = try #require(coordinator.listings.first)
+        let listed = try #require(before.plugins.first)
+        #expect(before.problem == nil)
+
+        try fixture.write(["astra-marketplace.json": Self.marketplace((0..<PluginSourceLimits.maxEntries).map { ("e\($0)", "./") })], in: folder)
+        coordinator.reload()
+        let after = try #require(coordinator.listings.first)
+        #expect(after.problem == PluginSourceCatalog.readLimitProblem)
+        #expect(after.plugins == before.plugins)
+        // Reloading again still keeps it, and an import re-reads the source.
+        coordinator.reload()
+        #expect(coordinator.listings.first?.plugins == before.plugins)
+        #expect(throws: PluginSourceCatalogError.notAddable(PluginSourceCatalog.readLimitProblem)) {
+            try PluginSourceCatalog.confirmReviewed(listed, store: fixture.store, installed: [])
+        }
+    }
+
     // MARK: - T12, T13: fetches
 
     @Test("T12: a failed fetch keeps the previous checkout")
@@ -550,6 +645,77 @@ struct PluginSourcesTests {
         input.origin = "acme-plugins"
         #expect(PluginsSurfacePresentation.subtitle(for: input).contains("from acme-plugins")
             || PluginsSurfacePresentation.subtitle(for: input).contains("From acme-plugins"))
+    }
+
+    @Test("T14: control and format characters in a source's display text are removed, and the entry says so")
+    func displayTextIsCleaned() throws {
+        func clean(_ text: String, _ limit: Int) -> (text: String, change: PluginSourceDisplayText.Change?) {
+            PluginSourceDisplayText.clean(text, limit: limit)
+        }
+        let limit = PluginSourceDisplayText.nameLimit
+        #expect(clean("Good\nApproved by ASTRA", limit) == ("Good Approved by ASTRA", .controlCharacters))
+        #expect(clean("Row\r\n\r\nFake heading", limit) == ("Row Fake heading", .controlCharacters))
+        #expect(clean("evil\u{202E}txt.exe", limit) == ("eviltxt.exe", .controlCharacters))
+        #expect(clean("a\u{2066}b\u{2069}c", limit) == ("abc", .controlCharacters))
+        #expect(clean("pay\u{200D}pal", limit) == ("paypal", .controlCharacters))
+        for mark in ["\u{200E}", "\u{200F}", "\u{061C}", "\u{202A}", "\u{202B}", "\u{202C}", "\u{202D}", "\u{2067}", "\u{2068}", "\u{FEFF}", "\u{0007}", "\u{2028}"] {
+            #expect(clean("x\(mark)y", limit).change == .controlCharacters, "kept U+\(String(mark.unicodeScalars.first!.value, radix: 16))")
+        }
+        // Spacing alone is collapsed without a problem.
+        #expect(clean("  Plain \u{00A0}  name  ", limit) == ("Plain name", nil))
+        #expect(clean("Plain name", limit) == ("Plain name", nil))
+        let long = clean(String(repeating: "x", count: 500), limit)
+        #expect(long.text.count == limit)
+        #expect(long.text.hasSuffix("…"))
+        #expect(long.change == .shortened)
+
+        let fixture = try Fixture()
+        let folder = fixture.root.appendingPathComponent("display", isDirectory: true)
+        let names = [
+            "newline": "Good\nApproved by ASTRA",
+            "rlo": "evil\u{202E}txt.exe",
+            "isolate": "a\u{2066}b\u{2069}c",
+            "joiner": "pay\u{200D}pal",
+            "long": String(repeating: "x", count: 500),
+            "plain": "Plain name"
+        ]
+        var files: [String: Data] = [:]
+        for (id, name) in names {
+            var package = try Self.package(id: id, version: "1.0.0")
+            package.name = name
+            files["\(id)/capability.json"] = try JSONEncoder().encode(package)
+        }
+        // A skill's name and the author carry it too.
+        var component = try Self.package(id: "component", version: "1.0.0")
+        component.author = "Acme\u{202E}"
+        component.skills[0].name = "Review\nApproved"
+        files["component/capability.json"] = try JSONEncoder().encode(component)
+        files["astra-marketplace.json"] = Self.marketplace((names.keys.sorted() + ["component"]).map { ($0, "./\($0)") } + [("entry\u{202E}name", "")])
+        try fixture.write(files, in: folder)
+        let source = try #require(PluginSource.make(from: folder.path))
+        let listing = PluginSourceCatalog.listing(for: source, store: fixture.store, installed: [])
+        let byID = Dictionary(uniqueKeysWithValues: listing.plugins.compactMap { plugin in plugin.package.map { ($0.id, plugin) } })
+        let changed = PluginSourceDisplayText.Change.controlCharacters.problem
+        #expect(changed == "Display text changed: control characters removed")
+        #expect(byID["newline"]?.package?.name == "Good Approved by ASTRA")
+        #expect(byID["rlo"]?.package?.name == "eviltxt.exe")
+        #expect(byID["isolate"]?.package?.name == "abc")
+        #expect(byID["joiner"]?.package?.name == "paypal")
+        for id in ["newline", "rlo", "isolate", "joiner"] {
+            #expect(byID[id]?.problem == changed, "\(id)")
+            #expect(byID[id]?.canAdd == false, "\(id)")
+        }
+        #expect(byID["long"]?.package?.name.count == limit)
+        #expect(byID["long"]?.problem == PluginSourceDisplayText.Change.shortened.problem)
+        #expect(byID["component"]?.package?.author == "Acme")
+        #expect(byID["component"]?.package?.skills.first?.name == "Review Approved")
+        #expect(byID["component"]?.problem == changed)
+        // Clean text is not a problem, and IDs are never rewritten.
+        #expect(byID["plain"]?.problem == nil)
+        #expect(Set(byID.keys) == Set(names.keys).union(["component"]))
+        #expect(byID["component"]?.package?.skills.first?.id == nil)
+        // A marketplace entry's own name is display text as well.
+        #expect(listing.plugins.contains { $0.package == nil && $0.entryName == "entryname" })
     }
 
     @Test("A folder source's plugin imports as the reviewed digest, keeping its source")
@@ -664,6 +830,15 @@ struct PluginSourcesTests {
         try JSONEncoder().encode(package(id: id, version: version, description: description))
     }
 
+    /// A Claude-layout plugin at the folder root with `skills` small skills.
+    static func manySkillsPlugin(skills: Int) -> [String: Data] {
+        var files = [".claude-plugin/plugin.json": Data(#"{"name":"Many","version":"1.0.0"}"#.utf8)]
+        for index in 0..<skills {
+            files["skills/s\(index)/SKILL.md"] = Data("---\nname: Skill \(index)\ndescription: Does \(index)\n---\nDo \(index).".utf8)
+        }
+        return files
+    }
+
     static func marketplace(_ entries: [(String, String)]) -> Data {
         let plugins = entries.map { ["name": $0.0, "source": $0.1] }
         return (try? JSONSerialization.data(withJSONObject: ["name": "test", "plugins": plugins])) ?? Data()
@@ -735,6 +910,19 @@ struct PluginSourcesTests {
             }
         }
     }
+}
+
+/// Files of the given sizes, in memory.
+private struct MemoryDirectory: PluginDirectoryReading {
+    let files: [String: Int]
+
+    func read(_ relativePath: String, limit: Int) -> PluginSourceFileRead {
+        guard let size = files[relativePath] else { return .missing }
+        return size <= limit ? .data(Data(count: size)) : .tooLarge
+    }
+
+    func entries(in relativeDirectory: String) -> [String] { files.keys.sorted() }
+    func scoped(to relativeDirectory: String) -> PluginDirectoryReading? { self }
 }
 
 /// Records each call and reports `exitCode` without running anything.

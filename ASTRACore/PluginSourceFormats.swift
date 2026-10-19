@@ -25,12 +25,85 @@ public protocol PluginDirectoryReading {
 }
 
 /// Size and count limits for everything a source supplies (threat model
-/// T11). A file over its limit is reported, never read.
+/// T11). A file over its limit is reported, never read; a source over the
+/// total is refused as a whole (`PluginSourceReadBudget`).
 public enum PluginSourceLimits {
     public static let marketplaceBytes = 256 * 1024
     public static let manifestBytes = 512 * 1024
     public static let skillBytes = 256 * 1024
     public static let maxEntries = 200
+    /// What one listing of a source may read in all, the same bound a git
+    /// checkout gets (T11). The per-file and entry limits don't bound the
+    /// total: 200 entries can each name a plugin of 200 maximum-size skills,
+    /// or all name the same one.
+    public static let totalBytes = 64 * 1024 * 1024
+    public static let totalFiles = 10_000
+}
+
+/// What one listing of a source has read so far, shared by every reader
+/// scoped from the same root (`BudgetedPluginDirectory`). Every path that
+/// exists counts as one file, whether it was read, refused or only found
+/// too large; a missing one doesn't. Past either bound nothing more is
+/// read and `exceeded` is set, so the listing refuses the source.
+public final class PluginSourceReadBudget {
+    public let maxBytes: Int
+    public let maxFiles: Int
+    public private(set) var bytes = 0
+    public private(set) var files = 0
+    public private(set) var exceeded = false
+
+    public init(maxBytes: Int = PluginSourceLimits.totalBytes, maxFiles: Int = PluginSourceLimits.totalFiles) {
+        self.maxBytes = maxBytes
+        self.maxFiles = maxFiles
+    }
+
+    var remainingBytes: Int { max(0, maxBytes - bytes) }
+
+    /// Records one read of `requested` bytes at most, given what it read.
+    /// Returns what the caller may see: `.refused` once a bound is passed.
+    func record(_ result: PluginSourceFileRead, requested limit: Int, allowed: Int) -> PluginSourceFileRead {
+        guard result != .missing else { return result }
+        files += 1
+        if files > maxFiles { exceeded = true }
+        switch result {
+        case .data(let data):
+            bytes += data.count
+            if bytes > maxBytes { exceeded = true }
+        case .tooLarge where allowed < limit:
+            // Over what is left of the budget, not over its own limit.
+            exceeded = true
+        default:
+            break
+        }
+        return exceeded ? .refused : result
+    }
+}
+
+/// A source's reader that stops at the listing's budget (T11). Each read
+/// asks the reader below for no more than what the budget has left, so the
+/// bytes read in all never pass `maxBytes`.
+public struct BudgetedPluginDirectory: PluginDirectoryReading {
+    let base: PluginDirectoryReading
+    public let budget: PluginSourceReadBudget
+
+    public init(_ base: PluginDirectoryReading, budget: PluginSourceReadBudget) {
+        self.base = base
+        self.budget = budget
+    }
+
+    public func read(_ relativePath: String, limit: Int) -> PluginSourceFileRead {
+        guard !budget.exceeded else { return .refused }
+        let allowed = min(limit, budget.remainingBytes)
+        return budget.record(base.read(relativePath, limit: allowed), requested: limit, allowed: allowed)
+    }
+
+    public func entries(in relativeDirectory: String) -> [String] {
+        budget.exceeded ? [] : base.entries(in: relativeDirectory)
+    }
+
+    public func scoped(to relativeDirectory: String) -> PluginDirectoryReading? {
+        base.scoped(to: relativeDirectory).map { BudgetedPluginDirectory($0, budget: budget) }
+    }
 }
 
 /// A plugin source's catalog: Claude Code's `.claude-plugin/marketplace.json`
