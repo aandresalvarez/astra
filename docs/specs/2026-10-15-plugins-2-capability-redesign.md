@@ -844,6 +844,18 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   credentials in the URL; an invalid one is a visible problem), and the
   mirror reconstructs it; every other field of such a connector still goes
   to the Keychain.
+- **Mirror scope is never partial.** `workspacesMirroring` throws when the
+  shared rows can't be read, instead of answering with fewer workspaces: a
+  Configure-surface deletion then deletes nothing, a post-save export
+  reports the mirror as not written, Add keeps the cleanup for launch, and
+  Remove, Update and the account-delete scope abort.
+- **Account rows show the workspace's name for the account.** The plugin
+  row names an account as this workspace knows it (its binding alias when
+  a shared account's name collides), the name the runtime uses.
+- **Routine skills are scoped like pinned ones.** A skill a routine selects
+  reaches the run under the word-matched scope every task gets; a
+  projected plugin skill needs no pin, since a pinned row is pruned by the
+  goal's wording the same way.
 
 ### How R4 was built (2026-10-16)
 
