@@ -26,15 +26,14 @@ enum CapabilityRailRepair {
     /// usable: Install when its binary is missing, otherwise its sign-in or fix.
     /// Nil when every checked prerequisite works or none offers an action.
     static func repair(for package: PluginPackage, statuses: [String: HealthStatus]) -> RepairAction? {
-        let components = PluginManifestConverter.manifest(from: package).components
-        for prerequisite in package.prerequisites {
+        // Each prerequisite with its own component, by position: two may
+        // share a check ID and still offer different repairs.
+        for (prerequisite, component) in PluginManifestConverter.setupComponents(of: package) {
             // A check that never ran (`HealthCheckPolicy`) has nothing to repair.
             guard let status = statuses[prerequisite.id], !status.isUsable, !status.isNotChecked else { continue }
             // Repository access (SSO, an org grant) is repaired by the
             // contextual GitHub flow, not by signing in again.
             if GitHubRepositoryAccessRepairButton.supports(prerequisite, status: status) { continue }
-            guard let component = components.first(where: { PluginManifestConverter.prerequisiteID(of: $0) == prerequisite.id })
-            else { continue }
             if case .missingBinary = status {
                 if let install = RepairAction.from(component, needsInstall: true) { return install }
                 continue

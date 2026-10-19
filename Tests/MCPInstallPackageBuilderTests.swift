@@ -92,6 +92,19 @@ struct MCPInstallPackageBuilderTests {
         #expect(report.package?.mcpServers.first?.installSource?.identifier == "@acme/github-mcp")
     }
 
+    @Test("only a runtime with a known version report gets a prerequisite check")
+    func unknownServerCommandGetsNoVersionCheck() throws {
+        let json = """
+        {"mcpServers": {"acme": {"type": "stdio", "command": "acme-mcp", "args": ["serve"]}}}
+        """
+        let intent = try #require(MCPInstallIntentParser.parse(json))
+        let package = try MCPInstallPackageBuilder.package(from: intent)
+        // `acme-mcp --version` would run unasked on every scan: no check.
+        #expect(package.prerequisites.isEmpty)
+        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        #expect(!report.blockers.contains { $0.title == "Unsafe health check" })
+    }
+
     @Test("review package with imported env keys validates through capability validator")
     func reviewPackageWithImportedEnvKeysValidatesThroughCapabilityValidator() throws {
         let json = """

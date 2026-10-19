@@ -203,7 +203,10 @@ struct PluginRepairTests {
             ("gcloud projects delete victim --quiet", "gcloud"), ("gh repo delete x --yes", "gh"),
             ("gh api -X DELETE /repos/x", "gh"), ("gh auth login extra", "gh"), ("gh auth logout", "gh"),
             ("gcloud --account projects delete x", "gcloud"), ("gh -- auth login", "gh"), ("copilot", "copilot"),
-            ("stanford-graph-mail delete-mailbox", "stanford-graph-mail"), ("aws s3 rm s3://bucket --recursive", "aws")
+            ("stanford-graph-mail delete-mailbox", "stanford-graph-mail"), ("aws s3 rm s3://bucket --recursive", "aws"),
+            // An unknown CLI has no sign-in at all: these words mean what it likes.
+            ("touch auth", "touch"), ("touch login", "touch"), ("sh sso", "sh"), ("stanford-graph-mail login", "stanford-graph-mail"),
+            ("/tmp/x/touch auth", "/tmp/x/touch"), ("codex auth", "codex")
         ] {
             #expect(!RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
             #expect(!RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: true), "\(command)")
@@ -211,11 +214,11 @@ struct PluginRepairTests {
         // An install step's package manager only installs.
         #expect(!RepairAction.isSafeTerminalCommand("brew uninstall gh", binary: "gh", allowsInstaller: true))
         for (command, binary) in [
-            ("gh auth login", "gh"), ("gh auth refresh --hostname github.example.com", "gh"), ("gh auth status --hostname github.example.com", "gh"),
+            ("gh auth login", "gh"), ("gh auth refresh --hostname github.example.com", "gh"), ("gh auth status --hostname github.example.com", "gh"), ("gh auth status --active --hostname github.example.com", "gh"),
             ("gh auth login --hostname github.example.com --web", "gh"), ("gcloud auth login", "gcloud"),
             ("gcloud auth application-default login", "gcloud"), ("/opt/sdk/bin/gcloud auth login --account=me@x.org", "/opt/sdk/bin/gcloud"),
             ("az login --tenant contoso", "az"), ("aws sso login --profile dev", "aws"), ("aws configure sso", "aws"),
-            ("codex login", "codex"), ("opencode auth login", "opencode"), ("stanford-graph-mail login", "stanford-graph-mail")
+            ("codex login", "codex"), ("opencode auth login", "opencode"), ("cursor-agent login", "cursor-agent")
         ] {
             #expect(RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
         }
@@ -238,6 +241,30 @@ struct PluginRepairTests {
         #expect(repair?.command == nil)
         let report = CapabilityPackageValidator.validate(data: try JSONEncoder().encode(package), checkPrerequisites: false)
         #expect(report.blockers.contains { $0.title == "Unsafe repair command" })
+    }
+
+    @Test("An unknown CLI's declared sign-in is guidance with no button, and import refuses it")
+    func unknownCLIRepairIsGuidance() throws {
+        let component = PluginComponent(
+            kind: .setup, id: "cli", name: "Notes CLI",
+            setup: PluginComponentSetup(
+                check: PluginSetupStep(kind: .exec, binary: "gh", arguments: ["--version"]),
+                repair: PluginSetupStep(kind: .terminal, command: "touch auth", hint: "Run `touch auth` to sign in.")
+            )
+        )
+        // Repairs and version checks share one list of known CLIs.
+        #expect(TerminalRepairPolicy.signInCLIs.isSubset(of: HealthCheckPolicy.knownCLIs))
+        let repair = try #require(RepairAction.from(component))
+        #expect(repair.command == nil)
+        #expect(repair.verb == "Check")
+        #expect(repair.detail == "Run `touch auth` to sign in.")
+        #expect(PluginsSurfacePresentation.repairGuidance(repair).isCommand == false)
+        var package = try gcloudPackage()
+        package.prerequisites = [CLIPrerequisite(
+            binary: "touch", livenessArgs: ["--version"], displayName: "Touch", purpose: "", authHint: "Run `touch auth`."
+        )]
+        let report = CapabilityPackageValidator.validate(data: try JSONEncoder().encode(package), checkPrerequisites: false)
+        #expect(!report.blockers.isEmpty)
     }
 
     @Test("A sign-in may carry only the flags its command lists, with values it accepts")
@@ -269,6 +296,32 @@ struct PluginRepairTests {
         }
         #expect(!RepairAction.isSafeTerminalCommand("brew install --HEAD gh", binary: "gh", allowsInstaller: true))
         #expect(RepairAction.isSafeTerminalCommand("brew install --formula gh", binary: "gh", allowsInstaller: true))
+    }
+
+    @Test("Prerequisites that share a check ID keep their own components and repairs")
+    func sharedCheckIDKeepsEachComponent() throws {
+        var package = try gcloudPackage()
+        let arguments = ["auth", "status", "--hostname", "github.com"]
+        package.prerequisites = [
+            CLIPrerequisite(binary: "gh", livenessArgs: arguments, displayName: "GitHub (read)", purpose: ""),
+            CLIPrerequisite(
+                binary: "gh", livenessArgs: arguments, displayName: "GitHub (write)", purpose: "",
+                authHint: "Run `gh auth login --hostname github.com --web`."
+            )
+        ]
+        #expect(package.prerequisites[0].id == package.prerequisites[1].id)
+        let status: [String: HealthStatus] = [package.prerequisites[0].id: .unauthenticated(detail: "expired")]
+        // The first offers nothing; the second's own sign-in is reachable.
+        #expect(CapabilityRailRepair.repair(for: package, statuses: status)?.command == "gh auth login --hostname github.com --web")
+        let pairs = PluginManifestConverter.setupComponents(of: package)
+        #expect(pairs.map(\.component.name) == ["GitHub (read)", "GitHub (write)"])
+        // Each component row finds its own prerequisite by position.
+        let manifest = PluginManifestConverter.manifest(from: package)
+        let positions = manifest.components.indices.compactMap { index in
+            PluginManifestConverter.prerequisitePosition(ofComponentAt: index, in: manifest).map { (manifest.components[index].name, $0) }
+        }
+        #expect(positions.map(\.0) == ["GitHub (read)", "GitHub (write)"])
+        #expect(positions.map(\.1) == [0, 1])
     }
 
     @Test("Every bundled plugin's repair is a sign-in that passes, at import and at launch")
@@ -347,7 +400,9 @@ struct PluginRepairTests {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-repair-path-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let name = "astra-check-\(UUID().uuidString.prefix(8))"
+        // A CLI with a known version report (`HealthCheckPolicy`), found only
+        // through the projected PATH.
+        let name = "terraform"
         func install(_ directory: String, exitCode: Int) throws -> String {
             let folder = root.appendingPathComponent(directory, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -375,7 +430,9 @@ struct PluginRepairTests {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-repair-relative-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let name = "astra-check-\(UUID().uuidString.prefix(8))"
+        // A CLI with a known version report (`HealthCheckPolicy`), found only
+        // through the projected PATH.
+        let name = "terraform"
         let tools = root.appendingPathComponent("tools", isDirectory: true)
         try FileManager.default.createDirectory(at: tools, withIntermediateDirectories: true)
         for folder in [root, tools] {
@@ -407,7 +464,7 @@ struct PluginRepairTests {
             .appendingPathComponent("astra-repair-semantic-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let name = "astra-docker-\(UUID().uuidString.prefix(8))"
+        let name = "docker"
         let file = root.appendingPathComponent(name)
         func script(stderr: String) throws {
             try "#!/bin/sh\necho 'Client: 27.0.0'\necho '\(stderr)' >&2\nexit 0\n".write(to: file, atomically: true, encoding: .utf8)

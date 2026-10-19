@@ -180,9 +180,17 @@ public struct RepairAction: Codable, Sendable, Equatable {
                         checkBinary: binary, checkArguments: check?.arguments, checkExpect: check?.expect
                     )
                 }
-                guard let command = step.command,
-                      isSafeTerminalCommand(command, binary: check?.binary, allowsInstaller: verb == "Install")
-                else { continue }
+                guard let command = step.command else { continue }
+                guard isSafeTerminalCommand(command, binary: check?.binary, allowsInstaller: verb == "Install") else {
+                    // Not a known CLI's listed sign-in (`TerminalRepairPolicy`):
+                    // no button runs it. The plugin's own words still say
+                    // what to do, and ASTRA checks again.
+                    guard verb != "Install", let hint = step.hint, let binary = check?.binary else { continue }
+                    return RepairAction(
+                        strategy: .terminal, componentName: component.name, title: component.name, verb: "Check",
+                        detail: hint, checkBinary: binary, checkArguments: check?.arguments, checkExpect: check?.expect
+                    )
+                }
                 return RepairAction(
                     strategy: .terminal, componentName: component.name,
                     title: component.name, verb: verb == "Install" ? verb : "Sign in",

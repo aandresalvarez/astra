@@ -260,8 +260,11 @@ struct PluginsSurfaceView: View {
     private func details(_ package: PluginPackage, row: PluginsSurfaceRow) -> some View {
         let manifest = PluginManifestConverter.manifest(from: package)
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(manifest.components.enumerated()), id: \.offset) { _, component in
-                componentRow(component, package: package, isEnabled: row.isEnabled)
+            ForEach(Array(manifest.components.enumerated()), id: \.offset) { index, component in
+                componentRow(
+                    component, package: package, isEnabled: row.isEnabled,
+                    position: PluginManifestConverter.prerequisitePosition(ofComponentAt: index, in: manifest)
+                )
             }
             if row.isEnabled || row.isRemovable {
                 HStack {
@@ -293,9 +296,10 @@ struct PluginsSurfaceView: View {
         }
     }
 
-    private func componentRow(_ component: PluginComponent, package: PluginPackage, isEnabled: Bool) -> some View {
+    /// `position`: the prerequisite this setup component checks, by position.
+    private func componentRow(_ component: PluginComponent, package: PluginPackage, isEnabled: Bool, position: Int?) -> some View {
         let checkID = PluginManifestConverter.prerequisiteID(of: component)
-        let failing = isEnabled && checkID != nil ? failingSetup(for: package).first { $0.prerequisite.id == checkID } : nil
+        let failing = isEnabled ? position.flatMap { position in failingSetup(for: package).first { $0.position == position } } : nil
         let packageState = isEnabled && component.kind == .connector
             ? CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
             : nil
@@ -378,6 +382,7 @@ struct PluginsSurfaceView: View {
     // MARK: - Health
 
     private struct FailingSetup {
+        let position: Int
         let prerequisite: CLIPrerequisite
         let component: PluginComponent
         let repair: RepairAction?
@@ -389,15 +394,15 @@ struct PluginsSurfaceView: View {
         return status.isUsable
     }
 
-    /// Matched by check identity, not label: two prerequisites may share a name.
+    /// Each prerequisite with its own component, by position: two may share a
+    /// name, or a check ID, and still offer different repairs.
     private func failingSetup(for package: PluginPackage) -> [FailingSetup] {
-        let components = PluginManifestConverter.manifest(from: package).components
-        return package.prerequisites.compactMap { prerequisite in
-            guard let status = statuses[prerequisite.id], !status.isUsable, !status.isNotChecked,
-                  let component = components.first(where: { PluginManifestConverter.prerequisiteID(of: $0) == prerequisite.id })
-            else { return nil }
+        PluginManifestConverter.setupComponents(of: package).enumerated().compactMap { position, pair in
+            let (prerequisite, component) = pair
+            guard let status = statuses[prerequisite.id], !status.isUsable, !status.isNotChecked else { return nil }
             let needsInstall: Bool = { if case .missingBinary = status { return true } else { return false } }()
             return FailingSetup(
+                position: position,
                 prerequisite: prerequisite,
                 component: component,
                 repair: RepairAction.from(component, needsInstall: needsInstall)
