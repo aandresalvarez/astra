@@ -135,7 +135,10 @@ struct PluginRuntimeProjection {
             for spec in package.connectors {
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
                 guard !overridden.contains(componentID) else { continue }
-                let accounts = activation.accounts(forComponent: componentID).filter { !$0.isDeleted }
+                // An account whose sign-in method this definition withdrew
+                // stays bound, but nothing runs with it until it reconnects.
+                let accounts = activation.accounts(forComponent: componentID)
+                    .filter { !$0.isDeleted && !Self.signsInWithWithdrawnMethod($0, spec: spec, package: package) }
                 if accounts.isEmpty {
                     unbound[package.id, default: []].append(componentID)
                 }
@@ -251,16 +254,26 @@ struct PluginRuntimeProjection {
     /// held it back (`awaitingUpdate`); otherwise it differs in its version,
     /// its content under the same version (`PluginDefinitionDigest`, which
     /// leaves out where a copy came from, so two copies of one definition
-    /// agree), or its components. A digest recorded before content digests
-    /// can't be compared, so only the version and components are. Its
-    /// plugin doesn't run, here or in a queued launch, until Update
-    /// reconciles it; the Plugins row offers Update meanwhile.
+    /// agree), or its components. A digest recorded before content digests,
+    /// or none (a mirror written before V20 carries only the version), can't
+    /// be compared, so only the version and components are; an activation
+    /// with no recorded version either has nothing to compare. Its plugin
+    /// doesn't run, here or in a queued launch, until Update reconciles it;
+    /// the Plugins row offers Update meanwhile.
     static func awaitsUpdate(_ activation: PluginActivation, to package: PluginPackage) -> Bool {
         if activation.awaitingUpdate { return true }
-        guard !activation.recordedDigest.isEmpty else { return false }
-        if activation.recordedVersion != package.version { return true }
+        if !activation.recordedVersion.isEmpty, activation.recordedVersion != package.version { return true }
         if PluginDefinitionDigest.matches(activation.recordedDigest, package) == false { return true }
         return !activation.knownComponentIDs.isEmpty && Set(activation.knownComponentIDs) != Set(componentIDs(of: package))
+    }
+
+    /// Whether `account`, which `package` created for `spec`'s component,
+    /// signs in with a method the definition no longer declares. Derived
+    /// from the definition, never stored: the account stays bound, out of
+    /// every run and not ready (`CapabilityPackageState` asks it to
+    /// reconnect), until it signs in with the declared method.
+    static func signsInWithWithdrawnMethod(_ account: Connector, spec: PluginConnector, package: PluginPackage) -> Bool {
+        account.originPackageID == package.id && !spec.authMethod.isEmpty && spec.authMethod != account.authMethod
     }
 
     /// `packages` without the plugins whose activation in `workspace` awaits
@@ -453,9 +466,12 @@ struct PluginRuntimeProjection {
     }
 
     /// Drops from a runtime copy the credential and setting keys outside
-    /// the declared sets, with their values.
+    /// the declared sets, with their values. Credential keys compare
+    /// canonically (`ConnectorCredentialKey`): a saved one is stored
+    /// uppercased whatever the declaration's spelling.
     private static func retain(credentials: Set<String>, config: Set<String>, on copy: Connector) {
-        let keptCredentials = copy.credentialKeys.indices.filter { credentials.contains(copy.credentialKeys[$0]) }
+        let declared = Set(credentials.map(ConnectorCredentialKey.canonical))
+        let keptCredentials = copy.credentialKeys.indices.filter { declared.contains(ConnectorCredentialKey.canonical(copy.credentialKeys[$0])) }
         if keptCredentials.count < copy.credentialKeys.count {
             copy.credentialValues = keptCredentials.map { $0 < copy.credentialValues.count ? copy.credentialValues[$0] : "" }
             copy.credentialKeys = keptCredentials.map { copy.credentialKeys[$0] }

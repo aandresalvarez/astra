@@ -12,8 +12,10 @@ import ASTRAModels
 /// value written first and recorded after could outlive every cleanup and
 /// come back.
 ///
-/// - A stored activation (the row's details editor) records the key and
-///   saves before the write; a write that fails takes the key back.
+/// - A stored activation (the row's details editor) records the key, saves
+///   and writes the workspace's mirror before every write (a recovery from
+///   a mirror without the key couldn't clean the value); a write that fails
+///   takes a newly recorded key back.
 /// - An activation saved later in the same transaction (Add, and the setup
 ///   it copies) journals the key in `PluginSecretCleanupOutbox` first: that
 ///   transaction's save settles it (the activation records it), and launch
@@ -25,7 +27,9 @@ enum PluginSecretSettingWriter {
     }
 
     /// Writes `value` for `settingKey` of a stored `activation`.
-    /// `saveMarker` saves the activation durably; it throws when it can't.
+    /// `saveMarker` saves the activation and writes its workspace's mirror
+    /// durably, run before every write; it throws when it can't, and then
+    /// nothing is written.
     /// Throws `PluginOperations.OperationError.secretSaveFailed` when the
     /// Keychain refuses, with the marker taken back.
     static func write(
@@ -39,10 +43,8 @@ enum PluginSecretSettingWriter {
         saveMarker: () throws -> Void
     ) throws {
         let newlyRecorded = !activation.secretSettingKeys.contains(settingKey)
-        if newlyRecorded {
-            WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: settingKey, on: activation)
-            try saveMarker()
-        }
+        WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: settingKey, on: activation)
+        try saveMarker()
         guard persistence.saveSecretValue(value, key: key, skillID: skillID, skillName: skillName, allowUserInteraction: true) else {
             if newlyRecorded {
                 // Nothing was written: the marker goes too. One that can't be

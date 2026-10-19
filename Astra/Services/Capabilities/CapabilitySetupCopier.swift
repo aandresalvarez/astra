@@ -156,8 +156,11 @@ struct CapabilitySetupCopier {
         return !name.isEmpty && normalizedKey.contains(name)
     }
 
-    /// The accounts this package's own (enabled) activation binds to the
-    /// component, its default first, and only those: a row it never bound
+    /// The account this package's own (enabled) activation uses for the
+    /// component, its default (`accounts(forComponent:)` puts it first),
+    /// and only that one: the setup is copied from one account whole, its
+    /// credentials, settings and URL together, so a second account's URL
+    /// can never land beside the default's secret, and a row it never bound
     /// must not fill in a URL, setting or credential its account lacks. A
     /// workspace without the activation (one from before plugins had them)
     /// falls back to its rows no plugin is bound to. An account another
@@ -172,7 +175,7 @@ struct CapabilitySetupCopier {
         let ownAccounts = activation?
             .accounts(forComponent: CapabilityResourceOrigin.componentID(for: pluginConnector))
             .filter { !$0.isDeleted } ?? []
-        if activation != nil { return ownAccounts }
+        if activation != nil { return Array(ownAccounts.prefix(1)) }
         let enabledGlobalConnectorIDs = Set(workspace.enabledGlobalConnectorIDs.map(Self.normalizedID))
         let enabledGlobalConnectors = globalConnectors.filter { connector in
             enabledGlobalConnectorIDs.contains(Self.normalizedID(connector.id.uuidString))

@@ -615,6 +615,41 @@ struct OnboardingWizardTests {
         #expect(summary.inputsByPackageID["jira-workflow"]?.credentialInputs["JIRA_API_TOKEN"] == "coral-token")
     }
 
+    @Test("Copy Setup copies one bound account whole: the default's URL, settings and secrets together")
+    @MainActor
+    func copySetupCopiesTheDefaultAccountWhole() throws {
+        let container = try makeCapabilitySetupCopyContainer()
+        let context = container.mainContext
+        let source = Workspace(name: "Two Jira sites", primaryPath: "/tmp/two-jira-sites")
+        context.insert(source)
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        func account(_ name: String, _ url: String, _ projects: String) -> Connector {
+            let connector = Connector(name: name, serviceType: "jira", connectorDescription: "", baseURL: url, authMethod: "basic")
+            connector.workspace = source
+            connector.configKeys = ["JIRA_PROJECTS"]
+            connector.configValues = [projects]
+            context.insert(connector)
+            return connector
+        }
+        let primary = account("Jira", "https://default.atlassian.net", "DEF")
+        let secondary = account("Jira Ops", "https://second.atlassian.net", "SEC")
+        WorkspaceCapabilityActivation.mutate(source) { $0.enableCapability(package.id) }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: source))
+        let component = CapabilityResourceOrigin.componentID(for: package.connectors[0])
+        WorkspaceCapabilityActivation.bind(primary, toComponent: component, of: activation, isDefault: true)
+        WorkspaceCapabilityActivation.bind(secondary, toComponent: component, of: activation)
+        #expect(activation.accounts(forComponent: component).map(\.id) == [primary.id, secondary.id])
+
+        // Keyed by component (R3); the flat view onboarding reads.
+        let inputs = PluginSetupInputs.flattened(
+            CapabilitySetupCopier(secretStore: MockSecretStore()).installationInputs(for: package, from: source), for: package.connectors
+        )
+        #expect(inputs.baseURLOverrides[package.connectors[0].name] == "https://default.atlassian.net")
+        #expect(inputs.configInputs["JIRA_BASE_URL"] == "https://default.atlassian.net")
+        #expect(inputs.configInputs["JIRA_PROJECTS"] == "DEF")
+        withExtendedLifetime(container) {}
+    }
+
     @Test("Workspace capability setup ignores unchanged default base URLs")
     @MainActor
     func workspaceCapabilitySetupIgnoresUnchangedDefaultBaseURLs() throws {

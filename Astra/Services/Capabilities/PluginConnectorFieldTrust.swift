@@ -74,11 +74,12 @@ enum PluginConnectorFieldTrust {
     /// definition stays as its author wrote it.
     static func asStored(_ connector: PluginConnector, in package: PluginPackage) -> PluginConnector {
         let trusted = trustedPlainSettingKeys(of: connector, in: package)
-        var seen = Set(connector.credentialHints.map(\.key))
+        // One stored credential per canonical key (`ConnectorCredentialKey`).
+        var seen = Set(connector.credentialHints.map { ConnectorCredentialKey.canonical($0.key) })
         var stored = connector
         stored.configHints = connector.configHints.filter { trusted.contains($0.key) }
         stored.credentialHints += connector.configHints
-            .filter { !trusted.contains($0.key) && seen.insert($0.key).inserted }
+            .filter { !trusted.contains($0.key) && seen.insert(ConnectorCredentialKey.canonical($0.key)).inserted }
             .map { PluginConnector.CredentialHint(key: $0.key, hint: $0.hint) }
         return stored
     }

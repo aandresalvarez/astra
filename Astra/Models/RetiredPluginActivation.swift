@@ -21,6 +21,12 @@ import SwiftData
 ///   source of it was. Its non-secret payload waits, never projected, until
 ///   the same digest from the same source is installed.
 ///
+/// - The accounts its components created in this workspace
+///   (`retainedAccounts`). Remove keeps an account and releases its
+///   provenance, so nothing else would tell the next Add they are this
+///   plugin's: Add binds each one back, stamped again, rather than making a
+///   duplicate that needs the same sign-in again.
+///
 /// Secret settings are not kept: Remove cleans their namespaces, and a later
 /// Add starts with none, as it always has.
 public struct RetiredPluginActivation: Codable, Equatable, Sendable {
@@ -94,6 +100,17 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
         }
     }
 
+    /// The workspace-owned accounts the plugin's components created, bound
+    /// when it was removed.
+    public var retainedAccounts: [RetainedAccount]?
+
+    /// An account a component created, and whether it was its default.
+    public struct RetainedAccount: Codable, Equatable, Sendable {
+        public var componentID: String
+        public var accountID: String
+        public var isDefault: Bool
+    }
+
     public init(
         pluginID: String,
         namespaceSeed: String,
@@ -120,6 +137,7 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
     var keepsAnything: Bool {
         !namespaceSeed.isEmpty || overridingRowIDs.contains { UUID(uuidString: $0) != nil } || !(pendingOverrides ?? []).isEmpty
             || pendingImport != nil
+            || !(retainedAccounts ?? []).isEmpty
     }
 
     /// Each kept override's component and row.
@@ -152,6 +170,14 @@ extension WorkspaceCapabilityActivation {
         var retired = all.filter { $0.pluginID != activation.pluginID }
         var entry = RetiredPluginActivation(activation)
         entry.pendingOverrides = all.first { $0.pluginID == activation.pluginID }?.pendingOverrides
+        // Read before Remove releases their provenance: a row this workspace
+        // owns that the plugin stamped is one it created here.
+        let retained = activation.bindings.filter { !$0.isDeleted }.compactMap { binding -> RetiredPluginActivation.RetainedAccount? in
+            guard let account = binding.account, !account.isDeleted, !account.isGlobal,
+                  account.workspace?.id == workspace.id, account.originPackageID == activation.pluginID else { return nil }
+            return .init(componentID: binding.componentID, accountID: account.id.uuidString, isDefault: binding.isDefault)
+        }
+        entry.retainedAccounts = retained.isEmpty ? nil : retained
         if entry.keepsAnything { retired.append(entry) }
         setRetired(retired, on: workspace)
     }
@@ -203,6 +229,17 @@ extension WorkspaceCapabilityActivation {
         guard let index = all.firstIndex(where: { $0.pluginID == pluginID }), all[index].pendingImport != nil else { return }
         all[index].pendingImport = nil
         setRetired(all.filter(\.keepsAnything), on: workspace)
+    }
+
+    /// The accounts Remove kept for `pluginID` in `workspace` that still
+    /// exist there, for Add to bind back (`retainedAccounts`).
+    public static func retainedAccounts(of pluginID: String, in workspace: Workspace) -> [(componentID: String, account: Connector, isDefault: Bool)] {
+        guard let entry = retiredActivations(of: workspace).first(where: { $0.pluginID == pluginID }) else { return [] }
+        return (entry.retainedAccounts ?? []).compactMap { retained in
+            guard let account = workspace.connectors.first(where: { !$0.isDeleted && $0.id.uuidString == retained.accountID })
+            else { return nil }
+            return (retained.componentID, account, retained.isDefault)
+        }
     }
 
     /// The plugins whose kept rows are pending as overrides in `workspace`.

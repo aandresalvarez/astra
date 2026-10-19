@@ -629,6 +629,24 @@ public enum PluginManifestConverter {
         )
     }
 
+    /// Each prerequisite with its own setup component, paired by position,
+    /// the order `manifest(from:)` keeps. Health is shared by check ID, but
+    /// two setup components may share one and still differ in label and
+    /// repair, so a first match by ID would show and run the wrong one's.
+    public static func setupComponents(of package: PluginPackage) -> [(prerequisite: CLIPrerequisite, component: PluginComponent)] {
+        package.prerequisites.map { ($0, setupComponent($0)) }
+    }
+
+    /// The position in the package's prerequisites of the component at
+    /// `index` in `manifest.components` (from `manifest(from:)`), when it is
+    /// a prerequisite's setup component: those come in prerequisite order,
+    /// and only they are setup components without a requirement.
+    public static func prerequisitePosition(ofComponentAt index: Int, in manifest: PluginManifest) -> Int? {
+        manifest.components.indices
+            .filter { manifest.components[$0].kind == .setup && manifest.components[$0].requirement == nil }
+            .firstIndex(of: index)
+    }
+
     /// The `CLIPrerequisite.id` (binary, arguments, context) a setup
     /// component checks; nil for one that runs no CLI. Health is keyed by it,
     /// so a failure finds its own component even when two share a name.

@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 @MainActor
 struct CapabilityActivationDisabler {
@@ -29,7 +30,8 @@ struct CapabilityActivationDisabler {
         availablePackages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions(),
         persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
         connectorCleanupStore: ConnectorCredentialCleanupStore? = nil,
-        keepingWorkspaceRows: Bool = false
+        keepingWorkspaceRows: Bool = false,
+        rewriteMirror: (@MainActor (Workspace) -> Bool)? = nil
     ) -> Result {
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         if WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) != nil {
@@ -112,11 +114,21 @@ struct CapabilityActivationDisabler {
         // or MCP-only packages. Skipping the save there would make the
         // disable look applied in memory but never reach SwiftData / the
         // exported config. Keychain cleanup stays gated on a successful save.
+        // The workspace's mirror is written before any credential of what
+        // it deleted is cleaned: one still naming the rows would bring them
+        // back without their secrets. One that can't be written keeps the
+        // connector cleanups for launch and skips the skills'.
+        var mirrorWritten = false
         if ConnectorCredentialCleanup.deleteThenClean(
             pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
-            save: { persist(workspace, modelContext) }
+            save: { persist(workspace, modelContext) },
+            beforeSettling: {
+                mirrorWritten = rewriteMirror?(workspace)
+                    ?? WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext)
+                return mirrorWritten
+            }
         ) {
-            pendingKeychainCleanups.forEach { $0() }
+            if mirrorWritten { pendingKeychainCleanups.forEach { $0() } }
         } else {
             // Failed save: revert the pending deletes and the workspace
             // membership arrays (which rollback does not restore) so the

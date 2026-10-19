@@ -100,7 +100,8 @@ public enum StartupCredentialMigrationService {
         modelContext: ModelContext,
         resolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
         store: SecretStore = SecretStoreSeam.required,
-        rewriteMirror: ((Workspace) -> Bool)? = nil
+        rewriteMirror: ((Workspace) -> Bool)? = nil,
+        save: ((String) -> Bool)? = nil
     ) -> Bool {
         guard let workspaces else { return false }
         var restorers: [() -> Void] = []
@@ -117,16 +118,20 @@ public enum StartupCredentialMigrationService {
         }
         guard !restorers.isEmpty else { return true }
         let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
-        let saved = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
-            modelContext: modelContext, auditFields: ["scope": "connector_setting_migration"]
-        )
+        let persist = save ?? { scope in
+            WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext, auditFields: ["scope": scope])
+        }
+        let saved = persist("connector_setting_migration")
         let unwritten = saved ? workspaces.filter { !rewrite($0) }.count : workspaces.count
         guard unwritten > 0 else { return true }
         restorers.forEach { $0() }
-        let unrestored = writes.reversed().filter { !$0.undo(store: store) }.count
-        let restoreSaved = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
-            modelContext: modelContext, auditFields: ["scope": "connector_setting_migration_undo"]
-        )
+        // The Keychain copies go only once the rows naming the plain values
+        // again are saved: a stored row still in its migrated form (a
+        // credential key, no plain value) needs them, and the next launch
+        // retries from it. A first save that never landed left the store as
+        // it was, so they can go then too.
+        let restoreSaved = persist("connector_setting_migration_undo")
+        let unrestored = (restoreSaved || !saved) ? writes.reversed().filter { !$0.undo(store: store) }.count : writes.count
         AuditLoggingSeam.required.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
             "scope": "connector_setting",
             "result": saved ? "mirror_rewrite_failed" : "save_failed",

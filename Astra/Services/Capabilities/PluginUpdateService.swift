@@ -286,7 +286,7 @@ enum PluginUpdateService {
                 let result = try reconcile(
                     activation, in: workspace, to: package, mode: mode, modelContext: modelContext, secrets: secrets,
                     connectorStore: connectorStore,
-                    awaitsReview: awaitsReview(package, in: workspace, approvalRecords: approvalRecords),
+                    awaitsReview: awaitsReview(package, in: workspace, records: approvalRecords),
                     copied: &total.copied
                 )
                 total.released += result.released
@@ -302,7 +302,7 @@ enum PluginUpdateService {
             )
             let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
             let saved = PluginSecretCleanupOutbox.deleteThenClean(
-                total.released, keys: total.staleSecrets, modelContext: modelContext, secrets: secrets,
+                total.released, keys: total.staleSecrets + journaledCopies(total.copied), modelContext: modelContext, secrets: secrets,
                 save: { WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext) },
                 beforeSettling: {
                     var seen = Set<UUID>()
@@ -316,6 +316,7 @@ enum PluginUpdateService {
             // A copy the Keychain can't take back is reported ahead of the
             // failure: the successor would keep a value Update reads as its own.
             let unrestored = undo(total.copied, secrets: secrets, connectorStore: connectorStore)
+            PluginSecretCleanupOutbox(for: modelContext)?.forget(journaledCopies(total.copied))
             if !unrestored.isEmpty { throw UpdateError.credentialRestoreFailed(keys: unrestored) }
             throw error
         }
@@ -507,8 +508,18 @@ enum PluginUpdateService {
                 let undeclared = mode == .release ? [] : activation.secretSettingKeys
                     .filter { PluginActivation.componentID(ofSettingKey: $0) == old }
                     .map { String($0.dropFirst(old.count + 1)) }
-                try copySecrets(of: spec, alsoCopying: undeclared, from: oldID, to: newID, persistence: persistence, copied: &copied)
+                try copySecrets(
+                    of: spec, alsoCopying: undeclared, from: oldID, to: newID, persistence: persistence,
+                    outbox: (modelContext ?? activation.modelContext).flatMap(PluginSecretCleanupOutbox.init(for:)), copied: &copied
+                )
                 result.copied += copied[before...]
+                // The successor owns each copy: its marker settles the
+                // journal with the save.
+                for entry in copied[before...] {
+                    WorkspaceCapabilityActivation.setSecretRecorded(
+                        true, forKey: PluginActivation.settingKey(componentID: new, key: entry.key), on: activation
+                    )
+                }
                 retargetSkill(oldID, to: newID, in: workspace)
                 result.released.append(oldID)
             }
@@ -549,6 +560,15 @@ enum PluginUpdateService {
             result.marked = WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
             return result
         }
+
+        // A kept setting the definition now declares secret leaves the plain
+        // settings in this save, its value moved into the Keychain through
+        // the journal first; undone with the rest if the save fails.
+        try moveSettingsNowSecret(
+            of: activation, in: package, persistence: persistence,
+            outbox: (modelContext ?? activation.modelContext).flatMap(PluginSecretCleanupOutbox.init(for:)),
+            copied: &copied, result: &result
+        )
 
         // A row replacing a component this definition no longer declares is
         // the workspace's own again (a shared one back on its lists) before
@@ -592,10 +612,10 @@ enum PluginUpdateService {
     /// Whether `package` still awaits its review in `workspace`: a draft no
     /// approval covers, an approval for another digest, or a pack's review
     /// gate.
-    static func awaitsReview(_ package: PluginPackage, in workspace: Workspace, approvalRecords: [CapabilityApprovalRecord]) -> Bool {
-        CapabilityCatalogPolicy.decision(
-            for: package, context: .currentUser(workspace: workspace, approvalRecords: approvalRecords)
-        ).blockers.contains { blocker in
+    static func awaitsReview(_ package: PluginPackage, in workspace: Workspace? = nil, records approvalRecords: [CapabilityApprovalRecord]) -> Bool {
+        let context = workspace.map { CapabilityCatalogPolicyContext.currentUser(workspace: $0, approvalRecords: approvalRecords) }
+            ?? CapabilityCatalogPolicyContext(approvalRecords: approvalRecords)
+        return CapabilityCatalogPolicy.decision(for: package, context: context).blockers.contains { blocker in
             switch blocker {
             case .draftRequiresApproval, .approvalDigestMismatch, .packPolicyReviewRequired: true
             default: false
@@ -605,6 +625,12 @@ enum PluginUpdateService {
 
     /// What an activation records for the definition it accepted: its
     /// content, never where the copy came from (`PluginDefinitionDigest`).
+    /// The single secrets `copied` wrote into skill namespaces, journaled
+    /// before each write: settled with the save, taken back with `undo`.
+    static func journaledCopies(_ copied: [CopiedSecret]) -> [StaleSecret] {
+        copied.filter { $0.account == nil }.map { StaleSecret(key: $0.key, skillID: $0.skillID) }
+    }
+
     static func digest(of package: PluginPackage) -> String {
         PluginDefinitionDigest.content(of: package)
     }
@@ -661,7 +687,7 @@ enum PluginUpdateService {
                     account.originComponentID = componentID
                     touched = true
                 }
-                for hint in spec.credentialHints where !account.credentialKeys.contains(hint.key)
+                for hint in spec.credentialHints where !account.credentialKeys.contains(where: { ConnectorCredentialKey.same($0, hint.key) })
                     && !(moved.contains(hint.key) && account.configKeys.contains(hint.key)) {
                     while account.credentialValues.count < account.credentialKeys.count { account.credentialValues.append("") }
                     account.credentialKeys.append(hint.key)
@@ -732,6 +758,7 @@ enum PluginUpdateService {
         from oldID: UUID,
         to newID: UUID,
         persistence: any SkillSecretPersisting.Type,
+        outbox: PluginSecretCleanupOutbox? = nil,
         copied: inout [CopiedSecret]
     ) throws {
         let declared = spec.environmentKeys.filter(Skill.isSecretEnvironmentKey)
@@ -740,10 +767,62 @@ enum PluginUpdateService {
                   !value.isEmpty else { continue }
             let existing = persistence.loadSecretValue(key: key, skillID: newID, store: KeychainSecretStore())
             guard existing?.isEmpty ?? true else { continue }
+            // Journaled before the copy and settled with the activation's
+            // save (`journaledCopies`): a quit between them leaves a copy
+            // launch cleans, never one nothing names.
+            do {
+                try outbox?.journal([StaleSecret(key: key, skillID: newID)])
+            } catch {
+                throw UpdateError.secretCopyFailed(component: spec.name, key: key)
+            }
             guard persistence.saveSecretValue(value, key: key, skillID: newID, skillName: spec.name, allowUserInteraction: false) else {
+                outbox?.forget([StaleSecret(key: key, skillID: newID)])
                 throw UpdateError.secretCopyFailed(component: spec.name, key: key)
             }
             copied.append(CopiedSecret(key: key, skillID: newID, previousValue: existing))
+        }
+    }
+
+    /// Moves each plain setting value of a kept skill whose key the
+    /// definition now declares secret into the skill's Keychain namespace,
+    /// journaled before the write, and drops the plain value. The reverse
+    /// (secret, now plain) keeps the Keychain value, unread, until the
+    /// person enters the setting again (`PluginOperations.setSetting`):
+    /// nothing secret is ever written out as a plain setting.
+    private static func moveSettingsNowSecret(
+        of activation: PluginActivation,
+        in package: PluginPackage,
+        persistence: any SkillSecretPersisting.Type,
+        outbox: PluginSecretCleanupOutbox?,
+        copied: inout [CopiedSecret],
+        result: inout Reconciliation
+    ) throws {
+        for skill in package.skills {
+            let componentID = CapabilityResourceOrigin.componentID(for: skill)
+            let plain = activation.configuration(forComponent: componentID)
+            let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
+            for key in skill.environmentKeys where Skill.isSecretEnvironmentKey(key) {
+                guard let value = plain[key] else { continue }
+                let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)
+                if !value.isEmpty {
+                    let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
+                    let journaled = StaleSecret(key: key, skillID: skillID)
+                    do {
+                        try outbox?.journal([journaled])
+                    } catch {
+                        throw UpdateError.secretCopyFailed(component: skill.name, key: key)
+                    }
+                    guard persistence.saveSecretValue(value, key: key, skillID: skillID, skillName: skill.name, allowUserInteraction: false) else {
+                        outbox?.forget([journaled])
+                        throw UpdateError.secretCopyFailed(component: skill.name, key: key)
+                    }
+                    let entry = CopiedSecret(key: key, skillID: skillID, previousValue: previous)
+                    copied.append(entry)
+                    result.copied.append(entry)
+                    WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: settingKey, on: activation)
+                }
+                WorkspaceCapabilityActivation.setConfigValue(nil, forKey: settingKey, on: activation)
+            }
         }
     }
 

@@ -205,6 +205,41 @@ struct CapabilityCatalogActionService {
         }
     }
 
+    /// Approves the draft an import staged over an approved plugin
+    /// (`CapabilityLibrary.stage`) and makes it the installed definition:
+    /// the approval is saved first, then the draft replaces the approved
+    /// copy, then every activation is reconciled with it, as an import does.
+    @discardableResult
+    func approveStaged(
+        id: String,
+        modelContext: ModelContext,
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
+        approvedBy: String = "ASTRA local admin"
+    ) throws -> PluginPackage {
+        guard let draft = library.stagedPackage(id: id) else {
+            throw CapabilityLibrary.RemovalError.notInstalled(id)
+        }
+        if let refusal = PluginUpdateService.refusals(for: draft, modelContext: modelContext).first { throw refusal }
+        let record = try approvalStore.save(package: draft, status: .approved, approvedBy: approvedBy, reviewNotes: "Approved the staged update.")
+        let installed = try library.commitStaged(id: id)
+        // A copy whose digest names where it is stored (an icon asset) is
+        // approved again where it now is.
+        var records = approvalStore.records()
+        if PluginUpdateService.awaitsReview(installed, records: records) {
+            _ = try approvalStore.save(package: installed, status: .approved, approvedBy: approvedBy, reviewNotes: record.reviewNotes)
+            records = approvalStore.records()
+        }
+        try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: [installed], mode: .release, approvalRecords: records)
+        CapabilityCatalogPersistenceEvents.post(.global)
+        return installed
+    }
+
+    /// Drops a staged draft: the approved copy stays what it was.
+    func discardStaged(id: String) {
+        library.discardStaged(id: id)
+        CapabilityCatalogPersistenceEvents.post(.global)
+    }
+
     /// Remove for a plugin the library no longer has a readable entry for.
     @discardableResult
     func forgetMissing(pluginID: String, modelContext: ModelContext) throws -> CapabilityUninstaller.RemovalResult {
