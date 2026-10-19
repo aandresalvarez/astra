@@ -110,6 +110,19 @@ enum RuntimeHomeAccessService {
                 problems.append(issue)
             }
         }
+        // These stores cannot be represented by one required path: Cursor uses
+        // workspace hashes and OpenCode stores sessions as SQLite rows. Recheck
+        // the exact launch environment here, off the UI actor, just as the path
+        // checks above revalidate Copilot and Antigravity's selected state.
+        if let session = request.resumeSessionID, [.cursorCLI, .openCodeCLI].contains(request.runtime) {
+            guard !Task.isCancelled else { return nil }
+            switch ProviderNativeSessionStore.lookup(runtime: request.runtime, sessionID: session,
+                                                    userHome: request.userHome, environment: request.environment) {
+            case .present: break
+            case .absent: problems.append("the selected native session is missing; it cannot be resumed")
+            case .unverifiable: problems.append("the selected native session could not be verified; restore access and retry")
+            }
+        }
         guard !problems.isEmpty else { return copilotCheck }
         return RuntimeReadinessCheck(
             id: checkID(for: request.runtime), title: "\(request.runtime.displayName) settings and state",
