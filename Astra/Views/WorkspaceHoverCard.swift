@@ -64,9 +64,9 @@ struct WorkspaceHoverCard: View {
         }
         .padding(10)
         .frame(width: 340)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Stanford.radiusLarge))
+        .background(Stanford.cardBackground, in: RoundedRectangle(cornerRadius: Stanford.radiusLarge))
         .overlay {
-            RoundedRectangle(cornerRadius: Stanford.radiusLarge).strokeBorder(.primary.opacity(0.12))
+            RoundedRectangle(cornerRadius: Stanford.radiusLarge).strokeBorder(Stanford.borderRest, lineWidth: 1)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Options for \(workspace.name)")

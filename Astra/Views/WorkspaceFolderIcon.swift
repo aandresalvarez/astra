@@ -9,7 +9,7 @@ struct WorkspaceFolderIcon: View {
             if isExpanded {
                 GeometryReader { geometry in
                     Self.openFolderPath(size: geometry.size)
-                        .stroke(style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+                        .stroke(style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
                 }
                 .frame(width: 17, height: 14)
             } else {
