@@ -1,7 +1,9 @@
 import Foundation
 
-/// What a Terminal repair may ask a CLI to do: sign in, check a sign-in, or
-/// (for an install step) install with a package manager. Nothing else.
+/// What a Terminal repair may ask a CLI to do: sign in, or (for an install
+/// step) install with a package manager. Nothing else. A status command
+/// (`gh auth status`, `gcloud auth list`) changes nothing, so it is a check
+/// (`HealthCheckPolicy`), never a repair: the button would fix nothing.
 ///
 /// A repair runs in one click, and a plugin declares its command. Being a
 /// plain call to the component's own CLI is not enough: `gcloud projects
@@ -36,8 +38,7 @@ public enum TerminalRepairPolicy {
                 positionals: ["auth", "login"], booleanFlags: ["--web", "-w"],
                 valueFlags: ["--hostname": .host, "-h": .host, "--git-protocol": .oneOf(["https", "ssh"]), "-p": .oneOf(["https", "ssh"])]
             ),
-            SignIn(positionals: ["auth", "refresh"], valueFlags: ["--hostname": .host, "-h": .host]),
-            SignIn(positionals: ["auth", "status"], booleanFlags: ["--active", "-a"], valueFlags: ["--hostname": .host, "-h": .host])
+            SignIn(positionals: ["auth", "refresh"], valueFlags: ["--hostname": .host, "-h": .host])
         ],
         "gcloud": [
             SignIn(positionals: ["auth", "login"], booleanFlags: ["--no-launch-browser", "--update-adc"], valueFlags: gcloudSignInFlags),

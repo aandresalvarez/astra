@@ -64,8 +64,25 @@ enum PluginConnectorFieldTrust {
     }
 
     /// The settings of `connector` that `package` stores as credentials.
+    /// A field that is the account's structure (`account.baseURL`,
+    /// `account.alias`) is neither: it lands on the account itself.
     static func settingsStoredAsCredentials(of connector: PluginConnector, in package: PluginPackage) -> Set<String> {
-        Set(connector.configHints.map(\.key)).subtracting(trustedPlainSettingKeys(of: connector, in: package))
+        Set(connector.configHints.filter { !$0.isAccountStructure }.map(\.key))
+            .subtracting(trustedPlainSettingKeys(of: connector, in: package))
+    }
+
+    /// Why `url`, entered for an account's endpoint, can't be one: it must
+    /// be HTTPS (or loopback HTTP), as credentials need
+    /// (`ConnectorSecurityPolicy`), with no user name or password in it.
+    static func endpointProblem(_ url: String) -> String? {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = URL(string: trimmed), parsed.host?.isEmpty == false else {
+            return "\(trimmed) isn't a web address."
+        }
+        guard parsed.user == nil, parsed.password == nil else {
+            return "A service URL can't carry a user name or password; enter those in their own fields."
+        }
+        return ConnectorSecurityPolicy.credentialTransportViolation(baseURL: trimmed, authMethod: "bearer", credentialKeys: ["ENDPOINT"])
     }
 
     /// `connector` as its fields are stored: each setting it may not keep
@@ -77,9 +94,11 @@ enum PluginConnectorFieldTrust {
         // One stored credential per canonical key (`ConnectorCredentialKey`).
         var seen = Set(connector.credentialHints.map { ConnectorCredentialKey.canonical($0.key) })
         var stored = connector
-        stored.configHints = connector.configHints.filter { trusted.contains($0.key) }
+        // The account's structure (endpoint, name) stays declared as it is:
+        // it is neither a plain setting nor a credential.
+        stored.configHints = connector.configHints.filter { trusted.contains($0.key) || $0.isAccountStructure }
         stored.credentialHints += connector.configHints
-            .filter { !trusted.contains($0.key) && seen.insert(ConnectorCredentialKey.canonical($0.key)).inserted }
+            .filter { !trusted.contains($0.key) && !$0.isAccountStructure && seen.insert(ConnectorCredentialKey.canonical($0.key)).inserted }
             .map { PluginConnector.CredentialHint(key: $0.key, hint: $0.hint) }
         return stored
     }
