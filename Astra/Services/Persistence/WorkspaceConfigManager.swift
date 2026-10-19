@@ -1289,7 +1289,8 @@ public enum WorkspaceConfigManager {
             if reused == nil { sanitizeCreated(connector, trust: capabilityTrust, report: &trustReport) }
             if reused == nil, freshIDs {
                 connector.id = UUID()
-                importSession?.record(connector, for: cc, createdIn: workspace)
+                importSession?.record(connector, for: cc, createdIn: workspace,
+                                      listed: cc.id.map(requestedActivation(from: config).globalConnectorIDs.contains) ?? false)
             }
             connector.workspace = (connector.isGlobal ? nil : workspace)
             if connector.isGlobal { activation.enableGlobalConnector(connector.id.uuidString) }

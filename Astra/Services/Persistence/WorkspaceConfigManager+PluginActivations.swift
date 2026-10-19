@@ -272,7 +272,16 @@ extension WorkspaceConfigManager {
         // The import turned on every shared row it read, the overrides the
         // mirror carries only so they can be named again included.
         WorkspaceCapabilityActivation.takeOverridesOffSharedLists(in: workspace)
+        // So did a shared account it carries only because a binding names it.
+        WorkspaceCapabilityActivation.takeBindingOnlyAccountsOffSharedList(
+            in: workspace, listed: listedSharedAccountIDs(of: config, connectorsByID: connectorsByID)
+        )
         return projectedIDs
+    }
+
+    /// The rows the mirror's own shared list names, by their ID here.
+    static func listedSharedAccountIDs(of config: WorkspaceConfig, connectorsByID: [String: Connector]) -> Set<String> {
+        Set(requestedActivation(from: config).globalConnectorIDs.map { connectorsByID[$0]?.id.uuidString ?? $0 })
     }
 
     /// Writes `workspace`'s mirror now, on this thread, registering its

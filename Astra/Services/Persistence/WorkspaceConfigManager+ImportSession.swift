@@ -19,7 +19,7 @@ extension WorkspaceConfigManager {
     public final class ImportSession {
         /// File account ID -> the row created for it, and the workspace whose
         /// import created it.
-        private var accounts: [String: (row: Connector, owner: Workspace)] = [:]
+        private var accounts: [String: (row: Connector, owner: Workspace, listed: Bool)] = [:]
         /// The rows each later workspace took from `accounts`, by workspace.
         private var adopted: [UUID: Set<String>] = [:]
 
@@ -27,13 +27,14 @@ extension WorkspaceConfigManager {
 
         /// Records the row created for the file's shared account `cc`; the
         /// first workspace to create one keeps it.
-        func record(_ row: Connector, for cc: ConnectorConfig, createdIn workspace: Workspace) {
+        /// `listed`: the creating workspace's mirror had it on its shared list.
+        func record(_ row: Connector, for cc: ConnectorConfig, createdIn workspace: Workspace, listed: Bool) {
             guard cc.isGlobal == true, let fileID = cc.id, accounts[fileID] == nil else { return }
-            accounts[fileID] = (row, workspace)
+            accounts[fileID] = (row, workspace, listed)
         }
 
         /// The row an earlier workspace of this import created for `cc`.
-        func sharedAccount(for cc: ConnectorConfig, in workspace: Workspace) -> (row: Connector, owner: Workspace)? {
+        func sharedAccount(for cc: ConnectorConfig, in workspace: Workspace) -> (row: Connector, owner: Workspace, listed: Bool)? {
             guard cc.isGlobal == true, let fileID = cc.id, let entry = accounts[fileID],
                   !entry.row.isDeleted, entry.owner.id != workspace.id else { return nil }
             return entry
@@ -52,9 +53,11 @@ extension WorkspaceConfigManager {
 
     /// Uses the row this import already created for `cc` in another
     /// workspace, made shared again so both use it: back on the creating
-    /// workspace's shared list, where it was its own row until now, and on
-    /// this one's. Like a reused shared row it takes none of this file's
-    /// skills. False when the import has no such row.
+    /// workspace's shared list, where it was its own row until now (unless
+    /// it is there only through a binding its mirror didn't list), and on
+    /// this one's, which `restoreActivationDetails` settles the same way.
+    /// Like a reused shared row it takes none of this file's skills. False
+    /// when the import has no such row.
     @MainActor
     static func adoptSharedAccount(
         _ cc: ConnectorConfig,
@@ -64,11 +67,14 @@ extension WorkspaceConfigManager {
         _ connectorsByID: inout [String: Connector],
         _ reusedRowIDs: inout Set<String>
     ) -> Bool {
-        guard let (row, owner) = session?.sharedAccount(for: cc, in: workspace) else { return false }
+        guard let (row, owner, listed) = session?.sharedAccount(for: cc, in: workspace) else { return false }
         if !row.isGlobal {
             row.isGlobal = true
             row.workspace = nil
-            WorkspaceCapabilityActivation.mutate(owner) { $0.enableGlobalConnector(row.id.uuidString) }
+            let boundByOwner = WorkspaceCapabilityActivation.workspacesBinding(row).contains { $0.id == owner.id }
+            if listed || !boundByOwner {
+                WorkspaceCapabilityActivation.mutate(owner) { $0.enableGlobalConnector(row.id.uuidString) }
+            }
         }
         session?.adopt(row, in: workspace)
         reusedRowIDs.insert(row.id.uuidString)
