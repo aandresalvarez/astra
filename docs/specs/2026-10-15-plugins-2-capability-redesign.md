@@ -453,24 +453,32 @@ Each is a decision R1 implements and its fixture tests.
 - Checks are read-only probes gated by approval and `canRun` (see Rules).
 - As built: a check runs on every scan (rail, Plugins surface, launch
   preflight, repair polling) with no click, so ASTRA runs it only when it is
-  a known read-only status command for that CLI (`HealthCheckPolicy`,
-  matched by `CLICommandShape`). Its positional words must match a listed
-  status command exactly and every flag must be one that command lists; a
-  flag's separate value counts as a positional unless the flag takes one.
-  Allowed: `--version`/`version` for any CLI; `gh auth status` (`--hostname`,
-  `--active`); `gcloud auth list` (`--format`, `--filter`); `gcloud config
-  get-value <property>` (`--format`); `az account show` (`--output`,
-  `--query`); `aws sts get-caller-identity` (`--output`, `--profile`,
-  `--query`, `--region`); `docker version|info` (`--format`); `docker ps`
-  (`--format`, `--quiet`). Only in their exact forms, because their default
-  output is a token or a script: `gcloud config config-helper
+  a known read-only status command of a known CLI (`HealthCheckPolicy`,
+  matched by `CLICommandShape` on the binary's basename; a path whose
+  basename isn't listed has no check). A version report counts only for the
+  known CLIs, each in the forms it supports: `--version` and `version` for
+  gh, gcloud, az, docker, git, terraform; `version` only for bq, gsutil,
+  kubectl; `--version` only for aws, node, npm, npx, python3, python, uv,
+  uvx, deno, bun, brew, the provider CLIs (claude, codex, copilot,
+  cursor-agent, opencode, agy) and the bundled and detected binaries (pwsh,
+  jq, curl, astra-mcp-smoke-server). `npm version` and `uv version` are
+  excluded (with an argument each sets a project's version), and any other
+  binary has no automatic check, since the same word means something else
+  to another program (`touch version` creates a file). Status commands,
+  with only the flags listed (a flag's separate value counts as a
+  positional unless the flag takes one): `gh auth status` (`--hostname`,
+  `--active`), `gcloud auth list` (`--format`, `--filter`), `gcloud config
+  get-value <property>` (`--format`), `az account show` (`--output`,
+  `--query`), `aws sts get-caller-identity` (`--output`, `--profile`,
+  `--query`, `--region`), `docker version|info` (`--format`), `docker ps`
+  (`--format`, `--quiet`). Exact forms only: `gcloud config config-helper
   --format=value(credential.token_expiry)`, `gcloud auth application-default
-  print-access-token --format=value(expiry)` and `osascript -e 'return
-  "ok"'`. A check that fails the rule is never executed: its status is
-  `notChecked`, shown as "Not checked" (not a pass) with no repair offered;
-  a repair's re-check applies the same rule; `CapabilityPackageValidator`
-  refuses it at import ("Unsafe health check"). The rule is the same for
-  every plugin, and every bundled check passes it (test-pinned).
+  print-access-token --format=none` (judged on exit status alone; it prints
+  nothing, so no token reaches ASTRA) and `osascript -e 'return "ok"'`. A
+  check that fails the rule is never executed: it shows "Not checked" (not
+  a pass), counts as a pending step and offers no repair; a repair's
+  re-check applies the same rule; `CapabilityPackageValidator` blocks it at
+  import ("Unsafe health check"). Every bundled check passes (test-pinned).
 - Retry after a repair resumes the provider session (already on `#508`).
 
 ### UI
