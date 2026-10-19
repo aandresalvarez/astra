@@ -284,11 +284,7 @@ enum CapabilityCatalogPolicy {
         }
 
         for connector in package.connectors {
-            if let reason = ConnectorSecurityPolicy.credentialTransportViolation(
-                baseURL: connector.baseURL,
-                authMethod: connector.authMethod,
-                credentialKeys: connector.credentialHints.map(\.key)
-            ) {
+            if let reason = PluginConnectorFieldTrust.credentialTransportViolation(of: connector, in: package) {
                 operationalBlockers.append(.unsafeConnector(name: displayName(connector.name, fallback: connector.serviceType), reason: reason))
             }
         }

@@ -384,13 +384,14 @@ public final class Connector {
     @discardableResult
     public func moveSettingsStoredAsCredentials(
         resolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
-        store: SecretStore = SecretStoreSeam.required
+        store: SecretStore = SecretStoreSeam.required,
+        recording record: (ConnectorSettingSecretWrite) -> Void = { _ in }
     ) -> [String] {
         guard let originPackageID, !originPackageID.isEmpty,
               let keys = resolver?.declaredSettingKeysStoredAsCredentials(
                 originPackageID: originPackageID, originComponentID: originComponentID
               ) else { return [] }
-        return moveSettingsToKeychain(keys, store: store)
+        return moveSettingsToKeychain(keys, store: store, recording: record)
     }
 
     /// Moves each of `keys` that holds a plain value on this row into the
@@ -398,18 +399,29 @@ public final class Connector {
     /// credential key) only once its value reads back from the Keychain, so
     /// a failed write keeps it here for the next try. A different value the
     /// Keychain already holds for the key is left for the person to settle.
+    /// Each Keychain write is handed to `record` as it lands, for a caller
+    /// whose later step can fail to `undo`.
     @discardableResult
-    public func moveSettingsToKeychain(_ keys: Set<String>, store: SecretStore = SecretStoreSeam.required) -> [String] {
+    public func moveSettingsToKeychain(
+        _ keys: Set<String>,
+        store: SecretStore = SecretStoreSeam.required,
+        recording record: (ConnectorSettingSecretWrite) -> Void = { _ in }
+    ) -> [String] {
         let secrets = ConnectorSecretSeam.required
         var moved: [String] = []
         for key in configKeys where keys.contains(key) {
             let value = configValue(key)
             guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             let upperKey = key.uppercased()
-            func held() -> String? { secrets.loadAllCredentials(keys: [upperKey], facts: secretFacts, store: store)[upperKey] }
-            if let existing = held(), !existing.isEmpty, existing != value { continue }
-            guard held() == value
-                || (secrets.saveCredential(value, key: upperKey, facts: secretFacts, store: store) && held() == value) else { continue }
+            let facts = secretFacts
+            func held() -> String? { secrets.loadAllCredentials(keys: [upperKey], facts: facts, store: store)[upperKey] }
+            let existing = held()
+            if let existing, !existing.isEmpty, existing != value { continue }
+            if existing != value {
+                guard secrets.saveCredential(value, key: upperKey, facts: facts, store: store) else { continue }
+                record(ConnectorSettingSecretWrite(key: upperKey, facts: facts, previousValue: existing))
+                guard held() == value else { continue }
+            }
             if let index = configKeys.firstIndex(of: key) {
                 configKeys.remove(at: index)
                 if index < configValues.count { configValues.remove(at: index) }
@@ -893,5 +905,27 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
             "service_type": serviceType
         ])
         return cleared && registryCleared
+    }
+}
+
+/// A setting's value `Connector.moveSettingsToKeychain` wrote into the
+/// Keychain, and what the Keychain held for its key before (nil: nothing),
+/// for a caller whose later step fails (a save, a mirror rewrite) to put
+/// back. A failed move left behind would make the next one find a value of
+/// its own there and refuse.
+public struct ConnectorSettingSecretWrite: Equatable, Sendable {
+    public let key: String
+    public let facts: ConnectorSecretFacts
+    public let previousValue: String?
+
+    /// Puts back what the write replaced in `store`, the one it was made
+    /// to. False when the Keychain refused.
+    @discardableResult
+    public func undo(store: SecretStore = SecretStoreSeam.required) -> Bool {
+        let secrets = ConnectorSecretSeam.required
+        if let previousValue, !previousValue.isEmpty {
+            return secrets.saveCredential(previousValue, key: key, facts: facts, store: store)
+        }
+        return secrets.deleteCredential(key: key, facts: facts, store: store)
     }
 }

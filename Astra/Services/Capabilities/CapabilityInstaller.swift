@@ -895,10 +895,8 @@ struct CapabilityInstaller {
     ) -> [String] {
         package.connectors.compactMap { connector in
             let baseURL = PluginSetupInputs.baseURL(in: baseURLOverrides, for: connector) ?? connector.baseURL
-            guard let violation = ConnectorSecurityPolicy.credentialTransportViolation(
-                baseURL: baseURL,
-                authMethod: connector.authMethod,
-                credentialKeys: connector.credentialHints.map(\.key)
+            guard let violation = PluginConnectorFieldTrust.credentialTransportViolation(
+                of: connector, in: package, baseURL: baseURL
             ) else {
                 return nil
             }

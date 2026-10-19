@@ -245,8 +245,8 @@ struct PluginRuntimeProjectionTests {
         try context.save()
 
         let inputs = CapabilitySetupCopier(secretStore: MockSecretStore()).installationInputs(for: jira, from: workspace)
-        #expect(inputs.baseURLOverrides[spec.name] == "https://own.atlassian.net")
-        #expect(inputs.configInputs["JIRA_PROJECTS"] == nil)
+        #expect(inputs.baseURLOverrides[spec.setupComponentID] == "https://own.atlassian.net")
+        #expect(inputs.configInputs[PluginSetupInputs.key("JIRA_PROJECTS", component: spec.setupComponentID)] == nil)
     }
 
     @Test("Copying setup does not turn back on a plugin the source turned off")

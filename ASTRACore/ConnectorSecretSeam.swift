@@ -14,7 +14,7 @@ import os
 // touched (`credentialKeys`/`credentialValues` mutation, `updatedAt`) stays
 // in `Connector.swift` itself, which now calls this seam only for the
 // Keychain I/O primitives.
-public struct ConnectorSecretFacts: Sendable {
+public struct ConnectorSecretFacts: Sendable, Equatable {
     public let id: UUID
     public let name: String
     public let serviceType: String
@@ -87,6 +87,11 @@ public protocol ConnectorSecretPersisting: Sendable {
     static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, store: SecretStore) -> Bool
     @discardableResult
     static func deleteCredential(key: String, facts: ConnectorSecretFacts) -> Bool
+    /// Store-injectable twin of `deleteCredential(key:facts:)`, as
+    /// `saveCredential(_:key:facts:store:)` is of the save: every namespace
+    /// `facts` resolves to.
+    @discardableResult
+    static func deleteCredential(key: String, facts: ConnectorSecretFacts, store: SecretStore) -> Bool
     static func credentialExists(key: String, facts: ConnectorSecretFacts) -> Bool
     /// Matches `KeychainService.load(key:connector:)`'s existing quirk:
     /// unlike `loadAllCredentials`, this bypasses the injectable

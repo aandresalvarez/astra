@@ -371,8 +371,9 @@ struct CopyableCapabilitySetupKeyTests {
         context.insert(empty)
         try context.save()
 
+        let package = makeRedcapPackage()
         let resolved = CopyableCapabilitySetupResolver.installSources(
-            for: makeRedcapPackage(),
+            for: package,
             excluding: destination.id,
             sources: [source, destination, empty],
             connectors: [global],
@@ -380,7 +381,9 @@ struct CopyableCapabilitySetupKeyTests {
         )
 
         #expect(resolved.map(\.name) == ["Source"])
-        #expect(resolved.first?.inputs.credentialInputs["REDCAP_API_TOKEN"] == "tok-abc")
+        // Keyed by the component it was copied from.
+        let token = PluginSetupInputs.key("REDCAP_API_TOKEN", component: package.connectors[0].setupComponentID)
+        #expect(resolved.first?.inputs.credentialInputs[token] == "tok-abc")
     }
 
     /// Two callers keying on the same rows for different packages must not

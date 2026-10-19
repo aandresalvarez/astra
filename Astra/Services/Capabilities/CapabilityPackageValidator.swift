@@ -544,11 +544,7 @@ enum CapabilityPackageValidator {
                     component: name
                 ))
             }
-            guard let reason = ConnectorSecurityPolicy.credentialTransportViolation(
-                baseURL: connector.baseURL,
-                authMethod: connector.authMethod,
-                credentialKeys: connector.credentialHints.map(\.key)
-            ) else {
+            guard let reason = PluginConnectorFieldTrust.credentialTransportViolation(of: connector, in: package) else {
                 continue
             }
             let name = displayName(connector.name, fallback: connector.serviceType)

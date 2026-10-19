@@ -2398,10 +2398,10 @@ struct PluginInstallSheet: View {
         guard !inputs.credentialInputs.isEmpty || !inputs.configInputs.isEmpty || !inputs.baseURLOverrides.isEmpty else {
             return
         }
-        let own = PluginSetupInputs.perComponent(inputs, for: storedConnectors)
-        credentialValues.merge(own.credentialInputs) { _, copied in copied }
-        configValues.merge(own.configInputs) { _, copied in copied }
-        baseURLValues.merge(own.baseURLOverrides) { _, copied in copied }
+        // Keyed by the component each value was copied from, as this form's own are.
+        credentialValues.merge(inputs.credentialInputs) { _, copied in copied }
+        configValues.merge(inputs.configInputs) { _, copied in copied }
+        baseURLValues.merge(inputs.baseURLOverrides) { _, copied in copied }
         copiedSetupSourceName = source.name
         resetValidation()
     }

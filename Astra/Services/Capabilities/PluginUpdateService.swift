@@ -179,11 +179,25 @@ enum PluginUpdateService {
         case release
     }
 
-    /// A secret written into a namespace, and what was there before.
+    /// A secret written into a namespace, and what was there before: a
+    /// renamed skill's, copied to its successor, or an account setting
+    /// moved into the Keychain (`account`; `skillID` is then the account's).
     struct CopiedSecret: Equatable {
         let key: String
         let skillID: UUID
         let previousValue: String?
+        var account: ConnectorSettingSecretWrite?
+
+        init(key: String, skillID: UUID, previousValue: String?) {
+            self.key = key
+            self.skillID = skillID
+            self.previousValue = previousValue
+        }
+
+        init(_ write: ConnectorSettingSecretWrite) {
+            self.init(key: write.key, skillID: write.facts.id, previousValue: write.previousValue)
+            account = write
+        }
     }
 
     /// A secret setting a kept component no longer declares: recorded in
@@ -197,7 +211,8 @@ enum PluginUpdateService {
     struct Reconciliation: Equatable {
         /// Skill namespaces released, journaled with the save.
         var released: [UUID] = []
-        /// Secrets copied for renames, put back if the save fails.
+        /// Secrets copied for renames and account settings moved into the
+        /// Keychain, put back if the save fails.
         var copied: [CopiedSecret] = []
         var staleSecrets: [StaleSecret] = []
         /// Whether the activation now records the definition.
@@ -232,7 +247,8 @@ enum PluginUpdateService {
         modelContext: ModelContext,
         packages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions(),
         mode: Mode = .automatic,
-        secrets: (any SkillSecretPersisting.Type)? = nil
+        secrets: (any SkillSecretPersisting.Type)? = nil,
+        connectorStore: SecretStore? = nil
     ) throws -> Int {
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let activations = try modelContext.fetch(FetchDescriptor<PluginActivation>())
@@ -252,7 +268,8 @@ enum PluginUpdateService {
                       needsReconcile(activation, to: package) || !PluginTemplateSync.isInSync(package, in: workspace)
                 else { continue }
                 let result = try reconcile(
-                    activation, in: workspace, to: package, mode: mode, modelContext: modelContext, secrets: secrets, copied: &total.copied
+                    activation, in: workspace, to: package, mode: mode, modelContext: modelContext, secrets: secrets,
+                    connectorStore: connectorStore, copied: &total.copied
                 )
                 total.released += result.released
                 total.staleSecrets += result.staleSecrets
@@ -270,7 +287,7 @@ enum PluginUpdateService {
             restore()
             // A copy the Keychain can't take back is reported ahead of the
             // failure: the successor would keep a value Update reads as its own.
-            let unrestored = undo(total.copied, secrets: secrets)
+            let unrestored = undo(total.copied, secrets: secrets, connectorStore: connectorStore)
             if !unrestored.isEmpty { throw UpdateError.credentialRestoreFailed(keys: unrestored) }
             throw error
         }
@@ -376,6 +393,7 @@ enum PluginUpdateService {
         mode: Mode,
         modelContext: ModelContext? = nil,
         secrets: (any SkillSecretPersisting.Type)? = nil,
+        connectorStore: SecretStore? = nil,
         copied: inout [CopiedSecret]
     ) throws -> Reconciliation {
         let persistence = secrets ?? SkillSecretSeam.required
@@ -447,7 +465,9 @@ enum PluginUpdateService {
             result.moved = true
         }
 
-        if syncOwnedAccounts(of: activation, to: package) { result.moved = true }
+        let beforeAccounts = copied.count
+        if syncOwnedAccounts(of: activation, to: package, store: connectorStore, copied: &copied) { result.moved = true }
+        result.copied += copied[beforeAccounts...]
 
         let dropped = known.subtracting(currentSet).subtracting(renames.keys).sorted()
         let staleKeys = staleSettings(of: activation, in: package)
@@ -520,11 +540,15 @@ enum PluginUpdateService {
     /// Puts back what `copied` overwrote, newest first. Returns the keys it
     /// couldn't put back, for the caller to report.
     @discardableResult
-    static func undo(_ copied: [CopiedSecret], secrets: (any SkillSecretPersisting.Type)? = nil) -> [String] {
+    static func undo(
+        _ copied: [CopiedSecret], secrets: (any SkillSecretPersisting.Type)? = nil, connectorStore: SecretStore? = nil
+    ) -> [String] {
         let persistence = secrets ?? SkillSecretSeam.required
         var unrestored: [String] = []
         for secret in copied.reversed() {
-            let restored = if let previous = secret.previousValue {
+            let restored = if let account = secret.account {
+                account.undo(store: connectorStore ?? SecretStoreSeam.required)
+            } else if let previous = secret.previousValue {
                 persistence.saveSecretValue(previous, key: secret.key, skillID: secret.skillID, skillName: "", allowUserInteraction: false)
             } else {
                 persistence.deleteSecret(key: secret.key, skillID: secret.skillID)
@@ -541,10 +565,14 @@ enum PluginUpdateService {
     /// and its description, icon and notes follow; one stamped with a
     /// component this one `replaces` is stamped with this one, so its
     /// creator's declaration is found by ID (`PluginRuntimeProjection`).
-    /// What the person entered (URL, auth method, values) is kept. Returns
-    /// whether a row changed.
+    /// What the person entered (URL, auth method, values) is kept. Each
+    /// setting moved into the Keychain is recorded in `copied`, for the
+    /// caller to `undo` if its save fails. Returns whether a row changed.
     @discardableResult
-    static func syncOwnedAccounts(of activation: PluginActivation, to package: PluginPackage) -> Bool {
+    static func syncOwnedAccounts(
+        of activation: PluginActivation, to package: PluginPackage, store: SecretStore? = nil, copied: inout [CopiedSecret]
+    ) -> Bool {
+        let store = store ?? SecretStoreSeam.required
         var changed = false
         for declared in package.connectors {
             // Settings only a bundled definition keeps plain; any other is a
@@ -556,7 +584,7 @@ enum PluginUpdateService {
             let predecessors = Set(CapabilityResourceOrigin.replacedComponentIDs(for: spec))
             for account in activation.accounts(forComponent: componentID)
             where !account.isDeleted && account.originPackageID == package.id {
-                var touched = !account.moveSettingsToKeychain(moved).isEmpty
+                var touched = !account.moveSettingsToKeychain(moved, store: store) { copied.append(CopiedSecret($0)) }.isEmpty
                 if let stamp = account.originComponentID, predecessors.contains(stamp) {
                     account.originComponentID = componentID
                     touched = true
