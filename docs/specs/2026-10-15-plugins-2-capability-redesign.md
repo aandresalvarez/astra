@@ -790,7 +790,12 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   one being removed, naming the dependents. It records the workspace-owned
   accounts each component created, and the next Add binds them back,
   stamped again, instead of creating duplicates; rows the person authored
-  are never taken.
+  are never taken. Remove records, with the accounts and template IDs it
+  keeps, where the removed copy came from (`RetiredPluginActivation.source`);
+  the next Add binds those accounts back, and writes templates under their
+  old IDs, only for a copy from that same source. A copy from another
+  source or a local file leaves the accounts the person's own, unused and
+  visible, and writes its own templates.
 - **Template identity across Remove.** Remove keeps a template the person
   edited as theirs, unstamped and under its ID, by the same edit rule as
   Update's drift check (`PluginTemplateSync.isEdited`). It deletes the
