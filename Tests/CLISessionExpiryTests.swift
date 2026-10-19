@@ -126,6 +126,79 @@ struct CLISessionExpiryTests {
         }
     }
 
+    @Test("What a shell runs under reaches the commands of its payload")
+    func shellPayloadsCarryTheirWrapperAssignments() throws {
+        let output = "HTTP 401: Bad credentials"
+        let selected = try #require(CLISessionExpiryClassifier.family(content: output, command: "env GH_CONFIG_DIR=/tmp/team bash -c 'gh api user'"))
+        #expect(selected.repair.checkSelectors == ["GH_CONFIG_DIR": "/tmp/team"])
+        let exported = try #require(CLISessionExpiryClassifier.family(content: output, command: "export GH_CONFIG_DIR=/tmp/team; gh api user"))
+        #expect(exported.repair.checkSelectors == ["GH_CONFIG_DIR": "/tmp/team"])
+        for command in ["GH_TOKEN=abc bash -c 'gh api user'", "env -u GH_TOKEN sh -c 'gh api user'"] {
+            let family = try #require(CLISessionExpiryClassifier.family(content: output, command: command), "\(command)")
+            #expect(!family.offersSignIn, "\(command)")
+            #expect(family.repair.checkBinary == nil, "\(command)")
+        }
+        // Its own reserved words still read as its own.
+        #expect(CLISessionExpiryClassifier.stop(content: output, command: "env X=1 bash -c '! gh api user'", failed: false) != nil)
+    }
+
+    @Test("Variables env removes, and gcloud's own account flags, leave the repair check-free and with no sign-in")
+    func removedVariablesAndAccountFlagsAreNotReproduced() throws {
+        let ghOutput = "HTTP 401: Bad credentials"
+        let gcloudExpired = "ERROR: (gcloud.projects.list) Reauthentication required."
+        for (command, output, named) in [
+            ("env -u GH_TOKEN gh api user", ghOutput, "env -u GH_TOKEN"), ("env -i gh api user", ghOutput, "env -i"),
+            ("env --unset=GH_TOKEN gh api user", ghOutput, "env -u GH_TOKEN"),
+            ("gcloud projects list --account stale@example.com", gcloudExpired, "--account"),
+            ("gcloud --configuration=team projects list", gcloudExpired, "--configuration"),
+            ("gcloud projects list --impersonate-service-account svc@p.iam.gserviceaccount.com", gcloudExpired, "--impersonate-service-account")
+        ] {
+            let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "\(command)")
+            let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
+            #expect(!family.offersSignIn, "\(command)")
+            #expect(family.repair.command == nil, "\(command)")
+            #expect(family.repair.checkBinary == nil, "\(command)")
+            #expect(stop.message.contains(named), "\(command)")
+        }
+        // Unrelated variables and flags change nothing.
+        for (command, output) in [("env -u PAGER gh api user", ghOutput), ("gcloud projects list --project p --format=json", gcloudExpired)] {
+            #expect(CLISessionExpiryClassifier.family(content: output, command: command)?.offersSignIn == true, "\(command)")
+        }
+    }
+
+    @Test("A failure an `|| exit` passes on still reaches the line, and a later command's assignment substitution is masked")
+    func exitFallbacksAndAssignmentSubstitutions() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in ["gh api user || exit 1", "gh api user || exit", "gh api user || return 2", "gh api user || { echo failed >&2; exit 1; }"] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) != nil, "\(command)")
+        }
+        for command in ["gh api user || exit 0", "gh api user || echo fallback", "gh api user || { echo failed; }"] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command) == nil, "\(command)")
+        }
+        // `TOKEN=$(gh …) echo ok` exits with echo's status; alone, with gh's.
+        for command in ["TOKEN=$(gh auth token) echo ok", "TOKEN=\"$(gh auth token)\" curl -s x", "A=$(gh auth token) B=$(true) echo ok"] {
+            #expect(CLISessionExpiryClassifier.masksExitStatus(of: "gh", in: command), "\(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) != nil, "\(command)")
+        }
+        #expect(!CLISessionExpiryClassifier.masksExitStatus(of: "gh", in: "TOKEN=$(gh auth token)"))
+        // An assignment that ended its own command feeds nothing after it.
+        #expect(!CLISessionExpiryClassifier.masksExitStatus(of: "gh", in: "TOKEN=$(gh auth token) && echo ok"))
+    }
+
+    @Test("Only a shell tool's command is classified: another tool's command input ran nothing")
+    func onlyShellToolsAreClassified() {
+        for name in ["Bash", "shell", "command_execution", "shellToolCall", "run_command", "run_shell_command", "bash(gh)"] {
+            #expect(CLISessionExpiryClassifier.isShellTool(name), "\(name)")
+        }
+        for name in ["mcp__github__run", "Read", "WebFetch", "Task", "astra_host_github"] {
+            #expect(!CLISessionExpiryClassifier.isShellTool(name), "\(name)")
+        }
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        _ = monitor.processEvent(.toolUse(name: "mcp__docs__search", id: "toolu_docs", input: ["command": "gcloud projects list"]), process: nil)
+        #expect(monitor.processEvent(.toolResult(toolId: "toolu_docs", content: gcloudReauth, isError: true), process: nil) == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
     @Test("A credential store the failed call selected itself is carried; credentials it set itself are not checked")
     func commandLocalSelectors() throws {
         let gcloudExpired = "ERROR: (gcloud.projects.list) Reauthentication required."
@@ -156,7 +229,7 @@ struct CLISessionExpiryTests {
             #expect(!family.offersSignIn, "\(command)")
             #expect(family.repair.command == nil)
             #expect(family.repair.checkBinary == nil, "\(command)")
-            #expect(stop.message.contains("set itself"))
+            #expect(stop.message.contains("chose itself"))
         }
     }
 
