@@ -770,7 +770,18 @@ struct CapabilityInstaller {
         workspace: Workspace,
         modelContext: ModelContext
     ) -> TaskTemplate {
-        let template = workspace.templates.first { $0.name == pluginTemplate.name } ?? TaskTemplate(
+        // The row stamped with this component is the plugin's template (the
+        // migration keeps the stamp while the plugin is missing, so it is
+        // the component's mapping when the plugin is back); so is one this
+        // plugin stamped before components were recorded, by name. A row
+        // the person authored is never taken over by its name: the plugin
+        // gets its own, stamped, beside it.
+        let componentID = CapabilityResourceOrigin.componentID(for: pluginTemplate)
+        let template = workspace.templates.first {
+            $0.originPackageID == package.id && $0.originComponentID == componentID
+        } ?? workspace.templates.first {
+            $0.originPackageID == package.id && ($0.originComponentID ?? "").isEmpty && $0.name == pluginTemplate.name
+        } ?? TaskTemplate(
             name: pluginTemplate.name,
             mainGoal: pluginTemplate.mainGoal,
             workspace: workspace,
@@ -791,11 +802,7 @@ struct CapabilityInstaller {
         template.variablesJSON = pluginTemplate.variablesJSON
         template.passContextToMain = pluginTemplate.passContextToMain
         template.passContextToAfter = pluginTemplate.passContextToAfter
-        CapabilityResourceOrigin.stamp(
-            template,
-            package: package,
-            componentID: CapabilityResourceOrigin.componentID(for: pluginTemplate)
-        )
+        CapabilityResourceOrigin.stamp(template, package: package, componentID: componentID)
         template.updatedAt = Date()
         return template
     }

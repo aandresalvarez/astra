@@ -364,7 +364,9 @@ struct PluginActivationOwnershipTests {
                     installedContentDigests: fixture.digests,
                     connectorComponents: WorkspaceConfigManager.CapabilityImportVerifier.connectorComponents(of: fixture.packages)
                 )
-                @MainActor func importAll(session: WorkspaceConfigManager.ImportSession?) throws -> (ModelContext, [Workspace]) {
+                @MainActor func importAll(
+                    session: WorkspaceConfigManager.ImportSession?, configs: [WorkspaceConfigManager.WorkspaceConfig] = configs
+                ) throws -> (ModelContext, [Workspace]) {
                     let target = try ModelContainer(
                         for: ASTRASchema.current,
                         migrationPlan: ASTRAMigrationPlan.self,
@@ -400,6 +402,24 @@ struct PluginActivationOwnershipTests {
                 // Imported one at a time, each workspace gets its own, as before.
                 let (separate, _) = try importAll(session: nil)
                 #expect(try separate.fetch(FetchDescriptor<Connector>()).filter { $0.serviceType == serviceType }.count == 2)
+
+                // Two files that give the ID to different accounts aren't
+                // merged: each workspace binds its own row.
+                var conflicting = configs
+                conflicting[1].connectors = conflicting[1].connectors?.map { cc in
+                    var cc = cc
+                    if cc.id == fixture.sharedGCloudID.uuidString { cc.configValues = cc.configValues.map { _ in "other-tenant" } }
+                    return cc
+                }
+                #expect(conflicting[1].connectors?.first { $0.id == fixture.sharedGCloudID.uuidString }?.configValues.isEmpty == false)
+                let (split, splitWorkspaces) = try importAll(session: WorkspaceConfigManager.ImportSession(), configs: conflicting)
+                let splitRows = try split.fetch(FetchDescriptor<Connector>()).filter { $0.serviceType == serviceType }
+                #expect(splitRows.count == 2)
+                let boundIDs = try splitWorkspaces.map { workspace in
+                    try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: workspace))
+                        .bindings.compactMap { $0.account?.id }
+                }
+                #expect(boundIDs.count == 2 && boundIDs.allSatisfy { $0.count == 1 } && Set(boundIDs.flatMap { $0 }).count == 2)
             }
         }
     }

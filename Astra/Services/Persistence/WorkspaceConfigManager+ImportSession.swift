@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 import ASTRAModels
 
 extension WorkspaceConfigManager {
@@ -12,14 +13,40 @@ extension WorkspaceConfigManager {
     /// each exported shared account ID to the one row the first child
     /// created; a later child uses that row, which becomes a shared row
     /// again, and binds its activations to it. The row keeps its fresh ID, so
-    /// it still resolves no credential this machine had. Only `.validate`
+    /// it still resolves no credential this machine had. Two files that give
+    /// one ID to different accounts (another service, URL, sign-in, name or
+    /// setting) are not merged: each gets its own row, and the mismatch is
+    /// logged, so neither workspace is pointed at the other's tenant. Only
+    /// `.validate`
     /// imports consult it; a single-workspace import has none, and mirror
     /// recovery keeps the file's own IDs.
     @MainActor
     public final class ImportSession {
         /// File account ID -> the row created for it, and the workspace whose
         /// import created it.
-        private var accounts: [String: (row: Connector, owner: Workspace, listed: Bool)] = [:]
+        private var accounts: [String: (row: Connector, owner: Workspace, listed: Bool, record: AccountRecord)] = [:]
+
+        /// What a file says an account is, secrets aside: two files must
+        /// agree on all of it to share one row.
+        struct AccountRecord: Equatable {
+            let serviceType: String
+            let baseURL: String
+            let authMethod: String
+            let name: String
+            let credentialKeys: [String]
+            let configKeys: [String]
+            let configValues: [String]
+
+            init(_ cc: ConnectorConfig) {
+                serviceType = cc.serviceType
+                baseURL = cc.baseURL
+                authMethod = cc.authMethod
+                name = cc.name
+                credentialKeys = cc.credentialKeys
+                configKeys = cc.configKeys
+                configValues = cc.configValues
+            }
+        }
         /// The rows each later workspace took from `accounts`, by workspace.
         private var adopted: [UUID: Set<String>] = [:]
 
@@ -30,14 +57,22 @@ extension WorkspaceConfigManager {
         /// `listed`: the creating workspace's mirror had it on its shared list.
         func record(_ row: Connector, for cc: ConnectorConfig, createdIn workspace: Workspace, listed: Bool) {
             guard cc.isGlobal == true, let fileID = cc.id, accounts[fileID] == nil else { return }
-            accounts[fileID] = (row, workspace, listed)
+            accounts[fileID] = (row, workspace, listed, AccountRecord(cc))
         }
 
         /// The row an earlier workspace of this import created for `cc`.
         func sharedAccount(for cc: ConnectorConfig, in workspace: Workspace) -> (row: Connector, owner: Workspace, listed: Bool)? {
             guard cc.isGlobal == true, let fileID = cc.id, let entry = accounts[fileID],
                   !entry.row.isDeleted, entry.owner.id != workspace.id else { return nil }
-            return entry
+            guard entry.record == AccountRecord(cc) else {
+                AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                    "operation": "import_shared_account",
+                    "reason": "account_records_differ",
+                    "workspace_id": workspace.id.uuidString
+                ], level: .warning)
+                return nil
+            }
+            return (entry.row, entry.owner, entry.listed)
         }
 
         func adopt(_ row: Connector, in workspace: Workspace) {

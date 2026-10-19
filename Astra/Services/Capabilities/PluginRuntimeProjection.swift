@@ -122,8 +122,10 @@ struct PluginRuntimeProjection {
                     case .runtimeCopies:
                         let copy = TaskExecutionLaunchSnapshotApplicator.detachedConnector(account, skill: primarySkill)
                         // A bound account is in scope through its binding,
-                        // wherever the row itself lives.
+                        // wherever the row itself lives, and runs under the
+                        // name this workspace knows it by.
                         copy.isGlobal = true
+                        copy.name = WorkspaceCapabilityActivation.alias(of: account, in: workspace)
                         connectors.append(copy)
                     }
                 }
