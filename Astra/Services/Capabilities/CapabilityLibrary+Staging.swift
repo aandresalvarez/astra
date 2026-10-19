@@ -60,7 +60,15 @@ extension CapabilityLibrary {
 
     /// Drops the staged draft of `id`, if any.
     func discardStaged(id: String) {
-        _ = try? staging.removePackage(id: id, trustedBuiltInIDs: [])
+        try? removeStaged(id: id)
+    }
+
+    /// Removes the staged draft of `id` (one that can't be read is moved
+    /// aside); throws while one is still there, so a Remove keeps its intent.
+    func removeStaged(id: String) throws {
+        if stagedPackage(id: id) != nil { _ = try staging.removePackage(id: id, trustedBuiltInIDs: []) }
+        try staging.quarantineUnreadableEntry(id: id)
+        guard stagedPackage(id: id) == nil, !staging.holdsUnreadableEntry(id: id) else { throw RemovalError.notInstalled(id) }
     }
 }
 

@@ -131,8 +131,10 @@ enum PluginOperations {
         try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
     }
 
+    /// Saves; the mirrors are written by the post-save hook in `save`
+    /// (`PluginStateMirrors`).
     static func persistAndExport(_ workspace: Workspace, modelContext: ModelContext) throws {
-        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
+        try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
     }
 
     // MARK: - Accounts
@@ -173,7 +175,7 @@ enum PluginOperations {
         account.workspace = workspace
         WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation)
         workspace.updatedAt = Date()
-        try save(workspace, modelContext: modelContext, restoring: snapshot)
+        try save(workspace, modelContext: modelContext, restoring: snapshot, accounts: [account])
         return account
     }
 
@@ -191,7 +193,7 @@ enum PluginOperations {
         let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: true)
         workspace.updatedAt = Date()
-        try save(workspace, modelContext: modelContext, restoring: snapshot)
+        try save(workspace, modelContext: modelContext, restoring: snapshot, accounts: [account])
     }
 
     /// Every workspace deleting `account` reaches, for the delete
@@ -274,6 +276,7 @@ enum PluginOperations {
         _ workspace: Workspace,
         modelContext: ModelContext,
         restoring snapshot: WorkspaceCapabilityActivation.Snapshot,
+        accounts: [Connector] = [],
         persist: (Workspace, ModelContext) throws -> Void = persistAndExport
     ) throws {
         do {
@@ -283,5 +286,7 @@ enum PluginOperations {
             WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
             throw OperationError.saveFailed
         }
+        // Every plugin-state save writes the mirrors it changed.
+        PluginStateMirrors.exportAfterSave(workspace: workspace, accounts: accounts, modelContext: modelContext)
     }
 }

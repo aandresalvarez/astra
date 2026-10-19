@@ -108,17 +108,17 @@ enum MCPInstallPackageBuilder {
             guard spec.transport == .stdio,
                   let command = spec.command,
                   !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  // Only a runtime with a known version report (`npx`,
-                  // `uvx`, `node`…) gets this check; any other command has
-                  // none to run unasked, and the server's own start is its
-                  // check (`HealthCheckPolicy`).
-                  HealthCheckPolicy.isReadOnly(binary: command, arguments: ["--version"]),
                   seen.insert(command).inserted else {
                 return nil
             }
+            // A runtime with a known version report (`npx`, `uvx`, `node`…)
+            // is checked with it; any other command only has to be found,
+            // never run unasked (`HealthCheckPolicy.isExistenceOnly`).
+            let livenessArgs = HealthCheckPolicy.isReadOnly(binary: command, arguments: ["--version"]) ? ["--version"] : []
+            guard !livenessArgs.isEmpty || HealthCheckPolicy.isExistenceOnly(binary: command, arguments: []) else { return nil }
             return CLIPrerequisite(
                 binary: command,
-                livenessArgs: ["--version"],
+                livenessArgs: livenessArgs,
                 displayName: "\(command) runtime",
                 purpose: "Launches the pasted MCP server.",
                 installHint: installHint(for: spec.installSource)

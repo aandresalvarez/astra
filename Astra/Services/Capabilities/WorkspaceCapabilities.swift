@@ -67,6 +67,25 @@ struct WorkspaceCapabilities {
         return uniqueSkills(ambient + enabledPackageSkills)
     }
 
+    /// The skills a routine or a template's defaults can name: the ones the
+    /// scheduler resolves when the routine fires, plugin skills included, so
+    /// nothing offered for selection drops out of the run.
+    static func routineSkills(in workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
+        WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills).activeSkills
+    }
+
+    /// The same, against a catalog an editor loaded once
+    /// (`RoutineSkillCatalog`), so its `body` never scans the library.
+    static func routineSkills(in workspace: Workspace, globalSkills: [Skill], catalog: RoutineSkillCatalog) -> [Skill] {
+        WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            packageDefinitions: catalog.packages,
+            approvalRecords: catalog.approvalRecords,
+            packPolicy: catalog.packPolicy
+        ).activeSkills
+    }
+
     var workspaceConnectors: [Connector] {
         sortedConnectors(workspace.connectors.filter { !$0.isGlobal })
     }
@@ -95,11 +114,13 @@ struct WorkspaceCapabilities {
         // An account is in scope only through its binding, so turning its
         // plugin off, removing the plugin or dropping the component takes it
         // out: a row bound here, or a workspace row a plugin created. A
-        // shared row this workspace listed itself stays an authored choice.
-        let boundAccountIDs = boundAccountIDs
+        // shared row this workspace listed itself stays an authored choice
+        // (`bindingOnlyAccountIDs`, as the runtime does in
+        // `TaskCapabilityResolver.allConnectors`).
+        let bindingOnly = WorkspaceCapabilityActivation.bindingOnlyAccountIDs(of: workspace)
         let authored = (workspaceConnectors + attached).filter { !Self.isPluginAccount($0) }
             + enabledGlobalConnectors
-        return uniqueConnectors(authored.filter { !boundAccountIDs.contains($0.id) } + projection.connectors)
+        return uniqueConnectors(authored.filter { !bindingOnly.contains($0.id) } + projection.connectors)
     }
 
     /// A workspace row a plugin created for one of its connector components,
@@ -119,10 +140,7 @@ struct WorkspaceCapabilities {
     /// Connector rows bound as accounts to any of this workspace's
     /// activations, on or off.
     var boundAccountIDs: Set<UUID> {
-        Set(WorkspaceCapabilityActivation.activations(of: workspace)
-            .flatMap(\.bindings)
-            .filter { !$0.isDeleted }
-            .compactMap { $0.account?.id })
+        WorkspaceCapabilityActivation.boundAccountIDs(of: workspace)
     }
 
     var workspaceTools: [LocalTool] {

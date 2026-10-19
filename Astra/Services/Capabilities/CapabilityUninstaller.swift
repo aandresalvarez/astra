@@ -78,7 +78,9 @@ struct CapabilityUninstaller {
         connectorCleanupStore: ConnectorCredentialCleanupStore? = nil,
         removeJournal: PluginRemoveJournal? = nil,
         skillSecrets: (any SkillSecretPersisting.Type)? = nil,
-        definitionMissing: Bool = false
+        definitionMissing: Bool = false,
+        secretCleanupOutbox: PluginSecretCleanupOutbox? = nil,
+        exportMirror: (@MainActor (Workspace) -> Bool)? = nil
     ) throws -> RemovalResult {
         let installedPackages = library.installedPackages()
         guard var package = installedPackages.first(where: { $0.id == requestedPackage.id })
@@ -224,6 +226,10 @@ struct CapabilityUninstaller {
             .filter { template in
                 !remainingWorkspacePackages.contains(where: { claims(template, package: $0) })
             }
+            // The IDs of the stamped templates deleted here are kept, so the
+            // next Add writes each component's template under its old ID and
+            // a schedule naming it resolves again.
+            var deletedTemplateIDs: [String: UUID] = [:]
             for template in workspaceTemplates {
                 // A plugin template the person edited is theirs: it stays,
                 // no longer the plugin's, as Update would leave it.
@@ -232,9 +238,14 @@ struct CapabilityUninstaller {
                     PluginTemplateSync.unstamp(template)
                     continue
                 }
+                if CapabilityResourceOrigin.isOwnedBy(template, packageID: package.id),
+                   let componentID = template.originComponentID, !componentID.isEmpty {
+                    deletedTemplateIDs[componentID] = template.id
+                }
                 result.removedTemplateIDs.append(template.id)
                 modelContext.delete(template)
             }
+            WorkspaceCapabilityActivation.retainTemplateIDs(deletedTemplateIDs, pluginID: package.id, in: workspace)
 
             if wasPackageEnabled || wasPackageRecorded || hadPackageGlobals || !workspaceTemplates.isEmpty {
                 workspace.updatedAt = Date()
@@ -281,14 +292,20 @@ struct CapabilityUninstaller {
         // The connectors' cleanups are recorded before the save and run, read
         // after it, so a connector sharing a namespace with one removed here
         // keeps its credentials; any that don't clear are retried at launch.
+        let changedWorkspaces = workspaces.filter { result.disabledWorkspaceIDs.contains($0.id) }
+        let exportMirror = exportMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
         guard ConnectorCredentialCleanup.deleteThenClean(
             pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
             save: {
                 PluginSecretCleanupOutbox.deleteThenClean(
-                    activationSecretSkillIDs, modelContext: modelContext, secrets: skillSecrets,
+                    activationSecretSkillIDs, modelContext: modelContext, outbox: secretCleanupOutbox, secrets: skillSecrets,
                     save: { persist(nil, modelContext) },
                     beforeSettling: {
+                        // Every changed mirror is rewritten before the
+                        // activations' secrets are cleaned; one that can't be
+                        // written keeps the cleanup pending (`resumePending`).
                         mirrorsWritten = PluginRemoveJournal.rewriteMirrors(of: intent, modelContext: modelContext)
+                            && changedWorkspaces.reduce(true) { written, workspace in exportMirror(workspace) && written }
                         return mirrorsWritten
                     }
                 )
@@ -323,6 +340,10 @@ struct CapabilityUninstaller {
             } else {
                 _ = try library.removePackage(id: package.id)
             }
+            // A draft staged beside it would bring the plugin back once
+            // approved, or hold its ID: it goes with the Remove, and the
+            // intent stays while it can't.
+            try library.removeStaged(id: package.id)
             if mirrorsWritten { removeJournal?.finish(package.id) }
         } catch {
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [

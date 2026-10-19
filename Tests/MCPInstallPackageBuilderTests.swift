@@ -92,17 +92,31 @@ struct MCPInstallPackageBuilderTests {
         #expect(report.package?.mcpServers.first?.installSource?.identifier == "@acme/github-mcp")
     }
 
-    @Test("only a runtime with a known version report gets a prerequisite check")
-    func unknownServerCommandGetsNoVersionCheck() throws {
+    @Test("an unknown server command is only found, never run; a missing one is a pending step")
+    func unknownServerCommandIsFoundNotRun() async throws {
         let json = """
         {"mcpServers": {"acme": {"type": "stdio", "command": "acme-mcp", "args": ["serve"]}}}
         """
         let intent = try #require(MCPInstallIntentParser.parse(json))
         let package = try MCPInstallPackageBuilder.package(from: intent)
-        // `acme-mcp --version` would run unasked on every scan: no check.
-        #expect(package.prerequisites.isEmpty)
+        // `acme-mcp --version` would run unasked on every scan: no arguments, found only.
+        let prerequisite = try #require(package.prerequisites.first)
+        #expect(prerequisite.binary == "acme-mcp")
+        #expect(prerequisite.livenessArgs.isEmpty)
         let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
         #expect(!report.blockers.contains { $0.title == "Unsafe health check" })
+        // Found: usable, and the binary never started. Missing: pending.
+        let stub = StubBinaryRunner()
+        await stub.setResponse(forKey: "/usr/bin/env which acme-mcp", result: .exited(code: 0, stdout: "/usr/local/bin/acme-mcp\n", stderr: ""))
+        let found = await EnvironmentHealthChecker(runner: stub, fallbackDirectories: []).check(binary: "acme-mcp", livenessArgs: [])
+        #expect(found.isUsable)
+        #expect(await stub.recordedCalls().map(\.args) == [["which", "acme-mcp"]])
+        let missing = await EnvironmentHealthChecker(runner: StubBinaryRunner(), fallbackDirectories: []).check(binary: "acme-mcp", livenessArgs: [])
+        #expect(missing == .missingBinary)
+        #expect(PluginsSurfacePresentation.pendingSetupChecks(for: package, statuses: [prerequisite.id: missing]) == 1)
+        // A relative path is neither found nor run.
+        #expect(!HealthCheckPolicy.isExistenceOnly(binary: "./acme-mcp", arguments: []))
+        #expect(!HealthCheckPolicy.isExistenceOnly(binary: "acme-mcp", arguments: ["serve"]))
     }
 
     @Test("review package with imported env keys validates through capability validator")

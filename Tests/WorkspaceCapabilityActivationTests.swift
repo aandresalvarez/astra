@@ -396,6 +396,54 @@ struct WorkspaceCapabilityActivationTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("A shared account the workspace lists on its own counts when a new account's name is checked")
+    @MainActor
+    func listedSharedAccountTakesPartInAliasChecks() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        // Listed here directly, bound by no plugin.
+        let listed = Connector(name: "Stanford", serviceType: "jira")
+        listed.isGlobal = true
+        let unlisted = Connector(name: "Other", serviceType: "jira")
+        unlisted.isGlobal = true
+        let local = Connector(name: "stanford", serviceType: "jira")
+        [listed, unlisted, local].forEach(context.insert)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableGlobalConnector(listed.id.uuidString)
+            $0.enableCapability("jira-workflow")
+        }
+        #expect(WorkspaceCapabilityActivation.uniqueAlias("Stanford", serviceType: "jira", in: workspace) == "Stanford 2")
+        #expect(WorkspaceCapabilityActivation.uniqueAlias("Other", serviceType: "jira", in: workspace) == "Other")
+        local.workspace = workspace
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(local, toComponent: "connector:jira:jira", of: activation)
+        #expect(local.name == "stanford 2")
+        #expect(listed.name == "Stanford")
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("Sharing a bound account doesn't list it, so it still leaves with its plugin")
+    @MainActor
+    func promotingABoundAccountKeepsItBindingOnly() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let bound = Connector(name: "Bound", serviceType: "jira")
+        let free = Connector(name: "Free", serviceType: "jira")
+        [bound, free].forEach(context.insert)
+        bound.workspace = workspace
+        free.workspace = workspace
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability("jira-workflow") }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(bound, toComponent: "connector:jira:jira", of: activation)
+        CapabilitySharing.promoteToShared(bound, in: workspace)
+        CapabilitySharing.promoteToShared(free, in: workspace)
+        // The unbound account needs the list to stay in scope; the bound one
+        // has its binding, and listed it would outlive its plugin.
+        #expect(WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs == [free.id.uuidString])
+        #expect(WorkspaceCapabilityActivation.bindingOnlyAccountIDs(of: workspace) == [bound.id])
+        withExtendedLifetime(container) {}
+    }
+
     @Test("A shared account that can't be renamed keeps its collision alias on the binding, durably")
     @MainActor
     func sharedAccountCollisionAliasIsDurable() throws {
@@ -431,9 +479,12 @@ struct WorkspaceCapabilityActivationTests {
         WorkspaceCapabilityActivation.mutate(other) { $0.enableCapability(jira.id) }
         let otherActivation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: other))
         WorkspaceCapabilityActivation.bind(boundElsewhere, toComponent: component, of: otherActivation)
+        // Joining the other workspace, it met the shared row that one lists
+        // by itself under the same name.
+        #expect(boundElsewhere.name == "Stanford 2")
         WorkspaceCapabilityActivation.bind(boundElsewhere, toComponent: "connector:jira:ops", of: activation)
-        #expect(boundElsewhere.name == "Stanford")
-        #expect(WorkspaceCapabilityActivation.alias(of: boundElsewhere, in: joining) == "Stanford 3")
+        #expect(boundElsewhere.name == "Stanford 2")
+        #expect(WorkspaceCapabilityActivation.alias(of: boundElsewhere, in: joining) == "Stanford 2 2")
         WorkspaceCapabilityActivation.unbind(boundElsewhere, from: activation)
         // The other account going away doesn't flip it back.
         context.delete(local)
@@ -504,34 +555,31 @@ struct WorkspaceCapabilityActivationTests {
         withExtendedLifetime((container, recovered)) {}
     }
 
-    @Test("An account moved to another service leaves one default on each side")
+    @Test("A bound account keeps its component's service; unbound, its type can change")
     @MainActor
-    func serviceChangeReelectsDefaults() throws {
+    func boundAccountServiceIsFixed() throws {
         let (container, workspace) = try makeManagedWorkspace()
         let context = container.mainContext
-        let jiraDefault = Connector(name: "Jira main", serviceType: "jira")
-        let jiraOther = Connector(name: "Jira other", serviceType: "jira")
-        let github = Connector(name: "GitHub", serviceType: "github")
-        [jiraDefault, jiraOther, github].forEach(context.insert)
-        WorkspaceCapabilityActivation.mutate(workspace) {
-            $0.enableCapability("jira-workflow")
-            $0.enableCapability("github-workflow")
-        }
+        let bound = Connector(name: "Jira main", serviceType: "jira")
+        let free = Connector(name: "Free", serviceType: "jira")
+        [bound, free].forEach(context.insert)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability("jira-workflow") }
         let jira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
-        let githubActivation = try #require(WorkspaceCapabilityActivation.activation(for: "github-workflow", in: workspace))
-        WorkspaceCapabilityActivation.bind(jiraDefault, toComponent: "connector:jira:a", of: jira)
-        WorkspaceCapabilityActivation.bind(jiraOther, toComponent: "connector:jira:b", of: jira)
-        WorkspaceCapabilityActivation.bind(github, toComponent: "connector:github:a", of: githubActivation)
-        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == jiraDefault.id)
+        WorkspaceCapabilityActivation.bind(bound, toComponent: "connector:jira:jira", of: jira)
 
-        // The person changes the Jira default's Type to GitHub.
-        jiraDefault.serviceType = "github"
-        WorkspaceCapabilityActivation.serviceChanged(of: jiraDefault, from: "jira")
-        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == jiraOther.id)
-        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "github", in: workspace)?.id == github.id)
-        let githubDefaults = WorkspaceCapabilityActivation.activations(of: workspace).flatMap(\.bindings)
-            .filter { $0.isDefault && $0.account?.serviceType == "github" }
-        #expect(githubDefaults.map { $0.account?.id } == [github.id])
+        // Its binding names a Jira component: a GitHub account there would
+        // be projected as Jira's.
+        #expect(!WorkspaceCapabilityActivation.canChangeService(of: bound))
+        #expect(!WorkspaceCapabilityActivation.changeService(of: bound, to: "github"))
+        #expect(bound.serviceType == "jira")
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == bound.id)
+        #expect(WorkspaceCapabilityActivation.changeService(of: free, to: "github"))
+        #expect(free.serviceType == "github")
+
+        // Released from the plugin, it may move.
+        WorkspaceCapabilityActivation.unbind(bound, from: jira)
+        #expect(WorkspaceCapabilityActivation.changeService(of: bound, to: "github"))
+        #expect(bound.serviceType == "github")
         withExtendedLifetime(container) {}
     }
 

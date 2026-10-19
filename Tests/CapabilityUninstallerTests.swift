@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
-import ASTRAPersistence
+@testable import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -196,6 +196,112 @@ struct CapabilityUninstallerTests {
         let projected = PluginRuntimeProjection.project(workspace: workspace, packages: library.installedPackages()).skills
         #expect(projected.map(\.id) == [seeded])
         #expect(schedule.skillIDs == [seeded.uuidString])
+    }
+
+    @Test("Remove keeps the activation's secret cleanup pending until every changed mirror is rewritten")
+    func removeHoldsSecretCleanupForUnwrittenMirror() throws {
+        try withTemporaryKeychain {
+            for mirrorWritable in [false, true] {
+                let container = try makeCapabilityUninstallerContainer()
+                let context = container.mainContext
+                let workspace = Workspace(name: "Held Cleanup", primaryPath: "/tmp/capability-held-cleanup-\(UUID().uuidString)")
+                context.insert(workspace)
+                let (library, root) = makeCapabilityUninstallerLibrary()
+                defer { try? FileManager.default.removeItem(at: root) }
+                let outbox = PluginSecretCleanupOutbox(fileURL: root.appendingPathComponent("PluginSecretCleanup.json"))
+                let package = retirementPackage(id: "held-cleanup-package")
+                try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+                let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+                let namespace = PluginRuntimeProjection.derivedID(
+                    of: activation, componentID: CapabilityResourceOrigin.componentID(for: package.skills[0])
+                )
+                let secrets = SkillSecretSeam.required
+                #expect(secrets.saveSecretValue(
+                    "s3cret", key: "REPORT_TOKEN", skillID: namespace, skillName: "Report Writer", allowUserInteraction: false
+                ))
+
+                var exported: [UUID] = []
+                var pendingWhileExporting: [UUID] = []
+                try CapabilityUninstaller(library: library).remove(
+                    package, modelContext: context, secretCleanupOutbox: outbox,
+                    exportMirror: { changed in
+                        exported.append(changed.id)
+                        pendingWhileExporting = (try? outbox.pending()) ?? []
+                        return mirrorWritable
+                    }
+                )
+
+                // The mirror is written synchronously, after the save and
+                // while the cleanup is still recorded.
+                #expect(exported == [workspace.id])
+                #expect(pendingWhileExporting.contains(namespace))
+                if mirrorWritable {
+                    #expect(try outbox.pending().isEmpty)
+                    #expect(!secrets.secretExists(key: "REPORT_TOKEN", skillID: namespace))
+                } else {
+                    // A stale mirror could restore the activation: its secrets wait.
+                    #expect(try outbox.pending().contains(namespace))
+                    #expect(secrets.secretExists(key: "REPORT_TOKEN", skillID: namespace))
+                }
+            }
+        }
+    }
+
+    @Test("A held cleanup waits while a workspace's own mirror still lists the removed activation")
+    func resumePendingWaitsForMirrorNamingActivation() throws {
+        try withTemporaryKeychain {
+            let container = try makeCapabilityUninstallerContainer()
+            let context = container.mainContext
+            let folder = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("astra-held-mirror-\(UUID().uuidString)", isDirectory: true)
+            let support = folder.appendingPathComponent(WorkspaceFileLayout.supportDirectoryName, isDirectory: true)
+            try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let workspace = Workspace(name: "Held Mirror", primaryPath: folder.path)
+            context.insert(workspace)
+            try context.save()
+            let outbox = PluginSecretCleanupOutbox(fileURL: folder.appendingPathComponent("PluginSecretCleanup.json"))
+            let component = "skill:Report Writer"
+            let namespace = PluginActivation.projectedID(
+                workspaceID: workspace.id, pluginID: "held-mirror-package", componentID: component, seed: "kept-seed"
+            )
+            let secrets = SkillSecretSeam.required
+            #expect(secrets.saveSecretValue(
+                "s3cret", key: "REPORT_TOKEN", skillID: namespace, skillName: "Report Writer", allowUserInteraction: false
+            ))
+            // The mirror a failed rewrite left behind still lists the activation.
+            let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+            try Data(#"""
+            {"installedPlugins":[{"id":"held-mirror-package","version":"1.0.0","knownComponentIDs":["\#(component)"],"namespaceSeed":"kept-seed"}]}
+            """#.utf8).write(to: mirror)
+            try outbox.write([namespace])
+            #expect(PluginSecretCleanupOutbox.activationNamespacesInStoredMirrors(modelContext: context)?
+                .first { $0.0.id == workspace.id }?.1.contains(namespace) == true)
+
+            // While it can't be rewritten, the namespace stays recorded.
+            try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: mirror.path)
+            PluginSecretCleanupOutbox.resumePending(modelContext: context, outbox: outbox)
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: mirror.path)
+            #expect(try outbox.pending() == [namespace])
+            #expect(secrets.secretExists(key: "REPORT_TOKEN", skillID: namespace))
+
+            // Once it is rewritten it no longer names the activation, and the
+            // namespace is cleaned.
+            PluginSecretCleanupOutbox.resumePending(modelContext: context, outbox: outbox)
+            #expect(try outbox.pending().isEmpty)
+            #expect(!secrets.secretExists(key: "REPORT_TOKEN", skillID: namespace))
+            #expect(!(try String(contentsOf: mirror, encoding: .utf8)).contains("held-mirror-package"))
+        }
+    }
+
+    private func withTemporaryKeychain(_ body: () throws -> Void) throws {
+        let keychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
+        defer { AstraSecureKeychainTestSupport.cleanup(keychainPath: keychainPath, bootstrapService: bootstrap, services: []) }
+        try AstraSecureKeychainStore.$keychainPathOverride.withValue(keychainPath) {
+            try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) { try body() }
+        }
     }
 
     private func retirementPackage(id: String) -> PluginPackage {
