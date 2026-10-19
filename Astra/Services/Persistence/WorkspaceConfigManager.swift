@@ -1229,7 +1229,7 @@ public enum WorkspaceConfigManager {
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
         taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
         capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState,
-        sourceWorkspaceID: UUID? = nil
+        sourceWorkspaceID: UUID? = nil, importSession: ImportSession? = nil
     ) -> WorkspaceConfigImportResult {
         let additionalPaths = config.additionalPaths.filter { !TaskWorktreeCheckoutReservation.isReserved($0) }
         let droppedAdditionalPaths = config.additionalPaths.filter { !additionalPaths.contains($0) }
@@ -1279,6 +1279,7 @@ public enum WorkspaceConfigManager {
         var reusedRowIDs = Set<String>()
         let freshIDs: Bool = { if case .validate = capabilityTrust { return true } else { return false } }()
         for cc in config.connectors ?? [] {
+            if freshIDs, adoptSharedAccount(cc, importSession, workspace, &activation, &connectorsByID, &reusedRowIDs) { continue }
             let reused = reusedGlobalConnector(for: cc, modelContext: modelContext)
             if let reused, case .validate = capabilityTrust { reusedRowIDs.insert(reused.id.uuidString) }
             guard let connector = reused ?? makeConnector(from: cc) else {
@@ -1286,12 +1287,13 @@ public enum WorkspaceConfigManager {
                 continue
             }
             if reused == nil { sanitizeCreated(connector, trust: capabilityTrust, report: &trustReport) }
-            if reused == nil, freshIDs { connector.id = UUID() }
+            if reused == nil, freshIDs {
+                connector.id = UUID()
+                importSession?.record(connector, for: cc, createdIn: workspace)
+            }
             connector.workspace = (connector.isGlobal ? nil : workspace)
             if connector.isGlobal { activation.enableGlobalConnector(connector.id.uuidString) }
-            if connector.modelContext == nil {
-                modelContext.insert(connector)
-            }
+            if connector.modelContext == nil { modelContext.insert(connector) }
             connectorsByID[connector.id.uuidString] = connector
             if let fileID = cc.id { connectorsByID[fileID] = connector }
             if connectorsByName[connector.name] == nil {
@@ -1359,7 +1361,7 @@ public enum WorkspaceConfigManager {
         WorkspaceCapabilityActivation.apply(activation, to: workspace)
         let projectedIDs = restoreActivationDetails(from: config, into: workspace, connectorsByID: connectorsByID,
                                  skillsByID: skillsByID, toolsByID: toolsByID, trust: capabilityTrust,
-                                 fileWorkspaceID: sourceWorkspaceID ?? workspace.id)
+                                 fileWorkspaceID: sourceWorkspaceID ?? workspace.id, sessionAccountIDs: importSession?.sharedRowIDs(in: workspace) ?? [])
 
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)
@@ -3015,7 +3017,6 @@ public enum WorkspaceConfigManager {
         guard !skills.contains(where: { $0.id == skill.id }) else { return }
         skills.append(skill)
     }
-
 
     private static func importedActiveWorkingPath(
         _ activeWorkingPath: String?,

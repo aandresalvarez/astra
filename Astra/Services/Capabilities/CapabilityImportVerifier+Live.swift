@@ -36,6 +36,10 @@ extension WorkspaceConfigManager.CapabilityImportVerifier {
                 },
                 uniquingKeysWith: { first, _ in first }
             ),
+            installedContentDigests: Dictionary(
+                installed.map { ($0.id, PluginDefinitionDigest.content(of: $0)) },
+                uniquingKeysWith: { first, _ in first }
+            ),
             connectorComponents: connectorComponents(of: installed)
         )
     }

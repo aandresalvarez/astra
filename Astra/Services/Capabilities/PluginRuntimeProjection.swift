@@ -241,20 +241,23 @@ struct PluginRuntimeProjection {
             .map { derivedID(of: activation, componentID: $0) }
     }
 
-    /// Whether `activation` was reconciled against another definition of
-    /// its plugin than `package`: an automatic pass that would have released
-    /// something held it back (`awaitingUpdate`, which also covers a
-    /// definition with the recorded version and components), or left it on
-    /// its recorded version and components
-    /// (`PluginUpdateService.Mode.automatic`). Its plugin doesn't run, here
-    /// or in a scheduled launch, until Update reconciles it; the Plugins row
-    /// offers Update meanwhile. The recorded digest only says the activation
-    /// was reconciled: it also covers where a copy came from (its source and
-    /// clamped governance), so two copies of one definition differ in it.
+    /// Whether `activation` accepted another definition of its plugin than
+    /// `package`: the library holds one definition for every workspace, so
+    /// an import, an Add elsewhere or the built-in sync replaces it here too.
+    /// An automatic pass that would have released something, or that met a
+    /// definition awaiting its review or changed under the same version,
+    /// held it back (`awaitingUpdate`); otherwise it differs in its version,
+    /// its content under the same version (`PluginDefinitionDigest`, which
+    /// leaves out where a copy came from, so two copies of one definition
+    /// agree), or its components. A digest recorded before content digests
+    /// can't be compared, so only the version and components are. Its
+    /// plugin doesn't run, here or in a queued launch, until Update
+    /// reconciles it; the Plugins row offers Update meanwhile.
     static func awaitsUpdate(_ activation: PluginActivation, to package: PluginPackage) -> Bool {
         if activation.awaitingUpdate { return true }
         guard !activation.recordedDigest.isEmpty else { return false }
         if activation.recordedVersion != package.version { return true }
+        if PluginDefinitionDigest.matches(activation.recordedDigest, package) == false { return true }
         return !activation.knownComponentIDs.isEmpty && Set(activation.knownComponentIDs) != Set(componentIDs(of: package))
     }
 

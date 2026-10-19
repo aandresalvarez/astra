@@ -173,6 +173,59 @@ struct CLISessionExpiryTests {
         #expect(CLISessionExpiryClassifier.checkingLaunchHost(projected).checkArguments?.last == "github.com")
     }
 
+    @Test("An exported GH_HOST or GH_REPO targets the gh calls after it in the same shell scope")
+    func exportedHostIsCarried() throws {
+        let output = "HTTP 401: Bad credentials (https://github.example.com/api/v3/user)"
+        for command in [
+            "export GH_HOST=github.example.com; gh api user", "export GH_HOST=github.example.com\ngh api user",
+            "export GH_REPO=github.example.com/team/app && gh pr list", "export UNRELATED=1 GH_HOST=github.example.com; gh api user",
+            "( export GH_HOST=github.example.com; gh api user )", "export GH_HOST=github.example.com; echo \"$(gh api user)\""
+        ] {
+            let family = try #require(CLISessionExpiryClassifier.family(content: output, command: command), "missed: \(command)")
+            #expect(family.repair.command == "gh auth login --hostname github.example.com", "\(command)")
+            #expect(family.repair.checkArguments == ["auth", "status", "--hostname", "github.example.com"], "\(command)")
+        }
+        // Not past its subshell, not after `unset`, not before the export,
+        // and an inline assignment or flag still wins.
+        for (command, host) in [
+            ("( export GH_HOST=github.example.com ); gh api user", "github.com"),
+            ("echo $(export GH_HOST=github.example.com); gh api user", "github.com"),
+            ("export GH_HOST=github.example.com; unset GH_HOST; gh api user", "github.com"),
+            ("gh api user; export GH_HOST=github.example.com", "github.com"),
+            ("export GH_HOST=github.example.com; GH_HOST=other.example.com gh api user", "other.example.com"),
+            ("export GH_HOST=github.example.com; gh api user --hostname other.example.com", "other.example.com")
+        ] {
+            let family = try #require(CLISessionExpiryClassifier.family(content: output, command: command), "missed: \(command)")
+            #expect(family.repair.checkArguments?.last == host, "\(command)")
+        }
+    }
+
+    @Test("Expired Application Default Credentials are repaired and checked as ADC, not as the CLI's account")
+    func applicationDefaultCredentialsAreTheirOwnSignIn() throws {
+        let output = "ERROR: (gcloud.auth.application-default.print-access-token) There was a problem refreshing your current auth tokens: ('invalid_grant: Bad Request')"
+        for command in [
+            "gcloud auth application-default print-access-token", "TOKEN=$(gcloud auth application-default print-access-token --quiet)",
+            "/opt/google-cloud-sdk/bin/gcloud auth application-default print-access-token"
+        ] {
+            let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "missed: \(command)")
+            let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
+            let repair = family.repair
+            #expect(repair.command?.hasSuffix("gcloud auth application-default login") == true, "\(command)")
+            #expect(repair.checkArguments == ["auth", "application-default", "print-access-token", "--format=value(expiry)"])
+            #expect(repair.checkExpect == SemanticCheck.stdoutNonEmpty.rawValue)
+            #expect(HealthCheckPolicy.isReadOnly(binary: try #require(repair.checkBinary), arguments: try #require(repair.checkArguments)))
+            #expect(RepairAction.isSafeTerminalCommand(try #require(repair.command), binary: repair.checkBinary, allowsInstaller: false))
+        }
+        // The CLI's own account, or a command that also makes other Google
+        // Cloud calls, keeps the ordinary sign-in.
+        for command in [
+            "gcloud projects list", "gcloud auth application-default print-access-token; bq ls",
+            "gcloud config get-value project && gcloud auth application-default print-access-token"
+        ] {
+            #expect(CLISessionExpiryClassifier.family(content: output, command: command) == CLISessionExpiryClassifier.googleCloud, "\(command)")
+        }
+    }
+
     @Test("A CLI the agent ran by path is checked and signed in at that path")
     func exactExecutableIsCarried() throws {
         let output = "HTTP 401: Bad credentials (https://api.github.com/user)"
@@ -411,6 +464,27 @@ struct CLISessionExpiryTests {
         )
         #expect(kill == false)
         #expect(monitor.runtimeStopReason == nil)
+    }
+
+    @Test("A here-document's body is text: a quoted sign-in error in it stops nothing")
+    func heredocBodiesAreNotCommands() {
+        let output = "$ gh auth status\nYou are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in [
+            "cat <<'EOF'\n$ gh auth status\nYou are not logged into any GitHub hosts.\nEOF\necho done",
+            "cat << EOF\ngh auth status; true\nEOF", "cat <<\"EOF\" > notes.md\ngh api user || true\nEOF",
+            "cat <<-EOF\n\tgh auth status\n\tEOF\necho done", "cat <<A <<B\ngh auth status\nA\ngh api user\nB\ntrue",
+            "x=$(cat <<EOF\ngh auth status\nEOF\n)"
+        ] {
+            #expect(CLISessionExpiryClassifier.stop(content: output, command: command, failed: false) == nil, "\(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: output, command: command, failed: true) == nil, "\(command)")
+        }
+        // A command after the delimiter line runs, and `<<<` is a string, not a here-document.
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "cat <<EOF\nhello\nEOF\ngh auth status"))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "cat <<< hello\ngh auth status"))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "cat <<EOF\nEOF2\nEOF\ngh api user"))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "cat <<-EOF\n\tbody\n\t\tEOF\ngh api user"))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "cat <<EOF\n\tEOF\ngh api user\nEOF"))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "cat <<EOF\nEOF2\ngh api user\nEOF"))
     }
 
     @Test("A pipeline that masks the CLI's failure still stops the run")

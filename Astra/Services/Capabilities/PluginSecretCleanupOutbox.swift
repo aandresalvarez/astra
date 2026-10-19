@@ -34,12 +34,16 @@ struct PluginSecretCleanupOutbox {
         self.init(fileURL: directory.appendingPathComponent("PluginSecretCleanup.json"))
     }
 
-    /// Records `skillIDs` (and single `keys`), saves, rewrites the mirrors
-    /// the save changed (`rewriteMirrors`), then cleans them: a mirror still
-    /// naming what was released would bring it back without its secrets.
+    /// Records `skillIDs` (and single `keys`), saves, then cleans them.
     /// Returns false, with the record taken back, when the record can't be
-    /// written or the save fails. A mirror that can't be rewritten keeps the
-    /// record, for launch to rewrite every mirror before it cleans.
+    /// written or the save fails.
+    ///
+    /// `beforeSettling` runs once the save has landed, for a step the
+    /// cleanup must wait on: rewriting every mirror the save changed (the
+    /// migration's, an Update's, a Remove's), since one still naming what
+    /// was released would bring it back without its secrets. When it fails
+    /// the deletion stands, so this still returns true, but the record stays
+    /// for `resumePending`.
     static func deleteThenClean(
         _ skillIDs: [UUID],
         keys: [PluginUpdateService.StaleSecret] = [],
@@ -47,7 +51,7 @@ struct PluginSecretCleanupOutbox {
         outbox: PluginSecretCleanupOutbox? = nil,
         secrets: (any SkillSecretPersisting.Type)? = nil,
         save: () -> Bool,
-        rewriteMirrors: () -> Bool = { true }
+        beforeSettling: () -> Bool = { true }
     ) -> Bool {
         let outbox = outbox ?? PluginSecretCleanupOutbox(for: modelContext)
         let unique = Array(Set(skillIDs))
@@ -67,20 +71,24 @@ struct PluginSecretCleanupOutbox {
             try? outbox?.writeEntries(previous)
             return false
         }
-        guard rewriteMirrors() else {
+        guard beforeSettling() else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
-                "scope": "plugin_secret_cleanup", "reason": "mirror_rewrite_failed_kept"
-            ], level: .error)
+                "scope": "plugin_secret_cleanup", "reason": "held_for_mirror", "count": String(unique.count + uniqueKeys.count)
+            ], level: .warning)
             return true
         }
         settle(unique, keys: uniqueKeys, modelContext: modelContext, outbox: outbox, secrets: secrets, clean: cleaner(secrets))
         return true
     }
 
-    /// Finishes cleanups a quit (or a mirror that couldn't be written)
-    /// interrupted, once every workspace's mirror is rewritten: which ones
-    /// still name what was released isn't recorded. Run at launch, once
-    /// recovery allows credential cleanup.
+    /// Finishes cleanups a quit interrupted, or a mirror rewrite held back.
+    /// Run at launch, once recovery allows credential cleanup.
+    ///
+    /// Which mirrors still name what an Update or a Remove released isn't
+    /// recorded, so every stored workspace's mirror is rewritten first, and
+    /// nothing settles while one can't be. A recorded row a mirror still
+    /// lists after that would come back from it without its secrets, so it
+    /// waits, as does everything while a mirror can't be read.
     static func resumePending(
         modelContext: ModelContext,
         outbox: PluginSecretCleanupOutbox? = nil,
@@ -98,7 +106,30 @@ struct PluginSecretCleanupOutbox {
             ], level: .error)
             return
         }
-        settle(pending, keys: keys, modelContext: modelContext, outbox: outbox, secrets: secrets, clean: cleaner(secrets))
+        guard let held = namedByMirrors(pending, modelContext: modelContext) else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "plugin_secret_cleanup", "reason": "workspace_mirror_unreadable"
+            ], level: .error)
+            return
+        }
+        settle(
+            pending.filter { !held.contains($0) }, keys: keys, modelContext: modelContext, outbox: outbox,
+            secrets: secrets, clean: cleaner(secrets)
+        )
+    }
+
+    /// The recorded rows a workspace mirror still lists once the stored
+    /// workspaces whose own mirror lists one are written again; nil when a
+    /// mirror can't be read.
+    private static func namedByMirrors(_ pending: [UUID], modelContext: ModelContext) -> Set<UUID>? {
+        guard let before = ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: modelContext) else { return nil }
+        let named = Set(pending).intersection(before.skillIDs)
+        guard !named.isEmpty else { return [] }
+        for (workspace, listed) in before.skillsByWorkspace where !listed.isDisjoint(with: named) {
+            WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext)
+        }
+        guard let after = ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: modelContext) else { return nil }
+        return named.intersection(after.skillIDs)
     }
 
     /// Settles what a Remove left pending before `package` is added to

@@ -239,7 +239,7 @@ struct CapabilityUninstaller {
                 PluginSecretCleanupOutbox.deleteThenClean(
                     activationSecretSkillIDs, modelContext: modelContext,
                     save: { persist(nil, modelContext) },
-                    rewriteMirrors: {
+                    beforeSettling: {
                         mirrorsWritten = PluginRemoveJournal.rewriteMirrors(of: intent, modelContext: modelContext)
                         return mirrorsWritten
                     }

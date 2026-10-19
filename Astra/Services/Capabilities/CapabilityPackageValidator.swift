@@ -708,6 +708,20 @@ enum CapabilityPackageValidator {
                 ))
                 continue
             }
+            // The check runs on every scan with no click, so it may only read
+            // status (`HealthCheckPolicy`): refused here, as the checker never
+            // runs it.
+            guard HealthCheckPolicy.isReadOnly(binary: prerequisite.binary, arguments: prerequisite.livenessArgs) else {
+                let check = ([prerequisite.binary] + prerequisite.livenessArgs).joined(separator: " ")
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe health check",
+                    "\(prerequisite.displayName) checks itself with `\(check)`; a check may only run a read-only status command, such as `--version`.",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
             // The install link becomes a repair button: a web page only.
             if let url = prerequisite.installURL, !RepairAction.isSafeRepairURL(url) {
                 issues.append(issue(

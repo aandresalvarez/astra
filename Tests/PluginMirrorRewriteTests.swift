@@ -172,6 +172,35 @@ struct PluginMirrorRewriteTests {
         #expect(!activation.awaitingUpdate)
     }
 
+    /// The automatic pass never takes other content under the version the
+    /// activation accepted, even when it would release nothing: that is the
+    /// person's to take, with Update.
+    @Test("The automatic pass holds a definition changed under the same version as awaiting Update")
+    func sameVersionContentChangeAwaitsUpdate() throws {
+        let env = try Fixtures.Environment()
+        try env.install(Fixtures.package(version: "1.0.0"))
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "ops.report", in: env.workspace))
+        let accepted = activation.recordedDigest
+        #expect(PluginDefinitionDigest.isContentDigest(accepted))
+        var changed = Fixtures.package(version: "1.0.0")
+        changed.skills[0].behaviorInstructions = "Write the weekly report, briefly."
+        try env.library.install(changed, sourceMetadata: .builtIn())
+        let packages = env.library.installedPackages()
+
+        try PluginUpdateService.reconcileAll(
+            modelContext: env.context, packages: packages, mode: .automatic, approvalRecords: Fixtures.approvals(packages)
+        )
+        #expect(activation.awaitingUpdate)
+        #expect(activation.recordedDigest == accepted)
+        #expect(PluginRuntimeProjection.runnable(packages, in: env.workspace).isEmpty)
+
+        try PluginUpdateService.reconcileAll(
+            modelContext: env.context, packages: packages, mode: .release, approvalRecords: Fixtures.approvals(packages)
+        )
+        #expect(!activation.awaitingUpdate)
+        #expect(activation.recordedDigest == PluginDefinitionDigest.content(of: changed))
+    }
+
     @Test("Two MCP servers of one package can't share an ID")
     func duplicateMCPServerIDsInOnePackageAreBlocked() {
         var package = Fixtures.package(version: "1.0.0")

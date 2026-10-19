@@ -173,7 +173,8 @@ extension WorkspaceConfigManager {
         skillsByID: [String: Skill],
         toolsByID: [String: LocalTool],
         trust: CapabilityImportTrustPolicy,
-        fileWorkspaceID: UUID? = nil
+        fileWorkspaceID: UUID? = nil,
+        sessionAccountIDs: Set<String> = []
     ) -> [String: String] {
         var projectedIDs: [String: String] = [:]
         for ref in config.installedPlugins ?? [] {
@@ -185,21 +186,13 @@ extension WorkspaceConfigManager {
             if case .validate = trust {
                 WorkspaceCapabilityActivation.setNamespaceSeed(UUID().uuidString, on: activation)
             }
-            // A chosen file's activation for another copy of the plugin than
-            // the one installed here (or for an unrecorded one) restores
-            // nothing: `reconcile` already left it off.
-            guard isAcceptedCopy(ref, trust: trust) else { continue }
-            if let digest = ref.digest, !digest.isEmpty {
-                WorkspaceCapabilityActivation.recordAccepted(
-                    pluginID: ref.id, version: activation.recordedVersion, digest: digest, in: workspace
-                )
-            }
-            let declared: Set<String>?
+            // The file's projected IDs (its workspace, its seed) name the
+            // installed definition's components under the fresh seed. Mapped
+            // even for an activation the file recorded against another copy:
+            // its templates and schedules then name what an Add of the
+            // installed copy here projects.
             if case .validate(let verifier) = trust {
-                declared = verifier.declaredComponentIDs[ref.id] ?? []
-                // The file's projected IDs (its workspace, its seed) name the
-                // same components under the fresh seed.
-                for componentID in declared ?? [] {
+                for componentID in verifier.declaredComponentIDs[ref.id] ?? [] {
                     let old = PluginActivation.projectedID(
                         workspaceID: fileWorkspaceID ?? workspace.id, pluginID: ref.id,
                         componentID: componentID, seed: ref.namespaceSeed ?? ""
@@ -209,6 +202,19 @@ extension WorkspaceConfigManager {
                     )
                     projectedIDs[old.uuidString] = new.uuidString
                 }
+            }
+            // A chosen file's activation for another copy of the plugin than
+            // the one installed here (or for an unrecorded one) restores
+            // nothing else: `reconcile` already left it off.
+            guard isAcceptedCopy(ref, trust: trust) else { continue }
+            if let digest = ref.digest, !digest.isEmpty {
+                WorkspaceCapabilityActivation.recordAccepted(
+                    pluginID: ref.id, version: activation.recordedVersion, digest: digest, in: workspace
+                )
+            }
+            let declared: Set<String>?
+            if case .validate(let verifier) = trust {
+                declared = verifier.declaredComponentIDs[ref.id] ?? []
             } else {
                 if let seed = ref.namespaceSeed, !seed.isEmpty {
                     WorkspaceCapabilityActivation.setNamespaceSeed(seed, on: activation)
@@ -257,10 +263,12 @@ extension WorkspaceConfigManager {
             }
             for account in ref.accounts ?? [] where allowed(account.componentID) {
                 guard let connector = connectorsByID[account.connectorID] else { continue }
-                // A chosen file binds only a row it created, for the
-                // component's own service.
-                if case .validate(let verifier) = trust,
-                   !verifier.acceptsAccount(connector, componentID: account.componentID, pluginID: ref.id) { continue }
+                // A chosen file binds only a row it created (or this import
+                // did, for a shared account), for the component's own service.
+                if case .validate(let verifier) = trust, !verifier.acceptsAccount(
+                    connector, componentID: account.componentID, pluginID: ref.id,
+                    createdByImport: sessionAccountIDs.contains(connector.id.uuidString)
+                ) { continue }
                 WorkspaceCapabilityActivation.bind(
                     connector,
                     toComponent: account.componentID,

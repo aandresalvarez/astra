@@ -232,11 +232,13 @@ enum PluginUpdateService {
     }
 
     /// True when the activation was not reconciled against this definition,
-    /// or a pass held it back from it.
+    /// or a pass held it back from it. A digest recorded before content
+    /// digests (`PluginDefinitionDigest`) can't be judged: only the version
+    /// and components are compared until one is recorded.
     static func needsReconcile(_ activation: PluginActivation, to package: PluginPackage) -> Bool {
         activation.awaitingUpdate
             || activation.recordedVersion != package.version
-            || activation.recordedDigest != digest(of: package)
+            || PluginDefinitionDigest.matches(activation.recordedDigest, package) == false
             || activation.knownComponentIDs != componentIDs(of: package)
     }
 
@@ -297,7 +299,7 @@ enum PluginUpdateService {
             let saved = PluginSecretCleanupOutbox.deleteThenClean(
                 total.released, keys: total.staleSecrets, modelContext: modelContext, secrets: secrets,
                 save: { WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext) },
-                rewriteMirrors: {
+                beforeSettling: {
                     var seen = Set<UUID>()
                     return mirrored.filter { seen.insert($0.id).inserted }.reduce(true) { rewrite($1) && $0 }
                 }
@@ -504,9 +506,13 @@ enum PluginUpdateService {
         if !secretsSettled, mode == .release {
             throw UpdateError.secretCleanupPending(key: Set(unsettled.map(\.key)).sorted().joined(separator: ", "))
         }
-        if mode == .automatic, !dropped.isEmpty || !staleKeys.isEmpty || !templatesInSync || !secretsSettled {
+        // A definition replaced under the version the activation accepted
+        // (other content, same version) is the person's to take: Update.
+        let changedInPlace = activation.recordedVersion == package.version
+            && PluginDefinitionDigest.matches(activation.recordedDigest, package) == false
+        if mode == .automatic, !dropped.isEmpty || !staleKeys.isEmpty || !templatesInSync || !secretsSettled || changedInPlace {
             result.withheld = dropped + staleKeys.map(\.settingKey) + (templatesInSync ? [] : ["templates"])
-                + (secretsSettled ? [] : ["secrets"])
+                + (secretsSettled ? [] : ["secrets"]) + (changedInPlace ? ["definition"] : [])
             // The renames moved state onto components the definition still
             // declares: the history names those now.
             WorkspaceCapabilityActivation.setKnownComponents(
@@ -576,8 +582,10 @@ enum PluginUpdateService {
         }
     }
 
+    /// What an activation records for the definition it accepted: its
+    /// content, never where the copy came from (`PluginDefinitionDigest`).
     static func digest(of package: PluginPackage) -> String {
-        (try? CapabilityApprovalDigest.digest(for: package)) ?? ""
+        PluginDefinitionDigest.content(of: package)
     }
 
     /// Puts back what `copied` overwrote, newest first. Returns the keys it

@@ -28,7 +28,8 @@ enum CapabilityRailRepair {
     static func repair(for package: PluginPackage, statuses: [String: HealthStatus]) -> RepairAction? {
         let components = PluginManifestConverter.manifest(from: package).components
         for prerequisite in package.prerequisites {
-            guard let status = statuses[prerequisite.id], !status.isUsable else { continue }
+            // A check that never ran (`HealthCheckPolicy`) has nothing to repair.
+            guard let status = statuses[prerequisite.id], !status.isUsable, !status.isNotChecked else { continue }
             // Repository access (SSO, an org grant) is repaired by the
             // contextual GitHub flow, not by signing in again.
             if GitHubRepositoryAccessRepairButton.supports(prerequisite, status: status) { continue }

@@ -6,8 +6,9 @@ import ASTRACore
 /// re-probe every CLI — that hammers `which` for no benefit, and worse,
 /// `--version` calls can be slow for some tools (java, gcloud first-run).
 ///
-/// Keys are the `CLIPrerequisite.id` (binary + livenessArgs) so two
-/// packages sharing the same probe share a single cache slot.
+/// Keys are the `CLIPrerequisite.id` (binary, arguments, semantic test,
+/// context) so two packages sharing the same check share a single cache
+/// slot, and a stricter check of the same probe gets its own.
 ///
 /// Thread-safe: the cache is a plain dictionary guarded by an NSLock.
 /// Using a real `actor` would force every call site to `await`, which is

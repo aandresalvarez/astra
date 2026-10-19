@@ -363,6 +363,9 @@ struct PluginsSurfaceView: View {
                     .tint(Stanford.lagunita)
             } else if failing != nil {
                 Text("Not working").font(Stanford.caption(11)).foregroundStyle(Stanford.statusError)
+            } else if isEnabled, let checkID, statuses[checkID]?.isNotChecked == true {
+                // A check that is not a read-only status command never runs.
+                Text("Not checked").font(Stanford.caption(11)).foregroundStyle(.secondary)
             } else if isEnabled, component.kind == .setup, isUsable(component, package: package) {
                 ConfiguredStatusDot()
             }
@@ -398,7 +401,7 @@ struct PluginsSurfaceView: View {
     private func failingSetup(for package: PluginPackage) -> [FailingSetup] {
         let components = PluginManifestConverter.manifest(from: package).components
         return package.prerequisites.compactMap { prerequisite in
-            guard let status = statuses[prerequisite.id], !status.isUsable,
+            guard let status = statuses[prerequisite.id], !status.isUsable, !status.isNotChecked,
                   let component = components.first(where: { PluginManifestConverter.prerequisiteID(of: $0) == prerequisite.id })
             else { return nil }
             let needsInstall: Bool = { if case .missingBinary = status { return true } else { return false } }()

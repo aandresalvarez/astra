@@ -2672,6 +2672,8 @@ struct PluginInstallSheet: View {
                 detail: "Did not respond: \(detail)",
                 passed: false
             )
+        case .notChecked(let detail):
+            PluginInstallValidationResult(title: prerequisite.displayName, detail: "Not checked: \(detail)", passed: false)
         }
     }
 

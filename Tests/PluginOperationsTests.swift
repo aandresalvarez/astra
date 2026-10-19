@@ -255,6 +255,24 @@ struct PluginOperationsTests {
         #expect(activation.recordedVersion == "2.0.0")
     }
 
+    /// Adding a version this workspace had at another one is an Update for
+    /// it (`.release`): a setting the new version stopped declaring goes.
+    @Test("Adding a version that stops declaring a setting releases it")
+    func addReleasesADroppedSetting() throws {
+        let env = try Environment()
+        var v1 = Self.package(version: "1.0.0")
+        v1.skills[0].environmentKeys = ["PROJECT", "REGION"]
+        v1.skills[0].environmentValues = ["default-project", ""]
+        try env.install(v1)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        try PluginOperations.setSetting("REGION", to: "us", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        #expect(activation.configuration(forComponent: "skill:report-agent") == ["REGION": "us"])
+
+        try env.install(Self.package(version: "2.0.0"))
+        #expect(activation.configuration(forComponent: "skill:report-agent").isEmpty)
+        #expect(activation.recordedVersion == "2.0.0")
+    }
+
     @Test("Update brings the plugin's templates to the definition and keeps dropped ones as the person's")
     func templatesFollowUpdate() throws {
         let env = try Environment()
@@ -718,7 +736,7 @@ struct PluginOperationsTests {
         packages.map { package in
             CapabilityApprovalRecord(
                 packageID: package.id, packageVersion: package.version, status: .approved, approvedBy: "Tests",
-                approvedAt: Date(), reviewNotes: "", sourceDigest: PluginUpdateService.digest(of: package)
+                approvedAt: Date(), reviewNotes: "", sourceDigest: (try? CapabilityApprovalDigest.digest(for: package)) ?? ""
             )
         }
     }

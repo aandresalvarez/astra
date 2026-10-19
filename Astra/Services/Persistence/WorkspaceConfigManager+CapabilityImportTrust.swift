@@ -36,6 +36,11 @@ extension WorkspaceConfigManager {
         /// recorded against another digest (another copy under the same ID)
         /// stays off and brings none of its settings or accounts.
         public var installedDigests: [String: String]
+        /// Each installed package's content digest (`PluginDefinitionDigest`),
+        /// which activations record now: one recorded against it accepted
+        /// this definition, from whichever copy. `installedDigests` judges a
+        /// file written before content digests.
+        public var installedContentDigests: [String: String]
         /// Each installed package's connector components, by component ID.
         /// An imported account is bound only to a component it is an account
         /// of (`acceptsAccount`).
@@ -57,6 +62,7 @@ extension WorkspaceConfigManager {
             availablePackIDs: Set<String>,
             declaredComponentIDs: [String: Set<String>] = [:],
             installedDigests: [String: String] = [:],
+            installedContentDigests: [String: String] = [:],
             connectorComponents: [String: [String: ConnectorComponent]] = [:]
         ) {
             self.approvedPackageIDs = approvedPackageIDs
@@ -64,6 +70,7 @@ extension WorkspaceConfigManager {
             self.availablePackIDs = availablePackIDs
             self.declaredComponentIDs = declaredComponentIDs
             self.installedDigests = installedDigests
+            self.installedContentDigests = installedContentDigests
             self.connectorComponents = connectorComponents
         }
 
@@ -73,8 +80,12 @@ extension WorkspaceConfigManager {
         /// own service. A custom or unnamed service also needs the
         /// component's name. Projection and readiness trust a binding, so the
         /// file's word that a row is an account is never enough.
-        public func acceptsAccount(_ connector: Connector, componentID: String, pluginID: String) -> Bool {
-            guard !connector.isGlobal,
+        /// `createdByImport` marks a shared row this same import created for
+        /// another workspace (`ImportSession`): created, so it may be bound.
+        public func acceptsAccount(
+            _ connector: Connector, componentID: String, pluginID: String, createdByImport: Bool = false
+        ) -> Bool {
+            guard createdByImport || !connector.isGlobal,
                   let component = connectorComponents[pluginID]?[componentID] else { return false }
             func normalized(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             let service = normalized(component.serviceType)
@@ -134,7 +145,7 @@ extension WorkspaceConfigManager {
     static func isAcceptedCopy(_ ref: InstalledPluginRef, trust: CapabilityImportTrustPolicy) -> Bool {
         guard case .validate(let verifier) = trust else { return true }
         guard let digest = ref.digest, !digest.isEmpty else { return false }
-        return verifier.installedDigests[ref.id] == digest
+        return verifier.installedContentDigests[ref.id] == digest || verifier.installedDigests[ref.id] == digest
     }
 
     @MainActor
