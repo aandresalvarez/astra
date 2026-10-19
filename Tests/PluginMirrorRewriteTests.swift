@@ -31,7 +31,7 @@ struct PluginMirrorRewriteTests {
             account, toComponent: CapabilityResourceOrigin.componentID(for: otherPlugin.connectors[0]), of: otherActivation
         )
         try env.context.save()
-        #expect(WorkspaceConfigManager.workspacesMirroring(
+        #expect(try WorkspaceConfigManager.workspacesMirroring(
             accountIDs: [account.id], among: [env.workspace, other], modelContext: env.context
         ).map(\.id) == [env.workspace.id, other.id])
         return (other, account)

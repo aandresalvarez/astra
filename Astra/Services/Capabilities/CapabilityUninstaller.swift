@@ -288,9 +288,11 @@ struct CapabilityUninstaller {
         // disabled, and each one carrying an account whose provenance it
         // released (another plugin's binding, a shared list). They are
         // rewritten before any secret is cleaned or the intent is cleared.
-        let affected = result.disabledWorkspaceIDs + WorkspaceConfigManager.workspacesMirroring(
+        // Unreadable shared rows abort before anything is deleted: a
+        // mirror left out would restore the plugin without its secrets.
+        let affected = result.disabledWorkspaceIDs + (try WorkspaceConfigManager.workspacesMirroring(
             accountIDs: Set(stampedAccounts.map(\.id)), among: workspaces, modelContext: modelContext
-        ).map(\.id).filter { !result.disabledWorkspaceIDs.contains($0) }
+        )).map(\.id).filter { !result.disabledWorkspaceIDs.contains($0) }
         let intent = PluginRemoveJournal.Intent(pluginID: package.id, workspaceIDs: affected)
         var mirrorsWritten = false
         let recordedIntent: Bool

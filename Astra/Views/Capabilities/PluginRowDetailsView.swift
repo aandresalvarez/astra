@@ -120,7 +120,9 @@ struct PluginRowDetailsView<SetupRow: View>: View {
                     !$0.isDeleted && $0.componentID == componentID && $0.account?.id == account.id && $0.isDefault
                 } ?? false
                 HStack(spacing: 8) {
-                    Text(account.name).font(Stanford.ui(12))
+                    // The name this workspace knows it by: a colliding shared
+                    // account's binding alias, which the runtime uses too.
+                    Text(PluginsSurfacePresentation.accountTitle(account, in: workspace)).font(Stanford.ui(12))
                     if !account.baseURL.isEmpty {
                         Text(account.baseURL)
                             .font(Stanford.caption(11))

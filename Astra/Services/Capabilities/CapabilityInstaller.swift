@@ -431,10 +431,13 @@ struct CapabilityInstaller {
             // others whose pending rows became overrides, and each carrying
             // an account the reconcile changed. One that can't be written
             // keeps the cleanup for launch.
-            let mirrored = [workspace] + pendingSnapshots.map(\.0) + WorkspaceConfigManager.workspacesMirroring(
+            // Shared rows that can't be read leave the set unknown, which
+            // counts as a mirror not written: the cleanup waits for launch.
+            let mirroring = try? WorkspaceConfigManager.workspacesMirroring(
                 accountIDs: reconciliation.changedAccountIDs,
-                among: (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? [], modelContext: modelContext
+                among: try modelContext.fetch(FetchDescriptor<Workspace>()), modelContext: modelContext
             )
+            let mirrored = [workspace] + pendingSnapshots.map(\.0) + (mirroring ?? [])
             let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
             guard PluginSecretCleanupOutbox.deleteThenClean(
                 releasedSkillIDs,
@@ -443,7 +446,7 @@ struct CapabilityInstaller {
                 save: { persist(workspace, modelContext) },
                 beforeSettling: {
                     var seen = Set<UUID>()
-                    return mirrored.filter { seen.insert($0.id).inserted }.reduce(true) { rewrite($1) && $0 }
+                    return mirrored.filter { seen.insert($0.id).inserted }.reduce(mirroring != nil) { rewrite($1) && $0 }
                 }
             ) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)

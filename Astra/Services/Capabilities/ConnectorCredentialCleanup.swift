@@ -201,13 +201,21 @@ enum ConnectorCredentialCleanup {
         _ connector: Connector, in workspace: Workspace, modelContext: ModelContext,
         store: ConnectorCredentialCleanupStore? = nil,
         exportMirror: ((Workspace) -> Void)? = nil,
+        fetchWorkspaces: (() throws -> [Workspace])? = nil,
         save: () -> Bool
     ) -> Bool {
         var seen = Set<UUID>()
         let id = connector.id.uuidString
-        let stored = (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? [workspace]
+        // Which mirrors carry the connector must be known in full before
+        // anything is deleted: one left out would restore the account from
+        // its stale mirror without credentials. Unreadable means not deleted.
+        guard let stored = try? (fetchWorkspaces ?? { try modelContext.fetch(FetchDescriptor<Workspace>()) })(),
+              let mirroring = try? WorkspaceConfigManager.workspacesMirroring(
+                  accountIDs: [connector.id], among: stored, modelContext: modelContext
+              )
+        else { return false }
         let affected = ([workspace] + WorkspaceCapabilityActivation.workspacesBinding(connector)
-            + WorkspaceConfigManager.workspacesMirroring(accountIDs: [connector.id], among: stored, modelContext: modelContext)
+            + mirroring
             + stored.filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) })
             .filter { seen.insert($0.id).inserted }
         let memberships = affected.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }

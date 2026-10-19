@@ -297,9 +297,9 @@ enum PluginUpdateService {
                 if !changedWorkspaces.contains(where: { $0 === workspace }) { changedWorkspaces.append(workspace) }
             }
             guard changed > 0 else { return 0 }
-            let mirrored = changedWorkspaces + WorkspaceConfigManager.workspacesMirroring(
+            let mirrored = changedWorkspaces + (try WorkspaceConfigManager.workspacesMirroring(
                 accountIDs: total.changedAccountIDs, among: try modelContext.fetch(FetchDescriptor<Workspace>()), modelContext: modelContext
-            )
+            ))
             let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
             let saved = PluginSecretCleanupOutbox.deleteThenClean(
                 total.released, keys: total.staleSecrets + journaledCopies(total.copied), modelContext: modelContext, secrets: secrets,

@@ -220,7 +220,7 @@ enum PluginOperations {
             throw OperationError.storeUnreadable
         }
         let listing = workspaces.filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) }
-        let mirroring = WorkspaceConfigManager.workspacesMirroring(accountIDs: [account.id], among: workspaces, modelContext: modelContext)
+        let mirroring = try WorkspaceConfigManager.workspacesMirroring(accountIDs: [account.id], among: workspaces, modelContext: modelContext)
         return ([account.workspace].compactMap { $0 } + mirroring + listing)
             .filter { !$0.isDeleted && seen.insert($0.id).inserted }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
