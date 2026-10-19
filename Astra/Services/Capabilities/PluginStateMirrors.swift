@@ -22,11 +22,17 @@ enum PluginStateMirrors {
         workspace: Workspace?,
         accounts: [Connector] = [],
         modelContext: ModelContext,
-        export: ((Workspace) -> Bool)? = nil
+        export: ((Workspace) -> Bool)? = nil,
+        fetchWorkspaces: (() throws -> [Workspace])? = nil
     ) -> Bool {
-        let stored = accounts.isEmpty ? [] : (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []
-        let mirrored = (workspace.map { [$0] } ?? [])
-            + WorkspaceConfigManager.workspacesMirroring(accountIDs: Set(accounts.map(\.id)), among: stored, modelContext: modelContext)
+        // Not knowing which mirrors the accounts leave stale is a failed
+        // export, not an empty one: the caller keeps or reports it.
+        guard let stored = accounts.isEmpty ? [] : try? (fetchWorkspaces ?? { try modelContext.fetch(FetchDescriptor<Workspace>()) })(),
+              let mirroring = try? WorkspaceConfigManager.workspacesMirroring(
+                  accountIDs: Set(accounts.map(\.id)), among: stored, modelContext: modelContext
+              )
+        else { return false }
+        let mirrored = (workspace.map { [$0] } ?? []) + mirroring
         guard let export else { return WorkspaceConfigManager.exportMirrorsNow(mirrored, modelContext: modelContext) }
         var seen = Set<UUID>()
         return mirrored.filter { seen.insert($0.id).inserted }.reduce(true) { export($1) && $0 }

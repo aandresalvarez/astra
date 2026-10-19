@@ -260,6 +260,14 @@ enum PluginsSurfacePresentation {
             .joined(separator: " · ")
     }
 
+    /// The name `workspace` knows `account` by, as the runtime names it:
+    /// its binding alias there when a shared account's name collides, else
+    /// the row's name. Two accounts never read the same next to Edit, Make
+    /// default and Delete.
+    static func accountTitle(_ account: Connector, in workspace: Workspace) -> String {
+        WorkspaceCapabilityActivation.alias(of: account, in: workspace)
+    }
+
     /// What a pending account's row offers.
     enum PendingAccountAction: Equatable {
         /// Add, which routes through the install flow that signs in again.

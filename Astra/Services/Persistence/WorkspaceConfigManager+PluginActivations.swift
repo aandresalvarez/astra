@@ -336,13 +336,20 @@ extension WorkspaceConfigManager {
     /// `export` collects its rows: the workspace's own, its skills', a
     /// shared one it lists, and an account any plugin's binding names
     /// there. The one answer to which mirrors a changed account leaves stale.
+    /// Throws when the shared rows can't be read: an answer missing a
+    /// workspace would let a destructive caller leave its mirror stale, so
+    /// there is no partial answer. `globalRows` stands in for the fetch in
+    /// tests.
     @MainActor
     public static func workspacesMirroring(
-        accountIDs: Set<UUID>, among workspaces: [Workspace], modelContext: ModelContext
-    ) -> [Workspace] {
+        accountIDs: Set<UUID>, among workspaces: [Workspace], modelContext: ModelContext,
+        globalRows: (() throws -> (skills: [Skill], connectors: [Connector]))? = nil
+    ) throws -> [Workspace] {
         guard !accountIDs.isEmpty else { return [] }
-        let globalSkills = fetchGlobalSkills(modelContext: modelContext)
-        let globalConnectors = fetchGlobalConnectors(modelContext: modelContext)
+        let (globalSkills, globalConnectors) = try (globalRows ?? {
+            (try modelContext.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal })),
+             try modelContext.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal })))
+        })()
         return workspaces.filter { workspace in
             !workspace.isDeleted && connectorsForExport(
                 workspace: workspace,
