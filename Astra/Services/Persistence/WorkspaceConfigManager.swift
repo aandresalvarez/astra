@@ -197,7 +197,7 @@ public enum WorkspaceConfigManager {
     }
 
     public struct WorkspaceConfig: Codable, Sendable {
-        public init(version: Int = WorkspaceConfigManager.currentVersion, id: String? = nil, name: String, primaryPath: String, additionalPaths: [String], icon: String, instructions: String, isStarred: Bool? = nil, activeWorkingPath: String? = nil, activeExecutionEnvironmentJSON: String? = nil, lastUsedSkillNames: [String]? = nil, enabledGlobalSkillIDs: [String]? = nil, enabledGlobalConnectorIDs: [String]? = nil, enabledGlobalToolIDs: [String]? = nil, enabledCapabilityIDs: [String]? = nil, enabledPackIDs: [String]? = nil, shelfVisibilityOverrides: [String: Bool]? = nil, memories: [String]? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, skills: [SkillConfig], connectors: [ConnectorConfig]? = nil, localTools: [LocalToolConfig]? = nil, templates: [TemplateConfig]? = nil, schedules: [ScheduleConfig]? = nil, sshConnections: [SSHConnection], tasks: [TaskConfig]? = nil, workspaceApps: [WorkspaceAppConfig]? = nil, workspaceAppRuns: [WorkspaceAppRunConfig]? = nil, workspaceAppRunEvents: [WorkspaceAppRunEventConfig]? = nil, workspaceAppDependencyBindings: [WorkspaceAppDependencyBindingConfig]? = nil, workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil, googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil, installedPlugins: [InstalledPluginRef]? = nil, exportedAt: Date) {
+        public init(version: Int = WorkspaceConfigManager.currentVersion, id: String? = nil, name: String, primaryPath: String, additionalPaths: [String], icon: String, instructions: String, isStarred: Bool? = nil, activeWorkingPath: String? = nil, activeExecutionEnvironmentJSON: String? = nil, lastUsedSkillNames: [String]? = nil, enabledGlobalSkillIDs: [String]? = nil, enabledGlobalConnectorIDs: [String]? = nil, defaultAccountServiceTypes: [String]? = nil, defaultAccountConnectorIDs: [String]? = nil, enabledGlobalToolIDs: [String]? = nil, enabledCapabilityIDs: [String]? = nil, enabledPackIDs: [String]? = nil, shelfVisibilityOverrides: [String: Bool]? = nil, memories: [String]? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, skills: [SkillConfig], connectors: [ConnectorConfig]? = nil, localTools: [LocalToolConfig]? = nil, templates: [TemplateConfig]? = nil, schedules: [ScheduleConfig]? = nil, sshConnections: [SSHConnection], tasks: [TaskConfig]? = nil, workspaceApps: [WorkspaceAppConfig]? = nil, workspaceAppRuns: [WorkspaceAppRunConfig]? = nil, workspaceAppRunEvents: [WorkspaceAppRunEventConfig]? = nil, workspaceAppDependencyBindings: [WorkspaceAppDependencyBindingConfig]? = nil, workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil, googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil, installedPlugins: [InstalledPluginRef]? = nil, exportedAt: Date) {
             self.version = version
             self.id = id
             self.name = name
@@ -211,6 +211,8 @@ public enum WorkspaceConfigManager {
             self.lastUsedSkillNames = lastUsedSkillNames
             self.enabledGlobalSkillIDs = enabledGlobalSkillIDs
             self.enabledGlobalConnectorIDs = enabledGlobalConnectorIDs
+            self.defaultAccountServiceTypes = defaultAccountServiceTypes
+            self.defaultAccountConnectorIDs = defaultAccountConnectorIDs
             self.enabledGlobalToolIDs = enabledGlobalToolIDs
             self.enabledCapabilityIDs = enabledCapabilityIDs
             self.enabledPackIDs = enabledPackIDs
@@ -252,6 +254,8 @@ public enum WorkspaceConfigManager {
         public var lastUsedSkillNames: [String]?
         public var enabledGlobalSkillIDs: [String]?
         public var enabledGlobalConnectorIDs: [String]?
+        public var defaultAccountServiceTypes: [String]? = nil
+        public var defaultAccountConnectorIDs: [String]? = nil
         public var enabledGlobalToolIDs: [String]?
         public var enabledCapabilityIDs: [String]?
         public var enabledPackIDs: [String]? = nil
@@ -339,7 +343,7 @@ public enum WorkspaceConfigManager {
     }
 
     public struct ConnectorConfig: Codable, Sendable {
-        public init(id: String? = nil, name: String, serviceType: String, icon: String, description: String, baseURL: String, authMethod: String, credentialKeys: [String], configKeys: [String], configValues: [String], isGlobal: Bool? = nil, notes: String, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+        public init(id: String? = nil, name: String, serviceType: String, icon: String, description: String, baseURL: String, authMethod: String, credentialKeys: [String], configKeys: [String], configValues: [String], isGlobal: Bool? = nil, notes: String, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, accountAlias: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
             self.id = id
             self.name = name
             self.serviceType = serviceType
@@ -357,6 +361,7 @@ public enum WorkspaceConfigManager {
             self.originComponentID = originComponentID
             self.originComponentKind = originComponentKind
             self.originSourceKind = originSourceKind
+            self.accountAlias = accountAlias
             self.createdAt = createdAt
             self.updatedAt = updatedAt
         }
@@ -373,6 +378,7 @@ public enum WorkspaceConfigManager {
         public var configValues: [String]
         public var isGlobal: Bool?
         public var notes: String
+        public var accountAlias: String? = nil
         public var originPackageID: String? = nil
         public var originPackageVersion: String? = nil
         public var originComponentID: String? = nil
@@ -1001,6 +1007,8 @@ public enum WorkspaceConfigManager {
             lastUsedSkillNames: workspace.lastUsedSkillNames,
             enabledGlobalSkillIDs: workspace.enabledGlobalSkillIDs,
             enabledGlobalConnectorIDs: workspace.enabledGlobalConnectorIDs,
+            defaultAccountServiceTypes: workspace.defaultAccountServiceTypes,
+            defaultAccountConnectorIDs: workspace.defaultAccountConnectorIDs,
             enabledGlobalToolIDs: workspace.enabledGlobalToolIDs,
             enabledCapabilityIDs: workspace.enabledCapabilityIDs,
             enabledPackIDs: workspace.enabledPackIDs,
@@ -1272,6 +1280,7 @@ public enum WorkspaceConfigManager {
         workspace.lastUsedSkillNames = config.lastUsedSkillNames ?? []
         workspace.enabledGlobalSkillIDs = config.enabledGlobalSkillIDs ?? []
         workspace.enabledGlobalConnectorIDs = config.enabledGlobalConnectorIDs ?? []
+        workspace.defaultAccountServiceTypes = config.defaultAccountServiceTypes ?? []
         workspace.enabledGlobalToolIDs = config.enabledGlobalToolIDs ?? []
         workspace.enabledCapabilityIDs = config.enabledCapabilityIDs ?? []
         workspace.enabledPackIDs = config.enabledPackIDs ?? []
@@ -1295,6 +1304,7 @@ public enum WorkspaceConfigManager {
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
         var skippedConnectorCount = 0
+        var importedConnectorIDs: [String: String] = [:]
         for cc in config.connectors ?? [] {
             guard let connector = reusedGlobalConnector(for: cc, modelContext: modelContext) ?? makeConnector(from: cc) else {
                 skippedConnectorCount += 1
@@ -1308,10 +1318,14 @@ public enum WorkspaceConfigManager {
                 modelContext.insert(connector)
             }
             connectorsByID[connector.id.uuidString] = connector
+            if let sourceID = cc.id { importedConnectorIDs[sourceID] = connector.id.uuidString }
             if connectorsByName[connector.name] == nil {
                 connectorsByName[connector.name] = connector
             }
         }
+
+        // A shared account can be reused by identity/name with a different UUID.
+        workspace.defaultAccountConnectorIDs = (config.defaultAccountConnectorIDs ?? []).map { importedConnectorIDs[$0] ?? $0 }
 
         var toolsByID: [String: LocalTool] = [:]
         var toolsByName: [String: LocalTool] = [:]
@@ -1671,6 +1685,7 @@ public enum WorkspaceConfigManager {
             originComponentID: connector.originComponentID,
             originComponentKind: connector.originComponentKind,
             originSourceKind: connector.originSourceKind,
+            accountAlias: connector.accountAlias,
             createdAt: connector.createdAt,
             updatedAt: connector.updatedAt
         )
@@ -2072,6 +2087,7 @@ public enum WorkspaceConfigManager {
         connector.originComponentID = config.originComponentID
         connector.originComponentKind = config.originComponentKind
         connector.originSourceKind = config.originSourceKind
+        connector.accountAlias = config.accountAlias
         connector.createdAt = config.createdAt ?? connector.createdAt
         connector.updatedAt = config.updatedAt ?? connector.updatedAt
         return connector
