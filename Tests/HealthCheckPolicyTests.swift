@@ -33,7 +33,7 @@ struct HealthCheckPolicyTests {
         // The checks Resume runs after a stopped sign-in, Enterprise host and
         // an installation run by path included.
         for family in CLISessionExpiryClassifier.families {
-            let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com")] : []
+            let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com"), family.onHost("github.com"), family.onEveryHost()] : []
             for candidate in [family] + hosted + ([family] + hosted).map({ $0.at("/opt/homebrew/bin/\(family.checkBinary)") }) {
                 #expect(HealthCheckPolicy.isReadOnly(binary: candidate.checkBinary, arguments: candidate.checkArguments), "\(candidate.checkArguments)")
             }
@@ -128,7 +128,7 @@ struct HealthCheckPolicyTests {
     @Test("ASTRA's own Terminal repairs pass the sign-in rule")
     func astraBuiltRepairsPassTheSignInRule() {
         for family in CLISessionExpiryClassifier.families where family.offersSignIn {
-            let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com")] : []
+            let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com"), family.onHost("github.com"), family.onEveryHost()] : []
             for candidate in [family] + hosted + ([family] + hosted).map({ $0.at("/opt/homebrew/bin/\(family.checkBinary)") }) {
                 let repair = candidate.repair.targetingCredentialStore(["CLOUDSDK_CONFIG": "/Users/o'connor/.config/gcloud", "GH_HOST": "github.example.com"])
                 #expect(RepairAction.isSafeTerminalCommand(

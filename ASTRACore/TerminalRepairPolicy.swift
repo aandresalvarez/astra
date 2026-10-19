@@ -33,7 +33,7 @@ public enum TerminalRepairPolicy {
                 valueFlags: ["--hostname": .host, "-h": .host, "--git-protocol": .oneOf(["https", "ssh"]), "-p": .oneOf(["https", "ssh"])]
             ),
             SignIn(positionals: ["auth", "refresh"], valueFlags: ["--hostname": .host, "-h": .host]),
-            SignIn(positionals: ["auth", "status"], valueFlags: ["--hostname": .host, "-h": .host])
+            SignIn(positionals: ["auth", "status"], booleanFlags: ["--active", "-a"], valueFlags: ["--hostname": .host, "-h": .host])
         ],
         "gcloud": [
             SignIn(positionals: ["auth", "login"], booleanFlags: ["--no-launch-browser", "--update-adc"], valueFlags: gcloudSignInFlags),

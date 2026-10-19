@@ -211,7 +211,7 @@ struct PluginRepairTests {
         // An install step's package manager only installs.
         #expect(!RepairAction.isSafeTerminalCommand("brew uninstall gh", binary: "gh", allowsInstaller: true))
         for (command, binary) in [
-            ("gh auth login", "gh"), ("gh auth refresh --hostname github.example.com", "gh"), ("gh auth status --hostname github.example.com", "gh"),
+            ("gh auth login", "gh"), ("gh auth refresh --hostname github.example.com", "gh"), ("gh auth status --hostname github.example.com", "gh"), ("gh auth status --active --hostname github.example.com", "gh"),
             ("gh auth login --hostname github.example.com --web", "gh"), ("gcloud auth login", "gcloud"),
             ("gcloud auth application-default login", "gcloud"), ("/opt/sdk/bin/gcloud auth login --account=me@x.org", "/opt/sdk/bin/gcloud"),
             ("az login --tenant contoso", "az"), ("aws sso login --profile dev", "aws"), ("aws configure sso", "aws"),
@@ -269,6 +269,32 @@ struct PluginRepairTests {
         }
         #expect(!RepairAction.isSafeTerminalCommand("brew install --HEAD gh", binary: "gh", allowsInstaller: true))
         #expect(RepairAction.isSafeTerminalCommand("brew install --formula gh", binary: "gh", allowsInstaller: true))
+    }
+
+    @Test("Prerequisites that share a check ID keep their own components and repairs")
+    func sharedCheckIDKeepsEachComponent() throws {
+        var package = try gcloudPackage()
+        let arguments = ["auth", "status", "--hostname", "github.com"]
+        package.prerequisites = [
+            CLIPrerequisite(binary: "gh", livenessArgs: arguments, displayName: "GitHub (read)", purpose: ""),
+            CLIPrerequisite(
+                binary: "gh", livenessArgs: arguments, displayName: "GitHub (write)", purpose: "",
+                authHint: "Run `gh auth login --hostname github.com --web`."
+            )
+        ]
+        #expect(package.prerequisites[0].id == package.prerequisites[1].id)
+        let status: [String: HealthStatus] = [package.prerequisites[0].id: .unauthenticated(detail: "expired")]
+        // The first offers nothing; the second's own sign-in is reachable.
+        #expect(CapabilityRailRepair.repair(for: package, statuses: status)?.command == "gh auth login --hostname github.com --web")
+        let pairs = PluginManifestConverter.setupComponents(of: package)
+        #expect(pairs.map(\.component.name) == ["GitHub (read)", "GitHub (write)"])
+        // Each component row finds its own prerequisite by position.
+        let manifest = PluginManifestConverter.manifest(from: package)
+        let positions = manifest.components.indices.compactMap { index in
+            PluginManifestConverter.prerequisitePosition(ofComponentAt: index, in: manifest).map { (manifest.components[index].name, $0) }
+        }
+        #expect(positions.map(\.0) == ["GitHub (read)", "GitHub (write)"])
+        #expect(positions.map(\.1) == [0, 1])
     }
 
     @Test("Every bundled plugin's repair is a sign-in that passes, at import and at launch")
