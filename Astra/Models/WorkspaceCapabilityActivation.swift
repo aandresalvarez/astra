@@ -210,12 +210,15 @@ public enum WorkspaceCapabilityActivation {
     /// bound with `isDefault`, becomes it. Account names (aliases) are unique
     /// per service among the accounts a workspace can see, so a task or the
     /// broker can name one; an account whose name another one there already
-    /// has is renamed " 2", " 3" before it is bound.
+    /// has is renamed " 2", " 3" before it is bound. `createdAt` dates a
+    /// new binding (a mirror restoring one keeps its age, which elects the
+    /// next default); an existing binding keeps its own.
     public static func bind(
         _ account: Connector,
         toComponent componentID: String,
         of activation: PluginActivation,
-        isDefault: Bool = false
+        isDefault: Bool = false,
+        createdAt: Date? = nil
     ) {
         let existing = activation.bindings.filter { !$0.isDeleted && $0.componentID == componentID }
         let sameService = sameServiceBindings(as: account, in: activation)
@@ -227,7 +230,11 @@ public enum WorkspaceCapabilityActivation {
         disambiguateAlias(of: account, joining: activation)
         let hasDefault = sameService.contains { $0.isDefault && $0.account?.id != account.id }
         let accountIsDefault = sameService.contains { $0.isDefault && $0.account?.id == account.id }
-        let binding = AccountBinding(componentID: componentID, isDefault: !hasDefault || isDefault || accountIsDefault)
+        let binding = AccountBinding(
+            componentID: componentID,
+            isDefault: !hasDefault || isDefault || accountIsDefault,
+            createdAt: createdAt ?? Date()
+        )
         if let context = activation.modelContext {
             context.insert(binding)
         }
@@ -286,6 +293,29 @@ public enum WorkspaceCapabilityActivation {
             }
         }
         touch(activation)
+    }
+
+    /// Re-elects defaults after `account`'s service changed from
+    /// `oldService`, in every workspace that binds it: each service keeps
+    /// exactly one default account. The service it left gets its oldest
+    /// remaining account when it took the default with it; the one it joined
+    /// keeps the default it had, else this account (or its oldest) gets it.
+    public static func serviceChanged(of account: Connector, from oldService: String) {
+        guard normalizedService(oldService) != normalizedService(account.serviceType) else { return }
+        for workspace in workspacesBinding(account) {
+            for service in [oldService, account.serviceType] {
+                let bindings = activations(of: workspace).flatMap(\.bindings)
+                    .filter { !$0.isDeleted && normalizedService($0.account?.serviceType) == normalizedService(service) }
+                    .sorted { $0.createdAt == $1.createdAt ? $0.id.uuidString < $1.id.uuidString : $0.createdAt < $1.createdAt }
+                let defaults = bindings.filter(\.isDefault)
+                guard let keep = defaults.first(where: { $0.account?.id != account.id }) ?? defaults.first ?? bindings.first
+                else { continue }
+                let changed = bindings.contains { $0.isDefault != ($0.account?.id == keep.account?.id) }
+                guard changed else { continue }
+                makeDefault(keep, among: bindings)
+                if let owner = keep.activation { touch(owner) }
+            }
+        }
     }
 
     /// The workspace's default account for `serviceType`, if one is bound.
@@ -584,6 +614,15 @@ public enum WorkspaceCapabilityActivation {
             guard !binding.isDeleted, let other = binding.activation?.workspace else { return false }
             return other !== joining
         }) { return }
+        // So does a shared row another workspace turned on by itself: it has
+        // no binding there, but its name is the one that workspace uses.
+        if account.isGlobal, let context = account.modelContext ?? activation.modelContext {
+            let id = account.id.uuidString
+            let usedElsewhere = (try? context.fetch(FetchDescriptor<Workspace>())).map { workspaces in
+                workspaces.contains { $0.id != joining?.id && $0.enabledGlobalConnectorIDs.contains(id) }
+            } ?? true
+            if usedElsewhere { return }
+        }
         var workspaces: [Workspace] = activation.workspace.map { [$0] } ?? []
         for binding in account.accountBindings where !binding.isDeleted {
             if let workspace = binding.activation?.workspace, !workspaces.contains(where: { $0 === workspace }) {

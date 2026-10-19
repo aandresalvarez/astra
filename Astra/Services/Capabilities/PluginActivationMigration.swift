@@ -357,6 +357,12 @@ enum PluginActivationMigration {
             let saved = PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, modelContext: modelContext) {
                 do {
                     try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: nil, modelContext: modelContext)
+                    // Every mirror is rewritten before the cleanup settles: a
+                    // V19 one still names the deleted rows, and a recovery
+                    // from it would bring them back without their secrets.
+                    for workspace in workspaces {
+                        WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext)
+                    }
                     return true
                 } catch {
                     saveError = error

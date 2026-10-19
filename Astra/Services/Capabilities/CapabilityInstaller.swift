@@ -176,7 +176,8 @@ struct CapabilityInstaller {
         policyContext: CapabilityCatalogPolicyContext? = nil,
         auditSource: String = "enable",
         traceID: String? = nil,
-        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
+        exportMirror: (@MainActor (Workspace) -> Void)? = nil
     ) throws -> InstallationResult {
         var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
         if let traceID { startFields["trace_id"] = traceID }
@@ -258,6 +259,9 @@ struct CapabilityInstaller {
                 guard let otherActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: other) else { continue }
                 WorkspaceCapabilityActivation.adoptPendingOverrides(on: otherActivation, declaring: componentIDs, in: other)
             }
+            // A row replacing a component this version no longer declares
+            // is the workspace's own again: nothing would project it.
+            WorkspaceCapabilityActivation.releaseUndeclaredOverrides(on: activation, declaring: componentIDs, in: workspace)
             WorkspaceCapabilityActivation.setKnownComponents(activation.knownComponentIDs + componentIDs, on: activation)
             // An account bound to a connector component this version no
             // longer declares is released (the account itself stays), so it
@@ -355,6 +359,16 @@ struct CapabilityInstaller {
             workspace.updatedAt = Date()
             guard persist(workspace, modelContext) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
+            }
+            // `persist` exports the clicked workspace; the others whose
+            // pending rows became overrides in the same save are exported
+            // here, or their mirrors would restore the rows as before.
+            for (other, _) in pendingSnapshots {
+                if let exportMirror {
+                    exportMirror(other)
+                } else if !WorkspacePersistenceCoordinator.shouldSkipAutoExport() {
+                    WorkspaceConfigManager.autoExport(workspace: other, modelContext: modelContext)
+                }
             }
             var enabledFields = [
                 "package_id": package.id,

@@ -42,7 +42,14 @@ enum PluginsSurfacePresentation {
         /// Why a plugin that is not on can't be added, when approval would
         /// not clear it: shown in place of Add, which could only fail.
         var blocker: String?
+        /// On, but the installed definition is not the one this workspace
+        /// accepted (`CapabilityPackageState.awaitsUpdate`): nothing of it
+        /// runs here until Add accepts it, so the row needs action and
+        /// offers Add again.
+        var awaitsUpdate = false
     }
+
+    static let awaitsUpdateMessage = "A new version is installed. Add it again to use it here."
 
     /// Whether a package is listed and what keeps it from being added. Listed
     /// when policy shows it and it is on, can be turned on, or needs only the
@@ -71,11 +78,11 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: input.isEnabled || input.blocker != nil ? nil : .add
+                verb: (input.isEnabled && !input.awaitsUpdate) || input.blocker != nil ? nil : .add
             )
             if !input.isEnabled {
                 state.available.append(row)
-            } else if input.pendingSteps > 0 {
+            } else if input.pendingSteps > 0 || input.awaitsUpdate {
                 state.actionNeeded.append(row)
             } else {
                 state.ready.append(row)
@@ -88,6 +95,7 @@ enum PluginsSurfacePresentation {
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
         if !input.isEnabled, let blocker = input.blocker { return blocker }
+        if input.isEnabled, input.awaitsUpdate { return awaitsUpdateMessage }
         let contents = input.package.contentParts.joined(separator: ", ")
         guard input.isEnabled, input.pendingSteps > 0 else {
             return contents.isEmpty ? input.package.description : contents

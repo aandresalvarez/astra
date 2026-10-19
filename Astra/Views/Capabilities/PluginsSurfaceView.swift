@@ -92,7 +92,8 @@ struct PluginsSurfaceView: View {
                     + PluginsSurfacePresentation.pendingAccounts(for: package, googleAccountConnected: googleConnected).count,
                 isVisible: listing.isVisible,
                 isRemovable: Self.isRemovable(package),
-                blocker: listing.blocker
+                blocker: listing.blocker,
+                awaitsUpdate: packageState.awaitsUpdate
             )
         }, query: query)
     }

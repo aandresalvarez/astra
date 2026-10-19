@@ -43,7 +43,8 @@ enum TaskExecutionLaunchSnapshotApplicator {
             pluginActivations: policy.pluginActivations,
             pluginDefinitions: policy.pluginDefinitions,
             pluginAccounts: policy.pluginAccounts,
-            pluginOverrides: policy.pluginOverrides
+            pluginOverrides: policy.pluginOverrides,
+            retiredPluginActivations: policy.retiredPluginActivations
         )
     }
 
@@ -82,6 +83,9 @@ enum TaskExecutionLaunchSnapshotApplicator {
                 accountsByID: Dictionary(workspace.connectors.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
                 frozenRowIDs: frozenRowIDs
             )
+            // With the record of removed ones: the rows a Remove kept out of
+            // scope at submission stay out, even if the plugin was added back.
+            WorkspaceCapabilityActivation.applyFrozenRetired(snapshot.retiredPluginActivations, to: workspace)
         }
         let task = AgentTask(title: source.title, goal: source.goal, workspace: workspace)
         task.id = source.id
