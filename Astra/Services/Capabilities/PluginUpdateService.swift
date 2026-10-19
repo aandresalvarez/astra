@@ -412,7 +412,8 @@ enum PluginUpdateService {
                 .map { String($0.dropFirst(new.count + 1)) })
             let settled = PluginSecretCleanupOutbox.settleRenameDestination(
                 PluginRuntimeProjection.derivedID(of: activation, componentID: new),
-                keys: spec.environmentKeys, kept: kept, modelContext: modelContext ?? activation.modelContext
+                keys: spec.environmentKeys, kept: kept, modelContext: modelContext ?? activation.modelContext,
+                clean: { persistence.deleteAllSecretsReportingResult(skillID: $0) }
             ) { persistence.deleteSecret(key: $0, skillID: PluginRuntimeProjection.derivedID(of: activation, componentID: new)) }
             return settled ? nil : new
         }
@@ -473,6 +474,10 @@ enum PluginUpdateService {
             return result
         }
 
+        // A row replacing a component this definition no longer declares is
+        // the workspace's own again (a shared one back on its lists) before
+        // the component's state goes, as at Add.
+        WorkspaceCapabilityActivation.releaseUndeclaredOverrides(on: activation, declaring: current, in: workspace)
         for component in dropped {
             if component.hasPrefix("skill:") {
                 let oldID = PluginRuntimeProjection.derivedID(of: activation, componentID: component)
@@ -543,15 +548,15 @@ enum PluginUpdateService {
         var changed = false
         for declared in package.connectors {
             // Settings only a bundled definition keeps plain; any other is a
-            // credential key. A row that still holds one as plain text keeps
-            // it there until Add moves it to the Keychain.
+            // credential key. A row that still holds one as plain text moves
+            // it to the Keychain here; one whose move fails keeps it.
             let spec = PluginConnectorFieldTrust.asStored(declared, in: package)
             let moved = PluginConnectorFieldTrust.settingsStoredAsCredentials(of: declared, in: package)
             let componentID = CapabilityResourceOrigin.componentID(for: spec)
             let predecessors = Set(CapabilityResourceOrigin.replacedComponentIDs(for: spec))
             for account in activation.accounts(forComponent: componentID)
             where !account.isDeleted && account.originPackageID == package.id {
-                var touched = false
+                var touched = !account.moveSettingsToKeychain(moved).isEmpty
                 if let stamp = account.originComponentID, predecessors.contains(stamp) {
                     account.originComponentID = componentID
                     touched = true

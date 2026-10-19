@@ -269,6 +269,66 @@ struct CapabilityInstallerTests {
         #expect(staging.credentialKeys == ["GCP_TOKEN", "GCP_REGION"] && staging.config == ["GCP_DATASET": "staging"])
     }
 
+    /// The setup sheet keys each connector's fields and base URL by its
+    /// component ID; two same-named connectors keep their own values.
+    @Test("Setup keyed by component ID reaches only that component's account")
+    func componentKeyedSetupStaysWithItsConnector() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Two Jiras", primaryPath: "/tmp/capability-two-jiras")
+        context.insert(workspace)
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let index = try #require(package.connectors.firstIndex { $0.configHints.contains { $0.key == "JIRA_PROJECTS" } })
+        var server = package.connectors[index]
+        server.id = "jira-server"
+        package.connectors.insert(server, at: index + 1)
+        let cloud = package.connectors[index]
+        #expect(cloud.name == server.name && cloud.setupComponentID != server.setupComponentID)
+        try CapabilityInstaller(library: library).install(
+            package, into: workspace, modelContext: context,
+            configInputs: [PluginSetupInputs.key("JIRA_PROJECTS", component: cloud.setupComponentID): "ENG"],
+            baseURLOverrides: [cloud.setupComponentID: "https://cloud.atlassian.net", server.setupComponentID: "https://jira.example.edu"]
+        )
+
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        let cloudAccount = try #require(activation.accounts(forComponent: cloud.setupComponentID).first)
+        let serverAccount = try #require(activation.accounts(forComponent: server.setupComponentID).first)
+        #expect(cloudAccount.id != serverAccount.id)
+        #expect(cloudAccount.baseURL == "https://cloud.atlassian.net" && serverAccount.baseURL == "https://jira.example.edu")
+        #expect(cloudAccount.configValue("JIRA_PROJECTS") == "ENG")
+        #expect(!serverAccount.configValues.contains("ENG"))
+    }
+
+    @Test("A component reads its own setup over the shared one, never another component's")
+    func setupInputViewsArePerComponent() {
+        let inputs = [
+            "SHARED": "s",
+            PluginSetupInputs.key("TOKEN", component: "connector:jira:a"): "a",
+            PluginSetupInputs.key("TOKEN", component: "connector:jira:b"): "b"
+        ]
+        #expect(PluginSetupInputs.view(inputs, component: "connector:jira:a") == ["SHARED": "s", "TOKEN": "a"])
+        #expect(PluginSetupInputs.view(inputs, component: "connector:jira:c") == ["SHARED": "s"])
+
+        // Copied setup (shared keys) fills each connector that declares the field.
+        let first = PluginConnector(name: "Jira", serviceType: "jira", icon: "", description: "", baseURL: "", authMethod: "bearer",
+                                    credentialHints: [.init(key: "TOKEN", hint: "")], configHints: [], notes: "")
+        var second = first
+        second.id = "jira-server"
+        let own = PluginSetupInputs.perComponent(
+            OnboardingCapabilityInstallationInputs(credentialInputs: ["TOKEN": "t"], configInputs: ["DATASET": "d"], baseURLOverrides: ["Jira": "https://x"]),
+            for: [first, second]
+        )
+        #expect(own.credentialInputs == [
+            PluginSetupInputs.key("TOKEN", component: first.setupComponentID): "t",
+            PluginSetupInputs.key("TOKEN", component: second.setupComponentID): "t"
+        ])
+        #expect(own.configInputs == ["DATASET": "d"])
+        #expect(own.baseURLOverrides == [first.setupComponentID: "https://x", second.setupComponentID: "https://x"])
+    }
+
     @Test("configured source values stay scoped to their workspace")
     func configuredSourceValuesStayScopedToWorkspace() throws {
         let container = try makeCapabilityInstallerContainer()
@@ -421,6 +481,46 @@ struct CapabilityInstallerTests {
         #expect(legacy.originPackageVersion == "1.0.0")
         #expect(legacy.behaviorInstructions == "Legacy")
         #expect(!workspace.enabledGlobalSkillIDs.contains(legacy.id.uuidString))
+    }
+
+    @Test("Add creates its own account instead of taking over an authored row with the same name and service")
+    func addLeavesMatchingAuthoredConnectorAlone() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Authored account", primaryPath: "/tmp/authored-account")
+        context.insert(workspace)
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let package = makeAnalystCapabilityPackage()
+        let pluginConnector = try #require(package.connectors.first)
+        let attachedSkill = Skill(name: "Authored skill", behaviorInstructions: "Mine")
+        context.insert(attachedSkill)
+        let authored = Connector(
+            name: pluginConnector.name,
+            serviceType: pluginConnector.serviceType,
+            icon: "cloud",
+            connectorDescription: "Mine",
+            baseURL: "https://authored.example.com",
+            authMethod: "none"
+        )
+        authored.configKeys = ["MY_PROJECT"]
+        authored.configValues = ["authored"]
+        authored.workspace = workspace
+        authored.skill = attachedSkill
+        context.insert(authored)
+        try context.save()
+
+        let result = try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+
+        #expect(authored.baseURL == "https://authored.example.com")
+        #expect(authored.config == ["MY_PROJECT": "authored"])
+        #expect(authored.skill?.id == attachedSkill.id)
+        #expect(!CapabilityResourceOrigin.hasOrigin(authored))
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        let account = try #require(activation.accounts(forComponent: CapabilityResourceOrigin.componentID(for: pluginConnector)).first)
+        #expect(account.id != authored.id)
+        #expect(result.connectorIDs == [account.id])
     }
 
     @Test("connector-only and tool-only packages project standalone elements")

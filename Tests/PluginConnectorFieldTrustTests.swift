@@ -158,9 +158,53 @@ struct PluginConnectorFieldTrustTests {
 
     /// Stands in for the installed definitions an account's creator is found in.
     enum StubCreator: ConnectorSettingStorageResolving {
-        static func settingKeysStoredAsCredentials(originPackageID: String, originComponentID: String?) -> Set<String>? {
+        static func settingKeysStoredAsCredentials(
+            originPackageID: String, originComponentID: String?, accountKeys: [String]
+        ) -> Set<String> {
+            originPackageID == "imported.tracker" ? ["TRACKER_PROJECT"] : []
+        }
+        static func declaredSettingKeysStoredAsCredentials(originPackageID: String, originComponentID: String?) -> Set<String>? {
             originPackageID == "imported.tracker" ? ["TRACKER_PROJECT"] : nil
         }
+    }
+
+    /// An older row of a third-party plugin holding a setting the mirror now
+    /// withholds: the value moves to the Keychain before the mirror is its
+    /// only other copy, and only once the Keychain has it.
+    @Test("A withheld plain setting moves to the Keychain, and stays on the row when the move fails")
+    func withheldPlainSettingMovesToTheKeychain() {
+        func legacyRow(_ origin: String = "imported.tracker") -> Connector {
+            let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
+            row.originPackageID = origin
+            row.originComponentID = "connector:tracker:tracker-api"
+            row.configKeys = ["TRACKER_PROJECT", "TRACKER_BASE_URL"]
+            row.configValues = ["ENG-1", "https://tracker.example.com"]
+            return row
+        }
+        // The Keychain refuses the write: nothing leaves the row.
+        let refusing = MockSecretStore()
+        refusing.failsWrites = true
+        let kept = legacyRow()
+        #expect(kept.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: refusing).isEmpty)
+        #expect(kept.configValue("TRACKER_PROJECT") == "ENG-1" && kept.credentialKeys.isEmpty)
+        // A creator that can't be found moves nothing either.
+        let unknown = legacyRow("gone.tracker")
+        #expect(unknown.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: MockSecretStore()).isEmpty)
+        #expect(unknown.configKeys.count == 2)
+
+        let store = MockSecretStore()
+        let row = legacyRow()
+        #expect(row.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: store) == ["TRACKER_PROJECT"])
+        #expect(row.configKeys == ["TRACKER_BASE_URL"] && row.credentialKeys == ["TRACKER_PROJECT"])
+        #expect(row.credentials(store: store)["TRACKER_PROJECT"] == "ENG-1")
+        // The mirror now names it as a credential, and the Keychain holds it.
+        let mirrored = ConnectorSettingStorageSeam.exportableConfig(
+            keys: row.configKeys, values: row.configValues, originPackageID: row.originPackageID,
+            originComponentID: row.originComponentID, resolver: StubCreator.self
+        )
+        #expect(mirrored.keys == ["TRACKER_BASE_URL"])
+        // Idempotent: a second pass has nothing to move.
+        #expect(row.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: store).isEmpty)
     }
 
     @Test("The mirror withholds a plain value an older row holds for a setting stored as a credential")
@@ -173,14 +217,33 @@ struct PluginConnectorFieldTrustTests {
         )
         #expect(withheld.keys == ["TRACKER_BASE_URL"])
         #expect(withheld.values == ["https://tracker.example.com"])
-        // A row no plugin created, or whose creator can't be found, is unchanged.
+        // A row no plugin created is unchanged.
         let own = ConnectorSettingStorageSeam.exportableConfig(
             keys: keys, values: values, originPackageID: nil, originComponentID: nil, resolver: StubCreator.self
         )
         #expect(own.keys == keys && own.values == values)
-        let unknown = ConnectorSettingStorageSeam.exportableConfig(
-            keys: keys, values: values, originPackageID: "gone", originComponentID: nil, resolver: StubCreator.self
+    }
+
+    @Test("The mirror withholds every setting of an account whose third-party creator can't be read")
+    func mirrorFailsClosedForUnreadableCreator() throws {
+        let keys = ["TRACKER_PROJECT", "TRACKER_BASE_URL"]
+        let values = ["ENG-1", "https://tracker.example.com"]
+        // Its library entry is unreadable, or a Remove kept the stamp.
+        for stamp in ["connector:tracker:tracker-api", nil] {
+            let unknown = ConnectorSettingStorageSeam.exportableConfig(
+                keys: keys, values: values, originPackageID: "gone.\(UUID().uuidString)", originComponentID: stamp,
+                resolver: PluginConnectorFieldTrust.self
+            )
+            #expect(unknown.keys.isEmpty && unknown.values.isEmpty)
+        }
+        // A bundled plugin's account still exports what ASTRA's own
+        // definition declares plain, and nothing else.
+        let jira = try #require(Self.jira().connectors.first { !$0.configHints.isEmpty })
+        let bundled = ConnectorSettingStorageSeam.exportableConfig(
+            keys: ["JIRA_PROJECTS", "JIRA_SITE"], values: ["ENG", "secret"], originPackageID: "jira-workflow",
+            originComponentID: "connector:jira:unknown-\(UUID().uuidString)", resolver: PluginConnectorFieldTrust.self
         )
-        #expect(unknown.keys == keys && unknown.values == values)
+        #expect(jira.configHints.map(\.key).contains("JIRA_PROJECTS"))
+        #expect(bundled.keys == ["JIRA_PROJECTS"] && bundled.values == ["ENG"])
     }
 }

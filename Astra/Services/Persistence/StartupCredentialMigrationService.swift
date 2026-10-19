@@ -66,6 +66,10 @@ public enum StartupCredentialMigrationService {
         let connectors = workspaces.flatMap(\.connectors) + globalConnectors
         for connector in connectors where seen.insert(connector.id).inserted {
             connector.migrateToKeychain()
+            // A plugin setting now stored as a credential leaves the row's
+            // plain text before the mirror, which withholds it, is the only
+            // other copy.
+            connector.moveSettingsStoredAsCredentials()
             // Move any secrets older versions stored in the login keychain
             // into ASTRA's dedicated keychain. Idempotent; runs once at launch
             // (not on every Connector instantiation), enumerating by service

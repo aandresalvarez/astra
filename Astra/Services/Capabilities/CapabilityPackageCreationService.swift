@@ -12,11 +12,16 @@ struct CapabilityPackageCreationResult {
 
 enum CapabilityPackageCreationError: LocalizedError {
     case invalidPackage(CapabilityPackageValidationReport)
+    /// The install failed and the approval saved ahead of it couldn't be
+    /// taken back: that version stays approved.
+    case approvalNotReverted(installError: String)
 
     var errorDescription: String? {
         switch self {
         case .invalidPackage(let report):
             return report.summary
+        case .approvalNotReverted(let installError):
+            return "\(installError) ASTRA also couldn't take back the approval it saved for this version, so it is still approved."
         }
     }
 }
@@ -106,9 +111,13 @@ struct CapabilityPackageCreationService {
                     traceID: traceID,
                     announceCatalogMutation: false
                 )
-            } catch {
-                approval?.revert()
-                throw error
+            } catch let installError {
+                do {
+                    try approval?.revert()
+                } catch {
+                    throw CapabilityPackageCreationError.approvalNotReverted(installError: installError.localizedDescription)
+                }
+                throw installError
             }
             let approvalRecord = approval?.record
             CapabilityCatalogPersistenceEvents.post(.global)
@@ -150,7 +159,7 @@ struct CapabilityPackageCreationService {
     private func saveApprovalRecordIfNeeded(
         _ pendingRecord: CapabilityApprovalRecord?,
         package: PluginPackage
-    ) throws -> (record: CapabilityApprovalRecord, revert: () -> Void)? {
+    ) throws -> (record: CapabilityApprovalRecord, revert: () throws -> Void)? {
         guard let pendingRecord else { return nil }
         return try approvalStore.saveBeforeDependentWrite(
             package: package,

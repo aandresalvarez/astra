@@ -157,6 +157,41 @@ struct CapabilityPackageRoundTripE2ETests {
         #expect(library.installedPackage(id: importedPackage.id)?.sourceMetadata == .localLibrary())
     }
 
+    @Test("create flow reports an approval it couldn't take back after a failed install")
+    func createFlowReportsAnApprovalItCouldNotRevert() throws {
+        let root = try roundTripTemporaryDirectory(named: "astra-capability-unreverted-e2e")
+        defer { try? FileManager.default.removeItem(at: root) }
+        // A library path that is a file: the install fails after the approval is saved.
+        let libraryURL = root.appendingPathComponent("app-library")
+        try Data("not a directory".utf8).write(to: libraryURL)
+        let library = CapabilityLibrary(directory: libraryURL)
+        let approvalStore = CapabilityApprovalStore(
+            directory: root.appendingPathComponent("approvals", isDirectory: true), fileManager: RemoveRefusingFileManager()
+        )
+        let container = try makeRoundTripContainer()
+        let workspace = Workspace(name: "Unreverted Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        container.mainContext.insert(workspace)
+        let package = roundTripPackage(name: "Unreverted Round Trip")
+        let service = CapabilityPackageCreationService(
+            library: library, sourceExporter: CapabilityPackageSourceExporter(), approvalStore: approvalStore,
+            appVersion: SemanticVersion(1, 0, 0)
+        )
+
+        do {
+            _ = try service.create(
+                package, enableHere: true, sourceURL: nil, workspace: workspace, modelContext: container.mainContext,
+                policyContext: CapabilityCatalogPolicyContext.workspaceUser(
+                    workspace: workspace, isAdmin: true, currentAppVersion: SemanticVersion(1, 0, 0), approvalRecords: []
+                )
+            )
+            Issue.record("The install should fail.")
+        } catch let error as CapabilityPackageCreationError {
+            guard case .approvalNotReverted = error else { Issue.record("Unexpected \(error)"); return }
+        }
+        // What the error says is what is on disk: the approval stayed.
+        #expect(approvalStore.records().count == 1)
+    }
+
     @Test("create flow rejects invalid packages without partial writes")
     func createFlowRejectsInvalidPackagesWithoutPartialWrites() throws {
         let root = try roundTripTemporaryDirectory(named: "astra-capability-invalid-e2e")
@@ -394,4 +429,11 @@ private func roundTripTemporaryDirectory(named prefix: String) throws -> URL {
         .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+}
+
+/// Refuses every removal: an approval saved ahead of a write can't be taken back.
+private final class RemoveRefusingFileManager: FileManager, @unchecked Sendable {
+    override func removeItem(at URL: URL) throws {
+        throw CocoaError(.fileWriteNoPermission)
+    }
 }

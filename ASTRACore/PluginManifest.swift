@@ -177,6 +177,9 @@ public enum PluginManifestError: Error, Equatable, LocalizedError {
     /// A component ID the package can't carry: it would be re-derived from
     /// the payload's name, so the declared ID would not survive conversion.
     case unrepresentableComponentID(component: String, id: String)
+    /// A component name or summary the package can't carry: the row would
+    /// show its payload's name and description instead.
+    case unrepresentableComponentLabel(component: String)
 
     public var errorDescription: String? {
         switch self {
@@ -190,6 +193,8 @@ public enum PluginManifestError: Error, Equatable, LocalizedError {
             "The plugin says it doesn't work on \(runtime), and ASTRA can't keep it off that runtime yet."
         case .unrepresentableComponentID(let component, let id):
             "\(component) declares the ID \"\(id)\", which ASTRA can't keep yet, so the plugin can't be installed."
+        case .unrepresentableComponentLabel(let component):
+            "\(component) declares a name or summary its definition doesn't share, which ASTRA can't keep yet, so the plugin can't be installed."
         }
     }
 }
@@ -489,12 +494,16 @@ public enum PluginManifestConverter {
         // The package keeps no component IDs: each comes back derived from
         // its payload (a name's slug, an MCP server's own ID). A declared ID
         // that differs would be replaced, and a later rename would then
-        // change the component's identity, so it is refused instead.
+        // change the component's identity, so it is refused instead. So is a
+        // name or summary the payload doesn't share: the row would show the
+        // payload's instead.
         for kind in [PluginComponent.Kind.skill, .connector, .tool, .mcp, .template] {
             let derived = carried.filter { $0.kind == kind }
-            for (index, component) in manifest.components.filter({ $0.kind == kind }).enumerated()
-            where index >= derived.count || derived[index].id != component.id {
-                throw PluginManifestError.unrepresentableComponentID(component: component.name, id: component.id)
+            for (index, component) in manifest.components.filter({ $0.kind == kind }).enumerated() {
+                guard index < derived.count, derived[index].id == component.id else {
+                    throw PluginManifestError.unrepresentableComponentID(component: component.name, id: component.id)
+                }
+                try checkLabel(of: component, against: derived[index])
             }
         }
         // Each component's steps are compared with its own carried copy, by
@@ -522,12 +531,22 @@ public enum PluginManifestConverter {
         for hasRequirement in [false, true] {
             let derived = carried.filter { $0.kind == .setup && ($0.requirement != nil) == hasRequirement }
             let declared = manifest.components.filter { $0.kind == .setup && ($0.requirement != nil) == hasRequirement }
-            for (index, component) in declared.enumerated()
-            where index >= derived.count || derived[index].id != component.id {
-                throw PluginManifestError.unrepresentableComponentID(component: component.name, id: component.id)
+            for (index, component) in declared.enumerated() {
+                guard index < derived.count, derived[index].id == component.id else {
+                    throw PluginManifestError.unrepresentableComponentID(component: component.name, id: component.id)
+                }
+                try checkLabel(of: component, against: derived[index])
             }
         }
         return package
+    }
+
+    /// Refuses `component` when its carried copy comes back with another
+    /// name or summary (an account's are its requirement's).
+    private static func checkLabel(of component: PluginComponent, against carried: PluginComponent) throws {
+        guard carried.name == component.name, carried.summary == component.summary else {
+            throw PluginManifestError.unrepresentableComponentLabel(component: component.name)
+        }
     }
 
     private static func hasExactPayload(_ component: PluginComponent) -> Bool {

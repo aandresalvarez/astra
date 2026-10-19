@@ -5,6 +5,7 @@ import ASTRAModels
 @testable import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
+import HostControlToolSupport
 
 /// Identity and ownership rules of `PluginRuntimeProjection` and the services
 /// that write activations (Plugins 2.0 R1 review).
@@ -341,6 +342,41 @@ struct PluginRuntimeProjectionTests {
         #expect(workspace.connectors.contains { $0.id == account.id })
     }
 
+    @Test("A definition another workspace added doesn't run here until this workspace accepts it")
+    func activationRunsOnlyTheDefinitionItAccepted() throws {
+        let context = try makeContext()
+        let gcloud = try builtIn("gcloud-workflow")
+        let a = Workspace(name: "A", primaryPath: "/tmp/projection-accepted-a")
+        let b = Workspace(name: "B", primaryPath: "/tmp/projection-accepted-b")
+        context.insert(a)
+        context.insert(b)
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-accepted-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let installer = CapabilityInstaller(library: library)
+        try installer.install(gcloud, into: a, modelContext: context)
+        try installer.install(gcloud, into: b, modelContext: context)
+        func instructions(_ workspace: Workspace) -> [String] {
+            PluginRuntimeProjection.project(workspace: workspace, packages: library.installedPackages()).skills.map(\.behaviorInstructions)
+        }
+        #expect(instructions(a) == gcloud.skills.map(\.behaviorInstructions))
+
+        // B adds a newer version: the library's one definition changes for A too.
+        var next = gcloud
+        next.version = "9.0.0"
+        next.skills[0].behaviorInstructions = "Version nine rules."
+        try installer.install(next, into: b, modelContext: context)
+        #expect(instructions(b).first == "Version nine rules.")
+        #expect(instructions(a).isEmpty)
+        #expect(PluginRuntimeProjection.runnable(library.installedPackages(), in: a).allSatisfy { $0.id != gcloud.id })
+        #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: a, in: library.installedPackages()).allSatisfy { $0.id != gcloud.id })
+
+        // Adding it in A accepts it there.
+        try installer.install(next, into: a, modelContext: context)
+        #expect(instructions(a).first == "Version nine rules.")
+    }
+
     @Test("Unbinding one component keeps the account's other bindings and the default")
     func unbindOneComponent() throws {
         let context = try makeContext()
@@ -383,7 +419,128 @@ struct PluginRuntimeProjectionTests {
         #expect(detached.skills.contains { $0.originComponentID == component })
     }
 
+    /// Make default on the second of two accounts: a broker call that names
+    /// no account reaches it, and naming the other still reaches that one.
+    @Test("An aliasless broker call reaches the account made default, and a named one still wins")
+    func aliaslessBrokerCallUsesTheWorkspaceDefault() throws {
+        let context = try makeContext()
+        let jira = try builtIn("jira-workflow")
+        let workspace = Workspace(name: "Defaults", primaryPath: "/tmp/projection-defaults")
+        context.insert(workspace)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(jira.id) }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+        let component = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        let accounts = ["Ops", "Research"].map { name in
+            let account = Connector(name: name, serviceType: "jira", baseURL: "https://\(name.lowercased()).atlassian.net", authMethod: "basic")
+            account.workspace = workspace
+            context.insert(account)
+            WorkspaceCapabilityActivation.bind(account, toComponent: component, of: activation)
+            return account
+        }
+        WorkspaceCapabilityActivation.bind(accounts[1], toComponent: component, of: activation, isDefault: true)
+        let task = AgentTask(title: "Issues", goal: "list the open issues", workspace: workspace, runtime: .claudeCode)
+        context.insert(task)
+        try context.save()
+
+        let configuration = Self.brokerConfiguration(for: task)
+        #expect(configuration.connectorManifest.connectors.count == 2)
+        #expect(configuration.connectorManifest.connectors.filter { $0.isDefault == true }.map(\.id) == [accounts[1].id.uuidString])
+        let resolve = { HostControlBrokeredServices.resolveConnector(forServiceType: "jira", alias: $0, in: configuration).connector?.id }
+        #expect(resolve(nil) == accounts[1].id.uuidString)
+        let other = try #require(configuration.connectorManifest.connectors.first { $0.id == accounts[0].id.uuidString })
+        #expect(resolve(other.alias) == accounts[0].id.uuidString)
+    }
+
+    /// Turn off keeps plugin A's bindings, its default included. While A is
+    /// off, B's oldest account stands in; turning A on gives the default back.
+    @Test("With the default's plugin off, an aliasless call reaches the oldest enabled account, and A's again once it's back")
+    func projectedDefaultFallsBackToTheOldestEnabledAccount() throws {
+        let context = try makeContext()
+        let jira = try builtIn("jira-workflow")
+        var other = jira
+        other.id = "jira-ops"
+        other.skills[0].name = "Jira Ops Agent"
+        let workspace = Workspace(name: "Fallback", primaryPath: "/tmp/projection-fallback")
+        context.insert(workspace)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableCapability(jira.id)
+            $0.enableCapability(other.id)
+        }
+        let component = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        func account(_ name: String, boundTo pluginID: String, at offset: TimeInterval) throws -> Connector {
+            let row = Connector(name: name, serviceType: "jira", baseURL: "https://\(name.lowercased()).atlassian.net", authMethod: "basic")
+            row.workspace = workspace
+            context.insert(row)
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace))
+            WorkspaceCapabilityActivation.bind(row, toComponent: component, of: activation)
+            let binding = try #require(activation.bindings.first { $0.account?.id == row.id })
+            binding.createdAt = Date(timeIntervalSince1970: 1_000 + offset)
+            return row
+        }
+        let primary = try account("Primary", boundTo: jira.id, at: 0)
+        let older = try account("Older", boundTo: other.id, at: 10)
+        _ = try account("Newer", boundTo: other.id, at: 20)
+        try context.save()
+
+        func aliaslessCall() -> String? {
+            let projection = PluginRuntimeProjection.project(workspace: workspace, packages: [jira, other], connectorMode: .runtimeCopies)
+            let manifest = ConnectorRuntimeProjection(
+                connectors: projection.connectors, secretStore: MockSecretStore(), defaultConnectorIDs: projection.defaultAccountIDs
+            ).manifestJSON()
+            return HostControlBrokeredServices.resolveConnector(
+                forServiceType: "jira", alias: nil, in: HostControlToolConfiguration(connectorsJSON: manifest)
+            ).connector?.id
+        }
+        #expect(aliaslessCall() == primary.id.uuidString)
+
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.removeAll { $0 == jira.id } }
+        let kept = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+        #expect(!kept.isEnabled && kept.bindings.contains { $0.isDefault && $0.account?.id == primary.id })
+        #expect(aliaslessCall() == older.id.uuidString)
+
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(jira.id) }
+        #expect(aliaslessCall() == primary.id.uuidString)
+    }
+
+    @Test("Accounts enabled outside a plugin carry no default, so an aliasless call is still refused")
+    func directAccountsKeepTheRefusal() throws {
+        let context = try makeContext()
+        let workspace = Workspace(name: "Direct", primaryPath: "/tmp/projection-direct")
+        context.insert(workspace)
+        for name in ["Ops", "Research"] {
+            let account = Connector(name: name, serviceType: "jira", baseURL: "https://\(name.lowercased()).atlassian.net", authMethod: "basic")
+            account.workspace = workspace
+            context.insert(account)
+        }
+        let task = AgentTask(title: "Issues", goal: "list the open issues", workspace: workspace, runtime: .claudeCode)
+        context.insert(task)
+        try context.save()
+
+        let configuration = Self.brokerConfiguration(for: task)
+        #expect(configuration.connectorManifest.connectors.count == 2)
+        #expect(configuration.connectorManifest.connectors.allSatisfy { $0.isDefault == nil })
+        let resolution = HostControlBrokeredServices.resolveConnector(forServiceType: "jira", alias: nil, in: configuration)
+        guard case .ambiguous(alias: nil, _) = resolution else {
+            Issue.record("Expected the aliasless call to be refused, got \(resolution)")
+            return
+        }
+    }
+
     // MARK: - Helpers
+
+    /// The broker's configuration as a launch of `task` builds it.
+    private static func brokerConfiguration(for task: AgentTask) -> HostControlToolConfiguration {
+        let store = MockSecretStore()
+        let scope = TaskCapabilityResolver(task: task, runtime: .claudeCode, secretStore: store).resolvedScope(.fullInventory)
+        let environment = HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: task,
+            runtime: .claudeCode,
+            capabilityScope: scope,
+            requiredTools: ["jira"],
+            secretStore: store
+        )
+        return HostControlToolConfiguration(connectorsJSON: environment["ASTRA_CONNECTORS"] ?? #"{"connectors":[]}"#)
+    }
 
     private func makeContext() throws -> ModelContext {
         let container = try ModelContainer(

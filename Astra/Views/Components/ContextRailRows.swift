@@ -177,9 +177,11 @@ struct CapabilityRailRow: View {
     /// A separate verb ("Sign in", "Install") beside the row, never the row's
     /// own tap target, per the lean UI system.
     var repairVerb: String? = nil
-    /// The Terminal command the repair runs. Shown, with a second tap to run
-    /// it, before anything a plugin declared is executed.
-    var repairCommand: String? = nil
+    /// What a Terminal repair does (`repairGuidance(for:)`): the command it
+    /// runs, shown with a second tap to run it before anything a plugin
+    /// declared is executed, or, for one that runs nothing ("Start Docker
+    /// Desktop…"), what to fix, shown before its check starts.
+    var repairGuidance: (text: String, isCommand: Bool)? = nil
     var repairStatus: String? = nil
     var onRepair: (() -> Void)? = nil
     /// A repair with its own control (GitHub repository access), shown in
@@ -201,7 +203,7 @@ struct CapabilityRailRow: View {
                         .foregroundStyle(.secondary)
                 } else if let repairVerb, let onRepair {
                     Button(repairVerb) {
-                        if repairCommand == nil { onRepair() } else { isConfirmingCommand.toggle() }
+                        if repairGuidance == nil { onRepair() } else { isConfirmingCommand.toggle() }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -209,15 +211,16 @@ struct CapabilityRailRow: View {
                     .accessibilityIdentifier("CapabilityRailRepairButton")
                 }
             }
-            if isConfirmingCommand, repairStatus == nil, let repairCommand, let onRepair {
+            if isConfirmingCommand, repairStatus == nil, let repairGuidance, let onRepair {
                 HStack(spacing: 6) {
-                    Text(repairCommand)
-                        .font(.system(size: 11, design: .monospaced))
+                    Text(repairGuidance.text)
+                        .font(repairGuidance.isCommand ? .system(size: 11, design: .monospaced) : Stanford.caption(11))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
-                        .lineLimit(2)
+                        .lineLimit(repairGuidance.isCommand ? 2 : nil)
+                        .fixedSize(horizontal: false, vertical: !repairGuidance.isCommand)
                     Spacer(minLength: 4)
-                    Button("Run in Terminal") {
+                    Button(repairGuidance.isCommand ? "Run in Terminal" : "Check now") {
                         isConfirmingCommand = false
                         onRepair()
                     }
@@ -227,6 +230,14 @@ struct CapabilityRailRow: View {
                 .padding(.leading, CapabilityRailLayout.leadingIconFrame + CapabilityRailLayout.leadingIconSpacing)
             }
         }
+    }
+
+    /// The rail's guidance for `repair`: a Terminal repair's command, or its
+    /// prose when it runs none (`PluginsSurfacePresentation.repairGuidance`).
+    /// Nil for a repair with its own flow (a page, a form, a code).
+    static func repairGuidance(for repair: RepairAction?) -> (text: String, isCommand: Bool)? {
+        guard let repair, repair.strategy == .terminal else { return nil }
+        return PluginsSurfacePresentation.repairGuidance(repair)
     }
 
     private var rowButton: some View {
