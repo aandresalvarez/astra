@@ -38,6 +38,9 @@ enum PluginUpdateService {
         case refusedByWorkspace(workspace: String, reason: String)
         case secretCopyFailed(component: String, key: String)
         case ambiguousRename(component: String)
+        /// A component takes over one the activation still holds beside it:
+        /// two independently owned states can't merge.
+        case renameIntoKnownComponent(component: String, predecessor: String)
         /// A secret setting the definition declares again still has an old
         /// value waiting to be cleared from the Keychain.
         case secretCleanupPending(key: String)
@@ -54,6 +57,8 @@ enum PluginUpdateService {
                 "\(workspace) can't take this version: \(reason)"
             case .secretCopyFailed(let component, let key):
                 "Couldn't move the saved \(key) of \(component) to the new version."
+            case .renameIntoKnownComponent(let component, let predecessor):
+                "\(component) takes over \(predecessor), but this workspace already has \(component) with its own settings, accounts and secrets, so the update can't merge them."
             case .ambiguousRename(let component):
                 "\(component) takes over more than one component this workspace still has settings for, so the update can't tell whose to keep."
             case .secretCleanupPending(let key):
@@ -449,6 +454,20 @@ enum PluginUpdateService {
                 return result
             }
             throw UpdateError.ambiguousRename(component: new)
+        }
+        // A predecessor whose successor the activation already knows as a
+        // component of its own (A and B, then B replaces A): moving A's state
+        // onto B would merge two owners and lose one's secret. Nothing moves;
+        // Update refuses, naming them, and the automatic pass leaves it awaiting.
+        if let (old, new) = renames.sorted(by: { $0.key < $1.key }).first(where: { old, new in
+            old != new && known.contains(old) && !currentSet.contains(old) && known.contains(new)
+        }) {
+            guard mode == .release else {
+                result.withheld = [new]
+                result.marked = WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
+                return result
+            }
+            throw UpdateError.renameIntoKnownComponent(component: new, predecessor: old)
         }
 
         // A rename destination whose namespace is still journaled for

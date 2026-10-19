@@ -296,6 +296,21 @@ enum CapabilityPackageValidator {
         for problem in PluginUpdateService.replacesProblems(in: package) {
             issues.append(issue(.blocker, .invalidComponentIdentity, "Invalid replaces", problem))
         }
+        // Against the installed version: a component that takes over one
+        // the installed version declares beside it would merge two owners.
+        if let installed = installedPackages.first(where: { $0.id == package.id }) {
+            let before = Set(PluginUpdateService.componentIDs(of: installed))
+            for (old, new) in PluginUpdateService.renames(in: package).sorted(by: { $0.key < $1.key })
+            where old != new && before.contains(old) && before.contains(new) {
+                issues.append(issue(
+                    .blocker,
+                    .invalidComponentIdentity,
+                    "Rename into an existing component",
+                    "\(new) replaces \(old), but the installed version has both: their settings, accounts and secrets can't be merged.",
+                    component: new
+                ))
+            }
+        }
 
         if !isValidPackageIDLiteral(rawID) {
             issues.append(issue(

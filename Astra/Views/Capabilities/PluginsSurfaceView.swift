@@ -111,6 +111,17 @@ struct PluginsSurfaceView: View {
                 [input], query: ""
             ).allRows.first ?? placeholderRow(package))
         }
+        // An activation whose plugin the library no longer has is listed
+        // too, so it can be removed (`CapabilityUninstaller.forgetMissing`).
+        let libraryIDs = Set((catalog.packages + PluginCatalog.builtInPackages).map(\.id))
+        for activation in WorkspaceCapabilityActivation.activations(of: workspace)
+        where !activation.isDeleted && !libraryIDs.contains(activation.pluginID) && rows[activation.pluginID] == nil {
+            let input = PluginsSurfacePresentation.missingInput(pluginID: activation.pluginID, isEnabled: activation.isEnabled)
+            inputs.append(input)
+            rows[activation.pluginID] = PluginRow(package: input.package, activation: activation, display: PluginsSurfacePresentation.makeState(
+                [input], query: ""
+            ).allRows.first ?? placeholderRow(input.package))
+        }
         return (PluginsSurfacePresentation.makeState(inputs, query: query), rows)
     }
 
@@ -548,7 +559,7 @@ struct PluginsSurfaceView: View {
                 Button(copy.verb, role: .destructive) {
                     confirming = nil
                     switch confirmation {
-                    case .remove: remove(row.package)
+                    case .remove: remove(row.package, missing: row.display.isMissing)
                     case .deleteAccount: if let account { deleteAccount(account) }
                     }
                 }
@@ -577,10 +588,14 @@ struct PluginsSurfaceView: View {
         onCatalogChanged()
     }
 
-    private func remove(_ package: PluginPackage) {
+    private func remove(_ package: PluginPackage, missing: Bool = false) {
         errorMessage = nil
         do {
-            try CapabilityCatalogActionService().remove(package, modelContext: modelContext)
+            if missing {
+                try CapabilityCatalogActionService().forgetMissing(pluginID: package.id, modelContext: modelContext)
+            } else {
+                try CapabilityCatalogActionService().remove(package, modelContext: modelContext)
+            }
             expanded.remove(package.id)
             catalog.loadApprovedCapabilities(announceLibraryMutations: false)
             onCatalogChanged()
