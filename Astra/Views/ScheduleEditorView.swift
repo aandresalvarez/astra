@@ -49,10 +49,7 @@ struct ScheduleEditorView: View {
     private var globalSkills: [Skill]
 
     private var availableSkills: [Skill] {
-        let workspaceSkills = workspace.skills.filter { !$0.isGlobal }
-        let enabledIDs = Set(workspace.enabledGlobalSkillIDs)
-        let enabledGlobals = globalSkills.filter { enabledIDs.contains($0.id.uuidString) }
-        return (workspaceSkills + enabledGlobals).sorted { $0.name < $1.name }
+        WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills)
     }
 
     private let budgetPresets = TaskExecutionDefaults.budgetPresets

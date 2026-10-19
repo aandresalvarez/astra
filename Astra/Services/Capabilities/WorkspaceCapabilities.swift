@@ -67,6 +67,13 @@ struct WorkspaceCapabilities {
         return uniqueSkills(ambient + enabledPackageSkills)
     }
 
+    /// The skills a routine or a template's defaults can name: the ones the
+    /// scheduler resolves when the routine fires, plugin skills included, so
+    /// nothing offered for selection drops out of the run.
+    static func routineSkills(in workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
+        WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills).activeSkills
+    }
+
     var workspaceConnectors: [Connector] {
         sortedConnectors(workspace.connectors.filter { !$0.isGlobal })
     }

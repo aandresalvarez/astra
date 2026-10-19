@@ -2174,10 +2174,8 @@ struct TemplateEditorView: View {
     private var globalSkills: [Skill]
 
     private var availableSkills: [Skill] {
-        let workspaceSkills = template.workspace?.skills ?? []
-        let enabledIDs = Set(template.workspace?.enabledGlobalSkillIDs ?? [])
-        let enabledGlobals = globalSkills.filter { enabledIDs.contains($0.id.uuidString) }
-        return (workspaceSkills.filter { !$0.isGlobal } + enabledGlobals).sorted { $0.name < $1.name }
+        guard let workspace = template.workspace else { return [] }
+        return WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills)
     }
 
     enum TemplatePhase: String, CaseIterable {
