@@ -114,6 +114,8 @@ final class PluginRepairCoordinator: ObservableObject {
     /// Re-runs the component's check exactly as the health check does.
     nonisolated static func liveCheck(_ repair: RepairAction) async -> Bool {
         guard let binary = repair.checkBinary else { return true }
+        // Only a read-only status check is run (`HealthCheckPolicy`).
+        guard HealthCheckPolicy.isReadOnly(binary: binary, arguments: repair.checkArguments ?? ["--version"]) else { return false }
         // With the stopped run's variables, the check runs the CLI as that
         // run did: a token the task projected, not ASTRA's own login.
         if let environment = repair.checkEnvironment, !environment.isEmpty {

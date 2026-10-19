@@ -466,10 +466,10 @@ struct OnboardingWizardTests {
         #expect(source.testBind(redcap, toPlugin: "redcap-workflow"))
 
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "redcap-workflow" })
-        let inputs = CapabilitySetupCopier(secretStore: MockSecretStore()).installationInputs(
+        let inputs = PluginSetupInputs.flattened(CapabilitySetupCopier(secretStore: MockSecretStore()).installationInputs(
             for: package,
             from: source
-        )
+        ), for: package.connectors)
 
         #expect(inputs.credentialInputs["REDCAP_API_TOKEN"] == "legacy-token")
         #expect(inputs.configInputs["REDCAP_API_URL"] == "https://redcap.legacy.edu/api/")
@@ -692,11 +692,11 @@ struct OnboardingWizardTests {
         #expect(summary.selectedPackageIDs == ["jira-workflow"])
 
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
-        let inputs = CapabilitySetupCopier(secretStore: store).installationInputs(
+        let inputs = PluginSetupInputs.flattened(CapabilitySetupCopier(secretStore: store).installationInputs(
             for: package,
             from: source,
             globalConnectors: [jira]
-        )
+        ), for: package.connectors)
 
         #expect(inputs.baseURLOverrides["Jira"] == "https://shared.atlassian.net")
         #expect(inputs.configInputs["JIRA_BASE_URL"] == "https://shared.atlassian.net")

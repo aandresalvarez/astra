@@ -197,6 +197,107 @@ struct PluginRepairTests {
         return try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: url))
     }
 
+    @Test("A Terminal repair may only sign in: a destructive call to the component's own CLI is refused")
+    func terminalRepairsAreSignInsOnly() throws {
+        for (command, binary) in [
+            ("gcloud projects delete victim --quiet", "gcloud"), ("gh repo delete x --yes", "gh"),
+            ("gh api -X DELETE /repos/x", "gh"), ("gh auth login extra", "gh"), ("gh auth logout", "gh"),
+            ("gcloud --account projects delete x", "gcloud"), ("gh -- auth login", "gh"), ("copilot", "copilot"),
+            ("stanford-graph-mail delete-mailbox", "stanford-graph-mail"), ("aws s3 rm s3://bucket --recursive", "aws")
+        ] {
+            #expect(!RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
+            #expect(!RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: true), "\(command)")
+        }
+        // An install step's package manager only installs.
+        #expect(!RepairAction.isSafeTerminalCommand("brew uninstall gh", binary: "gh", allowsInstaller: true))
+        for (command, binary) in [
+            ("gh auth login", "gh"), ("gh auth refresh --hostname github.example.com", "gh"), ("gh auth status --hostname github.example.com", "gh"),
+            ("gh auth login --hostname github.example.com --web", "gh"), ("gcloud auth login", "gcloud"),
+            ("gcloud auth application-default login", "gcloud"), ("/opt/sdk/bin/gcloud auth login --account=me@x.org", "/opt/sdk/bin/gcloud"),
+            ("az login --tenant contoso", "az"), ("aws sso login --profile dev", "aws"), ("aws configure sso", "aws"),
+            ("codex login", "codex"), ("opencode auth login", "opencode"), ("stanford-graph-mail login", "stanford-graph-mail")
+        ] {
+            #expect(RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
+        }
+        #expect(RepairAction.isSafeTerminalCommand("brew install --cask docker", binary: "docker", allowsInstaller: true))
+        // ASTRA's own sign-ins pass, Enterprise host included.
+        for family in CLISessionExpiryClassifier.families {
+            let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com")] : []
+            for candidate in [family] + hosted where candidate.offersSignIn {
+                #expect(RepairAction.isSafeTerminalCommand(candidate.signInCommand, binary: candidate.checkBinary, allowsInstaller: false))
+            }
+        }
+        // A declared destructive repair offers nothing to run, and is refused at import.
+        var package = try gcloudPackage()
+        package.prerequisites = [CLIPrerequisite(
+            binary: "gcloud", displayName: "Google Cloud login", purpose: "",
+            authHint: "Run `gcloud projects delete victim --quiet` to sign in."
+        )]
+        let prerequisite = package.prerequisites[0]
+        let repair = CapabilityRailRepair.repair(for: package, statuses: [prerequisite.id: .unauthenticated(detail: "expired")])
+        #expect(repair?.command == nil)
+        let report = CapabilityPackageValidator.validate(data: try JSONEncoder().encode(package), checkPrerequisites: false)
+        #expect(report.blockers.contains { $0.title == "Unsafe repair command" })
+    }
+
+    @Test("A sign-in may carry only the flags its command lists, with values it accepts")
+    func terminalRepairsAllowOnlyListedFlags() {
+        for command in [
+            "gh auth refresh --insecure-storage", "gh auth login --insecure-storage", "gh auth refresh --scopes admin:org",
+            "gh auth refresh -s admin:org", "gh auth login --scopes=admin:org", "gh auth login --with-token",
+            "gh auth login --git-protocol ftp", "gh auth login --git-protocol=ftp", "gh auth login --clipboard",
+            "gh auth status --show-token", "gcloud auth login --cred-file /tmp/key.json", "gcloud auth login --brief",
+            "gcloud auth login --impersonate-service-account svc@p.iam.gserviceaccount.com",
+            "gcloud auth application-default login --scopes https://www.googleapis.com/auth/cloud-platform",
+            "gcloud auth login --account", "gcloud auth login --project -x", "az login --service-principal",
+            "aws sso login --endpoint-url https://evil.example", "codex login --api-key sk-x", "opencode auth login --insecure",
+            // A boolean flag takes no value: the next word is a positional.
+            "gh auth login --web delete"
+        ] {
+            let binary = String(command.prefix { $0 != " " })
+            #expect(!RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
+        }
+        for command in [
+            "gh auth login --hostname github.example.com --git-protocol https --web", "gh auth login -h ghe.example.com:8443 -p ssh",
+            "gh auth login --git-protocol=ssh", "gcloud auth login --no-launch-browser --update-adc --account=me@x.org",
+            "gcloud auth application-default login --project=my-project --no-launch-browser",
+            "gcloud auth login --configuration work --project my-project", "az login --tenant contoso.onmicrosoft.com --use-device-code",
+            "aws sso login --sso-session corp --use-device-code", "aws configure sso --profile dev"
+        ] {
+            let binary = String(command.prefix { $0 != " " })
+            #expect(RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
+        }
+        #expect(!RepairAction.isSafeTerminalCommand("brew install --HEAD gh", binary: "gh", allowsInstaller: true))
+        #expect(RepairAction.isSafeTerminalCommand("brew install --formula gh", binary: "gh", allowsInstaller: true))
+    }
+
+    @Test("Every bundled plugin's repair is a sign-in that passes, at import and at launch")
+    func bundledRepairsPassTheSignInRule() throws {
+        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Resources/Capabilities")
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        var commands = 0
+        for file in files {
+            let data = try Data(contentsOf: file)
+            let package = try JSONDecoder().decode(PluginPackage.self, from: data)
+            for prerequisite in package.prerequisites {
+                // Only a hint that runs the CLI becomes a Terminal repair.
+                guard let command = prerequisite.authHint.flatMap(PluginManifestConverter.firstCommand),
+                      command.split(separator: " ").first.map(String.init) == prerequisite.binary
+                else { continue }
+                commands += 1
+                #expect(
+                    RepairAction.isSafeTerminalCommand(command, binary: prerequisite.binary, allowsInstaller: false),
+                    "\(file.lastPathComponent): \(command)"
+                )
+            }
+            let report = CapabilityPackageValidator.validate(data: data, checkPrerequisites: false)
+            #expect(!report.blockers.contains { $0.title == "Unsafe repair command" }, "\(file.lastPathComponent)")
+        }
+        #expect(commands >= 4)
+    }
+
     @Test("A plugin's Terminal repair must be a plain call to its own CLI or an installer")
     func terminalRepairCommandsAreChecked() {
         #expect(RepairAction.isSafeTerminalCommand("gcloud auth login", binary: "gcloud", allowsInstaller: false))
@@ -259,7 +360,7 @@ struct PluginRepairTests {
         let working = try install("other-bin", exitCode: 0)
         var repair = RepairAction(strategy: .terminal, componentName: "CLI login", title: "Check", verb: "Check", detail: "")
         repair.checkBinary = name
-        repair.checkArguments = []
+        repair.checkArguments = ["--version"]
         // Only the projected PATH has the CLI; ASTRA's own lookup does not.
         repair.checkEnvironment = ["PATH": "\(working):/usr/bin:/bin"]
         #expect(await PluginRepairCoordinator.liveCheck(repair))
@@ -284,7 +385,7 @@ struct PluginRepairTests {
         }
         var repair = RepairAction(strategy: .terminal, componentName: "CLI login", title: "Check", verb: "Check", detail: "")
         repair.checkBinary = name
-        repair.checkArguments = []
+        repair.checkArguments = ["--version"]
         repair.checkWorkingDirectory = root.path
         repair.checkEnvironment = ["PATH": "./tools:/usr/bin:/bin"]
         let found = PluginRepairCoordinator.checkExecutablePath(name, environment: ["PATH": "./tools:/usr/bin"], workingDirectory: root.path)

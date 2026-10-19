@@ -4805,9 +4805,7 @@ struct WorkspaceSetupForm: View {
             return nil
         }
         switch status {
-        case .healthy:
-            return nil
-        case .unverified:
+        case .healthy, .unverified:
             return nil
         case .missingBinary:
             return "\(prerequisite.displayName) is not installed"
@@ -4817,7 +4815,7 @@ struct WorkspaceSetupForm: View {
             return "\(prerequisite.displayName) needs authorization (\(detail))"
         case .unresponsive(let detail):
             return "\(prerequisite.displayName) failed (\(detail))"
-        case .none:
+        case .notChecked, .none:
             return isProbingCapability(packageID)
                 ? "Checking \(prerequisite.displayName)"
                 : "\(prerequisite.displayName) not checked"
@@ -4841,6 +4839,7 @@ struct WorkspaceSetupForm: View {
             return "Authorize"
         case .unresponsive:
             return "Check CLI"
+        case .notChecked: return "Not checked"
         case .none:
             return "Check"
         }
@@ -4866,6 +4865,7 @@ struct WorkspaceSetupForm: View {
             return "\(prerequisite.displayName) needs authorization: \(detail). Open Manage Capabilities to approve access."
         case .unresponsive(let detail):
             return "\(prerequisite.displayName) did not respond: \(detail)"
+        case .notChecked(let detail): return "\(prerequisite.displayName): \(detail)."
         case .none:
             return "Re-check \(prerequisite.displayName)."
         }

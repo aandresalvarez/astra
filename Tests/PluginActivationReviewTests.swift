@@ -33,7 +33,7 @@ struct PluginActivationReviewTests {
         #expect(!runs(env.workspace))
         #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: env.workspace, in: library).allSatisfy { $0.id != v2.id })
 
-        try PluginUpdateService.reconcileAll(modelContext: env.context, packages: library, mode: .release)
+        try PluginUpdateService.reconcileAll(modelContext: env.context, packages: library, mode: .release, approvalRecords: PluginOperationsTests.approvals(library))
         #expect(activation.recordedVersion == "2.0.0")
         #expect(runs(env.workspace))
         #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: env.workspace, in: library).contains { $0.id == v2.id })
@@ -145,14 +145,14 @@ struct PluginActivationReviewTests {
         try library.install(v2, sourceMetadata: .builtIn())
         let packages = library.installedPackages()
         #expect(throws: PluginUpdateService.UpdateError.secretCleanupPending(key: "API_TOKEN")) {
-            try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsRefusingDeletes.self)
+            try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsRefusingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
         }
-        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .automatic, secrets: SecretsRefusingDeletes.self)
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .automatic, secrets: SecretsRefusingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
         #expect(activation.recordedVersion == "1.0.0")
         #expect(PluginRuntimeProjection.project(workspace: workspace, packages: packages).skills.isEmpty)
         #expect(try outbox.pendingKeys() == [.init(key: "API_TOKEN", skillID: namespace)])
 
-        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsAcceptingDeletes.self)
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsAcceptingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
         #expect(activation.recordedVersion == "2.0.0")
         #expect(try outbox.pendingKeys().isEmpty)
     }
@@ -188,14 +188,14 @@ struct PluginActivationReviewTests {
         try library.install(v2, sourceMetadata: .builtIn())
         let packages = library.installedPackages()
         #expect(throws: PluginUpdateService.UpdateError.secretCleanupPending(key: "skill:renamed-agent")) {
-            try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsRefusingDeletes.self)
+            try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsRefusingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
         }
-        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .automatic, secrets: SecretsRefusingDeletes.self)
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .automatic, secrets: SecretsRefusingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
         #expect(activation.recordedVersion == "1.0.0")
         #expect(activation.knownComponentIDs.contains("skill:report-agent"))
         #expect(try outbox.entries() == [destination.uuidString])
 
-        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsAcceptingDeletes.self)
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsAcceptingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
         #expect(activation.recordedVersion == "2.0.0")
         #expect(!(try outbox.entries()).contains(destination.uuidString))
     }
@@ -318,13 +318,18 @@ struct PluginActivationReviewTests {
         // A_TOKEN is copied, B_TOKEN can't be, and A_TOKEN's copy can't be deleted.
         #expect(throws: PluginUpdateService.UpdateError.credentialRestoreFailed(keys: ["A_TOKEN"])) {
             try PluginUpdateService.reconcileAll(
-                modelContext: env.context, packages: env.library.installedPackages(), mode: .release, secrets: CopyFailingSecrets.self
+                modelContext: env.context, packages: env.library.installedPackages(), mode: .release, secrets: CopyFailingSecrets.self,
+                approvalRecords: PluginOperationsTests.approvals(env.library.installedPackages())
             )
         }
         #expect(activation.recordedVersion == "1.0.0")
     }
 
-    @Test("A setting whose save fails and whose Keychain value can't be put back says so")
+    /// A cleared secret leaves the Keychain before the record does; a save
+    /// that fails after puts the value back, and one it can't is reported.
+    /// (A set never gets this far: its record is saved before the write,
+    /// `PluginSecretSettingWriterTests`.)
+    @Test("A cleared setting whose save fails and whose Keychain value can't be put back says so")
     func settingRollbackReportsUnrestoredSecret() throws {
         let env = try Fixtures.Environment()
         var package = Fixtures.package(version: "1.0.0")
@@ -333,7 +338,7 @@ struct PluginActivationReviewTests {
         try env.install(package)
         #expect(throws: PluginOperations.OperationError.secretRestoreFailed(key: "API_TOKEN")) {
             try PluginOperations.setSetting(
-                "API_TOKEN", to: "new", of: package.skills[0], pluginID: package.id, in: env.workspace, modelContext: env.context,
+                "API_TOKEN", to: "", of: package.skills[0], pluginID: package.id, in: env.workspace, modelContext: env.context,
                 secrets: UnrestorableSecrets.self, persist: { _, _ in throw CocoaError(.fileWriteUnknown) }
             )
         }
@@ -394,7 +399,7 @@ struct PluginActivationReviewTests {
         #expect(PluginActivationRecord(activation).awaitingUpdate)
         #expect(WorkspaceConfigManager.installedPluginRefs(for: env.workspace, sourceIdentity: { _, _ in nil }).first { $0.id == v1.id }?.awaitingUpdate == true)
 
-        try PluginUpdateService.reconcileAll(modelContext: env.context, packages: library, mode: .release)
+        try PluginUpdateService.reconcileAll(modelContext: env.context, packages: library, mode: .release, approvalRecords: PluginOperationsTests.approvals(library))
         #expect(!activation.awaitingUpdate)
         #expect(runs())
     }
@@ -623,14 +628,14 @@ private enum CopyFailingSecrets: SkillSecretPersisting {
     static func deleteAllSecrets(skillID: UUID) {}
 }
 
-/// Skill secrets whose every value is "previous": a new value saves, the
-/// previous one can't be written back, nothing can be deleted.
+/// Skill secrets whose every value is "previous": it can be deleted, but
+/// not written back.
 private enum UnrestorableSecrets: SkillSecretPersisting {
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? { "previous" }
     static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool {
         value != "previous"
     }
-    static func deleteSecret(key: String, skillID: UUID) -> Bool { false }
+    static func deleteSecret(key: String, skillID: UUID) -> Bool { true }
     static func secretExists(key: String, skillID: UUID) -> Bool { true }
     static func deleteAllSecrets(skillID: UUID) {}
 }

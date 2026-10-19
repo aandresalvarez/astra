@@ -383,6 +383,19 @@ enum CapabilityPackageValidator {
             }
         }
 
+        // Two servers of one package with one ID: the projection keeps only
+        // the first, so the other's tools would silently be missing.
+        let serverIDs = package.mcpServers.map { $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        for duplicate in Dictionary(grouping: serverIDs, by: { $0 }).filter({ $0.value.count > 1 }).keys.sorted() {
+            issues.append(issue(
+                .blocker,
+                .duplicateMCPServerID,
+                "Duplicate MCP server ID",
+                "Two MCP servers in \(package.name) share the ID \(duplicate); give one of them its own.",
+                component: duplicate
+            ))
+        }
+
         // A setting is stored under `componentID#KEY`
         // (`PluginActivation.settingKey`) and split at the last `#`, so a key
         // containing one would be read back under the wrong component.
@@ -544,11 +557,7 @@ enum CapabilityPackageValidator {
                     component: name
                 ))
             }
-            guard let reason = ConnectorSecurityPolicy.credentialTransportViolation(
-                baseURL: connector.baseURL,
-                authMethod: connector.authMethod,
-                credentialKeys: connector.credentialHints.map(\.key)
-            ) else {
+            guard let reason = PluginConnectorFieldTrust.credentialTransportViolation(of: connector, in: package) else {
                 continue
             }
             let name = displayName(connector.name, fallback: connector.serviceType)
@@ -699,6 +708,20 @@ enum CapabilityPackageValidator {
                 ))
                 continue
             }
+            // The check runs on every scan with no click, so it may only read
+            // status (`HealthCheckPolicy`): refused here, as the checker never
+            // runs it.
+            guard HealthCheckPolicy.isReadOnly(binary: prerequisite.binary, arguments: prerequisite.livenessArgs) else {
+                let check = ([prerequisite.binary] + prerequisite.livenessArgs).joined(separator: " ")
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe health check",
+                    "\(prerequisite.displayName) checks itself with `\(check)`; a check may only run a read-only status command, such as `--version`.",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
             // The install link becomes a repair button: a web page only.
             if let url = prerequisite.installURL, !RepairAction.isSafeRepairURL(url) {
                 issues.append(issue(
@@ -706,6 +729,23 @@ enum CapabilityPackageValidator {
                     .unsafeLocalTool,
                     "Unsafe install link",
                     "\(prerequisite.displayName) links to \(url.scheme ?? "a non-web") address; install links must be https.",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
+            // A sign-in hint whose first command runs the CLI becomes its Sign
+            // in button, so it may only sign in (`TerminalRepairPolicy`):
+            // refused here at import, as the button refuses it at launch. A
+            // hint naming another program (`stanford-graph-mail login` for
+            // `pwsh`) is guidance and offers no button.
+            if let command = prerequisite.authHint.flatMap(PluginManifestConverter.firstCommand),
+               command.split(whereSeparator: \.isWhitespace).first.map(String.init) == prerequisite.binary,
+               !RepairAction.isSafeTerminalCommand(command, binary: prerequisite.binary, allowsInstaller: false) {
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe repair command",
+                    "\(prerequisite.displayName) offers `\(command)` as its sign-in; a repair may only run \(prerequisite.binary)'s own sign-in command.",
                     component: prerequisite.displayName
                 ))
                 continue

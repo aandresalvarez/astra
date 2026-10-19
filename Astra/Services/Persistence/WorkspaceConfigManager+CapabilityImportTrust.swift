@@ -41,6 +41,11 @@ extension WorkspaceConfigManager {
         /// imported activation from another source (or a local one where
         /// the copy here came from a source) stays off like another copy.
         public var installedSources: [String: String]
+        /// Each installed package's content digest (`PluginDefinitionDigest`),
+        /// which activations record now: one recorded against it accepted
+        /// this definition, from whichever copy. `installedDigests` judges a
+        /// file written before content digests.
+        public var installedContentDigests: [String: String]
         /// Each installed package's connector components, by component ID.
         /// An imported account is bound only to a component it is an account
         /// of (`acceptsAccount`).
@@ -62,6 +67,7 @@ extension WorkspaceConfigManager {
             availablePackIDs: Set<String>,
             declaredComponentIDs: [String: Set<String>] = [:],
             installedDigests: [String: String] = [:],
+            installedContentDigests: [String: String] = [:],
             installedSources: [String: String] = [:],
             connectorComponents: [String: [String: ConnectorComponent]] = [:]
         ) {
@@ -71,6 +77,7 @@ extension WorkspaceConfigManager {
             self.declaredComponentIDs = declaredComponentIDs
             self.installedDigests = installedDigests
             self.installedSources = installedSources
+            self.installedContentDigests = installedContentDigests
             self.connectorComponents = connectorComponents
         }
 
@@ -80,8 +87,12 @@ extension WorkspaceConfigManager {
         /// own service. A custom or unnamed service also needs the
         /// component's name. Projection and readiness trust a binding, so the
         /// file's word that a row is an account is never enough.
-        public func acceptsAccount(_ connector: Connector, componentID: String, pluginID: String) -> Bool {
-            guard !connector.isGlobal,
+        /// `createdByImport` marks a shared row this same import created for
+        /// another workspace (`ImportSession`): created, so it may be bound.
+        public func acceptsAccount(
+            _ connector: Connector, componentID: String, pluginID: String, createdByImport: Bool = false
+        ) -> Bool {
+            guard createdByImport || !connector.isGlobal,
                   let component = connectorComponents[pluginID]?[componentID] else { return false }
             func normalized(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             let service = normalized(component.serviceType)
@@ -148,7 +159,8 @@ extension WorkspaceConfigManager {
     static func isAcceptedCopy(_ ref: InstalledPluginRef, trust: CapabilityImportTrustPolicy) -> Bool {
         guard case .validate(let verifier) = trust else { return true }
         guard let digest = ref.digest, !digest.isEmpty else { return false }
-        return verifier.installedDigests[ref.id] == digest && isSameSource(ref, verifier: verifier)
+        let accepted = verifier.installedContentDigests[ref.id] == digest || verifier.installedDigests[ref.id] == digest
+        return accepted && isSameSource(ref, verifier: verifier)
     }
 
     /// The file's source for the activation against the installed copy's;

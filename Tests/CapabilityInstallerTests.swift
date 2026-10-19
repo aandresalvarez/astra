@@ -302,6 +302,69 @@ struct CapabilityInstallerTests {
         #expect(!serverAccount.configValues.contains("ENG"))
     }
 
+    /// Two connectors of one plugin that declare the same fields, each with
+    /// its own account values in the source workspace: copying the setup
+    /// gives each component its own, never one value for both.
+    @Test("Copied setup keeps each same-key connector's own values")
+    func copiedSetupKeepsEachComponentsOwnValues() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let source = Workspace(name: "Source", primaryPath: "/tmp/capability-copy-source")
+        let target = Workspace(name: "Target", primaryPath: "/tmp/capability-copy-target")
+        context.insert(source)
+        context.insert(target)
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let index = try #require(package.connectors.firstIndex { $0.configHints.contains { $0.key == "JIRA_PROJECTS" } })
+        var server = package.connectors[index]
+        server.id = "jira-server"
+        package.connectors.insert(server, at: index + 1)
+        let cloud = package.connectors[index]
+        let installer = CapabilityInstaller(library: library)
+        try installer.install(
+            package, into: source, modelContext: context,
+            configInputs: [PluginSetupInputs.key("JIRA_PROJECTS", component: cloud.setupComponentID): "ENG"],
+            baseURLOverrides: [cloud.setupComponentID: "https://cloud.atlassian.net", server.setupComponentID: "https://jira.example.edu"]
+        )
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: source))
+        let store = MockSecretStore()
+        let cloudAccount = try #require(activation.accounts(forComponent: cloud.setupComponentID).first)
+        let serverAccount = try #require(activation.accounts(forComponent: server.setupComponentID).first)
+        for (account, token) in [(cloudAccount, "cloud-token"), (serverAccount, "server-token")] {
+            for entityID in KeychainSecretStore.connectorEntityIDs(for: account) {
+                store.save(key: "JIRA_API_TOKEN", value: token, entityID: entityID, label: nil)
+            }
+        }
+
+        let copied = CapabilitySetupCopier(secretStore: store).installationInputs(for: package, from: source)
+        #expect(copied.credentialInputs[PluginSetupInputs.key("JIRA_API_TOKEN", component: cloud.setupComponentID)] == "cloud-token")
+        #expect(copied.credentialInputs[PluginSetupInputs.key("JIRA_API_TOKEN", component: server.setupComponentID)] == "server-token")
+        #expect(copied.credentialInputs["JIRA_API_TOKEN"] == nil)
+        #expect(copied.configInputs[PluginSetupInputs.key("JIRA_PROJECTS", component: cloud.setupComponentID)] == "ENG")
+        #expect(copied.configInputs["JIRA_PROJECTS"] == nil)
+        #expect(copied.baseURLOverrides == [
+            cloud.setupComponentID: "https://cloud.atlassian.net", server.setupComponentID: "https://jira.example.edu"
+        ])
+        // Onboarding's flat view leaves out the token the two hold differently.
+        let flat = PluginSetupInputs.flattened(copied, for: package.connectors)
+        #expect(flat.credentialInputs["JIRA_API_TOKEN"] == nil)
+        #expect(flat.configInputs["JIRA_PROJECTS"] == "ENG")
+
+        // Added from the copy, each component's account gets its own.
+        try installer.install(
+            package, into: target, modelContext: context,
+            configInputs: copied.configInputs, baseURLOverrides: copied.baseURLOverrides
+        )
+        let added = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: target))
+        let addedCloud = try #require(added.accounts(forComponent: cloud.setupComponentID).first)
+        let addedServer = try #require(added.accounts(forComponent: server.setupComponentID).first)
+        #expect(addedCloud.baseURL == "https://cloud.atlassian.net" && addedServer.baseURL == "https://jira.example.edu")
+        #expect(addedCloud.configValue("JIRA_PROJECTS") == "ENG")
+        #expect(!addedServer.configValues.contains("ENG"))
+    }
+
     @Test("A component reads its own setup over the shared one, never another component's")
     func setupInputViewsArePerComponent() {
         let inputs = [
@@ -312,21 +375,27 @@ struct CapabilityInstallerTests {
         #expect(PluginSetupInputs.view(inputs, component: "connector:jira:a") == ["SHARED": "s", "TOKEN": "a"])
         #expect(PluginSetupInputs.view(inputs, component: "connector:jira:c") == ["SHARED": "s"])
 
-        // Copied setup (shared keys) fills each connector that declares the field.
+        // Copied setup (keyed by component) flattens to the shared keys
+        // onboarding holds, leaving out what two components hold differently.
         let first = PluginConnector(name: "Jira", serviceType: "jira", icon: "", description: "", baseURL: "", authMethod: "bearer",
                                     credentialHints: [.init(key: "TOKEN", hint: "")], configHints: [], notes: "")
         var second = first
         second.id = "jira-server"
-        let own = PluginSetupInputs.perComponent(
-            OnboardingCapabilityInstallationInputs(credentialInputs: ["TOKEN": "t"], configInputs: ["DATASET": "d"], baseURLOverrides: ["Jira": "https://x"]),
-            for: [first, second]
-        )
-        #expect(own.credentialInputs == [
-            PluginSetupInputs.key("TOKEN", component: first.setupComponentID): "t",
-            PluginSetupInputs.key("TOKEN", component: second.setupComponentID): "t"
-        ])
-        #expect(own.configInputs == ["DATASET": "d"])
-        #expect(own.baseURLOverrides == [first.setupComponentID: "https://x", second.setupComponentID: "https://x"])
+        let flat = PluginSetupInputs.flattened(OnboardingCapabilityInstallationInputs(
+            credentialInputs: [
+                PluginSetupInputs.key("TOKEN", component: first.setupComponentID): "a",
+                PluginSetupInputs.key("TOKEN", component: second.setupComponentID): "b",
+                PluginSetupInputs.key("EMAIL", component: first.setupComponentID): "e"
+            ],
+            configInputs: [
+                PluginSetupInputs.key("DATASET", component: first.setupComponentID): "d",
+                PluginSetupInputs.key("DATASET", component: second.setupComponentID): "d"
+            ],
+            baseURLOverrides: [first.setupComponentID: "https://x", second.setupComponentID: "https://y"]
+        ), for: [first, second])
+        #expect(flat.credentialInputs == ["EMAIL": "e"])
+        #expect(flat.configInputs == ["DATASET": "d"])
+        #expect(flat.baseURLOverrides.isEmpty)
     }
 
     @Test("configured source values stay scoped to their workspace")

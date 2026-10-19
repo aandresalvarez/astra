@@ -18,8 +18,11 @@ public enum StartupCredentialMigrationService {
     @MainActor
     public static func migrate(modelContext: ModelContext) {
         let workspaces: [Workspace]
+        // Nil when the workspaces can't be read: no mirror can be rewritten.
+        var mirroringWorkspaces: [Workspace]?
         do {
             workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
+            mirroringWorkspaces = workspaces
         } catch {
             workspaces = []
             logFetchFailure(scope: "workspace_connectors", error: error)
@@ -44,6 +47,11 @@ public enum StartupCredentialMigrationService {
         }
 
         migrateConnectorCredentials(workspaces: workspaces, globalConnectors: globalConnectors)
+        moveSettingsStoredAsCredentials(
+            of: uniqueConnectors(workspaces: workspaces, globalConnectors: globalConnectors),
+            mirroredBy: mirroringWorkspaces,
+            modelContext: modelContext
+        )
         migrateSkillSecrets(skills: skills)
         // The two passes above touch the dedicated keychain once per connector
         // and once per skill, so if it cannot be opened at all this is the
@@ -62,20 +70,76 @@ public enum StartupCredentialMigrationService {
     }
 
     public static func migrateConnectorCredentials(workspaces: [Workspace], globalConnectors: [Connector] = []) {
-        var seen = Set<UUID>()
-        let connectors = workspaces.flatMap(\.connectors) + globalConnectors
-        for connector in connectors where seen.insert(connector.id).inserted {
+        for connector in uniqueConnectors(workspaces: workspaces, globalConnectors: globalConnectors) {
             connector.migrateToKeychain()
-            // A plugin setting now stored as a credential leaves the row's
-            // plain text before the mirror, which withholds it, is the only
-            // other copy.
-            connector.moveSettingsStoredAsCredentials()
             // Move any secrets older versions stored in the login keychain
             // into ASTRA's dedicated keychain. Idempotent; runs once at launch
             // (not on every Connector instantiation), enumerating by service
             // so it covers every credential/OAuth key without naming them.
             KeychainService.migrateConnectorFromLoginKeychain(connector: connector)
         }
+    }
+
+    /// Moves each plain setting a row's creator stores as a credential into
+    /// the Keychain (`Connector.moveSettingsStoredAsCredentials`), then saves
+    /// and rewrites every workspace's mirror on this thread: one an older
+    /// build wrote still holds those values, and the export now withholds
+    /// them. Which mirrors name a row (its workspace's, a skill's, an enabled
+    /// shared one, a bound account) is the export's business, so all of
+    /// them are rewritten. When the save or a rewrite fails, the rows and
+    /// the Keychain are put back as they were, so the next launch moves the
+    /// values, and rewrites the mirrors, again. With `workspaces` unknown
+    /// (nil: they couldn't be read) nothing moves: a mirror nobody rewrites
+    /// would keep the value the store no longer has. True when nothing was
+    /// left to retry.
+    @MainActor
+    @discardableResult
+    static func moveSettingsStoredAsCredentials(
+        of connectors: [Connector],
+        mirroredBy workspaces: [Workspace]?,
+        modelContext: ModelContext,
+        resolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
+        store: SecretStore = SecretStoreSeam.required,
+        rewriteMirror: ((Workspace) -> Bool)? = nil
+    ) -> Bool {
+        guard let workspaces else { return false }
+        var restorers: [() -> Void] = []
+        var writes: [ConnectorSettingSecretWrite] = []
+        for connector in connectors {
+            let row = (connector.configKeys, connector.configValues, connector.credentialKeys,
+                       connector.credentialValues, connector.updatedAt)
+            guard !connector.moveSettingsStoredAsCredentials(resolver: resolver, store: store, recording: { writes.append($0) }).isEmpty
+            else { continue }
+            restorers.append {
+                (connector.configKeys, connector.configValues, connector.credentialKeys,
+                 connector.credentialValues, connector.updatedAt) = row
+            }
+        }
+        guard !restorers.isEmpty else { return true }
+        let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
+        let saved = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+            modelContext: modelContext, auditFields: ["scope": "connector_setting_migration"]
+        )
+        let unwritten = saved ? workspaces.filter { !rewrite($0) }.count : workspaces.count
+        guard unwritten > 0 else { return true }
+        restorers.forEach { $0() }
+        let unrestored = writes.reversed().filter { !$0.undo(store: store) }.count
+        let restoreSaved = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+            modelContext: modelContext, auditFields: ["scope": "connector_setting_migration_undo"]
+        )
+        AuditLoggingSeam.required.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
+            "scope": "connector_setting",
+            "result": saved ? "mirror_rewrite_failed" : "save_failed",
+            "unwritten_mirror_count": String(unwritten),
+            "unrestored_secret_count": String(unrestored),
+            "restore_saved": String(restoreSaved)
+        ], level: .warning)
+        return false
+    }
+
+    private static func uniqueConnectors(workspaces: [Workspace], globalConnectors: [Connector]) -> [Connector] {
+        var seen = Set<UUID>()
+        return (workspaces.flatMap(\.connectors) + globalConnectors).filter { seen.insert($0.id).inserted }
     }
 
     public static func migrateSkillSecrets(skills: [Skill]) {

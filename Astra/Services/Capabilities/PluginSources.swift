@@ -108,7 +108,8 @@ struct PluginSource: Codable, Identifiable, Equatable, Sendable {
 /// `PluginSourceStore.launchedApp` only.
 enum PluginSourceMirrorIdentity: PluginSourceIdentityResolving {
     static func mirrorIdentity(pluginID: String, digest: String) -> String? {
-        PluginSourceStore.mirrorIdentity(pluginID: pluginID, digest: digest, provenance: PluginSourceStore().provenance())
+        guard let installed = CapabilityLibrary().installedPackage(id: pluginID) else { return nil }
+        return PluginSourceStore.mirrorIdentity(recordedDigest: digest, installed: installed, provenance: PluginSourceStore().provenance())
     }
 }
 
@@ -249,6 +250,18 @@ struct PluginSourceStore {
     static func mirrorIdentity(pluginID: String, digest: String, provenance: [String: Provenance]) -> String? {
         guard let record = provenance[pluginID]?.resolved(installedDigest: digest), record.names(digest) else { return nil }
         return "plugin-source:\(record.sourceID)"
+    }
+
+    /// The identity for an activation that recorded `recordedDigest`
+    /// against `installed`: a content digest (`PluginDefinitionDigest`), or
+    /// an approval digest from before content digests. Nil, local, when it
+    /// names another copy than the one installed.
+    static func mirrorIdentity(
+        recordedDigest: String, installed: PluginPackage, provenance: [String: Provenance]
+    ) -> String? {
+        let digest = PluginSourceCatalog.contentDigest(installed)
+        guard recordedDigest == digest || recordedDigest == PluginDefinitionDigest.content(of: installed) else { return nil }
+        return mirrorIdentity(pluginID: installed.id, digest: digest, provenance: provenance)
     }
 
     /// Plugin ID → provenance. An unreadable record reads as empty: no

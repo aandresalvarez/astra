@@ -108,7 +108,8 @@ struct PluginConnectorFieldTrustTests {
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
         let componentID = CapabilityResourceOrigin.componentID(for: package.connectors[0])
         WorkspaceCapabilityActivation.bind(legacy, toComponent: componentID, of: activation)
-        PluginUpdateService.syncOwnedAccounts(of: activation, to: package)
+        var copied: [PluginUpdateService.CopiedSecret] = []
+        PluginUpdateService.syncOwnedAccounts(of: activation, to: package, copied: &copied)
         #expect(account.credentialKeys == ["TRACKER_TOKEN", "TRACKER_PROJECT"])
         #expect(legacy.credentialKeys == ["TRACKER_TOKEN"])
         #expect(legacy.configValues == ["ENG-1"])
@@ -246,4 +247,219 @@ struct PluginConnectorFieldTrustTests {
         #expect(jira.configHints.map(\.key).contains("JIRA_PROJECTS"))
         #expect(bundled.keys == ["JIRA_PROJECTS"] && bundled.values == ["ENG"])
     }
+
+    /// What `store` holds for `key` in `row`'s namespaces, whatever its
+    /// keys list.
+    static func held(_ key: String, of row: Connector, in store: SecretStore) -> String? {
+        ConnectorSecretSeam.required.loadAllCredentials(keys: [key], facts: ConnectorSecretFacts(
+            id: row.id, name: row.name, serviceType: row.serviceType, baseURL: row.baseURL,
+            originPackageID: row.originPackageID, originComponentID: row.originComponentID
+        ), store: store)[key]
+    }
+
+    /// A connector that declares no credential, only a setting, over plain
+    /// HTTP: as written it needs no protected transport, but its setting is
+    /// stored as a credential, which the runtime would refuse to send.
+    @Test("A setting stored as a credential needs a protected transport at validation, catalog policy and install")
+    func storedSettingNeedsAProtectedTransport() throws {
+        var package = Self.importedPackage()
+        package.connectors[0].baseURL = "http://tracker.example.com"
+        package.connectors[0].authMethod = "none"
+        package.connectors[0].credentialHints = []
+        let connector = package.connectors[0]
+        #expect(ConnectorSecurityPolicy.credentialTransportViolation(
+            baseURL: connector.baseURL, authMethod: connector.authMethod, credentialKeys: connector.credentialHints.map(\.key)
+        ) == nil)
+        let reason = try #require(PluginConnectorFieldTrust.credentialTransportViolation(of: connector, in: package))
+
+        let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+        #expect(report.blockers.map(\.code).contains(.unsafeConnector))
+        let decision = CapabilityCatalogPolicy.decision(
+            for: package, context: CapabilityCatalogPolicyContext(currentAppVersion: SemanticVersion(1, 0, 0))
+        )
+        #expect(decision.blockers.contains(.unsafeConnector(name: connector.name, reason: reason)))
+        let env = try Fixtures.Environment()
+        #expect {
+            try env.install(package)
+        } throws: { error in
+            guard case CapabilityInstaller.InstallationError.blocked(let messages) = error else { return false }
+            return messages.contains("\(package.name) defines connector \(connector.name) with an unsafe credential transport. \(reason)")
+        }
+        #expect(env.workspace.connectors.isEmpty)
+        // A bundled plugin's own plain setting still needs none.
+        var jira = try Self.jira()
+        let index = try #require(jira.connectors.firstIndex { !$0.configHints.isEmpty })
+        jira.connectors[index].baseURL = "http://127.0.0.1:8080"
+        #expect(PluginConnectorFieldTrust.credentialTransportViolation(of: jira.connectors[index], in: jira) == nil)
+    }
+
+    /// An older third-party row holding a setting now stored as a
+    /// credential, and the mirror an older build wrote with its value.
+    @Test("The startup move saves and rewrites the mirrors, and is put back for the next launch when a rewrite fails")
+    func startupMoveRewritesMirrorsOrStaysRetryable() throws {
+        let env = try Fixtures.Environment()
+        let store = MockSecretStore()
+        let folder = env.root.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        env.workspace.primaryPath = folder.path
+        let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
+        row.originPackageID = "imported.tracker"
+        row.originComponentID = "connector:tracker:tracker-api"
+        row.configKeys = ["TRACKER_PROJECT"]
+        row.configValues = ["ENG-1"]
+        env.context.insert(row)
+        row.workspace = env.workspace
+        try env.context.save()
+        let mirrorURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try FileManager.default.createDirectory(at: mirrorURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"connectors":[{"configKeys":["TRACKER_PROJECT"],"configValues":["ENG-1"]}]}"#.utf8).write(to: mirrorURL)
+
+        // A rewrite fails: the row and the Keychain are as they were, so
+        // the next launch moves the value again.
+        #expect(!StartupCredentialMigrationService.moveSettingsStoredAsCredentials(
+            of: [row], mirroredBy: [env.workspace], modelContext: env.context,
+            resolver: StubCreator.self, store: store, rewriteMirror: { _ in false }
+        ))
+        #expect(row.configKeys == ["TRACKER_PROJECT"] && row.configValues == ["ENG-1"])
+        #expect(row.credentialKeys.isEmpty)
+        #expect(Self.held("TRACKER_PROJECT", of: row, in: store) == nil)
+        #expect(!env.context.hasChanges)
+
+        // It moves, is saved, and the mirror is rewritten without it.
+        #expect(StartupCredentialMigrationService.moveSettingsStoredAsCredentials(
+            of: [row], mirroredBy: [env.workspace], modelContext: env.context, resolver: StubCreator.self, store: store
+        ))
+        #expect(row.configKeys.isEmpty && row.credentialKeys == ["TRACKER_PROJECT"])
+        #expect(Self.held("TRACKER_PROJECT", of: row, in: store) == "ENG-1")
+        #expect(!env.context.hasChanges)
+        let mirror = try String(contentsOf: mirrorURL, encoding: .utf8)
+        #expect(mirror.contains(row.id.uuidString))
+        #expect(!mirror.contains("ENG-1"))
+    }
+
+    @Test("The startup move waits while the workspaces can't be read: no mirror could be rewritten")
+    func startupMoveWaitsForReadableWorkspaces() throws {
+        let env = try Fixtures.Environment()
+        let store = MockSecretStore()
+        let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
+        row.originPackageID = "imported.tracker"
+        row.originComponentID = "connector:tracker:tracker-api"
+        row.configKeys = ["TRACKER_PROJECT"]
+        row.configValues = ["ENG-1"]
+        row.isGlobal = true
+        env.context.insert(row)
+        try env.context.save()
+        #expect(!StartupCredentialMigrationService.moveSettingsStoredAsCredentials(
+            of: [row], mirroredBy: nil, modelContext: env.context, resolver: StubCreator.self, store: store
+        ))
+        #expect(row.configKeys == ["TRACKER_PROJECT"] && row.credentialKeys.isEmpty)
+        #expect(Self.held("TRACKER_PROJECT", of: row, in: store) == nil)
+    }
+
+    @Test("The mirror withholds a third-party account's retired setting, and a bundled one's, keeping only declared plain ones")
+    func mirrorWithholdsRetiredSettings() throws {
+        // The imported plugin's current definition no longer declares
+        // OLD_PROJECT, which Update left on the account.
+        let imported = Self.importedPackage()
+        let stamp = CapabilityResourceOrigin.componentID(for: imported.connectors[0])
+        let withheld = PluginConnectorFieldTrust.settingKeysStoredAsCredentials(
+            originPackageID: imported.id, originComponentID: stamp,
+            accountKeys: ["TRACKER_PROJECT", "OLD_PROJECT"], definitions: [imported]
+        )
+        #expect(withheld == ["TRACKER_PROJECT", "OLD_PROJECT"])
+        // A bundled account keeps what ASTRA's definition declares plain,
+        // and nothing it retired.
+        let jira = try Self.jira()
+        let connector = try #require(jira.connectors.first { !$0.configHints.isEmpty })
+        let bundled = PluginConnectorFieldTrust.settingKeysStoredAsCredentials(
+            originPackageID: jira.id, originComponentID: CapabilityResourceOrigin.componentID(for: connector),
+            accountKeys: ["JIRA_PROJECTS", "JIRA_RETIRED"], definitions: [jira]
+        )
+        #expect(bundled == ["JIRA_RETIRED"])
+    }
+
+    /// An Update whose reconcile moves an account's plain setting into the
+    /// Keychain and then fails: the account's arrays come back, and so must
+    /// the Keychain, or a retry after the person edits the setting would
+    /// find a value of the Update's there and refuse to move it.
+    @Test("A failed Update takes back a connector setting it moved into the Keychain")
+    func failedUpdateTakesBackAMovedConnectorSetting() throws {
+        let store = MockSecretStore()
+        do {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-moved-setting-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            // An on-disk store: the cleanup outbox lives beside it.
+            let container = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(url: root.appendingPathComponent("default.store"))]
+            )
+            Fixtures.Environment.retained.append(container)
+            let context = container.mainContext
+            let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
+            context.insert(workspace)
+            let library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
+            let v1 = Self.importedPackage()
+            try CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
+                .install(v1, into: workspace, modelContext: context, announceCatalogMutation: false)
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
+            let componentID = CapabilityResourceOrigin.componentID(for: v1.connectors[0])
+            let legacy = Connector(name: "Legacy", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
+            legacy.originPackageID = v1.id
+            legacy.originComponentID = componentID
+            legacy.configKeys = ["TRACKER_PROJECT"]
+            legacy.configValues = ["ENG-1"]
+            context.insert(legacy)
+            legacy.workspace = workspace
+            WorkspaceCapabilityActivation.bind(legacy, toComponent: componentID, of: activation)
+            try context.save()
+            // The reconcile fails after the account sync: a secret the
+            // definition declares again still awaits deletion.
+            let namespace = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
+            let outbox = try #require(PluginSecretCleanupOutbox(for: context))
+            try outbox.writeEntries(["\(namespace.uuidString)#API_TOKEN"])
+            var v2 = v1
+            v2.version = "2.0.0"
+            v2.skills[0].environmentKeys.append("API_TOKEN")
+            v2.skills[0].environmentValues.append("")
+            try library.install(v2, sourceMetadata: .builtIn())
+
+            #expect(throws: PluginUpdateService.UpdateError.secretCleanupPending(key: "API_TOKEN")) {
+                try PluginUpdateService.reconcileAll(
+                    modelContext: context, packages: library.installedPackages(), mode: .release, secrets: RefusingSkillDeletes.self,
+                    connectorStore: store, approvalRecords: PluginOperationsTests.approvals(library.installedPackages())
+                )
+            }
+            #expect(legacy.configKeys == ["TRACKER_PROJECT"] && legacy.configValues == ["ENG-1"])
+            #expect(Self.held("TRACKER_PROJECT", of: legacy, in: store) == nil)
+
+            // The person changes the setting; the next Update moves it.
+            legacy.configValues = ["ENG-2"]
+            try PluginUpdateService.reconcileAll(
+                modelContext: context, packages: library.installedPackages(), mode: .release, secrets: AcceptingSkillDeletes.self,
+                connectorStore: store, approvalRecords: PluginOperationsTests.approvals(library.installedPackages())
+            )
+            #expect(legacy.configKeys.isEmpty && legacy.credentialKeys.contains("TRACKER_PROJECT"))
+            #expect(Self.held("TRACKER_PROJECT", of: legacy, in: store) == "ENG-2")
+        }
+    }
+}
+
+private enum RefusingSkillDeletes: SkillSecretPersisting {
+    static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? { nil }
+    static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool { true }
+    static func deleteSecret(key: String, skillID: UUID) -> Bool { false }
+    static func secretExists(key: String, skillID: UUID) -> Bool { false }
+    static func deleteAllSecrets(skillID: UUID) {}
+    static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool { false }
+}
+
+private enum AcceptingSkillDeletes: SkillSecretPersisting {
+    static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? { nil }
+    static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool { true }
+    static func deleteSecret(key: String, skillID: UUID) -> Bool { true }
+    static func secretExists(key: String, skillID: UUID) -> Bool { false }
+    static func deleteAllSecrets(skillID: UUID) {}
 }

@@ -36,6 +36,9 @@ enum CLISessionExpiryClassifier {
         /// host or executable path it targets survives in the message that
         /// `family(forStopMessage:)` reads back.
         var namesCheck = false
+        /// Chosen only when every Google Cloud call in the command reads
+        /// Application Default Credentials (`readsOnlyApplicationDefault`).
+        var readsApplicationDefault = false
 
         var stopMessage: String {
             guard let customStopMessage else {
@@ -104,6 +107,22 @@ enum CLISessionExpiryClassifier {
         ]
     )
 
+    /// Application Default Credentials are a separate sign-in from the CLI's
+    /// own account: `gcloud auth application-default login` writes them, and
+    /// a healthy `gcloud auth login` says nothing about them. So a failed
+    /// `gcloud auth application-default print-access-token` signs in to and
+    /// checks ADC; the check prints the refreshed token's expiry, never the
+    /// token.
+    static let googleCloudApplicationDefault = Family(
+        commands: ["gcloud"],
+        displayName: "Google Cloud application default credentials",
+        signInCommand: "gcloud auth application-default login",
+        checkBinary: "gcloud",
+        checkArguments: ["auth", "application-default", "print-access-token", "--format=value(expiry)"],
+        patterns: googleCloud.patterns + ["please run:\n\n  $ gcloud auth application-default login"],
+        readsApplicationDefault: true
+    )
+
     static let gitHub = Family(
         commands: ["gh"],
         displayName: "GitHub",
@@ -150,7 +169,7 @@ enum CLISessionExpiryClassifier {
         customStopMessage: "GitHub Enterprise rejected the token in GH_ENTERPRISE_TOKEN or GITHUB_ENTERPRISE_TOKEN. That variable overrides any sign-in, so signing in again won't help: update or remove it where ASTRA's environment gets it, then resume."
     )
 
-    static let families = [googleCloud, gitHubEnterpriseToken, gitHubEnvironmentToken, gitHub]
+    static let families = [googleCloudApplicationDefault, googleCloud, gitHubEnterpriseToken, gitHubEnvironmentToken, gitHub]
 
     struct Stop: Equatable {
         let reason: String
@@ -175,6 +194,7 @@ enum CLISessionExpiryClassifier {
         guard var family = families.first(where: { family in
             family.commands.contains { failed ? runs($0, in: command) : masksExitStatus(of: $0, in: command) }
                 && family.patterns.contains { lowered.contains($0) }
+                && (!family.readsApplicationDefault || readsOnlyApplicationDefault(command))
         }) else { return nil }
         // A GitHub Enterprise host the command targeted is the one to sign
         // in to and check; github.com's login says nothing about it.
@@ -186,6 +206,22 @@ enum CLISessionExpiryClassifier {
             family = family.at(executable)
         }
         return family
+    }
+
+    /// True when `command` calls Google Cloud only as `gcloud auth
+    /// application-default …`. A command that also runs another gcloud, bq
+    /// or gsutil call may have failed on the CLI account instead.
+    static func readsOnlyApplicationDefault(_ command: String) -> Bool {
+        let calls = simpleCommands(command).compactMap { words -> [String]? in
+            var rest = words
+            stripWrappers(&rest)
+            guard let executable = rest.first, googleCloud.commands.contains((executable as NSString).lastPathComponent) else { return nil }
+            return rest
+        }
+        return !calls.isEmpty && calls.allSatisfy { call in
+            (call[0] as NSString).lastPathComponent == "gcloud"
+                && Array(call.dropFirst().filter { !$0.hasPrefix("-") }.prefix(2)) == ["auth", "application-default"]
+        }
     }
 
     /// The check CLI installed beside a companion that `command` runs by path
@@ -264,16 +300,38 @@ enum CLISessionExpiryClassifier {
 
     /// The GitHub Enterprise host a `gh` call in `command` targets: its
     /// `--hostname` flag or the host of its `-R/--repo HOST/OWNER/REPO`, else
-    /// a `GH_HOST=` assignment before it, else the host of a `GH_REPO=` one.
-    /// Nil for github.com or a value that is not a plain host name.
+    /// its `GH_HOST`, else the host of its `GH_REPO`: assigned before it, or
+    /// exported earlier in the same shell scope (`export GH_HOST=h; gh api
+    /// user`; an `export` in a subshell does not reach past it, and `unset`
+    /// clears one). Nil for github.com or a value that is not a plain host
+    /// name, and nil when the `gh` calls disagree (`gh auth status --hostname
+    /// a; gh auth status --hostname b`): which one failed is unknown, so the
+    /// stop stays untargeted rather than checking a host that may be healthy.
     static func gitHubHost(in command: String) -> String? {
-        for words in simpleCommands(command) {
-            var rest = words
+        var hosts: [String?] = []
+        // `export`ed and `unset` host variables, newest last, with the scope
+        // they were set in.
+        var exported: [(name: String, value: String?, scope: [Int])] = []
+        for segment in segments(command) {
+            var rest = segment.words
             var assignments: [String] = []
             stripWrappers(&rest, assignments: &assignments)
+            if let builtin = rest.first, builtin == "export" || builtin == "unset" {
+                for word in rest.dropFirst() {
+                    let name = String(word.prefix { $0 != "=" })
+                    guard ["GH_HOST", "GH_REPO"].contains(name) else { continue }
+                    if builtin == "unset" {
+                        exported.append((name, nil, segment.scope))
+                    } else if word.count > name.count {
+                        exported.append((name, String(word.dropFirst(name.count + 1)), segment.scope))
+                    }
+                }
+                continue
+            }
             guard let executable = rest.first, (executable as NSString).lastPathComponent == "gh" else { continue }
             func assigned(_ name: String) -> String? {
-                assignments.last { $0.hasPrefix("\(name)=") }.map { String($0.dropFirst(name.count + 1)) }
+                if let inline = assignments.last(where: { $0.hasPrefix("\(name)=") }) { return String(inline.dropFirst(name.count + 1)) }
+                return exported.last { $0.name == name && segment.scope.starts(with: $0.scope) }?.value
             }
             var declared = assigned("GH_HOST") ?? assigned("GH_REPO").flatMap(repositoryHost)
             let arguments = Array(rest.dropFirst())
@@ -290,9 +348,10 @@ enum CLISessionExpiryClassifier {
                     declared = host
                 }
             }
-            if let host = declared.flatMap(enterpriseHost) { return host }
+            hosts.append(declared.flatMap(enterpriseHost))
         }
-        return nil
+        guard let host = hosts.first, hosts.allSatisfy({ $0 == host }) else { return nil }
+        return host
     }
 
     /// The host of a `HOST/OWNER/REPO` repository selector (`gh --repo`,
@@ -360,16 +419,36 @@ enum CLISessionExpiryClassifier {
         return segments.indices.contains { index in
             let segment = segments[index]
             guard executes(cli, segment.words) else { return false }
+            // A compound command's closing word (`}`, `fi`, `done`) carries
+            // its status on: the operator after it is the one that decides.
+            var end = index
+            while end + 1 < segments.count, closes(segments[end + 1].words) { end += 1 }
+            let separator = segments[end].separator
             return segment.enclosingCommands.contains { !executes(cli, $0) }
                 || negates(segment.words)
                 || isCondition(segment.words)
-                || (index < segments.count - 1 && statusMaskingSeparators.contains(segment.separator))
+                // `&` runs it in the background, and the line succeeds,
+                // even when nothing follows (`gh auth status &`).
+                || separator == "&"
+                || (end < segments.count - 1 && statusMaskingSeparators.contains(separator))
         }
     }
 
     /// Shell reserved words that open or continue a compound command: the
-    /// word after one is a command (`if gh auth status; then …; fi`).
-    private static let reservedWords: Set<String> = ["if", "then", "elif", "else", "fi", "while", "until", "do", "done", "!"]
+    /// word after one is a command (`if gh auth status; then …; fi`, `{ gh
+    /// auth status; } 2>&1`).
+    private static let reservedWords: Set<String> = ["if", "then", "elif", "else", "fi", "while", "until", "do", "done", "!", "{", "}"]
+
+    /// Reserved words that close a compound command, whose status is then
+    /// its last command's.
+    private static let closingWords: Set<String> = ["}", "fi", "done"]
+
+    /// True when this "command" only closes a compound command, perhaps with
+    /// a redirection (`} 2>&1`).
+    private static func closes(_ words: [String]) -> Bool {
+        guard let first = words.first, closingWords.contains(first) else { return false }
+        return words.dropFirst().allSatisfy { $0.contains(">") || $0.contains("<") }
+    }
 
     /// Reserved words whose command is a condition.
     private static let conditionWords: Set<String> = ["if", "elif", "while", "until"]
@@ -400,7 +479,8 @@ enum CLISessionExpiryClassifier {
     /// honored: a separator or a space inside quotes is part of a word, and
     /// the quotes themselves are removed. `$( … )` and backticks start a
     /// new command, as their contents run too, inside double quotes as well;
-    /// inside single quotes they are literal text.
+    /// inside single quotes they are literal text. A here-document's body
+    /// (`<<EOF` or `<<-EOF` to its delimiter line) is text too.
     static func simpleCommands(_ line: String) -> [[String]] {
         segments(line).map(\.words)
     }
@@ -415,6 +495,10 @@ enum CLISessionExpiryClassifier {
         /// outermost first (`echo` in `echo "$(gh auth token)"`); their exit
         /// status, not this command's, is the line's.
         var enclosingCommands: [[String]] = []
+        /// The subshells and substitutions it runs in, outermost first, each
+        /// by its own number: an `export` reaches the commands after it whose
+        /// scope starts with its own.
+        var scope: [Int] = []
     }
 
     static func segments(_ line: String) -> [Segment] {
@@ -431,10 +515,27 @@ enum CLISessionExpiryClassifier {
         // Every open parenthesis or backtick, innermost last, with the
         // command a substitution there feeds (nil for a subshell, or for a
         // substitution that is the whole command, as in an assignment).
-        var groups: [(closer: Character, command: [String]?)] = []
+        var groups: [(closer: Character, command: [String]?, id: Int)] = []
+        var groupCount = 0
+        // Here-documents whose bodies follow this line, in order: the
+        // delimiter and whether `<<-` strips leading tabs. A body is text
+        // (`cat <<'EOF'` printing `$ gh auth status`), never commands.
+        var heredocs: [(delimiter: String, stripsTabs: Bool)] = []
+        // Where the current word's delimiter starts, after an unquoted `<<`;
+        // a bare `<<` takes the next word.
+        var heredocStart: (offset: Int, stripsTabs: Bool)?
+        var heredocAwaitsWord: Bool?
         let characters = Array(line)
         var index = 0
         func endWord() {
+            if let start = heredocStart {
+                let delimiter = String(word.dropFirst(start.offset))
+                if delimiter.isEmpty { heredocAwaitsWord = start.stripsTabs } else { heredocs.append((delimiter, start.stripsTabs)) }
+                heredocStart = nil
+            } else if inWord, let stripsTabs = heredocAwaitsWord {
+                heredocs.append((word, stripsTabs))
+                heredocAwaitsWord = nil
+            }
             if inWord { words.append(word) }
             word = ""
             inWord = false
@@ -444,7 +545,7 @@ enum CLISessionExpiryClassifier {
             words.removeAll { $0 == "$" }
             if !words.isEmpty {
                 segments.append(Segment(
-                    words: words, separator: separator, enclosingCommands: groups.compactMap(\.command)
+                    words: words, separator: separator, enclosingCommands: groups.compactMap(\.command), scope: groups.map(\.id)
                 ))
             } else if segments.last?.separator == ")" {
                 segments[segments.count - 1].separator = separator
@@ -460,7 +561,8 @@ enum CLISessionExpiryClassifier {
             enclosing.removeAll(where: \.isEmpty)
             stripWrappers(&enclosing)
             endCommand(String(opener))
-            groups.append((closer: closer, command: substitutes && !enclosing.isEmpty ? enclosing : nil))
+            groups.append((closer: closer, command: substitutes && !enclosing.isEmpty ? enclosing : nil, id: groupCount))
+            groupCount += 1
         }
         func closeOrOpenGroup(_ character: Character) {
             guard character == ")" || (character == "`" && groups.last?.closer == "`") else {
@@ -533,6 +635,26 @@ enum CLISessionExpiryClassifier {
                 closeOrOpenGroup(character)
             case ";", "\n":
                 endCommand(String(character))
+                guard character == "\n" else { break }
+                // Each pending here-document's body runs to its delimiter line.
+                for heredoc in heredocs {
+                    while index < characters.count {
+                        let end = characters[index...].firstIndex(of: "\n") ?? characters.count
+                        let line = String(characters[index..<end])
+                        index = min(end + 1, characters.count)
+                        if (heredoc.stripsTabs ? String(line.drop { $0 == "\t" }) : line) == heredoc.delimiter { break }
+                    }
+                }
+                heredocs.removeAll()
+                heredocAwaitsWord = nil
+            case "<" where next == "<" && word.last != "<" && (index + 1 >= characters.count || characters[index + 1] != "<"):
+                // `<<` or `<<-` starts a here-document (`<<<` is a string).
+                index += 1
+                let stripsTabs = index < characters.count && characters[index] == "-"
+                if stripsTabs { index += 1 }
+                word += stripsTabs ? "<<-" : "<<"
+                inWord = true
+                heredocStart = (word.count, stripsTabs)
             default:
                 // `$(` ends at the `(`, which starts the substituted command.
                 word.append(character)

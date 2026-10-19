@@ -8,10 +8,11 @@ import ASTRACore
 /// and field keys while their stable component IDs differ, so a value meant
 /// for one of them is stored under `key(_:component:)`, and its base URL
 /// under its component ID. A bare field key, or a base URL under a connector
-/// name, is shared by every connector that declares it, which is what the
-/// callers that predate per-component setup (setup copy, onboarding) pass.
-/// The installer reads a component's inputs only through `view(_:component:)`
-/// and `baseURL(in:for:)`.
+/// name, is shared by every connector that declares it, which is what
+/// onboarding's form passes. Setup copy (`CapabilitySetupCopier`) keys
+/// every value by the component it was copied from. The installer reads a
+/// component's inputs only through `view(_:component:)` and
+/// `baseURL(in:for:)`.
 enum PluginSetupInputs {
     /// Not a character a field key or component ID contains.
     private static let separator = "\u{1F}"
@@ -38,24 +39,33 @@ enum PluginSetupInputs {
         overrides[connector.setupComponentID] ?? overrides[connector.name]
     }
 
-    /// Copied setup (`CapabilitySetupCopier`, shared keys) as each of
-    /// `connectors`' own: every connector that declares a copied field or
-    /// is named by a copied base URL gets it. Skill settings stay shared.
-    static func perComponent(
+    /// Copied setup (keyed by component) as the shared keys onboarding's
+    /// form holds: a field by its key, a base URL by its connector's name.
+    /// A value two components hold differently is left out, so a shared key
+    /// never hands one component's value to another that had its own.
+    static func flattened(
         _ copied: OnboardingCapabilityInstallationInputs,
         for connectors: [PluginConnector]
     ) -> OnboardingCapabilityInstallationInputs {
-        var own = OnboardingCapabilityInstallationInputs(configInputs: copied.configInputs)
-        for connector in connectors {
-            for hint in connector.credentialHints {
-                if let value = copied.credentialInputs[hint.key] { own.credentialInputs[key(hint.key, component: connector.setupComponentID)] = value }
+        func agreed(_ values: [(key: String, value: String)]) -> [String: String] {
+            var flat: [String: String] = [:]
+            var conflicting = Set<String>()
+            for (key, value) in values {
+                if let held = flat[key], held != value { conflicting.insert(key) } else { flat[key] = value }
             }
-            for hint in connector.configHints {
-                if let value = copied.configInputs[hint.key] { own.configInputs[key(hint.key, component: connector.setupComponentID)] = value }
-            }
-            if let url = baseURL(in: copied.baseURLOverrides, for: connector) { own.baseURLOverrides[connector.setupComponentID] = url }
+            return flat.filter { !conflicting.contains($0.key) }
         }
-        return own
+        func fields(_ values: [String: String]) -> [String: String] {
+            agreed(values.map { key, value in
+                (key.range(of: separator).map { String(key[$0.upperBound...]) } ?? key, value)
+            })
+        }
+        let names = Dictionary(connectors.map { ($0.setupComponentID, $0.name) }, uniquingKeysWith: { first, _ in first })
+        return OnboardingCapabilityInstallationInputs(
+            credentialInputs: fields(copied.credentialInputs),
+            configInputs: fields(copied.configInputs),
+            baseURLOverrides: agreed(copied.baseURLOverrides.map { (names[$0.key] ?? $0.key, $0.value) })
+        )
     }
 }
 

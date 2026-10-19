@@ -485,6 +485,38 @@ struct RetryInterruptedRunTests {
         }
     }
 
+    @Test("An empty projected variable reaches the check as the resumed run gets it, not as ASTRA's own")
+    func emptyProjectedVariablesReachTheCheck() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let workspace = Workspace(name: "Empty Values", primaryPath: env.root)
+        let task = AgentTask(title: "Token", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+        task.status = .failed
+        task.sessionId = "claude-session-1"
+        task.skillSnapshots = [SkillSnapshotConfig(
+            id: UUID().uuidString, name: "GitHub Agent", icon: "key", description: "GitHub pull requests",
+            allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+            environmentKeys: ["PATH", "GH_TOKEN", "CLOUDSDK_CONFIG"], environmentValues: ["", "", ""], isGlobal: false,
+            connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+            createdAt: Date(), updatedAt: Date()
+        )]
+        env.context.insert(workspace)
+        env.context.insert(task)
+        try env.context.save()
+        #expect(TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gh") == ["PATH": "", "GH_TOKEN": ""])
+        #expect(TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "/opt/sdk/bin/gcloud")?["CLOUDSDK_CONFIG"] == "")
+        // The resumed shell searches no directory, so it finds no `sh`; nor
+        // does the check, though ASTRA's own PATH has one.
+        var repair = RepairAction(
+            strategy: .terminal, componentName: "Shell", title: "Check", verb: "Check", detail: "",
+            checkBinary: "sh", checkArguments: ["--version"]
+        )
+        repair.checkEnvironment = TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gh")
+        #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+        repair.checkEnvironment = nil
+        #expect(await PluginRepairCoordinator.liveCheck(repair))
+    }
+
     @Test("Without a provider session Retry still relaunches from scratch")
     func noSessionRelaunches() async throws {
         let submitted = try await retry(sessionID: nil, stopReason: "cancelled")

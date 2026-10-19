@@ -661,12 +661,16 @@ struct PluginSourcesTests {
         let digest = PluginSourceCatalog.contentDigest(installed)
 
         // The export records the source the copy came from.
-        let refs = WorkspaceConfigManager.installedPluginRefs(for: workspace) { id, digest in
-            PluginSourceStore.mirrorIdentity(pluginID: id, digest: digest, provenance: fixture.store.provenance())
+        let refs = WorkspaceConfigManager.installedPluginRefs(for: workspace) { id, recorded in
+            fixture.library.installedPackage(id: id).flatMap {
+                PluginSourceStore.mirrorIdentity(recordedDigest: recorded, installed: $0, provenance: fixture.store.provenance())
+            }
         }
         let ref = try #require(refs.first { $0.id == installed.id })
         #expect(ref.source == "plugin-source:\(source.id)")
-        #expect(ref.digest == digest)
+        #expect(ref.digest == PluginDefinitionDigest.content(of: installed) || ref.digest == digest)
+        // A digest that names another copy records no source.
+        #expect(PluginSourceStore.mirrorIdentity(recordedDigest: "content-v1:other", installed: installed, provenance: fixture.store.provenance()) == nil)
         var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: fixture.context))
         config.installedPlugins = refs
 

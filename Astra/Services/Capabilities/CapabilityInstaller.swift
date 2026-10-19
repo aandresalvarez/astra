@@ -288,6 +288,7 @@ struct CapabilityInstaller {
                     activation: activation,
                     configInputs: skillConfigInputs,
                     packageID: package.id,
+                    modelContext: modelContext,
                     savedSecrets: &savedSkillSecrets
                 )
                 appendUnique(projectedID, to: &skillIDs)
@@ -370,9 +371,13 @@ struct CapabilityInstaller {
             }
 
             workspace.updatedAt = Date()
-            guard PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, keys: reconciliation.staleSecrets, modelContext: modelContext, save: {
-                persist(workspace, modelContext)
-            }) else {
+            // The secret settings written above settle with the save: the
+            // activation records them now.
+            let journaledSecrets = savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }
+            guard PluginSecretCleanupOutbox.deleteThenClean(
+                releasedSkillIDs, keys: reconciliation.staleSecrets + journaledSecrets, modelContext: modelContext,
+                save: { persist(workspace, modelContext) }
+            ) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
             // `persist` exports the clicked workspace; the others whose
@@ -419,6 +424,9 @@ struct CapabilityInstaller {
             for (other, snapshot) in pendingSnapshots { WorkspaceCapabilityActivation.restore(snapshot, to: other) }
             let unrestored = restoreSkillSecrets(savedSkillSecrets)
                 + PluginUpdateService.undo(renamedSecrets)
+            PluginSecretSettingWriter.forgetJournaled(
+                savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }, modelContext: modelContext
+            )
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
             fields["result"] = "enable_failed_rolled_back"
@@ -546,6 +554,7 @@ struct CapabilityInstaller {
         activation: PluginActivation,
         configInputs: [String: String],
         packageID: String,
+        modelContext: ModelContext,
         savedSecrets: inout [SavedSkillSecret]
     ) throws {
         for key in pluginSkill.environmentKeys {
@@ -559,13 +568,13 @@ struct CapabilityInstaller {
             guard !value.isEmpty else { continue }
             let persistence = skillSecrets
             let previous = persistence.loadSecretValue(key: key, skillID: projectedID, store: KeychainSecretStore())
-            guard persistence.saveSecretValue(
-                value,
-                key: key,
-                skillID: projectedID,
-                skillName: pluginSkill.name,
-                allowUserInteraction: false
-            ) else {
+            // Journaled before the write, settled with the Add's save: a quit
+            // between them leaves a value launch cleans, never one unrecorded.
+            let written = try PluginSecretSettingWriter.writeJournaled(
+                value, key: key, skillName: pluginSkill.name, skillID: projectedID,
+                modelContext: modelContext, persistence: persistence
+            )
+            guard written else {
                 throw InstallationError.credentialSaveFailed(packageID: packageID, key: key)
             }
             savedSecrets.append(SavedSkillSecret(key: key, skillID: projectedID, previousValue: previous))
@@ -895,10 +904,8 @@ struct CapabilityInstaller {
     ) -> [String] {
         package.connectors.compactMap { connector in
             let baseURL = PluginSetupInputs.baseURL(in: baseURLOverrides, for: connector) ?? connector.baseURL
-            guard let violation = ConnectorSecurityPolicy.credentialTransportViolation(
-                baseURL: baseURL,
-                authMethod: connector.authMethod,
-                credentialKeys: connector.credentialHints.map(\.key)
+            guard let violation = PluginConnectorFieldTrust.credentialTransportViolation(
+                of: connector, in: package, baseURL: baseURL
             ) else {
                 return nil
             }

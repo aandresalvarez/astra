@@ -431,7 +431,8 @@ final class TaskLifecycleCoordinator {
     /// snapshot whose skill was removed still delivers its variables.
     /// `binary` may be the path of the installation that failed; its name
     /// picks the variables. A relative `PATH` entry is resolved from the
-    /// run's code directory (`RepairAction.checkWorkingDirectory`).
+    /// run's code directory (`RepairAction.checkWorkingDirectory`). An empty
+    /// value is the resumed run's value too, not a missing one.
     static func projectedCheckEnvironment(for task: AgentTask, binary: String?) -> [String: String]? {
         let binary = binary.map { ($0 as NSString).lastPathComponent }
         guard binary == "gh" || binary == "gcloud" else { return nil }
@@ -442,8 +443,10 @@ final class TaskLifecycleCoordinator {
         ).providerLaunch
         var launchEnvironment = scope.resolver.resolvedEnvironmentVariables
         BrokeredConnectorEnvironment.strip(from: &launchEnvironment, capabilityScope: scope)
-        let environment = launchEnvironment.filter { key, value in
-            !value.isEmpty && (binary == "gcloud" || Self.gitHubCheckVariables.contains(key))
+        // An empty value is kept: the launch overlay applies it too, so
+        // `PATH=""` or `GH_TOKEN=""` overrides ASTRA's own value there.
+        let environment = launchEnvironment.filter { key, _ in
+            binary == "gcloud" || Self.gitHubCheckVariables.contains(key)
         }
         return environment.isEmpty ? nil : environment
     }
@@ -1137,7 +1140,10 @@ final class TaskLifecycleCoordinator {
         return replacement
     }
 
+    /// `importSession` spans one Import Workspace action: workspaces it
+    /// imports together keep the shared accounts they had in common.
     func importFromConfig(at url: URL, existingWorkspaces: [Workspace],
+                          importSession: WorkspaceConfigManager.ImportSession? = nil,
                           askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
         do {
             var config = try WorkspaceConfigManager.loadConfig(from: url)
@@ -1165,10 +1171,10 @@ final class TaskLifecycleCoordinator {
                     }
                     let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
                     return replaceWorkspace(existing, replacementPath: config.primaryPath) {
-                        WorkspaceConfigManager.importWorkspace(
+                        WorkspaceConfigManager.importWorkspaceResult(
                             from: config, modelContext: modelContext, scheduleTrustPolicy: scheduleTrustPolicy,
-                            capabilityTrust: .validate(.live())
-                        )
+                            capabilityTrust: .validate(.live()), importSession: importSession
+                        ).workspace
                     }
                 case .duplicate:
                     var dupConfig = config
@@ -1193,15 +1199,15 @@ final class TaskLifecycleCoordinator {
                     }
                     // The file's projected skill IDs (in its templates and
                     // schedules) were derived from the ID cleared above.
-                    return WorkspaceConfigManager.importWorkspace(
+                    return WorkspaceConfigManager.importWorkspaceResult(
                         from: dupConfig, modelContext: modelContext, capabilityTrust: .validate(.live()),
-                        sourceWorkspaceID: configID.flatMap(UUID.init(uuidString:))
-                    )
+                        sourceWorkspaceID: configID.flatMap(UUID.init(uuidString:)), importSession: importSession
+                    ).workspace
                 }
             }
-            return WorkspaceConfigManager.importWorkspace(
-                from: config, modelContext: modelContext, capabilityTrust: .validate(.live())
-            )
+            return WorkspaceConfigManager.importWorkspaceResult(
+                from: config, modelContext: modelContext, capabilityTrust: .validate(.live()), importSession: importSession
+            ).workspace
         } catch {
             AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
                 "operation": "import_config",

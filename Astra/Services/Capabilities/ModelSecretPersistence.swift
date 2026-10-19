@@ -76,6 +76,17 @@ enum ConnectorSecretPersistence: ConnectorSecretPersisting {
     }
 
     @discardableResult
+    static func deleteCredential(key: String, facts: ConnectorSecretFacts, store: SecretStore) -> Bool {
+        KeychainSecretStore.connectorEntityIDs(
+            id: facts.id,
+            serviceType: facts.serviceType,
+            baseURL: facts.baseURL,
+            originPackageID: facts.originPackageID,
+            originComponentID: facts.originComponentID
+        ).map { store.delete(key: key, entityID: $0) }.allSatisfy { $0 }
+    }
+
+    @discardableResult
     static func deleteCredential(key: String, facts: ConnectorSecretFacts) -> Bool {
         let deleted = KeychainService.delete(key: key, facts: facts)
         AppLogger.audit(.connectorSecretRemoved, category: "Keychain", fields: [

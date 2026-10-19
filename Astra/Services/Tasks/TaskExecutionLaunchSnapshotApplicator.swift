@@ -55,7 +55,8 @@ enum TaskExecutionLaunchSnapshotApplicator {
         let cloneSources = capabilityCloneSources(
             source: source,
             resolvedInventory: resolvedInventory,
-            frozen: frozenRows(of: snapshot, source: source)
+            frozen: frozenRows(of: snapshot, source: source),
+            unfrozenAccountIDs: unfrozenAccountIDs(of: snapshot, source: source)
         )
         let workspace = source.workspace.map(detachedWorkspace)
         let capabilityGraph = detachedCapabilityGraph(
@@ -235,6 +236,23 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return rows
     }
 
+    /// The accounts the live workspace's activations bind that no frozen
+    /// activation does: a plugin added, or an account bound, while the
+    /// request waited. Who owns an account is frozen with the activations,
+    /// so these stay out of the launch copy, where nothing would bind them
+    /// and they would read as the workspace's own (`TaskCapabilityResolver`
+    /// scopes an unbound workspace account). Empty for a request that froze
+    /// no activations: its launch copy binds the live ones.
+    private static func unfrozenAccountIDs(of snapshot: AgentTaskLaunchSnapshot, source: AgentTask) -> Set<UUID> {
+        guard let records = snapshot.pluginActivations, let live = source.workspace else { return [] }
+        let frozen = Set(records.flatMap(\.bindings).compactMap(\.accountID))
+        let bound = WorkspaceCapabilityActivation.activations(of: live)
+            .flatMap(\.bindings)
+            .filter { !$0.isDeleted }
+            .compactMap { $0.account?.id }
+        return Set(bound).subtracting(frozen)
+    }
+
     /// The bound accounts' copies take the contents frozen at submission;
     /// one deleted since is brought back as a copy of what was submitted.
     /// Credentials are still read from the Keychain by the account's ID.
@@ -329,7 +347,8 @@ enum TaskExecutionLaunchSnapshotApplicator {
     private static func capabilityCloneSources(
         source: AgentTask,
         resolvedInventory: TaskCapabilityResolver.ResourceInventory,
-        frozen: FrozenActivationRows = FrozenActivationRows()
+        frozen: FrozenActivationRows = FrozenActivationRows(),
+        unfrozenAccountIDs: Set<UUID> = []
     ) -> CapabilityCloneSources {
         let workspaceSkills = source.workspace?.skills ?? []
         let workspaceConnectors = source.workspace?.connectors ?? []
@@ -351,6 +370,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
                 frozen.localTools
         )
 
+        connectors.removeAll { unfrozenAccountIDs.contains($0.id) }
         skills = uniqueSkills(
             skills + connectors.compactMap(\.skill) + localTools.compactMap(\.skill)
         )
