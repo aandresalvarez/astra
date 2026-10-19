@@ -106,6 +106,36 @@ struct PreflightCacheTests {
         }
     }
 
+    @Test("A value that spells an id delimiter is escaped: no two checks share an id")
+    func prerequisiteIDsDoNotCollide() async {
+        func check(_ binary: String, _ arguments: [String], _ semantic: SemanticCheck? = nil) -> CLIPrerequisite {
+            CLIPrerequisite(binary: binary, livenessArgs: arguments, semantic: semantic, displayName: binary, purpose: "")
+        }
+        for (first, second) in [
+            (check("x", ["y:semantic=stdoutNonEmpty"]), check("x", ["y"], .stdoutNonEmpty)),
+            (check("x", ["y:context=githubRepositoryAccess"]), check("x", ["y"])),
+            (check("x:y", ["z"]), check("x", ["y:z"])),
+            (check("x", ["a b"]), check("x", ["a", "b"])),
+            (check("x", [""]), check("x", [])),
+            (check("x", ["%3A"]), check("x", [":"]))
+        ] {
+            #expect(first.id != second.id, "\(first.id)")
+        }
+        // Ordinary checks keep the ids they always had.
+        #expect(CommonCLIPrerequisites.githubAuth.id == "gh:auth status --hostname github.com:context=githubRepositoryAccess")
+        #expect(CommonCLIPrerequisites.docker.id == "docker:version --format {{.Client.Version}}:semantic=stderrNoDaemonError")
+        #expect(CommonCLIPrerequisites.gcloudAuth.id == "gcloud:config config-helper --format=value(credential.token_expiry):semantic=stdoutNonEmpty")
+        // The two colliding checks get their own results, and a binary with
+        // a delimiter in it is still invalidated by name.
+        let cache = PreflightCache(checker: EnvironmentHealthChecker(runner: CountingRunner()))
+        _ = await cache.status(for: check("x", ["y:semantic=stdoutNonEmpty"]))
+        _ = await cache.status(for: check("x", ["y"], .stdoutNonEmpty))
+        _ = await cache.status(for: check("/opt/a:b/tool", ["--version"]))
+        #expect(await cache.cachedCount() == 3)
+        await cache.invalidate(binary: "/opt/a:b/tool")
+        #expect(await cache.cachedCount() == 2)
+    }
+
     @Test("invalidate(binary:) removes the binary's entries only")
     func invalidateSingleBinary() async {
         let runner = CountingRunner()
