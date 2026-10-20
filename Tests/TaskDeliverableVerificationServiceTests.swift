@@ -590,15 +590,26 @@ struct TaskDeliverableVerificationServiceTests {
         <script type="text/template"><p>i</p></script>
         <script type="text/x-handlebars-template"><p>j</p></script>
         <script src="external.js"></script>
+        <script title=" type='application/json'">k()</script>
+        <script data-src="lazy.js" type = "text/json">{"l": 1}</script>
+        <scripts>not a script</scripts>
+        <script
+          id="m" type="application/json">{"m": 1}</script>
+        <script alt="a > b">n()</script>
         """
 
         let scripts = TaskDeliverableVerificationService.inlineScripts(in: html)
 
         #expect(scripts.map(\.isJavaScript) == [
             true, true, true, true, true, true,
-            false, false, false, false, false
+            false, false, false, false, false,
+            true, false, false, true
         ])
         #expect(scripts[6].type == "application/json")
+        #expect(scripts[11].type == nil)
+        #expect(scripts[11].body == "k()")
+        #expect(scripts[12].type == "text/json")
+        #expect(scripts[14].body == "n()")
     }
 
     private func makeFixture(goal: String) throws -> (

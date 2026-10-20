@@ -844,26 +844,18 @@ enum TaskDeliverableVerificationService {
     static func inlineScripts(in html: String) -> [InlineScript] {
         var scripts: [InlineScript] = []
         var searchStart = html.startIndex
-        while let openRange = html.range(
-            of: "<script",
-            options: [.caseInsensitive],
-            range: searchStart..<html.endIndex
-        ) {
-            guard let tagEnd = html.range(of: ">", range: openRange.upperBound..<html.endIndex) else {
-                break
-            }
-            let openingTag = html[openRange.lowerBound..<tagEnd.upperBound].lowercased()
+        while let tag = nextScriptOpeningTag(in: html, from: searchStart) {
             guard let closeRange = html.range(
                 of: "</script",
                 options: [.caseInsensitive],
-                range: tagEnd.upperBound..<html.endIndex
+                range: tag.end..<html.endIndex
             ) else {
                 break
             }
-            if !openingTag.contains("src=") {
+            if tag.attributes["src"] == nil {
                 scripts.append(InlineScript(
-                    type: scriptTypeAttribute(in: openingTag),
-                    body: String(html[tagEnd.upperBound..<closeRange.lowerBound])
+                    type: tag.attributes["type"],
+                    body: String(html[tag.end..<closeRange.lowerBound])
                 ))
             }
             searchStart = closeRange.upperBound
@@ -871,41 +863,93 @@ enum TaskDeliverableVerificationService {
         return scripts
     }
 
-    private static let scriptTypeAttributePattern = try? NSRegularExpression(
-        pattern: #"\stype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#,
-        options: [.caseInsensitive]
-    )
-
-    private static func scriptTypeAttribute(in openingTag: String) -> String? {
-        guard let regex = scriptTypeAttributePattern else { return nil }
-        let range = NSRange(openingTag.startIndex..<openingTag.endIndex, in: openingTag)
-        guard let match = regex.firstMatch(in: openingTag, range: range) else { return nil }
-        for group in 1...3 {
-            if let valueRange = Range(match.range(at: group), in: openingTag) {
-                return String(openingTag[valueRange])
-            }
-        }
-        return nil
-    }
-
     private static func externalScriptReferences(in html: String) -> Int {
         var count = 0
         var searchStart = html.startIndex
+        while let tag = nextScriptOpeningTag(in: html, from: searchStart) {
+            if tag.attributes["src"] != nil {
+                count += 1
+            }
+            searchStart = tag.end
+        }
+        return count
+    }
+
+    /// Finds the next `<script ...>` opening tag and tokenizes its attributes
+    /// the way an HTML parser does, so text inside a quoted value (for
+    /// example `title="type='application/json'"`) is never read as an
+    /// attribute. Names are lowercased; the first occurrence of a name wins.
+    private static func nextScriptOpeningTag(
+        in html: String,
+        from start: String.Index
+    ) -> (attributes: [String: String], end: String.Index)? {
+        var searchStart = start
         while let openRange = html.range(
             of: "<script",
             options: [.caseInsensitive],
             range: searchStart..<html.endIndex
         ) {
-            guard let tagEnd = html.range(of: ">", range: openRange.upperBound..<html.endIndex) else {
-                break
+            var index = openRange.upperBound
+            // `<scripts>` or `<script-x>` is a different element.
+            if index < html.endIndex, !isTagNameTerminator(html[index]) {
+                searchStart = index
+                continue
             }
-            let openingTag = html[openRange.lowerBound..<tagEnd.upperBound].lowercased()
-            if openingTag.contains("src=") {
-                count += 1
+            var attributes: [String: String] = [:]
+            while index < html.endIndex {
+                let character = html[index]
+                if character == ">" {
+                    return (attributes, html.index(after: index))
+                }
+                if character.isWhitespace || character == "/" {
+                    index = html.index(after: index)
+                    continue
+                }
+                let nameStart = index
+                index = html.index(after: index)
+                while index < html.endIndex,
+                      !isTagNameTerminator(html[index]),
+                      html[index] != "=" {
+                    index = html.index(after: index)
+                }
+                let name = html[nameStart..<index].lowercased()
+                var value = ""
+                var lookahead = index
+                while lookahead < html.endIndex, html[lookahead].isWhitespace {
+                    lookahead = html.index(after: lookahead)
+                }
+                if lookahead < html.endIndex, html[lookahead] == "=" {
+                    index = html.index(after: lookahead)
+                    while index < html.endIndex, html[index].isWhitespace {
+                        index = html.index(after: index)
+                    }
+                    if index < html.endIndex, html[index] == "\"" || html[index] == "'" {
+                        let quote = html[index]
+                        let valueStart = html.index(after: index)
+                        let valueEnd = html[valueStart...].firstIndex(of: quote) ?? html.endIndex
+                        value = String(html[valueStart..<valueEnd])
+                        index = valueEnd < html.endIndex ? html.index(after: valueEnd) : valueEnd
+                    } else {
+                        let valueStart = index
+                        while index < html.endIndex,
+                              !html[index].isWhitespace,
+                              html[index] != ">" {
+                            index = html.index(after: index)
+                        }
+                        value = String(html[valueStart..<index])
+                    }
+                }
+                if attributes[name] == nil {
+                    attributes[name] = value
+                }
             }
-            searchStart = tagEnd.upperBound
+            return nil
         }
-        return count
+        return nil
+    }
+
+    private static func isTagNameTerminator(_ character: Character) -> Bool {
+        character.isWhitespace || character == "/" || character == ">"
     }
 
     private static func bounded(_ text: String, maxCharacters: Int) -> String {
