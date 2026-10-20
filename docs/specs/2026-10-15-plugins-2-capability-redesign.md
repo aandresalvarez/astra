@@ -12,6 +12,113 @@ checked against the cited lines; claims marked *(static read)* come from a
 code-reading pass that executed nothing; *(unverified)* means the spec relies
 on it and nobody has confirmed it yet.
 
+## Stabilization contract (2026-10-19)
+
+This section is normative and supersedes conflicting implementation notes below.
+It defines acceptance requirements; its presence does not certify that a branch
+implements them. Validation must identify the final integrated commit, not an
+older green head of a stacked PR.
+
+### Store compatibility
+
+`main` now includes the original V20 format, including `Connector.accountAlias`
+and workspace default-account arrays. Freeze both V19 and original V20 model
+graphs and checksums. The plugin graph uses **V21**, with explicit migration
+from original V20; never reuse V20 for activations and bindings. V21 also owns
+`PluginOperationReceipt`, the commit proof for plugin operations.
+
+Migration must preserve task/run history, account IDs, aliases, shared-account
+identity and each workspace's selected default, including a second account for
+the same service. Domain conversion remains idempotent after the schema opens
+and after workspace recovery. A failed conversion must keep legacy resources
+usable or explicitly block admission; it must not silently yield an empty scope.
+
+### Commit and recovery
+
+Library files, approvals, SwiftData, Keychain and workspace mirrors do not share
+a database transaction. Their services must use a common explicit boundary:
+
+1. Before replacing library or approval bytes, prepare durable rollback material
+   under ASTRA-owned storage. Bind its immutable manifest to an operation UUID,
+   store identity and digest. Preserve staged review bytes. Never serialize
+   Keychain values, environment tokens or interactive secret inputs into it.
+2. Save a receipt with that UUID in the **same SwiftData save** as the domain
+   changes. Zero changed activations still require proof for a library operation.
+   A fresh-context read, not a successful callback, proves the commit.
+3. Distinguish `not committed`, `committed` and `indeterminate`. Only a proven
+   uncommitted operation permits rollback. An exception after a confirmed save
+   does not authorize undoing committed account or secret edits.
+4. After commit, regenerate affected mirrors from saved domain state. Keep the
+   receipt pending until the actual copies and completion save succeed. An
+   inaccessible configured folder is a failed copy, not "nothing to export".
+   Retry debt exists even when no credential cleanup entries were produced.
+5. On restart, reconcile prepared file operations against matching-store
+   receipts before completing their projections or cleaning credentials. A
+   missing receipt proves an uncommitted operation only in the identified,
+   readable store. An unreadable or replaced store preserves recovery material.
+   Recovery is idempotent and never saves unrelated unsaved editor state.
+
+A saved change awaiting its copy must be reported as saved with recovery pending,
+not as an ordinary failed save. Publish its committed scope so cached views also
+refresh on that outcome. If only a secret's marker was saved, explicitly report
+that the **new credential was not written**. A pending library/approval manifest
+cannot be completed by an ordinary mirror-only retry.
+
+### Accepted requests and credentials
+
+A queued request owns one coherent accepted definition, activation/settings,
+account/override snapshot and original workspace namespace. Do not combine live
+acceptance metadata with frozen settings. Preserve the workspace ID in new
+snapshots; an old snapshot without provable identity must not borrow the task's
+current workspace after it moves.
+
+Central credential liveness includes nonterminal requests and every recoverable
+mirror. Temporary ownership keeps cleanup **owed** until released; it must not
+settle the cleanup record as though a permanent live owner had replaced it.
+Apply the rule to namespaces, individual keys, account deletion, Update, Remove,
+re-add and workspace deletion. Unknown states, versions or unreadable ownership
+records fail closed. Explicit revocation is a separate recorded action: identify
+affected requests, cancel/block their revoked context, and await running-resource
+release before irreversible cleanup. Retry cannot silently reactivate it.
+
+Validated imports receive fresh credential identity. Reusing/coalescing a shared
+account requires an explicit choice identifying the existing account; a matching
+name, service or URL is not consent to its credentials.
+
+### Repair and source boundaries
+
+Capture typed repair evidence at execution and carry it through the durable stop
+event; translated display prose is not an executable contract. Automatic repair
+requires a bounded supported invocation and trusted executable/account context.
+Uninvoked functions and quoted diagnostics prove no CLI execution. Ambiguous
+wrappers, user/directory changes or unsupported shell contexts authorize no
+inferred executable check; show manual guidance where failure is established.
+
+Source-provided setup hints remain inert display text. A hostname or credential
+directory selected by a plugin is not trusted merely because its syntax is valid.
+Require destination-specific consent for a new enterprise login host, and a
+separate confirmation before replacing/updating Application Default Credentials.
+Only ASTRA-selected protected credential directories may reach a sign-in action;
+otherwise refuse the action or provide check-free manual guidance. The rule also
+covers inherited launch environment and historical repair records.
+
+Use the source threat model for complete input, clone and resource budgets.
+Serialize library-wide validation and mutation, including workspace Add versus
+Remove, across processes. A synchronous UI path returns busy immediately on
+contention; it never sleeps waiting for the library lock. Revalidate source,
+definition and admission facts inside that same boundary before saving.
+
+### Required evidence
+
+Verify original V20 and V19 migration/reopening; queued and revoked requests;
+shared accounts in two workspaces; failed saves, Keychain writes and mirrors;
+Add → Update → Remove → re-add; zero-cleanup and zero-activation operations;
+restart at each prepared/file/domain/mirror boundary; failed rollback; wrong or
+unreadable store identity; exact reviewed source bytes; decompression/output
+budgets; and lock contention. Run focused regressions, the full serial suite,
+native ASTRA Dev QA and CI on final heads. Intended R4 product removals remain
+explicit decisions; passing tests or absent reviewer comments do not prove parity.
+
 ## Redesign: one owner per plugin fact (2026-10-16)
 
 ### Why the first build has to change
@@ -77,9 +184,9 @@ Mechanics, *(verified 2026-10-16)*:
 
 ### Model (one new schema version on `main`)
 
-`main` is at V19 (phase 0 changed no schema), so this is V20 on `main`; the
-V20 on the stacked branches (`Connector.accountAlias`, workspace default
-accounts) is not shipped and is superseded.
+The target is V21. Original V20 (`Connector.accountAlias` and workspace
+default accounts) is now a compatibility input on `main`, not a schema that
+can be superseded in place. See the stabilization contract above.
 
 - **Library entry = installation.** `CapabilityLibrary` keeps one entry per
   plugin. It stores the manifest as authored, so `worksOn`, setup steps,
@@ -253,9 +360,11 @@ reconciliation finishes or undoes what an exit interrupted:
   goes through `ConnectorCredentialCleanup.deleteThenClean`, and Remove
   (`CapabilityUninstaller`) through `PluginSecretCleanupOutbox.deleteThenClean`.
 
-### Migration V19 → V20 (custom stage)
+### Migration V19 / original V20 → V21
 
-The dev store is backed up first; the stage is one-way.
+Back up the dev store first. Explicit schema stages open V21 from frozen
+historical graphs; the following domain conversion runs idempotently after
+opening the store and again after recovery, before capability admission.
 
 1. Each workspace gets one activation per plugin in the union of
    `enabledCapabilityIDs` and `installedPluginIDs`, with `enabled` set from
@@ -518,7 +627,7 @@ Each is a decision R1 implements and its fixture tests.
 | --- | --- |
 | `#506` phase 0 | Merge as is: the activation owner, config-import trust and deleted-model guards are independent of this change. |
 | `#508` phase 2 | Rebase on `main`: the repair loop, `RepairAction`, the expiry stop and resume, and the Plugins screen behind its flag are reused. The expiry classifier is reworked per *Health and repair*. |
-| `#507` phase 1 | Superseded. `ConnectorAccountResolver` and the manifest types move into R1; its V20 is not shipped. |
+| `#507` phase 1 | Superseded. `ConnectorAccountResolver` and the manifest types move into R1; its original V20 shape is retained for compatibility; the plugin graph uses V21. |
 | `#509` phase 3 | Superseded. The built-in manifests and the Update and `worksOn` presentation move into R3; plugin sources move to R5. |
 | `#510` phase 4 | Superseded by R4, which starts from the parity checklist. |
 
@@ -575,9 +684,9 @@ stored.
    out of every run: the runtime reached plugin skills only through name
    matching, never through `enabledGlobalSkillIDs`.
 5. **The migration runs after the store opens, not as a custom stage.**
-   V20 is additive (the legacy enablement arrays are renamed `legacy*` and
-   kept, read only by the migration and cleared by it), so V19 stores
-   lightweight-migrate. `PluginActivationMigration` runs synchronously at
+   V21 adds the activation, binding and operation-receipt entities while
+   retaining legacy enablement and original V20 account metadata. Explicit
+   V19/original-V20 schema stages precede domain conversion. `PluginActivationMigration` runs synchronously at
    launch before any capability resolution, and again after the
    asynchronous workspace recovery import (`afterImport`). It is idempotent
    and one save; a secret it cannot copy aborts it before anything is
@@ -694,7 +803,7 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   runs. Keeping old definitions runnable per activation is not planned:
   the approval is for the library's digest, and running two versions of
   one plugin side by side is what the redesign removes.
-- **`knownComponentIDs`** is part of V20 (R1 and R3 ship together; no
+- **`knownComponentIDs`** is part of V21 (R1 and R3 ship together; no
   release has the model without it). The migration seeds it from the
   definition each activation was migrated against, Add and every
   reconciliation set it, and the workspace mirror carries it, so a dropped

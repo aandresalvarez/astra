@@ -16,6 +16,7 @@ enum AgentRuntimeFailureCategory: String, Codable, CaseIterable, Sendable {
     case noVisibleOutput = "no_visible_output"
     case providerProcessFailed = "provider_process_failed"
     case sandboxCredentialAccessBlocked = "sandbox_credential_access_blocked"
+    case providerHomeAccessDenied = "provider_home_access_denied"
 }
 
 struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
@@ -47,6 +48,7 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
     enum SummarySource: String, Codable, Sendable {
         case stderr
         case resultOutput = "result_output"
+        case providerLog = "provider_log"
         case fallback
         case none
     }
@@ -69,7 +71,9 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         stream: AgentRuntimeStreamTelemetrySnapshot?,
         timedOut: Bool = false,
         budgetExceeded: Bool = false,
-        maxTurnsExceeded: Bool = false
+        maxTurnsExceeded: Bool = false,
+        startupEvidence: String? = nil,
+        copilotHomeAccess: (() -> CopilotHomeAccessReport)? = nil
     ) -> AgentRuntimeFailureDiagnostic {
         let raw = rawError ?? ""
         // Strip benign provider warnings (e.g. deprecation notices) so they never
@@ -88,14 +92,15 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         // has_error_output=false / an empty error_summary.
         let resultOutput = (runOutput ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let redactedResult = LogSanitizer.sanitize(resultOutput, maxLength: 800)
+        let redactedLog = LogSanitizer.sanitize(startupEvidence ?? "", maxLength: 800)
         // Keyword classification (auth/model/quota/...) inspects stderr AND the
         // result payload so a real error carried only in stdout is still matched.
-        let haystack = "\(raw)\n\(redactedStderr)\n\(redactedResult)".lowercased()
+        let haystack = "\(raw)\n\(redactedStderr)\n\(redactedResult)\n\(redactedLog)".lowercased()
         // The noVisibleOutput empty-check still uses only the warning-stripped
         // stderr, so a substantive result payload upgrades the surfaced summary
         // without changing the "produced events but no visible output" verdict.
         let meaningfulHaystack = meaningful.trimmingCharacters(in: .whitespacesAndNewlines)
-        let category = classifyCategory(
+        var category = classifyCategory(
             haystack: haystack,
             meaningfulHaystackEmpty: meaningfulHaystack.isEmpty,
             exitCode: exitCode,
@@ -104,18 +109,46 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
             budgetExceeded: budgetExceeded,
             maxTurnsExceeded: maxTurnsExceeded
         )
+        // A completely silent non-zero exit is all Copilot gives when it cannot
+        // read its own config: no stderr, no stdout, no log. Only then is the
+        // state home inspected, so a failure with any real evidence keeps it.
+        // Only an unreadable entry explains the exit; an unwritable one is a
+        // readiness warning, not proof of cause. Benign warnings on stderr
+        // (deprecation notices) do not count as evidence here either.
+        var homeAccess: CopilotHomeAccessReport?
+        // Blank plain-text framing lines count as raw lines and turn the
+        // category into noVisibleOutput, so the gate looks at parsed content.
+        // Exit 1 is the observed signature; a signal (128+N) or any other code
+        // is a different failure and keeps its own diagnosis.
+        if Self.copilotHomeEvidenceCanExplain(
+            category: category, exitCode: exitCode, rawError: rawError,
+            runOutput: runOutput, startupEvidence: startupEvidence, stream: stream
+        ),
+           let report = copilotHomeAccess?(),
+           report.blocksCopilot {
+            category = .providerHomeAccessDenied
+            homeAccess = report
+        }
         let summarySource: SummarySource
         let summary: String
-        if !redactedStderr.isEmpty {
+        if let homeAccess {
+            summarySource = .fallback
+            summary = homeAccess.cause
+        } else if !redactedStderr.isEmpty {
             summarySource = .stderr
             summary = redactedStderr
         } else if !redactedResult.isEmpty {
             summarySource = .resultOutput
             summary = redactedResult
+        } else if !redactedLog.isEmpty {
+            summarySource = .providerLog
+            summary = redactedLog
         } else {
             let fallback = fallbackSummary(for: category, runtime: runtime)
             summarySource = fallback.isEmpty ? .none : .fallback
-            summary = fallback
+            summary = category == .noVisibleOutput && stream?.rawLineCount == 0
+                ? "\(runtime.displayName) \(providerVersion ?? "unknown version") exited with code \(exitCode) before emitting any stdout, stderr, or provider events. The provider did not report a cause."
+                : fallback
         }
         let resolvedModel = RuntimeModelAvailability.normalizedModel(model, for: runtime)
         let approvable = isApprovableRuntimePermission(category: category, haystack: haystack)
@@ -129,15 +162,31 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
             rawErrorCharacterCount: raw.count,
             resultOutputCharacterCount: resultOutput.count,
             summarySource: summarySource,
-            userMessage: userMessage(
-                for: category,
-                runtime: runtime,
-                model: resolvedModel,
-                isApprovableRuntimePermission: approvable
-            ),
+            userMessage: homeAccess.map { "\(runtime.displayName) could not use its settings folder. \($0.userMessage)" }
+                ?? userMessage(
+                    for: category,
+                    runtime: runtime,
+                    model: resolvedModel,
+                    isApprovableRuntimePermission: approvable
+                ),
             stderrWasWarningOnly: warningOnly,
             isApprovableRuntimePermission: approvable
         )
+    }
+
+    /// Shared by classification and the asynchronous evidence-acquisition
+    /// boundary, so post-failure I/O uses exactly the same silence policy.
+    static func copilotHomeEvidenceCanExplain(
+        category: AgentRuntimeFailureCategory, exitCode: Int, rawError: String?,
+        runOutput: String?, startupEvidence: String?, stream: AgentRuntimeStreamTelemetrySnapshot?
+    ) -> Bool {
+        (category == .providerProcessFailed || category == .noVisibleOutput)
+            && exitCode == 1
+            && strippingBenignWarnings(rawError ?? "").isEmpty
+            && (runOutput ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && LogSanitizer.sanitize(startupEvidence ?? "", maxLength: 800).isEmpty
+            && (stream?.jsonLineCount ?? 0) == 0
+            && (stream?.parsedEventCount ?? 0) == 0
     }
 
     /// Withholds the approval card only for denials that can be *proven*
@@ -239,6 +288,9 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         if timedOut {
             return .runtimeTimedOut
         }
+        if exitCode == 78, haystack.contains(RuntimeHomeAccessContainerCommand.failureMarker.lowercased()) {
+            return .providerHomeAccessDenied
+        }
         if budgetExceeded || maxTurnsExceeded {
             return .budgetExceeded
         }
@@ -273,7 +325,7 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         if containsAny(haystack, [
             "api key", "apikey", "base url", "base_url", "endpoint", "deployment",
             "byok", "provider config", "provider configuration", "openai-compatible",
-            "azure openai", "missing provider", "invalid provider"
+            "azure openai", "missing provider", "invalid provider", "plan model not specified"
         ]) {
             return .providerConfigurationInvalid
         }
@@ -308,7 +360,7 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
             return .networkFailed
         }
         if let stream,
-           stream.rawLineCount > 0,
+           (stream.rawLineCount > 0 || haystack.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
            stream.textEventCount == 0,
            stream.completedEventCount == 0,
            meaningfulHaystackEmpty {
@@ -390,9 +442,14 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
                 let hint = CommonCLIPrerequisites.claude.authHint ?? "Run `claude /login` or set `ANTHROPIC_API_KEY`."
                 return "\(runtime.displayName) returned no output. It is usually not logged in (\(hint)) or a SessionStart hook failed before any response was produced."
             }
+            if runtime == .copilotCLI {
+                return "Copilot exited without a visible response. Check `copilot login` and the selected account/model in the CLI, then retry. If it repeats, include the provider version and launch diagnostics; no provider error was supplied."
+            }
             return "\(runtime.displayName) exited before returning a visible assistant response."
         case .providerProcessFailed:
             return "\(runtime.displayName) failed before ASTRA received a visible assistant response."
+        case .providerHomeAccessDenied:
+            return "\(runtime.displayName) could not use its settings or state. Review the reported path and restore the access required by the provider, then retry."
         case .sandboxCredentialAccessBlocked:
             return "\(runtime.displayName) crashed while reading its saved macOS Keychain login. This runtime's own sandbox is disabled under the current policy, so ASTRA wraps it in a stricter sandbox that blocks this Keychain read. Try Review or Interactive policy for this task, or lower the sandbox read scope in Settings."
         }

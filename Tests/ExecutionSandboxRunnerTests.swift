@@ -151,6 +151,32 @@ struct ExecutionSandboxRunnerTests {
 
     // MARK: - Decision wiring
 
+    @Test("Cancelling during a home check prevents launch and permits a later fresh launch", arguments: ["runner", "task", "domain"])
+    func cancelledDuringHomeCheck(mode: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-cancel-home-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: { _ in ExecutionSandboxSettings(enforcement: .off) })
+        let context = makeContext(workspacePath: root.path)
+        let adapter = FakeLaunchAdapter(currentDirectory: root.path)
+        let attempt = Task { @MainActor in
+            let outcome = await runner.guardedSandboxedPlan(adapter: adapter, context: context, homeAccessCheck: { _, _ in
+                switch mode {
+                case "runner": runner.cancel()
+                case "task": withUnsafeCurrentTask { $0?.cancel() }
+                default: context.task.status = .cancelled
+                }
+                return nil
+            })
+            guard case .blocked(let result) = outcome else { return false }
+            return result.runtimeStopReason == "cancelled"
+        }
+        #expect(await attempt.value)
+        context.task.status = .draft
+        let next = await runner.guardedSandboxedPlan(adapter: adapter, context: context, homeAccessCheck: { _, _ in nil })
+        guard case .plan = next else { Issue.record("A fresh launch remained cancelled"); return }
+    }
+
     @Test("sandboxedPlan wraps the executable in sandbox-exec when the sandbox applies")
     func sandboxedPlanApplied() throws {
         let fm = FileManager.default

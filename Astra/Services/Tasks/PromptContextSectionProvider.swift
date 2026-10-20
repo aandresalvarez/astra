@@ -17,6 +17,7 @@ enum PromptContextSectionProviderID: String, Sendable, CaseIterable {
     case workspaceEnvironment = "workspace-environment"
     case taskOutputFolder = "task-output-folder"
     case taskDetails = "task-details"
+    case taskInputs = "task-inputs"
     case followUpContext = "follow-up-context"
     case capabilities = "capabilities"
     case browser = "browser"
@@ -41,6 +42,7 @@ enum PromptContextSectionProviderRegistry {
                 .workspaceEnvironment,
                 .taskOutputFolder,
                 .taskDetails,
+                .taskInputs,
                 .capabilities,
                 .browser,
                 .documentReader,
@@ -58,8 +60,10 @@ enum PromptContextSectionProviderRegistry {
                 .workspaceEnvironment,
                 .taskOutputFolder,
                 .followUpContext,
+                .taskInputs,
                 .capabilities,
                 .browser,
+                .documentReader,
                 .memories,
                 .astraRunProtocol,
                 .historyLookupRule,

@@ -9,15 +9,6 @@ import ASTRAPersistence
 @Suite("Running task count")
 @MainActor
 struct RunningTaskCountPredicateTests {
-    /// The predicate form `ContentView.fetchRunningTaskCount()` used to run.
-    private func legacyEnumPredicateCount(_ context: ModelContext) throws -> Int {
-        let runningStatus = TaskStatus.running
-        let descriptor = FetchDescriptor<AgentTask>(
-            predicate: #Predicate<AgentTask> { task in task.status == runningStatus }
-        )
-        return try context.fetchCount(descriptor)
-    }
-
     private func seed(_ context: ModelContext) throws {
         let workspace = Workspace(name: "Count", primaryPath: NSTemporaryDirectory())
         context.insert(workspace)
@@ -41,14 +32,18 @@ struct RunningTaskCountPredicateTests {
         return (container, root)
     }
 
-    @Test("The enum-capturing predicate throws on a real on-disk store")
-    func legacyPredicateThrowsOnDisk() throws {
+    @Test("Completing a running task updates the count on disk and after reopening")
+    func completionUpdatesRunningCountOnDisk() throws {
         let (container, root) = try onDiskContainer()
         defer { try? FileManager.default.removeItem(at: root) }
-        try seed(container.mainContext)
-        #expect(throws: (any Error).self) {
-            _ = try legacyEnumPredicateCount(container.mainContext)
-        }
+        let context = container.mainContext
+        try seed(context)
+        let task = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first { $0.status == .running })
+        task.status = .completed
+        task.completedAt = Date()
+        try context.save()
+        #expect(AppUpdateSafety.runningTaskCount(in: context) == 1)
+        #expect(AppUpdateSafety.runningTaskCount(in: ModelContext(container)) == 1)
     }
 
     @Test("Counts only .running tasks on a real on-disk store")

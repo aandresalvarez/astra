@@ -689,6 +689,7 @@ final class TaskLifecycleCoordinator {
             cleanupStore: worktreeCleanupStore,
             delete: {
                 willDelete()
+                SwiftDataDeletionPreparation.prepare(task)
                 // Removed inside the deletion, so a failed save rolls it back.
                 for request in requests { modelContext.delete(request) }
                 modelContext.delete(task)
@@ -828,6 +829,7 @@ final class TaskLifecycleCoordinator {
             WorkspaceConfigManager.autoExport(workspace: ws, modelContext: modelContext)
             return (false, nil, nil)
         }
+        SwiftDataDeletionPreparation.prepare(ws)
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: ws), workspace: next, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
@@ -919,6 +921,7 @@ final class TaskLifecycleCoordinator {
         settleAfterUnsavedDeletion(existing.tasks)
         afterCancellation()
         let existingID = existing.id.uuidString
+        SwiftDataDeletionPreparation.prepare(existing)
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: existing), workspace: nil, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
@@ -1182,11 +1185,16 @@ final class TaskLifecycleCoordinator {
                 let originalTitle = task.title
                 let originalUpdatedAt = task.updatedAt
 
-                guard let generated = await SpecEngine.generateTitle(
-                    goal: task.goal,
-                    workspacePath: workspace.primaryPath,
-                    utilityRuntime: utilityRuntime
-                ),
+                let outcome = await TaskTitleGenerationService.generate(goal: task.goal,
+                    workspacePath: workspace.primaryPath, configuration: utilityRuntime)
+                if outcome.shouldStopBatch {
+                    AppLogger.audit(.taskStats, category: "UI", fields: [
+                        "operation": "thread_title_backfill", "result": "runtime_unavailable",
+                        "runtime": runtime.rawValue
+                    ], level: .warning)
+                    break
+                }
+                guard let generated = outcome.title,
                 Self.isUsableGeneratedTitle(generated),
                 generated.caseInsensitiveCompare(originalTitle) != .orderedSame else {
                     continue
