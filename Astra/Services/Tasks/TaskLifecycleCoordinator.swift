@@ -1157,7 +1157,7 @@ final class TaskLifecycleCoordinator {
     }
 
     /// `importSession` spans one Import Workspace action: workspaces it
-    /// imports together keep the shared accounts they had in common.
+    /// imports together share only the accounts the person confirmed.
     func importFromConfig(at url: URL, existingWorkspaces: [Workspace],
                           importSession: WorkspaceConfigManager.ImportSession? = nil,
                           askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
@@ -1477,19 +1477,6 @@ final class TaskLifecycleCoordinator {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard collapsed.count > 240 else { return collapsed }
         return String(collapsed.prefix(240)) + "..."
-    }
-
-    // MARK: - Migration
-
-    func migrateConnectorCredentials(workspaces: [Workspace], globalConnectors: [Connector] = []) {
-        StartupCredentialMigrationService.migrateConnectorCredentials(
-            workspaces: workspaces,
-            globalConnectors: globalConnectors
-        )
-    }
-
-    func migrateSkillSecrets(skills: [Skill]) {
-        StartupCredentialMigrationService.migrateSkillSecrets(skills: skills)
     }
 
     // MARK: - Seeding

@@ -337,7 +337,7 @@ struct PluginActivationOwnershipTests {
         #expect(!activation.configuration.isEmpty)
     }
 
-    @Test("Workspaces imported together keep the shared account they had in common, under a fresh ID")
+    @Test("Workspaces imported together share an account only when the person confirmed it, under a fresh ID")
     func batchImportKeepsSharedAccountsShared() throws {
         let keychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
         let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
@@ -386,8 +386,19 @@ struct PluginActivationOwnershipTests {
                 }
                 let serviceType = fixture.gcloud.connectors[0].serviceType
 
-                // One import action: one row, shared, bound in both.
-                let (context, imported) = try importAll(session: WorkspaceConfigManager.ImportSession())
+                // One import action, nothing confirmed: each file is its own
+                // trust domain, so each workspace binds its own row.
+                let (unconfirmed, unconfirmedWorkspaces) = try importAll(session: WorkspaceConfigManager.ImportSession())
+                #expect(try unconfirmed.fetch(FetchDescriptor<Connector>()).filter { $0.serviceType == serviceType }.count == 2)
+                let unconfirmedBound = try unconfirmedWorkspaces.map { workspace in
+                    try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: workspace))
+                        .bindings.compactMap { $0.account?.id }
+                }
+                #expect(unconfirmedBound.allSatisfy { $0.count == 1 } && Set(unconfirmedBound.flatMap { $0 }).count == 2)
+
+                // The person confirmed sharing it: one row, shared, bound in both.
+                let confirmed = WorkspaceConfigManager.ImportSession(sharedAccountIDs: [fixture.sharedGCloudID.uuidString])
+                let (context, imported) = try importAll(session: confirmed)
                 let rows = try context.fetch(FetchDescriptor<Connector>()).filter { $0.serviceType == serviceType }
                 let row = try #require(rows.first)
                 #expect(rows.count == 1)
@@ -408,7 +419,7 @@ struct PluginActivationOwnershipTests {
                 #expect(try separate.fetch(FetchDescriptor<Connector>()).filter { $0.serviceType == serviceType }.count == 2)
 
                 // Two files that give the ID to different accounts aren't
-                // merged: each workspace binds its own row.
+                // merged even when confirmed: each workspace binds its own row.
                 var conflicting = configs
                 conflicting[1].connectors = conflicting[1].connectors?.map { cc in
                     var cc = cc
@@ -416,7 +427,9 @@ struct PluginActivationOwnershipTests {
                     return cc
                 }
                 #expect(conflicting[1].connectors?.first { $0.id == fixture.sharedGCloudID.uuidString }?.configValues.isEmpty == false)
-                let (split, splitWorkspaces) = try importAll(session: WorkspaceConfigManager.ImportSession(), configs: conflicting)
+                let (split, splitWorkspaces) = try importAll(
+                    session: WorkspaceConfigManager.ImportSession(sharedAccountIDs: [fixture.sharedGCloudID.uuidString]), configs: conflicting
+                )
                 let splitRows = try split.fetch(FetchDescriptor<Connector>()).filter { $0.serviceType == serviceType }
                 #expect(splitRows.count == 2)
                 let boundIDs = try splitWorkspaces.map { workspace in

@@ -172,7 +172,7 @@ struct PluginConnectorFieldTrustTests {
     /// An older row of a third-party plugin holding a setting the mirror now
     /// withholds: the value moves to the Keychain before the mirror is its
     /// only other copy, and only once the Keychain has it.
-    @Test("A withheld plain setting moves to the Keychain, and stays on the row when the move fails")
+    @Test("The setting-copy primitive preserves its source when the vault refuses a write")
     func withheldPlainSettingMovesToTheKeychain() {
         func legacyRow(_ origin: String = "imported.tracker") -> Connector {
             let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
@@ -186,16 +186,11 @@ struct PluginConnectorFieldTrustTests {
         let refusing = MockSecretStore()
         refusing.failsWrites = true
         let kept = legacyRow()
-        #expect(kept.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: refusing).isEmpty)
+        #expect(kept.moveSettingsToKeychain(["TRACKER_PROJECT"], store: refusing).isEmpty)
         #expect(kept.configValue("TRACKER_PROJECT") == "ENG-1" && kept.credentialKeys.isEmpty)
-        // A creator that can't be found moves nothing either.
-        let unknown = legacyRow("gone.tracker")
-        #expect(unknown.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: MockSecretStore()).isEmpty)
-        #expect(unknown.configKeys.count == 2)
-
         let store = MockSecretStore()
         let row = legacyRow()
-        #expect(row.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: store) == ["TRACKER_PROJECT"])
+        #expect(row.moveSettingsToKeychain(["TRACKER_PROJECT"], store: store) == ["TRACKER_PROJECT"])
         #expect(row.configKeys == ["TRACKER_BASE_URL"] && row.credentialKeys == ["TRACKER_PROJECT"])
         #expect(row.credentials(store: store)["TRACKER_PROJECT"] == "ENG-1")
         // The mirror now names it as a credential, and the Keychain holds it.
@@ -205,7 +200,7 @@ struct PluginConnectorFieldTrustTests {
         )
         #expect(mirrored.keys == ["TRACKER_BASE_URL"])
         // Idempotent: a second pass has nothing to move.
-        #expect(row.moveSettingsStoredAsCredentials(resolver: StubCreator.self, store: store).isEmpty)
+        #expect(row.moveSettingsToKeychain(["TRACKER_PROJECT"], store: store).isEmpty)
     }
 
     @Test("The mirror withholds a plain value an older row holds for a setting stored as a credential")
@@ -295,66 +290,55 @@ struct PluginConnectorFieldTrustTests {
 
     /// An older third-party row holding a setting now stored as a
     /// credential, and the mirror an older build wrote with its value.
-    @Test("The startup move saves and rewrites the mirrors, and is put back for the next launch when a rewrite fails")
+    @Test("A saved startup cutover remains recoverable when a mirror rewrite fails")
     func startupMoveRewritesMirrorsOrStaysRetryable() throws {
-        let env = try Fixtures.Environment()
-        let store = MockSecretStore()
-        let folder = env.root.appendingPathComponent("workspace", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: env.root) }
-        env.workspace.primaryPath = folder.path
-        let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
-        row.originPackageID = "imported.tracker"
-        row.originComponentID = "connector:tracker:tracker-api"
-        row.configKeys = ["TRACKER_PROJECT"]
-        row.configValues = ["ENG-1"]
-        env.context.insert(row)
-        row.workspace = env.workspace
-        try env.context.save()
-        let mirrorURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
-        try FileManager.default.createDirectory(at: mirrorURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data(#"{"connectors":[{"configKeys":["TRACKER_PROJECT"],"configValues":["ENG-1"]}]}"#.utf8).write(to: mirrorURL)
-
-        // A rewrite fails: the row and the Keychain are as they were, so
-        // the next launch moves the value again.
-        #expect(!StartupCredentialMigrationService.moveSettingsStoredAsCredentials(
-            of: [row], mirroredBy: [env.workspace], modelContext: env.context,
-            resolver: StubCreator.self, store: store, rewriteMirror: { _ in false }
-        ))
-        #expect(row.configKeys == ["TRACKER_PROJECT"] && row.configValues == ["ENG-1"])
-        #expect(row.credentialKeys.isEmpty)
-        #expect(Self.held("TRACKER_PROJECT", of: row, in: store) == nil)
-        #expect(!env.context.hasChanges)
-
-        // It moves, is saved, and the mirror is rewritten without it.
-        #expect(StartupCredentialMigrationService.moveSettingsStoredAsCredentials(
-            of: [row], mirroredBy: [env.workspace], modelContext: env.context, resolver: StubCreator.self, store: store
-        ))
-        #expect(row.configKeys.isEmpty && row.credentialKeys == ["TRACKER_PROJECT"])
-        #expect(Self.held("TRACKER_PROJECT", of: row, in: store) == "ENG-1")
-        #expect(!env.context.hasChanges)
-        let mirror = try String(contentsOf: mirrorURL, encoding: .utf8)
-        #expect(mirror.contains(row.id.uuidString))
-        #expect(!mirror.contains("ENG-1"))
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixtures.Environment()
+            let folder = env.root.appendingPathComponent("workspace", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: env.root) }
+            env.workspace.primaryPath = folder.path
+            let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
+            row.originPackageID = "imported.tracker"
+            row.originComponentID = "connector:tracker:tracker-api"
+            row.configKeys = ["TRACKER_PROJECT"]
+            row.configValues = ["ENG-1"]
+            env.context.insert(row)
+            row.workspace = env.workspace
+            try env.context.save()
+            let mirrorURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+            try FileManager.default.createDirectory(at: mirrorURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(#"{"connectors":[{"configKeys":["TRACKER_PROJECT"],"configValues":["ENG-1"]}]}"#.utf8).write(to: mirrorURL)
+            #expect(!StartupCredentialMigrationService.migrateAccounts([row], mirroredBy: [env.workspace],
+                modelContext: env.context, resolver: StubCreator.self, rewriteMirror: { _ in false }))
+            #expect(row.configKeys.isEmpty && row.credentialKeys == ["TRACKER_PROJECT"])
+            #expect(row.currentCredentialValue(forKey: "TRACKER_PROJECT") == "ENG-1")
+            let pending = try #require(try env.context.fetch(FetchDescriptor<PluginOperationReceipt>()).first { $0.completedAt == nil })
+            try ConnectorCredentialEditor.recover(pending.id, modelContext: env.context)
+            #expect(try PluginOperationCommit.read(pending.id, container: env.context.container)?.completedAt != nil)
+            let mirror = try String(contentsOf: mirrorURL, encoding: .utf8)
+            #expect(mirror.contains(row.id.uuidString))
+            #expect(!mirror.contains("ENG-1"))
+        }
     }
 
-    @Test("The startup move waits while the workspaces can't be read: no mirror could be rewritten")
+    @Test("The startup move waits while its workspace scope can't be read")
     func startupMoveWaitsForReadableWorkspaces() throws {
-        let env = try Fixtures.Environment()
-        let store = MockSecretStore()
-        let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
-        row.originPackageID = "imported.tracker"
-        row.originComponentID = "connector:tracker:tracker-api"
-        row.configKeys = ["TRACKER_PROJECT"]
-        row.configValues = ["ENG-1"]
-        row.isGlobal = true
-        env.context.insert(row)
-        try env.context.save()
-        #expect(!StartupCredentialMigrationService.moveSettingsStoredAsCredentials(
-            of: [row], mirroredBy: nil, modelContext: env.context, resolver: StubCreator.self, store: store
-        ))
-        #expect(row.configKeys == ["TRACKER_PROJECT"] && row.credentialKeys.isEmpty)
-        #expect(Self.held("TRACKER_PROJECT", of: row, in: store) == nil)
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixtures.Environment()
+            let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
+            row.originPackageID = "imported.tracker"
+            row.originComponentID = "connector:tracker:tracker-api"
+            row.configKeys = ["TRACKER_PROJECT"]
+            row.configValues = ["ENG-1"]
+            row.isGlobal = true
+            env.context.insert(row)
+            try env.context.save()
+            #expect(!StartupCredentialMigrationService.migrateAccounts([row], mirroredBy: nil,
+                modelContext: env.context, resolver: StubCreator.self))
+            #expect(row.configKeys == ["TRACKER_PROJECT"] && row.credentialKeys.isEmpty)
+            #expect(row.currentCredentialValue(forKey: "TRACKER_PROJECT") == nil)
+        }
     }
 
     @Test("The mirror withholds a third-party account's retired setting, and a bundled one's, keeping only declared plain ones")
