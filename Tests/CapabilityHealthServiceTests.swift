@@ -42,6 +42,39 @@ struct CapabilityHealthServiceTests {
         #expect(issues.first?.message.contains("Run `example-cli auth login`.") == true)
     }
 
+    @Test("a liveness timeout reads as a slow CLI, never as a login problem")
+    func livenessTimeoutDoesNotSuggestLogin() {
+        let prerequisite = CommonCLIPrerequisites.gcloud
+        let package = PluginPackage(
+            id: "gcloud-workflow",
+            name: "Google Cloud",
+            icon: "cloud",
+            description: "gcloud-backed workflow",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            prerequisites: [prerequisite],
+            governance: .builtInApproved()
+        )
+
+        let issues = CapabilityHealthService.prerequisiteIssues(
+            for: package,
+            statuses: [prerequisite.id: .unresponsive(detail: "timed out after 15s")]
+        )
+
+        #expect(issues.map(\.kind) == [.unresponsive])
+        let message = issues.first?.message ?? ""
+        #expect(message.contains("slow to respond"))
+        #expect(message.contains("timed out after 15s"))
+        #expect(!message.contains("auth login"))
+        #expect(!message.contains("Install"))
+    }
+
     @Test("healthy prerequisites do not create health issues")
     func healthyPrerequisitesDoNotCreateHealthIssues() {
         let prerequisite = CommonCLIPrerequisites.githubAuth

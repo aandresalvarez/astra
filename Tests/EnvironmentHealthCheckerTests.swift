@@ -148,6 +148,7 @@ struct EnvironmentHealthCheckerTests {
             return
         }
         #expect(detail.contains("timed out"))
+        #expect(status.isLivenessTimeout)
     }
 
     @Test("Unresponsive when liveness exits non-zero")
@@ -166,6 +167,7 @@ struct EnvironmentHealthCheckerTests {
         }
         #expect(detail.contains("exit 2"))
         #expect(detail.contains("dylib not found"))
+        #expect(!status.isLivenessTimeout)
     }
 
     @Test("Unresponsive when liveness fails to launch")

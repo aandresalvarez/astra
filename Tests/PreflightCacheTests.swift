@@ -135,6 +135,147 @@ struct PreflightCacheTests {
         }
         #expect(detail.contains("not logged in"))
     }
+
+    @Test("a liveness timeout is retried once with the longer budget")
+    func livenessTimeoutIsRetriedWithLongerBudget() async {
+        let runner = ScriptedLivenessRunner(livenessOutcomes: [.timedOut, .exited(code: 0)])
+        let cache = PreflightCache(
+            checker: EnvironmentHealthChecker(runner: runner),
+            probeTimeout: 3,
+            slowProbeRetryTimeout: 15
+        )
+
+        let status = await cache.status(for: CommonCLIPrerequisites.gcloud)
+
+        guard case .healthy = status else {
+            Issue.record("Expected healthy after the slow retry, got \(status)")
+            return
+        }
+        #expect(await runner.livenessTimeouts() == [3, 15])
+        #expect(await cache.cachedStatus(for: CommonCLIPrerequisites.gcloud) == status)
+    }
+
+    @Test("a failure that is not a timeout is not retried")
+    func nonTimeoutFailureIsNotRetried() async {
+        let runner = ScriptedLivenessRunner(livenessOutcomes: [.exited(code: 2)])
+        let cache = PreflightCache(checker: EnvironmentHealthChecker(runner: runner))
+
+        let status = await cache.status(for: CommonCLIPrerequisites.gcloud)
+
+        guard case .unresponsive = status else {
+            Issue.record("Expected unresponsive, got \(status)")
+            return
+        }
+        #expect(!status.isLivenessTimeout)
+        #expect(await runner.livenessTimeouts().count == 1)
+    }
+
+    @Test("an auth probe that keeps timing out stays unresponsive, not signed out")
+    func authProbeTimeoutIsNotClassifiedAsUnauthenticated() async {
+        let runner = ScriptedLivenessRunner(livenessOutcomes: [.timedOut, .timedOut])
+        let cache = PreflightCache(checker: EnvironmentHealthChecker(runner: runner))
+
+        let status = await cache.status(for: CommonCLIPrerequisites.gcloudAuth)
+
+        #expect(status.isLivenessTimeout, "Expected a liveness timeout, got \(status)")
+        #expect(await runner.livenessTimeouts() == [
+            PreflightCache.defaultProbeTimeout,
+            PreflightCache.defaultSlowProbeRetryTimeout
+        ])
+    }
+
+    @Test("concurrent callers for the same prerequisite share one probe")
+    func concurrentCallersShareOneProbe() async throws {
+        let runner = GatedRunner()
+        let cache = PreflightCache(checker: EnvironmentHealthChecker(runner: runner))
+        let prereq = CommonCLIPrerequisites.gcloud
+
+        let first = Task { await cache.status(for: prereq) }
+        await runner.waitUntilLivenessStarted()
+        let second = Task { await cache.status(for: prereq) }
+        // Give the second caller time to reach the cache while the first
+        // probe is held open. Without coalescing it would start its own probe.
+        try await Task.sleep(for: .milliseconds(100))
+        await runner.release()
+
+        let statuses = [await first.value, await second.value]
+        #expect(statuses.allSatisfy { if case .healthy = $0 { true } else { false } })
+        #expect(await runner.livenessCallCount() == 1)
+    }
+}
+
+/// Answers `which` immediately and each liveness call with the next scripted
+/// outcome, recording the timeout the checker granted it.
+private actor ScriptedLivenessRunner: BinaryRunner {
+    private var outcomes: [RunResult.Outcome]
+    private var timeouts: [TimeInterval] = []
+
+    init(livenessOutcomes: [RunResult.Outcome]) {
+        self.outcomes = livenessOutcomes
+    }
+
+    func livenessTimeouts() -> [TimeInterval] { timeouts }
+
+    func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?
+    ) async -> RunResult {
+        if args.first == "which" {
+            return RunResult.exited(code: 0, stdout: "/opt/bin/gcloud\n", stderr: "")
+        }
+        timeouts.append(timeout)
+        let outcome = outcomes.isEmpty ? .exited(code: 0) : outcomes.removeFirst()
+        switch outcome {
+        case .timedOut:
+            return RunResult.timedOut(stdout: "", stderr: "")
+        case .exited(let code) where code != 0:
+            return RunResult.exited(code: code, stdout: "", stderr: "boom")
+        default:
+            return RunResult.exited(code: 0, stdout: "account@example.com\n", stderr: "")
+        }
+    }
+}
+
+/// Holds every liveness call open until `release()`, without blocking a
+/// thread, so a test can put a second caller in front of an in-flight probe.
+private actor GatedRunner: BinaryRunner {
+    private var livenessCalls = 0
+    private var released = false
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func livenessCallCount() -> Int { livenessCalls }
+
+    func waitUntilLivenessStarted() async {
+        guard livenessCalls == 0 else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
+    }
+
+    func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?
+    ) async -> RunResult {
+        if args.first == "which" {
+            return RunResult.exited(code: 0, stdout: "/opt/bin/gcloud\n", stderr: "")
+        }
+        livenessCalls += 1
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        if !released {
+            await withCheckedContinuation { releaseWaiters.append($0) }
+        }
+        return RunResult.exited(code: 0, stdout: "Google Cloud SDK 1.0.0\n", stderr: "")
+    }
 }
 
 // MARK: - Clock stub

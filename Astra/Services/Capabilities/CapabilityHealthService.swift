@@ -87,6 +87,17 @@ enum CapabilityHealthService {
                 resourceName: prerequisite.displayName,
                 message: "\(prerequisite.displayName): authorization required. \(detail). Open Manage Capabilities and choose Repair access."
             )
+        case .unresponsive(let detail) where status.isLivenessTimeout:
+            // Installed but slow to answer, even after a longer retry. A
+            // login or install hint would send the user to fix something
+            // that is not broken.
+            return CapabilityHealthIssue(
+                packageID: package.id,
+                packageName: package.name,
+                kind: .unresponsive,
+                resourceName: prerequisite.displayName,
+                message: "\(prerequisite.displayName): installed but slow to respond (\(detail)). This machine may be busy; retry in a moment."
+            )
         case .unresponsive(let detail):
             let hint = prerequisite.authHint ?? prerequisite.installHint
             return CapabilityHealthIssue(

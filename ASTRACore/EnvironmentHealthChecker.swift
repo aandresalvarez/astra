@@ -46,6 +46,15 @@ public enum HealthStatus: Sendable, Equatable {
             return false
         }
     }
+
+    /// Whether this is a liveness probe that ran out of time, as opposed to
+    /// one that answered with a failure. A slow answer says the machine was
+    /// busy, not that the CLI is broken or signed out, so callers retry it
+    /// and never describe it as a login problem.
+    public var isLivenessTimeout: Bool {
+        guard case .unresponsive(let detail) = self else { return false }
+        return detail.hasPrefix(EnvironmentHealthChecker.livenessTimeoutDetailPrefix)
+    }
 }
 
 /// A semantic check inspects liveness stdout/stderr and returns whether the
@@ -79,6 +88,11 @@ public enum SemanticCheck: String, Codable, Sendable, Equatable {
 ///     `--version` in 3s is effectively unresponsive for interactive use.
 public struct EnvironmentHealthChecker: Sendable {
     public static let defaultEnvPath = "/usr/bin/env"
+    static let livenessTimeoutDetailPrefix = "timed out after "
+
+    static func livenessTimeoutDetail(after timeout: TimeInterval) -> String {
+        "\(livenessTimeoutDetailPrefix)\(Int(timeout))s"
+    }
     public static var defaultFallbackDirectories: [String] {
         [
             "\(NSHomeDirectory())/.local/bin",
@@ -155,7 +169,7 @@ public struct EnvironmentHealthChecker: Sendable {
             // possible with broken symlinks or permission changes.
             return .unresponsive(detail: reason)
         case .timedOut:
-            return .unresponsive(detail: "timed out after \(Int(timeout))s")
+            return .unresponsive(detail: Self.livenessTimeoutDetail(after: timeout))
         case .cancelled:
             return .unresponsive(detail: "cancelled")
         case .exited(let code) where code != 0:
