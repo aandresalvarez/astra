@@ -159,8 +159,8 @@ struct CapabilityPackageRoundTripE2ETests {
         #expect(library.installedPackage(id: importedPackage.id)?.sourceMetadata == .localLibrary())
     }
 
-    @Test("create flow reports an approval it couldn't take back after a failed install")
-    func createFlowReportsAnApprovalItCouldNotRevert() throws {
+    @Test("create prepares every participant before publishing any approval")
+    func createPreparationFailurePublishesNoApproval() throws {
         let root = try roundTripTemporaryDirectory(named: "astra-capability-unreverted-e2e")
         defer { try? FileManager.default.removeItem(at: root) }
         // A library path that is a file: the install fails after the approval is saved.
@@ -188,11 +188,8 @@ struct CapabilityPackageRoundTripE2ETests {
                 )
             )
             Issue.record("The install should fail.")
-        } catch let error as CapabilityPackageCreationError {
-            guard case .approvalNotReverted = error else { Issue.record("Unexpected \(error)"); return }
-        }
-        // What the error says is what is on disk: the approval stayed.
-        #expect(approvalStore.records().count == 1)
+        } catch { }
+        #expect(approvalStore.records().isEmpty)
     }
 
     @Test("create flow rejects invalid packages without partial writes")

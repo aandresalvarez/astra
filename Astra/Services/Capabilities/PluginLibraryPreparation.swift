@@ -15,8 +15,10 @@ enum PluginLibraryPreparation {
     static func prepare(
         source: CapabilityPackageSource, library: CapabilityLibrary,
         approvalStore: CapabilityApprovalStore, approvedBy: String? = nil,
+        approvalRecord: CapabilityApprovalRecord? = nil,
         storeIdentity: String, journal: PluginFileOperationJournal,
-        operation: PluginFileOperationContext? = nil, destination: Destination = .installed
+        operation: PluginFileOperationContext? = nil, destination: Destination = .installed,
+        clearsStaged: Bool = true
     ) throws -> Definition {
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("astra-plugin-prepare-\(UUID())")
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -28,10 +30,13 @@ enum PluginLibraryPreparation {
             throw PluginDefinitionChange.Failure.reviewedBytesChanged
         }
         var approvalChange: PluginFileOperationJournal.Change?
-        if let approvedBy {
+        if approvedBy != nil || approvalRecord != nil {
             let approvals = CapabilityApprovalStore(directory: scratch.appendingPathComponent("Approvals"), publishesChanges: false)
-            let record = try approvals.save(package: installed, status: .approved, approvedBy: approvedBy,
-                reviewNotes: "Approved the staged update.")
+            let record = try approvals.save(package: installed, status: approvalRecord?.status ?? .approved,
+                approvedBy: approvalRecord?.approvedBy ?? approvedBy!,
+                reviewNotes: approvalRecord?.reviewNotes ?? "Approved the staged update.",
+                approvedAt: approvalRecord?.approvedAt ?? Date())
+            if let expected = approvalRecord, expected != record { throw PluginDefinitionChange.Failure.reviewedBytesChanged }
             approvalChange = .init(root: .approvals, name: approvalStore.recordURL(for: record).lastPathComponent,
                 replacement: try PluginFileImage.capture(approvals.recordURL(for: record)))
         }
@@ -50,10 +55,10 @@ enum PluginLibraryPreparation {
             .init(root: target, name: name + ".json", replacement: try PluginFileImage.capture(candidate.packageURL(for: installed.id))),
             .init(root: target, name: name, replacement: try PluginFileImage.capture(candidate.packageManifestURL(for: installed.id).deletingLastPathComponent()))
         ]
-        if destination == .installed {
+        if destination == .installed, clearsStaged {
             changes += [.init(root: .staging, name: name + ".json", replacement: nil), .init(root: .staging, name: name, replacement: nil)]
         }
-        if let approvalChange { changes.append(approvalChange) }
+        if let approvalChange { changes.insert(approvalChange, at: 0) }
         let prepared = try journal.prepare(id: operation?.id ?? UUID(), storeIdentity: storeIdentity, pluginIDs: [installed.id],
             changes: changes, linkedMetadataDigest: operation?.metadataDigest)
         return Definition(operation: prepared, reviewedDigest: reviewedDigest)
