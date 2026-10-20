@@ -278,6 +278,7 @@ enum PluginUpdateService {
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let activations = try modelContext.fetch(FetchDescriptor<PluginActivation>())
         let credentialPreparation = PluginUpdateSkillCredentials(modelContext: modelContext, persistence: secrets ?? SkillSecretSeam.required)
+        let accountPreparation = PluginUpdateAccountCredentials(modelContext: modelContext)
         var total = Reconciliation()
         var changedWorkspaces: [Workspace] = []
         var changed = 0
@@ -297,7 +298,7 @@ enum PluginUpdateService {
                     activation, in: workspace, to: package, mode: mode, modelContext: modelContext, secrets: secrets,
                     connectorStore: connectorStore,
                     awaitsReview: awaitsReview(package, in: workspace, records: approvalRecords),
-                    credentialPreparation: credentialPreparation,
+                    credentialPreparation: credentialPreparation, accountPreparation: accountPreparation,
                     copied: &total.copied
                 )
                 total.released += result.released
@@ -353,6 +354,7 @@ enum PluginUpdateService {
                 throw PluginOperationProblem.savedRecoveryPending(receipt.id)
             }
             credentialPreparation.completed(activations: activations)
+            accountPreparation.completed()
         } catch {
             guard !PluginOperationProblem.preventsRollback(error) else { throw error }
             modelContext.rollback()
@@ -362,6 +364,7 @@ enum PluginUpdateService {
             let legacyCopies = total.copied.filter { $0.account != nil || !credentialPreparation.owns($0.skillID) }
             let unrestored = undo(legacyCopies, secrets: secrets, connectorStore: connectorStore)
             credentialPreparation.discard()
+            accountPreparation.discard()
             // A refused undo leaves an actual orphan. Keep its intent until
             // recovery can delete it, using the same saved-owner checks.
             if unrestored.isEmpty {
@@ -480,6 +483,7 @@ enum PluginUpdateService {
         connectorStore: SecretStore? = nil,
         awaitsReview: Bool = false,
         credentialPreparation: PluginUpdateSkillCredentials? = nil,
+        accountPreparation: PluginUpdateAccountCredentials? = nil,
         preparedGeneration: PluginCredentialGenerationTransaction? = nil,
         copied: inout [CopiedSecret]
     ) throws -> Reconciliation {
@@ -592,7 +596,8 @@ enum PluginUpdateService {
         }
 
         let beforeAccounts = copied.count
-        result.changedAccountIDs = syncOwnedAccounts(of: activation, to: package, store: connectorStore, copied: &copied)
+        result.changedAccountIDs = try accountPreparation?.prepare(activation, package: package) ?? []
+        result.changedAccountIDs.formUnion(syncOwnedAccounts(of: activation, to: package, store: connectorStore, copied: &copied))
         if !result.changedAccountIDs.isEmpty { result.moved = true }
         result.copied += copied[beforeAccounts...]
 
