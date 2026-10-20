@@ -73,12 +73,21 @@ enum TaskPlanService: Sendable {
     /// turn, and after a save `task.events` comes back as faults: on a long
     /// task each reconstruction then fetched every conversation event one row
     /// at a time to find the handful that can change the plan.
+    ///
+    /// The reader matches on `task.id`, which a duplicated workspace import
+    /// can share between two live tasks. Any row owned by another task means
+    /// the id alone cannot answer, so that rare case replays the relationship.
     static func reconstruct(for task: AgentTask) -> TaskPlanState {
+        let owner = task.persistentModelID
         guard let modelContext = task.modelContext,
               let input = try? TaskPlanStateReader.read(taskID: task.id, modelContext: modelContext),
-              let latestEventAt = try? latestEventTimestamp(taskID: task.id, modelContext: modelContext) else {
+              let newest = try? newestEvent(taskID: task.id, modelContext: modelContext),
+              newest.task?.persistentModelID == owner,
+              input.events.allSatisfy({ $0.task?.persistentModelID == owner }),
+              input.recoveryRuns.allSatisfy({ $0.task?.persistentModelID == owner }) else {
             return reconstruct(from: task.events, recoveryRuns: task.runs)
         }
+        let latestEventAt = newest.timestamp
         var state = reconstruct(from: input.events, recoveryRuns: input.recoveryRuns)
         // The relationship replay stamps the newest event of any type, plan or
         // not; keep that rather than the newest plan event.
@@ -86,13 +95,13 @@ enum TaskPlanService: Sendable {
         return state
     }
 
-    private static func latestEventTimestamp(taskID: UUID, modelContext: ModelContext) throws -> Date? {
+    private static func newestEvent(taskID: UUID, modelContext: ModelContext) throws -> TaskEvent? {
         var descriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> { $0.task?.id == taskID },
             sortBy: [SortDescriptor(\TaskEvent.timestamp, order: .reverse)]
         )
         descriptor.fetchLimit = 1
-        return try modelContext.fetch(descriptor).first?.timestamp
+        return try modelContext.fetch(descriptor).first
     }
 
     static func reconstruct(from events: [TaskEvent], recoveryRuns: [TaskRun]) -> TaskPlanState {

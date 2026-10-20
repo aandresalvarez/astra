@@ -82,6 +82,36 @@ struct TaskEventTypeLookupTests {
         #expect(TaskEventTypeLookup.events(ofType: settled, task: task).isEmpty)
     }
 
+    @Test("Tasks sharing an id, as a duplicated workspace import leaves them, read only their own rows")
+    func duplicatedTaskIDsStayIndependent() throws {
+        let (container, context) = try makeContext()
+        defer { _ = container }
+        let original = AgentTask(title: "Original", goal: "Ship the plan")
+        let duplicate = AgentTask(title: "Duplicate", goal: "Ship the plan")
+        duplicate.id = original.id
+        context.insert(original)
+        context.insert(duplicate)
+        let run = TaskRun(task: duplicate)
+        run.id = UUID()
+        context.insert(run)
+        context.insert(TaskEvent(task: original, type: settled, payload: "original"))
+        context.insert(TaskEvent(task: duplicate, type: settled, payload: "duplicate", run: run))
+        let plan = TaskPlanPayload(title: "Plan", goal: "Ship the plan",
+                                   steps: [TaskPlanPayloadStep(id: "one", title: "Inspect")])
+        _ = TaskPlanService.recordCreated(plan, task: original, modelContext: context)
+        _ = TaskPlanService.recordApproved(plan, task: original, modelContext: context)
+        try context.save()
+
+        #expect(TaskEventTypeLookup.events(ofType: settled, task: original).map(\.payload) == ["original"])
+        #expect(TaskEventTypeLookup.events(ofType: settled, task: duplicate).map(\.payload) == ["duplicate"])
+        #expect(TaskEventTypeLookup.first(ofType: settled, task: duplicate, run: run)?.payload == "duplicate")
+        // The duplicate never planned: it must not inherit the original's plan.
+        #expect(TaskPlanService.reconstruct(for: duplicate).plan == nil)
+        #expect(TaskPlanService.reconstruct(for: duplicate)
+            == TaskPlanService.reconstruct(from: duplicate.events, recoveryRuns: duplicate.runs))
+        #expect(TaskPlanService.reconstruct(for: original).lifecycleStatus == .approved)
+    }
+
     @Test("An unmanaged task is scanned, since no store can answer for it")
     func unmanagedTaskFallsBackToTheRelationship() {
         let task = AgentTask(title: "Detached", goal: "No store")

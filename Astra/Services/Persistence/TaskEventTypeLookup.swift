@@ -16,6 +16,11 @@ import ASTRAModels
 /// what the `!isDeleted` scans it replaces looked at. An unmanaged task (a
 /// detached launch view, or one never inserted) has no store to ask, so it is
 /// scanned as before.
+///
+/// `task.id` narrows the query but does not decide ownership: importing a
+/// workspace as a duplicate restores the exported task and run UUIDs, so two
+/// live tasks can share one. Each row is kept only if its owner is this task's
+/// own persistent identity, which is what the relationship scan answered.
 @MainActor
 public enum TaskEventTypeLookup {
     public static func events(ofType type: String, task: AgentTask) -> [TaskEvent] {
@@ -51,6 +56,7 @@ public enum TaskEventTypeLookup {
               let fetched = try? modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: predicate)) else {
             return task.events.filter { !$0.isDeleted && scan($0) }
         }
-        return fetched.filter { !$0.isDeleted }
+        let owner = task.persistentModelID
+        return fetched.filter { !$0.isDeleted && $0.task?.persistentModelID == owner }
     }
 }

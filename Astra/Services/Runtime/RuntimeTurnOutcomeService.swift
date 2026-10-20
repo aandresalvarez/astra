@@ -14,6 +14,15 @@ enum RuntimeTurnOutcomeService {
         let selectedRuntime = checkpoint.runtime
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
         let auditPhase = checkpoint.phase
+        // Frozen before the first await, like the rest of the launch view: a
+        // snapshot without an executionRootPath follows the live workspace,
+        // which can change while validation yields. Built only for the
+        // run-tests branch that reads it — it copies every run and event of
+        // the task, which on a long task cost more than the rest of the
+        // outcome.
+        let validationTask = checkpoint.launchSnapshot.validationStrategy == .runTests
+            ? TaskExecutionLaunchSnapshotApplicator.detachedTask(checkpoint.launchSnapshot, from: task)
+            : nil
         let executionPath = checkpoint.executionPath
         let launchPermissionPolicy = checkpoint.permissionPolicy
         let timeoutSeconds = checkpoint.timeoutSeconds
@@ -137,12 +146,10 @@ enum RuntimeTurnOutcomeService {
                         // part of AgentTaskLaunchSnapshot, so a command edited
                         // after admission must not be what grades this run. The
                         // detached task also carries the executionRootPath the
-                        // run actually used, so tests execute where it ran. Built
-                        // only here: it copies every run and event of the task,
-                        // which on a long task cost more than the rest of the
-                        // outcome, and no other branch reads it.
+                        // run actually used, so tests execute where it ran.
                         let testResult = await ValidationService.runTests(
-                            task: TaskExecutionLaunchSnapshotApplicator.detachedTask(checkpoint.launchSnapshot, from: task),
+                            task: validationTask
+                                ?? TaskExecutionLaunchSnapshotApplicator.detachedTask(checkpoint.launchSnapshot, from: task),
                             commandRunner: ShellValidationCommandRunner(
                                 sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement
                             )
