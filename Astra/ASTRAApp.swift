@@ -975,6 +975,9 @@ public struct ASTRAApp: App {
                 // skipped it, even a cleanup recorded meanwhile waits. Each
                 // pass spares what the other's pending records hold, so an
                 // unconfirmed workspace deletion is dropped only after both.
+                // Rewriting saved projections needs a trusted store, but
+                // does not require the credential-ownership scan.
+                PluginOperationRecovery.resumePending(modelContext: modelContext)
                 if WorkspaceRecoveryTrust.allowsCleanup {
                     WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
                                                                   movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)

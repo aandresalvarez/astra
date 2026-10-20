@@ -373,9 +373,10 @@ struct SchemaVersionTests {
     @Test("Plugins 2.0 uses a new V21 schema after original V20")
     func v21VersionIdentifier() {
         #expect(ASTRASchemaV21.versionIdentifier == Schema.Version(21, 0, 0))
-        #expect(ASTRASchemaV21.models.count == 21)
+        #expect(ASTRASchemaV21.models.count == 22)
         #expect(ASTRASchemaV21.models.contains { $0 == PluginActivation.self })
         #expect(ASTRASchemaV21.models.contains { $0 == AccountBinding.self })
+        #expect(ASTRASchemaV21.models.contains { $0 == PluginOperationReceipt.self })
     }
 
     @Test("Advertised current schema matches the compiled current model")
@@ -500,7 +501,7 @@ struct SchemaVersionTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [config]
         )
-        #expect(container.schema.entities.count == 21)
+        #expect(container.schema.entities.count == 22)
     }
 
     @MainActor

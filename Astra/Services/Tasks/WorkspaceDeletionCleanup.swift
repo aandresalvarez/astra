@@ -418,9 +418,13 @@ enum WorkspaceDeletionCleanupService {
     static func settle(
         _ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext,
         retained: [ConnectorKeychainCleanup] = [], retainedSkillIDs: Set<UUID> = [], movedMirrors: [String] = [],
-        identity: (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:)
+        identity: (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
+        cleanConnectors: (([ConnectorKeychainCleanup], ConnectorCredentialCleanup.Ownership) -> Bool)? = nil,
+        cleanSkill: ((SkillKeychainCleanup) -> Bool)? = nil
     ) -> Bool {
-        guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
+        guard PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext),
+              let requests = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+              let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
               let connectors = try? modelContext.fetch(FetchDescriptor<Connector>()),
               let skills = try? modelContext.fetch(FetchDescriptor<Skill>()) else { return false }
         // The mirror files pinned at deletion, compared with the ones each
@@ -493,11 +497,13 @@ enum WorkspaceDeletionCleanupService {
         // the record for an idempotent retry. A recreated connector can share
         // a stable endpoint or package namespace under a new ID, so
         // connector ownership is per namespace.
-        var cleared = ConnectorCredentialCleanup.run(
-            record.connectors, ownership: ConnectorCredentialCleanup.Ownership(connectors, retained: retained)
-        )
+        let ready = record.connectors.filter { !requests.holdsAccount($0) }
+        let ownership = ConnectorCredentialCleanup.Ownership(connectors, retained: retained)
+        let attempted = cleanConnectors.map { $0(ready, ownership) } ?? ConnectorCredentialCleanup.run(ready, ownership: ownership)
+        var cleared = ready.count == record.connectors.count && attempted
         for skill in record.skills where !liveSkills.contains(skill.skillID) && !retainedSkillIDs.contains(skill.skillID) {
-            cleared = skill.run() && cleared
+            if requests.holdsSkill(skill.skillID) { cleared = false; continue }
+            cleared = (cleanSkill.map { $0(skill) } ?? skill.run()) && cleared
         }
         if !cleared {
             AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [

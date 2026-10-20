@@ -208,7 +208,8 @@ struct PluginSecretCleanupOutbox {
         clean: (UUID) -> Bool = { SkillKeychainCleanup(skillID: $0).run() }
     ) {
         // What is live can't be told without the store: every record stays.
-        guard let pendingTasks = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+        guard PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext),
+              let pendingTasks = PendingTaskCredentialReferences.capture(modelContext: modelContext),
               let live = liveSkillIDs(modelContext: modelContext) else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "plugin_secret_cleanup", "reason": "store_unreadable_kept"
