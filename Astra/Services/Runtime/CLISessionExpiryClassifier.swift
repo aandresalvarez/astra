@@ -254,6 +254,13 @@ enum CLISessionExpiryClassifier {
     struct Stop: Equatable {
         let reason: String
         let message: String
+        let repairContext: RuntimeRepairContext?
+
+        init(reason: String, message: String, repairContext: RuntimeRepairContext? = nil) {
+            self.reason = reason
+            self.message = message
+            self.repairContext = repairContext
+        }
     }
 
     /// A stop when `content` is a sign-in failure printed by a command that
@@ -261,8 +268,19 @@ enum CLISessionExpiryClassifier {
     /// when the line succeeded, the CLI must have run where its own exit
     /// status was masked (`masksExitStatus`).
     static func stop(content: String, command: String?, failed: Bool = true) -> Stop? {
-        guard let family = family(content: content, command: command, failed: failed) else { return nil }
-        return Stop(reason: TaskRunStopReason.capabilitySessionExpired.rawValue, message: family.stopMessage)
+        guard let command, RuntimeRepairInvocationPolicy.admitsDiagnostics(command: command, content: content),
+              let family = family(content: content, command: command, failed: failed) else { return nil }
+        guard RuntimeRepairInvocationPolicy.permitsAutomaticRepair(command: command, commands: family.commands) else {
+            let message = "Authentication failed in a shell context ASTRA cannot safely identify. "
+                + "Review the command and its user, directory and credential store, then repair access manually before resuming."
+            return Stop(reason: TaskRunStopReason.capabilitySessionExpired.rawValue, message: message,
+                        repairContext: .manualReview(message: message))
+        }
+        return Stop(
+            reason: TaskRunStopReason.capabilitySessionExpired.rawValue, message: family.stopMessage,
+            repairContext: RuntimeRepairContext(providerBinary: family.checkBinary, message: family.stopMessage,
+                                               repair: family.repair, offersAction: family.offersSignIn)
+        )
     }
 
     static func family(
@@ -683,18 +701,6 @@ enum CLISessionExpiryClassifier {
               let host = (environment["GH_REPO"].flatMap(repositoryHost) ?? environment["GH_HOST"]).flatMap(enterpriseHost)
         else { return repair }
         return retargeted(repair, to: host)
-    }
-
-    /// The stop message to record for `message`, given the variables the
-    /// run's `gcloud` got (`environment`, read only for an
-    /// application-default stop): with `GOOGLE_APPLICATION_CREDENTIALS` set,
-    /// the guidance about that file (`Family.credentialFile`), which offers
-    /// no sign-in. Otherwise `message` unchanged.
-    static func stopMessage(_ message: String, launchEnvironment environment: () -> [String: String]?) -> String {
-        guard let family = family(forStopMessage: message), family.readsApplicationDefault, family.offersSignIn,
-              let file = environment()?["GOOGLE_APPLICATION_CREDENTIALS"], !file.isEmpty
-        else { return message }
-        return family.credentialFile(file).stopMessage
     }
 
     /// An application-default sign-in (recorded before the run's

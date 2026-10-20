@@ -469,11 +469,16 @@ final class TaskLifecycleCoordinator {
     func pendingRepair(for task: AgentTask) -> RepairAction? {
         guard let run = task.runs.max(by: { $0.startedAt < $1.startedAt }) else { return nil }
         let newestFirst = task.events.filter { $0.run?.id == run.id }.sorted { $0.timestamp > $1.timestamp }
+        if let captured = newestFirst.first(where: { $0.type == TaskEventTypes.System.runtimeRepairContext.rawValue }) {
+            return RuntimeRepairContext.decode(from: captured.payload)?.repair
+                ?? RuntimeRepairContext.manualReview(message: "The saved repair context could not be read.").repair
+        }
         if let recorded = newestFirst
             .first(where: { $0.type == TaskEventTypes.System.runtimeRepairRequired.rawValue })
             .flatMap({ RepairAction.decode(from: $0.payload) }) {
             return recorded
         }
+        // Legacy-only reader for stops saved before structured repair contexts.
         guard run.typedStopReason == .capabilitySessionExpired else { return nil }
         return newestFirst.lazy
             .filter { $0.type == TaskEventTypes.System.error.rawValue }
