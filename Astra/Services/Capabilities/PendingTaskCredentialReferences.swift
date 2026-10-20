@@ -43,11 +43,16 @@ struct PendingTaskCredentialReferences {
             // Requests before policy snapshots use live rows, already covered
             // by normal ownership. A present but unreadable policy is unsafe.
             guard let json = request.executionPolicySnapshotJSON else { continue }
-            guard let data = json.data(using: .utf8),
-                  let policy = try? JSONDecoder().decode(TaskExecutionPolicySnapshotV1.self, from: data),
-                  policy.version == 1, result.include(policy, in: saved) else { return nil }
+            guard result.includePolicyJSON(json, in: saved) else { return nil }
         }
         return result
+    }
+
+    mutating func includePolicyJSON(_ json: String, in context: ModelContext) -> Bool {
+        guard let data = json.data(using: .utf8),
+              let policy = try? JSONDecoder().decode(TaskExecutionPolicySnapshotV1.self, from: data),
+              policy.version == 1 else { return false }
+        return include(policy, in: context)
     }
 
     private mutating func include(_ policy: TaskExecutionPolicySnapshotV1, in context: ModelContext) -> Bool {
@@ -95,6 +100,10 @@ struct PendingTaskCredentialReferences {
         }
         guard let data = policy.skillSnapshotsJSON.data(using: .utf8),
               let snapshots = try? JSONDecoder().decode([SkillSnapshotConfig].self, from: data) else { return false }
+        return includeSkillSnapshots(snapshots)
+    }
+
+    mutating func includeSkillSnapshots(_ snapshots: [SkillSnapshotConfig]) -> Bool {
         for skill in snapshots {
             if let namespace = skill.credentialNamespaceID {
                 includeSkill(namespace, keys: skill.environmentKeys)

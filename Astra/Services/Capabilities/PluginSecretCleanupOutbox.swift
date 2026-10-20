@@ -106,87 +106,7 @@ struct PluginSecretCleanupOutbox {
             ], level: .error)
             return
         }
-        guard let held = namedByMirrors(pending, modelContext: modelContext) else {
-            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
-                "scope": "plugin_secret_cleanup", "reason": "workspace_mirror_unreadable"
-            ], level: .error)
-            return
-        }
-        settle(
-            pending.filter { !held.contains($0) }, keys: keys, modelContext: modelContext, outbox: outbox,
-            secrets: secrets, clean: cleaner(secrets)
-        )
-    }
-
-    /// The recorded rows a workspace mirror still lists once the stored
-    /// workspaces whose own mirror lists one are written again; nil when a
-    /// mirror can't be read.
-    private static func namedByMirrors(_ pending: [UUID], modelContext: ModelContext) -> Set<UUID>? {
-        guard let before = ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: modelContext),
-              let beforeActivations = activationNamespacesInStoredMirrors(modelContext: modelContext) else { return nil }
-        let named = Set(pending).intersection(before.skillIDs.union(beforeActivations.flatMap(\.1)))
-        guard !named.isEmpty else { return [] }
-        var exported = Set<UUID>()
-        for (workspace, listed) in before.skillsByWorkspace + beforeActivations
-        where !listed.isDisjoint(with: named) && exported.insert(workspace.id).inserted {
-            WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext)
-        }
-        guard let after = ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: modelContext),
-              let afterActivations = activationNamespacesInStoredMirrors(modelContext: modelContext) else { return nil }
-        return named.intersection(after.skillIDs.union(afterActivations.flatMap(\.1)))
-    }
-
-    /// The secret namespaces each stored workspace's own mirror would give
-    /// back with the activations it lists (`InstalledPluginRef`: every
-    /// component it records, under its seed), which a launch recovery
-    /// restores with the workspace's ID. Nil when a mirror can't be read.
-    static func activationNamespacesInStoredMirrors(modelContext: ModelContext) -> [(Workspace, Set<UUID>)]? {
-        struct Listed: Decodable {
-            struct Plugin: Decodable {
-                let id: String
-                let settings: [String: String]?
-                let overriddenComponentIDs: [String]?
-                let knownComponentIDs: [String]?
-                let secretSettingKeys: [String]?
-                let namespaceSeed: String?
-                let credentialNamespaceSeed: String?
-            }
-            let installedPlugins: [Plugin]?
-        }
-        guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()) else { return nil }
-        var result: [(Workspace, Set<UUID>)] = []
-        for workspace in workspaces {
-            // Recovery reads the legacy mirror only without the current one.
-            let files = [
-                WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath),
-                WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspace.primaryPath)
-            ].filter { !$0.isEmpty }
-            for file in files {
-                let data: Data
-                do {
-                    data = try Data(contentsOf: URL(fileURLWithPath: file))
-                } catch {
-                    if WorkspaceFileLayout.isMissingFile(error) { continue }
-                    return nil
-                }
-                guard let listed = try? JSONDecoder().decode(Listed.self, from: data) else { return nil }
-                var namespaces = Set<UUID>()
-                for plugin in listed.installedPlugins ?? [] {
-                    let settingKeys = Array((plugin.settings ?? [:]).keys) + (plugin.secretSettingKeys ?? [])
-                    let components = (plugin.knownComponentIDs ?? []) + (plugin.overriddenComponentIDs ?? [])
-                        + settingKeys.compactMap(PluginActivation.componentID(ofSettingKey:))
-                    for componentID in Set(components) {
-                        namespaces.insert(PluginActivation.credentialID(
-                            workspaceID: workspace.id, pluginID: plugin.id, componentID: componentID,
-                            runtimeSeed: plugin.namespaceSeed ?? "", generation: plugin.credentialNamespaceSeed ?? ""
-                        ))
-                    }
-                }
-                result.append((workspace, namespaces))
-                break
-            }
-        }
-        return result
+        settle(pending, keys: keys, modelContext: modelContext, outbox: outbox, secrets: secrets, clean: cleaner(secrets))
     }
 
     /// Settles the recorded single secrets among `keys` (secret settings a
@@ -206,8 +126,9 @@ struct PluginSecretCleanupOutbox {
         guard let pending = try? outbox.pendingKeys() else { return keys }
         let redeclared = keys.filter(Set(pending).contains)
         guard let modelContext, PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext),
-              let references = PendingTaskCredentialReferences.capture(modelContext: modelContext) else { return redeclared }
-        let failed = redeclared.filter { references.holdsSkill($0.skillID, key: $0.key) || !delete($0) }
+              let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+              let mirrors = PluginCredentialMirrorReferences.capture(modelContext: modelContext) else { return redeclared }
+        let failed = redeclared.filter { references.holdsSkill($0.skillID, key: $0.key) || mirrors.holdsSkill($0.skillID, key: $0.key) || !delete($0) }
         let settled = Set(redeclared.filter { !failed.contains($0) }.map(entry))
         if !settled.isEmpty, let entries = try? outbox.entries() {
             try? outbox.writeEntries(entries.filter { !settled.contains($0) })
@@ -241,15 +162,16 @@ struct PluginSecretCleanupOutbox {
         guard !journaled.isEmpty else { return true }
         guard let modelContext, PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext),
               let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+              let mirrors = PluginCredentialMirrorReferences.capture(modelContext: modelContext),
               !references.holdsSkill(destination) else { return false }
         if journaled.contains(namespace), kept.isEmpty {
-            guard clean(destination) else { return false }
+            guard !mirrors.holdsSkill(destination), clean(destination) else { return false }
         } else {
             var toDelete = Set(journaled.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) })
             // Secrets the activation records there keep it live, so it is
             // cleaned only of what isn't the person's (as `settle` would).
             if journaled.contains(namespace) { toDelete.formUnion(keys) }
-            let failed = toDelete.subtracting(kept).filter { !delete($0) }
+            let failed = toDelete.subtracting(kept).filter { mirrors.holdsSkill(destination, key: $0) || !delete($0) }
             guard failed.isEmpty else { return false }
         }
         try? outbox.writeEntries(entries.filter { !journaled.contains($0) })
@@ -286,13 +208,19 @@ struct PluginSecretCleanupOutbox {
             ], level: .error)
             return
         }
+        guard let mirrors = PluginCredentialMirrorReferences.capture(modelContext: modelContext) else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "plugin_secret_cleanup", "reason": "workspace_mirror_unreadable"
+            ], level: .error)
+            return
+        }
         var settled = Set<String>()
-        for id in skillIDs where !pendingTasks.holdsSkill(id) && (live.contains(id) || clean(id)) {
+        for id in skillIDs where !pendingTasks.holdsSkill(id) && (live.contains(id) || (!mirrors.holdsSkill(id) && clean(id))) {
             settled.insert(id.uuidString)
         }
         let persistence = secrets ?? SkillSecretSeam.required
         for key in keys where !pendingTasks.holdsSkill(key.skillID, key: key.key)
-            && (liveKeys.contains(key) || persistence.deleteSecret(key: key.key, skillID: key.skillID)) {
+            && (liveKeys.contains(key) || (!mirrors.holdsSkill(key.skillID, key: key.key) && persistence.deleteSecret(key: key.key, skillID: key.skillID))) {
             settled.insert(entry(key))
         }
         guard let outbox, let pending = try? outbox.entries() else { return }
