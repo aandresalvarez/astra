@@ -37,10 +37,11 @@ struct PluginFileOperationJournal {
 
     let roots: [Root: URL]
     let directory: URL
-    private let manager = FileManager.default
+    private let manager: FileManager
     private static let maximumManifestBytes = 96 * 1_024 * 1_024
 
     init(library: CapabilityLibrary, approvals: CapabilityApprovalStore) {
+        manager = library.fileManager
         roots = [.library: library.directory.standardizedFileURL.resolvingSymlinksInPath(),
                  .staging: library.directory.deletingLastPathComponent()
                     .appendingPathComponent(library.directory.lastPathComponent + "Staged", isDirectory: true)
