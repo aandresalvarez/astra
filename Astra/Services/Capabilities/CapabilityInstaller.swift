@@ -309,12 +309,24 @@ struct CapabilityInstaller {
                 let account = candidate.account
                 let prepared = try ConnectorCredentialGenerationTransaction.prepare(account: account, isNew: false,
                     keeping: candidate.keeping, replacing: [], modelContext: modelContext, declaredFormats: candidate.formats,
-                    lease: stagedAccountCredentials.first?.lease)
+                    migratingSettings: candidate.migratingSettings, lease: stagedAccountCredentials.first?.lease)
                 stagedAccountCredentials.append(prepared)
                 account.credentialNamespaceID = prepared.namespaceID
                 // Every retained legacy value has now passed admission or
                 // yielded to a newer vault value in the private generation.
                 account.credentialValues = Array(repeating: "", count: account.credentialKeys.count)
+                // Retire only the exact raw source fields the participant
+                // admitted (or matched to an accepted value). Conflicting
+                // values remain on the row for the person's explicit choice.
+                let retained = account.configKeys.indices.filter { index in
+                    let value = index < account.configValues.count ? account.configValues[index] : ""
+                    return !prepared.settledSettingFields.contains {
+                        ConnectorCredentialKey.same($0.key, account.configKeys[index]) && $0.value == value
+                    }
+                }
+                let values = retained.map { $0 < account.configValues.count ? account.configValues[$0] : "" }
+                account.configKeys = retained.map { account.configKeys[$0] }
+                account.configValues = values
             }
             stagedAccountCredentials.forEach { $0.noteWriteAttempt() }
             let reconciliation = try PluginUpdateService.reconcile(

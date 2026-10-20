@@ -10,6 +10,7 @@ enum PluginAccountCredentialCutoverPlan {
         let account: Connector
         var keeping: Set<String>
         var formats: [String: [ConnectorCredentialFormat]]
+        var migratingSettings: Set<String>
     }
 
     static func formats(of spec: PluginConnector) -> [String: [ConnectorCredentialFormat]] {
@@ -28,7 +29,13 @@ enum PluginAccountCredentialCutoverPlan {
             let moved = PluginConnectorFieldTrust.settingsStoredAsCredentials(of: declared, in: package)
             for binding in activation.bindings where !binding.isDeleted && components.contains(binding.componentID) {
                 guard let account = binding.account, !account.isDeleted, account.originPackageID == package.id else { continue }
-                let promoted = Set(moved.filter { !account.configValue($0).isEmpty }.map(ConnectorCredentialKey.canonical))
+                let declared = Set(moved.map(ConnectorCredentialKey.canonical))
+                let promoted = Set(account.configKeys.indices.compactMap { index -> String? in
+                    let key = ConnectorCredentialKey.canonical(account.configKeys[index])
+                    guard declared.contains(key), index < account.configValues.count,
+                          !account.configValues[index].isEmpty else { return nil }
+                    return key
+                })
                 let addsKey = spec.credentialHints.contains { hint in
                     !account.credentialKeys.contains { ConnectorCredentialKey.same($0, hint.key) }
                 }
@@ -40,12 +47,13 @@ enum PluginAccountCredentialCutoverPlan {
                 let declaredFormats = formats(of: spec)
                 if let index = result.firstIndex(where: { $0.account.id == account.id }) {
                     result[index].keeping.formUnion(keeping)
+                    result[index].migratingSettings.formUnion(promoted)
                     for (key, constraints) in declaredFormats {
                         for constraint in constraints where !result[index].formats[key, default: []].contains(constraint) {
                             result[index].formats[key, default: []].append(constraint)
                         }
                     }
-                } else { result.append(Candidate(account: account, keeping: keeping, formats: declaredFormats)) }
+                } else { result.append(Candidate(account: account, keeping: keeping, formats: declaredFormats, migratingSettings: promoted)) }
             }
         }
         return result

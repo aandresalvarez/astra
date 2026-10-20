@@ -78,4 +78,31 @@ struct PluginAccountEditorSourceCoordinationTests {
         }
     }
 
+    @Test("Source mutation excludes both automatic and direct legacy credential migration", arguments: [false, true])
+    func sourceMutationExcludesLegacyMigration(startupEntry: Bool) throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try ConnectorCredentialEditorTests.Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable()
+            account.originPackageID = nil
+            account.credentialKeys.append("SECOND_TOKEN")
+            account.credentialValues.append("legacy-second-token")
+            try env.disk.context.save()
+            let namespace = account.credentialNamespaceID
+            try PluginSourceStore().exclusively(pluginID: "unrelated-source") {
+                if startupEntry { StartupCredentialMigrationService.migrate(modelContext: env.disk.context) }
+                else {
+                    #expect(throws: PluginSourceStoreError.libraryBusy) {
+                        _ = try ConnectorCredentialMigration.migrate(account, mirroredBy: [env.disk.workspace], modelContext: env.disk.context)
+                    }
+                }
+            }
+            #expect(account.credentialNamespaceID == namespace)
+            #expect(account.credentialValues.contains("legacy-second-token"))
+            #expect(account.currentCredentialValue(forKey: "SECOND_TOKEN") == nil)
+            let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.disk.context))
+            #expect(try journal.pending().isEmpty)
+        }
+    }
+
 }

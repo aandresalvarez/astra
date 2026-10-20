@@ -364,41 +364,6 @@ public final class Connector {
         return (value?.isEmpty == false) ? value : nil
     }
 
-    /// Migrate any legacy plaintext credentials to Keychain.
-    public func migrateToKeychain() {
-        let facts = secretFacts
-        for (index, key) in credentialKeys.enumerated() {
-            guard index < credentialValues.count else { continue }
-            let value = credentialValues[index]
-            guard !value.isEmpty else { continue }
-
-            let migrated = ConnectorSecretSeam.required.credentialExists(key: key, facts: facts)
-                || ConnectorSecretSeam.required.saveCredential(value, key: key, facts: facts, allowUserInteraction: false)
-            if migrated {
-                credentialValues[index] = ""
-            }
-        }
-        ConnectorSecretSeam.required.synchronizeCredentialNamespaces(keys: credentialKeys, facts: facts)
-    }
-
-    /// Moves the plain values of the settings this account's creator stores
-    /// as credentials (`ConnectorSettingStorageSeam`) into the Keychain. The
-    /// workspace mirror withholds those settings, so a value left on the row
-    /// would be one recovery from being lost. Only a definite answer about
-    /// the creator moves anything. Returns the keys moved.
-    @discardableResult
-    public func moveSettingsStoredAsCredentials(
-        resolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
-        store: SecretStore = SecretStoreSeam.required,
-        recording record: (ConnectorSettingSecretWrite) -> Void = { _ in }
-    ) -> [String] {
-        guard let originPackageID, !originPackageID.isEmpty,
-              let keys = resolver?.declaredSettingKeysStoredAsCredentials(
-                originPackageID: originPackageID, originComponentID: originComponentID
-              ) else { return [] }
-        return moveSettingsToKeychain(keys, store: store, recording: record)
-    }
-
     /// Moves each of `keys` that holds a plain value on this row into the
     /// Keychain, one at a time: a setting leaves `configKeys` (and becomes a
     /// credential key) only once its value reads back from the Keychain, so
