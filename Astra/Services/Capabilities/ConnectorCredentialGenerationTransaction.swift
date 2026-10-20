@@ -8,6 +8,11 @@ import ASTRAPersistence
 /// reference is published by the caller's existing durable operation commit.
 @MainActor
 final class ConnectorCredentialGenerationTransaction {
+    enum LegacyHandling { case migrate, preservePending }
+    struct LegacyField {
+        let key: String
+        let value: String
+    }
     enum Failure: Error, LocalizedError {
         case changedAccount, readFailed(String), copyFailed(String)
         case legacyCredentialRejected(String, ConnectorCredentialAdmissionVerdict)
@@ -18,13 +23,16 @@ final class ConnectorCredentialGenerationTransaction {
             case .readFailed(let key): return "Couldn't read the saved \(key). Unlock the credential store and retry."
             case .copyFailed(let key): return "Couldn't preserve the saved \(key) for this account. Retry."
             case .conflictingLegacyValues(let key):
-                return "There are different saved values for \(key). Replace that credential before changing other secrets."
+                return "There are different saved values for \(key). Replace or remove that credential before migrating this account."
             case .legacyCredentialRejected(let key, let verdict):
                 return verdict.message(forKey: key) ?? "The saved \(key) must be corrected before migrating this account."
             }
         }
     }
     let namespaceID: UUID
+    /// Existing model-owned migration debt. Editor actions retain these raw
+    /// fields without admitting or transporting them as credentials.
+    let pendingLegacyFields: [String: [LegacyField]]
     var accountID: UUID { staged.connectorID }
     private var writeAttempted = false
     private let previous: ConnectorKeychainCleanup?
@@ -33,8 +41,9 @@ final class ConnectorCredentialGenerationTransaction {
     let lease: ConnectorCredentialGenerationJournal.Lease?
 
     private init(namespaceID: UUID, previous: ConnectorKeychainCleanup?, staged: ConnectorKeychainCleanup,
-                 journal: ConnectorCredentialGenerationJournal?, lease: ConnectorCredentialGenerationJournal.Lease?) {
+                 pendingLegacyFields: [String: [LegacyField]], journal: ConnectorCredentialGenerationJournal?, lease: ConnectorCredentialGenerationJournal.Lease?) {
         self.namespaceID = namespaceID
+        self.pendingLegacyFields = pendingLegacyFields
         self.previous = previous
         self.staged = staged
         self.journal = journal
@@ -46,6 +55,7 @@ final class ConnectorCredentialGenerationTransaction {
     static func prepare(
         account: Connector, isNew: Bool, keeping keys: Set<String>, replacing: Set<String>, modelContext: ModelContext,
         declaredFormats: [String: [ConnectorCredentialFormat]] = [:],
+        legacyHandling: LegacyHandling = .migrate,
         lease: ConnectorCredentialGenerationJournal.Lease? = nil
     ) throws -> Self {
         guard account.modelContext === modelContext, !account.isDeleted else { throw Failure.changedAccount }
@@ -77,6 +87,7 @@ final class ConnectorCredentialGenerationTransaction {
             credentialNamespaceID: namespaceID)
         var copies: [(String, String)] = []
         var legacyValues: [(String, String)] = []
+        var pendingLegacyFields: [String: [LegacyField]] = [:]
         if let stored {
             // A legacy plain setting being promoted can have a newer vault
             // value without a credential marker. Preserve that value too, but
@@ -89,11 +100,16 @@ final class ConnectorCredentialGenerationTransaction {
                 switch ConnectorSecretSeam.required.readCredential(key: key, facts: source, store: KeychainSecretStore()) {
                 case .value(let value): copies.append((key, value))
                 case .missing:
-                    let candidates = Set(stored.credentialKeys.indices.compactMap { index -> String? in
-                        guard ConnectorCredentialKey.same(stored.credentialKeys[index], key),
-                              index < stored.credentialValues.count, !stored.credentialValues[index].isEmpty else { return nil }
-                        return stored.credentialValues[index]
-                    })
+                    let fields = stored.credentialKeys.indices.compactMap { index -> LegacyField? in
+                        guard ConnectorCredentialKey.same(stored.credentialKeys[index], key) else { return nil }
+                        return LegacyField(key: stored.credentialKeys[index],
+                            value: index < stored.credentialValues.count ? stored.credentialValues[index] : "")
+                    }
+                    let candidates = Set(fields.map(\.value).filter { !$0.isEmpty })
+                    if case .preservePending = legacyHandling, !candidates.isEmpty {
+                        pendingLegacyFields[key] = fields
+                        continue
+                    }
                     guard candidates.count <= 1 else { throw Failure.conflictingLegacyValues(key) }
                     if let value = candidates.first { legacyValues.append((key, value)) }
                 case .unavailable: throw Failure.readFailed(key)
@@ -111,7 +127,8 @@ final class ConnectorCredentialGenerationTransaction {
             }
         }
         if let journal, let heldLease { try journal.record([staged] + (old.map { [$0] } ?? []), lease: heldLease) }
-        let prepared = Self(namespaceID: namespaceID, previous: old, staged: staged, journal: journal, lease: heldLease)
+        let prepared = Self(namespaceID: namespaceID, previous: old, staged: staged,
+            pendingLegacyFields: pendingLegacyFields, journal: journal, lease: heldLease)
         for (key, value) in copies {
             // An opaque value already admitted to this same logical account.
             prepared.noteWriteAttempt()

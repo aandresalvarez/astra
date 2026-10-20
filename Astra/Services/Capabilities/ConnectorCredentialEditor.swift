@@ -77,7 +77,8 @@ enum ConnectorCredentialEditor {
             .subtracting(replacement == nil ? [key] : [])
         let isNew = modelContext.insertedModelsArray.contains { ($0 as? Connector) === account }
         let prepared = try ConnectorCredentialGenerationTransaction.prepare(account: account, isNew: isNew,
-            keeping: keeping, replacing: replacement == nil ? [] : [key], modelContext: modelContext)
+            keeping: keeping, replacing: replacement == nil ? [] : [key], modelContext: modelContext,
+            legacyHandling: .preservePending)
         var attemptedCommit = false
         do {
             // Recheck scope from fresh saved rows while the producer lease is
@@ -86,9 +87,19 @@ enum ConnectorCredentialEditor {
             try requireReady(affected, modelContext: modelContext)
             account.credentialNamespaceID = prepared.namespaceID
             var seen = Set<String>()
-            account.credentialKeys = account.credentialKeys.map(ConnectorCredentialKey.canonical)
-                .filter { (replacement != nil || $0 != key) && seen.insert($0).inserted }
-            account.credentialValues = Array(repeating: "", count: account.credentialKeys.count)
+            var keys: [String] = []
+            var values: [String] = []
+            for existing in account.credentialKeys {
+                let canonical = ConnectorCredentialKey.canonical(existing)
+                guard (replacement != nil || canonical != key), seen.insert(canonical).inserted else { continue }
+                if let pending = prepared.pendingLegacyFields[canonical] {
+                    // Preserve even conflicting legacy rows. An unrelated
+                    // edit cannot choose one, erase them, or admit them.
+                    keys += pending.map(\.key); values += pending.map(\.value)
+                } else { keys.append(canonical); values.append("") }
+            }
+            account.credentialKeys = keys
+            account.credentialValues = values
             // An explicit secret edit settles the same key's legacy plain
             // alias too. Keeping it would create a second mutable owner or
             // silently restore a removed credential during a later migration.
