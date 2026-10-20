@@ -154,7 +154,9 @@ struct CapabilityUninstaller {
         // Read old intents for compatibility, but new removals have a
         // UUID-bound file manifest and receipt instead of inferring a save.
         let removeJournal = removeJournal ?? PluginRemoveJournal(for: modelContext)
-        _ = try removeJournal?.intents()
+        let legacyIntents = try removeJournal?.intents() ?? []
+        let legacyWorkspaceIDs = legacyIntents.first { $0.pluginID == package.id }
+            .map { $0.workspaceIDs ?? workspaces.map(\.id) } ?? []
         let transaction = try PluginRemovalTransaction.prepare(pluginID: package.id, missing: definitionMissing,
             library: library, modelContext: modelContext, operation: operation)
         let restore = PluginUpdateService.captureState(of: workspaces)
@@ -277,7 +279,7 @@ struct CapabilityUninstaller {
             // mirror left out would restore the plugin without its secrets.
             let affected = result.disabledWorkspaceIDs + (try WorkspaceConfigManager.workspacesMirroring(
                 accountIDs: Set(stampedAccounts.map(\.id)), among: workspaces, modelContext: modelContext
-            )).map(\.id).filter { !result.disabledWorkspaceIDs.contains($0) }
+            )).map(\.id).filter { !result.disabledWorkspaceIDs.contains($0) } + legacyWorkspaceIDs
             try transaction.commit(workspaceIDs: affected, secretIDs: activationSecretSkillIDs,
                 modelContext: modelContext, outbox: secretCleanupOutbox, secrets: skillSecrets,
                 persist: { persist(nil, $0) }, export: exportMirror)
