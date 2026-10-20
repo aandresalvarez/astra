@@ -18,9 +18,6 @@ struct CapabilityInstaller {
         /// above because the remedy is different: nothing about this install
         /// can recover it, and they have to re-enter the value.
         case credentialRestoreFailed(packageID: String, keys: [String])
-        /// An earlier Remove's secrets are still waiting to be cleared from
-        /// the Keychain; a new activation would derive the same namespaces.
-        case secretCleanupPending(packageID: String)
 
         var errorDescription: String? {
             switch self {
@@ -34,8 +31,6 @@ struct CapabilityInstaller {
                 let reason = verdict.message(forKey: key)
                     ?? "\(key) is not a valid credential for this connector."
                 return "Enabling \(id) was stopped: \(reason)"
-            case .secretCleanupPending(let id):
-                return "\(id) can't be added yet: the secrets it had here before haven't been cleared from the Keychain. Try again."
             case .credentialRestoreFailed(let id, let keys):
                 let names = keys.joined(separator: ", ")
                 return """
@@ -187,12 +182,7 @@ struct CapabilityInstaller {
             return try enableSkillRow(skillID, package: package, workspace: workspace, modelContext: modelContext, persist: persist, fileCommit: fileCommit)
         }
 
-        // A new activation derives the namespaces a Remove may not have
-        // finished clearing: settle them first, and wait while one is pending.
-        if WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) == nil,
-           !PluginSecretCleanupOutbox.settleBeforeAdding(package, to: workspace, modelContext: modelContext) {
-            throw InstallationError.secretCleanupPending(packageID: package.id)
-        }
+        let isNewActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) == nil
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         // The library holds one definition for every workspace: each other
         // one whose activation kept rows while it was missing gets them as
@@ -240,6 +230,9 @@ struct CapabilityInstaller {
             let retainedAccounts = WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: workspace)
             let retainedTemplateIDs = WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: workspace)
             WorkspaceCapabilityActivation.reinstateRetired(on: activation, declaring: componentIDs, in: workspace)
+            if isNewActivation {
+                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(UUID().uuidString, on: activation)
+            }
             for retained in retainedAccounts
             where componentIDs.contains(retained.componentID) && activation.accounts(forComponent: retained.componentID).isEmpty {
                 CapabilityResourceOrigin.stamp(retained.account, package: package, componentID: retained.componentID)
@@ -289,7 +282,7 @@ struct CapabilityInstaller {
                 try saveSkillSettings(
                     pluginSkill,
                     componentID: componentID,
-                    projectedID: projectedID,
+                    credentialID: PluginRuntimeProjection.credentialID(of: activation, componentID: componentID),
                     activation: activation,
                     configInputs: skillConfigInputs,
                     packageID: package.id,
@@ -594,12 +587,12 @@ struct CapabilityInstaller {
     }
 
     /// Stores a skill's configured settings on the activation: non-secret
-    /// values under `componentID.KEY`, secret ones in the Keychain under the
-    /// projected skill's ID.
+    /// values under `componentID#KEY`, secret ones under the activation's
+    /// credential namespace.
     private func saveSkillSettings(
         _ pluginSkill: PluginSkill,
         componentID: String,
-        projectedID: UUID,
+        credentialID: UUID,
         activation: PluginActivation,
         configInputs: [String: String],
         packageID: String,
@@ -616,17 +609,17 @@ struct CapabilityInstaller {
             }
             guard !value.isEmpty else { continue }
             let persistence = skillSecrets
-            let previous = persistence.loadSecretValue(key: key, skillID: projectedID, store: KeychainSecretStore())
+            let previous = persistence.loadSecretValue(key: key, skillID: credentialID, store: KeychainSecretStore())
             // Journaled before the write, settled with the Add's save: a quit
             // between them leaves a value launch cleans, never one unrecorded.
             let written = try PluginSecretSettingWriter.writeJournaled(
-                value, key: key, skillName: pluginSkill.name, skillID: projectedID,
+                value, key: key, skillName: pluginSkill.name, skillID: credentialID,
                 modelContext: modelContext, persistence: persistence
             )
             guard written else {
                 throw InstallationError.credentialSaveFailed(packageID: packageID, key: key)
             }
-            savedSecrets.append(SavedSkillSecret(key: key, skillID: projectedID, previousValue: previous))
+            savedSecrets.append(SavedSkillSecret(key: key, skillID: credentialID, previousValue: previous))
             WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: settingKey, on: activation)
         }
     }

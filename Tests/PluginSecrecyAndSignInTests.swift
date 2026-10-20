@@ -27,6 +27,7 @@ struct PluginSecrecyAndSignInTests {
         )
         Fixtures.Environment.retained.append(container)
         let context = container.mainContext
+        context.autosaveEnabled = false
         let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
         try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
@@ -42,14 +43,14 @@ struct PluginSecrecyAndSignInTests {
         )
         try context.save()
         let outbox = try #require(PluginSecretCleanupOutbox(for: context))
-        let newID = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:summary-agent")
+        let newID = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:summary-agent")
 
         var v2 = v1
         v2.version = "2.0.0"
         v2.skills[0].id = "summary-agent"
         v2.skills[0].name = "Summary Agent"
         v2.skills[0].replaces = ["report-agent"]
-        RenameSecrets.reset(holding: PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent"))
+        RenameSecrets.reset(holding: PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent"))
         RenameSecrets.onSave = { RenameSecrets.journalAtWrite = (try? outbox.pendingKeys()) ?? [] }
         try PluginUpdateService.reconcileAll(
             modelContext: context, packages: [v2], mode: .release, secrets: RenameSecrets.self, approvalRecords: []
@@ -69,7 +70,7 @@ struct PluginSecrecyAndSignInTests {
         v1.skills[0].environmentValues = ["default-project", ""]
         try env.install(v1)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
-        let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
+        let skillID = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
         // A value an older build kept plain for a setting now classed secret.
         let tokenKey = PluginActivation.settingKey(componentID: "skill:report-agent", key: "API_TOKEN")
         WorkspaceCapabilityActivation.setConfigValue("tok-plain", forKey: tokenKey, on: activation)

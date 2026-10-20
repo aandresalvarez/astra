@@ -21,7 +21,7 @@ struct PluginRound23ReviewTests {
         let v1 = Fixtures.package(version: "1.0.0")
         try env.install(v1)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
-        let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
+        let skillID = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
         let projectKey = PluginActivation.settingKey(componentID: "skill:report-agent", key: "PROJECT")
         // An earlier definition kept PROJECT secret: recorded, with a value.
         WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: projectKey, on: activation)

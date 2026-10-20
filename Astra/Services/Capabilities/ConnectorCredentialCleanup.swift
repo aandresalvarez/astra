@@ -373,7 +373,7 @@ enum ConnectorCredentialCleanup {
         skillsByWorkspace: [(Workspace, Set<UUID>)]
     )? {
         struct Listed: Decodable {
-            struct Skill: Decodable { let id: String? }
+            struct Skill: Decodable { let id: String?; let credentialNamespaceID: UUID? }
             struct Entry: Decodable {
                 let id: String?
                 let name: String?
@@ -433,7 +433,7 @@ enum ConnectorCredentialCleanup {
                 }
                 owners.append(connector.keychainCleanup)
             }
-            let skills = Set((listed.skills ?? []).compactMap { $0.id.flatMap(UUID.init(uuidString:)) })
+            let skills = Set((listed.skills ?? []).compactMap { $0.credentialNamespaceID ?? $0.id.flatMap(UUID.init(uuidString:)) })
             skillIDs.formUnion(skills)
             // Only a stored workspace's own mirror holds an intent back: an
             // export rewrites it. Any other copy names owners, which every

@@ -113,7 +113,7 @@ struct PluginRenameAndMissingTests {
         )
         try context.save()
         let account = try #require(workspace.connectors.first)
-        let namespace = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
+        let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
 
         // The library loses it: the row lists it as missing, with Remove.
         _ = try library.removePackage(id: package.id)
@@ -233,7 +233,7 @@ struct PluginRound21ReviewTests {
         let installer = CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
         try installer.install(v1, into: workspace, modelContext: context, announceCatalogMutation: false)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
-        let released = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:summary-agent")
+        let released = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:summary-agent")
         let outbox = try #require(PluginSecretCleanupOutbox(for: context))
 
         var v2 = v1

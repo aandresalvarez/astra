@@ -44,6 +44,7 @@ struct PluginSecretSettingWriterTests {
             )
             Fixtures.Environment.retained.append(container)
             context = container.mainContext
+            context.autosaveEnabled = false
             let folder = root.appendingPathComponent("workspace", isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             workspace = Workspace(name: "Ops", primaryPath: folder.path)
@@ -81,7 +82,7 @@ struct PluginSecretSettingWriterTests {
         // In that state, Remove still cleans the namespace and an Update
         // that drops the key still releases it.
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: store.workspace))
-        let namespace = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
+        let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
         #expect(PluginRuntimeProjection.secretNamespaces(of: activation, package: package).contains(namespace))
         #expect(activation.secretSettingKeys == [settingKey])
 
@@ -157,7 +158,7 @@ struct PluginSecretSettingWriterTests {
             .install(package, into: store.workspace, modelContext: store.context, configInputs: ["API_TOKEN": "token"],
                      announceCatalogMutation: false)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: store.workspace))
-        let namespace = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
+        let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
         #expect(RecordingSecrets.journalAtWrite == ["\(namespace.uuidString)#API_TOKEN"])
         // Settled with the save: the activation records it now.
         #expect(try outbox.entries().isEmpty)

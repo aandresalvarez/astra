@@ -135,7 +135,7 @@ struct PluginActivationReviewTests {
         try CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
             .install(v1, into: workspace, modelContext: context, announceCatalogMutation: false)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
-        let namespace = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
+        let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
         // An earlier Update released API_TOKEN, and its delete failed.
         let outbox = try #require(PluginSecretCleanupOutbox(for: context))
         try outbox.writeEntries(["\(namespace.uuidString)#API_TOKEN"])
@@ -180,7 +180,7 @@ struct PluginActivationReviewTests {
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
         // An earlier version had a "Renamed Agent" whose Remove left its
         // namespace journaled: the delete failed.
-        let destination = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:renamed-agent")
+        let destination = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:renamed-agent")
         let outbox = try #require(PluginSecretCleanupOutbox(for: context))
         try outbox.writeEntries([destination.uuidString])
 
@@ -323,7 +323,7 @@ struct PluginActivationReviewTests {
         v2.skills[0].id = "summary-agent"
         v2.skills[0].replaces = ["skill:report-agent"]
         try env.library.install(v2, sourceMetadata: .builtIn())
-        CopyFailingSecrets.sources.withLock { $0.insert(PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")) }
+        CopyFailingSecrets.sources.withLock { $0.insert(PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")) }
 
         // A_TOKEN is copied, B_TOKEN can't be, and A_TOKEN's copy can't be deleted.
         #expect(throws: PluginUpdateService.UpdateError.credentialRestoreFailed(keys: ["A_TOKEN"])) {

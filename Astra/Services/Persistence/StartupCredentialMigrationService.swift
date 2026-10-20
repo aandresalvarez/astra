@@ -154,7 +154,7 @@ public enum StartupCredentialMigrationService {
             // secrets into ASTRA's dedicated keychain. Done here rather than in
             // Skill.migrateSecretsToKeychain() (which Skill.init() calls on every
             // instantiation) to keep the per-init path free of keychain queries.
-            KeychainService.migrateSkillFromLoginKeychain(skillID: skill.id)
+            KeychainService.migrateSkillFromLoginKeychain(skillID: skill.secretNamespaceID)
         }
     }
 
