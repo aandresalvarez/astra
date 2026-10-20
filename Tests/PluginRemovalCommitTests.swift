@@ -92,6 +92,25 @@ struct PluginRemovalCommitTests {
         #expect(PluginOperationRecovery.permitsCredentialCleanup(modelContext: reopened.mainContext))
     }
 
+    @Test("Completing an older Remove retains its mirror scope even when no activation remains", arguments: [false, true])
+    func legacyIntentScopeIsNotLost(bareIDs: Bool) throws {
+        let env = try Fixture(activated: true)
+        defer { env.disk.removeFiles() }
+        #expect(WorkspaceConfigManager.exportMirrorNow(workspace: env.workspace, modelContext: env.context))
+        WorkspaceCapabilityActivation.mutate(env.workspace) { $0 = WorkspaceCapabilityActivationState() }
+        try env.context.save()
+        let legacy = PluginRemoveJournal(fileURL: env.disk.root.appendingPathComponent("LegacyRemovals.json"))
+        if bareIDs { try JSONEncoder().encode([env.package.id]).write(to: legacy.fileURL) }
+        else { try legacy.begin(env.package.id, affecting: [env.workspace.id]) }
+        _ = try CapabilityUninstaller(library: env.library).remove(env.package, modelContext: env.context, removeJournal: legacy)
+        #expect(try legacy.pending().isEmpty)
+        let config = try WorkspaceConfigManager.loadConfig(from: URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: env.workspace.primaryPath)))
+        #expect(!(config.installedPlugins ?? []).contains { $0.id == env.package.id })
+        let receipts = try ModelContext(env.disk.container).fetch(FetchDescriptor<PluginOperationReceipt>())
+        let receipt = try #require(receipts.first { $0.kindRawValue == PluginOperationReceipt.Kind.remove.rawValue })
+        #expect(receipt.workspaceIDStrings == [env.workspace.id.uuidString])
+    }
+
     @MainActor
     struct Fixture {
         let disk: PluginFileOperationRecoveryTests.Fixture
