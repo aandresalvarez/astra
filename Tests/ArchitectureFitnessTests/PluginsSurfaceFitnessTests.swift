@@ -10,7 +10,8 @@ struct PluginsSurfaceFitnessTests {
         "Astra/Views/Capabilities/PluginsSurfaceView.swift",
         "Astra/Views/Capabilities/PluginRowDetailsView.swift",
         "Astra/Views/Capabilities/PluginSourcesSection.swift",
-        "Astra/Views/Capabilities/PluginAccountsSection.swift"
+        "Astra/Views/Capabilities/PluginAccountsSection.swift",
+        "Astra/Views/Capabilities/PluginStateRecoverySection.swift"
     ]
 
     @Test("Plugins surface delegates capability side effects to the action service")

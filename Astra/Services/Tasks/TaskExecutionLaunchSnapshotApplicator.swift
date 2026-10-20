@@ -43,8 +43,10 @@ enum TaskExecutionLaunchSnapshotApplicator {
             pluginActivations: policy.pluginActivations,
             pluginDefinitions: policy.pluginDefinitions,
             pluginAccounts: policy.pluginAccounts,
+            accountInventory: policy.accountInventory,
             pluginOverrides: policy.pluginOverrides,
             authoredSkills: policy.authoredSkills,
+            pendingLegacyPluginState: policy.pendingLegacyPluginState,
             retiredPluginActivations: policy.retiredPluginActivations
         )
     }
@@ -65,6 +67,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             workspace: workspace
         )
         if let workspace, let live = source.workspace {
+            WorkspaceCapabilityActivation.applyFrozenPendingLegacy(snapshot.pendingLegacyPluginState, to: workspace)
             // The accounts and definitions frozen with them: an account
             // edited or deleted, or a plugin updated, while the request
             // waited does not change the run either.
@@ -72,14 +75,18 @@ enum TaskExecutionLaunchSnapshotApplicator {
             // So are the override rows' contents: an override edited or
             // deleted while it waited runs as submitted.
             var lateAttachments = LateAttachments()
+            let accountParents = snapshot.accountInventory?.entries.compactMap(\.parentSkill) ?? []
+            let authoredRecords = snapshot.authoredSkills.map { $0 + accountParents }
+                ?? (accountParents.isEmpty ? nil : accountParents)
             let authoredRowIDs = applyFrozenOverrides(
-                snapshot.authoredSkills.map { PluginOverrideRecords(skills: $0) },
+                authoredRecords.map { PluginOverrideRecords(skills: $0) },
                 to: workspace, skillsByID: capabilityGraph.skillsByID, unlinked: &lateAttachments
             )
             let frozenRowIDs = applyFrozenOverrides(
                 snapshot.pluginOverrides, to: workspace, skillsByID: capabilityGraph.skillsByID, unlinked: &lateAttachments
             )
             pruneLateAttachments(lateAttachments, of: snapshot, from: workspace, keeping: frozenRowIDs.union(authoredRowIDs))
+            applyAccountInventory(snapshot.accountInventory, to: workspace, skillsByID: capabilityGraph.skillsByID)
             workspace.launchPluginDefinitions = snapshot.pluginDefinitions
             // The activations frozen at submission, when the request has
             // them: a plugin turned off, on or reconfigured while it waited

@@ -192,7 +192,8 @@ struct TaskCapabilityResolver {
         // the skill of a connector a shared list turned on.
         let overriding = overridingRowIDs()
         for connector in connectors {
-            guard let skill = connector.skill, !overriding.contains(skill.id) else { continue }
+            guard let skill = connector.skill, !overriding.contains(skill.id),
+                  permitsLegacyOrigin(skill.originPackageID, id: skill.id, shared: skill.isGlobal, kind: .skill) else { continue }
             combined.append(skill)
         }
         return uniqueSkills(combined)
@@ -249,6 +250,7 @@ struct TaskCapabilityResolver {
         let fromSkills = pinnedTools + enabledPackageSkills().flatMap(\.localTools)
         let standalone = task.workspace?.localTools.filter {
             $0.skill == nil && !$0.isGlobal && !overriding.contains($0.id)
+                && permitsLegacyOrigin($0.originPackageID, id: $0.id, shared: false, kind: .tool)
         } ?? []
         var all = fromSkills + standalone + enabledPackageLocalTools()
 
@@ -312,7 +314,15 @@ struct TaskCapabilityResolver {
     /// kept a pin from before the migration).
     private func pinnedSkills() -> [Skill] {
         let overriding = overridingRowIDs()
-        return task.skills.filter { !overriding.contains($0.id) }
+        return task.skills.filter {
+            !overriding.contains($0.id) && permitsLegacyOrigin($0.originPackageID, id: $0.id, shared: $0.isGlobal, kind: .skill)
+        }
+    }
+
+    private func permitsLegacyOrigin(_ pluginID: String?, id: UUID, shared: Bool,
+                                     kind: WorkspaceCapabilityActivation.SharedResourceKind) -> Bool {
+        guard let workspace = task.workspace else { return true }
+        return WorkspaceCapabilityActivation.permitsPendingLegacyResource(pluginID, id: id, shared: shared, kind: kind, in: workspace)
     }
 
     private func overridingRowIDs() -> Set<UUID> {

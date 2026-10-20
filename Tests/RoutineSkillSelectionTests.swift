@@ -95,9 +95,7 @@ struct RoutineSkillSelectionTests {
         // The plugin was turned off meanwhile: its skill is no longer offered.
         _ = CapabilityActivationDisabler().disable(
             fixture.gcloud, in: a,
-            capabilities: WorkspaceCapabilities(workspace: a, globalSkills: globalSkills, packageDefinitions: fixture.packages),
-            modelContext: context, availablePackages: fixture.packages
-        )
+            modelContext: context)
         #expect(RoutineSkillCatalog.validatedSelection(selection, in: a, globalSkills: globalSkills).isEmpty)
     }
 

@@ -27,6 +27,7 @@ struct CapabilityActivationOwnerFitnessTests {
     private func isExempt(_ relative: String) -> Bool {
         relative == "Astra/Models/Workspace.swift"
             || relative == "Astra/Models/WorkspaceCapabilityActivation.swift"
+            || relative == "Astra/Models/WorkspaceCapabilityActivation+Legacy.swift"
             || relative == "Astra/Models/SchemaVersions.swift"
             || (relative.hasPrefix("Astra/Models/ASTRASchemaV") && relative.hasSuffix(".swift"))
     }
@@ -39,11 +40,10 @@ struct CapabilityActivationOwnerFitnessTests {
     /// reader moves behind the owner; never raise one.
     private let readRegistry: [String: Int] = [
         "Astra/Services/Browser/ShelfQuerySession.swift": 4,
-        "Astra/Services/Capabilities/CapabilityActivationDisabler.swift": 1,
         "Astra/Services/Capabilities/CapabilityAudit.swift": 5,
         "Astra/Services/Capabilities/CapabilityCatalogPolicy.swift": 2,
         "Astra/Services/Capabilities/CapabilityInstaller.swift": 3,
-        "Astra/Services/Capabilities/CapabilityPackageState.swift": 4,
+        "Astra/Services/Capabilities/CapabilityPackageState.swift": 3,
         "Astra/Services/Capabilities/CapabilityRuntimeIntegrityService.swift": 1,
         "Astra/Services/Capabilities/CapabilityRuntimeResourceMatcher.swift": 2,
         "Astra/Services/Capabilities/CapabilitySetupCopier.swift": 3,

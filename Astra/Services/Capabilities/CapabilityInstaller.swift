@@ -612,7 +612,7 @@ struct CapabilityInstaller {
     /// the value it replaced, so a failed enable can put it back.
     /// The stored skill row a catalog-synthesized `skill.<uuid>` package
     /// stands for (`CapabilityCatalogInventory`), nil for a real plugin.
-    static func syntheticSkillRowID(of package: PluginPackage) -> UUID? {
+    nonisolated static func syntheticSkillRowID(of package: PluginPackage) -> UUID? {
         let kind = package.sourceMetadata?.kind
         guard package.id.hasPrefix("skill."), kind == "workspace" || kind == "shared" else { return nil }
         return UUID(uuidString: String(package.id.dropFirst("skill.".count)))

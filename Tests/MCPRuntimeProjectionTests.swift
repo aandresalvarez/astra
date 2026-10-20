@@ -954,10 +954,7 @@ struct MCPRuntimeParityTests {
         CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: capabilities,
-            modelContext: context,
-            availablePackages: [package]
-        )
+            modelContext: context)
         #expect(!workspace.enabledCapabilityIDs.contains("mcp-only"))
         #expect(MCPRuntimeProjection.enabledServers(
             for: workspace,
