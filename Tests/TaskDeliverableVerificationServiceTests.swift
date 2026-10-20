@@ -609,7 +609,12 @@ struct TaskDeliverableVerificationServiceTests {
             ("<div data-x=\"<style>\"></div><script>a()</script>", true),
             ("<div title='<!--'></div><script>a()</script>", true),
             ("<script type\u{00A0}=\"application/json\">a()</script>", true),
-            ("<script type=\"application/json\">{\"a\": \"</scripts>\"}</script>", false)
+            ("<script type=\"application/json\">{\"a\": \"</scripts>\"}</script>", false),
+            ("<script type=\"text&SOL;javascript\">{}</script>", false),
+            ("<!--><script>a()</script>", true),
+            ("<!--->x<script>a()</script>", true),
+            ("<!-- x --!><script>a()</script>", true),
+            ("<svg><style><script>a()</script></style></svg>", true)
         ]
 
         for testCase in cases {
@@ -624,6 +629,16 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(HTMLScriptScanner.inlineScripts(
             in: "<script src=\"external.js\"></script><scripts>x</scripts>"
         ).isEmpty)
+        // A quoted `>` in a script end tag does not end it early.
+        let quotedEndTag = HTMLScriptScanner.inlineScripts(
+            in: "<script>ok()</script data=\"> <script type=application/json>\"><script>a()</script>"
+        )
+        #expect(quotedEndTag.map(\.body) == ["ok()", "a()"])
+        #expect(quotedEndTag.allSatisfy { $0.isJavaScript })
+        // In SVG, `<script/>` self-closes and `href` is an external source.
+        let svg = "<svg><script href=\"app.js\"/><script>a()</script></svg><script>b()</script>"
+        #expect(HTMLScriptScanner.inlineScripts(in: svg).map(\.body) == ["a()", "b()"])
+        #expect(HTMLScriptScanner.externalScriptCount(in: svg) == 1)
         // A non-ASCII space is part of the tag name, so this is not a script.
         #expect(HTMLScriptScanner.inlineScripts(
             in: "<script\u{00A0}type=\"application/json\">a()</script>"

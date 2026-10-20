@@ -91,9 +91,15 @@ enum HTMLScriptScanner {
         "textarea", "title", "style", "xmp", "iframe", "noembed", "noframes", "noscript"
     ]
 
+    // Elements that switch the parser to foreign (SVG/MathML) content, where
+    // `<script/>` self-closes, SVG scripts load via `href`, and RAWTEXT rules
+    // do not apply.
+    private static let foreignRootElements: Set<String> = ["svg", "math"]
+
     static func scriptElements(in html: String) -> [ScriptElement] {
         let scalars = Array(html.unicodeScalars)
         var elements: [ScriptElement] = []
+        var foreignDepth = 0
         var index = 0
         while index < scalars.count {
             guard scalars[index] == "<", index + 1 < scalars.count else {
@@ -102,8 +108,8 @@ enum HTMLScriptScanner {
             }
             let next = scalars[index + 1]
             if hasPrefix("<!--", in: scalars, at: index) {
-                guard let end = find("-->", in: scalars, from: index + 4) else { break }
-                index = end + 3
+                guard let end = commentEnd(in: scalars, from: index + 4) else { break }
+                index = end
             } else if next == "!" || next == "?" {
                 // Doctype or bogus comment: ends at the next `>`.
                 guard let end = find(">", in: scalars, from: index + 2) else { break }
@@ -118,16 +124,32 @@ enum HTMLScriptScanner {
                 let name = string(scalars[nameStart..<cursor]).lowercased()
                 guard let tag = parseAttributes(scalars, from: cursor) else { break }
                 index = tag.end
-                guard !isEndTag else { continue }
-                if name == "script" {
+                if isEndTag {
+                    if foreignRootElements.contains(name) {
+                        foreignDepth = max(0, foreignDepth - 1)
+                    }
+                    continue
+                }
+                if foreignRootElements.contains(name), !tag.selfClosing {
+                    foreignDepth += 1
+                } else if name == "script" {
+                    var attributes = tag.attributes
+                    if foreignDepth > 0, attributes["src"] == nil,
+                       let href = attributes["href"] ?? attributes["xlink:href"] {
+                        attributes["src"] = href
+                    }
+                    if foreignDepth > 0, tag.selfClosing {
+                        elements.append(ScriptElement(attributes: attributes, body: ""))
+                        continue
+                    }
                     let close = findEndTag("script", in: scalars, from: tag.end)
                     elements.append(ScriptElement(
-                        attributes: tag.attributes,
+                        attributes: attributes,
                         body: string(scalars[tag.end..<(close?.start ?? scalars.count)])
                     ))
                     guard let close else { break }
                     index = close.end
-                } else if textOnlyElements.contains(name) {
+                } else if foreignDepth == 0, textOnlyElements.contains(name) {
                     guard let close = findEndTag(name, in: scalars, from: tag.end) else { break }
                     index = close.end
                 }
@@ -143,13 +165,16 @@ enum HTMLScriptScanner {
     private static func parseAttributes(
         _ scalars: [Unicode.Scalar],
         from start: Int
-    ) -> (attributes: [String: String], end: Int)? {
+    ) -> (attributes: [String: String], end: Int, selfClosing: Bool)? {
         var attributes: [String: String] = [:]
         var index = start
         while index < scalars.count {
             let scalar = scalars[index]
             if scalar == ">" {
-                return (attributes, index + 1)
+                return (attributes, index + 1, false)
+            }
+            if scalar == "/", index + 1 < scalars.count, scalars[index + 1] == ">" {
+                return (attributes, index + 2, true)
             }
             if isASCIIWhitespace(scalar) || scalar == "/" {
                 index += 1
@@ -191,8 +216,21 @@ enum HTMLScriptScanner {
         return nil
     }
 
+    /// Finds where a comment whose content starts at `start` ends: `-->` or
+    /// `--!>`, or the abrupt `<!-->` / `<!--->` forms.
+    private static func commentEnd(in scalars: [Unicode.Scalar], from start: Int) -> Int? {
+        if hasPrefix(">", in: scalars, at: start) { return start + 1 }
+        if hasPrefix("->", in: scalars, at: start) { return start + 2 }
+        let close = find("-->", in: scalars, from: start).map { $0 + 3 }
+        let bangClose = find("--!>", in: scalars, from: start).map { $0 + 4 }
+        switch (close, bangClose) {
+        case let (close?, bangClose?): return min(close, bangClose)
+        case let (close, bangClose): return close ?? bangClose
+        }
+    }
+
     /// Finds `</name` followed by whitespace, `/` or `>`, and the index just
-    /// past that end tag's `>`.
+    /// past that end tag's `>`, honoring quoted values inside the end tag.
     private static func findEndTag(
         _ name: String,
         in scalars: [Unicode.Scalar],
@@ -204,8 +242,8 @@ enum HTMLScriptScanner {
             let after = found + marker.count
             if after >= scalars.count { return nil }
             if isTagNameTerminator(scalars[after]) {
-                guard let end = find(">", in: scalars, from: after) else { return nil }
-                return (found, end + 1)
+                guard let tag = parseAttributes(scalars, from: after) else { return nil }
+                return (found, tag.end)
             }
             index = after
         }
@@ -216,8 +254,10 @@ enum HTMLScriptScanner {
     /// uses: numeric (`&#47;`, `&#x2f;`) and a few named ones (`&sol;`).
     static func decodingCharacterReferences(_ value: String) -> String {
         guard value.contains("&") else { return value }
+        // Named references are case-sensitive; only these spellings exist.
         let named: [String: String] = [
-            "amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'",
+            "amp": "&", "AMP": "&", "lt": "<", "LT": "<", "gt": ">", "GT": ">",
+            "quot": "\"", "QUOT": "\"", "apos": "'",
             "sol": "/", "plus": "+", "period": "."
         ]
         var decoded = ""
@@ -238,7 +278,7 @@ enum HTMLScriptScanner {
                     : UInt32(digits, radix: 10)
                 replacement = scalarValue.flatMap(Unicode.Scalar.init).map { String(Character($0)) }
             } else {
-                replacement = named[reference.lowercased()]
+                replacement = named[String(reference)]
             }
             if let replacement {
                 decoded += replacement
