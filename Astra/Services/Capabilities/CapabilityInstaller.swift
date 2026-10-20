@@ -214,6 +214,9 @@ struct CapabilityInstaller {
             return try enableSkillRow(skillID, package: package, workspace: workspace, modelContext: modelContext, persist: persist, fileCommit: fileCommit)
         }
 
+        guard workspace.modelContext === modelContext, !workspace.isDeleted else {
+            throw InstallationError.persistenceFailed(packageID: package.id)
+        }
         let isNewActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) == nil
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         // The library holds one definition for every workspace: each other
@@ -225,6 +228,7 @@ struct CapabilityInstaller {
                 && WorkspaceCapabilityActivation.activation(for: package.id, in: other) != nil
         }
         let pendingSnapshots = pendingElsewhere.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
+        var stagedGeneration: PluginCredentialGenerationTransaction?
         var savedSkillSecrets: [SavedSkillSecret] = []
         var renamedSecrets: [PluginUpdateService.CopiedSecret] = []
         let restoreReconciled = PluginUpdateService.captureState(of: [workspace] + pendingElsewhere)
@@ -241,6 +245,14 @@ struct CapabilityInstaller {
             var connectorIDs: [UUID] = []
             var localToolIDs: [UUID] = []
             var templateIDs: [UUID] = []
+
+            if let existing = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) {
+                let prepared = try PluginCredentialGenerationTransaction.prepareCopy(
+                    activation: existing, workspaceID: workspace.id, modelContext: modelContext,
+                    skillName: package.name, persistence: skillSecrets)
+                stagedGeneration = prepared
+                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(prepared.generation, on: existing)
+            }
 
             // The activation owns everything this workspace keeps for the
             // plugin. Skills and tools are not stored: the runtime projects
@@ -295,6 +307,7 @@ struct CapabilityInstaller {
                 in: workspace,
                 to: package,
                 mode: .release,
+                secrets: skillSecrets,
                 copied: &renamedSecrets
             )
             let releasedSkillIDs = reconciliation.released
@@ -434,7 +447,7 @@ struct CapabilityInstaller {
             let saved = PluginSecretCleanupOutbox.deleteThenClean(
                 releasedSkillIDs,
                 keys: reconciliation.staleSecrets + journaledSecrets + PluginUpdateService.journaledCopies(renamedSecrets),
-                modelContext: modelContext,
+                modelContext: modelContext, secrets: skillSecrets,
                 save: {
                     let result = PluginStateCommit.save(workspaceIDs: mirrored.map(\.id), pluginIDs: [package.id],
                         kind: .add, modelContext: modelContext, persist: { context in
@@ -491,12 +504,21 @@ struct CapabilityInstaller {
             WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
             for (other, snapshot) in pendingSnapshots { WorkspaceCapabilityActivation.restore(snapshot, to: other) }
             let unrestored = restoreSkillSecrets(savedSkillSecrets)
-                + PluginUpdateService.undo(renamedSecrets)
-            PluginSecretSettingWriter.forgetJournaled(
-                savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }
-                    + PluginUpdateService.journaledCopies(renamedSecrets),
-                modelContext: modelContext
-            )
+                + PluginUpdateService.undo(renamedSecrets, secrets: skillSecrets)
+            // A refused compensation still owes cleanup. Retaining the
+            // batch is safe: recovery checks saved owners before deleting,
+            // and already-restored keys settle idempotently.
+            if unrestored.isEmpty {
+                PluginSecretSettingWriter.forgetJournaled(
+                    savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }
+                        + PluginUpdateService.journaledCopies(renamedSecrets),
+                    modelContext: modelContext
+                )
+            }
+            // The published generation was restored first. These unique
+            // staged namespaces can now be reclaimed without compensation
+            // touching any credential the saved activation still references.
+            stagedGeneration?.discard()
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
             fields["result"] = "enable_failed_rolled_back"

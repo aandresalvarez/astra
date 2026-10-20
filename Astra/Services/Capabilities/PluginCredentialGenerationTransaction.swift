@@ -19,10 +19,29 @@ struct PluginCredentialGenerationTransaction {
         replacement: String?, skillName: String, modelContext: ModelContext,
         persistence: any SkillSecretPersisting.Type
     ) throws -> Self {
+        try stage(activation: activation, workspaceID: workspaceID, modelContext: modelContext,
+            replacing: (componentID, key, replacement), skillName: skillName, persistence: persistence)
+    }
+
+    /// Add and reconciliation may touch several keys or rename components.
+    /// Isolate their writes before changing the activation's saved contract.
+    static func prepareCopy(
+        activation: PluginActivation, workspaceID: UUID, modelContext: ModelContext,
+        skillName: String, persistence: any SkillSecretPersisting.Type
+    ) throws -> Self {
+        try stage(activation: activation, workspaceID: workspaceID, modelContext: modelContext,
+            replacing: nil, skillName: skillName, persistence: persistence)
+    }
+
+    private static func stage(
+        activation: PluginActivation, workspaceID: UUID, modelContext: ModelContext,
+        replacing: (component: String, key: String, value: String?)?, skillName: String,
+        persistence: any SkillSecretPersisting.Type
+    ) throws -> Self {
         guard activation.modelContext === modelContext, activation.workspace?.id == workspaceID,
               !activation.isDeleted else { throw PluginOperations.OperationError.workspaceChanged }
         let generation = UUID().uuidString
-        let changed = PluginActivation.settingKey(componentID: componentID, key: key)
+        let changed = replacing.map { PluginActivation.settingKey(componentID: $0.component, key: $0.key) }
         struct Write { let key: String; let component: String; let value: String; let explicit: Bool }
         var writes: [Write] = []
         for setting in Set(activation.secretSettingKeys).sorted() where setting != changed {
@@ -37,13 +56,17 @@ struct PluginCredentialGenerationTransaction {
             case .unavailable: throw PluginOperations.OperationError.secretReadFailed(key: name)
             }
         }
-        if let replacement { writes.append(Write(key: key, component: componentID, value: replacement, explicit: true)) }
+        if let replacing, let value = replacing.value {
+            writes.append(Write(key: replacing.key, component: replacing.component, value: value, explicit: true))
+        }
         func destination(_ component: String) -> UUID {
             PluginActivation.credentialID(workspaceID: workspaceID, pluginID: activation.pluginID, componentID: component,
                 runtimeSeed: activation.namespaceSeed, generation: generation)
         }
         var released = Set(PluginRuntimeProjection.secretNamespaces(of: activation, package: nil))
-        released.insert(PluginRuntimeProjection.credentialID(of: activation, componentID: componentID))
+        if let replacing {
+            released.insert(PluginRuntimeProjection.credentialID(of: activation, componentID: replacing.component))
+        }
         let namespaces = Set(writes.map { destination($0.component) })
         let outbox = PluginSecretCleanupOutbox(for: modelContext)
         if let outbox {
