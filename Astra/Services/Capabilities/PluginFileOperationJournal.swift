@@ -55,7 +55,7 @@ struct PluginFileOperationJournal {
         try manager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         guard try pendingIDs().isEmpty else { throw Failure.pendingOperation }
         var pins: [String: Pin] = [:]
-        for root in Root.allCases {
+        for root in Set(changes.map(\.root)) {
             let url = roots[root]!
             try manager.createDirectory(at: url, withIntermediateDirectories: true)
             pins[root.rawValue] = try pin(url)
@@ -137,8 +137,9 @@ struct PluginFileOperationJournal {
     }
 
     private func validateRoots(_ manifest: Manifest) throws {
-        guard manifest.roots.count == Root.allCases.count else { throw Failure.changedRoot }
-        for root in Root.allCases {
+        let usedRoots = Set(manifest.entries.map(\.root))
+        guard Set(manifest.roots.keys) == Set(usedRoots.map(\.rawValue)) else { throw Failure.changedRoot }
+        for root in usedRoots {
             guard try pin(roots[root]!) == manifest.roots[root.rawValue] else { throw Failure.changedRoot }
         }
     }

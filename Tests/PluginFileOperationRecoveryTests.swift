@@ -71,6 +71,18 @@ struct PluginFileOperationRecoveryTests {
         #expect(try fixture.journal.pendingIDs() == [prepared.id])
     }
 
+    @Test("A library-only preparation never creates or modifies an unrelated approval root")
+    func unrelatedStorageIsUntouched() throws {
+        let fixture = try Fixture()
+        defer { fixture.removeFiles() }
+        let approvalRoot = fixture.root.appendingPathComponent("Approvals")
+        #expect(!FileManager.default.fileExists(atPath: approvalRoot.path))
+        let prepared = try fixture.prepare()
+        #expect(!FileManager.default.fileExists(atPath: approvalRoot.path))
+        try fixture.journal.apply(prepared, forward: true)
+        #expect(!FileManager.default.fileExists(atPath: approvalRoot.path))
+    }
+
     @Test("Wrong stores never decide rollback or overwrite library bytes")
     func wrongStoreRetainsJournal() throws {
         let fixture = try Fixture()
