@@ -45,23 +45,19 @@ struct PendingTaskCredentialReferences {
             guard let json = request.executionPolicySnapshotJSON else { continue }
             guard let data = json.data(using: .utf8),
                   let policy = try? JSONDecoder().decode(TaskExecutionPolicySnapshotV1.self, from: data),
-                  policy.version == 1, result.include(policy, taskID: request.taskID, in: saved) else { return nil }
+                  policy.version == 1, result.include(policy, in: saved) else { return nil }
         }
         return result
     }
 
-    private mutating func include(_ policy: TaskExecutionPolicySnapshotV1, taskID: UUID, in context: ModelContext) -> Bool {
+    private mutating func include(_ policy: TaskExecutionPolicySnapshotV1, in context: ModelContext) -> Bool {
         let definitions = Dictionary((policy.pluginDefinitions ?? []).map { ($0.id, $0) },
                                      uniquingKeysWith: { first, _ in first })
         for activation in policy.pluginActivations ?? [] where activation.isEnabled {
-            var workspaceID = activation.workspaceID
-            if workspaceID == nil {
-                var descriptor = FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
-                descriptor.fetchLimit = 1
-                guard let task = try? context.fetch(descriptor).first else { return false }
-                workspaceID = task.workspace?.id
-            }
-            guard let workspaceID else { return false }
+            // Old snapshots did not preserve the namespace's workspace.
+            // The task may have moved since submission, so its live owner
+            // cannot prove that identity. Keep all cleanup pending instead.
+            guard let workspaceID = activation.workspaceID else { return false }
             let definition = definitions[activation.pluginID]
             let specs = definition?.skills ?? []
             var components = Set(activation.knownComponentIDs + activation.overriddenComponentIDs)
