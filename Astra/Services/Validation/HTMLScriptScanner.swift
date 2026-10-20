@@ -156,11 +156,13 @@ enum HTMLScriptScanner {
                     }
                     // A script that never gets an end tag is never run.
                     guard let close = inForeign
-                        ? findEndTag("script", in: scalars, from: tag.end)
+                        ? findForeignScriptEnd(in: scalars, from: tag.end)
                         : findScriptDataEnd(in: scalars, from: tag.end) else { break }
                     elements.append(ScriptElement(
                         attributes: attributes,
-                        body: string(scalars[tag.end..<close.start])
+                        body: inForeign
+                            ? removingCDATAMarkers(scalars, in: tag.end..<close.start)
+                            : string(scalars[tag.end..<close.start])
                     ))
                     index = close.end
                 } else if !inForeign, name == "plaintext" {
@@ -255,6 +257,49 @@ enum HTMLScriptScanner {
             return encoding == "text/html" || encoding == "application/xhtml+xml"
         }
         return htmlIntegrationPoints.contains(name)
+    }
+
+    /// Finds the end tag of an SVG/MathML script; a `</script>` inside a
+    /// CDATA section is text and does not close it.
+    private static func findForeignScriptEnd(
+        in scalars: [Unicode.Scalar],
+        from start: Int
+    ) -> (start: Int, end: Int)? {
+        var index = start
+        while index < scalars.count {
+            if hasPrefix("<![CDATA[", in: scalars, at: index) {
+                guard let end = find("]]>", in: scalars, from: index + 9) else { return nil }
+                index = end + 3
+            } else if isTag("</script", in: scalars, at: index) {
+                guard let tag = parseAttributes(scalars, from: index + 8) else { return nil }
+                return (index, tag.end)
+            } else {
+                index += 1
+            }
+        }
+        return nil
+    }
+
+    /// In foreign content a CDATA section contributes only its contents to
+    /// the script text, so `<![CDATA[ … ]]>` wrappers are dropped.
+    private static func removingCDATAMarkers(
+        _ scalars: [Unicode.Scalar],
+        in range: Range<Int>
+    ) -> String {
+        var text = String.UnicodeScalarView()
+        var index = range.lowerBound
+        while index < range.upperBound {
+            if hasPrefix("<![CDATA[", in: scalars, at: index),
+               let end = find("]]>", in: scalars, from: index + 9),
+               end + 3 <= range.upperBound {
+                text.append(contentsOf: scalars[(index + 9)..<end])
+                index = end + 3
+            } else {
+                text.append(scalars[index])
+                index += 1
+            }
+        }
+        return String(text)
     }
 
     /// Finds the end tag that closes an HTML script, following the tokenizer's

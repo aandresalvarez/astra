@@ -663,6 +663,10 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(HTMLScriptScanner.inlineScripts(in: manyComments).map(\.body) == ["a()"])
         // A script cut off before its end tag never runs, so it is not checked.
         #expect(HTMLScriptScanner.inlineScripts(in: "<script>a()</script><script>bad(").map(\.body) == ["a()"])
+        // In SVG, CDATA wrappers are not part of the script text, and a
+        // `</script>` inside CDATA does not close the script.
+        let svgCDATA = "<svg><script><![CDATA[const ok = \"</script>\";]]></script></svg>"
+        #expect(HTMLScriptScanner.inlineScripts(in: svgCDATA).map(\.body) == ["const ok = \"</script>\";"])
         // Everything after `<plaintext>` is text.
         #expect(HTMLScriptScanner.inlineScripts(in: "<plaintext><script>bad(</script>").isEmpty)
         // A non-ASCII space is part of the tag name, so this is not a script.
