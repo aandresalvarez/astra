@@ -9,6 +9,10 @@ import ASTRAModels
 public struct KeychainSecretStore: SecretStore {
     public init() {}
 
+    public func read(key: String, entityID: String) -> SecretReadOutcome {
+        AstraSecureKeychainStore.read(service: entityID, account: key)
+    }
+
     public func load(key: String, entityID: String) -> String? {
         AstraSecureKeychainStore.load(service: entityID, account: key)
     }

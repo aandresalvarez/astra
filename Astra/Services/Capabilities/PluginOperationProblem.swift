@@ -5,11 +5,10 @@ import Foundation
 enum PluginOperationProblem: Error, LocalizedError {
     case savedRecoveryPending(UUID)
     case commitUncertain(UUID)
-    case credentialWriteDeferred(UUID)
 
     var operationID: UUID {
         switch self {
-        case .savedRecoveryPending(let id), .commitUncertain(let id), .credentialWriteDeferred(let id): id
+        case .savedRecoveryPending(let id), .commitUncertain(let id): id
         }
     }
 
@@ -19,8 +18,6 @@ enum PluginOperationProblem: Error, LocalizedError {
             "The change was saved, but its recovery copy is pending. ASTRA will retry it."
         case .commitUncertain:
             "ASTRA couldn't confirm this save. Its recovery information was kept; check recovery before repeating the change."
-        case .credentialWriteDeferred:
-            "The new credential wasn't written because its recovery metadata is pending. Retry after recovery completes."
         }
     }
 

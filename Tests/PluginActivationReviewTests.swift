@@ -336,18 +336,16 @@ struct PluginActivationReviewTests {
         #expect(activation.recordedVersion == "1.0.0")
     }
 
-    /// A cleared secret leaves the Keychain before the record does; a save
-    /// that fails after puts the value back, and one it can't is reported.
-    /// (A set never gets this far: its record is saved before the write,
-    /// `PluginSecretSettingWriterTests`.)
-    @Test("A cleared setting whose save fails and whose Keychain value can't be put back says so")
-    func settingRollbackReportsUnrestoredSecret() throws {
+    /// Failed clears never modify the saved namespace, so no compensating
+    /// Keychain write is required even when that write would be refused.
+    @Test("A failed clear preserves its old namespace without attempting restoration")
+    func failedClearDoesNotNeedCompensation() throws {
         let env = try Fixtures.Environment()
         var package = Fixtures.package(version: "1.0.0")
         package.skills[0].environmentKeys = ["API_TOKEN"]
         package.skills[0].environmentValues = [""]
         try env.install(package)
-        #expect(throws: PluginOperations.OperationError.secretRestoreFailed(key: "API_TOKEN")) {
+        #expect(throws: PluginOperations.OperationError.saveFailed) {
             try PluginOperations.setSetting(
                 "API_TOKEN", to: "", of: package.skills[0], pluginID: package.id, in: env.workspace, modelContext: env.context,
                 secrets: UnrestorableSecrets.self, persist: { _, _ in throw CocoaError(.fileWriteUnknown) }
