@@ -96,6 +96,22 @@ struct PluginSourceDefinitionOperation {
         }
     }
 
+    /// Remove and forget-missing publish provenance only through the same
+    /// matching receipt as their library and workspace deletion.
+    func removing(pluginID: String, modelContext: ModelContext,
+        perform: (PluginFileOperationContext) throws -> CapabilityUninstaller.RemovalResult) throws -> CapabilityUninstaller.RemovalResult {
+        try recover(modelContext)
+        let journal = PluginSourceOperationJournal(store: store)
+        let prepared = try journal.prepare(pluginID: pluginID, after: nil, modelContext: modelContext)
+        let operation = PluginFileOperationContext(id: prepared.id, metadataDigest: prepared.digest, metadata: journal.handler(modelContext: modelContext))
+        do { return try perform(operation) }
+        catch {
+            _ = journal.resumeOrphans(modelContext: modelContext,
+                files: PluginFileOperationJournal(library: library, approvals: CapabilityApprovalStore()))
+            throw error
+        }
+    }
+
     private func recover(_ context: ModelContext, approvals: CapabilityApprovalStore = CapabilityApprovalStore()) throws {
         let recovery = PluginSourceOperationRecovery(library: library, store: store, approvals: approvals)
         guard recovery.resumeSerialized(modelContext: context) == 0 else { throw PluginDefinitionChange.Failure.recoveryPending }

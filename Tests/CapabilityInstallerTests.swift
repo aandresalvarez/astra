@@ -1107,6 +1107,8 @@ struct CapabilityInstallerTests {
 
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
+        workspace.primaryPath = root.appendingPathComponent("Workspace").path
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
 
         var package = makeAnalystCapabilityPackage()
         package.templates = [
@@ -1177,6 +1179,11 @@ struct CapabilityInstallerTests {
 
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
+        firstWorkspace.primaryPath = root.appendingPathComponent("First").path
+        secondWorkspace.primaryPath = root.appendingPathComponent("Second").path
+        for workspace in [firstWorkspace, secondWorkspace] {
+            try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
+        }
 
         var firstPackage = makeAnalystCapabilityPackage()
         firstPackage.id = "stanford.bigquery.first"

@@ -188,8 +188,10 @@ struct CapabilityCatalogActionService {
         _ package: PluginPackage,
         modelContext: ModelContext
     ) throws -> CapabilityUninstaller.RemovalResult {
-        try forgettingSource(of: package.id, leaving: .remove) {
-            try uninstaller.remove(package, modelContext: modelContext)
+        try sourceStore.exclusively(pluginID: package.id) {
+            try PluginSourceDefinitionOperation(library: library, store: sourceStore).removing(pluginID: package.id, modelContext: modelContext) {
+                try uninstaller.remove(package, modelContext: modelContext, operation: $0)
+            }
         }
     }
 
@@ -224,7 +226,11 @@ struct CapabilityCatalogActionService {
     /// Remove for a plugin the library no longer has a readable entry for.
     @discardableResult
     func forgetMissing(pluginID: String, modelContext: ModelContext) throws -> CapabilityUninstaller.RemovalResult {
-        try uninstaller.forgetMissing(pluginID: pluginID, modelContext: modelContext)
+        try sourceStore.exclusively(pluginID: pluginID) {
+            try PluginSourceDefinitionOperation(library: library, store: sourceStore).removing(pluginID: pluginID, modelContext: modelContext) {
+                try uninstaller.forgetMissing(pluginID: pluginID, modelContext: modelContext, operation: $0)
+            }
+        }
     }
 
     /// Plugins 2.0 one-step Add: install, approve and enable in this workspace.

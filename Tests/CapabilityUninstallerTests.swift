@@ -28,6 +28,8 @@ struct CapabilityUninstallerTests {
         let workspace = Workspace(name: "Uninstall", primaryPath: "/tmp/capability-uninstall")
         context.insert(workspace)
         let (library, root) = makeCapabilityUninstallerLibrary()
+        workspace.primaryPath = root.appendingPathComponent("Workspace").path
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let package = PluginPackage(
@@ -81,6 +83,8 @@ struct CapabilityUninstallerTests {
         let workspace = Workspace(name: "Kept Account", primaryPath: "/tmp/capability-kept-account")
         context.insert(workspace)
         let (library, root) = makeCapabilityUninstallerLibrary()
+        workspace.primaryPath = root.appendingPathComponent("Workspace").path
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let package = PluginPackage(
@@ -123,6 +127,8 @@ struct CapabilityUninstallerTests {
         let workspace = Workspace(name: "Retired Overrides", primaryPath: "/tmp/capability-retired-overrides")
         context.insert(workspace)
         let (library, root) = makeCapabilityUninstallerLibrary()
+        workspace.primaryPath = root.appendingPathComponent("Workspace").path
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let package = retirementPackage(id: "retired-overrides-package")
         let installer = CapabilityInstaller(library: library)
@@ -172,6 +178,8 @@ struct CapabilityUninstallerTests {
         let workspace = Workspace(name: "Retired Seed", primaryPath: "/tmp/capability-retired-seed")
         context.insert(workspace)
         let (library, root) = makeCapabilityUninstallerLibrary()
+        workspace.primaryPath = root.appendingPathComponent("Workspace").path
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let package = retirementPackage(id: "retired-seed-package")
         let installer = CapabilityInstaller(library: library)
@@ -224,14 +232,20 @@ struct CapabilityUninstallerTests {
 
                 var exported: [UUID] = []
                 var pendingWhileExporting: [UUID] = []
-                try CapabilityUninstaller(library: library).remove(
-                    package, modelContext: context, secretCleanupOutbox: outbox,
-                    exportMirror: { changed in
-                        exported.append(changed.id)
-                        pendingWhileExporting = (try? outbox.pending()) ?? []
-                        return mirrorWritable
-                    }
-                )
+                do {
+                    try CapabilityUninstaller(library: library).remove(
+                        package, modelContext: context, secretCleanupOutbox: outbox,
+                        exportMirror: { changed in
+                            exported.append(changed.id)
+                            pendingWhileExporting = (try? outbox.pending()) ?? []
+                            return mirrorWritable
+                        }
+                    )
+                    #expect(mirrorWritable)
+                } catch let problem as PluginOperationProblem {
+                    #expect(!mirrorWritable)
+                    guard case .savedRecoveryPending = problem else { throw problem }
+                }
 
                 // The mirror is written synchronously, after the save and
                 // while the cleanup is still recorded.

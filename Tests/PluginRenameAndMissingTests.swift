@@ -177,29 +177,28 @@ struct PluginRound22ReviewTests {
         #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) != nil)
     }
 
-    @Test("Forgetting a plugin whose entry is unreadable moves the entry aside, and keeps the intent while it can't")
+    @Test("An unreadable definition is preserved until quarantine can be prepared, then removed recoverably")
     func unreadableEntryIsQuarantined() throws {
         let env = try Fixtures.Environment()
         let package = Fixtures.package(version: "1.0.0")
         try env.install(package)
-        let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
-        try Data("not a package".utf8).write(to: env.library.packageURL(for: package.id))
-        #expect(env.library.holdsUnreadableEntry(id: package.id))
-
-        // The quarantine folder can't be made: the intent stays.
+        let original = Data("not a package".utf8)
+        try original.write(to: env.library.packageURL(for: package.id))
         try Data().write(to: env.library.quarantineDirectory)
-        try CapabilityUninstaller(library: env.library).forgetMissing(pluginID: package.id, modelContext: env.context, removeJournal: journal)
-        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) == nil)
-        #expect(try journal.pending() == [package.id])
-        #expect(env.library.holdsUnreadableEntry(id: package.id))
-
-        // Launch moves it aside and finishes.
+        #expect(throws: (any Error).self) {
+            try CapabilityUninstaller(library: env.library).forgetMissing(pluginID: package.id, modelContext: env.context)
+        }
+        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) != nil)
+        #expect(try Data(contentsOf: env.library.packageURL(for: package.id)) == original)
         try FileManager.default.removeItem(at: env.library.quarantineDirectory)
-        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
-        #expect(try journal.pending().isEmpty)
+        try CapabilityUninstaller(library: env.library).forgetMissing(pluginID: package.id, modelContext: env.context)
+        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) == nil)
         #expect(!env.library.holdsUnreadableEntry(id: package.id))
-        #expect(try FileManager.default.contentsOfDirectory(atPath: env.library.quarantineDirectory.path).count == 1)
+        let quarantined = try FileManager.default.contentsOfDirectory(at: env.library.quarantineDirectory, includingPropertiesForKeys: nil)
+        #expect(quarantined.count == 1)
+        #expect(try Data(contentsOf: #require(quarantined.first)) == original)
     }
+
 }
 
 /// Round 21 review: every save that releases secrets writes its mirrors

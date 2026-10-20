@@ -680,13 +680,22 @@ struct PluginSourcesTests {
         #expect(fixture.store.provenance()[package.id]?.pendingForget == nil)
         #expect(fixture.store.provenance()[package.id]?.sourceID == source.id)
 
-        // After the write: the plugin is gone, so the record goes too.
+        // A refused post-save file deletion retains both proofs. Restoring
+        // its before-provenance image is a real pending recovery, not an edit
+        // made after an already completed operation's journals were removed.
         files.snapshots = []
-        _ = try CapabilityCatalogActionService(library: library, sourceStore: fixture.store).remove(package, modelContext: fixture.context)
+        files.refuseLibraryRemovals = true
+        #expect(throws: PluginOperationProblem.self) {
+            try CapabilityCatalogActionService(library: library, sourceStore: fixture.store).remove(package, modelContext: fixture.context)
+        }
         try files.restoreLastSnapshot()
-        #expect(fixture.store.provenance()[package.id]?.pendingForget == .remove)
-        PluginSourceCoordinator(store: fixture.store, installedPackages: { library.installedPackages() }).reload()
+        #expect(fixture.store.provenance()[package.id]?.sourceID == source.id)
+        #expect(try PluginSourceOperationJournal(store: fixture.store).pendingIDs().count == 1)
+        files.refuseLibraryRemovals = false
+        #expect(PluginSourceOperationRecovery(library: library, store: fixture.store).resumePending(modelContext: fixture.context) == 0)
         #expect(fixture.store.provenance()[package.id] == nil)
+        #expect(library.installedPackage(id: package.id) == nil)
+
     }
 
     @Test("T5: a Create that exits after its library write forgets the source")
@@ -863,6 +872,7 @@ struct PluginSourcesTests {
         let coordinatorA = PluginSourceCoordinator(store: a.store, installedPackages: { a.library.installedPackages() })
         coordinatorA.reload()
         let workspaceA = Workspace(name: "Waits", primaryPath: a.root.appendingPathComponent("ws").path)
+        try FileManager.default.createDirectory(atPath: workspaceA.primaryPath, withIntermediateDirectories: true)
         a.context.insert(workspaceA)
         let serviceA = CapabilityCatalogActionService(library: a.library, sourceStore: a.store)
         try serviceA.importReviewed(try #require(coordinatorA.listings.first?.plugins.first), workspace: workspaceA, modelContext: a.context, coordinator: coordinatorA)
@@ -891,20 +901,23 @@ struct PluginSourcesTests {
         }
         #expect(config.installedPlugins?.first { $0.id == installedA.id }?.source == "plugin-source:\(source.id)")
 
-        func importFile(on machine: Fixture) -> Workspace {
+        func importFile(on machine: Fixture) throws -> Workspace {
             let verifier = WorkspaceConfigManager.CapabilityImportVerifier.live(
                 library: machine.library, approvalRecords: [], sourceStore: machine.store
             )
             var file = config
             file.id = nil
-            return WorkspaceConfigManager.importWorkspaceResult(
+            let workspace = WorkspaceConfigManager.importWorkspaceResult(
                 from: file, modelContext: machine.context, capabilityTrust: .validate(verifier)
             ).workspace
+            workspace.primaryPath = machine.root.appendingPathComponent("Workspace-\(workspace.id)").path
+            try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
+            return workspace
         }
         /// A Mac the file is imported on before anything is installed.
         func freshImport() throws -> (Fixture, Workspace) {
             let machine = try Fixture()
-            return (machine, importFile(on: machine))
+            return (machine, try importFile(on: machine))
         }
         func addInstalled(_ package: PluginPackage, on machine: Fixture, to workspace: Workspace) throws -> PluginActivation {
             _ = try CapabilityCatalogActionService(library: machine.library, sourceStore: machine.store).add(
@@ -950,7 +963,7 @@ struct PluginSourcesTests {
         // Machine C: the same bytes from another source never restore it, and Remove drops it.
         let (c, workspaceC) = try freshImport()
         // A second workspace waits too, and is never added to.
-        let untouchedC = importFile(on: c)
+        let untouchedC = try importFile(on: c)
         let importedC = Set(workspaceC.connectors.map(\.id.uuidString))
         try c.library.install(installedA, sourceMetadata: .localLibrary())
         try c.store.recordProvenance(pluginID: installedA.id, sourceID: "acme-other-123abc", digest: PluginSourceCatalog.contentDigest(installedA))
@@ -1647,6 +1660,7 @@ final class ProvenanceSnapshotFileManager: FileManager {
     let provenanceURL: URL
     var snapshots: [Data?] = []
     var failLibraryWrites = false
+    var refuseLibraryRemovals = false
     /// Runs once, at the next library write, before it: what arrives while
     /// a write is under way.
     var duringNextLibraryWrite: (() -> Void)?
@@ -1686,7 +1700,7 @@ final class ProvenanceSnapshotFileManager: FileManager {
     override func removeItem(at url: URL) throws {
         if url.standardizedFileURL.path.hasPrefix(libraryDirectory.path + "/") {
             snapshot()
-            if failLibraryWrites { throw CocoaError(.fileWriteNoPermission) }
+            if failLibraryWrites || refuseLibraryRemovals { throw CocoaError(.fileWriteNoPermission) }
         }
         try super.removeItem(at: url)
     }
