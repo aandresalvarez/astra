@@ -31,6 +31,8 @@ public final class Connector {
     public var originComponentID: String?
     public var originComponentKind: String?
     public var originSourceKind: String?
+    /// Original V20 account label retained for migration and authored accounts.
+    public var accountAlias: String?
     public var createdAt: Date
     public var updatedAt: Date
 

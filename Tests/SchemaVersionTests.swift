@@ -364,37 +364,43 @@ struct SchemaVersionTests {
     @Test("SchemaV20 version identifier is 20.0.0")
     func v20VersionIdentifier() {
         #expect(ASTRASchemaV20.versionIdentifier == Schema.Version(20, 0, 0))
-        #expect(ASTRASchemaV20.models.count == 21)
-        #expect(ASTRASchemaV20.models.contains { $0 == PluginActivation.self })
-        #expect(ASTRASchemaV20.models.contains { $0 == AccountBinding.self })
-        #expect(ASTRASchemaV20.models.contains { $0 == Connector.self })
-        #expect(ASTRASchemaV20.models.contains { $0 == Workspace.self })
+        #expect(ASTRASchemaV20.models.count == 19)
+        #expect(ASTRASchemaV20.models.contains { $0 == ASTRASchemaV20Models.Connector.self })
+        #expect(ASTRASchemaV20.models.contains { $0 == ASTRASchemaV20Models.Workspace.self })
+    }
+
+    @Test("Plugins 2.0 uses a new V21 schema after original V20")
+    func v21VersionIdentifier() {
+        #expect(ASTRASchemaV21.versionIdentifier == Schema.Version(21, 0, 0))
+        #expect(ASTRASchemaV21.models.count == 21)
+        #expect(ASTRASchemaV21.models.contains { $0 == PluginActivation.self })
+        #expect(ASTRASchemaV21.models.contains { $0 == AccountBinding.self })
     }
 
     @Test("Advertised current schema matches the compiled current model")
     func advertisedCurrentSchemaMatchesCompiledModel() {
-        #expect(ASTRASchema.currentVersion == 20)
-        #expect(ASTRASchemaV20.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
+        #expect(ASTRASchema.currentVersion == 21)
+        #expect(ASTRASchemaV21.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV20")
+    @Test("Migration plan lists SchemaV1 through SchemaV21")
     func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 20)
+        #expect(ASTRAMigrationPlan.schemas.count == 21)
     }
 
-    @Test("Migration plan has V1 to V20 lightweight stages")
+    @Test("Migration plan has V1 to V21 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 19)
+        #expect(ASTRAMigrationPlan.stages.count == 20)
     }
 
     @Test("Orphan recovery plan keeps the colliding V12 isolated")
     func orphanRecoveryPlanIsIsolated() {
         // The isolated V12 recovery plans migrate their colliding-V12 store
         // forward to current: V12x → V13 → … → V19 → V20.
-        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 9)
-        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 8)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 9)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 8)
+        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 10)
+        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 9)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 10)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 9)
     }
 
     @Test("Frozen V12 and V13 schemas match all observed on-disk fingerprints")
@@ -813,7 +819,7 @@ struct SchemaVersionTests {
     }
 
     @MainActor
-    @Test("Production SchemaV19 store migrates to V20 with no activations yet")
+    @Test("Production SchemaV19 store migrates through original V20 to V21 with no activations yet")
     func v19StoreMigratesToPluginActivations() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-schema-v19-accounts-migration-\(UUID().uuidString)", isDirectory: true)

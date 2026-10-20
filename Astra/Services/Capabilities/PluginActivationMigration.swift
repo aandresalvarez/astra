@@ -4,9 +4,9 @@ import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
-/// Moves a V19 store's plugin state onto `PluginActivation` (Plugins 2.0 R1).
+/// Moves a V19/V20 store's plugin state onto `PluginActivation` (Plugins 2.0 R1).
 ///
-/// Runs once the V20 store is open, before anything resolves capabilities,
+/// Runs once the V21 store is open, before anything resolves capabilities,
 /// and again on any later launch that still finds legacy state, so an
 /// interrupted run finishes. It is idempotent: a store with no legacy
 /// enablement arrays and no plugin-origin skill or tool rows is left alone.
@@ -83,7 +83,7 @@ enum PluginActivationMigration {
         do {
             let report = try migrate(modelContext: context, packages: packages)
             AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
-                "migration": "plugin_activations_v20",
+                "migration": "plugin_activations_v21",
                 "result": "migrated",
                 "activations": String(report.activations),
                 "accounts_bound": String(report.accountsBound),
@@ -94,7 +94,7 @@ enum PluginActivationMigration {
             ])
         } catch {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                "migration": "plugin_activations_v20",
+                "migration": "plugin_activations_v21",
                 "result": "deferred",
                 "error_type": String(describing: error)
             ], level: .error)
@@ -212,8 +212,8 @@ enum PluginActivationMigration {
                 }
             }
 
-            // V19 stored no default account: binding in creation order makes
-            // each component's oldest account its default.
+            // Original V20 selections take precedence; V19 falls back to the
+            // oldest account when it has no recorded service default.
             for connector in connectors.sorted(by: { $0.createdAt < $1.createdAt }) where isPluginOrigin(connector) {
                 let pluginID = trimmed(connector.originPackageID)
                 // Without its definition (a custom plugin's file missing or
@@ -237,7 +237,7 @@ enum PluginActivationMigration {
                 if !(connector.skill.map { independentSkillIDs.contains($0.id) } ?? false) { connector.skill = nil }
                 for (workspace, activation) in bindTo
                 where !activation.bindings.contains(where: { $0.account?.id == connector.id }) {
-                    WorkspaceCapabilityActivation.bind(connector, toComponent: componentID, of: activation)
+                    PluginV20AccountChoices.bind(connector, componentID: componentID, to: activation, in: workspace)
                     let id = connector.id.uuidString
                     if workspace.enabledGlobalConnectorIDs.contains(id) {
                         WorkspaceCapabilityActivation.mutate(workspace) { $0.globalConnectorIDs.removeAll { $0 == id } }
@@ -396,7 +396,7 @@ enum PluginActivationMigration {
             // does: retrying cannot bring back a value the rollback lost.
             if !unrestored.isEmpty {
                 AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                    "migration": "plugin_activations_v20",
+                    "migration": "plugin_activations_v21",
                     "result": "secret_restore_failed",
                     "unrestored_secret_count": String(unrestored.count)
                 ], level: .error)
