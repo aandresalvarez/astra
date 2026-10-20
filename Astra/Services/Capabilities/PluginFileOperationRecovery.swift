@@ -8,12 +8,17 @@ import ASTRAModels
 @MainActor
 struct PluginFileOperationRecovery {
     struct Result { var completed = 0; var filesReady = 0; var deferred = 0 }
+    struct MetadataHandler {
+        let reconcile: (PluginFileOperationJournal.Prepared, PluginOperationCommit.Snapshot?) throws -> Void
+        let finish: (PluginFileOperationJournal.Prepared, PluginOperationCommit.Snapshot?) throws -> Void
+    }
     let journal: PluginFileOperationJournal
 
     @discardableResult
     func resumePending(
         modelContext: ModelContext, only id: UUID? = nil,
-        export: ((Workspace, ModelContext) -> Bool)? = nil, completesMirrors: Bool = true
+        export: ((Workspace, ModelContext) -> Bool)? = nil, completesMirrors: Bool = true,
+        metadata: MetadataHandler? = nil
     ) -> Result {
         guard let identity = PersistentStoreIdentity.current(for: modelContext),
               let ids = try? journal.pendingIDs() else { return Result(deferred: 1) }
@@ -21,7 +26,8 @@ struct PluginFileOperationRecovery {
         for pendingID in ids where id == nil || pendingID == id {
             do {
                 let prepared = try journal.load(pendingID)
-                guard prepared.manifest.storeIdentity == identity else {
+                guard prepared.manifest.storeIdentity == identity,
+                      prepared.manifest.linkedMetadataDigest == nil || metadata != nil else {
                     result.deferred += 1; continue
                 }
                 if let receipt = try PluginOperationCommit.read(pendingID, container: modelContext.container) {
@@ -34,6 +40,7 @@ struct PluginFileOperationRecovery {
                     // deletion; don't overwrite a later definition on retry.
                     if receipt.completedAt == nil {
                         try journal.apply(prepared, forward: true)
+                        if prepared.manifest.linkedMetadataDigest != nil { try metadata?.reconcile(prepared, receipt) }
                         if !completesMirrors { result.filesReady += 1; continue }
                         let recovered = PluginOperationRecovery.resumePending(modelContext: modelContext, only: pendingID,
                             allowsFileOperation: { $0.id == pendingID && $0.manifestDigest == prepared.digest }, export: export)
@@ -41,8 +48,14 @@ struct PluginFileOperationRecovery {
                     }
                 } else {
                     try journal.apply(prepared, forward: false)
+                    if prepared.manifest.linkedMetadataDigest != nil { try metadata?.reconcile(prepared, nil) }
                 }
+                let finalReceipt = try PluginOperationCommit.read(pendingID, container: modelContext.container)
                 try journal.discard(prepared)
+                // Finishing after file-journal deletion is retryable from a
+                // metadata orphan. A crash can never remove its before/after
+                // image while file replay still needs it.
+                if prepared.manifest.linkedMetadataDigest != nil { try metadata?.finish(prepared, finalReceipt) }
                 result.completed += 1
             } catch { result.deferred += 1 }
         }
