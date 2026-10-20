@@ -606,7 +606,19 @@ enum TaskDeliverableVerificationService {
         }
 
         for (index, script) in scripts.enumerated() {
-            let trimmed = script.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard script.isJavaScript else {
+                // Data blocks (JSON, JSON-LD, import maps, templates) are not
+                // JavaScript; node would reject them as syntax errors.
+                checks.append(TaskDeliverableCheck(
+                    id: "javascript.syntax.inline.\(index + 1)",
+                    title: "Inline JavaScript syntax",
+                    status: .skipped,
+                    summary: "Inline script \(index + 1) has type \"\(script.type ?? "")\", which is not JavaScript; it was not syntax-checked.",
+                    path: file.path
+                ))
+                continue
+            }
+            let trimmed = script.body.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
                 checks.append(TaskDeliverableCheck(
                     id: "javascript.syntax.inline.\(index + 1)",
@@ -792,8 +804,45 @@ enum TaskDeliverableVerificationService {
         return size.uint64Value
     }
 
-    private static func inlineScripts(in html: String) -> [String] {
-        var scripts: [String] = []
+    struct InlineScript: Equatable {
+        var type: String?
+        var body: String
+
+        /// HTML treats a script as classic or module JavaScript only when its
+        /// type is absent, empty, `module`, or a JavaScript MIME type; any
+        /// other type makes it an inert data block.
+        var isJavaScript: Bool {
+            guard let type else { return true }
+            let essence = type
+                .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+                .first
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() } ?? ""
+            return essence.isEmpty || essence == "module" || Self.javascriptMIMETypes.contains(essence)
+        }
+
+        // https://html.spec.whatwg.org/multipage/scripting.html#javascript-mime-type
+        private static let javascriptMIMETypes: Set<String> = [
+            "application/ecmascript",
+            "application/javascript",
+            "application/x-ecmascript",
+            "application/x-javascript",
+            "text/ecmascript",
+            "text/javascript",
+            "text/javascript1.0",
+            "text/javascript1.1",
+            "text/javascript1.2",
+            "text/javascript1.3",
+            "text/javascript1.4",
+            "text/javascript1.5",
+            "text/jscript",
+            "text/livescript",
+            "text/x-ecmascript",
+            "text/x-javascript"
+        ]
+    }
+
+    static func inlineScripts(in html: String) -> [InlineScript] {
+        var scripts: [InlineScript] = []
         var searchStart = html.startIndex
         while let openRange = html.range(
             of: "<script",
@@ -812,11 +861,31 @@ enum TaskDeliverableVerificationService {
                 break
             }
             if !openingTag.contains("src=") {
-                scripts.append(String(html[tagEnd.upperBound..<closeRange.lowerBound]))
+                scripts.append(InlineScript(
+                    type: scriptTypeAttribute(in: openingTag),
+                    body: String(html[tagEnd.upperBound..<closeRange.lowerBound])
+                ))
             }
             searchStart = closeRange.upperBound
         }
         return scripts
+    }
+
+    private static let scriptTypeAttributePattern = try? NSRegularExpression(
+        pattern: #"\stype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#,
+        options: [.caseInsensitive]
+    )
+
+    private static func scriptTypeAttribute(in openingTag: String) -> String? {
+        guard let regex = scriptTypeAttributePattern else { return nil }
+        let range = NSRange(openingTag.startIndex..<openingTag.endIndex, in: openingTag)
+        guard let match = regex.firstMatch(in: openingTag, range: range) else { return nil }
+        for group in 1...3 {
+            if let valueRange = Range(match.range(at: group), in: openingTag) {
+                return String(openingTag[valueRange])
+            }
+        }
+        return nil
     }
 
     private static func externalScriptReferences(in html: String) -> Int {

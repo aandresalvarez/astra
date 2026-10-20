@@ -473,6 +473,134 @@ struct TaskDeliverableVerificationServiceTests {
         }
     }
 
+    @Test("Quarto-style page checks only its JavaScript blocks, not its JSON data block")
+    func quartoStylePageSkipsJSONDataBlock() async throws {
+        let fixture = try makeFixture(goal: "create a web page with html and javascript")
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        let html = """
+        <!DOCTYPE html>
+        <html><head>
+        <script src="site_libs/quarto-nav/quarto-nav.js"></script>
+        <script id="quarto-search-options" type="application/json">{
+          "location": "navbar",
+          "copy-button": false
+        }</script>
+        <script type="text/javascript">
+        const typesetMath = (el) => { return el; };
+        </script>
+        </head><body><script>window.document.addEventListener("DOMContentLoaded", () => {});</script></body></html>
+        """
+        try html.write(
+            toFile: (fixture.folder as NSString).appendingPathComponent("about.html"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let checked = CheckedSources()
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task,
+            run: fixture.run,
+            environment: nodeLikeEnvironment(recording: checked)
+        )
+
+        #expect(result.canComplete)
+        #expect(result.level == .syntaxVerified)
+        #expect(!TaskCompletionPolicy.decide(deliverableVerification: result).shouldBlockCompletion)
+        #expect(checked.sources.count == 2)
+        #expect(!checked.sources.contains { $0.contains("\"location\"") })
+        let jsonBlock = result.checks.first { $0.id == "javascript.syntax.inline.1" }
+        #expect(jsonBlock?.status == .skipped)
+        #expect(jsonBlock?.summary.contains("application/json") == true)
+        #expect(result.checks.filter { $0.id.hasPrefix("javascript.syntax.inline") && $0.status == .passed }.count == 2)
+    }
+
+    @Test("JSON-LD, import map and template blocks are reported as skipped, never failed")
+    func dataOnlyScriptBlocksAreSkipped() async throws {
+        let fixture = try makeFixture(goal: "create a web page with html and javascript")
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        let html = """
+        <!doctype html>
+        <html><head>
+        <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article"}</script>
+        <script type=importmap>{"imports": {"app": "./app.js"}}</script>
+        <script type="text/x-template" id="row"><tr><td>{{ name }}</td></tr></script>
+        </head><body></body></html>
+        """
+        try html.write(
+            toFile: (fixture.folder as NSString).appendingPathComponent("index.html"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let checked = CheckedSources()
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task,
+            run: fixture.run,
+            environment: nodeLikeEnvironment(recording: checked)
+        )
+
+        #expect(result.canComplete)
+        #expect(result.status == "review_needed")
+        #expect(!result.checks.contains { $0.status == .failed })
+        #expect(checked.sources.isEmpty)
+        #expect(result.checks.filter { $0.id.hasPrefix("javascript.syntax.inline") && $0.status == .skipped }.count == 3)
+    }
+
+    @Test("type=module blocks are still syntax-checked as JavaScript")
+    func moduleScriptBlocksAreSyntaxChecked() async throws {
+        let fixture = try makeFixture(goal: "create a web page with html and javascript")
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        let html = """
+        <!doctype html>
+        <html><body><script type="module">import { start } from "./app.js"; start(</script></body></html>
+        """
+        try html.write(
+            toFile: (fixture.folder as NSString).appendingPathComponent("index.html"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let checked = CheckedSources()
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task,
+            run: fixture.run,
+            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { source, _ in
+                checked.append(source)
+                return .failed("SyntaxError: missing ) after argument list")
+            })
+        )
+
+        #expect(checked.sources.count == 1)
+        #expect(!result.canComplete)
+        #expect(TaskCompletionPolicy.decide(deliverableVerification: result).stopReason == "deliverable_verification_failed")
+    }
+
+    @Test("inline script type attribute decides whether a block is JavaScript")
+    func inlineScriptTypeClassification() {
+        let html = """
+        <script>a()</script>
+        <script type="">b()</script>
+        <script type=module>c()</script>
+        <script TYPE='Text/JavaScript; charset=utf-8'>d()</script>
+        <script data-type="application/json">e()</script>
+        <script type="application/x-javascript">f()</script>
+        <script type="application/json">{"g": 1}</script>
+        <script type="application/ld+json">{"h": 1}</script>
+        <script type="importmap">{"imports": {}}</script>
+        <script type="text/template"><p>i</p></script>
+        <script type="text/x-handlebars-template"><p>j</p></script>
+        <script src="external.js"></script>
+        """
+
+        let scripts = TaskDeliverableVerificationService.inlineScripts(in: html)
+
+        #expect(scripts.map(\.isJavaScript) == [
+            true, true, true, true, true, true,
+            false, false, false, false, false
+        ])
+        #expect(scripts[6].type == "application/json")
+    }
+
     private func makeFixture(goal: String) throws -> (
         root: String,
         container: ModelContainer,
@@ -503,4 +631,30 @@ struct TaskDeliverableVerificationServiceTests {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url.path
     }
+}
+
+/// Records what reaches the syntax checker and, like node, rejects a bare
+/// JSON object literal.
+private final class CheckedSources: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+
+    var sources: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    func append(_ source: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        recorded.append(source)
+    }
+}
+
+private func nodeLikeEnvironment(recording checked: CheckedSources) -> TaskDeliverableVerificationEnvironment {
+    TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { source, _ in
+        checked.append(source)
+        return source.hasPrefix("{") ? .failed("SyntaxError: Unexpected token ':'") : .passed
+    })
 }
