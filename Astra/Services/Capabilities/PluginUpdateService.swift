@@ -480,6 +480,7 @@ enum PluginUpdateService {
         connectorStore: SecretStore? = nil,
         awaitsReview: Bool = false,
         credentialPreparation: PluginUpdateSkillCredentials? = nil,
+        preparedGeneration: PluginCredentialGenerationTransaction? = nil,
         copied: inout [CopiedSecret]
     ) throws -> Reconciliation {
         let persistence = secrets ?? SkillSecretSeam.required
@@ -540,7 +541,8 @@ enum PluginUpdateService {
                 .filter { PluginActivation.componentID(ofSettingKey: $0) == new }
                 .map { String($0.dropFirst(new.count + 1)) })
             let destination = PluginRuntimeProjection.credentialID(of: activation, componentID: new)
-            if credentialPreparation?.owns(destination) == true { return nil }
+            if credentialPreparation?.owns(destination) == true
+                || preparedGeneration?.namespaces.contains(destination) == true { return nil }
             let settled = PluginSecretCleanupOutbox.settleRenameDestination(
                 destination,
                 keys: spec.environmentKeys, kept: kept, modelContext: modelContext ?? activation.modelContext,

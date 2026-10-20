@@ -300,6 +300,7 @@ struct CapabilityInstaller {
                 to: package,
                 mode: .release,
                 secrets: skillSecrets,
+                preparedGeneration: stagedGeneration,
                 copied: &renamedSecrets
             )
             let releasedSkillIDs = reconciliation.released
