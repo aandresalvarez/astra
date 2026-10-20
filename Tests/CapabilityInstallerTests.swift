@@ -80,7 +80,10 @@ struct CapabilityInstallerTests {
     func installWritesLibraryAndRecordsActivation() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Capability Workspace", primaryPath: "/tmp/capability-workspace")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Capability Workspace", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -134,7 +137,10 @@ struct CapabilityInstallerTests {
     func addAgainKeepsBoundAccountSetup() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Jira site", primaryPath: "/tmp/capability-add-again")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Jira site", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -204,7 +210,10 @@ struct CapabilityInstallerTests {
     func addMatchesTemplatesByStampNotName() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Templates", primaryPath: "/tmp/capability-templates")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Templates", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -251,7 +260,10 @@ struct CapabilityInstallerTests {
     func installRecordsOriginMetadataOnResources() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Origin", primaryPath: "/tmp/capability-origin")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Origin", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -309,7 +321,10 @@ struct CapabilityInstallerTests {
     func installStoresConfiguredSourceEnvValuesOnConnector() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Jira Config", primaryPath: "/tmp/jira-config")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Jira Config", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -350,7 +365,10 @@ struct CapabilityInstallerTests {
     func sameNamedConnectorsGetSeparateAccounts() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Two Sites", primaryPath: "/tmp/capability-two-sites")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Two Sites", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -392,7 +410,10 @@ struct CapabilityInstallerTests {
     func componentKeyedSetupStaysWithItsConnector() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Two Jiras", primaryPath: "/tmp/capability-two-jiras")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Two Jiras", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -426,8 +447,14 @@ struct CapabilityInstallerTests {
     func copiedSetupKeepsEachComponentsOwnValues() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let source = Workspace(name: "Source", primaryPath: "/tmp/capability-copy-source")
-        let target = Workspace(name: "Target", primaryPath: "/tmp/capability-copy-target")
+        let sourceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: sourceFolder) }
+        let source = Workspace(name: "Source", primaryPath: sourceFolder.path)
+        let targetFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: targetFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: targetFolder) }
+        let target = Workspace(name: "Target", primaryPath: targetFolder.path)
         context.insert(source)
         context.insert(target)
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -519,8 +546,14 @@ struct CapabilityInstallerTests {
     func configuredSourceValuesStayScopedToWorkspace() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let firstWorkspace = Workspace(name: "First Jira", primaryPath: "/tmp/first-jira")
-        let secondWorkspace = Workspace(name: "Second Jira", primaryPath: "/tmp/second-jira")
+        let firstWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: firstWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: firstWorkspaceFolder) }
+        let firstWorkspace = Workspace(name: "First Jira", primaryPath: firstWorkspaceFolder.path)
+        let secondWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: secondWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: secondWorkspaceFolder) }
+        let secondWorkspace = Workspace(name: "Second Jira", primaryPath: secondWorkspaceFolder.path)
         context.insert(firstWorkspace)
         context.insert(secondWorkspace)
 
@@ -579,8 +612,14 @@ struct CapabilityInstallerTests {
     func installSharesLibraryEntryAcrossWorkspaces() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let firstWorkspace = Workspace(name: "First", primaryPath: "/tmp/first-capability")
-        let secondWorkspace = Workspace(name: "Second", primaryPath: "/tmp/second-capability")
+        let firstWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: firstWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: firstWorkspaceFolder) }
+        let firstWorkspace = Workspace(name: "First", primaryPath: firstWorkspaceFolder.path)
+        let secondWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: secondWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: secondWorkspaceFolder) }
+        let secondWorkspace = Workspace(name: "Second", primaryPath: secondWorkspaceFolder.path)
         context.insert(firstWorkspace)
         context.insert(secondWorkspace)
 
@@ -609,7 +648,10 @@ struct CapabilityInstallerTests {
     func updateRefreshesProjectionWithoutRows() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Update", primaryPath: "/tmp/update-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Update", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -644,7 +686,10 @@ struct CapabilityInstallerTests {
     func updateReleasesSharedAccountsByTheirOwnListing() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Released Shared", primaryPath: "/tmp/released-shared-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Released Shared", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -696,7 +741,10 @@ struct CapabilityInstallerTests {
     func addLeavesLegacyRowsAlone() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Legacy rows", primaryPath: "/tmp/duplicate-update")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Legacy rows", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -725,7 +773,10 @@ struct CapabilityInstallerTests {
     func addLeavesMatchingAuthoredConnectorAlone() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Authored account", primaryPath: "/tmp/authored-account")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Authored account", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -765,7 +816,10 @@ struct CapabilityInstallerTests {
     func standaloneElementPackagesProject() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Standalone", primaryPath: "/tmp/standalone-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Standalone", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -794,7 +848,10 @@ struct CapabilityInstallerTests {
     func installerBlocksUnsatisfiedDependencies() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Blocked", primaryPath: "/tmp/blocked-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Blocked", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -819,7 +876,10 @@ struct CapabilityInstallerTests {
     func installerBlocksPolicyDeniedPackages() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Policy Blocked", primaryPath: "/tmp/policy-blocked-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Policy Blocked", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -853,7 +913,10 @@ struct CapabilityInstallerTests {
     func installerAppliesDefaultPolicyWhenContextIsOmitted() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Default Policy Blocked", primaryPath: "/tmp/default-policy-blocked")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Default Policy Blocked", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -881,7 +944,10 @@ struct CapabilityInstallerTests {
     func installerEnforcesRoleScopedPolicyContexts() throws {
         let deniedContainer = try makeCapabilityInstallerContainer()
         let deniedContext = deniedContainer.mainContext
-        let deniedWorkspace = Workspace(name: "Denied Role", primaryPath: "/tmp/denied-role")
+        let deniedWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: deniedWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: deniedWorkspaceFolder) }
+        let deniedWorkspace = Workspace(name: "Denied Role", primaryPath: deniedWorkspaceFolder.path)
         deniedContext.insert(deniedWorkspace)
 
         let (deniedLibrary, deniedRoot) = makeCapabilityInstallerLibrary()
@@ -915,7 +981,10 @@ struct CapabilityInstallerTests {
 
         let allowedContainer = try makeCapabilityInstallerContainer()
         let allowedContext = allowedContainer.mainContext
-        let allowedWorkspace = Workspace(name: "Allowed Role", primaryPath: "/tmp/allowed-role")
+        let allowedWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: allowedWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: allowedWorkspaceFolder) }
+        let allowedWorkspace = Workspace(name: "Allowed Role", primaryPath: allowedWorkspaceFolder.path)
         allowedContext.insert(allowedWorkspace)
         let (allowedLibrary, allowedRoot) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: allowedRoot) }
@@ -939,7 +1008,10 @@ struct CapabilityInstallerTests {
     func installerBlocksUnsafeLocalToolCommands() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Unsafe Tool", primaryPath: "/tmp/unsafe-tool")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Unsafe Tool", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -972,7 +1044,10 @@ struct CapabilityInstallerTests {
     func installerBlocksUnsafeLocalToolArguments() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Unsafe Tool Arguments", primaryPath: "/tmp/unsafe-tool-args")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Unsafe Tool Arguments", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -1005,7 +1080,10 @@ struct CapabilityInstallerTests {
     func installerBlocksCredentialedHTTPConnectors() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Unsafe Connector", primaryPath: "/tmp/unsafe-connector")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Unsafe Connector", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -1039,7 +1117,10 @@ struct CapabilityInstallerTests {
     func installerAcceptsSafeMCPServerDeclarations() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Safe MCP", primaryPath: "/tmp/safe-mcp")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Safe MCP", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -1069,7 +1150,10 @@ struct CapabilityInstallerTests {
     func installerBlocksUnsafeMCPServerDeclarations() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Unsafe MCP", primaryPath: "/tmp/unsafe-mcp")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Unsafe MCP", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -1102,7 +1186,10 @@ struct CapabilityInstallerTests {
     func uninstallRemovesPackageAndKeepsAccounts() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Remove", primaryPath: "/tmp/remove-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Remove", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -1172,8 +1259,14 @@ struct CapabilityInstallerTests {
     func uninstallKeepsOtherPluginActivations() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let firstWorkspace = Workspace(name: "First", primaryPath: "/tmp/remove-first")
-        let secondWorkspace = Workspace(name: "Second", primaryPath: "/tmp/remove-second")
+        let firstWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: firstWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: firstWorkspaceFolder) }
+        let firstWorkspace = Workspace(name: "First", primaryPath: firstWorkspaceFolder.path)
+        let secondWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: secondWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: secondWorkspaceFolder) }
+        let secondWorkspace = Workspace(name: "Second", primaryPath: secondWorkspaceFolder.path)
         context.insert(firstWorkspace)
         context.insert(secondWorkspace)
 

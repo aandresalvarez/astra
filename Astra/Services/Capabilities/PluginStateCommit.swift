@@ -23,7 +23,18 @@ enum PluginStateCommit {
         let affected: [Workspace]
         do { affected = try PluginStateMirrors.affectedWorkspaces(workspace: workspace, accounts: accounts, modelContext: modelContext) }
         catch { return .notCommitted(error) }
-        let outcome = PluginOperationCommit.save(kind: kind, pluginIDs: pluginIDs, workspaceIDs: affected.map(\.id),
+        return save(workspaceIDs: affected.map(\.id), pluginIDs: pluginIDs, kind: kind,
+            modelContext: modelContext, persist: persist, export: export, publishesCompleted: publishesCompleted)
+    }
+
+    /// Callers reconciling multiple activations resolve the complete scope
+    /// before saving. Failure to discover that scope must abort the change.
+    static func save(
+        workspaceIDs: [UUID], pluginIDs: [String], kind: PluginOperationReceipt.Kind,
+        modelContext: ModelContext, persist: (ModelContext) throws -> Void,
+        export: ((Workspace) -> Bool)? = nil, publishesCompleted: Bool = true
+    ) -> Outcome {
+        let outcome = PluginOperationCommit.save(kind: kind, pluginIDs: pluginIDs, workspaceIDs: Array(Set(workspaceIDs)),
             modelContext: modelContext, persist: persist)
         switch outcome {
         case .notCommitted(let error): return .notCommitted(error)

@@ -112,6 +112,7 @@ struct CapabilityPackageCreationService {
                     announceCatalogMutation: false
                 )
             } catch let installError {
+                guard !PluginOperationProblem.preventsRollback(installError) else { throw installError }
                 do {
                     try approval?.revert()
                 } catch {
