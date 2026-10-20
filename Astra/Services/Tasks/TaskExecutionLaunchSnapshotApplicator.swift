@@ -141,6 +141,8 @@ enum TaskExecutionLaunchSnapshotApplicator {
         task.skills = source.skills.map {
             capabilityGraph.skillsByID[$0.id] ?? detachedSkill($0)
         }
+        TaskAuthoredSkillLaunchProjection.apply(task.skillSnapshots, to: task.skills,
+            excluding: workspace.map(WorkspaceCapabilityActivation.overridingRowIDs(of:)) ?? [])
         return task
     }
 
