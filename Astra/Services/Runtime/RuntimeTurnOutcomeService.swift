@@ -14,7 +14,6 @@ enum RuntimeTurnOutcomeService {
         let selectedRuntime = checkpoint.runtime
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
         let auditPhase = checkpoint.phase
-        let executionTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(checkpoint.launchSnapshot, from: task)
         let executionPath = checkpoint.executionPath
         let launchPermissionPolicy = checkpoint.permissionPolicy
         let timeoutSeconds = checkpoint.timeoutSeconds
@@ -113,7 +112,7 @@ enum RuntimeTurnOutcomeService {
             if !blockedFromCompleting {
                 if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
                     // Frozen on launchTask, same as the budget above.
-                    switch executionTask.validationStrategy {
+                    switch checkpoint.launchSnapshot.validationStrategy {
                     case .manual:
                         let completed = await TaskSuccessfulCompletionService.apply(
                             task: task,
@@ -134,13 +133,16 @@ enum RuntimeTurnOutcomeService {
                     case .runTests:
                         let testEvent = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Running validation tests...", run: run)
                         modelContext.insert(testEvent)
-                        // Frozen on executionTask like the strategy switch above:
-                        // testCommand is part of AgentTaskLaunchSnapshot, so a
-                        // command edited after admission must not be what grades
-                        // this run. executionTask also carries the executionRootPath
-                        // the run actually used, so tests execute where it ran.
+                        // Frozen like the strategy switch above: testCommand is
+                        // part of AgentTaskLaunchSnapshot, so a command edited
+                        // after admission must not be what grades this run. The
+                        // detached task also carries the executionRootPath the
+                        // run actually used, so tests execute where it ran. Built
+                        // only here: it copies every run and event of the task,
+                        // which on a long task cost more than the rest of the
+                        // outcome, and no other branch reads it.
                         let testResult = await ValidationService.runTests(
-                            task: executionTask,
+                            task: TaskExecutionLaunchSnapshotApplicator.detachedTask(checkpoint.launchSnapshot, from: task),
                             commandRunner: ShellValidationCommandRunner(
                                 sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement
                             )
