@@ -90,9 +90,6 @@ struct PromptContextSectionProviderContext {
     /// the artifact again, even when verification stopped at review_needed,
     /// which `originalGoalDelivery` alone does not accept.
     let followsUpDeliveredRequest: Bool
-    /// The launch's resolved SSH route. `nil` outside a launch: the SSH block
-    /// then names the connections and makes no claim about how to reach them.
-    let remoteSSHRoute: RemoteWorkspaceSSHRoute?
 
     init(
         mode: PromptAssemblyMode,
@@ -103,8 +100,7 @@ struct PromptContextSectionProviderContext {
         ioSnapshot: PromptContextIOSnapshot = .empty,
         connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy? = nil,
         runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil,
-        followsUpDeliveredRequest: Bool = false,
-        remoteSSHRoute: RemoteWorkspaceSSHRoute? = nil
+        followsUpDeliveredRequest: Bool = false
     ) {
         self.mode = mode
         self.task = task
@@ -115,7 +111,6 @@ struct PromptContextSectionProviderContext {
         self.connectorCredentialExposurePolicy = connectorCredentialExposurePolicy
         self.runtimeCapabilityProfile = runtimeCapabilityProfile
         self.followsUpDeliveredRequest = followsUpDeliveredRequest
-        self.remoteSSHRoute = remoteSSHRoute
     }
 }
 

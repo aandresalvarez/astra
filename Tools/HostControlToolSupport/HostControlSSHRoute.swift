@@ -21,6 +21,12 @@ public enum HostControlSSHRoute: Equatable, Sendable {
         /// Ask routes this turn's host work through ASTRA's typed tools, which
         /// withdraws the provider shell, and no host-control `ssh` is offered.
         case nativeShellWithdrawn = "native_shell_withdrawn"
+        /// The task's permission policy denies the provider shell (Locked, or
+        /// a custom rule denying Bash or ssh).
+        case policyDeniesShell = "policy_denies_shell"
+        /// The provider's own sandbox blocks outbound connections from its
+        /// shell, so the SSH wrapper is present but cannot connect.
+        case shellSandboxBlocksNetwork = "shell_sandbox_blocks_network"
         /// The workspace runs in Docker, so the provider's shell is not the
         /// host's, and this runtime cannot carry host-control `ssh`.
         case dockerWorkspace = "docker_workspace"
@@ -31,6 +37,10 @@ public enum HostControlSSHRoute: Equatable, Sendable {
             switch self {
             case .nativeShellWithdrawn:
                 return "Ask routes this turn's host work through ASTRA's typed tools, which withdraws the provider shell, and no ASTRA SSH tool is offered. Auto, or a turn that needs no ASTRA host tools, keeps `ssh <alias>` in the shell"
+            case .policyDeniesShell:
+                return "this task's permission policy denies the provider shell (the Locked preset or a custom rule), and no ASTRA SSH tool is offered"
+            case .shellSandboxBlocksNetwork:
+                return "this run's provider sandbox blocks outbound connections from the shell, so `ssh` cannot connect, and no ASTRA SSH tool is offered"
             case .dockerWorkspace:
                 return "this workspace runs in Docker, so the provider's shell is not the host's SSH, and this runtime cannot carry ASTRA's host-control tools"
             case .sshClientUnavailable:

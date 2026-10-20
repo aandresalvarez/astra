@@ -676,12 +676,6 @@ final class AgentRuntimeWorker {
             }
             return
         }
-        // Resolved once, from the values this launch actually uses; the prompt,
-        // the broker refusal, and the resource manifest read it from the policy.
-        executionPolicy = executionPolicy.withRemoteSSHRoute(RemoteWorkspaceSSHRoute.resolve(
-            task: executionTask, requirements: appliedRuntime.requirements,
-            environment: runEnvironment.runSnapshot, permissionPolicy: launchPermissionPolicy,
-            runtimeCapabilityProfile: runtimeCapabilityProfile))
         let basePrompt = (auditPhase == .resume && approvedPlan == nil
             ? AgentPromptBuilder.buildFreshFollowUpPrompt(message: sessionMessage ?? startPayload,
                 task: executionTask, executionPolicy: executionPolicy)
@@ -701,7 +695,7 @@ final class AgentRuntimeWorker {
             repositoryStatus: githubRepositoryStatus
         )
         var prompt = runEnvironment.appendingReadOnlyInputGuidance(to: readinessPrompt)
-        let launchResourcePlan = TaskLaunchResourceResolver.resolve(
+        var launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: executionTask,
             runID: run.id,
             runtime: selectedRuntime,
@@ -721,8 +715,7 @@ final class AgentRuntimeWorker {
             // independently re-derived GitHub host-control routing instead of
             // reusing the resolver's single precomputed answer.
             precomputedRuntimeRequirements: appliedRuntime.requirements,
-            runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile,
-            remoteSSHRoute: executionPolicy.remoteSSHRoute
+            runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
         )
         TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         let budgetEnforcementMode = currentBudgetEnforcementMode
@@ -767,6 +760,16 @@ final class AgentRuntimeWorker {
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
             return
+        }
+        // Resolved once, from the render this run launches with, so a shell the
+        // policy denies or a sandbox without network is never promised. The
+        // prompt's run line, the broker refusal, and the resource manifest read it.
+        executionPolicy = executionPolicy.withRemoteSSHRoute(RemoteWorkspaceSSHRoute.resolve(
+            task: executionTask, render: manifest.providerRender, requirements: appliedRuntime.requirements,
+            environment: runEnvironment.runSnapshot, runtimeCapabilityProfile: runtimeCapabilityProfile))
+        if let sshRoute = executionPolicy.remoteSSHRoute {
+            launchResourcePlan.remoteSSHRoute = sshRoute
+            TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         }
         let launchSignature = ProviderLaunchSignatureService.make(
             for: task,

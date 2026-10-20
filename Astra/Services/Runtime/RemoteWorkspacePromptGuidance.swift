@@ -6,11 +6,15 @@ enum RemoteWorkspacePromptGuidance {
     Long-running remote command contract: only launch multi-hour remote work when a reviewed workspace capability explicitly authorizes remote execution. Launch it detached with file-backed logs or status files so it survives SSH disconnects. Keep each SSH or Bash tool call bounded to one launch or one status read; never hold a tool call open with `sleep` or an internal polling loop. Do not replace a long wait with rapid repeated checks. Return the durable external handle, latest verified status, and recovery paths, then end the provider turn. Do not claim ASTRA will continue monitoring unless an explicit ASTRA operation-monitoring capability registered the job.
     """
 
-    /// The workspace's SSH connections, and how this run reaches them. The
-    /// "how" is the launch's resolved route and nothing else: without one
-    /// (a prompt built outside a launch) the block describes the servers and
-    /// makes no claim about a shell or tool the run may not have.
-    static func connectionBlock(connections: [SSHConnection], route: RemoteWorkspaceSSHRoute?) -> String? {
+    /// Points at the run line rather than saying how to connect: the route is
+    /// resolved from the provider render, which does not exist yet when this
+    /// block is built, so anything said here could promise a shell or tool
+    /// the run does not get.
+    static let routeReference = "How this run can reach the server is stated in the \"SSH route for this run\" line ASTRA adds at launch; follow that line over anything else about SSH."
+
+    /// The workspace's SSH connections. Makes no claim about how to reach
+    /// them; `RemoteWorkspaceSSHRoute.runGuidance` does.
+    static func connectionBlock(connections: [SSHConnection]) -> String? {
         guard !connections.isEmpty else { return nil }
         var block: String
         if connections.count == 1, let conn = connections.first {
@@ -30,9 +34,7 @@ enum RemoteWorkspacePromptGuidance {
                 if !conn.keyPath.isEmpty { block += " [identity: \(conn.keyPath)]" }
             }
         }
-        if let route {
-            block += "\n\(route.instruction)"
-        }
+        block += "\n\(routeReference)"
         block += "\n\(longRunningCommandContract)"
         return block
     }

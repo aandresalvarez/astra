@@ -4,8 +4,9 @@ import ASTRAModels
 import ASTRAPersistence
 import HostControlToolSupport
 
-/// The one SSH route a run gets, resolved once per launch next to its
-/// `TaskRuntimeRequirementSet` and carried on `AgentRuntimeExecutionPolicy`.
+/// The one SSH route a run gets, resolved once per launch from its provider
+/// render and `TaskRuntimeRequirementSet`, and carried on
+/// `AgentRuntimeExecutionPolicy`.
 ///
 /// Before this existed the prompt described SSH from `ssh-connections.json`
 /// alone while the launch decided the real route, and the two disagreed: an
@@ -26,33 +27,44 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
         self.route = route
     }
 
-    /// The pure decision. `nil` when the workspace has no SSH connections.
+    /// The pure decision, read from the provider render the run launches
+    /// with: the render already folds in the task's policy (Locked, custom
+    /// shell rules), Ask's host-control withdrawal, and the provider sandbox,
+    /// so the route cannot promise a shell the render took away or one that
+    /// cannot reach the network. `nil` when the workspace has no SSH
+    /// connections.
     static func resolve(
         aliases: [String],
+        render: ProviderPolicyRender,
         requirements: TaskRuntimeRequirementSet,
         environment: WorkspaceExecutionEnvironment,
-        permissionPolicy: PermissionPolicy,
         runtimeCapabilityProfile: AgentRuntimeCapabilityProfile,
         sshClientAvailable: Bool
     ) -> RemoteWorkspaceSSHRoute? {
         guard !aliases.isEmpty else { return nil }
         let offersBrokerSSH = runtimeCapabilityProfile.canDeliverHostControlPlane
             && requirements.offeredHostControlTools.contains("ssh")
+        let withoutNativeShell = { (reason: HostControlSSHRoute.UnavailableReason) -> HostControlSSHRoute in
+            offersBrokerSSH ? .brokerReachabilityOnly : .unavailable(reason)
+        }
         let route: HostControlSSHRoute
         if environment.isContainerized {
             // Host Bash must not escape the selected execution environment, and
             // a provider running inside the container has neither the host's
             // ~/.ssh nor the task's SSH wrapper, so Docker never gets the
             // native route.
-            route = offersBrokerSSH ? .brokerReachabilityOnly : .unavailable(.dockerWorkspace)
-        } else if HostControlPlaneMCPProjection.withdrawsNativeShell(
-            environment: environment,
-            permissionPolicy: permissionPolicy,
-            requiredTools: requirements.hostControlTools,
-            usesHostControlCLIRelay: !requirements.offeredHostControlTools.isEmpty
-                && runtimeCapabilityProfile.usesHostControlCLIRelay
-        ) {
-            route = offersBrokerSSH ? .brokerReachabilityOnly : .unavailable(.nativeShellWithdrawn)
+            route = withoutNativeShell(.dockerWorkspace)
+        } else if render.deniesNativeShellOrSSH {
+            let withdrawnForHostControl = HostControlPlaneMCPProjection.withdrawsNativeShell(
+                environment: environment,
+                permissionPolicy: render.launchPermissionPolicy,
+                requiredTools: requirements.hostControlTools,
+                usesHostControlCLIRelay: !requirements.offeredHostControlTools.isEmpty
+                    && runtimeCapabilityProfile.usesHostControlCLIRelay
+            )
+            route = withoutNativeShell(withdrawnForHostControl ? .nativeShellWithdrawn : .policyDeniesShell)
+        } else if !render.nativeShellReachesNetwork {
+            route = withoutNativeShell(.shellSandboxBlocksNetwork)
         } else if sshClientAvailable {
             route = .nativeShell
         } else {
@@ -61,21 +73,22 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
         return RemoteWorkspaceSSHRoute(aliases: aliases, route: route)
     }
 
-    /// The launch's call: reads the task's connections and whether its SSH
-    /// wrapper can be injected, then decides with the launch's own values.
+    /// The launch's call, made once the run's manifest is recorded: reads the
+    /// task's connections and whether its SSH wrapper can be injected, then
+    /// decides with the launch's own values.
     @MainActor
     static func resolve(
         task: AgentTask,
+        render: ProviderPolicyRender,
         requirements: TaskRuntimeRequirementSet,
         environment: WorkspaceExecutionEnvironment,
-        permissionPolicy: PermissionPolicy,
         runtimeCapabilityProfile: AgentRuntimeCapabilityProfile
     ) -> RemoteWorkspaceSSHRoute? {
         resolve(
             aliases: connectAliases(for: task),
+            render: render,
             requirements: requirements,
             environment: environment,
-            permissionPolicy: permissionPolicy,
             runtimeCapabilityProfile: runtimeCapabilityProfile,
             sshClientAvailable: AgentRuntimeProcessRunner.canInjectSSHShim(for: task)
         )
@@ -145,5 +158,30 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(aliases, forKey: .aliases)
         try container.encode(route.wireValue, forKey: .route)
+    }
+}
+
+extension ProviderPolicyRender {
+    /// The render takes the provider's shell away, or denies `ssh` in it.
+    var deniesNativeShellOrSSH: Bool {
+        let shellTools: Set<String> = ["bash", "shell"]
+        if deniedTools.contains(where: { shellTools.contains($0.lowercased()) }) {
+            return true
+        }
+        return deniedShellPatterns.contains { pattern in
+            var command = pattern.trimmingCharacters(in: .whitespaces).lowercased()
+            if command.hasPrefix("bash("), command.hasSuffix(")") {
+                command = String(command.dropFirst(5).dropLast())
+            }
+            return command == "ssh" || command.hasPrefix("ssh:") || command.hasPrefix("ssh ")
+        }
+    }
+
+    /// Whether the provider's own sandbox lets its shell open a connection.
+    /// Codex is the runtime whose rendered sandbox is known to block it by
+    /// default; the others are taken to reach it.
+    var nativeShellReachesNetwork: Bool {
+        guard providerID == .codexCLI else { return true }
+        return CodexCLIRuntime.shellReachesNetwork(permissionArguments: cliArgumentsSummary)
     }
 }

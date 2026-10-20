@@ -41,10 +41,7 @@ enum TaskLaunchResourceResolver {
         // The profile the launch resolved from this runtime's own executable.
         // Defaults to resolving it here rather than reading the static table,
         // which for Copilot is a guess about the installed binary.
-        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil,
-        // Recorded as resolved by the launch (`RemoteWorkspaceSSHRoute`), never
-        // re-derived here, so the manifest names the route the prompt promised.
-        remoteSSHRoute: RemoteWorkspaceSSHRoute? = nil
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil
     ) -> TaskLaunchResourcePlan {
         let environment = executionEnvironment ?? DockerExecutionPlanner.resolveEnvironment(for: task)
         var hostPathGrants: [RuntimePathGrant] = []
@@ -215,7 +212,6 @@ enum TaskLaunchResourceResolver {
             providerPlacement: environment.effectiveProviderPlacement.rawValue,
             workspaceCommandPlacement: environment.workspaceCommandPlacement,
             shellRoute: environment.workspaceShellRoute,
-            remoteSSHRoute: remoteSSHRoute,
             hostPathGrants: uniqueHostPathGrants(hostPathGrants),
             containerMounts: uniqueContainerMounts(containerMounts),
             environmentGrants: uniqueEnvironmentGrants(environmentGrants),

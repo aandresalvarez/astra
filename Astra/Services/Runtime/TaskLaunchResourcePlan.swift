@@ -138,7 +138,9 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
     var workspaceCommandPlacement: String
     var controlPlaneToolPlacement: String
     var shellRoute: String
-    /// The run's resolved SSH route; `nil` when the workspace has no SSH connections.
+    /// The run's SSH route, recorded by the launch once its render exists
+    /// (`RemoteWorkspaceSSHRoute`); `nil` when the workspace has no SSH
+    /// connections. Never derived by the resolver.
     var remoteSSHRoute: RemoteWorkspaceSSHRoute?
     var generatedAt: Date
     var hostPathGrants: [RuntimePathGrant]

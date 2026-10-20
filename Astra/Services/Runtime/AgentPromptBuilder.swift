@@ -187,8 +187,7 @@ enum AgentPromptBuilder {
                     for: task,
                     executionPolicy: executionPolicy
                 ),
-                runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile,
-                remoteSSHRoute: executionPolicy.remoteSSHRoute
+                runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
             )
         )
     }
@@ -328,15 +327,10 @@ enum AgentPromptBuilder {
         return prompt
     }
 
-    private static func appendSSHContext(
-        for task: AgentTask,
-        route: RemoteWorkspaceSSHRoute?,
-        to sections: inout [PromptContextSection]
-    ) {
+    private static func appendSSHContext(for task: AgentTask, to sections: inout [PromptContextSection]) {
         guard let ws = task.workspace,
               let sshBlock = RemoteWorkspacePromptGuidance.connectionBlock(
-                connections: SSHConnectionManager.load(workspacePath: ws.primaryPath),
-                route: route
+                connections: SSHConnectionManager.load(workspacePath: ws.primaryPath)
               ) else { return }
         appendSection(sshBlock, kind: .supportingContext, to: &sections, sourcePointers: sshSourcePointers(workspace: ws))
     }
@@ -697,8 +691,7 @@ enum AgentPromptBuilder {
                 ioSnapshot: ioSnapshot,
                 connectorCredentialExposurePolicy: capabilityContext.snapshot.connectorCredentialExposurePolicy,
                 runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile,
-                followsUpDeliveredRequest: executionPolicy.followsUpDeliveredRequest,
-                remoteSSHRoute: executionPolicy.remoteSSHRoute
+                followsUpDeliveredRequest: executionPolicy.followsUpDeliveredRequest
             )
         )
     }
@@ -1153,7 +1146,7 @@ enum AgentPromptBuilder {
             state _: inout PromptContextSectionProviderState,
             to sections: inout [PromptContextSection]
         ) {
-            appendSSHContext(for: context.task, route: context.remoteSSHRoute, to: &sections)
+            appendSSHContext(for: context.task, to: &sections)
             appendWorkspacePaths(for: context.task, to: &sections)
         }
     }

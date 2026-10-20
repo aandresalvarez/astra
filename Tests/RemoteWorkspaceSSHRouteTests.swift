@@ -26,10 +26,51 @@ struct RemoteWorkspaceSSHRouteTests {
         image: "alpine:3.20"
     )
 
+    /// The Codex bundle task E0F780F8 ran under: no `danger-full-access`, no
+    /// `approval_policy="never"`, so ASTRA asks for the approval reviewer.
+    private static let reviewerBundle = CodexRequirementsPolicy(
+        allowedSandboxModes: [.readOnly, .workspaceWrite],
+        requiredWindowsSandbox: nil,
+        allowedApprovalPolicies: ["on-request"],
+        allowedApprovalsReviewers: [CodexRequirementsPolicy.automaticApprovalReviewer],
+        evidence: []
+    )
+
+    /// A render shaped the way the adapters build one: Codex arguments come
+    /// from `codexPermissionArguments`, the shell denials are explicit.
+    private func render(
+        _ runtime: AgentRuntimeID,
+        _ mode: ProviderPermissionMode,
+        deniedTools: [String] = [],
+        deniedShellPatterns: [String] = [],
+        codexRequirements: CodexRequirementsPolicy = .unconstrained
+    ) -> ProviderPolicyRender {
+        ProviderPolicyRender(
+            providerID: runtime,
+            adapterVersion: 1,
+            policyLevel: mode == .autonomous ? .autonomous : .review,
+            configOwnership: .generated,
+            permissionMode: mode,
+            allowedTools: [],
+            deniedTools: deniedTools,
+            allowedShellPatterns: [],
+            deniedShellPatterns: deniedShellPatterns,
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: runtime == .codexCLI
+                ? CodexCLIRuntime.codexPermissionArguments(policy: PermissionPolicy(providerMode: mode), requirements: codexRequirements)
+                : [],
+            settingsSummary: "",
+            generatedConfigPreview: "",
+            enforcementTiers: [],
+            diagnostics: [],
+            usesBroadProviderPermissions: mode == .autonomous
+        )
+    }
+
     private func route(
-        runtime: AgentRuntimeID = .codexCLI,
+        _ render: ProviderPolicyRender,
         profile: AgentRuntimeCapabilityProfile? = nil,
-        policy: PermissionPolicy,
         required: [String] = [],
         offered: [String]? = nil,
         environment: WorkspaceExecutionEnvironment = .host,
@@ -37,6 +78,7 @@ struct RemoteWorkspaceSSHRouteTests {
     ) -> HostControlSSHRoute? {
         RemoteWorkspaceSSHRoute.resolve(
             aliases: aliases,
+            render: render,
             requirements: TaskRuntimeRequirementSet(
                 hostControlTools: required,
                 offeredHostControlTools: offered ?? required + ["history"],
@@ -44,65 +86,92 @@ struct RemoteWorkspaceSSHRouteTests {
                 requiresBrowserControl: false
             ),
             environment: environment,
-            permissionPolicy: policy,
-            runtimeCapabilityProfile: profile ?? AgentRuntimeCapabilityProfile.defaultProfile(for: runtime),
+            runtimeCapabilityProfile: profile ?? AgentRuntimeCapabilityProfile.defaultProfile(for: render.providerID),
             sshClientAvailable: sshClientAvailable
         )?.route
+    }
+
+    private var relayProfile: AgentRuntimeCapabilityProfile {
+        .defaultProfile(for: .codexCLI, providerMCPPolicy: .serversDisabled(policyName: nil))
     }
 
     // MARK: - Derivation
 
     @Test("Auto on the host gets the native shell route, with or without host tools")
     func autoGetsNativeShell() {
-        #expect(route(policy: .autonomous) == .nativeShell)
-        #expect(route(runtime: .claudeCode, policy: .autonomous, required: ["github"]) == .nativeShell)
+        #expect(route(render(.codexCLI, .autonomous)) == .nativeShell)
+        #expect(route(render(.claudeCode, .autonomous), required: ["github"]) == .nativeShell)
         // The incident's shape: Codex on the CLI relay because the org MCP
-        // policy refuses servers, with "ssh" absent from the offered set.
-        let relay = AgentRuntimeCapabilityProfile.defaultProfile(
-            for: .codexCLI,
-            providerMCPPolicy: .serversDisabled(policyName: nil)
-        )
-        #expect(relay.usesHostControlCLIRelay)
-        #expect(route(profile: relay, policy: .autonomous, required: ["jira"]) == .nativeShell)
+        // policy refuses servers, under a bundle that clamps it to
+        // workspace-write with the approval reviewer, and "ssh" not offered.
+        #expect(relayProfile.usesHostControlCLIRelay)
+        #expect(route(render(.codexCLI, .autonomous, codexRequirements: Self.reviewerBundle),
+                      profile: relayProfile, required: ["jira"]) == .nativeShell)
     }
 
     @Test("Ask keeps the native route only while the render leaves the shell in place")
     func askFollowsNativeShellWithdrawal() {
         // No ASTRA host tool required: the provider shell stays, and each
         // `ssh` call is a shell command under Ask's own approval.
-        #expect(route(runtime: .claudeCode, policy: .restricted) == .nativeShell)
+        #expect(route(render(.claudeCode, .restricted)) == .nativeShell)
         // A turn that routes host work through ASTRA withdraws the shell.
-        #expect(route(runtime: .claudeCode, policy: .restricted, required: ["github"])
-            == .unavailable(.nativeShellWithdrawn))
+        let withdrawn = render(.claudeCode, .restricted, deniedTools: ["Bash", "shell"])
+        #expect(route(withdrawn, required: ["github"]) == .unavailable(.nativeShellWithdrawn))
         // ...and falls back to the reachability check when it is offered.
-        #expect(route(runtime: .claudeCode, policy: .restricted, required: ["github"], offered: ["github", "ssh"])
-            == .brokerReachabilityOnly)
+        #expect(route(withdrawn, required: ["github"], offered: ["github", "ssh"]) == .brokerReachabilityOnly)
         // The CLI relay is a shell command, so a relay runtime keeps its shell.
-        let relay = AgentRuntimeCapabilityProfile.defaultProfile(
-            for: .codexCLI,
-            providerMCPPolicy: .serversDisabled(policyName: nil)
-        )
-        #expect(route(profile: relay, policy: .restricted, required: ["github"]) == .nativeShell)
+        #expect(route(render(.codexCLI, .restricted, codexRequirements: Self.reviewerBundle),
+                      profile: relayProfile, required: ["github"]) == .nativeShell)
+    }
+
+    @Test("A policy that denies the shell, or ssh in it, never gets the native route")
+    func policyShellDenialWins() {
+        // Locked (or a custom rule) collapses to restricted with no host tool
+        // required, so only the render's own denial says the shell is gone.
+        let locked = render(.claudeCode, .restricted, deniedTools: AgentPolicy.preset(.locked).deniedTools)
+        #expect(locked.deniesNativeShellOrSSH)
+        #expect(route(locked) == .unavailable(.policyDeniesShell))
+        #expect(route(locked, offered: ["ssh"]) == .brokerReachabilityOnly)
+        for pattern in ["ssh", "ssh:*", "Bash(ssh:*)", "ssh *"] {
+            #expect(route(render(.claudeCode, .autonomous, deniedShellPatterns: [pattern]))
+                == .unavailable(.policyDeniesShell), "\(pattern)")
+        }
+        #expect(route(render(.claudeCode, .autonomous, deniedShellPatterns: ["sshpass:*", "rm:*"])) == .nativeShell)
+    }
+
+    @Test("A Codex sandbox that cannot connect never gets the native route")
+    func codexSandboxNetworkDecidesNativeRoute() {
+        // workspace-write with approval_policy="never": connect(2) is denied
+        // and nothing can grant an escalated run.
+        let sandboxed = render(.codexCLI, .restricted)
+        #expect(sandboxed.cliArgumentsSummary.contains("workspace-write"))
+        #expect(!sandboxed.nativeShellReachesNetwork)
+        #expect(route(sandboxed) == .unavailable(.shellSandboxBlocksNetwork))
+        #expect(route(sandboxed, offered: ["ssh"]) == .brokerReachabilityOnly)
+        // Same sandbox, but the reviewer can approve an escalated run.
+        #expect(route(render(.codexCLI, .restricted, codexRequirements: Self.reviewerBundle)) == .nativeShell)
+        // Auto without a bundle bypasses the sandbox.
+        #expect(render(.codexCLI, .autonomous).nativeShellReachesNetwork)
     }
 
     @Test("Docker never gets the native route")
     func dockerNeverGetsNativeShell() {
         let environment = Self.dockerEnvironment
         #expect(environment.isContainerized)
-        #expect(route(runtime: .claudeCode, policy: .autonomous, offered: HostControlPlaneMCPProjection.toolNames,
+        #expect(route(render(.claudeCode, .autonomous), offered: HostControlPlaneMCPProjection.toolNames,
                       environment: environment) == .brokerReachabilityOnly)
-        #expect(route(runtime: .claudeCode, policy: .autonomous, offered: ["history"], environment: environment)
+        #expect(route(render(.claudeCode, .autonomous), offered: ["history"], environment: environment)
             == .unavailable(.dockerWorkspace))
     }
 
     @Test("No ssh client means no route, and no connections means no route at all")
     func missingClientOrConnections() {
-        #expect(route(policy: .autonomous, sshClientAvailable: false) == .unavailable(.sshClientUnavailable))
+        #expect(route(render(.codexCLI, .autonomous), sshClientAvailable: false) == .unavailable(.sshClientUnavailable))
         #expect(RemoteWorkspaceSSHRoute.resolve(
             aliases: [],
+            render: render(.codexCLI, .autonomous),
             requirements: TaskRuntimeRequirementSet(hostControlTools: [], requiresDockerWorkspaceShell: false, requiresBrowserControl: false),
             environment: .host,
-            permissionPolicy: .autonomous,
             runtimeCapabilityProfile: .defaultProfile(for: .codexCLI),
             sshClientAvailable: true
         ) == nil)
@@ -114,9 +183,9 @@ struct RemoteWorkspaceSSHRouteTests {
         defer { fixture.cleanup() }
         let resolved = try #require(RemoteWorkspaceSSHRoute.resolve(
             task: fixture.task,
+            render: render(.codexCLI, .autonomous),
             requirements: TaskRuntimeRequirementSet(hostControlTools: [], requiresDockerWorkspaceShell: false, requiresBrowserControl: false),
             environment: .host,
-            permissionPolicy: .autonomous,
             runtimeCapabilityProfile: .defaultProfile(for: .codexCLI)
         ))
         #expect(resolved.aliases == ["deid-jsn-workbench", "agent@staging.example.test"])
@@ -126,68 +195,87 @@ struct RemoteWorkspaceSSHRouteTests {
 
     // MARK: - The route and the policy render cannot disagree
 
-    /// The route says "native shell" exactly when the policy render leaves the
-    /// provider's shell in place. Same inputs the launch hands both of them.
-    @Test("The native route matches the policy render's shell withdrawal", arguments: [
-        PermissionPolicy.autonomous, PermissionPolicy.restricted
+    /// Rendered by the real manifest path, the way a launch records it: the
+    /// route is native only where that render leaves the provider's shell in
+    /// place, across policy levels (Locked included), Ask's host-control
+    /// withdrawal, and Codex over MCP and over the CLI relay.
+    @Test("The native route never contradicts the recorded provider render", arguments: [
+        AgentPolicyLevel.autonomous, AgentPolicyLevel.review, AgentPolicyLevel.locked
     ])
-    func nativeRouteMatchesPolicyRender(policy: PermissionPolicy) throws {
+    func nativeRouteMatchesRecordedRender(level: AgentPolicyLevel) throws {
         let container = try makeContainer()
         let context = container.mainContext
         let package = try #require(PluginCatalog.builtInPackages.first {
             $0.id == HostControlPlaneMCPProjection.githubPackageID
         })
-        let workspace = Workspace(name: "SSH render", primaryPath: "/tmp/astra-ssh-route-render")
-        workspace.enabledCapabilityIDs = [package.id]
-        let contextText = "Use GitHub to inspect PR metadata, issue links, and checks for this task."
         let profiles: [(AgentRuntimeID, AgentRuntimeCapabilityProfile)] = [
             (.claudeCode, .defaultProfile(for: .claudeCode)),
             (.codexCLI, .defaultProfile(for: .codexCLI)),
-            (.codexCLI, .defaultProfile(for: .codexCLI, providerMCPPolicy: .serversDisabled(policyName: nil)))
+            (.codexCLI, relayProfile)
         ]
-        for (runtime, profile) in profiles {
-            let task = AgentTask(title: "Route render", goal: contextText, workspace: workspace, runtime: runtime)
+        for needsGitHub in [false, true] {
+            let workspace = Workspace(name: "SSH render", primaryPath: "/tmp/astra-ssh-route-render")
+            workspace.enabledCapabilityIDs = needsGitHub ? [package.id] : []
             context.insert(workspace)
-            context.insert(task)
-            let requirements = TaskRuntimeRequirementSet.derive(
-                task: task,
-                capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot.capture(
-                    for: task,
-                    providerLaunchContextText: contextText
-                ),
-                executionEnvironment: .host,
-                browserBridgeRequired: false
-            )
-            #expect(requirements.hostControlTools.contains("github"))
-            let run = TaskRun(task: task)
-            context.insert(run)
-            let manifest = AgentPolicyManifestService.recordPreflightManifest(
-                task: task,
-                run: run,
-                runtime: runtime,
-                model: "default",
-                workspacePath: workspace.primaryPath,
-                phase: .run,
-                permissionPolicy: policy,
-                executionPolicy: .default,
-                defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
-                runtimeCapabilityProfile: profile,
-                capabilityPackages: [package],
-                contextText: contextText,
-                precomputedRuntimeRequirements: requirements,
-                modelContext: context
-            )
-            let resolved = try #require(RemoteWorkspaceSSHRoute.resolve(
-                aliases: aliases,
-                requirements: requirements,
-                environment: .host,
-                permissionPolicy: PermissionPolicy(providerMode: manifest.providerRender.permissionMode),
-                runtimeCapabilityProfile: profile,
-                sshClientAvailable: true
-            ))
-            let renderKeepsShell = !manifest.providerRender.deniedTools.contains("Bash")
-            #expect((resolved.route == .nativeShell) == renderKeepsShell,
-                    "\(runtime.rawValue) relay=\(profile.usesHostControlCLIRelay) policy=\(policy)")
+            let contextText = needsGitHub
+                ? "Use GitHub to inspect PR metadata, issue links, and checks for this task."
+                : "Check disk usage on the remote server."
+            for (runtime, profile) in profiles {
+                let task = AgentTask(title: "Route render", goal: contextText, workspace: workspace, runtime: runtime)
+                context.insert(task)
+                TaskPolicyStore.recordSelection(level: level, task: task, modelContext: context, source: "test")
+                let requirements = TaskRuntimeRequirementSet.derive(
+                    task: task,
+                    capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot.capture(
+                        for: task,
+                        providerLaunchContextText: contextText
+                    ),
+                    executionEnvironment: .host,
+                    browserBridgeRequired: false
+                )
+                #expect(requirements.hostControlTools.contains("github") == needsGitHub)
+                let run = TaskRun(task: task)
+                context.insert(run)
+                let manifest = AgentPolicyManifestService.recordPreflightManifest(
+                    task: task,
+                    run: run,
+                    runtime: runtime,
+                    model: "default",
+                    workspacePath: workspace.primaryPath,
+                    phase: .run,
+                    permissionPolicy: level == .autonomous ? .autonomous : .restricted,
+                    executionPolicy: .default,
+                    defaultPolicyLevelRaw: level.rawValue,
+                    runtimeCapabilityProfile: profile,
+                    capabilityPackages: needsGitHub ? [package] : [],
+                    contextText: contextText,
+                    precomputedRuntimeRequirements: requirements,
+                    modelContext: context
+                )
+                let render = manifest.providerRender
+                let resolved = try #require(RemoteWorkspaceSSHRoute.resolve(
+                    aliases: aliases,
+                    render: render,
+                    requirements: requirements,
+                    environment: .host,
+                    runtimeCapabilityProfile: profile,
+                    sshClientAvailable: true
+                ))
+                let label = "\(runtime.rawValue) relay=\(profile.usesHostControlCLIRelay) level=\(level.rawValue) github=\(needsGitHub)"
+                if render.deniedTools.contains(where: { ["bash", "shell"].contains($0.lowercased()) }) {
+                    #expect(resolved.route != .nativeShell, "\(label)")
+                }
+                if level == .locked {
+                    // With a host tool required off the relay, Ask's withdrawal is
+                    // named first; either way the shell is gone and no SSH is offered.
+                    let withdrawn = needsGitHub && !profile.usesHostControlCLIRelay
+                    let expected: HostControlSSHRoute.UnavailableReason = withdrawn ? .nativeShellWithdrawn : .policyDeniesShell
+                    #expect(resolved.route == .unavailable(expected), "\(label)")
+                }
+                if level == .autonomous, runtime == .claudeCode {
+                    #expect(resolved.route == .nativeShell, "\(label)")
+                }
+            }
         }
     }
 
@@ -280,7 +368,7 @@ struct RemoteWorkspaceSSHRouteTests {
         let fixture = try makeTask(goal: "Check the VM")
         defer { fixture.cleanup() }
         let resolved = RemoteWorkspaceSSHRoute(aliases: aliases, route: .unavailable(.nativeShellWithdrawn))
-        let plan = TaskLaunchResourceResolver.resolve(
+        var plan = TaskLaunchResourceResolver.resolve(
             task: fixture.task,
             runID: UUID(),
             runtime: .codexCLI,
@@ -288,10 +376,11 @@ struct RemoteWorkspaceSSHRouteTests {
             prompt: "",
             contextText: "",
             workspacePath: fixture.root.path,
-            executionEnvironment: .host,
-            remoteSSHRoute: resolved
+            executionEnvironment: .host
         )
-        #expect(plan.remoteSSHRoute == resolved)
+        // The resolver never derives it; the launch records it once the render exists.
+        #expect(plan.remoteSSHRoute == nil)
+        plan.remoteSSHRoute = resolved
         #expect(plan.commandPlannedFields["ssh_route"] == "unavailable:native_shell_withdrawn")
 
         let encoder = JSONEncoder()
