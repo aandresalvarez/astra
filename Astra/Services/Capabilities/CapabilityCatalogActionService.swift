@@ -179,21 +179,24 @@ struct CapabilityCatalogActionService {
     /// (`CapabilityLibrary.stage`) through the prepared file/receipt boundary.
     /// Reconciliation and approval either commit together or retain the draft
     /// and restore the previous installed bytes.
+    func reviewStaged(id: String) throws -> PluginStagedReview {
+        try PluginStagedReview.capture(id: id, library: library)
+    }
+
     @discardableResult
     func approveStaged(
-        id: String,
+        _ review: PluginStagedReview,
         modelContext: ModelContext,
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         approvedBy: String = "ASTRA local admin"
     ) throws -> PluginPackage {
-        try PluginStagedApproval.approve(id: id, library: library, modelContext: modelContext,
+        try PluginStagedApproval.approve(review, library: library, modelContext: modelContext,
             approvalStore: approvalStore, approvedBy: approvedBy)
     }
 
     /// Drops a staged draft: the approved copy stays what it was.
-    func discardStaged(id: String) {
-        library.discardStaged(id: id)
-        CapabilityCatalogPersistenceEvents.post(.global)
+    func discardStaged(_ review: PluginStagedReview, modelContext: ModelContext) throws {
+        try PluginStagedDiscard.discard(review, library: library, modelContext: modelContext)
     }
 
     /// Remove for a plugin the library no longer has a readable entry for.
