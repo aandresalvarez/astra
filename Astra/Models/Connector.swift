@@ -31,6 +31,9 @@ public final class Connector {
     public var originComponentID: String?
     public var originComponentKind: String?
     public var originSourceKind: String?
+    /// Account label persisted by early V20 Dev builds. Retain it across
+    /// saves without changing this build's connector selection policy.
+    public var accountAlias: String?
     public var createdAt: Date
     public var updatedAt: Date
 

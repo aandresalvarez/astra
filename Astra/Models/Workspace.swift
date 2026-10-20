@@ -20,6 +20,11 @@ public final class Workspace: Identifiable {
     public var memories: [String] = []
     public var installedPluginIDs: [String] = []
     public var installedPluginVersions: [String] = []
+    /// Paired service types and connector UUIDs persisted by early V20 Dev
+    /// builds. Preserve these account choices when opening those stores;
+    /// account selection in this build still follows the existing policies.
+    public var defaultAccountServiceTypes: [String] = []
+    public var defaultAccountConnectorIDs: [String] = []
     public var isStarred: Bool = false
     /// The code location new chats default to. `nil` means the primary path; a
     /// non-nil value is the absolute path of the active configured repository or
