@@ -24,7 +24,7 @@ enum PluginDefinitionChange {
         journal: PluginFileOperationJournal, modelContext: ModelContext,
         kind: PluginOperationReceipt.Kind, approvalRecords: () -> [CapabilityApprovalRecord],
         persist: ((ModelContext) throws -> Void)? = nil,
-        rewriteMirror: ((Workspace) -> Bool)? = nil
+        rewriteMirror: ((Workspace) -> Bool)? = nil, operation: PluginFileOperationContext? = nil
     ) throws -> PluginPackage {
         let prepared = definition.operation
         let recovery = PluginFileOperationRecovery(journal: journal)
@@ -43,7 +43,7 @@ enum PluginDefinitionChange {
             }
             try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: [installed], mode: .release,
                 approvalRecords: records, rewriteMirror: rewriteMirror,
-                fileOperation: prepared, fileJournal: journal, operationKind: kind, persist: persist)
+                fileOperation: prepared, fileJournal: journal, operationKind: kind, persist: persist, metadata: operation?.metadata)
             CapabilityCatalogPersistenceEvents.post(.global)
             return installed
         } catch {
@@ -51,11 +51,41 @@ enum PluginDefinitionChange {
             if !PluginOperationProblem.preventsRollback(error) {
                 // Reconciliation restores unsaved model changes first. Only
                 // the matching-store receipt can choose file replay direction.
-                guard recovery.resumePending(modelContext: modelContext, only: prepared.id).deferred == 0 else {
+                guard recovery.resumePending(modelContext: modelContext, only: prepared.id, metadata: operation?.metadata).deferred == 0 else {
                     throw PluginOperationProblem.commitUncertain(prepared.id)
                 }
             }
             throw error
         }
     }
+    /// Staging changes no active workspace. Use a fresh context so the receipt
+    /// cannot save or roll back an unrelated editor's in-flight changes.
+    static func stage(_ definition: PluginLibraryPreparation.Definition, journal: PluginFileOperationJournal,
+        modelContext: ModelContext, operation: PluginFileOperationContext?) throws {
+        let saved = ModelContext(modelContext.container)
+        saved.autosaveEnabled = false
+        let prepared = definition.operation
+        let recovery = PluginFileOperationRecovery(journal: journal)
+        do {
+            try journal.apply(prepared, forward: true)
+            let result = PluginOperationCommit.save(id: prepared.id, kind: .update, pluginIDs: prepared.manifest.pluginIDs,
+                workspaceIDs: [], manifestDigest: prepared.digest, modelContext: saved)
+            switch result {
+            case .notCommitted(let error): saved.rollback(); throw error
+            case .indeterminate: throw PluginOperationProblem.commitUncertain(prepared.id)
+            case .committed:
+                guard recovery.resumePending(modelContext: saved, only: prepared.id, metadata: operation?.metadata).completed == 1 else {
+                    throw PluginOperationProblem.savedRecoveryPending(prepared.id)
+                }
+            }
+            CapabilityCatalogPersistenceEvents.post(.global)
+        } catch {
+            guard !PluginOperationProblem.preventsRollback(error) else { throw error }
+            guard recovery.resumePending(modelContext: saved, only: prepared.id, metadata: operation?.metadata).deferred == 0 else {
+                throw PluginOperationProblem.commitUncertain(prepared.id)
+            }
+            throw error
+        }
+    }
+
 }

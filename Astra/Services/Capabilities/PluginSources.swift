@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import ASTRAPersistence
 import os
 import ASTRACore
 
@@ -226,6 +227,14 @@ struct PluginSourceStore {
         /// an exit, it is settled by what the library holds (`resolved`).
         var pendingForget: PendingForget?
 
+        /// The origin of the exact draft, separate from the active copy's
+        /// ownership. A local draft keeps sourceID nil until approval.
+        var pendingReview: PendingReview?
+        struct PendingReview: Codable, Equatable, Sendable {
+            let digest: String
+            let sourceID: String?
+        }
+
         enum PendingForget: Codable, Equatable, Sendable {
             /// Remove: the plugin leaves the library.
             case remove
@@ -298,6 +307,30 @@ struct PluginSourceStore {
         guard let data = try? HostFileAccessBroker(fileManager: fileManager)
             .readData(at: provenanceURL, intent: .astraManagedStorage(root: root)) else { return [:] }
         return (try? JSONDecoder().decode([String: Provenance].self, from: data)) ?? [:]
+    }
+
+    /// Mutation/recovery cannot treat a damaged ownership file as empty.
+    func savedProvenance() throws -> [String: Provenance] {
+        do {
+            guard try fileManager.attributesOfItem(atPath: provenanceURL.path)[.type] as? FileAttributeType == .typeRegular else {
+                throw PluginSourceOperationJournal.Failure.invalidRecord
+            }
+        } catch where WorkspaceFileLayout.isMissingFile(error) { return [:] }
+        let data = try HostFileAccessBroker(fileManager: fileManager)
+            .readData(at: provenanceURL, intent: .astraManagedStorage(root: root))
+        return try JSONDecoder().decode([String: Provenance].self, from: data)
+    }
+
+    /// Call under the existing library serialization. Patch only this plugin,
+    /// preserving unrelated source refreshes and ownership records.
+    func replaceProvenance(pluginID: String, before: Provenance?, after: Provenance?) throws {
+        var records = try savedProvenance()
+        guard records[pluginID] == before || records[pluginID] == after else {
+            throw PluginSourceOperationJournal.Failure.changedOwnership
+        }
+        guard records[pluginID] != after else { return }
+        records[pluginID] = after
+        try write(records)
     }
 
     func recordProvenance(pluginID: String, sourceID: String, digest: String) throws {

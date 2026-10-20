@@ -86,6 +86,8 @@ extension CapabilityCatalogActionService {
         modelContext: ModelContext,
         coordinator: PluginSourceCoordinator
     ) throws -> CapabilityPackageImportResult {
+        guard PluginSourceOperationRecovery(library: library, store: coordinator.store)
+            .resumeSerialized(modelContext: modelContext) == 0 else { throw PluginDefinitionChange.Failure.recoveryPending }
         let package = try PluginSourceCatalog.confirmReviewed(
             plugin,
             store: coordinator.store,
@@ -103,19 +105,9 @@ extension CapabilityCatalogActionService {
             checkPrerequisites: false
         )
         guard report.canInstall else { throw CapabilityPackageImportError(report: report) }
-        // Provenance first: an exit after the library write still finds the
-        // new copy named, and a failed write still finds the old one.
-        try coordinator.store.beginProvenance(
-            pluginID: package.id, sourceID: plugin.source.id, digest: PluginSourceCatalog.contentDigest(package)
-        )
-        let result = try CapabilityPackageImporter(library: library).importValidatedPackage(
-            report,
-            modelContext: modelContext,
-            replacesInstalledCopy: ownCopy
-        )
-        if let stored = library.installedPackage(id: package.id) {
-            try coordinator.recordInstalled(stored, from: plugin.source)
-        }
+        let result = try PluginSourceDefinitionOperation(library: library, store: coordinator.store).importPackage(
+            report, sourceID: plugin.source.id, modelContext: modelContext, replacesInstalledCopy: ownCopy)
+        coordinator.reload()
         AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
             "source": "plugin_source",
             "source_id": plugin.source.id,

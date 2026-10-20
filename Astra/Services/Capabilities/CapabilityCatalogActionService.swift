@@ -207,8 +207,8 @@ struct CapabilityCatalogActionService {
         // Staged approval changes the shared library, so keep the source
         // store's global serialization around the durable commit boundary.
         try sourceStore.exclusively(pluginID: id) {
-            try PluginStagedApproval.approve(id: id, library: library, modelContext: modelContext,
-                approvalStore: approvalStore, approvedBy: approvedBy)
+            try PluginSourceDefinitionOperation(library: library, store: sourceStore).approve(id: id,
+                modelContext: modelContext, approvalStore: approvalStore, approvedBy: approvedBy)
         }
     }
 
@@ -422,10 +422,10 @@ struct CapabilityCatalogActionService {
             throw CapabilityPackageImportError(report: report)
         }
         do {
-            let result = try forgettingSource(
-                of: report.package?.id, leaving: .install(digest: report.package.map(PluginSourceCatalog.contentDigest) ?? "")
-            ) {
-                try CapabilityPackageImporter(library: library).importValidatedPackage(report, modelContext: modelContext)
+            guard let package = report.package else { throw CapabilityPackageImportError(report: report) }
+            let result = try sourceStore.exclusively(pluginID: package.id) {
+                try PluginSourceDefinitionOperation(library: library, store: sourceStore).importPackage(
+                    report, sourceID: nil, modelContext: modelContext)
             }
             AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
                 "source": "import_json",

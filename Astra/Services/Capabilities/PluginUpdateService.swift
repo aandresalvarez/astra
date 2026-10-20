@@ -267,7 +267,8 @@ enum PluginUpdateService {
         fileOperation: PluginFileOperationJournal.Prepared? = nil,
         fileJournal: PluginFileOperationJournal? = nil,
         operationKind: PluginOperationReceipt.Kind = .update,
-        persist: ((ModelContext) throws -> Void)? = nil
+        persist: ((ModelContext) throws -> Void)? = nil,
+        metadata: PluginFileOperationRecovery.MetadataHandler? = nil
     ) throws -> Int {
         guard (fileOperation == nil) == (fileJournal == nil) else { throw PluginFileOperationJournal.Failure.invalidManifest }
         let approvalRecords = approvalRecords ?? CapabilityApprovalStore().records()
@@ -305,7 +306,9 @@ enum PluginUpdateService {
             let mirrored = changedWorkspaces + (try WorkspaceConfigManager.workspacesMirroring(
                 accountIDs: total.changedAccountIDs, among: try modelContext.fetch(FetchDescriptor<Workspace>()), modelContext: modelContext
             ))
-            let workspaceIDs = Array(Set(mirrored.map(\.id)))
+            let metadataWorkspaces = fileOperation?.manifest.linkedMetadataDigest == nil ? [] :
+                activations.filter { packagesByID[$0.pluginID] != nil && !$0.isDeleted }.compactMap(\.workspace)
+            let workspaceIDs = Array(Set((mirrored + metadataWorkspaces).map(\.id)))
             var committed: PluginOperationCommit.Outcome?
             var recoveryComplete = false
             let saved = PluginSecretCleanupOutbox.deleteThenClean(
@@ -328,7 +331,7 @@ enum PluginUpdateService {
                     let export: ((Workspace, ModelContext) -> Bool)? = rewriteMirror.map { write in { workspace, _ in write(workspace) } }
                     if let journal = fileJournal, let prepared = fileOperation {
                         recoveryComplete = PluginFileOperationRecovery(journal: journal)
-                            .resumePending(modelContext: modelContext, only: prepared.id, export: export).completed == 1
+                            .resumePending(modelContext: modelContext, only: prepared.id, export: export, metadata: metadata).completed == 1
                     } else {
                         recoveryComplete = PluginOperationRecovery.resumePending(modelContext: modelContext,
                             only: receipt.id, export: export).completed == 1

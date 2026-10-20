@@ -634,18 +634,33 @@ struct PluginSourcesTests {
         fixture.context.insert(workspace)
         let service = CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
 
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.append(package.id) }
+        WorkspaceCapabilityActivation.recordAccepted(pluginID: package.id, version: package.version,
+            digest: PluginDefinitionDigest.content(of: package), in: workspace)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        WorkspaceCapabilityActivation.setKnownComponents(PluginRuntimeProjection.componentIDs(of: package), on: activation)
+        try fixture.context.save()
+        let support = URL(fileURLWithPath: WorkspaceFileLayout.supportDirectory(for: workspace.primaryPath))
+        try Data("Blocked recovery directory".utf8).write(to: support)
         files.snapshots = []
         let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
-        _ = try service.importPlugin(report, workspace: workspace, modelContext: fixture.context, traceID: AuditTrace.make("test"))
-        // The exit: the library holds the file's copy, the forget never ran.
+        #expect(throws: PluginOperationProblem.self) {
+            try service.importPlugin(report, workspace: workspace, modelContext: fixture.context, traceID: AuditTrace.make("test"))
+        }
+        // The receipt committed but recovery is incomplete. Simulate the old
+        // provenance image surviving; the matching receipt, not equal plugin
+        // bytes, must choose the new owner on retry.
         try files.restoreLastSnapshot()
-        #expect(fixture.store.provenance()[package.id]?.pendingForget == .install(digest: digest))
+        #expect(fixture.store.provenance()[package.id]?.sourceID == source.id)
         let installed = try #require(library.installedPackage(id: package.id))
         #expect(PluginSourceCatalog.contentDigest(installed) == digest)
-        #expect(!PluginSourceCatalog.isOwnCopy(installed, of: source, provenance: fixture.store.provenance()))
-        // The next load settles it for good.
-        PluginSourceCoordinator(store: fixture.store, installedPackages: { library.installedPackages() }).reload()
+        #expect(try PluginSourceOperationJournal(store: fixture.store).pendingIDs().count == 1)
+        try FileManager.default.removeItem(at: support)
+        #expect(PluginSourceOperationRecovery(library: library, store: fixture.store).resumePending(modelContext: fixture.context) == 0)
         #expect(fixture.store.provenance()[package.id] == nil)
+        #expect(!PluginSourceCatalog.isOwnCopy(installed, of: source, provenance: fixture.store.provenance()))
+
     }
 
     @Test("T5: a Remove that exits after its library write forgets the source; one that exits before keeps it")
@@ -739,8 +754,13 @@ struct PluginSourcesTests {
             try CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
                 .importPlugin(report, workspace: workspace, modelContext: fixture.context, traceID: AuditTrace.make("test"))
         }
-        // The intent was journaled before the write, and cleared after it failed.
-        #expect(files.snapshots.contains { $0.map { String(decoding: $0, as: UTF8.self).contains("pendingForget") } == true })
+        // The active owner never changes before a confirmed commit. A
+        // refused filesystem keeps recovery proof rather than guessing from
+        // the old installed bytes; once access returns it rolls back safely.
+        #expect(files.snapshots.contains { $0.map { String(decoding: $0, as: UTF8.self).contains(source.id) } == true })
+        files.failLibraryWrites = false
+        #expect(PluginSourceOperationRecovery(library: library, store: fixture.store).resumePending(modelContext: fixture.context) == 0)
+        #expect(try PluginSourceOperationJournal(store: fixture.store).pendingIDs().isEmpty)
         let record = try #require(fixture.store.provenance()[old.id])
         #expect(record.pendingForget == nil)
         #expect(PluginSourceCatalog.isOwnCopy(old, of: source, provenance: fixture.store.provenance()))

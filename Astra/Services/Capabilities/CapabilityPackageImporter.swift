@@ -92,7 +92,8 @@ struct CapabilityPackageImporter {
         _ report: CapabilityPackageValidationReport,
         modelContext: ModelContext? = nil,
         replacesInstalledCopy: Bool = false,
-        approvalRecords: [CapabilityApprovalRecord]? = nil
+        approvalRecords: [CapabilityApprovalRecord]? = nil,
+        operationFactory: ((CapabilityPackageSource, Bool) throws -> PluginFileOperationContext)? = nil
     ) throws -> CapabilityPackageImportResult {
         guard report.canInstall, let package = report.package else {
             throw CapabilityPackageImportError(report: report)
@@ -108,7 +109,15 @@ struct CapabilityPackageImporter {
             )
             draft.package = package
             if !Self.isApproved(Self.asStored(draft.package), records: records) {
-                try library.stage(draft)
+                if let modelContext {
+                    let journal = PluginFileOperationJournal(library: library, approvals: CapabilityApprovalStore())
+                    guard let identity = PersistentStoreIdentity.current(for: modelContext) else { throw PluginDefinitionChange.Failure.unavailableStore }
+                    let operation = try operationFactory?(draft, true)
+                    let prepared = try PluginLibraryPreparation.prepare(source: draft, library: library,
+                        approvalStore: CapabilityApprovalStore(), storeIdentity: identity, journal: journal,
+                        operation: operation, destination: .staged)
+                    try PluginDefinitionChange.stage(prepared, journal: journal, modelContext: modelContext, operation: operation)
+                } else { try library.stage(draft) }
                 CapabilityCatalogPersistenceEvents.post(.global)
                 return CapabilityPackageImportResult(
                     package: package, report: report, installedURL: library.staging.packageURL(for: package.id), staged: true
@@ -137,10 +146,12 @@ struct CapabilityPackageImporter {
             let approvals = CapabilityApprovalStore()
             let journal = PluginFileOperationJournal(library: library, approvals: approvals)
             guard let identity = PersistentStoreIdentity.current(for: modelContext) else { throw PluginDefinitionChange.Failure.unavailableStore }
-            let definition = try PluginLibraryPreparation.prepare(source: currentReport.source ?? currentSource,
-                library: library, approvalStore: approvals, storeIdentity: identity, journal: journal)
+            let source = currentReport.source ?? currentSource
+            let operation = try operationFactory?(source, false)
+            let definition = try PluginLibraryPreparation.prepare(source: source,
+                library: library, approvalStore: approvals, storeIdentity: identity, journal: journal, operation: operation)
             _ = try PluginDefinitionChange.commit(definition, library: library, journal: journal,
-                modelContext: modelContext, kind: .update, approvalRecords: { records })
+                modelContext: modelContext, kind: .update, approvalRecords: { records }, operation: operation)
             return CapabilityPackageImportResult(package: package, report: report,
                 installedURL: package.iconDescriptor.kind == .asset
                     ? library.packageManifestURL(for: package.id) : library.packageURL(for: package.id))

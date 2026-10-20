@@ -802,7 +802,7 @@ public struct ASTRAApp: App {
             )
         let startup = AstraStoreStartupCoordinator.start(isUITesting: isUITesting, appInfo: appInfo)
         modelContainer = startup.modelContainer
-        startupBlocker = startup.blocker ?? (isUITesting ? nil : PluginFileOperationStartup.blocker(modelContext: startup.modelContainer.mainContext))
+        startupBlocker = startup.blocker ?? (isUITesting ? nil : PluginSourceOperationRecovery.startupBlocker(modelContext: startup.modelContainer.mainContext))
         _storeLeaseHolder = StateObject(wrappedValue: StoreLeaseHolder(lease: startup.lease))
 
         Task.detached(priority: .utility) {
@@ -987,7 +987,7 @@ public struct ASTRAApp: App {
                 // unconfirmed workspace deletion is dropped only after both.
                 // Rewriting saved projections needs a trusted store, but
                 // does not require the credential-ownership scan.
-                PluginFileOperationRecovery(journal: PluginFileOperationJournal(library: CapabilityLibrary(), approvals: CapabilityApprovalStore()))
+                PluginSourceOperationRecovery(library: CapabilityLibrary(), store: PluginSourceStore())
                     .resumePending(modelContext: modelContext)
                 PluginOperationRecovery.resumePending(modelContext: modelContext)
                 if WorkspaceRecoveryTrust.allowsCleanup {
