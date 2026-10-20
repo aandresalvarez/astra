@@ -1070,7 +1070,10 @@ struct ConnectorCredentialCleanupTests {
         #expect(app.contains("|| connectorCleanup"))
         // A launch that skipped the scan resumes no credential cleanup, and
         // an unconfirmed workspace deletion is dropped only after both passes.
-        let gate = try #require(app.range(of: "if WorkspaceRecoveryTrust.allowsCleanup {\n                    WorkspaceDeletionCleanupService.resumePending("))
+        let gate = try #require(app.range(of: "if WorkspaceRecoveryTrust.allowsCleanup {"))
+        let operations = try #require(app.range(of: "PluginOperationRecovery.resumePending(modelContext: modelContext)", range: trusted.upperBound..<gate.lowerBound))
+        let workspaces = try #require(app.range(of: "WorkspaceDeletionCleanupService.resumePending(", range: gate.upperBound..<app.endIndex))
+        #expect(trusted.upperBound <= operations.lowerBound && operations.upperBound < workspaces.lowerBound)
         let connectors = try #require(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: gate.upperBound..<app.endIndex))
         let drop = try #require(app.range(of: "WorkspaceDeletionCleanupService.dropUnconfirmed(\n                        modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker", range: connectors.upperBound..<app.endIndex))
         #expect(app[gate.upperBound..<drop.lowerBound].contains("dropsUnconfirmed: false"))

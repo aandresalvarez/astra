@@ -247,7 +247,8 @@ public enum ASTRASchemaV21: VersionedSchema {
             PersistentStoreMigrationRecord.self,
             TaskTurnRequest.self,
             PluginActivation.self,
-            AccountBinding.self
+            AccountBinding.self,
+            PluginOperationReceipt.self
         ]
     }
 }

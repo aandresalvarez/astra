@@ -63,7 +63,7 @@ struct PluginMirrorRewriteTests {
         let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
         // The mirror of the fixture's workspace can't be written, so the
         // intent stays to be read.
-        let folder = env.root.appendingPathComponent("workspace", isDirectory: true)
+        let folder = env.root.appendingPathComponent("blocked-workspace", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: env.root) }
         env.workspace.primaryPath = folder.path

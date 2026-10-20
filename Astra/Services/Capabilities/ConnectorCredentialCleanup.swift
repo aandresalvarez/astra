@@ -87,6 +87,7 @@ enum ConnectorCredentialCleanup {
         perform: (([ConnectorKeychainCleanup], Ownership) -> Bool)? = nil
     ) -> Bool {
         guard !cleanups.isEmpty else { return true }
+        guard PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext) else { return false }
         guard let retained = retained ?? retainedByPendingWorkspaceDeletions(modelContext: modelContext) else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_cleanup", "reason": "workspace_deletion_unreadable",

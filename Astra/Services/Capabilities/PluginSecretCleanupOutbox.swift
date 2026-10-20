@@ -231,7 +231,8 @@ struct PluginSecretCleanupOutbox {
         guard !keys.isEmpty, let outbox = outbox ?? modelContext.flatMap(PluginSecretCleanupOutbox.init(for:)) else { return [] }
         guard let pending = try? outbox.pendingKeys() else { return keys }
         let redeclared = keys.filter(Set(pending).contains)
-        guard let modelContext, let references = PendingTaskCredentialReferences.capture(modelContext: modelContext) else { return redeclared }
+        guard let modelContext, PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext),
+              let references = PendingTaskCredentialReferences.capture(modelContext: modelContext) else { return redeclared }
         let failed = redeclared.filter { references.holdsSkill($0.skillID, key: $0.key) || !delete($0) }
         let settled = Set(redeclared.filter { !failed.contains($0) }.map(entry))
         if !settled.isEmpty, let entries = try? outbox.entries() {
@@ -264,7 +265,8 @@ struct PluginSecretCleanupOutbox {
         let prefix = namespace + "#"
         let journaled = entries.filter { $0 == namespace || $0.hasPrefix(prefix) }
         guard !journaled.isEmpty else { return true }
-        guard let modelContext, let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+        guard let modelContext, PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext),
+              let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
               !references.holdsSkill(destination) else { return false }
         if journaled.contains(namespace), kept.isEmpty {
             guard clean(destination) else { return false }
@@ -301,7 +303,8 @@ struct PluginSecretCleanupOutbox {
         clean: (UUID) -> Bool = { SkillKeychainCleanup(skillID: $0).run() }
     ) {
         // What is live can't be told without the store: every record stays.
-        guard let pendingTasks = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+        guard PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext),
+              let pendingTasks = PendingTaskCredentialReferences.capture(modelContext: modelContext),
               let live = liveSkillIDs(modelContext: modelContext),
               let liveKeys = liveSecretKeys(modelContext: modelContext) else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [

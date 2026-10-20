@@ -784,6 +784,10 @@ struct PluginOperationsTests {
         static var retained: [ModelContainer] = []
 
         init() throws {
+            let rootURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("astra-plugin-ops-\(UUID().uuidString)", isDirectory: true)
+            let workspaceURL = rootURL.appendingPathComponent("Workspace", isDirectory: true)
+            try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
             container = try ModelContainer(
                 for: ASTRASchema.current,
                 migrationPlan: ASTRAMigrationPlan.self,
@@ -791,10 +795,9 @@ struct PluginOperationsTests {
             )
             Self.retained.append(container)
             context = container.mainContext
-            workspace = Workspace(name: "Ops", primaryPath: "/tmp/plugin-ops")
+            workspace = Workspace(name: "Ops", primaryPath: workspaceURL.path)
             context.insert(workspace)
-            root = FileManager.default.temporaryDirectory
-                .appendingPathComponent("astra-plugin-ops-\(UUID().uuidString)", isDirectory: true)
+            root = rootURL
             library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
             installer = CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
         }
