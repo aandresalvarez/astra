@@ -149,6 +149,7 @@ struct PluginSecretCleanupOutbox {
                 let knownComponentIDs: [String]?
                 let secretSettingKeys: [String]?
                 let namespaceSeed: String?
+                let credentialNamespaceSeed: String?
             }
             let installedPlugins: [Plugin]?
         }
@@ -175,9 +176,9 @@ struct PluginSecretCleanupOutbox {
                     let components = (plugin.knownComponentIDs ?? []) + (plugin.overriddenComponentIDs ?? [])
                         + settingKeys.compactMap(PluginActivation.componentID(ofSettingKey:))
                     for componentID in Set(components) {
-                        namespaces.insert(PluginActivation.projectedID(
+                        namespaces.insert(PluginActivation.credentialID(
                             workspaceID: workspace.id, pluginID: plugin.id, componentID: componentID,
-                            seed: plugin.namespaceSeed ?? ""
+                            runtimeSeed: plugin.namespaceSeed ?? "", generation: plugin.credentialNamespaceSeed ?? ""
                         ))
                     }
                 }
@@ -186,33 +187,6 @@ struct PluginSecretCleanupOutbox {
             }
         }
         return result
-    }
-
-    /// Settles what a Remove left pending before `package` is added to
-    /// `workspace` again. With no activation of it there, the namespaces a
-    /// new one would derive are nobody's, so they are cleaned now; while one
-    /// is still pending (its delete failed, or the record can't be read) the
-    /// Add must wait, or the new activation would read the old values.
-    static func settleBeforeAdding(
-        _ package: PluginPackage,
-        to workspace: Workspace,
-        modelContext: ModelContext,
-        outbox: PluginSecretCleanupOutbox? = nil,
-        clean: (UUID) -> Bool = { SkillKeychainCleanup(skillID: $0).run() }
-    ) -> Bool {
-        guard let outbox = outbox ?? PluginSecretCleanupOutbox(for: modelContext) else { return true }
-        guard let pending = try? outbox.pending() else { return false }
-        // The seed a Remove kept is the one the new activation derives with.
-        let seed = WorkspaceCapabilityActivation.retiredActivations(of: workspace)
-            .first { $0.pluginID == package.id }?.namespaceSeed ?? ""
-        let derived = Set(PluginRuntimeProjection.componentIDs(of: package).map {
-            PluginActivation.projectedID(workspaceID: workspace.id, pluginID: package.id, componentID: $0, seed: seed)
-        })
-        let reused = pending.filter(derived.contains)
-        guard !reused.isEmpty else { return true }
-        settle(reused, keys: [], modelContext: modelContext, outbox: outbox, clean: clean)
-        guard let after = try? outbox.pending() else { return false }
-        return after.allSatisfy { !derived.contains($0) }
     }
 
     /// Settles the recorded single secrets among `keys` (secret settings a
@@ -329,13 +303,19 @@ struct PluginSecretCleanupOutbox {
     /// the store can't be read.
     static func liveSecretKeys(modelContext: ModelContext) -> Set<PluginUpdateService.StaleSecret>? {
         guard let activations = try? modelContext.fetch(FetchDescriptor<PluginActivation>()) else { return nil }
+        guard let skills = try? modelContext.fetch(FetchDescriptor<Skill>()) else { return nil }
         var live = Set<PluginUpdateService.StaleSecret>()
+        for skill in skills where !skill.isDeleted {
+            for key in skill.environmentKeys where Skill.isSecretEnvironmentKey(key) {
+                live.insert(.init(key: key, skillID: skill.secretNamespaceID))
+            }
+        }
         for activation in activations where !activation.isDeleted {
             for settingKey in activation.secretSettingKeys {
                 guard let componentID = PluginActivation.componentID(ofSettingKey: settingKey) else { continue }
                 live.insert(PluginUpdateService.StaleSecret(
                     key: String(settingKey.dropFirst(componentID.count + 1)),
-                    skillID: PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
+                    skillID: PluginRuntimeProjection.credentialID(of: activation, componentID: componentID)
                 ))
             }
         }
@@ -369,7 +349,7 @@ struct PluginSecretCleanupOutbox {
     static func liveSkillIDs(modelContext: ModelContext) -> Set<UUID>? {
         guard let skills = try? modelContext.fetch(FetchDescriptor<Skill>()),
               let activations = try? modelContext.fetch(FetchDescriptor<PluginActivation>()) else { return nil }
-        var live = Set(skills.map(\.id))
+        var live = Set(skills.map(\.secretNamespaceID))
         let packages = Dictionary(
             CapabilityRuntimeResourceMatcher.packageDefinitions().map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }

@@ -898,6 +898,7 @@ struct SchemaVersionTests {
         let storeURL = root.appendingPathComponent("store.store")
         let workspaceID: UUID
         let connectorIDs: [UUID]
+        let skillID: UUID
         let taskID: UUID
         let runID: UUID
         let eventID: UUID
@@ -928,10 +929,15 @@ struct SchemaVersionTests {
             // Deliberately select the second account; loading must preserve
             // the saved choice rather than infer it from the first connector.
             workspace.defaultAccountConnectorIDs = [connectors[1].id.uuidString]
+            let skill = ASTRASchemaV20Models.Skill()
+            skill.name = "Legacy namespace"
+            skill.workspace = workspace
+            context.insert(skill)
             let task = ASTRASchemaV20Models.AgentTask()
             task.title = "Existing chat"
             task.goal = "Preserve history"
             task.workspace = workspace
+            task.skills = [skill]
             context.insert(task)
             let run = ASTRASchemaV20Models.TaskRun()
             run.task = task
@@ -946,6 +952,7 @@ struct SchemaVersionTests {
             try context.save()
             workspaceID = workspace.id
             connectorIDs = connectors.map(\.id)
+            skillID = skill.id
             taskID = task.id
             runID = run.id
             eventID = event.id
@@ -985,6 +992,10 @@ struct SchemaVersionTests {
                 #expect(connector.accountAlias == alias)
                 #expect(connector.workspace?.id == workspaceID)
             }
+            let skill = try #require(try context.fetch(FetchDescriptor<Skill>()).first { $0.id == skillID })
+            #expect(skill.credentialNamespaceID == nil)
+            #expect(skill.secretNamespaceID == skillID)
+            #expect(task.skills.map(\.id) == [skillID])
             #expect(task.id == taskID)
             #expect(task.workspace?.id == workspaceID)
             #expect(task.title == (pass == 0 ? "Existing chat" : "Edited chat"))
@@ -1003,6 +1014,7 @@ struct SchemaVersionTests {
                 try context.save()
             } else {
                 #expect(workspace.installedVersion(of: "existing-plugin") == "1.0.0")
+                #expect(WorkspaceCapabilityActivation.activation(for: "existing-plugin", in: workspace)?.credentialNamespaceSeed == "")
             }
         }
     }

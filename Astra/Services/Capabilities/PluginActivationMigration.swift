@@ -298,7 +298,7 @@ enum PluginActivationMigration {
                         spec: spec,
                         componentID: componentID,
                         to: activation,
-                        projectedID: projectedID,
+                        projectedID: PluginRuntimeProjection.credentialID(of: activation, componentID: componentID),
                         secrets: secrets,
                         copied: &copiedSecrets
                     )
@@ -503,12 +503,12 @@ enum PluginActivationMigration {
         // keychain first.
         if skill.environmentKeys.contains(where: Skill.isSecretEnvironmentKey) {
             skill.migrateSecretsToKeychain()
-            KeychainService.migrateSkillFromLoginKeychain(skillID: skill.id)
+            KeychainService.migrateSkillFromLoginKeychain(skillID: skill.secretNamespaceID)
         }
         for (index, key) in skill.environmentKeys.enumerated() {
             let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)
             if Skill.isSecretEnvironmentKey(key) {
-                let stored = persistence.loadSecretValue(key: key, skillID: skill.id, store: KeychainSecretStore())
+                let stored = persistence.loadSecretValue(key: key, skillID: skill.secretNamespaceID, store: KeychainSecretStore())
                 let legacy = index < skill.environmentValues.count ? skill.environmentValues[index] : ""
                 let value = stored ?? legacy
                 guard !value.isEmpty else { continue }

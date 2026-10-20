@@ -47,7 +47,7 @@ enum PluginOperations {
     ) -> String {
         let componentID = CapabilityResourceOrigin.componentID(for: skill)
         if Skill.isSecretEnvironmentKey(key) {
-            let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
+            let skillID = PluginRuntimeProjection.credentialID(of: activation, componentID: componentID)
             return SkillSecretSeam.required.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore()) ?? ""
         }
         if let value = activation.configuration(forComponent: componentID)[key] { return value }
@@ -80,7 +80,7 @@ enum PluginOperations {
         let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)
         let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         if Skill.isSecretEnvironmentKey(key) {
-            let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
+            let skillID = PluginRuntimeProjection.credentialID(of: activation, componentID: componentID)
             let persistence = secrets ?? SkillSecretSeam.required
             guard value.isEmpty else {
                 try PluginSecretSettingWriter.write(
@@ -132,7 +132,7 @@ enum PluginOperations {
         var cleared: (persistence: any SkillSecretPersisting.Type, skillID: UUID, previous: String)?
         if activation.secretSettingKeys.contains(settingKey) {
             let persistence = secrets ?? SkillSecretSeam.required
-            let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
+            let skillID = PluginRuntimeProjection.credentialID(of: activation, componentID: componentID)
             let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
             guard persistence.deleteSecret(key: key, skillID: skillID) else {
                 throw OperationError.secretDeleteFailed(key: key)

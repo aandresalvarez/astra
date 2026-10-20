@@ -283,6 +283,7 @@ extension WorkspaceConfigManager {
             guard let id = snapshot.id, let row = restored[id] else { return snapshot }
             var remapped = snapshot
             remapped.id = row.id.uuidString
+            remapped.credentialNamespaceID = row.credentialNamespaceID
             remapped.name = row.name
             return remapped
         }

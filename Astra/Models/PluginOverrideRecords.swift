@@ -9,6 +9,7 @@ import SwiftData
 public struct PluginOverrideRecords: Codable, Equatable, Sendable {
     public struct SkillRecord: Codable, Equatable, Sendable {
         public let id: UUID
+        public let credentialNamespaceID: UUID?
         public let name: String
         public let icon: String
         public let skillDescription: String
@@ -32,6 +33,7 @@ public struct PluginOverrideRecords: Codable, Equatable, Sendable {
         /// shared ones, and its own (never another workspace's).
         public init(_ skill: Skill, workspaceID: UUID) {
             id = skill.id
+            credentialNamespaceID = skill.credentialNamespaceID
             name = skill.name
             icon = skill.icon
             skillDescription = skill.skillDescription
@@ -59,6 +61,7 @@ public struct PluginOverrideRecords: Codable, Equatable, Sendable {
         /// row). Environment is assigned directly: the init's parameter would
         /// move secret-looking values into the Keychain.
         public func apply(to skill: Skill) {
+            skill.credentialNamespaceID = credentialNamespaceID
             skill.name = name
             skill.icon = icon
             skill.skillDescription = skillDescription

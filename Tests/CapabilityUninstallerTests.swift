@@ -222,7 +222,7 @@ struct CapabilityUninstallerTests {
                 let package = retirementPackage(id: "held-cleanup-package")
                 try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
                 let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
-                let namespace = PluginRuntimeProjection.derivedID(
+                let namespace = PluginRuntimeProjection.credentialID(
                     of: activation, componentID: CapabilityResourceOrigin.componentID(for: package.skills[0])
                 )
                 let secrets = SkillSecretSeam.required

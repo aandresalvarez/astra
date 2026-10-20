@@ -206,6 +206,12 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
+    public static func setCredentialNamespaceSeed(_ seed: String, on activation: PluginActivation) {
+        guard activation.credentialNamespaceSeed != seed else { return }
+        activation.credentialNamespaceSeed = seed
+        touch(activation)
+    }
+
     /// Records each plugin template row's content digest (by component) as a
     /// sync wrote it.
     public static func setTemplateDigests(_ digests: [String: String], on activation: PluginActivation) {
@@ -665,6 +671,7 @@ public enum WorkspaceCapabilityActivation {
             activation.templateDigests = record.templateDigests
             activation.awaitingUpdate = accepted?.awaitingUpdate ?? record.awaitingUpdate
             activation.namespaceSeed = record.namespaceSeed
+            activation.credentialNamespaceSeed = record.credentialNamespaceSeed
             activation.revision = record.revision
             activation.updatedAt = record.updatedAt
             activation.workspace = target
@@ -934,6 +941,7 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
     public let templateDigests: [String]
     public let awaitingUpdate: Bool
     public let namespaceSeed: String
+    public let credentialNamespaceSeed: String
     public let revision: Int
     public let createdAt: Date
     public let updatedAt: Date
@@ -959,6 +967,7 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
         templateDigests = try container.decodeIfPresent([String].self, forKey: .templateDigests) ?? []
         awaitingUpdate = try container.decodeIfPresent(Bool.self, forKey: .awaitingUpdate) ?? false
         namespaceSeed = try container.decodeIfPresent(String.self, forKey: .namespaceSeed) ?? ""
+        credentialNamespaceSeed = try container.decodeIfPresent(String.self, forKey: .credentialNamespaceSeed) ?? ""
         revision = try container.decode(Int.self, forKey: .revision)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
@@ -981,6 +990,7 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
         templateDigests = activation.templateDigests
         awaitingUpdate = activation.awaitingUpdate
         namespaceSeed = activation.namespaceSeed
+        credentialNamespaceSeed = activation.credentialNamespaceSeed
         revision = activation.revision
         createdAt = activation.createdAt
         updatedAt = activation.updatedAt
@@ -1022,6 +1032,7 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
         if activation.templateDigests != templateDigests { activation.templateDigests = templateDigests }
         if activation.awaitingUpdate != awaitingUpdate { activation.awaitingUpdate = awaitingUpdate }
         if activation.namespaceSeed != namespaceSeed { activation.namespaceSeed = namespaceSeed }
+        if activation.credentialNamespaceSeed != credentialNamespaceSeed { activation.credentialNamespaceSeed = credentialNamespaceSeed }
         if activation.createdAt != createdAt { activation.createdAt = createdAt }
         let current = activation.bindings.filter { !$0.isDeleted }
         if current.map(Self.bindingKey) != bindings.map(Self.bindingKey) {

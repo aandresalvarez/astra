@@ -25,7 +25,7 @@ public final class PluginActivation {
     public var recordedDigest: String
     /// Non-secret settings keyed `componentID#KEY` (`settingKey`), paired by
     /// index. An empty value is an explicit setting, not an absent one.
-    /// Secret values are in the Keychain under the projected component's ID.
+    /// Secret values are in the Keychain under the component's credential namespace.
     public var configKeys: [String]
     public var configValues: [String]
     /// The secret settings (`componentID#KEY`) written to the Keychain, so a
@@ -42,11 +42,14 @@ public final class PluginActivation {
     /// gone (and not taken over through `replaces`) has its settings,
     /// accounts and secrets released. Seeded by Add and the migration.
     public var knownComponentIDs: [String]
-    /// Mixed into the projected components' IDs (and so their Keychain
-    /// namespaces) when not empty. A validated import of a workspace file
+    /// Mixed into stable projected component IDs (and legacy Keychain
+    /// namespaces without a credential generation) when not empty. A validated import of a workspace file
     /// gets a fresh one, so a file imported over a workspace under its ID
     /// never reads the secrets that workspace's activation stored.
     public var namespaceSeed: String
+    /// Credential storage is independent of stable runtime/template IDs.
+    /// Empty preserves legacy namespaces; a new Add receives a fresh seed.
+    public var credentialNamespaceSeed: String = ""
     /// Each plugin template row's content digest as the last sync wrote it,
     /// `componentID#digest`. A stamped row whose content no longer matches
     /// was edited by the person: a sync keeps it as their own row
@@ -106,13 +109,27 @@ public final class PluginActivation {
         self.updatedAt = createdAt
     }
 
-    /// The ID of a component's projected skill or tool, which also names
-    /// its Keychain namespace: a name-based UUID (version 5 layout) over the
+    /// The stable ID of a projected skill or tool: a name-based UUID
+    /// (version 5 layout) over the
     /// workspace, plugin and component IDs, plus the activation's namespace
     /// seed when it has one.
     public static func projectedID(workspaceID: UUID, pluginID: String, componentID: String, seed: String = "") -> UUID {
+        namedID(domain: "astra.plugin-component.v2|", workspaceID: workspaceID,
+            pluginID: pluginID, componentID: componentID, seed: seed)
+    }
+
+    public static func credentialID(workspaceID: UUID, pluginID: String, componentID: String,
+        runtimeSeed: String = "", generation: String = "") -> UUID {
+        guard !generation.isEmpty else {
+            return projectedID(workspaceID: workspaceID, pluginID: pluginID, componentID: componentID, seed: runtimeSeed)
+        }
+        return namedID(domain: "astra.plugin-credential.v1|", workspaceID: workspaceID,
+            pluginID: pluginID, componentID: componentID, seed: generation)
+    }
+
+    private static func namedID(domain: String, workspaceID: UUID, pluginID: String, componentID: String, seed: String) -> UUID {
         var hasher = SHA256()
-        hasher.update(data: Data("astra.plugin-component.v2|".utf8))
+        hasher.update(data: Data(domain.utf8))
         hasher.update(data: Data(workspaceID.uuidString.utf8))
         hasher.update(data: Data("|".utf8))
         hasher.update(data: Data(pluginID.utf8))
