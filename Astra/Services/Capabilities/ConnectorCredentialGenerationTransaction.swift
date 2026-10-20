@@ -56,6 +56,7 @@ final class ConnectorCredentialGenerationTransaction {
         account: Connector, isNew: Bool, keeping keys: Set<String>, replacing: Set<String>, modelContext: ModelContext,
         declaredFormats: [String: [ConnectorCredentialFormat]] = [:],
         legacyHandling: LegacyHandling = .migrate,
+        copying sourceAccount: Connector? = nil,
         lease: ConnectorCredentialGenerationJournal.Lease? = nil
     ) throws -> Self {
         guard account.modelContext === modelContext, !account.isDeleted else { throw Failure.changedAccount }
@@ -64,21 +65,38 @@ final class ConnectorCredentialGenerationTransaction {
         _ = try journal?.pending() // Reject unreadable ownership before any vault write.
         let saved = ModelContext(modelContext.container)
         saved.autosaveEnabled = false
-        let accountID = account.id
+        let sourceAccount = sourceAccount ?? account
+        let copying = sourceAccount !== account
+        guard sourceAccount.modelContext === modelContext, !sourceAccount.isDeleted else { throw Failure.changedAccount }
+        if copying {
+            let destinationID = account.id
+            var destination = FetchDescriptor<Connector>(predicate: #Predicate { $0.id == destinationID })
+            destination.fetchLimit = 1
+            guard isNew, try saved.fetch(destination).isEmpty,
+                  modelContext.insertedModelsArray.contains(where: { ($0 as? Connector) === account })
+            else { throw Failure.changedAccount }
+        }
+        let accountID = sourceAccount.id
         var query = FetchDescriptor<Connector>(predicate: #Predicate { $0.id == accountID })
         query.fetchLimit = 2
         let rows = try saved.fetch(query)
         guard rows.count <= 1 else { throw Failure.changedAccount }
         let stored = rows.first
         if let stored {
-            guard !isNew, stored.credentialNamespaceID == account.credentialNamespaceID,
-                  stored.baseURL == account.baseURL, stored.serviceType == account.serviceType else { throw Failure.changedAccount }
+            guard (copying || !isNew), stored.credentialNamespaceID == sourceAccount.credentialNamespaceID,
+                  stored.baseURL == sourceAccount.baseURL, stored.serviceType == sourceAccount.serviceType else { throw Failure.changedAccount }
+            if copying {
+                guard stored.credentialKeys == sourceAccount.credentialKeys, stored.credentialValues == sourceAccount.credentialValues,
+                      stored.configKeys == sourceAccount.configKeys, stored.configValues == sourceAccount.configValues,
+                      stored.originPackageID == sourceAccount.originPackageID, stored.originComponentID == sourceAccount.originComponentID
+                else { throw Failure.changedAccount }
+            }
         } else {
-            guard isNew || modelContext.insertedModelsArray.contains(where: { ($0 as? Connector) === account })
+            guard !copying, isNew || modelContext.insertedModelsArray.contains(where: { ($0 as? Connector) === account })
             else { throw Failure.changedAccount }
         }
         let namespaceID = UUID()
-        let old = stored?.keychainCleanup
+        let old = copying ? nil : stored?.keychainCleanup
         var staged = account.keychainCleanup
         staged.credentialNamespaceID = namespaceID
         let source = ConnectorSecretFacts(connector: stored ?? account)

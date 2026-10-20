@@ -1224,10 +1224,12 @@ struct ConnectorEditorView: View {
 
     private func duplicateForWorkspace() {
         guard let workspace else { return }
-        let copy = CapabilitySharing.duplicateForWorkspace(connector, in: workspace)
-        modelContext.insert(copy)
-        onDuplicate?(copy)
-        saveSharingChange()
+        do {
+            let copy = try ConnectorCredentialDuplication.duplicate(connector, in: workspace, modelContext: modelContext)
+            credentialOperationError = nil
+            credentialRecoveryID = nil
+            onDuplicate?(copy)
+        } catch { showCredentialOperationError(error) }
     }
 
     private func saveSharingChange() {
