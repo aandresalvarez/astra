@@ -605,21 +605,32 @@ struct TaskDeliverableVerificationServiceTests {
             ("<textarea><script type=\"application/json\"></textarea><script>a()</script>", true),
             ("<TITLE>x <script type=\"text/template\"></title><script>a()</script>", true),
             ("<style>/* <script type=\"application/json\"> */</style><script>a()</script>", true),
-            ("<titles></titles><script type=\"application/json\">{}</script>", false)
+            ("<titles></titles><script type=\"application/json\">{}</script>", false),
+            ("<div data-x=\"<style>\"></div><script>a()</script>", true),
+            ("<div title='<!--'></div><script>a()</script>", true),
+            ("<script type\u{00A0}=\"application/json\">a()</script>", true),
+            ("<script type=\"application/json\">{\"a\": \"</scripts>\"}</script>", false)
         ]
 
         for testCase in cases {
-            let scripts = TaskDeliverableVerificationService.inlineScripts(in: testCase.html)
+            let scripts = HTMLScriptScanner.inlineScripts(in: testCase.html)
             #expect(scripts.count == 1, "\(testCase.html)")
             #expect(scripts.first?.isJavaScript == testCase.isJavaScript, "\(testCase.html)")
         }
-        let commented = TaskDeliverableVerificationService.inlineScripts(
+        let commented = HTMLScriptScanner.inlineScripts(
             in: "<!-- <script type=\"application/json\"> --><script>a()</script>"
         )
         #expect(commented.first?.body == "a()")
-        #expect(TaskDeliverableVerificationService.inlineScripts(
+        #expect(HTMLScriptScanner.inlineScripts(
             in: "<script src=\"external.js\"></script><scripts>x</scripts>"
         ).isEmpty)
+        // A non-ASCII space is part of the tag name, so this is not a script.
+        #expect(HTMLScriptScanner.inlineScripts(
+            in: "<script\u{00A0}type=\"application/json\">a()</script>"
+        ).isEmpty)
+        #expect(HTMLScriptScanner.externalScriptCount(
+            in: "<div data-src=\"x.js\"></div><script src=\"a.js\"></script><!-- <script src=\"b.js\"></script> -->"
+        ) == 1)
     }
 
     private func makeFixture(goal: String) throws -> (
