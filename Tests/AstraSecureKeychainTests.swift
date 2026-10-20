@@ -52,6 +52,17 @@ enum AstraSecureKeychainTestSupport {
         })
     }
 
+    @MainActor
+    static func withPrivateVault<T>(_ body: () throws -> T) rethrows -> T {
+        let path = tempKeychainPath()
+        let bootstrap = "astra-private-vault-test-" + UUID().uuidString
+        installTestBootstrapPassword(service: bootstrap)
+        defer { cleanup(keychainPath: path, bootstrapService: bootstrap, services: []) }
+        return try AstraSecureKeychainStore.$keychainPathOverride.withValue(path) {
+            try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) { try body() }
+        }
+    }
+
     /// Run keychain assertions with Security.framework UI disabled. This catches
     /// regressions where ASTRA would otherwise surface the internal dedicated
     /// keychain password prompt instead of reading through its unlocked handle.

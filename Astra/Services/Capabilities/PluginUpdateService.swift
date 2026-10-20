@@ -387,7 +387,7 @@ enum PluginUpdateService {
                 .flatMap(\.bindings).compactMap(\.account) where !account.isDeleted {
                 let saved = (account.credentialKeys, account.credentialValues, account.configKeys, account.configValues,
                              account.connectorDescription, account.icon, account.notes, account.originPackageVersion,
-                             account.originComponentID)
+                             account.originComponentID, account.credentialNamespaceID)
                 restorers.append {
                     account.credentialKeys = saved.0
                     account.credentialValues = saved.1
@@ -398,6 +398,7 @@ enum PluginUpdateService {
                     account.notes = saved.6
                     account.originPackageVersion = saved.7
                     account.originComponentID = saved.8
+                    account.credentialNamespaceID = saved.9
                 }
             }
         }
