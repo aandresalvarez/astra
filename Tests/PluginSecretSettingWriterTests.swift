@@ -7,9 +7,9 @@ import Testing
 @testable import ASTRA
 import ASTRACore
 
-/// A plugin secret setting's owner is durable before its Keychain value
-/// (`PluginSecretSettingWriter`), and an automatic pass moves nothing for a
-/// definition awaiting its review. Fixtures are `PluginOperationsTests`'s.
+/// Generation intents precede credential writes; the domain cutover follows
+/// complete values. An automatic pass moves nothing for a definition awaiting
+/// review. Fixtures are `PluginOperationsTests`'s.
 @Suite("Plugin secret settings and review-gated renames")
 @MainActor
 struct PluginSecretSettingWriterTests {
@@ -59,8 +59,8 @@ struct PluginSecretSettingWriterTests {
         }
     }
 
-    @Test("The row's editor saves the secret's marker before the Keychain write, and takes it back when the write fails")
-    func editorSavesTheMarkerBeforeTheWrite() throws {
+    @Test("The editor journals a new generation before writing and publishes its marker only with the save")
+    func editorJournalsBeforeWriteAndPublishesAfterSave() throws {
         let store = try DiskStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let package = Self.secretPackage()
@@ -68,21 +68,26 @@ struct PluginSecretSettingWriterTests {
             .install(package, into: store.workspace, modelContext: store.context, announceCatalogMutation: false)
         let settingKey = PluginActivation.settingKey(componentID: "skill:report-agent", key: "API_TOKEN")
 
-        // What a relaunch reads at the moment of the write: a quit there
-        // leaves the marker and no value.
+        // Before cutover, the saved marker is still old. The namespace
+        // journal, rather than a prematurely published marker, owns the write.
         RecordingSecrets.reset()
-        RecordingSecrets.onSave = { RecordingSecrets.markerAtWrite = (try? store.storedSecretKeys(of: package.id)) ?? [] }
+        RecordingSecrets.onSave = {
+            RecordingSecrets.markerAtWrite = (try? store.storedSecretKeys(of: package.id)) ?? []
+            RecordingSecrets.journalAtWrite = (try? PluginSecretCleanupOutbox(for: store.context)?.entries()) ?? []
+        }
         try PluginOperations.setSetting(
             "API_TOKEN", to: "token", of: package.skills[0], pluginID: package.id, in: store.workspace,
             modelContext: store.context, secrets: RecordingSecrets.self
         )
-        #expect(RecordingSecrets.markerAtWrite == [settingKey])
+        #expect(RecordingSecrets.markerAtWrite.isEmpty)
         #expect(RecordingSecrets.saved == ["API_TOKEN"])
 
         // In that state, Remove still cleans the namespace and an Update
         // that drops the key still releases it.
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: store.workspace))
         let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
+        #expect(RecordingSecrets.savedNamespaces == [namespace])
+        #expect(RecordingSecrets.journalAtWrite.contains(namespace.uuidString))
         #expect(PluginRuntimeProjection.secretNamespaces(of: activation, package: package).contains(namespace))
         #expect(activation.secretSettingKeys == [settingKey])
 
@@ -101,8 +106,8 @@ struct PluginSecretSettingWriterTests {
         #expect(try store.storedSecretKeys(of: package.id).isEmpty)
     }
 
-    @Test("Every secret edit writes the workspace's mirror before the Keychain, and writes nothing when it can't")
-    func secretEditWritesTheMirrorFirst() throws {
+    @Test("Every secret edit stages credentials before its mirror and retains a saved generation while the mirror waits")
+    func secretEditStagesBeforeCutoverAndMirror() throws {
         let env = try Fixtures.Environment()
         let package = Self.secretPackage()
         try env.install(package)
@@ -115,7 +120,7 @@ struct PluginSecretSettingWriterTests {
                 modelContext: env.context, secrets: RecordingSecrets.self, rewriteMirror: { _ in log.append("mirror"); return true }
             )
         }
-        #expect(log == ["mirror", "keychain", "mirror", "keychain"])
+        #expect(log == ["keychain", "mirror", "keychain", "mirror"])
 
         RecordingSecrets.reset()
         #expect(throws: PluginOperationProblem.self) {
@@ -124,13 +129,13 @@ struct PluginSecretSettingWriterTests {
                 modelContext: env.context, secrets: RecordingSecrets.self, rewriteMirror: { _ in false }
             )
         }
-        #expect(RecordingSecrets.saved.isEmpty)
+        #expect(RecordingSecrets.saved == ["API_TOKEN"])
         let pending = try ModelContext(env.container).fetch(FetchDescriptor<PluginOperationReceipt>(predicate: #Predicate { $0.completedAt == nil }))
         #expect(pending.count == 1)
     }
 
-    @Test("A marker that can't be saved writes nothing to the Keychain")
-    func unsavedMarkerWritesNothing() throws {
+    @Test("A failed domain save discards only the staged generation")
+    func failedCutoverDiscardsOnlyStagedNamespaces() throws {
         let env = try Fixtures.Environment()
         let package = Self.secretPackage()
         try env.install(package)
@@ -141,7 +146,8 @@ struct PluginSecretSettingWriterTests {
                 secrets: RecordingSecrets.self, persist: { _, _ in throw CocoaError(.fileWriteUnknown) }
             )
         }
-        #expect(RecordingSecrets.saved.isEmpty)
+        #expect(RecordingSecrets.saved == ["API_TOKEN"])
+        #expect(RecordingSecrets.clearedNamespaces == RecordingSecrets.savedNamespaces)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
         #expect(activation.secretSettingKeys.isEmpty)
     }
@@ -249,6 +255,8 @@ struct PluginSecretSettingWriterTests {
 private enum RecordingSecrets: SkillSecretPersisting {
     private struct State {
         var saved: [String] = []
+        var savedNamespaces: [UUID] = []
+        var clearedNamespaces: [UUID] = []
         var loaded: [String] = []
         var deleted: [String] = []
         var refusesWrites = false
@@ -259,6 +267,8 @@ private enum RecordingSecrets: SkillSecretPersisting {
     nonisolated(unsafe) static var journalAtWrite: [String] = []
 
     static var saved: [String] { state.withLock(\.saved) }
+    static var savedNamespaces: [UUID] { state.withLock(\.savedNamespaces) }
+    static var clearedNamespaces: [UUID] { state.withLock(\.clearedNamespaces) }
     static var loaded: [String] { state.withLock(\.loaded) }
     static var deleted: [String] { state.withLock(\.deleted) }
     static var refusesWrites: Bool {
@@ -282,6 +292,7 @@ private enum RecordingSecrets: SkillSecretPersisting {
         return state.withLock { state in
             guard !state.refusesWrites else { return false }
             state.saved.append(key)
+            state.savedNamespaces.append(skillID)
             return true
         }
     }
@@ -290,6 +301,6 @@ private enum RecordingSecrets: SkillSecretPersisting {
         return true
     }
     static func secretExists(key: String, skillID: UUID) -> Bool { false }
-    static func deleteAllSecrets(skillID: UUID) {}
-    static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool { true }
+    static func deleteAllSecrets(skillID: UUID) { state.withLock { $0.clearedNamespaces.append(skillID) } }
+    static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool { deleteAllSecrets(skillID: skillID); return true }
 }

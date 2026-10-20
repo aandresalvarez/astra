@@ -15,8 +15,8 @@ import ASTRACore
 struct PluginRound23ReviewTests {
     typealias Fixtures = PluginOperationsTests
 
-    @Test("Entering a now plain setting whose save fails puts the cleared secret back, or reports it")
-    func clearedSecretIsRestoredWhenSaveFails() throws {
+    @Test("A failed plain replacement preserves the old secret even when compensation writes would fail")
+    func plainReplacementFailurePreservesOldSecret() throws {
         let env = try Fixtures.Environment()
         let v1 = Fixtures.package(version: "1.0.0")
         try env.install(v1)
@@ -40,22 +40,23 @@ struct PluginRound23ReviewTests {
         #expect(HeldSecrets.value(key: "PROJECT", skillID: skillID) == "old-secret")
         #expect(activation.configuration(forComponent: "skill:report-agent")["PROJECT"] == nil)
 
-        // One the Keychain won't take back is reported, not reported gone.
+        // No compensation is required even when the vault refuses writes.
         HeldSecrets.refusesWrites = true
-        #expect(throws: PluginOperations.OperationError.secretRestoreFailed(key: "PROJECT")) {
+        #expect(throws: PluginOperations.OperationError.saveFailed) {
             try PluginOperations.setSetting(
                 "PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context,
                 secrets: HeldSecrets.self, persist: { _, _ in throw CocoaError(.fileWriteUnknown) }
             )
         }
-        #expect(HeldSecrets.value(key: "PROJECT", skillID: skillID) == nil)
+        #expect(HeldSecrets.value(key: "PROJECT", skillID: skillID) == "old-secret")
 
-        // A save that lands clears it for good.
+        // A saved plain replacement uses a new generation. Old credentials
+        // remain available until their cleanup pass proves no references remain.
         HeldSecrets.refusesWrites = false
         HeldSecrets.set("old-secret", key: "PROJECT", skillID: skillID)
         try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context, secrets: HeldSecrets.self)
         #expect(!activation.secretSettingKeys.contains(projectKey))
-        #expect(HeldSecrets.value(key: "PROJECT", skillID: skillID) == nil)
+        #expect(HeldSecrets.value(key: "PROJECT", skillID: skillID) == "old-secret")
         #expect(activation.configuration(forComponent: "skill:report-agent")["PROJECT"] == "alpha")
     }
 

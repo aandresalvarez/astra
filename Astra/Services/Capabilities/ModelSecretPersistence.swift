@@ -123,6 +123,10 @@ enum ConnectorSecretPersistence: ConnectorSecretPersisting {
 /// Keychain I/O plumbing with no `Skill`/logging references (both moved to
 /// `Skill.swift` as part of Track A2.4).
 enum SkillSecretPersistence: SkillSecretPersisting {
+    static func readSecretValue(key: String, skillID: UUID, store: SecretStore) -> SecretReadOutcome {
+        store.read(key: key, entityID: KeychainSecretStore.skillEntityID(for: skillID))
+    }
+
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? {
         let entityID = KeychainSecretStore.skillEntityID(for: skillID)
         return store.load(key: key, entityID: entityID)

@@ -62,7 +62,7 @@ struct PluginSecrecyAndSignInTests {
         #expect(try outbox.pendingKeys().isEmpty)
     }
 
-    @Test("Update moves a plain value kept for a secret setting into the Keychain; entering a now plain setting clears its secret")
+    @Test("Update moves a plain value kept for a secret setting into the Keychain; a plain replacement moves to a separate credential generation")
     func secrecyChangesMoveOrClearValues() throws {
         let env = try Fixtures.Environment()
         var v1 = Fixtures.package(version: "1.0.0")
@@ -97,7 +97,8 @@ struct PluginSecrecyAndSignInTests {
             "PROJECT", to: "alpha", of: v2.skills[0], pluginID: v2.id, in: env.workspace, modelContext: env.context,
             secrets: RenameSecrets.self
         )
-        #expect(RenameSecrets.deleted == ["PROJECT@\(skillID.uuidString)"])
+        #expect(RenameSecrets.deleted.isEmpty)
+        #expect(PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent") != skillID)
         #expect(!activation.secretSettingKeys.contains(projectKey))
         #expect(activation.configuration(forComponent: "skill:report-agent")["PROJECT"] == "alpha")
     }

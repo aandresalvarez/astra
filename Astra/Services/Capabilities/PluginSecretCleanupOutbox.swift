@@ -263,6 +263,14 @@ struct PluginSecretCleanupOutbox {
         try writeEntries(Array(Set(pending + keys.map(Self.entry))))
     }
 
+    /// Retires only this generation transaction's unique namespace entries.
+    /// Other pending namespaces and individual-key intents are preserved.
+    func forgetNamespaces(_ ids: Set<UUID>) {
+        let completed = Set(ids.map(\.uuidString))
+        guard let pending = try? entries() else { return }
+        try? writeEntries(pending.filter { !completed.contains($0) })
+    }
+
     /// Takes back single secrets `journal` recorded, for a write that
     /// didn't happen or was undone.
     func forget(_ keys: [PluginUpdateService.StaleSecret]) {

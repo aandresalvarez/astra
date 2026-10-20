@@ -17,19 +17,17 @@ enum PluginOperations {
     enum OperationError: Error, Equatable, LocalizedError {
         case notAdded(pluginID: String)
         case secretSaveFailed(key: String)
-        case secretDeleteFailed(key: String)
-        /// The change wasn't saved and the Keychain couldn't take back the
-        /// value it had already written or cleared.
-        case secretRestoreFailed(key: String)
+        case secretReadFailed(key: String)
+        case workspaceChanged
         case storeUnreadable
         case saveFailed
 
         var errorDescription: String? {
             switch self {
             case .notAdded: "Add the plugin to this workspace first."
+            case .secretReadFailed(let key): "Couldn't read \(key) from the Keychain. Check credential-storage access before retrying."
             case .secretSaveFailed(let key): "Couldn't save \(key) to the Keychain."
-            case .secretDeleteFailed(let key): "Couldn't clear \(key) from the Keychain; the old value is still in use."
-            case .secretRestoreFailed(let key): "Couldn't save the change, and \(key) couldn't be put back as it was in the Keychain. Enter it again."
+            case .workspaceChanged: "The workspace changed. Reopen its settings before retrying."
             case .storeUnreadable: "Couldn't read the workspaces that use this account."
             case .saveFailed: "Couldn't save the change."
             }
@@ -55,103 +53,48 @@ enum PluginOperations {
         return skill.environmentValues[index]
     }
 
-    /// Sets a plugin skill's setting for this workspace. A secret value is
-    /// written through `PluginSecretSettingWriter`: the activation records
-    /// it, durably, before the Keychain has it. An empty secret clears it
-    /// from the Keychain first; a clear the Keychain refuses throws, so the
-    /// old credential is never reported gone while still in use, and a
-    /// failed save after it puts the value back (one it can't put back is
-    /// reported as such). An emptied non-secret setting is kept as empty.
+    /// Publishes settings with a complete credential generation. Old values
+    /// are never overwritten or cleared before the matching domain receipt.
     static func setSetting(
-        _ key: String,
-        to value: String,
-        of skill: PluginSkill,
-        pluginID: String,
-        in workspace: Workspace,
-        modelContext: ModelContext,
+        _ key: String, to value: String, of skill: PluginSkill, pluginID: String,
+        in workspace: Workspace, modelContext: ModelContext,
         secrets: (any SkillSecretPersisting.Type)? = nil,
         persist: (Workspace, ModelContext) throws -> Void = persistAndExport,
         rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws {
+        guard workspace.modelContext === modelContext, !workspace.isDeleted else { throw OperationError.workspaceChanged }
         guard let activation = WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) else {
             throw OperationError.notAdded(pluginID: pluginID)
         }
         let componentID = CapabilityResourceOrigin.componentID(for: skill)
         let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)
         let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
-        if Skill.isSecretEnvironmentKey(key) {
-            let skillID = PluginRuntimeProjection.credentialID(of: activation, componentID: componentID)
-            let persistence = secrets ?? SkillSecretSeam.required
-            guard value.isEmpty else {
-                try PluginSecretSettingWriter.write(
-                    value, key: key, skillName: skill.name, settingKey: settingKey, skillID: skillID,
-                    on: activation, persistence: persistence
-                ) {
-                    workspace.updatedAt = Date()
-                    do {
-                        try save(workspace, modelContext: modelContext, restoring: snapshot,
-                            pluginIDs: [pluginID], rewriteMirror: rewriteMirror, publishesCompleted: false, persist: persist)
-                    } catch let problem as PluginOperationProblem {
-                        // Only the marker was committed; the new value has
-                        // not reached the Keychain yet.
-                        throw PluginOperationProblem.credentialWriteDeferred(problem.operationID)
-                    }
-                }
-                // The marker and its copy were ready first. Publish only
-                // after the actual credential write has completed.
-                CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
-                return
-            }
-            let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
-            guard persistence.deleteSecret(key: key, skillID: skillID) else {
-                throw OperationError.secretDeleteFailed(key: key)
-            }
-            // The record goes only once the Keychain value has.
+        let secret = Skill.isSecretEnvironmentKey(key)
+        let changesCredentials = secret || activation.secretSettingKeys.contains(settingKey)
+        let prepared: PluginCredentialGenerationTransaction?
+        if changesCredentials {
+            prepared = try PluginCredentialGenerationTransaction.prepare(activation: activation,
+                workspaceID: workspace.id, componentID: componentID, key: key,
+                replacement: secret && !value.isEmpty ? value : nil, skillName: skill.name,
+                modelContext: modelContext, persistence: secrets ?? SkillSecretSeam.required)
+        } else { prepared = nil }
+        if let prepared { WorkspaceCapabilityActivation.setCredentialNamespaceSeed(prepared.generation, on: activation) }
+        if secret {
+            WorkspaceCapabilityActivation.setConfigValue(nil, forKey: settingKey, on: activation)
+            WorkspaceCapabilityActivation.setSecretRecorded(!value.isEmpty, forKey: settingKey, on: activation)
+        } else {
             WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: settingKey, on: activation)
-            do {
-                try save(workspace, modelContext: modelContext, restoring: snapshot,
-                    pluginIDs: [pluginID], rewriteMirror: rewriteMirror, persist: persist)
-            } catch {
-                if PluginOperationProblem.preventsRollback(error) { throw error }
-                // The record went back to what it was; so does the Keychain.
-                // A value it can't take back no longer matches the record.
-                if let previous, !persistence.saveSecretValue(
-                    previous, key: key, skillID: skillID, skillName: skill.name, allowUserInteraction: false
-                ) {
-                    throw OperationError.secretRestoreFailed(key: key)
-                }
-                throw error
-            }
-            return
+            WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
         }
-        // A secret an earlier definition kept under this now plain key is
-        // the person's to replace: entering the setting clears it. The
-        // cleared value is held for a save that fails, as the empty-secret
-        // branch holds its: the record then goes back to naming a value
-        // that is there again, or the loss is reported.
-        var cleared: (persistence: any SkillSecretPersisting.Type, skillID: UUID, previous: String)?
-        if activation.secretSettingKeys.contains(settingKey) {
-            let persistence = secrets ?? SkillSecretSeam.required
-            let skillID = PluginRuntimeProjection.credentialID(of: activation, componentID: componentID)
-            let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
-            guard persistence.deleteSecret(key: key, skillID: skillID) else {
-                throw OperationError.secretDeleteFailed(key: key)
-            }
-            WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: settingKey, on: activation)
-            if let previous, !previous.isEmpty { cleared = (persistence, skillID, previous) }
-        }
-        WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
         workspace.updatedAt = Date()
         do {
             try save(workspace, modelContext: modelContext, restoring: snapshot,
-                    pluginIDs: [pluginID], rewriteMirror: rewriteMirror, persist: persist)
+                pluginIDs: [pluginID], rewriteMirror: rewriteMirror, persist: persist)
+            prepared?.completed()
         } catch {
-            if PluginOperationProblem.preventsRollback(error) { throw error }
-            if let cleared, !cleared.persistence.saveSecretValue(
-                cleared.previous, key: key, skillID: cleared.skillID, skillName: skill.name, allowUserInteraction: false
-            ) {
-                throw OperationError.secretRestoreFailed(key: key)
-            }
+            // A saved or uncertain cutover must retain both generations and
+            // their recovery intents. Only a proved noncommit can discard.
+            if !PluginOperationProblem.preventsRollback(error) { prepared?.discard() }
             throw error
         }
     }

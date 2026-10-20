@@ -209,6 +209,20 @@ public enum AstraSecureKeychainStore {
         return .failed(diagnosis: drainPendingKeychainFailureLocked(scope: "keychain_write")?.diagnosis)
     }
 
+    /// A missing item is not an unreadable vault or bootstrap password.
+    /// The status belongs to this read, never a shared last-error slot.
+    public static func read(service: String, account: String) -> SecretReadOutcome {
+        guard !shouldBlockUnscopedTestKeychainAccess else { return .unavailable }
+        var status: OSStatus = errSecNotAvailable
+        let value = AstraSecureKeychain.secret(forAccount: account, service: service,
+            keychainPath: keychainPath, bootstrapService: bootstrapService, status: &status)
+        switch status {
+        case errSecSuccess: return value.map(SecretReadOutcome.value) ?? .unavailable
+        case errSecItemNotFound: return .missing
+        default: return .unavailable
+        }
+    }
+
     public static func load(service: String, account: String) -> String? {
         guard !shouldBlockUnscopedTestKeychainAccess else { return nil }
         return AstraSecureKeychain.secret(
