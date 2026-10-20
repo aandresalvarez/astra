@@ -36,7 +36,7 @@ struct PluginsSurfaceView: View {
     @State private var showCreateWizard = false
     @State private var importReview: CapabilityImportReview?
     /// A draft an import kept beside an approved copy, awaiting review.
-    @State private var stagedReview: PluginPackage?
+    @State private var stagedReview: PluginStagedReview?
     @State private var showMCPPaste = false
     @State private var pastedMCPTarget = ""
     @State private var mcpInstallRequest: MCPInstallChatRequest?
@@ -228,14 +228,11 @@ struct PluginsSurfaceView: View {
                 onImport: { importFile($0) }
             )
         }
-        .alert("\(stagedReview?.name ?? "") \(stagedReview?.version ?? "") is waiting for review", isPresented: Binding(
+        .alert("\(stagedReview?.package.name ?? "") \(stagedReview?.package.version ?? "") is waiting for review", isPresented: Binding(
             get: { stagedReview != nil }, set: { if !$0 { stagedReview = nil } }
         ), presenting: stagedReview) { draft in
             Button("Approve and update") { approveStaged(draft) }
-            Button("Discard", role: .destructive) {
-                CapabilityCatalogActionService().discardStaged(id: draft.id)
-                catalog.loadApprovedCapabilities(announceLibraryMutations: false)
-            }
+            Button("Discard", role: .destructive) { discardStaged(draft) }
             Button("Later", role: .cancel) {}
         } message: { _ in
             Text("The approved version stays in use in every workspace until you approve this one.")
@@ -580,7 +577,7 @@ struct PluginsSurfaceView: View {
             )
             importReview = nil
             catalog.loadApprovedCapabilities(announceLibraryMutations: false)
-            if result.staged { stagedReview = result.package } else { expanded.insert(result.package.id) }
+            if result.staged { presentStagedReview(id: result.package.id) } else { expanded.insert(result.package.id) }
             onCatalogChanged()
         } catch {
             importReview = nil
@@ -588,16 +585,30 @@ struct PluginsSurfaceView: View {
         }
     }
 
-    private func approveStaged(_ draft: PluginPackage) {
+    private func presentStagedReview(id: String) {
+        do { stagedReview = try CapabilityCatalogActionService().reviewStaged(id: id) }
+        catch { errorMessage = "Couldn't open the pending update: \(error.localizedDescription)" }
+    }
+
+    private func approveStaged(_ draft: PluginStagedReview) {
         errorMessage = nil
         do {
-            try CapabilityCatalogActionService().approveStaged(id: draft.id, modelContext: modelContext)
+            try CapabilityCatalogActionService().approveStaged(draft, modelContext: modelContext)
             catalog.loadApprovedCapabilities(announceLibraryMutations: false)
             expanded.insert(draft.id)
             onCatalogChanged()
         } catch {
             errorMessage = "Couldn't approve the update: \(error.localizedDescription)"
         }
+    }
+
+    private func discardStaged(_ draft: PluginStagedReview) {
+        errorMessage = nil
+        do {
+            try CapabilityCatalogActionService().discardStaged(draft, modelContext: modelContext)
+            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+            onCatalogChanged()
+        } catch { errorMessage = "Couldn't discard the update: \(error.localizedDescription)" }
     }
 
     private func reviewPastedMCPTarget() {
