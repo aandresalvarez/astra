@@ -266,19 +266,32 @@ struct NewTaskWorktreeOwnStateTests {
         return payload.identity
     }
 
-    @Test("A failed adoption whose draft's earlier checkout is now reserved leaves the draft unpinned, not on the worktree")
-    func failedAdoptionClearsPinWhenPreviousIsReserved() async throws {
+    @Test("A failed adoption leaves a reserved prior checkout unpinned in memory and after saving", arguments: [false, true])
+    func failedAdoptionClearsPinWhenPreviousIsReserved(onDisk: Bool) async throws {
+        try await checkFailedAdoption(onDisk: onDisk, reservePreviousCheckout: true)
+    }
+
+    @Test("A failed adoption restores an available prior checkout without leaving adoption changes pending", arguments: [false, true])
+    func failedAdoptionRestoresAvailablePin(onDisk: Bool) async throws {
+        try await checkFailedAdoption(onDisk: onDisk, reservePreviousCheckout: false)
+    }
+
+    private func checkFailedAdoption(onDisk: Bool, reservePreviousCheckout: Bool) async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let repository = try fixture.repository("App")
         let other = fixture.root.appendingPathComponent("App-other", isDirectory: true)
         try fixture.git(["worktree", "add", "--quiet", "-b", "other", other.path], at: repository)
-        let store = try Fixture.container()
-        let context = store.mainContext
+        let store = try onDisk
+            ? ModelContainer(for: ASTRASchema.current, configurations: [ModelConfiguration(url: fixture.root.appendingPathComponent("default.store"))])
+            : Fixture.container()
+        let context = ModelContext(store)
+        context.autosaveEnabled = false
         let (task, _) = try await prepare(repository: repository, context: context, fixture: fixture)
         let worktree = try #require(task.executionRootPath)
         let draft = AgentTask(title: "Chat", goal: "Explore", workspace: task.workspace)
         draft.executionRootPath = other.path
+        draft.isolationStrategy = .copy
         context.insert(draft)
         try context.save()
         TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
@@ -288,16 +301,42 @@ struct NewTaskWorktreeOwnStateTests {
             _ = try TaskWorktreeService.recoverFailedSubmission(
                 task: task, existingDraft: draft, modelContext: context,
                 persist: { _, _, _ in
-                    // Cleanup reserves the draft's earlier checkout meanwhile.
-                    reservation = TaskWorktreeCheckoutReservation.acquire(other.path)
+                    if reservePreviousCheckout {
+                        // Cleanup reserves the draft's earlier checkout meanwhile.
+                        reservation = TaskWorktreeCheckoutReservation.acquire(other.path)
+                    }
                     throw CocoaError(.fileWriteNoPermission)
                 }
             )
         }
-        #expect(reservation != nil)
+        #expect((reservation != nil) == reservePreviousCheckout)
+        let expectedPin: String? = reservePreviousCheckout ? nil : other.path
         #expect(draft.executionRootPath != worktree)
-        #expect(draft.executionRootPath == nil)
+        #expect(draft.executionRootPath == expectedPin)
+        #expect(draft.isolationStrategy == .copy)
         #expect(TaskWorktreeBinding.eventForInheritance(from: draft) == nil)
+        #expect(!task.isDeleted)
+        #expect(task.executionRootPath == worktree)
+        // Clearing a newly reserved checkout is a new durable correction,
+        // not part of the discarded adoption. A cached nil without a pending
+        // update silently keeps the old path in the store on macOS 26.
+        #expect(context.hasChanges == reservePreviousCheckout)
+        let beforeSave = try #require(try ModelContext(store).fetch(FetchDescriptor<AgentTask>()).first { $0.id == draft.id })
+        #expect(beforeSave.executionRootPath == other.path)
+        // Force an unrelated save too, so the assertion cannot succeed just
+        // because SwiftData skips saving a context it thinks is unchanged.
+        let workspace = try #require(task.workspace)
+        workspace.name = "Saved after failed adoption"
+        try context.save()
+        #expect(!context.hasChanges)
+        let durable = try #require(try ModelContext(store).fetch(FetchDescriptor<AgentTask>()).first { $0.id == draft.id })
+        #expect(durable.executionRootPath == expectedPin)
+        #expect(durable.isolationStrategy == .copy)
+        #expect(TaskWorktreeBinding.eventForInheritance(from: durable) == nil)
+        #expect(durable.workspace?.name == workspace.name)
+        let durableTask = try #require(try ModelContext(store).fetch(FetchDescriptor<AgentTask>()).first { $0.id == task.id })
+        #expect(durableTask.executionRootPath == worktree)
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: durableTask)?.worktreePath == worktree)
     }
 
     @Test("A derived task isn't created onto another checkout when its source's is reserved")

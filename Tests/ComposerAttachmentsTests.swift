@@ -133,11 +133,69 @@ struct ComposerAttachmentsTests {
         #expect(readOnlyGuard.lowerBound < sync.lowerBound)
         #expect(sync.lowerBound < submit.lowerBound)
 
-        // Both composers draw a chip the same way.
+        // Draft chips and persisted file rows share path/name rules.
         #expect(chat.contains("Text(ComposerAttachments.displayName(for: file))"))
-        let chips = try sourceFile("Astra/Views/Components/ComposerInputChipsView.swift")
+        let chips = try sourceFile("Astra/Views/Components/TaskInputFilesView.swift")
         #expect(chips.contains("ComposerAttachments.paths(in: task.inputs)"))
         #expect(chips.contains("ComposerAttachments.displayName(for: path)"))
+    }
+
+    @Test("sent attachments belong to Task Files, while the composer shows only pending files")
+    func sentAttachmentsStayOutOfTheNextMessageComposer() throws {
+        let taskView = try sourceFile("Astra/Views/TaskMainView.swift")
+        let composer = try body(of: "composerView", in: taskView)
+        #expect(!composer.contains("ComposerInputChipsView(task: task)"))
+        #expect(!composer.contains("TaskInputFilesView(task: task)"))
+        #expect(composer.contains("ForEach(attachedFiles"))
+        let filesStart = try #require(taskView.range(of: "private var taskFilesPopover:"))
+        let filesEnd = try #require(taskView[filesStart.upperBound...].range(of: "private var taskDiagnosticsPopover:"))
+        #expect(taskView[filesStart.upperBound..<filesEnd.lowerBound].contains("TaskFilesPopoverView(task: task"))
+        let filesView = try sourceFile("Astra/Views/Components/TaskFilesPopoverView.swift")
+        #expect(filesView.contains("TaskInputFilesView(task: task)"))
+        let inputsView = try sourceFile("Astra/Views/Components/TaskInputFilesView.swift")
+        #expect(inputsView.contains("Attached to this chat"))
+    }
+
+    @Test("Task Files lists a sent attachment once even if the file index also reports it")
+    func sentAttachmentsAreNotDuplicatedInFiles() {
+        let presentation = TaskFilesPopoverPresentation(items: [
+            TaskFileItem(path: "/tmp/sent.md", source: "output"),
+            TaskFileItem(path: "/tmp/result.md", source: "output")
+        ], inputs: ["  /tmp/sent.md\n", "Previous task output: context"])
+        #expect(presentation.inputPaths == ["  /tmp/sent.md\n"])
+        #expect(presentation.otherFiles.map(\.path) == ["/tmp/result.md"])
+        #expect(presentation.fileCount == 2)
+    }
+
+    @Test("Task Files keeps missing inputs and folders available for removal")
+    func missingInputsRemainManageableInFiles() {
+        let presentation = TaskFilesPopoverPresentation(items: [], inputs: [
+            "/missing/attachment.pdf", "/missing/folder", "/missing/attachment.pdf", "Context prose"
+        ])
+        #expect(presentation.inputPaths == ["/missing/attachment.pdf", "/missing/folder"])
+        #expect(presentation.otherFiles.isEmpty)
+        #expect(presentation.fileCount == 2)
+    }
+
+    @Test("The toolbar count uses the same durable input presentation as Files")
+    func headerCountIncludesMissingInputsAndFolders() throws {
+        let view = try sourceFile("Astra/Views/TaskMainView.swift")
+        let start = try #require(view.range(of: "private var headerFileCount: Int {"))
+        let end = try #require(view[start.upperBound...].firstIndex(of: "}"))
+        #expect(view[start.upperBound..<end].contains("TaskFilesPopoverPresentation"))
+    }
+
+    @Test("Selected directories with file-like names open as directories", arguments: ["docs.html", "data.sql", "README"])
+    func folderMetadataPreservesDirectoryKind(name: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-input-kind-\(UUID())")
+        let folder = root.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = TaskInputFileMetadata.load(paths: [folder.path, root.appendingPathComponent("missing.pdf").path])
+        let item = try #require(snapshot.items[folder.path])
+        #expect(item.isDirectory)
+        #expect(item.destination == nil)
+        #expect(snapshot.missing.count == 1)
     }
 
     /// Start Over deletes the draft, so the chips restored from it have to go

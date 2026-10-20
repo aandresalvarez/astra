@@ -7,37 +7,73 @@ import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
 
-/// Wires the sidebar's snapshot the way `TaskSidebarContainerView` wires it —
-/// a one-row `@Query` for the signal, `SidebarTaskStore` for the read — and
-/// asks the only question that matters: does a task created while the sidebar
-/// is on screen reach the rail?
-///
-/// `SidebarTaskStoreTests` calls `noteChanged` by hand, so it proves what the
-/// store does *given* a signal. This proves the signal arrives at all, through
-/// a real hosted view and a real container.
+/// Exercises the same store lifecycle as the sidebar in a real hosted view.
+/// Modern systems use source observers; Sonoma retains its bounded Query
+/// signal. Tests never call `noteChanged` themselves.
 @Suite("Sidebar task store signal integration")
 @MainActor
 struct SidebarTaskStoreSignalIntegrationTests {
+    @MainActor
+    private final class WeakProbe {
+        weak var container: ModelContainer?
+        weak var host: AnyObject?
+        weak var window: NSWindow?
+        weak var store: SidebarTaskStore?
+
+        init(container: ModelContainer, host: AnyObject, window: NSWindow, store: SidebarTaskStore) {
+            self.container = container
+            self.host = host
+            self.window = window
+            self.store = store
+        }
+    }
+
+    /// Query observers on Sonoma and SwiftData's autosave timers on newer
+    /// systems can outlive a hosted view in a test binary. Keep the fixture
+    /// alive for later run-loop callbacks and other suites' save notifications.
+    @MainActor
+    private final class ProbeLifetime {
+        static let process = ProbeLifetime()
+        private var retained: [AnyObject] = []
+
+        func keepAlive(_ objects: AnyObject...) {
+            retained.append(contentsOf: objects)
+        }
+    }
+
+    @Test("Hosted fixtures outlive their scope and are released with their lifetime owner")
+    func fixtureLifetime() {
+        final class Fixture {}
+        weak var fixture: Fixture?
+        do {
+            let lifetime = ProbeLifetime()
+            do {
+                let object = Fixture()
+                fixture = object
+                lifetime.keepAlive(object)
+            }
+            withExtendedLifetime(lifetime) { #expect(fixture != nil) }
+        }
+        #expect(fixture == nil)
+    }
+
     private final class BodyCounter {
         var count = 0
     }
 
     /// The container view's body, reduced to the parts that carry the signal.
     private struct SidebarSignalProbe: View {
-        @Query(SidebarTaskFetch.invalidationSignalDescriptor())
-        private var taskChangeSignal: [AgentTask]
         @Environment(\.modelContext) private var modelContext
 
         let store: SidebarTaskStore
         let counter: BodyCounter
 
         var body: some View {
-            let _ = taskChangeSignal.count
-            store.noteChanged(context: modelContext)
             counter.count += 1
             return Color.clear
                 .frame(width: 10, height: 10)
                 .onAppear { store.loadIfNeeded(context: modelContext) }
+                .background { SidebarTaskLegacyChangeSignal(store: store) }
         }
     }
 
@@ -57,20 +93,6 @@ struct SidebarTaskStoreSignalIntegrationTests {
             }
             .frame(width: 10, height: 10)
             .modelContainer(container)
-        }
-    }
-
-    /// Retains the probe's container, host and window for the life of the
-    /// process. A `@Query`'s notification observer outlives the view that
-    /// declared it in a test binary, and one that outlives its `ModelContainer`
-    /// traps inside an unrelated suite's save. See
-    /// `SwiftDataQueryInvalidationBreadthTests.ProbeLifetime`.
-    @MainActor
-    private enum ProbeLifetime {
-        private static var retained: [Any] = []
-
-        static func keepAlive(_ values: Any...) {
-            retained.append(contentsOf: values)
         }
     }
 
@@ -106,6 +128,22 @@ struct SidebarTaskStoreSignalIntegrationTests {
 
     @Test("A task created while the sidebar is on screen reaches the snapshot")
     func insertedTaskReachesTheSnapshot() async throws {
+        let probe = try await exerciseHostedProbe()
+        let other = try ModelContainer(for: ASTRASchema.current,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(other)
+        context.insert(AgentTask(title: "After teardown", goal: "unrelated save"))
+        try context.save()
+        drainRunLoop()
+        // Framework callbacks can arrive after view teardown. The fixture,
+        // including its context/container, must still be alive at that point.
+        #expect(probe.container != nil)
+        #expect(probe.host != nil)
+        #expect(probe.window != nil)
+        #expect(probe.store != nil)
+    }
+
+    private func exerciseHostedProbe() async throws -> WeakProbe {
         let container = try ModelContainer(
             for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,
@@ -128,8 +166,8 @@ struct SidebarTaskStoreSignalIntegrationTests {
             defer: false
         )
         window.contentView = host
+        ProbeLifetime.process.keepAlive(container, host, window, store)
         window.orderFront(nil)
-        ProbeLifetime.keepAlive(container, host, window, store)
         defer {
             root.showsProbe = false
             host.rootView = root
@@ -163,5 +201,6 @@ struct SidebarTaskStoreSignalIntegrationTests {
             store.tasks.first { $0.id == arrival.id }?.workspace?.id == workspace.id,
             "The snapshot holds the task but not its workspace, so no drawer can list it."
         )
+        return WeakProbe(container: container, host: host, window: window, store: store)
     }
 }

@@ -31,6 +31,6 @@ run swift test --filter WorkspacePersistenceTests
 run swift test --filter SchemaVersionTests
 run swift test --filter WorkspaceImport
 run swift test --filter JiraConnectorAuthTests
-run swift test --sanitize thread
-run swift test --sanitize address
+run script/swift_test.sh --sanitize thread
+run script/swift_test.sh --sanitize address
 run git diff --check

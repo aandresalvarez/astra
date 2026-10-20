@@ -558,17 +558,17 @@ struct CLISessionExpiryTests {
         let output = "ERROR: (gcloud.auth.application-default.print-access-token) There was a problem refreshing your current auth tokens: ('invalid_grant: Bad Request')"
         for command in ["gcloud auth application-default print-access-token", "/opt/google-cloud-sdk/bin/gcloud auth application-default print-access-token"] {
             let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command))
-            #expect(CLISessionExpiryClassifier.stopMessage(stop.message) { [:] } == stop.message)
+            let captured = try #require(stop.repairContext)
+            #expect(RuntimeRepairContextResolver.resolve(captured, environment: [:]) == captured)
             for (file, named) in [("/Users/me/keys/adc.json", true), ("/tmp/odd`name.json", false)] {
-                let message = CLISessionExpiryClassifier.stopMessage(stop.message) { ["GOOGLE_APPLICATION_CREDENTIALS": file] }
-                #expect(message.contains("GOOGLE_APPLICATION_CREDENTIALS"))
-                #expect(message.contains("`\(file)`") == named, "\(file)")
-                let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: message), "lost: \(command) \(file)")
-                #expect(!family.offersSignIn)
-                #expect(family.repair.command == nil)
-                #expect(family.repair.verb == "Check")
-                #expect(family.repair.checkArguments == CLISessionExpiryClassifier.googleCloudApplicationDefault.checkArguments)
-                #expect(family.repair.checkBinary == (command.hasPrefix("/") ? "/opt/google-cloud-sdk/bin/gcloud" : "gcloud"))
+                let resolved = RuntimeRepairContextResolver.resolve(captured, environment: ["GOOGLE_APPLICATION_CREDENTIALS": file])
+                #expect(resolved.message.contains("GOOGLE_APPLICATION_CREDENTIALS"))
+                #expect(resolved.message.contains("`\(file)`") == named, "\(file)")
+                #expect(!resolved.offersAction)
+                #expect(resolved.repair.command == nil)
+                #expect(resolved.repair.verb == "Check")
+                #expect(resolved.repair.checkArguments == CLISessionExpiryClassifier.googleCloudApplicationDefault.checkArguments)
+                #expect(resolved.repair.checkBinary == (command.hasPrefix("/") ? "/opt/google-cloud-sdk/bin/gcloud" : "gcloud"))
             }
         }
         // A sign-in recorded before the variable was known runs nothing once it is.
@@ -583,11 +583,15 @@ struct CLISessionExpiryTests {
         var account = CLISessionExpiryClassifier.googleCloud.repair
         account.checkEnvironment = recorded.checkEnvironment
         #expect(CLISessionExpiryClassifier.checkingCredentialFile(account) == account)
-        // The stop records the guidance, not the sign-in.
-        let service = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Astra/Services/Runtime/RuntimeTurnOutcomeService.swift"), encoding: .utf8)
-        #expect(service.contains("CLISessionExpiryClassifier.stopMessage(message) {"))
-        #expect(service.contains("CLISessionExpiryClassifier.family(forStopMessage: payload), family.offersSignIn"))
+        // The typed failure keeps its repair when display prose changes, and
+        // the run's credential file turns it into manual guidance.
+        let captured = RuntimeRepairContext(providerBinary: "gcloud", message: "Localized display message",
+                                            repair: CLISessionExpiryClassifier.googleCloudApplicationDefault.repair,
+                                            offersAction: true)
+        let resolved = RuntimeRepairContextResolver.resolve(captured, environment: recorded.checkEnvironment)
+        #expect(!resolved.offersAction)
+        #expect(resolved.repair.command == nil)
+        #expect(resolved.message.contains("`/Users/me/keys/adc.json`"))
     }
 
     @Test("An exported GH_HOST or GH_REPO targets the gh calls after it in the same shell scope")

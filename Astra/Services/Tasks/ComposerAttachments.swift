@@ -14,7 +14,7 @@ import Foundation
 enum ComposerAttachments {
     /// Whether `input` is shown as a chip. A path may carry prompt-projection
     /// whitespace; `~/` and relative strings stay prose, as they always have in
-    /// `ComposerInputChipsView`.
+    /// the persisted input list in Task Files.
     static func isAttachment(_ input: String) -> Bool {
         input.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/")
     }

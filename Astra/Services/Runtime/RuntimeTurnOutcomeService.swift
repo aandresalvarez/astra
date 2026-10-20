@@ -56,7 +56,7 @@ enum RuntimeTurnOutcomeService {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: runtimeAdapter.maxTurnsPayload(phase: auditPhase, task: task), run: run)
             modelContext.insert(event)
-        } else if Self.applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
+        } else if RuntimeStopOutcome.apply(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
         } else if Self.applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
         } else if result.policyViolation {
             run.status = .failed
@@ -324,44 +324,6 @@ enum RuntimeTurnOutcomeService {
 
         Approve to continue this task with one-time expanded runtime permissions.\(detail)
         """
-    }
-
-    @MainActor
-    private static func applyRuntimeStopIfNeeded(
-        _ result: AgentProcessResult,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        phase: RunPhase
-    ) -> Bool {
-        guard let reason = result.runtimeStopReason, !reason.isEmpty else { return false }
-
-        run.status = .failed
-        run.typedStopReason = TaskRunStopReason.custom(reason)
-        if AgentRuntimeWorker.isTerminalRuntimeStop(reason) {
-            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
-        } else {
-            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
-        }
-
-        // Expired ADC from the run's own GOOGLE_APPLICATION_CREDENTIALS file
-        // is guidance about that file, with no sign-in to offer.
-        let payload = result.runtimeStopMessage.map { message in
-            CLISessionExpiryClassifier.stopMessage(message) {
-                TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gcloud")
-            }
-        } ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
-        modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run))
-        if let family = CLISessionExpiryClassifier.family(forStopMessage: payload), family.offersSignIn {
-            let event = TaskEventTypes.System.runtimeRepairRequired
-            modelContext.insert(TaskEvent(task: task, eventType: event, payload: family.repair.encoded(), run: run))
-        }
-        AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-            "phase": phase.rawValue,
-            "reason": reason,
-            "source": "runtime_stop"
-        ], level: .error)
-        return true
     }
 
     @MainActor

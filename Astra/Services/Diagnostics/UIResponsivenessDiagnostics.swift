@@ -174,6 +174,7 @@ enum UIResponsivenessDiagnostics {
             || event.hasPrefix("screen_transition_to_")
             || event.hasPrefix("task_open_")
             || event.hasPrefix("run_finalize_")
+            || event == "files_shelf_phase"
             || filesShelfReadinessEvents.contains(event)
             || event.hasPrefix("chat_stream_")
             || event.hasPrefix("chat_scroll_")
@@ -227,7 +228,7 @@ enum UIResponsivenessDiagnostics {
     }
 
     private static func displayEvent(_ event: String, fields: [String: String]) -> String {
-        if ["task_open_phase", "run_finalize_phase"].contains(event), let phase = fields["phase"] {
+        if ["task_open_phase", "run_finalize_phase", "files_shelf_phase"].contains(event), let phase = fields["phase"] {
             return "\(event):\(phase)"
         }
         if event.hasPrefix("screen_transition_to_"), let destination = fields["destination"] {

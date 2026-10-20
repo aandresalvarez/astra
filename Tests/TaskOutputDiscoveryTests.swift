@@ -14,6 +14,18 @@ private func makeTaskOutputDiscoveryContainer() throws -> ModelContainer {
 @Suite("Task output discovery")
 @MainActor
 struct TaskOutputDiscoveryTests {
+    @Test("Discovery timing separates background work from queue and actor-resume delay")
+    func discoveryPhaseTiming() async {
+        let prepared = await TaskOutputDiscovery.prepareAsync(in: "")
+        let phases = prepared.phaseMilliseconds(resumedAt: prepared.finishedAt + 50_000_000)
+        #expect(prepared.files.isEmpty)
+        #expect(phases["output_discovery_resume"] == 50)
+        #expect(phases["output_discovery_queue"]! >= 0)
+        #expect(phases["output_discovery_io"]! >= 0)
+        let total = phases.values.reduce(0, +)
+        #expect(abs(total - Double(prepared.finishedAt + 50_000_000 - prepared.requestedAt) / 1_000_000) < 0.0001)
+    }
+
     @Test("run-scoped workspace scan finds unrecorded workspace-root artifacts")
     func runScopedWorkspaceScanFindsUnrecordedWorkspaceRootArtifacts() throws {
         let fixture = try makeFixture(goal: "Create ./test_results.txt")

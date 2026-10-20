@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct AgentRuntimePolicyCapabilities: Equatable, Sendable {
     var supportsOutputFormatJSON: Bool
@@ -760,7 +761,7 @@ struct AgentRuntimePostProcessContext {
 struct AgentRuntimeProcessLaunchPlan: Equatable {
     let runtime: AgentRuntimeID
     let executablePath: String
-    let arguments: [String]
+    var arguments: [String]
     let currentDirectory: String
     let environment: [String: String]
     let browserShimDirectory: String?
@@ -773,10 +774,12 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     /// write-allow). See `CopilotCLIRuntime.configWriteDenyPaths`.
     let sandboxProtectedWriteDenyPaths: [String]
     let providerDetectedFields: [String: String]
-    let commandPlannedFields: [String: String]
+    var commandPlannedFields: [String: String]
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
     var pathMapper: ExecutionEnvironmentPathMapper?
     var executionEnvironment: WorkspaceExecutionEnvironment
+    /// Owned by Docker planning. Avoid inferring command boundaries from CLI strings.
+    var containerProviderCommandIndex: Int? = nil
     /// Set only by `AgentRuntimeProcessRunner` after every required read-only
     /// enforcement surface has been applied and verified.
     var readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt?
@@ -1939,7 +1942,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? CopilotCLIRuntime.detectPath() : context.executablePath
         let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
-        let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
+        let capabilities = context.executionPolicy.copilotCapabilities
+            ?? CopilotCLIRuntime.capabilities(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let nativeDirectories = AgentRuntimeProcessRunner.copilotNativeDirectoryProjection(for: context.task)
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
@@ -2021,6 +2025,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 RuntimeModelAvailability.normalizedReasoningEffort(effort, for: model, runtime: id)
             }
             : "none"
+        let diagnosticLogDirectory = CopilotStartupEvidence.directory(
+            taskFolder: TaskWorkspaceAccess(task: context.task).taskFolder, runID: context.runID)
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -2043,13 +2049,14 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             askFirstTools: surfacedAskFirstTools,
             additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
             reasoningEffort: reasoningEffort, resumeSessionID: context.nativeContinuationSessionID,
+            diagnosticLogDirectory: diagnosticLogDirectory,
             permissionArguments: permissionArguments
         )
         let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(
             copilotHome: context.providerHomeDirectory,
             copilotStateHome: copilotStateHome,
             userHome: userHome
-        )
+        ) + [diagnosticLogDirectory].compactMap { $0 }
         let sandboxReadablePaths = CopilotCLIRuntime.authReadablePaths(userHome: userHome) + mcpProjection.readablePaths
         let providerDetectedFields = CopilotLaunchDiagnostics.providerDetectedFields(
             id: id,
@@ -2176,7 +2183,21 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let copilotHome = configuredHome.isEmpty ? CopilotCLIRuntime.channelHome() : configuredHome
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
-        let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
+        let discoveryStarted = ContinuousClock.now
+        let capabilities: CopilotCLICapabilities
+        do {
+            capabilities = try await CopilotCLIRuntime.requiredCapabilities(
+                executablePath: executable, timeout: configuration.timeoutSeconds)
+            try Task.checkCancellation()
+        } catch {
+            return AgentUtilityRunResult(exitCode: -1, output: "", error: error.localizedDescription)
+        }
+        let elapsed = discoveryStarted.duration(to: .now)
+        let remainingTimeout = configuration.timeoutSeconds - Double(elapsed.components.seconds)
+            - Double(elapsed.components.attoseconds) / 1e18
+        guard remainingTimeout > 0 else {
+            return AgentUtilityRunResult(exitCode: -1, output: "", error: CopilotCapabilityProbe.Failure.timedOut.localizedDescription)
+        }
         let allowedTools = toolMode == .readOnly ? ["Read", "Glob", "Grep"] : []
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
@@ -2220,7 +2241,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             process: processPlan,
             providerHomeDirectory: copilotHome,
             permissionPolicy: .restricted,
-            timeoutSeconds: configuration.timeoutSeconds
+            timeoutSeconds: remainingTimeout
         )
         if plan.parsesJSONLines {
             return await runStreamingCopilotUtilityPrompt(utilityPlan)
@@ -2617,7 +2638,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
                 || taskEnv[HostControlBrokerIPC.endpointEnvironmentKey] != nil,
             diagnosticLogPath: diagnosticLogPath, resumeSessionID: context.nativeContinuationSessionID,
-            permissionArguments: context.requiredProviderPolicyRender(for: id).antigravityLaunchPermissionArguments()
+            permissionArguments: context.requiredProviderPolicyRender(for: id).antigravityLaunchPermissionArguments(),
+            model: providerModel
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,
@@ -2768,7 +2790,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             // This path returns the child's raw stdout to the caller's own
             // parser, which reads `ASTRA_*_SUGGESTION` text — structured
             // envelopes would leave it nothing to decode.
-            structuredOutputAllowed: false
+            structuredOutputAllowed: false,
+            model: model
         )
 
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)

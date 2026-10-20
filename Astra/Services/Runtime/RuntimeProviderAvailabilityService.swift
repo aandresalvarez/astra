@@ -109,16 +109,19 @@ struct RuntimeProviderAvailabilityService {
         cacheMaxAge: TimeInterval = RuntimeProviderAvailabilityService.cacheMaxAge
     ) async -> [AgentRuntimeID: RuntimeReadinessState] {
         if let cache, let cached = await cache.states(for: configuration, maxAge: cacheMaxAge) {
-            AppLogger.debug("runtime.availability_refresh source=cache \(Self.summary(of: cached))", category: "Runtime")
-            return cached
+            let refreshed = await refreshingUncachedChecks(cached, configuration: configuration)
+            AppLogger.debug("runtime.availability_refresh source=cache \(Self.summary(of: refreshed))", category: "Runtime")
+            return refreshed
         }
+        // The cache stores states without the uncached checks; they are
+        // re-run on every answer, cached or probed.
         let states = await withTaskGroup(of: (AgentRuntimeID, RuntimeReadinessState).self) { group in
             for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
                 group.addTask {
-                    let report = await readinessService.check(
+                    let report = await readinessService.checkDescriptor(
                         configuration: configuration.readinessConfiguration(for: runtime)
                     )
-                    return (runtime, report.state)
+                    return (runtime, report.cacheable.state)
                 }
             }
 
@@ -145,8 +148,37 @@ struct RuntimeProviderAvailabilityService {
         if let cache, states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count {
             await cache.store(states, for: configuration)
         }
-        AppLogger.debug("runtime.availability_refresh source=probe \(Self.summary(of: states))", category: "Runtime")
-        return states
+        let refreshed = await refreshingUncachedChecks(states, configuration: configuration)
+        AppLogger.debug("runtime.availability_refresh source=probe \(Self.summary(of: refreshed))", category: "Runtime")
+        return refreshed
+    }
+
+    private func refreshingUncachedChecks(
+        _ states: [AgentRuntimeID: RuntimeReadinessState],
+        configuration: RuntimeProviderAvailabilityConfiguration
+    ) async -> [AgentRuntimeID: RuntimeReadinessState] {
+        guard !Task.isCancelled else { return [:] }
+        // A warning at most: this answer is global, but whether the host home
+        // matters depends on the launch (a container never reads it). The
+        // final-plan guard blocks the launches it would actually break.
+        // Independent homes must not add their filesystem latency together,
+        // including when the descriptor states came from the cache.
+        let refreshed = await withTaskGroup(of: (AgentRuntimeID, RuntimeReadinessState).self) { group in
+            for (runtime, state) in states {
+                group.addTask {
+                    let checked = await readinessService.refreshingUncachedChecks(
+                        .ready, configuration: configuration.readinessConfiguration(for: runtime)
+                    )
+                    return (runtime, state.combined(with: checked == .blocked ? .warning : checked))
+                }
+            }
+            var refreshed: [AgentRuntimeID: RuntimeReadinessState] = [:]
+            for await (runtime, state) in group { refreshed[runtime] = state }
+            return refreshed
+        }
+        // A cancelled filesystem operation can still finish. Do not publish
+        // its old settings over the replacement composer's current answer.
+        return Task.isCancelled ? [:] : refreshed
     }
 
     private static func summary(of states: [AgentRuntimeID: RuntimeReadinessState]) -> String {
