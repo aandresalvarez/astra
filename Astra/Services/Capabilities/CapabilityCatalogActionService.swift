@@ -193,29 +193,32 @@ struct CapabilityCatalogActionService {
         }
     }
 
-    /// Approves the draft an import staged over an approved plugin
-    /// (`CapabilityLibrary.stage`) through the prepared file/receipt boundary.
-    /// Reconciliation and approval either commit together or retain the draft
-    /// and restore the previous installed bytes.
+    /// Captures what the review UI presents; later approval cannot silently
+    /// substitute a newer draft from another window.
+    func reviewStaged(id: String) throws -> PluginStagedReview {
+        try PluginStagedReview.capture(id: id, library: library)
+    }
+
     @discardableResult
     func approveStaged(
-        id: String,
+        _ review: PluginStagedReview,
         modelContext: ModelContext,
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         approvedBy: String = "ASTRA local admin"
     ) throws -> PluginPackage {
         // Staged approval changes the shared library, so keep the source
         // store's global serialization around the durable commit boundary.
-        try sourceStore.exclusively(pluginID: id) {
-            try PluginSourceDefinitionOperation(library: library, store: sourceStore).approve(id: id,
+        try sourceStore.exclusively(pluginID: review.id) {
+            try PluginSourceDefinitionOperation(library: library, store: sourceStore).approve(review,
                 modelContext: modelContext, approvalStore: approvalStore, approvedBy: approvedBy)
         }
     }
 
     /// Drops a staged draft: the approved copy stays what it was.
-    func discardStaged(id: String) {
-        library.discardStaged(id: id)
-        CapabilityCatalogPersistenceEvents.post(.global)
+    func discardStaged(_ review: PluginStagedReview, modelContext: ModelContext) throws {
+        try sourceStore.exclusively(pluginID: review.id) {
+            try PluginSourceDefinitionOperation(library: library, store: sourceStore).discard(review, modelContext: modelContext)
+        }
     }
 
     /// Remove for a plugin the library no longer has a readable entry for.

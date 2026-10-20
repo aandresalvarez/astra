@@ -13,7 +13,7 @@ import ASTRAModels
 struct PluginSourcesSection: View {
     var workspace: Workspace
     var installed: [PluginPackage]
-    var onImported: () -> Void
+    var onImported: (CapabilityPackageImportResult) -> Void
 
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var coordinator = PluginSourceCoordinator.shared
@@ -183,8 +183,8 @@ struct PluginSourcesSection: View {
         reviewing = nil
         errorMessage = nil
         do {
-            try actions.importReviewed(plugin, workspace: workspace, modelContext: modelContext)
-            onImported()
+            let result = try actions.importReviewed(plugin, workspace: workspace, modelContext: modelContext)
+            onImported(result)
         } catch {
             errorMessage = error.localizedDescription
         }

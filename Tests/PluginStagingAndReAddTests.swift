@@ -38,7 +38,7 @@ struct PluginStagingAndReAddTests {
 
         // Approval commits it: installed, reconciled, no longer staged.
         let service = CapabilityCatalogActionService(library: env.library, appVersion: SemanticVersion(1, 0, 0))
-        let committed = try service.approveStaged(id: "ops.report", modelContext: env.context, approvalStore: approvals)
+        let committed = try service.approveStaged(try service.reviewStaged(id: "ops.report"), modelContext: env.context, approvalStore: approvals)
         #expect(committed.version == "2.0.0")
         #expect(env.library.installedPackage(id: "ops.report")?.version == "2.0.0")
         #expect(env.library.stagedPackage(id: "ops.report") == nil)

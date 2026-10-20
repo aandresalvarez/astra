@@ -161,7 +161,7 @@ struct PluginSourcesLibraryTests {
         #expect(try fixture.store.exclusively(pluginID: "someone-else") { true })
         // The staged approval takes the same locks.
         let source = try String(contentsOf: PluginSourcesTests.repositoryRoot().appendingPathComponent("Astra/Services/Capabilities/CapabilityCatalogActionService.swift"), encoding: .utf8)
-        #expect(source.contains("try sourceStore.exclusively(pluginID: id) {\n            try PluginSourceDefinitionOperation(library: library, store: sourceStore).approve("))
+        #expect(source.contains("try sourceStore.exclusively(pluginID: review.id) {\n            try PluginSourceDefinitionOperation(library: library, store: sourceStore).approve("))
     }
 
     @Test("T5: recovering the workspace's own mirror holds an activation whose plugin is now installed from another source; its own source's Update is awaited as before")

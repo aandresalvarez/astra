@@ -50,7 +50,7 @@ struct PluginStagedApprovalRecoveryTests {
         try env.library.stage(CapabilityPackageSource(package: draft, manifestURL: nil, assetRootURL: nil))
         var savedID: UUID?
         do {
-            _ = try PluginStagedApproval.approve(id: draft.id, library: env.library, modelContext: env.context,
+            _ = try PluginStagedApproval.approve(try PluginStagedReview.capture(id: draft.id, library: env.library), library: env.library, modelContext: env.context,
                 approvalStore: approvals, approvedBy: "Tests", persist: { context in
                     if saveLands { try context.save() }
                     throw SaveFailure.failed
@@ -96,7 +96,7 @@ struct PluginStagedApprovalRecoveryTests {
         let digest = try CapabilityApprovalDigest.digest(for: reviewed)
         let approvals = CapabilityApprovalStore(directory: env.root.appendingPathComponent("Approvals"))
         let installed = try CapabilityCatalogActionService(library: env.library)
-            .approveStaged(id: draft.id, modelContext: env.context, approvalStore: approvals)
+            .approveStaged(try PluginStagedReview.capture(id: draft.id, library: env.library), modelContext: env.context, approvalStore: approvals)
         #expect(try CapabilityApprovalDigest.digest(for: installed) == digest)
         #expect(approvals.record(for: installed)?.sourceDigest == digest)
         #expect(try Data(contentsOf: env.library.packageManifestURL(for: draft.id).deletingLastPathComponent().appendingPathComponent("assets/icon.svg")) == bytes)
@@ -130,7 +130,7 @@ struct PluginStagedApprovalRecoveryTests {
         try env.library.stage(CapabilityPackageSource(package: draft, manifestURL: nil, assetRootURL: nil))
         let service = CapabilityCatalogActionService(library: env.library)
         #expect(throws: PluginUpdateService.UpdateError.ambiguousRename(component: "skill:c-agent")) {
-            try service.approveStaged(id: original.id, modelContext: env.context, approvalStore: approvals)
+            try service.approveStaged(try service.reviewStaged(id: original.id), modelContext: env.context, approvalStore: approvals)
         }
         #expect(env.library.installedPackage(id: original.id)?.version == "1.0.0")
         #expect(env.library.stagedPackage(id: original.id)?.version == "2.0.0")

@@ -38,7 +38,7 @@ struct PluginSourceDefinitionOperationTests {
         #expect(pending.pendingReview?.sourceID == sourceID)
         #expect(pending.pendingReview?.digest == (try CapabilityApprovalDigest.digest(for: #require(env.library.stagedPackage(id: env.id)))))
         let reopened = try env.disk.reopen()
-        let installed = try env.service.approveStaged(id: env.id, modelContext: reopened.mainContext, approvalStore: env.approvals)
+        let installed = try env.service.approveStaged(try env.service.reviewStaged(id: env.id), modelContext: reopened.mainContext, approvalStore: env.approvals)
         #expect(installed.version == "2.0.0" && env.library.stagedPackage(id: env.id) == nil)
         #expect(env.store.provenance()[env.id] == .init(sourceID: sourceID, digest: PluginSourceCatalog.contentDigest(installed)))
         #expect(env.approvals.record(for: installed)?.status == .approved)
@@ -55,7 +55,7 @@ struct PluginSourceDefinitionOperationTests {
         #expect(result.staged && env.library.installedPackage(id: env.id)?.version == "1.0.0")
         let pending = try #require(env.store.provenance()[env.id])
         #expect(pending.sourceID == sourceID && pending.pendingReview != nil && pending.pendingReview?.sourceID == nil)
-        let installed = try env.service.approveStaged(id: env.id, modelContext: env.context, approvalStore: env.approvals)
+        let installed = try env.service.approveStaged(try env.service.reviewStaged(id: env.id), modelContext: env.context, approvalStore: env.approvals)
         #expect(installed.version == "2.0.0")
         #expect(env.store.provenance()[env.id] == nil)
     }
@@ -72,7 +72,7 @@ struct PluginSourceDefinitionOperationTests {
         changed.skills[0].behaviorInstructions = "Different instructions, never reviewed."
         try env.library.stage(.init(package: changed, manifestURL: nil, assetRootURL: nil))
         #expect(throws: (any Error).self) {
-            try env.service.approveStaged(id: env.id, modelContext: env.context, approvalStore: env.approvals)
+            try env.service.approveStaged(try env.service.reviewStaged(id: env.id), modelContext: env.context, approvalStore: env.approvals)
         }
         #expect(env.library.installedPackage(id: env.id)?.version == "1.0.0")
         #expect(env.store.provenance()[env.id] == before)
@@ -118,6 +118,56 @@ struct PluginSourceDefinitionOperationTests {
         #expect(FileManager.default.fileExists(atPath: WorkspaceFileLayout.workspaceConfigFile(for: env.workspace.primaryPath)))
     }
 
+    @Test("A window cannot approve or discard a later draft using its earlier review", arguments: [false, true])
+    func staleWindowDoesNotApproveNewDraft(sameVersion: Bool) throws {
+        let env = try Fixture()
+        defer { env.disk.removeFiles() }
+        _ = try env.installApprovedSource()
+        let (first, firstCoordinator) = try env.offered(version: "2.0.0")
+        _ = try env.service.importReviewed(first, workspace: env.workspace, modelContext: env.context, coordinator: firstCoordinator)
+        let review = try env.service.reviewStaged(id: env.id)
+        let nextVersion = sameVersion ? "2.0.0" : "3.0.0"
+        let (later, laterCoordinator) = try env.offered(version: nextVersion, instructions: "New instructions from the later review")
+        _ = try env.service.importReviewed(later, workspace: env.workspace, modelContext: env.context, coordinator: laterCoordinator)
+        let provenance = env.store.provenance()[env.id]
+        let approvals = env.approvals.records()
+        #expect(throws: (any Error).self) { try env.service.discardStaged(review, modelContext: env.context) }
+        #expect(throws: (any Error).self) {
+            try env.service.approveStaged(review, modelContext: env.context, approvalStore: env.approvals)
+        }
+        #expect(env.library.installedPackage(id: env.id)?.version == "1.0.0")
+        #expect(env.library.stagedPackage(id: env.id)?.version == nextVersion)
+        #expect(env.store.provenance()[env.id] == provenance && env.approvals.records() == approvals)
+        #expect(try PluginSourceOperationJournal(store: env.store).pendingIDs().isEmpty)
+        let refreshed = try env.service.reviewStaged(id: env.id)
+        let accepted = try env.service.approveStaged(refreshed, modelContext: env.context, approvalStore: env.approvals)
+        #expect(accepted.version == nextVersion)
+        #expect(accepted.skills[0].behaviorInstructions == "New instructions from the later review")
+    }
+
+    @Test("Discard clears only the reviewed draft and its origin, retaining the active copy", arguments: [false, true])
+    func discardRetainsActiveSource(localDraft: Bool) throws {
+        let env = try Fixture()
+        defer { env.disk.removeFiles() }
+        _ = try env.installApprovedSource()
+        let active = env.store.provenance()[env.id]
+        if localDraft { _ = try env.importLocal(PluginSourcesTests.package(id: env.id, version: "2.0.0")) }
+        else {
+            let (plugin, coordinator) = try env.offered(version: "2.0.0")
+            _ = try env.service.importReviewed(plugin, workspace: env.workspace, modelContext: env.context, coordinator: coordinator)
+        }
+        let review = try env.service.reviewStaged(id: env.id)
+        env.workspace.name = "Unsaved discard editor"
+        try env.service.discardStaged(review, modelContext: env.context)
+        #expect(env.library.stagedPackage(id: env.id) == nil)
+        #expect(env.library.installedPackage(id: env.id)?.version == "1.0.0")
+        #expect(env.store.provenance()[env.id] == active)
+        let reopened = try env.disk.reopen()
+        #expect(try reopened.mainContext.fetch(FetchDescriptor<Workspace>()).first?.name == "Source operations")
+        #expect(try PluginSourceOperationJournal(store: env.store).pendingIDs().isEmpty)
+        #expect(PluginSourceOperationRecovery(library: env.library, store: env.store).resumePending(modelContext: reopened.mainContext) == 0)
+    }
+
     @Test("Staging cannot accidentally save an unrelated editor's changes")
     func stagingUsesIndependentContext() throws {
         let env = try Fixture()
@@ -150,10 +200,12 @@ struct PluginSourceDefinitionOperationTests {
             disk.context.insert(workspace)
             try disk.context.save()
         }
-        func offered(version: String) throws -> (SourcedPlugin, PluginSourceCoordinator) {
+        func offered(version: String, instructions: String? = nil) throws -> (SourcedPlugin, PluginSourceCoordinator) {
             let folder = disk.root.appendingPathComponent("Repository")
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try PluginSourcesTests.packageJSON(id: id, version: version).write(to: folder.appendingPathComponent("capability.json"), options: .atomic)
+            var package = try PluginSourcesTests.package(id: id, version: version)
+            if let instructions { package.skills[0].behaviorInstructions = instructions }
+            try JSONEncoder().encode(package).write(to: folder.appendingPathComponent("capability.json"), options: .atomic)
             let source = try #require(PluginSource.make(from: folder.path))
             try store.save([source])
             let coordinator = PluginSourceCoordinator(store: store, installedPackages: { library.installedPackages() })

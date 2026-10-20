@@ -47,7 +47,8 @@ struct PluginSourceDefinitionOperation {
         }
     }
 
-    func approve(id: String, modelContext: ModelContext, approvalStore: CapabilityApprovalStore, approvedBy: String) throws -> PluginPackage {
+    func approve(_ review: PluginStagedReview, modelContext: ModelContext, approvalStore: CapabilityApprovalStore, approvedBy: String) throws -> PluginPackage {
+        let id = review.id
         try recover(modelContext, approvals: approvalStore)
         guard let draft = library.stagedPackage(id: id) else { throw CapabilityLibrary.RemovalError.notInstalled(id) }
         let before = try store.savedProvenance()[id]
@@ -65,11 +66,32 @@ struct PluginSourceDefinitionOperation {
         let prepared = try journal.prepare(pluginID: id, after: after, modelContext: modelContext)
         let operation = PluginFileOperationContext(id: prepared.id, metadataDigest: prepared.digest, metadata: journal.handler(modelContext: modelContext))
         do {
-            return try PluginStagedApproval.approve(id: id, library: library, modelContext: modelContext,
+            return try PluginStagedApproval.approve(review, library: library, modelContext: modelContext,
                 approvalStore: approvalStore, approvedBy: approvedBy, operation: operation)
         } catch {
             _ = journal.resumeOrphans(modelContext: modelContext,
                 files: PluginFileOperationJournal(library: library, approvals: approvalStore))
+            throw error
+        }
+    }
+
+    func discard(_ review: PluginStagedReview, modelContext: ModelContext) throws {
+        try recover(modelContext)
+        let before = try store.savedProvenance()[review.id]
+        let digest = library.installedPackage(id: review.id).map(PluginSourceCatalog.contentDigest)
+        let active = before?.resolved(installedDigest: digest)
+        let after: PluginSourceStore.Provenance?
+        if let active, let digest, active.names(digest) {
+            after = .init(sourceID: active.sourceID, digest: digest)
+        } else { after = nil }
+        let journal = PluginSourceOperationJournal(store: store)
+        let prepared = try journal.prepare(pluginID: review.id, after: after, modelContext: modelContext)
+        let operation = PluginFileOperationContext(id: prepared.id, metadataDigest: prepared.digest, metadata: journal.handler(modelContext: modelContext))
+        do {
+            try PluginStagedDiscard.discard(review, library: library, modelContext: modelContext, operation: operation)
+        } catch {
+            _ = journal.resumeOrphans(modelContext: modelContext,
+                files: PluginFileOperationJournal(library: library, approvals: CapabilityApprovalStore()))
             throw error
         }
     }
