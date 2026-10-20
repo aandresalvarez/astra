@@ -5,7 +5,8 @@ import AppKit
 final class WorkspaceHoverWindowLifetime {
     private let notifications: NotificationCenter
     private var observers: [NSObjectProtocol] = []
-    // Read-only access lets callers await a scheduled check, including cancellation.
+    /// Read-only completion handle for joining deferred focus work. Sleeping
+    /// for a fixed interval does not guarantee this task has been scheduled.
     private(set) var pendingFocusCheck: Task<Void, Never>?
 
     init(parent: NSWindow, panel: NSWindow, notifications: NotificationCenter = .default,

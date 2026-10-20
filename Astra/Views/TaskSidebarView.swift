@@ -1035,6 +1035,14 @@ struct TaskSidebarView: View {
                     subtitle: task.workspace?.name,
                     requests: activityRequests[task.id] ?? []
                 )
+                // Install the source on the task surface, independently of
+                // the trailing menu's native tracking and focus gestures.
+                .onDrag {
+                    beginTaskDrag()
+                    return NSItemProvider(object: task.id.uuidString as NSString)
+                } preview: {
+                    SidebarTaskDragChip(title: task.title)
+                }
             }
             .buttonStyle(.plain)
         } accessory: { showsHoverChrome in
@@ -1047,12 +1055,6 @@ struct TaskSidebarView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { updateTaskHover($0, id: task.id) }
-        .onDrag {
-            beginTaskDrag()
-            return NSItemProvider(object: task.id.uuidString as NSString)
-        } preview: {
-            SidebarTaskDragChip(title: task.title)
-        }
         .contextMenu {
             pinToggleButton(for: task)
 
@@ -1377,15 +1379,8 @@ struct TaskSidebarView: View {
         }
     }
 
-    /// One List row per workspace that bundles the folder header and
-    /// (when expanded) its task children. Putting the children inside a
-    /// single List row — instead of as sibling rows — lets SwiftUI's
-    /// `.transition` modifier actually fire: List on macOS is backed by
-    /// NSTableView which animates its own row insertions and ignores
-    /// SwiftUI transitions on row-level children. By collapsing the
-    /// workspace + tasks into one row, the conditional that toggles
-    /// the tasks lives inside the row's view tree, where transitions
-    /// behave like they do everywhere else.
+    /// Groups a folder header and its task drawer in one stable subtree so
+    /// disclosure animates the drawer's opacity and the group's height together.
     ///
     /// Child task rows keep a compact workspace-relative indent, but avoid the
     /// permanent guide rail that used to consume title width and dominate the
@@ -1688,10 +1683,8 @@ struct TaskSidebarView: View {
         .contextMenu {
             WorkspaceOptionsMenu(actions: workspaceActions(for: workspace), workspace: workspace)
         }
-        // Keep the destination on the fixed-height workspace header. The
-        // enclosing List row can also contain an expanded task drawer, and
-        // AppKit's table-backed row does not reliably expose that composite
-        // subtree as a SwiftUI drop destination.
+        // Only the fixed-height folder header accepts workspace reordering;
+        // its expanded task drawer keeps independent task drag sources.
         .onDrop(
             of: [WorkspaceSidebarDragPayload.type],
             isTargeted: workspaceDropTargetBinding(for: workspace.id)
@@ -1870,6 +1863,14 @@ struct TaskSidebarView: View {
                     attemptCount: attemptCount,
                     requests: activityRequests[task.id] ?? []
                 )
+                // Install the source on the task surface, independently of
+                // the trailing menu's native tracking and focus gestures.
+                .onDrag {
+                    beginTaskDrag()
+                    return NSItemProvider(object: task.id.uuidString as NSString)
+                } preview: {
+                    SidebarTaskDragChip(title: task.title)
+                }
             }
             .buttonStyle(.plain)
         } accessory: { showsHoverChrome in
@@ -1878,12 +1879,6 @@ struct TaskSidebarView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { updateTaskHover($0, id: task.id) }
-        .onDrag {
-            beginTaskDrag()
-            return NSItemProvider(object: task.id.uuidString as NSString)
-        } preview: {
-            SidebarTaskDragChip(title: task.title)
-        }
         .contextMenu {
             pinToggleButton(for: task)
 
