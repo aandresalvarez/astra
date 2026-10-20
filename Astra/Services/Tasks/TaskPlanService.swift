@@ -81,10 +81,11 @@ enum TaskPlanService: Sendable {
     static func reconstruct(from events: [TaskEvent]) -> TaskPlanState {
         var state = TaskPlanState.empty
 
-        for event in sortedEventsForReconstruction(events) {
-            state.latestEventAt = event.timestamp
+        for entry in sortedEventsForReconstruction(events) {
+            let event = entry.event
+            state.latestEventAt = entry.timestamp
 
-            switch event.type {
+            switch entry.type {
             case TaskPlanEventTypes.created:
                 guard let plan = decodePlanPayload(event.payload) else { continue }
                 state.plan = plan
@@ -107,7 +108,7 @@ enum TaskPlanService: Sendable {
                 guard let plan = decodePlanPayload(event.payload) else { continue }
                 state.plan = mergeHistoricalStepState(from: state.plan, into: plan)
                 state.lifecycleStatus = .approved
-                state.approvedAt = event.timestamp
+                state.approvedAt = entry.timestamp
                 state.cancelledAt = nil
                 state.cancellationReason = nil
                 state.executionFailedAt = nil
@@ -115,24 +116,24 @@ enum TaskPlanService: Sendable {
             case TaskPlanEventTypes.cancelled:
                 guard matchesCurrentPlan(event.payload, state: state) else { continue }
                 state.lifecycleStatus = .cancelled
-                state.cancelledAt = event.timestamp
+                state.cancelledAt = entry.timestamp
                 state.cancellationReason = decodeLifecyclePayload(event.payload)?.reason
                     ?? event.payload.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
 
             case TaskPlanEventTypes.executionStarted:
                 guard matchesCurrentPlan(event.payload, state: state) else { continue }
                 state.lifecycleStatus = .executing
-                state.executionStartedAt = event.timestamp
+                state.executionStartedAt = entry.timestamp
 
             case TaskPlanEventTypes.executionCompleted:
                 guard matchesCurrentPlan(event.payload, state: state) else { continue }
                 state.lifecycleStatus = .completed
-                state.executionCompletedAt = event.timestamp
+                state.executionCompletedAt = entry.timestamp
 
             case TaskPlanEventTypes.executionFailed:
                 guard matchesCurrentPlan(event.payload, state: state) else { continue }
                 state.lifecycleStatus = .failed
-                state.executionFailedAt = event.timestamp
+                state.executionFailedAt = entry.timestamp
                 state.cancellationReason = decodeLifecyclePayload(event.payload)?.reason
                     ?? event.payload.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
 
@@ -148,23 +149,29 @@ enum TaskPlanService: Sendable {
         return state
     }
 
-    private static func sortedEventsForReconstruction(_ events: [TaskEvent]) -> [TaskEvent] {
+    private typealias ReconstructionEntry = (offset: Int, event: TaskEvent, timestamp: Date, type: String, priority: Int)
+
+    /// Reads each event's `timestamp` and `type` once, for the sort and the
+    /// replay alike: on a SwiftData model every property read is a
+    /// backing-store lookup, and the comparator runs O(n log n) times.
+    private static func sortedEventsForReconstruction(_ events: [TaskEvent]) -> [ReconstructionEntry] {
         events.enumerated()
+            .map { offset, event -> ReconstructionEntry in
+                let type = event.type
+                return (offset, event, event.timestamp, type, reconstructionPriority(for: type))
+            }
             .sorted { lhs, rhs in
-                let timestampOrder = lhs.element.timestamp.compare(rhs.element.timestamp)
+                let timestampOrder = lhs.timestamp.compare(rhs.timestamp)
                 if timestampOrder != .orderedSame {
                     return timestampOrder == .orderedAscending
                 }
 
-                let lhsPriority = reconstructionPriority(for: lhs.element.type)
-                let rhsPriority = reconstructionPriority(for: rhs.element.type)
-                if lhsPriority != rhsPriority {
-                    return lhsPriority < rhsPriority
+                if lhs.priority != rhs.priority {
+                    return lhs.priority < rhs.priority
                 }
 
                 return lhs.offset < rhs.offset
             }
-            .map(\.element)
     }
 
     private static func reconstructionPriority(for eventType: String) -> Int {

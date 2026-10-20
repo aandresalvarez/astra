@@ -61,7 +61,43 @@ extension TaskContextStateManager {
         startingRequest: String,
         approvedGoal: String?
     ) -> ActiveObjectiveResolution {
-        if let override = latestObjectiveOverride(for: task) {
+        activeObjectiveResolution(
+            for: task,
+            override: latestObjectiveOverride(for: task),
+            planState: planState,
+            startingRequest: startingRequest,
+            approvedGoal: approvedGoal
+        )
+    }
+
+    /// `activeObjectiveResolution` over a context derive's one-pass event index.
+    static func activeObjectiveResolution(
+        for task: AgentTask,
+        events: TaskContextEventIndex,
+        planState: TaskPlanState,
+        startingRequest: String,
+        approvedGoal: String?
+    ) -> ActiveObjectiveResolution {
+        activeObjectiveResolution(
+            for: task,
+            override: latestObjectiveOverride(
+                userMessages: events.userMessages,
+                pendingTurnMessageIDs: events.pendingTurnMessageIDs
+            ),
+            planState: planState,
+            startingRequest: startingRequest,
+            approvedGoal: approvedGoal
+        )
+    }
+
+    private static func activeObjectiveResolution(
+        for task: AgentTask,
+        override: ObjectiveOverride?,
+        planState: TaskPlanState,
+        startingRequest: String,
+        approvedGoal: String?
+    ) -> ActiveObjectiveResolution {
+        if let override {
             return ActiveObjectiveResolution(
                 objective: override.objective,
                 sourcePointers: [override.source],
@@ -115,7 +151,11 @@ extension TaskContextStateManager {
     }
 
     public static func firstConversationEventValue(for task: AgentTask) -> TaskEvent? {
-        task.events
+        firstConversationEventValue(in: task.events)
+    }
+
+    static func firstConversationEventValue(in events: [TaskEvent]) -> TaskEvent? {
+        events
             .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
             .sorted { $0.timestamp < $1.timestamp }
             .first
@@ -149,8 +189,14 @@ private struct ObjectiveOverride: Equatable {
 }
 
 private func latestObjectiveOverride(for task: AgentTask) -> ObjectiveOverride? {
-    let pendingTurnMessageIDs = TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
-    let userMessages = task.events
+    latestObjectiveOverride(
+        userMessages: task.events,
+        pendingTurnMessageIDs: TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
+    )
+}
+
+private func latestObjectiveOverride(userMessages events: [TaskEvent], pendingTurnMessageIDs: Set<UUID>) -> ObjectiveOverride? {
+    let userMessages = events
         .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
         .filter { !pendingTurnMessageIDs.contains($0.id) }
         .sorted { $0.timestamp < $1.timestamp }

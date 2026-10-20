@@ -21,8 +21,14 @@ public struct TaskCorrectiveWorkRecord {
 public enum TaskCorrectiveWorkQueries {
     @MainActor
     public static func latestCorrectiveSteps(for task: AgentTask) -> [TaskCorrectiveWorkRecord] {
+        latestCorrectiveSteps(in: task.events)
+    }
+
+    /// `latestCorrectiveSteps(for:)` over an already-gathered event list, for
+    /// callers that scan `task.events` once and share the result.
+    public static func latestCorrectiveSteps(in events: [TaskEvent]) -> [TaskCorrectiveWorkRecord] {
         var latestByID: [String: TaskCorrectiveWorkRecord] = [:]
-        for event in task.events
+        for event in events
             .filter({ isCorrectiveStepEvent($0.type) })
             .sorted(by: { $0.timestamp > $1.timestamp }) {
             guard let payload = decode(event.payload) else { continue }
@@ -35,7 +41,11 @@ public enum TaskCorrectiveWorkQueries {
 
     @MainActor
     public static func openCorrectiveSteps(for task: AgentTask) -> [TaskCorrectiveWorkRecord] {
-        latestCorrectiveSteps(for: task).filter { record in
+        openCorrectiveSteps(in: task.events)
+    }
+
+    public static func openCorrectiveSteps(in events: [TaskEvent]) -> [TaskCorrectiveWorkRecord] {
+        latestCorrectiveSteps(in: events).filter { record in
             ["proposed", "approved", "task_created"].contains(record.payload.status)
         }
     }
