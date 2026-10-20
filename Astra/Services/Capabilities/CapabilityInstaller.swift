@@ -305,13 +305,16 @@ struct CapabilityInstaller {
             // schedules and the synced account fields reconciling writes.
             // Reconciliation can promote account settings into secrets. Give
             // every account it may touch a private generation first too.
-            for candidate in accountsRequiringCredentialCutover(for: package, activation: activation) {
+            for candidate in PluginAccountCredentialCutoverPlan.candidates(for: package, activation: activation) {
                 let account = candidate.account
                 let prepared = try ConnectorCredentialGenerationTransaction.prepare(account: account, isNew: false,
-                    keeping: candidate.keeping, replacing: [], modelContext: modelContext,
+                    keeping: candidate.keeping, replacing: [], modelContext: modelContext, declaredFormats: candidate.formats,
                     lease: stagedAccountCredentials.first?.lease)
                 stagedAccountCredentials.append(prepared)
                 account.credentialNamespaceID = prepared.namespaceID
+                // Every retained legacy value has now passed admission or
+                // yielded to a newer vault value in the private generation.
+                account.credentialValues = Array(repeating: "", count: account.credentialKeys.count)
             }
             stagedAccountCredentials.forEach { $0.noteWriteAttempt() }
             let reconciliation = try PluginUpdateService.reconcile(
@@ -755,34 +758,6 @@ struct CapabilityInstaller {
         }
     }
 
-    /// Only operations that may change credentials need a vault read. A
-    /// plain metadata refresh keeps the saved generation without touching it.
-    private func accountsRequiringCredentialCutover(for package: PluginPackage, activation: PluginActivation) -> [(account: Connector, keeping: Set<String>)] {
-        var result: [(account: Connector, keeping: Set<String>)] = []
-        for declared in package.connectors {
-            let spec = PluginConnectorFieldTrust.asStored(declared, in: package)
-            let component = CapabilityResourceOrigin.componentID(for: spec)
-            let predecessors = Set(CapabilityResourceOrigin.replacedComponentIDs(for: spec))
-            let components = predecessors.union([component])
-            let moved = PluginConnectorFieldTrust.settingsStoredAsCredentials(of: declared, in: package)
-            for binding in activation.bindings where !binding.isDeleted && components.contains(binding.componentID) {
-                guard let account = binding.account, !account.isDeleted, account.originPackageID == package.id,
-                      !result.contains(where: { $0.account.id == account.id }) else { continue }
-                let promotedKeys = Set(moved.filter { !account.configValue($0).isEmpty }.map(ConnectorCredentialKey.canonical))
-                let promotes = !promotedKeys.isEmpty
-                let addsKey = spec.credentialHints.contains { hint in
-                    !account.credentialKeys.contains { ConnectorCredentialKey.same($0, hint.key) }
-                }
-                let renamesLegacy = account.credentialNamespaceID == nil
-                    && account.originComponentID.map { predecessors.contains($0) && $0 != component } == true
-                if promotes || addsKey || renamesLegacy {
-                    result.append((account, Set(account.credentialKeys.map(ConnectorCredentialKey.canonical)).union(promotedKeys)))
-                }
-            }
-        }
-        return result
-    }
-
     private func upsertWorkspaceConnector(
         _ fields: StoredConnectorFields,
         package: PluginPackage,
@@ -853,7 +828,8 @@ struct CapabilityInstaller {
             let participant = try ConnectorCredentialGenerationTransaction.prepare(account: connector, isNew: isNew,
                 keeping: targetKeys,
                 replacing: Set(credentialInputs.filter { !$0.value.isEmpty }.keys.map(ConnectorCredentialKey.canonical)),
-                modelContext: modelContext, lease: stagedCredentials.first?.lease)
+                modelContext: modelContext, declaredFormats: PluginAccountCredentialCutoverPlan.formats(of: pluginConnector),
+                lease: stagedCredentials.first?.lease)
             stagedCredentials.append(participant)
             connector.credentialNamespaceID = participant.namespaceID
             prepared = participant
