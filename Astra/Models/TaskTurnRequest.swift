@@ -47,6 +47,9 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     /// account edited or deleted while the request waits does not change what
     /// it runs with. Nil for older requests, which read the live rows.
     public let pluginAccounts: [PluginAccountRecord]?
+    /// Complete account inventory accepted by the submission service, including
+    /// independent accounts. Nil preserves the older partial snapshot contract.
+    public let accountInventory: TaskAccountInventorySnapshot?
     /// The contents of the authored rows those activations name as
     /// overrides, so an override edited or deleted while the request waits
     /// does not change what it runs with. Nil for older requests, which read
@@ -65,7 +68,8 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     public init(
         task: AgentTask,
         turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
-        pluginDefinitions: [PluginPackage]? = nil
+        pluginDefinitions: [PluginPackage]? = nil,
+        accountInventory: TaskAccountInventorySnapshot? = nil
     ) {
         version = 1
         reasoningEffort = task.reasoningEffort
@@ -86,6 +90,7 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         pluginActivations = task.workspace.map {
             WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.init)
         }
+        self.accountInventory = accountInventory
         self.pluginDefinitions = pluginDefinitions
         pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
         pluginOverrides = task.workspace.map(PluginOverrideRecords.init(workspace:))
@@ -221,6 +226,7 @@ public final class TaskTurnRequest {
         resourceClaims: [TaskExecutionResourceClaim] = [],
         turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
         pluginDefinitions: [PluginPackage]? = nil,
+        accountInventory: TaskAccountInventorySnapshot? = nil,
         state: TaskTurnRequestState = .waitingForWorker,
         submittedAt: Date = Date()
     ) {
@@ -248,7 +254,8 @@ public final class TaskTurnRequest {
         self.executionPolicySnapshotJSON = Self.encode(TaskExecutionPolicySnapshotV1(
             task: task,
             turnIntentSnapshot: turnIntentSnapshot,
-            pluginDefinitions: pluginDefinitions
+            pluginDefinitions: pluginDefinitions,
+            accountInventory: accountInventory
         ))
         self.resourceClaimsJSON = Self.encode(resourceClaims) ?? "[]"
     }

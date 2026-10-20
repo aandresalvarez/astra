@@ -455,6 +455,7 @@ enum ExecutionRequestSubmissionService {
             ),
             turnIntentSnapshot: turnIntentSnapshot,
             pluginDefinitions: TaskExecutionLaunchSnapshotApplicator.pluginDefinitions(for: task),
+            accountInventory: TaskExecutionLaunchSnapshotApplicator.accountInventory(for: task),
             submittedAt: date
         )
         if let origin, let snapshot = originSnapshot {
@@ -467,7 +468,8 @@ enum ExecutionRequestSubmissionService {
             request.tokenBudgetSnapshot = origin.tokenBudgetSnapshot
             request.executionPolicySnapshotJSON = TaskEvent.payloadString(TaskExecutionPolicySnapshotV1(
                 task: frozenTask, turnIntentSnapshot: turnIntentSnapshot,
-                pluginDefinitions: TaskExecutionLaunchSnapshotApplicator.pluginDefinitions(for: frozenTask)))
+                pluginDefinitions: TaskExecutionLaunchSnapshotApplicator.pluginDefinitions(for: frozenTask),
+                accountInventory: TaskExecutionLaunchSnapshotApplicator.accountInventory(for: frozenTask)))
             request.resourceClaimsJSON = origin.resourceClaimsJSON
         }
         if let binding = permissionContinuation, let run = task.runs.first(where: { $0.id == binding.runID }),

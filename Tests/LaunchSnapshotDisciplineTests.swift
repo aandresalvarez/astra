@@ -66,7 +66,7 @@ struct LaunchSnapshotDisciplineTests {
     /// verify that authored records and their attachments stay authoritative.
     private static let snapshotOwnedResourceFields: Set<String> = [
         "pluginActivations", "pluginDefinitions", "pluginAccounts", "pluginOverrides", "retiredPluginActivations",
-        "authoredSkills", "pendingLegacyPluginState"
+        "authoredSkills", "pendingLegacyPluginState", "accountInventory"
     ]
 
     // MARK: - Freeze chain

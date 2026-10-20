@@ -100,7 +100,9 @@ struct PendingTaskCredentialReferences {
             }
         }
         for account in policy.pluginAccounts ?? [] { include(account) }
-        for skill in (policy.pluginOverrides?.skills ?? []) + (policy.authoredSkills ?? []) {
+        for entry in policy.accountInventory?.entries ?? [] { include(entry.account) }
+        let accountParents = policy.accountInventory?.entries.compactMap(\.parentSkill) ?? []
+        for skill in (policy.pluginOverrides?.skills ?? []) + (policy.authoredSkills ?? []) + accountParents {
             includeSkill(skill.credentialNamespaceID ?? skill.id, keys: skill.environmentKeys)
             for account in skill.attachedConnectors ?? [] { include(account) }
         }
