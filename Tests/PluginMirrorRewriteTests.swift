@@ -70,12 +70,19 @@ struct PluginMirrorRewriteTests {
         let mirrorURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
         try FileManager.default.createDirectory(at: mirrorURL, withIntermediateDirectories: true)
 
-        try CapabilityUninstaller(library: env.library).remove(
-            Fixtures.package(version: "1.0.0"), modelContext: env.context, removeJournal: journal
-        )
+        var operationID: UUID?
+        do {
+            _ = try CapabilityUninstaller(library: env.library).remove(
+                Fixtures.package(version: "1.0.0"), modelContext: env.context, removeJournal: journal)
+            Issue.record("A failed mirror must leave explicit recovery debt")
+        } catch let problem as PluginOperationProblem { operationID = problem.operationID }
         #expect(account.originPackageID == nil)
-        let intent = try #require(try journal.intents().first)
-        #expect(Set(intent.workspaceIDs ?? []) == [env.workspace.id, other.id])
+        let id = try #require(operationID)
+        let receipt = try #require(try PluginOperationCommit.read(id, container: env.container))
+        #expect(Set(receipt.workspaceIDs) == [env.workspace.id, other.id])
+        #expect(receipt.completedAt == nil)
+        #expect(try journal.intents().isEmpty)
+
     }
 
     /// An Update that releases a skill's secret namespace, on a store with a
