@@ -25,7 +25,7 @@ struct CapabilityLibrary {
     }
 
     let directory: URL
-    private let fileManager: FileManager
+    let fileManager: FileManager
 
     init(directory: URL = Self.capabilitiesDirectory(), fileManager: FileManager = .default) {
         self.directory = directory
