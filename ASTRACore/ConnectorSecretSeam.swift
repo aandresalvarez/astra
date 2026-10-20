@@ -16,6 +16,9 @@ import os
 // Keychain I/O primitives.
 public struct ConnectorSecretFacts: Sendable, Equatable {
     public let id: UUID
+    /// Nil retains the historical UUID/endpoint aliases. A generation is
+    /// exclusive: it never falls back into another account's legacy slots.
+    public let credentialNamespaceID: UUID?
     public let name: String
     public let serviceType: String
     public let baseURL: String
@@ -28,9 +31,11 @@ public struct ConnectorSecretFacts: Sendable, Equatable {
         serviceType: String,
         baseURL: String,
         originPackageID: String?,
-        originComponentID: String?
+        originComponentID: String?,
+        credentialNamespaceID: UUID? = nil
     ) {
         self.id = id
+        self.credentialNamespaceID = credentialNamespaceID
         self.name = name
         self.serviceType = serviceType
         self.baseURL = baseURL
@@ -67,6 +72,8 @@ public protocol ConnectorSecretPersisting: Sendable {
     /// Matches `ConnectorSecretPersistence.credentials(for:store:)`: tries
     /// every namespace `facts` resolves to, first match per key wins.
     static func loadAllCredentials(keys: [String], facts: ConnectorSecretFacts, store: SecretStore) -> [String: String]
+    /// A refused vault read must not be treated as an unconfigured key.
+    static func readCredential(key: String, facts: ConnectorSecretFacts, store: SecretStore) -> SecretReadOutcome
     @discardableResult
     static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, allowUserInteraction: Bool) -> Bool
     /// The same write, reporting why it failed rather than only that it did.
@@ -109,6 +116,10 @@ public protocol ConnectorSecretPersisting: Sendable {
 }
 
 public extension ConnectorSecretPersisting {
+    static func readCredential(key: String, facts: ConnectorSecretFacts, store: SecretStore) -> SecretReadOutcome {
+        loadAllCredentials(keys: [key], facts: facts, store: store)[key].map(SecretReadOutcome.value) ?? .missing
+    }
+
     /// `deleteAllCredentials` reporting whether every namespace was cleared.
     /// Defaulted to success so test fakes keep compiling; a fake can't
     /// delete selectively, so it deletes nothing while anything is spared.

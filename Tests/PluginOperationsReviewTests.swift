@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
-import ASTRAModels
+@testable import ASTRAModels
 @testable import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
@@ -121,7 +121,7 @@ struct PluginOperationsReviewTests {
         let account = try #require(env.workspace.connectors.first { $0.originPackageID == v1.id })
         let store = MockSecretStore()
         for key in ["TRACKER_TOKEN", "LEGACY_TOKEN"] {
-            store.save(key: key, value: "\(key)-value", entityID: KeychainSecretStore.connectorEntityID(for: account.id), label: nil)
+            #expect(account.saveCredential(key: key, value: "\(key)-value", store: store))
         }
         func projectedCredentials(_ package: PluginPackage) -> [String] {
             let projection = PluginRuntimeProjection.project(workspace: env.workspace, packages: [package], connectorMode: .runtimeCopies)

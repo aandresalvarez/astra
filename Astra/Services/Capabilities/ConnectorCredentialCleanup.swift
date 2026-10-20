@@ -18,6 +18,7 @@ enum ConnectorCredentialCleanup {
         let namespaces: Set<String>
         let outlookConnectorIDs: Set<UUID>
         let connectorIDs: Set<UUID>
+        let currentNamespaces: [UUID: Set<String>]
 
         /// `retained` are connectors a pending workspace deletion still
         /// holds: their mirror may yet be recovered, so what they use stays.
@@ -26,13 +27,26 @@ enum ConnectorCredentialCleanup {
                 .union(retained.flatMap {
                     KeychainSecretStore.connectorEntityIDs(
                         id: $0.connectorID, serviceType: $0.serviceType, baseURL: $0.baseURL,
-                        originPackageID: $0.originPackageID, originComponentID: $0.originComponentID
+                        originPackageID: $0.originPackageID, originComponentID: $0.originComponentID,
+                        credentialNamespaceID: $0.credentialNamespaceID
                     )
                 })
             outlookConnectorIDs = Set(connectors.filter(\.isStanfordOutlookMail).map(\.id))
                 .union(retained.filter(\.isStanfordOutlookMail).map(\.connectorID))
             connectorIDs = Set(connectors.map(\.id))
+            currentNamespaces = Dictionary(connectors.map { ($0.id, Set(KeychainSecretStore.connectorEntityIDs(for: $0))) },
+                uniquingKeysWith: { $0.union($1) })
         }
+    }
+
+    /// Plain references only; fresh saved rows own the current generation.
+    /// Retired generations remain held by every admitted recovery source.
+    static func capturedOwnership(modelContext: ModelContext, extraMirrors: [String]? = nil) -> Ownership? {
+        let saved = ModelContext(modelContext.container)
+        guard let stored = try? saved.fetch(FetchDescriptor<Connector>()),
+              let retained = retainedByPendingWorkspaceDeletions(modelContext: saved),
+              let mirrored = connectorsInStoredMirrors(modelContext: saved, extraMirrors: extraMirrors) else { return nil }
+        return Ownership(stored, retained: retained + mirrored.owners)
     }
 
     /// The namespaces `connector` resolves to that nothing in `ownership`
@@ -40,7 +54,8 @@ enum ConnectorCredentialCleanup {
     static func unownedNamespaces(of connector: ConnectorKeychainCleanup, ownership: Ownership) -> Set<String> {
         Set(KeychainSecretStore.connectorEntityIDs(
             id: connector.connectorID, serviceType: connector.serviceType, baseURL: connector.baseURL,
-            originPackageID: connector.originPackageID, originComponentID: connector.originComponentID
+            originPackageID: connector.originPackageID, originComponentID: connector.originComponentID,
+            credentialNamespaceID: connector.credentialNamespaceID
         )).subtracting(ownership.namespaces)
     }
 
@@ -384,6 +399,7 @@ enum ConnectorCredentialCleanup {
                 let baseURL: String?
                 let originPackageID: String?
                 let originComponentID: String?
+                let credentialNamespaceID: UUID?
             }
             let id: String?
             let connectors: [Entry]?
@@ -407,6 +423,7 @@ enum ConnectorCredentialCleanup {
                 )
                 connector.originPackageID = entry.originPackageID
                 connector.originComponentID = entry.originComponentID
+                connector.credentialNamespaceID = entry.credentialNamespaceID
                 if let id = entry.id.flatMap(UUID.init(uuidString:)) {
                     ids.insert(id)
                     connector.id = id

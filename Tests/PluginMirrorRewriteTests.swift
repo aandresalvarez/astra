@@ -249,6 +249,7 @@ struct PluginMirrorRewriteTests {
     /// change keeps the Keychain's, and leaves the row's visible.
     @Test("Add again keeps a newer Keychain value over a legacy row's plain setting")
     func addKeepsANewerKeychainValue() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
         let env = try Fixtures.Environment()
         let package = PluginConnectorFieldTrustTests.importedPackage()
         try env.install(package)
@@ -256,6 +257,7 @@ struct PluginMirrorRewriteTests {
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
         let account = try #require(activation.accounts(forComponent: componentID).first)
         // The legacy shape: the setting is plain on the row.
+        #expect(account.restorePreviouslyStoredCredential(key: "TRACKER_PROJECT", value: "ENG-2"))
         account.credentialKeys = ["TRACKER_TOKEN"]
         account.credentialValues = [""]
         account.configKeys = ["TRACKER_PROJECT"]
@@ -278,6 +280,8 @@ struct PluginMirrorRewriteTests {
         #expect(after.configValue("TRACKER_PROJECT") == "ENG-1")
         #expect(!after.credentialKeys.contains("TRACKER_PROJECT"))
         #expect(after.credentialKeys.count == after.credentialValues.count)
+        #expect(after.currentCredentialValue(forKey: "TRACKER_PROJECT") == "ENG-2")
+        }
     }
 
     /// R1's binding alias (`AccountBinding.alias`) is the name a workspace

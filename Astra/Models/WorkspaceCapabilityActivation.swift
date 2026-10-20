@@ -1087,6 +1087,7 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
 /// column, so it is never captured.)
 public struct PluginAccountRecord: Codable, Equatable, Sendable {
     public let id: UUID
+    public let credentialNamespaceID: UUID?
     public let name: String
     public let serviceType: String
     public let icon: String
@@ -1109,6 +1110,7 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
 
     public init(_ account: Connector) {
         id = account.id
+        credentialNamespaceID = account.credentialNamespaceID
         name = account.name
         serviceType = account.serviceType
         icon = account.icon
@@ -1145,6 +1147,7 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
     /// Writes these contents onto `account`, a launch copy (never a stored
     /// row): its credential values are left as they are.
     public func apply(to account: Connector) {
+        account.credentialNamespaceID = credentialNamespaceID
         account.name = name
         account.serviceType = serviceType
         account.icon = icon

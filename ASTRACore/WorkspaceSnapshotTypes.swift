@@ -2,6 +2,7 @@ import Foundation
 
 public struct ConnectorSnapshotConfig: Codable, Equatable, Sendable {
     public var id: String?
+    public var credentialNamespaceID: UUID?
     public var name: String
     public var serviceType: String
     public var icon: String
@@ -30,9 +31,11 @@ public struct ConnectorSnapshotConfig: Codable, Equatable, Sendable {
         isGlobal: Bool?,
         notes: String,
         createdAt: Date?,
-        updatedAt: Date?
+        updatedAt: Date?,
+        credentialNamespaceID: UUID? = nil
     ) {
         self.id = id
+        self.credentialNamespaceID = credentialNamespaceID
         self.name = name
         self.serviceType = serviceType
         self.icon = icon
