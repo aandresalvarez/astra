@@ -18,13 +18,17 @@ struct WorkspaceHoverReviewRegressionTests {
     }
 
     @Test("Switching to another window dismisses the passive card")
-    func parentLosesKey() async {
+    func parentLosesKey() async throws {
         let fixture = FocusFixture()
         defer { fixture.tearDown() }
         fixture.notifications.post(name: NSWindow.didResignKeyNotification, object: fixture.parent)
+        let check = try #require(fixture.lifetime.pendingFocusCheck)
+        #expect(fixture.focusReads == 0)
         fixture.keyWindow = fixture.other
-        await fixture.settle()
+        await check.value
         #expect(fixture.dismissals == 1)
+        #expect(fixture.focusReads == 1)
+        #expect(fixture.lifetime.pendingFocusCheck == nil)
     }
 
     @Test("Keyboard focus can enter the card, then leave it for another window")
@@ -66,19 +70,40 @@ struct WorkspaceHoverReviewRegressionTests {
     }
 
     @Test("Unrelated windows and invalidated notifications cannot dismiss a card")
-    func observerScope() async {
+    func observerScope() async throws {
         let fixture = FocusFixture()
         defer { fixture.tearDown() }
         fixture.keyWindow = fixture.other
         fixture.notifications.post(name: NSWindow.didResignKeyNotification, object: fixture.other)
-        await fixture.settle()
+        #expect(fixture.lifetime.pendingFocusCheck == nil)
         #expect(fixture.dismissals == 0)
         fixture.notifications.post(name: NSWindow.didResignKeyNotification, object: fixture.parent)
+        let cancelledCheck = try #require(fixture.lifetime.pendingFocusCheck)
         fixture.lifetime.invalidate()
-        await fixture.settle()
+        await cancelledCheck.value
         #expect(fixture.dismissals == 0)
+        #expect(fixture.focusReads == 0)
         fixture.notifications.post(name: NSWindow.didResizeNotification, object: fixture.parent)
         #expect(fixture.dismissals == 0)
+    }
+
+    @Test("A newer focus transition cancels the previous queued check")
+    func replacingPendingFocusCheck() async throws {
+        let fixture = FocusFixture()
+        defer { fixture.tearDown() }
+        fixture.notifications.post(name: NSWindow.didResignKeyNotification, object: fixture.parent)
+        let supersededCheck = try #require(fixture.lifetime.pendingFocusCheck)
+        fixture.keyWindow = fixture.panel
+        fixture.notifications.post(name: NSWindow.didResignKeyNotification, object: fixture.panel)
+        let latestCheck = try #require(fixture.lifetime.pendingFocusCheck)
+        fixture.keyWindow = fixture.other
+
+        #expect(supersededCheck.isCancelled)
+        await supersededCheck.value
+        await latestCheck.value
+        #expect(fixture.focusReads == 1)
+        #expect(fixture.dismissals == 1)
+        #expect(fixture.lifetime.pendingFocusCheck == nil)
     }
 
     @Test("Parent geometry, closing, and app deactivation still dismiss the card",
@@ -100,18 +125,23 @@ private final class FocusFixture {
     let other = NSWindow()
     var keyWindow: NSWindow?
     var dismissals = 0
+    var focusReads = 0
     var lifetime: WorkspaceHoverWindowLifetime!
 
     init() {
         for window in [parent, panel, other] { window.isReleasedWhenClosed = false }
         keyWindow = parent
-        lifetime = WorkspaceHoverWindowLifetime(parent: parent, panel: panel, notifications: notifications,
-                                                keyWindow: { [weak self] in self?.keyWindow }) { [weak self] in
-            self?.dismissals += 1
-        }
+        lifetime = WorkspaceHoverWindowLifetime(
+            parent: parent, panel: panel, notifications: notifications,
+            keyWindow: { [weak self] in
+                self?.focusReads += 1
+                return self?.keyWindow
+            },
+            dismiss: { [weak self] in self?.dismissals += 1 }
+        )
     }
 
-    func settle() async { try? await Task.sleep(for: .milliseconds(20)) }
+    func settle() async { await lifetime.pendingFocusCheck?.value }
 
     func tearDown() {
         lifetime.invalidate()
