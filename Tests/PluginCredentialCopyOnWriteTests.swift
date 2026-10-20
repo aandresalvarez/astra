@@ -166,6 +166,59 @@ struct PluginCredentialCopyOnWriteTests {
         #expect(try env.outbox.entries().isEmpty)
     }
 
+    @Test("Update cannot publish a rename when the source credential vault is unavailable", arguments: [false, true])
+    func updateRejectsUnreadableRename(automatic: Bool) throws {
+        let previous = SkillSecretSeam.required
+        SkillSecretSeam.register(GenerationSecrets.self)
+        defer { SkillSecretSeam.register(previous) }
+        let env = try PluginCredentialGenerationTests.Fixture()
+        defer { env.disk.disk.removeFiles() }
+        let old = try env.enable("accepted-rename-secret")
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: env.package.id, in: env.workspace))
+        let before = PluginActivationRecord(activation)
+        var update = env.package
+        update.version = "2.0.0"
+        update.skills[0].replaces = [env.component]
+        update.skills[0].id = "renamed-component"
+        #expect(throws: (any Error).self) {
+            try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [update],
+                mode: automatic ? .automatic : .release, secrets: UnreadableGenerationSecret.self)
+        }
+        let saved = try #require(try ModelContext(env.context.container).fetch(FetchDescriptor<PluginActivation>()).first)
+        #expect(PluginActivationRecord(saved) == before)
+        #expect(GenerationSecrets.value(in: old.secretNamespaceID) == "accepted-rename-secret")
+        #expect(try env.outbox.entries().isEmpty)
+    }
+
+    @Test("A failed Update retains cleanup for a renamed credential when compensation is refused")
+    func failedUpdateRetainsRefusedCopyCleanup() throws {
+        let previous = SkillSecretSeam.required
+        SkillSecretSeam.register(GenerationSecrets.self)
+        defer { SkillSecretSeam.register(previous) }
+        let env = try PluginCredentialGenerationTests.Fixture()
+        defer { env.disk.disk.removeFiles() }
+        let old = try env.enable("saved-update-value")
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: env.package.id, in: env.workspace))
+        var update = env.package
+        update.version = "2.0.0"
+        update.skills[0].replaces = [env.component]
+        update.skills[0].id = "renamed-update-component"
+        let component = CapabilityResourceOrigin.componentID(for: update.skills[0])
+        let orphan = PluginRuntimeProjection.credentialID(of: activation, componentID: component)
+        #expect(throws: (any Error).self) {
+            try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [update], mode: .release,
+                secrets: RefusingGenerationCleanup.self, persist: { _ in throw CocoaError(.fileWriteUnknown) })
+        }
+        #expect(GenerationSecrets.value(in: orphan) == "saved-update-value")
+        #expect(try env.outbox.pendingKeys().contains(.init(key: "API_TOKEN", skillID: orphan)))
+        #expect(GenerationSecrets.value(in: old.secretNamespaceID) == "saved-update-value")
+        PluginSecretCleanupOutbox.resumePending(modelContext: ModelContext(env.context.container),
+            outbox: env.outbox, secrets: GenerationSecrets.self)
+        #expect(GenerationSecrets.value(in: orphan) == nil)
+        #expect(GenerationSecrets.value(in: old.secretNamespaceID) == "saved-update-value")
+        #expect(try env.outbox.entries().isEmpty)
+    }
+
     @Test("Before a clear commits, the saved activation still resolves its old secret without compensation")
     func failedClearNeverRemovesTheSavedValue() throws {
         let previous = SkillSecretSeam.required
