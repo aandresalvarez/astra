@@ -1,13 +1,19 @@
 import SwiftData
 import ASTRAModels
 
-/// Faults the plugin/account relationships touched by a reversible deletion.
-/// SwiftData must snapshot real arrays, including empty ones, before cascade
-/// deletion changes an inverse. This reads the affected relationship closure;
-/// it never edits domain state or scans task histories.
+/// Resolves relationship arrays before a reversible plugin graph mutation.
+/// SwiftData snapshots the owning workspace's arrays together, including ones
+/// the operation does not edit. An unresolved empty array can otherwise return
+/// as a snapshot future after rollback. This reads IDs, never task histories.
 @MainActor
 public enum SwiftDataPluginRelationshipPreparation {
     public static func prepare(_ workspace: Workspace, additionalAccounts: [Connector] = []) {
+        for task in workspace.tasks { _ = task.id }
+        for skill in workspace.skills { _ = skill.id }
+        for connector in workspace.connectors { _ = connector.id }
+        for tool in workspace.localTools { _ = tool.id }
+        for template in workspace.templates { _ = template.id }
+        for schedule in workspace.schedules { _ = schedule.id }
         prepare(activations: workspace.pluginActivations, accounts: workspace.connectors + additionalAccounts)
     }
 

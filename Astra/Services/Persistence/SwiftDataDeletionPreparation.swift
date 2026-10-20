@@ -31,6 +31,23 @@ public enum SwiftDataDeletionPreparation {
         }
     }
 
+    /// Skill migration is a reversible deletion too. Resolve empty inverse
+    /// arrays before SwiftData snapshots them, then the surviving task owners.
+    public static func prepare(_ skill: Skill) {
+        if let workspace = skill.workspace { for related in workspace.skills { _ = related.id } }
+        for task in skill.tasks {
+            _ = task.id
+            for related in task.skills { _ = related.id }
+        }
+        for connector in skill.connectors { _ = (connector.id, connector.skill?.id) }
+        for tool in skill.localTools { _ = (tool.id, tool.skill?.id) }
+    }
+
+    public static func prepare(_ tool: LocalTool) {
+        if let workspace = tool.workspace { for related in workspace.localTools { _ = related.id } }
+        if let skill = tool.skill { for related in skill.localTools { _ = related.id } }
+    }
+
     public static func prepare(_ task: AgentTask) {
         // A task-only deletion also mutates its surviving owner's inverse.
         // Resolve the array and its models before SwiftData snapshots it.

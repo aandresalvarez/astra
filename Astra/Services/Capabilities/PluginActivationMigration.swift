@@ -140,6 +140,11 @@ enum PluginActivationMigration {
         let connectors = try modelContext.fetch(FetchDescriptor<Connector>())
         let skills = try modelContext.fetch(FetchDescriptor<Skill>())
         let tools = try modelContext.fetch(FetchDescriptor<LocalTool>())
+        // These rows may be removed, then restored by rollback. Even an
+        // empty inverse must be materialized before any graph mutation.
+        for workspace in workspaces { SwiftDataPluginRelationshipPreparation.prepare(workspace) }
+        for skill in skills { SwiftDataDeletionPreparation.prepare(skill) }
+        for tool in tools { SwiftDataDeletionPreparation.prepare(tool) }
         var report = Report()
         var releasedSkillIDs: [UUID] = []
         var copiedSecrets: [CopiedSecret] = []
