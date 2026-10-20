@@ -761,12 +761,13 @@ final class AgentRuntimeWorker {
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
             return
         }
-        // Resolved once, from the render this run launches with, so a shell the
-        // policy denies or a sandbox without network is never promised. The
-        // prompt's run line, the broker refusal, and the resource manifest read it.
+        // Resolved once, from the manifest this run launches with: the guard's
+        // answer for the `ssh` command and the sandbox the process gets. The run
+        // line, the broker refusal, the resource manifest and the signature read it.
         executionPolicy = executionPolicy.withRemoteSSHRoute(RemoteWorkspaceSSHRoute.resolve(
-            task: executionTask, render: manifest.providerRender, requirements: appliedRuntime.requirements,
-            environment: runEnvironment.runSnapshot, runtimeCapabilityProfile: runtimeCapabilityProfile))
+            task: executionTask, manifest: manifest, requirements: appliedRuntime.requirements,
+            environment: runEnvironment.runSnapshot, runtimeCapabilityProfile: runtimeCapabilityProfile,
+            hostControlHelperAvailable: processRunner.isHostControlBrokerAvailable()))
         if let sshRoute = executionPolicy.remoteSSHRoute {
             launchResourcePlan.remoteSSHRoute = sshRoute
             TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)

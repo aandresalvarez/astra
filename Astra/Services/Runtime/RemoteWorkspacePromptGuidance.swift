@@ -18,7 +18,7 @@ enum RemoteWorkspacePromptGuidance {
         guard !connections.isEmpty else { return nil }
         var block: String
         if connections.count == 1, let conn = connections.first {
-            let alias = RemoteWorkspaceSSHRoute.connectAlias(for: conn)
+            let alias = RemoteWorkspaceSSHRoute.connectTarget(for: conn)
             block = "Remote Server: This workspace is connected to a remote server via SSH."
             block += "\n- Name: \(conn.displayLabel)"
             block += "\n- Connect with: ssh \(alias)"
@@ -29,7 +29,7 @@ enum RemoteWorkspacePromptGuidance {
         } else {
             block = "Available SSH Connections:"
             for conn in connections {
-                block += "\n- \(conn.displayLabel): ssh \(RemoteWorkspaceSSHRoute.connectAlias(for: conn)) (remote path: \(conn.remotePath))"
+                block += "\n- \(conn.displayLabel): ssh \(RemoteWorkspaceSSHRoute.connectTarget(for: conn)) (remote path: \(conn.remotePath))"
                 if !conn.configAlias.isEmpty { block += " [uses ~/.ssh/config alias; may include ProxyCommand/IAP]" }
                 if !conn.keyPath.isEmpty { block += " [identity: \(conn.keyPath)]" }
             }

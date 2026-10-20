@@ -85,7 +85,7 @@ struct RemoteWorkspacePromptGuidanceTests {
     func brokerReachabilityRoutePrompt() throws {
         let prompt = try launchPrompt(suffix: "broker", route: .brokerReachabilityOnly)
 
-        #expect(prompt.contains("ASTRA host control can check SSH reachability for this alias"))
+        #expect(prompt.contains("ASTRA host control can check SSH reachability for this connection"))
         #expect(prompt.contains("Remote command execution requires a reviewed workspace capability"))
         #expect(!prompt.contains("ssh deid-jsn-workbench '<command>'"))
     }
@@ -102,7 +102,7 @@ struct RemoteWorkspacePromptGuidanceTests {
 
     @Test("The run line is authoritative over earlier task notes")
     func runGuidanceOverridesStaleNotes() {
-        let route = RemoteWorkspaceSSHRoute(aliases: ["deid-jsn-workbench"], route: .nativeShell)
+        let route = RemoteWorkspaceSSHRoute(targets: ["deid-jsn-workbench"], route: .nativeShell)
         let stale = "Current state: SSH is disabled for this task; do not retry."
         let prompt = RemoteWorkspaceSSHRoute.appendingRunGuidance(to: stale, route: route)
 
@@ -122,7 +122,7 @@ struct RemoteWorkspacePromptGuidanceTests {
         assertNoRouteClaim(in: base)
         return RemoteWorkspaceSSHRoute.appendingRunGuidance(
             to: base,
-            route: RemoteWorkspaceSSHRoute(aliases: ["deid-jsn-workbench"], route: route)
+            route: RemoteWorkspaceSSHRoute(targets: ["deid-jsn-workbench"], route: route)
         )
     }
 

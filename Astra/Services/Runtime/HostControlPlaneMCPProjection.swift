@@ -480,7 +480,7 @@ enum HostControlPlaneMCPProjection {
         "ASTRA_HOST_CONTROL_SSH_EXECUTABLE",
         "ASTRA_HOST_CONTROL_ALLOWED_SSH_ALIASES",
         HostControlSSHRoute.environmentKey,
-        HostControlSSHRoute.aliasesEnvironmentKey,
+        HostControlSSHRoute.targetsEnvironmentKey,
         "ASTRA_HOST_CONTROL_ALLOWED_TOOLS",
         "ASTRA_HOST_CONTROL_CURRENT_DIRECTORY",
         "ASTRA_HOST_CONTROL_TASK_FOLDER",

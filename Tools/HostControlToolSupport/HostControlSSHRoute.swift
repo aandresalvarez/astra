@@ -50,7 +50,8 @@ public enum HostControlSSHRoute: Equatable, Sendable {
     }
 
     public static let environmentKey = "ASTRA_HOST_CONTROL_SSH_ROUTE"
-    public static let aliasesEnvironmentKey = "ASTRA_HOST_CONTROL_SSH_ROUTE_ALIASES"
+    /// Newline-separated: a target can hold spaces (`-p 2222 user@host`).
+    public static let targetsEnvironmentKey = "ASTRA_HOST_CONTROL_SSH_ROUTE_TARGETS"
 
     public var wireValue: String {
         switch self {
@@ -92,17 +93,19 @@ public enum HostControlSSHRoute: Equatable, Sendable {
     }
 
     /// What the agent should do, said the same way in the prompt and in the
-    /// broker's refusal.
-    public func instruction(aliases: [String]) -> String {
-        let named = aliases.map { "`\($0)`" }.joined(separator: ", ")
+    /// broker's refusal. `targets` is what follows `ssh` for each connection:
+    /// its config alias, or the port, identity, and `user@host` it needs.
+    public func instruction(targets: [String]) -> String {
         switch self {
         case .nativeShell:
-            let example = aliases.first ?? "<alias>"
+            let example = targets.first ?? "<alias>"
+            let others = targets.dropFirst().map { "`ssh \($0)`" }.joined(separator: ", ")
             return "Run remote commands with `ssh \(example) '<command>'` in your shell"
-                + (aliases.count > 1 ? " (aliases: \(named))." : ".")
+                + (others.isEmpty ? "." : " (other connections: \(others)).")
                 + " The `ssh` on your PATH is ASTRA's task wrapper; `astra-host-control ssh` is not this run's route."
+                + " If a command is refused or cannot connect, report that error as it is; do not record SSH as disabled for later turns."
         case .brokerReachabilityOnly:
-            let subject = aliases.count == 1 ? "this alias" : "these aliases"
+            let subject = targets.count == 1 ? "this connection" : "these connections"
             return "ASTRA host control can check SSH reachability for \(subject), but it does not accept provider-supplied remote commands."
                 + " Remote command execution requires a reviewed workspace capability that explicitly supports it."
         case .unavailable(let reason):
@@ -118,10 +121,10 @@ public enum HostControlSSHRoute: Equatable, Sendable {
     public static func toolNotEnabledMessage(
         tool: String,
         route: HostControlSSHRoute?,
-        aliases: [String]
+        targets: [String]
     ) -> String {
         let base = "\(tool) is not enabled for this task"
         guard tool == "ssh", let route else { return base }
-        return "\(base). ASTRA resolved this run's SSH route as \(route.summary). \(route.instruction(aliases: aliases))"
+        return "\(base). ASTRA resolved this run's SSH route as \(route.summary). \(route.instruction(targets: targets))"
     }
 }

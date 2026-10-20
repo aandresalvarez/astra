@@ -11,7 +11,7 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
     public var sshExecutable: String
     public var allowedSSHAliases: [String]
     public var sshRoute: HostControlSSHRoute?
-    public var sshRouteAliases: [String]
+    public var sshRouteTargets: [String]
     public var allowedTools: Set<String>
     public var currentDirectory: String
     /// Where a brokered tool writes output it must not return inline.
@@ -35,7 +35,7 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
         sshExecutable: String = "ssh",
         allowedSSHAliases: [String] = [],
         sshRoute: HostControlSSHRoute? = nil,
-        sshRouteAliases: [String] = [],
+        sshRouteTargets: [String] = [],
         allowedTools: Set<String> = knownToolNames,
         currentDirectory: String = "",
         taskFolder: String = "",
@@ -51,7 +51,7 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
         self.sshExecutable = Self.clean(sshExecutable) ?? "ssh"
         self.allowedSSHAliases = Self.deduplicated(allowedSSHAliases.compactMap(Self.clean))
         self.sshRoute = sshRoute
-        self.sshRouteAliases = Self.deduplicated(sshRouteAliases.compactMap(Self.clean))
+        self.sshRouteTargets = Self.deduplicated(sshRouteTargets.compactMap(Self.clean))
         let normalizedTools = Set(allowedTools.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
             .intersection(Self.knownToolNames)
         self.allowedTools = normalizedTools
@@ -72,7 +72,7 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
             sshExecutable: clean(env["ASTRA_HOST_CONTROL_SSH_EXECUTABLE"]) ?? "ssh",
             allowedSSHAliases: splitList(env["ASTRA_HOST_CONTROL_ALLOWED_SSH_ALIASES"]),
             sshRoute: HostControlSSHRoute(wireValue: env[HostControlSSHRoute.environmentKey]),
-            sshRouteAliases: splitList(env[HostControlSSHRoute.aliasesEnvironmentKey]),
+            sshRouteTargets: (env[HostControlSSHRoute.targetsEnvironmentKey] ?? "").split(separator: "\n").map(String.init),
             allowedTools: allowedToolSet(env["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"]),
             currentDirectory: clean(env["ASTRA_HOST_CONTROL_CURRENT_DIRECTORY"]) ?? "",
             taskFolder: clean(env["ASTRA_HOST_CONTROL_TASK_FOLDER"]) ?? "",
@@ -899,7 +899,7 @@ public final class HostControlMCPServer {
         let normalizedToolName = normalizedToolName(call.name)
         guard toolIsAllowed(normalizedToolName) else {
             return .error(code: -32602, message: HostControlSSHRoute.toolNotEnabledMessage(
-                tool: normalizedToolName, route: configuration.sshRoute, aliases: configuration.sshRouteAliases))
+                tool: normalizedToolName, route: configuration.sshRoute, targets: configuration.sshRouteTargets))
         }
         let arguments = call.arguments
         switch normalizedToolName {

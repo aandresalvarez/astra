@@ -1317,7 +1317,8 @@ enum AgentPolicyManifestService {
                 storedEnforcement: sandboxResolution.storedEnforcement.rawValue,
                 effectiveEnforcement: sandboxSettings.enforcement.rawValue,
                 effectiveReadScope: sandboxSettings.readScope.rawValue,
-                resolutionReason: sandboxResolution.reason?.rawValue
+                resolutionReason: sandboxResolution.reason?.rawValue,
+                shellNetworkAllowed: !(sandboxSettings.shouldWrap(runtime: runtime) && !sandboxSettings.allowNetwork)
             )
         )
         return manifest
