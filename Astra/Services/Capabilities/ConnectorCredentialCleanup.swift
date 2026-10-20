@@ -83,7 +83,8 @@ enum ConnectorCredentialCleanup {
     /// is not.
     @discardableResult
     static func run(
-        _ cleanups: [ConnectorKeychainCleanup], modelContext: ModelContext, retained: [ConnectorKeychainCleanup]? = nil
+        _ cleanups: [ConnectorKeychainCleanup], modelContext: ModelContext, retained: [ConnectorKeychainCleanup]? = nil,
+        perform: (([ConnectorKeychainCleanup], Ownership) -> Bool)? = nil
     ) -> Bool {
         guard !cleanups.isEmpty else { return true }
         guard let retained = retained ?? retainedByPendingWorkspaceDeletions(modelContext: modelContext) else {
@@ -100,7 +101,11 @@ enum ConnectorCredentialCleanup {
             ], level: .error)
             return false
         }
-        return run(cleanups, ownership: Ownership(stored, retained: retained))
+        guard let references = PendingTaskCredentialReferences.capture(modelContext: modelContext) else { return false }
+        let ready = cleanups.filter { !references.holdsAccount($0) }
+        let ownership = Ownership(stored, retained: retained)
+        let cleared = perform.map { $0(ready, ownership) } ?? run(ready, ownership: ownership)
+        return ready.count == cleanups.count && cleared
     }
 
     /// The connectors pending workspace deletions hold, whose mirrors startup

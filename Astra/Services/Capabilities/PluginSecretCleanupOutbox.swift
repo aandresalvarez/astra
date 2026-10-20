@@ -45,6 +45,7 @@ struct PluginSecretCleanupOutbox {
         _ skillIDs: [UUID],
         modelContext: ModelContext,
         outbox: PluginSecretCleanupOutbox? = nil,
+        secrets: (any SkillSecretPersisting.Type)? = nil,
         save: () -> Bool,
         beforeSettling: () -> Bool = { true }
     ) -> Bool {
@@ -71,7 +72,7 @@ struct PluginSecretCleanupOutbox {
             ], level: .warning)
             return true
         }
-        settle(unique, modelContext: modelContext, outbox: outbox)
+        settle(unique, modelContext: modelContext, outbox: outbox, clean: cleaner(secrets))
         return true
     }
 
@@ -83,7 +84,8 @@ struct PluginSecretCleanupOutbox {
     /// from it without its secrets, so the stored workspaces whose mirror
     /// names one are exported first, and one any mirror still names waits,
     /// as does everything while a mirror can't be read.
-    static func resumePending(modelContext: ModelContext, outbox: PluginSecretCleanupOutbox? = nil) {
+    static func resumePending(modelContext: ModelContext, outbox: PluginSecretCleanupOutbox? = nil,
+                              secrets: (any SkillSecretPersisting.Type)? = nil) {
         let outbox = outbox ?? PluginSecretCleanupOutbox(for: modelContext)
         guard let pending = try? outbox?.pending(), !pending.isEmpty else { return }
         guard let held = namedByMirrors(pending, modelContext: modelContext) else {
@@ -92,7 +94,7 @@ struct PluginSecretCleanupOutbox {
             ], level: .error)
             return
         }
-        settle(pending.filter { !held.contains($0) }, modelContext: modelContext, outbox: outbox)
+        settle(pending.filter { !held.contains($0) }, modelContext: modelContext, outbox: outbox, clean: cleaner(secrets))
     }
 
     /// The recorded rows a workspace mirror still lists once the stored
@@ -192,6 +194,11 @@ struct PluginSecretCleanupOutbox {
         return after.allSatisfy { !derived.contains($0) }
     }
 
+    private static func cleaner(_ secrets: (any SkillSecretPersisting.Type)?) -> (UUID) -> Bool {
+        guard let secrets else { return { SkillKeychainCleanup(skillID: $0).run() } }
+        return { secrets.deleteAllSecretsReportingResult(skillID: $0) }
+    }
+
     /// Cleans every recorded namespace nothing live names and drops it from
     /// the record; one still in use (re-added, restored) is dropped uncleaned.
     private static func settle(
@@ -201,14 +208,15 @@ struct PluginSecretCleanupOutbox {
         clean: (UUID) -> Bool = { SkillKeychainCleanup(skillID: $0).run() }
     ) {
         // What is live can't be told without the store: every record stays.
-        guard let live = liveSkillIDs(modelContext: modelContext) else {
+        guard let pendingTasks = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+              let live = liveSkillIDs(modelContext: modelContext) else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "plugin_secret_cleanup", "reason": "store_unreadable_kept"
             ], level: .error)
             return
         }
         var settled = Set<UUID>()
-        for id in skillIDs {
+        for id in skillIDs where !pendingTasks.holdsSkill(id) {
             if live.contains(id) || clean(id) {
                 settled.insert(id)
             }

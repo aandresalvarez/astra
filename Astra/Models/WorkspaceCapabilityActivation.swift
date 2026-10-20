@@ -483,6 +483,7 @@ public enum WorkspaceCapabilityActivation {
                 recordedDigest: record.recordedDigest,
                 createdAt: record.createdAt
             )
+            activation.launchWorkspaceID = record.workspaceID ?? source.id
             activation.configKeys = record.configKeys
             activation.configValues = record.configValues
             // A launch copy can't tell a deleted override row from a shared
@@ -749,6 +750,8 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
     }
 
     public let id: UUID
+    /// Namespace identity at submission, even if the task later moves workspaces.
+    public let workspaceID: UUID?
     public let pluginID: String
     public let isEnabled: Bool
     public let recordedVersion: String
@@ -767,6 +770,7 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
 
     public init(_ activation: PluginActivation) {
         id = activation.id
+        workspaceID = activation.launchWorkspaceID ?? activation.workspace?.id
         pluginID = activation.pluginID
         isEnabled = activation.isEnabled
         recordedVersion = activation.recordedVersion

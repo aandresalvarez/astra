@@ -22,8 +22,22 @@ import ASTRACore
 enum PluginDefinitionDigest {
     static let prefix = "content-v1:"
 
-    /// What a run gets from a definition. Presentation (name, icon, text,
-    /// prerequisites' badges), source and governance are left out.
+    /// Executable checks and remediation, excluding badge labels.
+    private struct PrerequisiteContract: Encodable, Equatable, Sendable {
+        let probeID: String
+        let installURL: URL?
+        let installHint: String
+        let authHint: String?
+
+        init(_ prerequisite: CLIPrerequisite) {
+            probeID = prerequisite.id
+            installURL = prerequisite.installURL
+            installHint = prerequisite.installHint
+            authHint = prerequisite.authHint
+        }
+    }
+
+    /// What a run gets from a definition, excluding presentation, source and governance.
     private struct Content: Encodable, Equatable, Sendable {
         let id: String
         let version: String
@@ -36,6 +50,8 @@ enum PluginDefinitionDigest {
         let browserAdapters: [String]
         let requires: [String]?
         let conflicts: [String]?
+        // Omitted when empty, preserving existing digests without probes.
+        let prerequisites: [PrerequisiteContract]?
 
         init(_ package: PluginPackage) {
             id = package.id
@@ -49,6 +65,7 @@ enum PluginDefinitionDigest {
             browserAdapters = package.browserAdapters
             requires = package.requires
             conflicts = package.conflicts
+            prerequisites = package.prerequisites.isEmpty ? nil : package.prerequisites.map(PrerequisiteContract.init)
         }
     }
 
