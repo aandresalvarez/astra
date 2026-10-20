@@ -1421,11 +1421,16 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(ConnectorCredentialCleanup.unownedNamespaces(of: deleted.keychainCleanup, ownership: .init([deleted])).isEmpty)
     }
 
-    @Test("A deletion retry that isn't saved puts back the cleanup an earlier saved deletion still owes")
-    func unsavedRetryRestoresEarlierRecord() throws {
+    @Test("A deletion retry that isn't saved puts back the cleanup an earlier saved deletion still owes", arguments: [false, true])
+    func unsavedRetryRestoresEarlierRecord(onDisk: Bool) throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
-        let container = try Fixture.container()
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            configurations: onDisk
+                ? ModelConfiguration(url: fixture.root.appendingPathComponent("retry.store"))
+                : ModelConfiguration(isStoredInMemoryOnly: true)
+        )
         let context = container.mainContext
         let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
         let folder = fixture.root.appendingPathComponent("Retried", isDirectory: true)

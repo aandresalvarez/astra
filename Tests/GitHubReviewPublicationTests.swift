@@ -155,40 +155,56 @@ struct GitHubReviewPublicationTests {
         #expect(await cli.postedPayload() == fixture.data)
     }
 
-    @Test("a confirmed post recovers its receipt after the first save fails")
-    func confirmedPostWithReceiptSaveFailure() async throws {
-        let fixture = try makeFixture()
+    @Test("a confirmed post recovers its receipt with faulted relationships after the first save fails",
+          arguments: [false, true], [false, true])
+    func confirmedPostWithReceiptSaveFailure(onDisk: Bool, populated: Bool) async throws {
+        let fixture = try makeFixture(onDisk: onDisk)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
-        let run = TaskRun(task: fixture.task)
-        run.recordExternalOutcomePending()
+        let originalRun = TaskRun(task: fixture.task)
+        originalRun.recordExternalOutcomePending()
         fixture.task.status = .pendingUser
-        fixture.context.insert(run)
+        fixture.context.insert(originalRun)
         fixture.context.insert(TaskEvent(
             task: fixture.task,
             eventType: TaskEventTypes.Conversation.userMessage,
             payload: "Post the PR review comments",
-            run: run
+            run: originalRun
         ))
+        if populated {
+            fixture.context.insert(Artifact(task: fixture.task, type: "json", path: fixture.file.path))
+            fixture.task.skills = [Skill(name: "Keep this skill")]
+        }
         try fixture.context.save()
+
+        // A reopened task must not depend on an earlier synchronous workspace
+        // export having materialized every relationship before receipt edits.
+        let context = ModelContext(fixture.container)
+        let task = try #require(context.fetch(FetchDescriptor<AgentTask>()).first)
+        let run = try #require(context.fetch(FetchDescriptor<TaskRun>()).first)
         let cli = FakeCLI()
         let service = GitHubReviewPublicationService(
-            modelContext: fixture.context,
+            modelContext: context,
             cli: cli,
             saveReceipt: { _, _ in throw NSError(domain: "SaveFailure", code: 1) }
         )
-        let proposal = try await service.prepare(task: fixture.task, filePath: fixture.file.path)
-        let receipt = try await service.publish(task: fixture.task, proposal: proposal)
+        let proposal = try await service.prepare(task: task, filePath: fixture.file.path)
+        let receipt = try await service.publish(task: task, proposal: proposal)
         #expect(await cli.postCount() == 1)
         #expect(receipt.reviewID == 42)
-        #expect(GitHubReviewPublicationService.hasDispatched(task: fixture.task, filePath: fixture.file.path))
-        #expect(fixture.task.events.contains { $0.type == GitHubReviewPublicationEventTypes.receiptRecovery })
-        #expect(!fixture.task.events.contains { $0.type == GitHubReviewPublicationEventTypes.indeterminate })
-        #expect(fixture.task.status == .completed)
+        #expect(GitHubReviewPublicationService.hasDispatched(task: task, filePath: fixture.file.path))
+        #expect(task.events.contains { $0.type == GitHubReviewPublicationEventTypes.receiptRecovery })
+        #expect(!task.events.contains { $0.type == GitHubReviewPublicationEventTypes.indeterminate })
+        #expect(task.status == .completed)
         #expect(run.typedStopReason == .completed)
-        try fixture.context.save()
+        #expect(task.runs.count == 1)
+        #expect(task.artifacts.count == (populated ? 1 : 0))
+        #expect(task.skills.count == (populated ? 1 : 0))
+        try context.save()
         let persistedTask = try #require(ModelContext(fixture.container).fetch(FetchDescriptor<AgentTask>()).first)
         #expect(persistedTask.status == .completed)
         #expect(persistedTask.events.contains { $0.type == GitHubReviewPublicationEventTypes.receiptRecovery })
+        #expect(persistedTask.artifacts.count == (populated ? 1 : 0))
+        #expect(persistedTask.skills.count == (populated ? 1 : 0))
     }
 
     @Test("canonical GitHub repository casing still yields a confirmed receipt")
@@ -788,7 +804,7 @@ struct GitHubReviewPublicationTests {
         #expect(task.status != .completed)
     }
 
-    private func makeFixture(goal: String = "review this pr in detail https://github.com/example/repo/pull/12") throws -> (
+    private func makeFixture(goal: String = "review this pr in detail https://github.com/example/repo/pull/12", onDisk: Bool = false) throws -> (
         root: URL, container: ModelContainer, context: ModelContext, task: AgentTask, file: URL, data: Data
     ) {
         let root = FileManager.default.temporaryDirectory
@@ -797,7 +813,8 @@ struct GitHubReviewPublicationTests {
         let container = try ModelContainer(
             for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,
-            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            configurations: [onDisk ? ModelConfiguration(url: root.appendingPathComponent("review.store"))
+                : ModelConfiguration(isStoredInMemoryOnly: true)]
         )
         let context = container.mainContext
         let workspace = Workspace(name: "Review", primaryPath: root.path)

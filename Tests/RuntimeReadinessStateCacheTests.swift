@@ -5,6 +5,98 @@ import ASTRACore
 
 @Suite("Runtime readiness state cache")
 struct RuntimeReadinessStateCacheTests {
+    @Test("Cancellation during uncached home checks cannot publish a stale availability map", arguments: [false, true])
+    func cancelledHomeRefreshIsDiscarded(cacheHit: Bool) async {
+        let cache = RuntimeReadinessStateCache()
+        let configuration = configuration()
+        if cacheHit {
+            await cache.store(Dictionary(uniqueKeysWithValues: AgentRuntimeAdapterRegistry.runtimeIDs.map { ($0, RuntimeReadinessState.ready) }),
+                              for: configuration)
+        }
+        let inspection = SuspendedHomeInspection()
+        let service = RuntimeProviderAvailabilityService(readinessService: RuntimeReadinessService(
+            runner: StubBinaryRunner(), detectExecutable: { _ in "" }, isExecutable: { _ in false },
+            homeAccessCheck: { await inspection.check($0) }
+        ))
+        let refresh = Task { await service.states(configuration: configuration, cache: cache) }
+        await inspection.waitUntilStarted()
+        refresh.cancel()
+        // Filesystem work can finish after cancellation. Its late answer must
+        // not overwrite a replacement SwiftUI task's current configuration.
+        await inspection.release()
+        #expect(await refresh.value.isEmpty)
+        #expect(await cache.states(for: configuration, maxAge: 300)?[.codexCLI] == (cacheHit ? .ready : .blocked))
+    }
+
+    @Test("Independent home inspections overlap on availability misses and cache hits", arguments: [false, true])
+    func homeChecksOverlap(cacheHit: Bool) async {
+        let cache = RuntimeReadinessStateCache()
+        let configuration = configuration()
+        if cacheHit {
+            var states = Dictionary(uniqueKeysWithValues: AgentRuntimeAdapterRegistry.runtimeIDs.map { ($0, RuntimeReadinessState.ready) })
+            states[.claudeCode] = .blocked
+            states[.copilotCLI] = .warning
+            await cache.store(states, for: configuration)
+        }
+        let inspections = OverlappingHomeInspections()
+        // Only a deadlock escape for the old serial implementation. Success
+        // depends on all inspections entering the barrier, never elapsed time.
+        let escape = Task {
+            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            await inspections.release()
+        }
+        defer { escape.cancel() }
+        let service = RuntimeProviderAvailabilityService(readinessService: RuntimeReadinessService(
+            runner: StubBinaryRunner(), detectExecutable: { _ in "" }, isExecutable: { _ in false },
+            homeAccessCheck: { await inspections.check($0) }
+        ))
+        let states = await service.states(configuration: configuration, cache: cache)
+        #expect(await inspections.allEnteredBeforeRelease)
+        let cached = await cache.states(for: configuration, maxAge: 300)
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
+            #expect(await inspections.count(runtime) == 1)
+            let base = cached?[runtime]
+            #expect(base != nil)
+            let expected: RuntimeReadinessState? = base == .blocked ? .blocked
+                : ([.codexCLI, .antigravityCLI].contains(runtime) ? .warning : base)
+            #expect(states[runtime] == expected)
+        }
+        #expect(cached?[.codexCLI] == (cacheHit ? .ready : .blocked))
+        #expect(states[.codexCLI] == (cacheHit ? .warning : .blocked))
+    }
+
+    @Test("An availability miss and a cache hit each inspect provider homes exactly once")
+    func homeChecksRunOncePerAnswer() async {
+        let cache = RuntimeReadinessStateCache()
+        let runner = StubBinaryRunner()
+        await runner.setResponse(forKey: "/opt/codex --version", result: .exited(code: 0, stdout: "codex-cli 0.130.0", stderr: ""))
+        let probe = HomeInspectionCounter()
+        let service = RuntimeProviderAvailabilityService(readinessService: RuntimeReadinessService(
+            runner: runner, detectExecutable: { "/opt/" + $0 }, isExecutable: { $0 == "/opt/codex" },
+            homeAccessCheck: { await probe.check($0) }
+        ))
+        let first = await service.states(configuration: configuration(), cache: cache)
+        #expect(first[.codexCLI] == .warning)
+        #expect(await cache.states(for: configuration(), maxAge: 300)?[.codexCLI] == .ready)
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs { #expect(await probe.count(runtime) == 1) }
+        await probe.repair()
+        let second = await service.states(configuration: configuration(), cache: cache)
+        #expect(second[.codexCLI] == .ready)
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs { #expect(await probe.count(runtime) == 2) }
+    }
+
+    actor HomeInspectionCounter {
+        private var counts: [AgentRuntimeID: Int] = [:]
+        private var blocked = true
+        func count(_ runtime: AgentRuntimeID) -> Int { counts[runtime, default: 0] }
+        func repair() { blocked = false }
+        func check(_ request: RuntimeHomeAccessRequest) -> RuntimeReadinessCheck? {
+            counts[request.runtime, default: 0] += 1
+            guard request.runtime == .codexCLI, blocked else { return nil }
+            return .init(id: RuntimeHomeAccessService.checkID(for: request.runtime), title: "QA", detail: "QA", state: .blocked, remediation: nil)
+        }
+    }
+
     private func configuration(claudePath: String = "/opt/claude") -> RuntimeProviderAvailabilityConfiguration {
         RuntimeProviderAvailabilityConfiguration(
             claudePath: claudePath,
@@ -111,6 +203,52 @@ struct RuntimeReadinessStateCacheTests {
 
         #expect(states.isEmpty)
         #expect(await cache.states(for: configuration(), maxAge: 300) == nil)
+    }
+}
+
+private actor OverlappingHomeInspections {
+    private var counts: [AgentRuntimeID: Int] = [:]
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+    private(set) var allEnteredBeforeRelease = false
+
+    func count(_ runtime: AgentRuntimeID) -> Int { counts[runtime, default: 0] }
+
+    func release() {
+        guard !released else { return }
+        allEnteredBeforeRelease = counts.count == AgentRuntimeAdapterRegistry.runtimeIDs.count
+        released = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+
+    func check(_ request: RuntimeHomeAccessRequest) async -> RuntimeReadinessCheck? {
+        counts[request.runtime, default: 0] += 1
+        if counts.count == AgentRuntimeAdapterRegistry.runtimeIDs.count { release() }
+        if !released { await withCheckedContinuation { waiters.append($0) } }
+        guard request.runtime == .codexCLI || request.runtime == .antigravityCLI else { return nil }
+        return .init(id: RuntimeHomeAccessService.checkID(for: request.runtime), title: "QA", detail: "QA",
+                     state: request.runtime == .codexCLI ? .blocked : .warning, remediation: nil)
+    }
+}
+
+private actor SuspendedHomeInspection {
+    private var started = false
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var finishWaiter: CheckedContinuation<Void, Never>?
+
+    func waitUntilStarted() async {
+        if !started { await withCheckedContinuation { startWaiter = $0 } }
+    }
+
+    func release() { finishWaiter?.resume(); finishWaiter = nil }
+
+    func check(_ request: RuntimeHomeAccessRequest) async -> RuntimeReadinessCheck? {
+        guard request.runtime == .codexCLI else { return nil }
+        started = true
+        startWaiter?.resume(); startWaiter = nil
+        await withCheckedContinuation { finishWaiter = $0 }
+        return .init(id: RuntimeHomeAccessService.checkID(for: request.runtime), title: "QA", detail: "QA", state: .blocked, remediation: nil)
     }
 }
 

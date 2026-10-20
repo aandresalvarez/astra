@@ -3,6 +3,7 @@ import CoreData
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -364,37 +365,43 @@ struct SchemaVersionTests {
     @Test("SchemaV20 version identifier is 20.0.0")
     func v20VersionIdentifier() {
         #expect(ASTRASchemaV20.versionIdentifier == Schema.Version(20, 0, 0))
-        #expect(ASTRASchemaV20.models.count == 21)
-        #expect(ASTRASchemaV20.models.contains { $0 == PluginActivation.self })
-        #expect(ASTRASchemaV20.models.contains { $0 == AccountBinding.self })
-        #expect(ASTRASchemaV20.models.contains { $0 == Connector.self })
-        #expect(ASTRASchemaV20.models.contains { $0 == Workspace.self })
+        #expect(ASTRASchemaV20.models.count == 19)
+        #expect(ASTRASchemaV20.models.contains { $0 == ASTRASchemaV20Models.Connector.self })
+        #expect(ASTRASchemaV20.models.contains { $0 == ASTRASchemaV20Models.Workspace.self })
+    }
+
+    @Test("Plugins 2.0 uses a new V21 schema after original V20")
+    func v21VersionIdentifier() {
+        #expect(ASTRASchemaV21.versionIdentifier == Schema.Version(21, 0, 0))
+        #expect(ASTRASchemaV21.models.count == 21)
+        #expect(ASTRASchemaV21.models.contains { $0 == PluginActivation.self })
+        #expect(ASTRASchemaV21.models.contains { $0 == AccountBinding.self })
     }
 
     @Test("Advertised current schema matches the compiled current model")
     func advertisedCurrentSchemaMatchesCompiledModel() {
-        #expect(ASTRASchema.currentVersion == 20)
-        #expect(ASTRASchemaV20.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
+        #expect(ASTRASchema.currentVersion == 21)
+        #expect(ASTRASchemaV21.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV20")
+    @Test("Migration plan lists SchemaV1 through SchemaV21")
     func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 20)
+        #expect(ASTRAMigrationPlan.schemas.count == 21)
     }
 
-    @Test("Migration plan has V1 to V20 lightweight stages")
+    @Test("Migration plan has V1 to V21 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 19)
+        #expect(ASTRAMigrationPlan.stages.count == 20)
     }
 
     @Test("Orphan recovery plan keeps the colliding V12 isolated")
     func orphanRecoveryPlanIsIsolated() {
         // The isolated V12 recovery plans migrate their colliding-V12 store
         // forward to current: V12x → V13 → … → V19 → V20.
-        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 9)
-        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 8)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 9)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 8)
+        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 10)
+        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 9)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 10)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 9)
     }
 
     @Test("Frozen V12 and V13 schemas match all observed on-disk fingerprints")
@@ -446,6 +453,18 @@ struct SchemaVersionTests {
         )
         let checksum = try modelChecksum(for: ASTRASchemaV19.self)
         #expect(checksum == "duKdx2u5oRtENSXcuKBC5TLK6WuuZ6XvGNTbXu/ICPI=", "Actual production V19 checksum: \(checksum)")
+    }
+
+    @Test("V20 matches the original account-fields Dev store, not another V20 shape")
+    func v20FingerprintMatchesExistingDevStore() throws {
+        // Read from an existing store written by 9c2e330b0175, before the
+        // Plugins branch reused 20.0.0 for PluginActivation/AccountBinding.
+        // Pin the observed shape so changing the live graph requires a new
+        // version instead of silently breaking these already-written stores.
+        #expect(try modelDigest(for: ASTRASchemaV20.self)
+            == "6cQiw2kBfDBspXv8xxBgAW4At3UeNNURek6kfI6rMYX3b7pzQkDnTUhCND9fdVJPVar6/Sm5/OqJmiWOsGa7Lw==")
+        #expect(try modelChecksum(for: ASTRASchemaV20.self)
+            == "uvXqoT2QHoqI1yo2j6ak39BCJrvsbou+4r5HwsWizNw=")
     }
 
     @Test("Frozen V14 and V16 schema fingerprints survive the V17 column")
@@ -813,7 +832,7 @@ struct SchemaVersionTests {
     }
 
     @MainActor
-    @Test("Production SchemaV19 store migrates to V20 with no activations yet")
+    @Test("Production SchemaV19 store migrates through original V20 to V21 with no activations yet")
     func v19StoreMigratesToPluginActivations() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-schema-v19-accounts-migration-\(UUID().uuidString)", isDirectory: true)
@@ -866,6 +885,125 @@ struct SchemaVersionTests {
         #expect(connector.accountBindings.isEmpty)
         #expect(connector.workspace?.id == workspaceID)
         #expect(schedule.reasoningEffort == "high")
+    }
+
+    @MainActor
+    @Test("Existing V20 account choices and chat history survive main's edits and reopen")
+    func existingV20StorePreservesAccountsAndHistory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-existing-v20-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("store.store")
+        let workspaceID: UUID
+        let connectorIDs: [UUID]
+        let taskID: UUID
+        let runID: UUID
+        let eventID: UUID
+
+        do {
+            // Create the original V20 shape without a migration plan, as the
+            // existing Dev build did. The fingerprint test pins its identity
+            // independently to the metadata observed on disk.
+            let container = try ModelContainer(
+                for: Schema(versionedSchema: ASTRASchemaV20.self),
+                configurations: [ModelConfiguration(url: storeURL)]
+            )
+            let context = container.mainContext
+            let workspace = ASTRASchemaV20Models.Workspace()
+            workspace.name = "Existing V20"
+            workspace.primaryPath = "/tmp/existing-v20"
+            context.insert(workspace)
+            let connectors = ["Research", "Personal"].map { alias in
+                let connector = ASTRASchemaV20Models.Connector()
+                connector.name = "\(alias) Jira"
+                connector.serviceType = "jira"
+                connector.accountAlias = alias
+                connector.workspace = workspace
+                context.insert(connector)
+                return connector
+            }
+            workspace.defaultAccountServiceTypes = ["jira"]
+            // Deliberately select the second account; loading must preserve
+            // the saved choice rather than infer it from the first connector.
+            workspace.defaultAccountConnectorIDs = [connectors[1].id.uuidString]
+            let task = ASTRASchemaV20Models.AgentTask()
+            task.title = "Existing chat"
+            task.goal = "Preserve history"
+            task.workspace = workspace
+            context.insert(task)
+            let run = ASTRASchemaV20Models.TaskRun()
+            run.task = task
+            run.output = "Saved result"
+            context.insert(run)
+            let event = ASTRASchemaV20Models.TaskEvent()
+            event.task = task
+            event.type = "user_message"
+            event.payload = "Saved message"
+            event.run = run
+            context.insert(event)
+            try context.save()
+            workspaceID = workspace.id
+            connectorIDs = connectors.map(\.id)
+            taskID = task.id
+            runID = run.id
+            eventID = event.id
+        }
+
+        try PersistentStoreCompatibilityService.writeMetadata(
+            PersistentStoreCompatibilityMetadata(
+                schemaVersion: 20, minimumReaderSchemaVersion: 20, channel: "dev",
+                appVersion: "0.1.30", appBuild: "10030", gitCommit: "9c2e330b0175",
+                bundlePath: "/tmp/ASTRA Dev.app"
+            ), for: storeURL
+        )
+        #expect(PersistentStoreCompatibilityService.assess(
+            storeURL: storeURL, latestSupportedSchemaVersion: 19
+        ) == .requiresNewerReader(requiredSchemaVersion: 20))
+        #expect(PersistentStoreCompatibilityService.assess(
+            storeURL: storeURL, latestSupportedSchemaVersion: AppBuildInfo.current.schemaVersion
+        ) == .compatible(storeSchemaVersion: 20))
+
+        for pass in 0..<2 {
+            let container = try ModelContainer(
+                for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(url: storeURL)]
+            )
+            let context = container.mainContext
+            let workspace = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
+            let connectors = try context.fetch(FetchDescriptor<Connector>())
+            let task = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+            let run = try #require(try context.fetch(FetchDescriptor<TaskRun>()).first)
+            let event = try #require(try context.fetch(FetchDescriptor<TaskEvent>()).first)
+            #expect(workspace.id == workspaceID)
+            #expect(workspace.defaultAccountServiceTypes == ["jira"])
+            #expect(workspace.defaultAccountConnectorIDs == [connectorIDs[1].uuidString])
+            #expect(connectors.count == 2)
+            for (id, alias) in zip(connectorIDs, ["Research", "Personal"]) {
+                let connector = try #require(connectors.first { $0.id == id })
+                #expect(connector.accountAlias == alias)
+                #expect(connector.workspace?.id == workspaceID)
+            }
+            #expect(task.id == taskID)
+            #expect(task.workspace?.id == workspaceID)
+            #expect(task.title == (pass == 0 ? "Existing chat" : "Edited chat"))
+            #expect(run.id == runID)
+            #expect(run.task?.id == taskID)
+            #expect(run.output == "Saved result")
+            #expect(event.id == eventID)
+            #expect(event.task?.id == taskID)
+            #expect(event.run?.id == runID)
+            #expect(event.payload == "Saved message")
+            if pass == 0 {
+                task.title = "Edited chat"
+                WorkspaceCapabilityActivation.mutate(workspace) {
+                    $0.recordInstalledPlugin(id: "existing-plugin", version: "1.0.0")
+                }
+                try context.save()
+            } else {
+                #expect(workspace.installedVersion(of: "existing-plugin") == "1.0.0")
+            }
+        }
     }
 
     private func modelDigest(for versionedSchema: any VersionedSchema.Type) throws -> String {

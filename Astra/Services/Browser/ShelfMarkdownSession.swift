@@ -77,6 +77,7 @@ struct ShelfMarkdownDocument: Identifiable, Equatable {
     var formattedJSONContent: String?
     var jsonErrorMessage: String?
     var errorMessage: String?
+    var previewFailure: ShelfPreviewFailure? = nil
     var saveErrorMessage: String?
     var contentSignature: String
 
@@ -255,15 +256,16 @@ final class ShelfMarkdownSession: ObservableObject {
             durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: startedAt),
             kind: document.kind,
             byteCount: document.fileByteSize,
-            outcome: document.errorMessage == nil ? "ready" : "error",
+            outcome: document.previewFailure == nil && document.errorMessage == nil ? "ready" : "error",
             taskID: boundTaskID
         )
-        if document.errorMessage != nil {
+        if document.previewFailure != nil || document.errorMessage != nil {
             PerformanceTelemetry.log(
                 "files_shelf_preview_error",
                 level: .warning,
                 fields: [
                     "kind": document.kind.rawValue,
+                    "reason": document.previewFailure?.rawValue ?? "read_failed",
                     "byte_bucket": PerformanceTelemetryFields.byteBucket(Int(clamping: document.fileByteSize))
                 ],
                 taskID: boundTaskID
@@ -379,6 +381,7 @@ final class ShelfMarkdownSession: ObservableObject {
         documents[index].formattedJSONContent = jsonPreview.content
         documents[index].jsonErrorMessage = jsonPreview.errorMessage
         documents[index].errorMessage = nil
+        documents[index].previewFailure = nil
         documents[index].saveErrorMessage = nil
         documents[index].contentSignature = Self.contentSignature(
             for: documents[index].fileURL,
@@ -408,6 +411,7 @@ final class ShelfMarkdownSession: ObservableObject {
             documents[index].modifiedAt = metadata?.modifiedAt
             documents[index].isLargePreview = fileByteSize >= Self.largeTextPreviewBytes
             documents[index].errorMessage = nil
+            documents[index].previewFailure = nil
             documents[index].saveErrorMessage = nil
             documents[index].contentSignature = Self.contentSignature(
                 for: documents[index].fileURL,
@@ -454,6 +458,7 @@ final class ShelfMarkdownSession: ObservableObject {
         let kind = ShelfTextDocumentKind.infer(from: url)
         let content: String
         let errorMessage: String?
+        var previewFailure: ShelfPreviewFailure? = nil
         var fileByteSize: Int64 = 0
         var modifiedAt: Date?
         do {
@@ -477,7 +482,8 @@ final class ShelfMarkdownSession: ObservableObject {
                     imageSize: preview?.pixelSize,
                     formattedJSONContent: nil,
                     jsonErrorMessage: nil,
-                    errorMessage: nil,
+                    errorMessage: preview == nil ? "Could not decode this image. Open External to inspect the original." : nil,
+                    previewFailure: preview == nil ? .decodeFailed : nil,
                     saveErrorMessage: nil,
                     contentSignature: preview?.signature ?? Self.contentSignature(
                         for: url,
@@ -502,7 +508,8 @@ final class ShelfMarkdownSession: ObservableObject {
                     imageSize: nil,
                     formattedJSONContent: nil,
                     jsonErrorMessage: nil,
-                    errorMessage: "\(url.lastPathComponent) is too large to preview in the Files shelf.",
+                    errorMessage: "\(url.lastPathComponent) exceeds the 2 MB Files preview limit. Use Open External to inspect the full file.",
+                    previewFailure: .tooLarge,
                     saveErrorMessage: nil,
                     contentSignature: Self.contentSignature(
                         for: url,
@@ -532,6 +539,7 @@ final class ShelfMarkdownSession: ObservableObject {
                     formattedJSONContent: nil,
                     jsonErrorMessage: nil,
                     errorMessage: nil,
+                    previewFailure: .unsupported,
                     saveErrorMessage: nil,
                     contentSignature: Self.contentSignature(
                         for: url,
@@ -543,8 +551,7 @@ final class ShelfMarkdownSession: ObservableObject {
             content = decoded
             errorMessage = nil
         } catch {
-            fileByteSize = 0
-            modifiedAt = nil
+            previewFailure = ShelfPreviewFailure.classify(error)
             content = ""
             errorMessage = "Could not read \(url.lastPathComponent): \(error.localizedDescription)"
         }
@@ -565,6 +572,7 @@ final class ShelfMarkdownSession: ObservableObject {
             formattedJSONContent: jsonPreview.content,
             jsonErrorMessage: jsonPreview.errorMessage,
             errorMessage: errorMessage,
+            previewFailure: previewFailure,
             saveErrorMessage: nil,
             contentSignature: Self.contentSignature(
                 for: url,

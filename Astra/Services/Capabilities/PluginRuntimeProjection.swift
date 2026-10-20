@@ -215,7 +215,7 @@ struct PluginRuntimeProjection {
     /// a workspace; one detached from it falls back to its own ID.
     static func derivedID(of activation: PluginActivation, componentID: String) -> UUID {
         derivedID(
-            workspaceID: activation.workspace?.id ?? activation.id,
+            workspaceID: activation.launchWorkspaceID ?? activation.workspace?.id ?? activation.id,
             pluginID: activation.pluginID,
             componentID: componentID,
             seed: activation.namespaceSeed

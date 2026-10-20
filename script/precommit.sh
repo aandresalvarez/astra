@@ -23,7 +23,7 @@ run_focused_targets_for_changed_paths() {
 
   while IFS= read -r target; do
     [[ -n "$target" ]] || continue
-    run swift test --filter "$target"
+    run script/swift_test.sh --filter "$target"
   done <<< "$targets"
 }
 
@@ -32,6 +32,7 @@ while IFS= read -r path; do
   changed_files+=("$path")
 done < <(changed_paths)
 
+run python3 script/permission_repair_test_harness_tests.py
 run script/test_architecture.sh
 if ((${#changed_files[@]} > 0)); then
   validation_plan="$(script/focused_validation_plan.sh "${changed_files[@]}")"

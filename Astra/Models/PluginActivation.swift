@@ -61,6 +61,9 @@ public final class PluginActivation {
     public var createdAt: Date
     public var updatedAt: Date
 
+    /// Only detached launch copies use this; it never changes the stored schema.
+    @Transient public var launchWorkspaceID: UUID? = nil
+
     public var workspace: Workspace?
 
     /// The digest `templateDigests` records for one template component.

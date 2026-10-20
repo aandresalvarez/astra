@@ -28,6 +28,9 @@ public final class Workspace: Identifiable {
     public var legacyInstalledPluginIDs: [String] = []
     @Attribute(originalName: "installedPluginVersions")
     public var legacyInstalledPluginVersions: [String] = []
+    /// Original V20 choices, read when legacy accounts become plugin bindings.
+    public var defaultAccountServiceTypes: [String] = []
+    public var defaultAccountConnectorIDs: [String] = []
     public var isStarred: Bool = false
     /// The code location new chats default to. `nil` means the primary path; a
     /// non-nil value is the absolute path of the active configured repository or

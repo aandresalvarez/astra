@@ -18,8 +18,8 @@ enum AppUpdateSafety {
     /// Tasks the store records as `.running`.
     ///
     /// The fetch narrows on `completedAt == nil` and refines the status in
-    /// memory: a `#Predicate` that captures a `TaskStatus` throws
-    /// `unsupportedPredicate` on every store backend, and the old `try?` turned
+    /// memory: older SwiftData versions reject predicates that capture `TaskStatus`
+    /// with `unsupportedPredicate`, and the old `try?` turned
     /// that into a permanent 0 — so this backstop never blocked an update. A
     /// running task always has `completedAt == nil` (only finalization sets it).
     ///

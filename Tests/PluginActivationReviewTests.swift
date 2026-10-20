@@ -202,13 +202,14 @@ struct PluginActivationReviewTests {
 
     @Test("A journaled rename destination is cleared whole, and stays journaled until that succeeds")
     func renameDestinationNamespaceIsClearedWhole() throws {
+        let env = try Fixtures.Environment()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-rename-whole-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let outbox = PluginSecretCleanupOutbox(fileURL: root.appendingPathComponent("PluginSecretCleanup.json"))
         let destination = UUID()
         func settle(kept: Set<String> = [], cleans: Bool, deleted: inout [String], cleaned: inout [UUID]) -> Bool {
             PluginSecretCleanupOutbox.settleRenameDestination(
-                destination, keys: ["DECLARED"], kept: kept, modelContext: nil, outbox: outbox,
+                destination, keys: ["DECLARED"], kept: kept, modelContext: env.context, outbox: outbox,
                 clean: { cleaned.append($0); return cleans }
             ) { deleted.append($0); return true }
         }

@@ -231,7 +231,8 @@ struct PluginSecretCleanupOutbox {
         guard !keys.isEmpty, let outbox = outbox ?? modelContext.flatMap(PluginSecretCleanupOutbox.init(for:)) else { return [] }
         guard let pending = try? outbox.pendingKeys() else { return keys }
         let redeclared = keys.filter(Set(pending).contains)
-        let failed = redeclared.filter { !delete($0) }
+        guard let modelContext, let references = PendingTaskCredentialReferences.capture(modelContext: modelContext) else { return redeclared }
+        let failed = redeclared.filter { references.holdsSkill($0.skillID, key: $0.key) || !delete($0) }
         let settled = Set(redeclared.filter { !failed.contains($0) }.map(entry))
         if !settled.isEmpty, let entries = try? outbox.entries() {
             try? outbox.writeEntries(entries.filter { !settled.contains($0) })
@@ -263,6 +264,8 @@ struct PluginSecretCleanupOutbox {
         let prefix = namespace + "#"
         let journaled = entries.filter { $0 == namespace || $0.hasPrefix(prefix) }
         guard !journaled.isEmpty else { return true }
+        guard let modelContext, let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+              !references.holdsSkill(destination) else { return false }
         if journaled.contains(namespace), kept.isEmpty {
             guard clean(destination) else { return false }
         } else {
@@ -298,7 +301,8 @@ struct PluginSecretCleanupOutbox {
         clean: (UUID) -> Bool = { SkillKeychainCleanup(skillID: $0).run() }
     ) {
         // What is live can't be told without the store: every record stays.
-        guard let live = liveSkillIDs(modelContext: modelContext),
+        guard let pendingTasks = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+              let live = liveSkillIDs(modelContext: modelContext),
               let liveKeys = liveSecretKeys(modelContext: modelContext) else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "plugin_secret_cleanup", "reason": "store_unreadable_kept"
@@ -306,11 +310,12 @@ struct PluginSecretCleanupOutbox {
             return
         }
         var settled = Set<String>()
-        for id in skillIDs where live.contains(id) || clean(id) {
+        for id in skillIDs where !pendingTasks.holdsSkill(id) && (live.contains(id) || clean(id)) {
             settled.insert(id.uuidString)
         }
         let persistence = secrets ?? SkillSecretSeam.required
-        for key in keys where liveKeys.contains(key) || persistence.deleteSecret(key: key.key, skillID: key.skillID) {
+        for key in keys where !pendingTasks.holdsSkill(key.skillID, key: key.key)
+            && (liveKeys.contains(key) || persistence.deleteSecret(key: key.key, skillID: key.skillID)) {
             settled.insert(entry(key))
         }
         guard let outbox, let pending = try? outbox.entries() else { return }

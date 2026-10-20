@@ -172,7 +172,7 @@ struct RuntimeEligibilityPreviewRequest {
             selectedRuntime: task.resolvedRuntimeID
         ) { candidateRuntimes in
             let intent = TaskTurnIntentResolver.preview(for: task, acceptedTurn: acceptedTurn)
-            return evaluate(
+            return await evaluate(
                 task: task,
                 intent: intent,
                 requestedRuntime: task.resolvedRuntimeID,
@@ -272,7 +272,7 @@ struct RuntimeEligibilityPreviewRequest {
                 for: draftTask ?? previewTask,
                 acceptedTurn: acceptedTurn
             )
-            return evaluate(
+            return await evaluate(
                 task: previewTask,
                 intent: intent,
                 requestedRuntime: requestedRuntime,
@@ -294,9 +294,26 @@ struct RuntimeEligibilityPreviewRequest {
         providerSettings: ProviderSettingsSnapshot,
         readinessStates: [AgentRuntimeID: RuntimeReadinessState],
         candidateRuntimes: [AgentRuntimeID]?
-    ) -> TaskRuntimeEligibilitySnapshot? {
+    ) async -> TaskRuntimeEligibilitySnapshot? {
         guard !Task.isCancelled else { return nil }
-        let executionPolicy = AgentRuntimeExecutionPolicy.default.withTurnIntentSnapshot(intent)
+        var executionPolicy = AgentRuntimeExecutionPolicy.default.withTurnIntentSnapshot(intent)
+        let configuration = AgentRuntimeConfiguration(
+            providerSettings: providerSettings.providerSettings, defaultRuntimeID: requestedRuntime)
+        var copilotExecutableAvailable: Bool?
+        if (candidateRuntimes ?? AgentRuntimeAdapterRegistry.runtimeIDs).contains(.copilotCLI) {
+            let settings = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).launchSettings(configuration: configuration)
+            copilotExecutableAvailable = FileManager.default.isExecutableFile(atPath: settings.executablePath)
+            if copilotExecutableAvailable == true {
+                do {
+                    executionPolicy.copilotCapabilityResolution = .answered(
+                        try await CopilotCLIRuntime.requiredCapabilities(executablePath: settings.executablePath))
+                } catch {
+                    guard !Task.isCancelled else { return nil }
+                    executionPolicy.copilotCapabilityResolution = .unavailable(error.localizedDescription)
+                }
+            }
+        }
+        guard !Task.isCancelled else { return nil }
         return TaskLaunchAdmissionService.evaluate(
             task: task,
             intent: intent,
@@ -312,6 +329,7 @@ struct RuntimeEligibilityPreviewRequest {
             candidateRuntimes: candidateRuntimes ?? AgentRuntimeAdapterRegistry.runtimeIDs,
             isRuntimeUsable: { runtime, _ in
                 readinessStates[runtime]?.allowsTaskLaunch == true
+                    && (runtime != .copilotCLI || copilotExecutableAvailable != false)
             }
         )
     }

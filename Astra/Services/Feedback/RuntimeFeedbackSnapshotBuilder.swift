@@ -137,7 +137,7 @@ struct RuntimeFeedbackSnapshotBuilder {
             mapped = .missing
         case "authentication_failed", "auth_required", "unauthenticated":
             mapped = .unauthenticated
-        case "model_unavailable", "provider_configuration_invalid", "malformed_mcp_config", "unsupported_output_format", "misconfigured":
+        case "model_unavailable", "provider_configuration_invalid", "provider_home_access_denied", "malformed_mcp_config", "unsupported_output_format", "misconfigured":
             mapped = .misconfigured
         case "permission_denied", "sandbox_credential_access_blocked":
             mapped = .permissionDenied

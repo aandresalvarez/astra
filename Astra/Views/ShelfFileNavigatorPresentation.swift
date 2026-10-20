@@ -64,3 +64,35 @@ enum ShelfFileNavigatorInitialPresentationPolicy {
         isPinned || !hasSelectedFile || !hasDiscoveredBrowser
     }
 }
+
+enum ShelfFileNavigatorContentPresentation: Equatable {
+    case noWorkspacePaths
+    case scanning
+    case emptyScope
+    case populatedList
+
+    static func resolve(
+        hasConfiguredRoots: Bool,
+        hasVisibleFileRoots: Bool,
+        isSearchingFiles: Bool,
+        isScanningFiles: Bool
+    ) -> ShelfFileNavigatorContentPresentation {
+        if !hasConfiguredRoots {
+            return .noWorkspacePaths
+        }
+        if isScanningFiles && !hasVisibleFileRoots {
+            return .scanning
+        }
+        if !hasVisibleFileRoots && !isSearchingFiles {
+            return .emptyScope
+        }
+        return .populatedList
+    }
+
+    var usesListSurface: Bool {
+        switch self {
+        case .noWorkspacePaths, .scanning, .emptyScope, .populatedList:
+            true
+        }
+    }
+}

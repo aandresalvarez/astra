@@ -35,6 +35,72 @@ struct RoutineSkillSelectionTests {
         #expect(Set(resolved.map(\.id)) == Set(projected.map(\.id)))
     }
 
+    @Test("A routine's projected skill reaches the run under the same text scope as a pinned one")
+    func projectedSkillIsScopedLikeAPinnedOne() throws {
+        let fixture = try PluginMigrationFixture()
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let globalSkills = try context.fetch(FetchDescriptor<Skill>()).filter(\.isGlobal)
+        let projected = try #require(WorkspaceCapabilities.routineSkills(in: a, globalSkills: globalSkills)
+            .first { $0.modelContext == nil })
+        let pinned = Skill(name: "Release notes", skillDescription: "Writes release notes", allowedTools: ["Read"])
+        pinned.workspace = a
+        context.insert(pinned)
+        // The routine selected both; only the pinned row can be stored on
+        // the task, the projected one is in the run through its plugin.
+        let schedule = TaskSchedule(name: "Both", goal: "G", workspace: a)
+        schedule.skillIDs = [projected.id.uuidString, pinned.id.uuidString]
+        context.insert(schedule)
+        let stored = AgentTask.storableSkills(TaskScheduler.resolvedSkills(for: schedule, globalSkills: globalSkills), in: a)
+        #expect(stored.map(\.id) == [pinned.id])
+
+        func scope(goal: String) -> Set<UUID> {
+            let task = AgentTask(title: "Routine", goal: goal, workspace: a)
+            task.originScheduleID = schedule.id
+            task.skills = stored
+            context.insert(task)
+            return Set(TaskCapabilityResolver(task: task).activationScope(contextText: goal).behaviorSkills.map(\.id))
+        }
+        // Named by the goal: both are in scope, the projected one by its
+        // plugin, the pinned one by its row.
+        let named = scope(goal: "Use \(projected.name) and \(pinned.name) for this run")
+        #expect(named.contains(projected.id))
+        #expect(named.contains(pinned.id))
+        // Not named: both are pruned alike; a pin is no stronger than the
+        // projection under the word-matched scope every task gets.
+        let unnamed = scope(goal: "Summarize yesterday's standup")
+        #expect(!unnamed.contains(projected.id))
+        #expect(!unnamed.contains(pinned.id))
+    }
+
+    @Test("A routine's selection is checked against durable state when it is saved")
+    func selectionIsValidatedAtSave() throws {
+        let fixture = try PluginMigrationFixture()
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let globalSkills = try context.fetch(FetchDescriptor<Skill>()).filter(\.isGlobal)
+        let projected = try #require(WorkspaceCapabilities.routineSkills(in: a, globalSkills: globalSkills)
+            .first { $0.modelContext == nil })
+        let authored = Skill(name: "Release notes", skillDescription: "Writes release notes", allowedTools: ["Read"])
+        authored.workspace = a
+        context.insert(authored)
+        let selection = [projected.id.uuidString, authored.id.uuidString]
+        #expect(RoutineSkillCatalog.validatedSelection(selection, in: a, globalSkills: globalSkills) == selection)
+        // The row was deleted while the editor stayed open on its stale catalog.
+        context.delete(authored)
+        try context.save()
+        #expect(RoutineSkillCatalog.validatedSelection(selection, in: a, globalSkills: globalSkills) == [projected.id.uuidString])
+        // The plugin was turned off meanwhile: its skill is no longer offered.
+        _ = CapabilityActivationDisabler().disable(
+            fixture.gcloud, in: a,
+            capabilities: WorkspaceCapabilities(workspace: a, globalSkills: globalSkills, packageDefinitions: fixture.packages),
+            modelContext: context, availablePackages: fixture.packages
+        )
+        #expect(RoutineSkillCatalog.validatedSelection(selection, in: a, globalSkills: globalSkills).isEmpty)
+    }
+
     @Test("Editors resolve routine skills against the catalog they loaded, not the library")
     func editorsResolveAgainstTheirLoadedCatalog() throws {
         let fixture = try PluginMigrationFixture()
