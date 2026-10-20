@@ -8,7 +8,7 @@ import ASTRAPersistence
 /// directions until the domain receipt and every mirror confirm completion.
 struct PluginFileOperationJournal {
     enum Failure: Error { case pendingOperation, invalidManifest, changedRoot, missingJournal }
-    enum Root: String, Codable, CaseIterable { case library, staging, approvals }
+    enum Root: String, Codable, CaseIterable { case library, staging, approvals, quarantine }
     struct Change {
         let root: Root
         let name: String
@@ -47,7 +47,8 @@ struct PluginFileOperationJournal {
                  .staging: library.directory.deletingLastPathComponent()
                     .appendingPathComponent(library.directory.lastPathComponent + "Staged", isDirectory: true)
                     .standardizedFileURL.resolvingSymlinksInPath(),
-                 .approvals: approvals.directory.standardizedFileURL.resolvingSymlinksInPath()]
+                 .approvals: approvals.directory.standardizedFileURL.resolvingSymlinksInPath(),
+                 .quarantine: library.quarantineDirectory.standardizedFileURL.resolvingSymlinksInPath()]
         directory = library.directory.deletingLastPathComponent()
             .appendingPathComponent(library.directory.lastPathComponent + "Operations", isDirectory: true)
             .standardizedFileURL.resolvingSymlinksInPath()

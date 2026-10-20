@@ -120,6 +120,9 @@ struct CapabilityResourceKindParityTests {
         let context = container.mainContext
         let first = Workspace(name: "First", primaryPath: root.appendingPathComponent("a").path)
         let second = Workspace(name: "Second", primaryPath: root.appendingPathComponent("b").path)
+        for workspace in [first, second] {
+            try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
+        }
         context.insert(first)
         context.insert(second)
 

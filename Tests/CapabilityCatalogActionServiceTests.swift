@@ -233,6 +233,8 @@ struct CapabilityCatalogActionServiceTests {
         context.insert(workspace)
         let (library, root) = makeCapabilityActionLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
+        workspace.primaryPath = root.appendingPathComponent("Workspace").path
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
 
         let package = makeActionPackage(id: "remove-action-package")
         let service = CapabilityCatalogActionService(library: library)

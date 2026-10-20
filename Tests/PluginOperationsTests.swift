@@ -144,43 +144,43 @@ struct PluginOperationsTests {
         #expect(PluginOperations.setting("PROJECT", of: package.skills[0], in: there) == "default-project")
     }
 
-    /// A Remove whose save landed but whose mirror couldn't be written: a
-    /// recovery from that mirror would bring back what it deleted, so the
-    /// intent stays, with the workspace, until launch rewrites it.
-    @Test("A Remove's intent is cleared only once every affected mirror is rewritten")
+    @Test("A Remove receipt completes only once every affected mirror is rewritten")
     func removeIntentWaitsForMirrorRewrites() throws {
         let env = try Environment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
         let folder = env.root.appendingPathComponent("workspace", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: env.root) }
         env.workspace.primaryPath = folder.path
         let other = Workspace(name: "Other", primaryPath: env.root.appendingPathComponent("other").path)
         env.context.insert(other)
         let package = Self.package(version: "1.0.0")
         try env.install(package)
-        let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
-        // The mirror's path is taken by a folder: it can't be written.
+        let legacy = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
+        let files = PluginFileOperationJournal(library: env.library, approvals: CapabilityApprovalStore())
         let mirrorURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
         try? FileManager.default.removeItem(at: mirrorURL)
         try FileManager.default.createDirectory(at: mirrorURL, withIntermediateDirectories: true)
-
-        try CapabilityUninstaller(library: env.library).remove(package, modelContext: env.context, removeJournal: journal)
+        var operationID: UUID?
+        do {
+            _ = try CapabilityUninstaller(library: env.library).remove(package, modelContext: env.context, removeJournal: legacy)
+            Issue.record("A failed mirror must report committed pending work")
+        } catch let problem as PluginOperationProblem { operationID = problem.operationID }
+        let id = try #require(operationID)
         #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) == nil)
-        #expect(try journal.intents() == [.init(pluginID: package.id, workspaceIDs: [env.workspace.id])])
-
-        // Launch: still unwritable, still kept; only the recorded workspace
-        // is rewritten.
+        #expect(try legacy.intents().isEmpty, "New Remove never writes an ambiguous legacy intent")
+        #expect(try PluginOperationCommit.read(id, container: env.container)?.workspaceIDs == [env.workspace.id])
         var rewritten: [UUID] = []
-        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal) {
-            rewritten.append($0.id)
+        let blocked = PluginFileOperationRecovery(journal: files).resumePending(modelContext: env.context, export: { workspace, _ in
+            rewritten.append(workspace.id)
             return false
-        }
-        #expect(rewritten == [env.workspace.id])
-        #expect(try journal.pending() == [package.id])
-
+        })
+        #expect(blocked.deferred == 1 && rewritten == [env.workspace.id])
+        #expect(try files.pendingIDs() == [id])
         try FileManager.default.removeItem(at: mirrorURL)
-        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
-        #expect(try journal.pending().isEmpty)
+        let result = PluginFileOperationRecovery(journal: files).resumePending(modelContext: env.context)
+        #expect(result.completed == 1 && result.deferred == 0)
+        #expect(try files.pendingIDs().isEmpty)
+        #expect(try PluginOperationCommit.read(id, container: env.container)?.completedAt != nil)
         let mirror = try WorkspaceConfigManager.loadConfig(from: mirrorURL)
         #expect(!(mirror.installedPlugins ?? []).contains { $0.id == package.id })
     }
