@@ -15,25 +15,11 @@ enum PluginOperationRuntimeAdmission {
         do {
             let files = PluginFileOperationJournal(library: CapabilityLibrary(), approvals: CapabilityApprovalStore())
             if !((try files.pendingIDs()).isEmpty) { return problems(pluginIDs, names: names) }
-            let saved = ModelContext(modelContext.container)
-            let descriptor = FetchDescriptor<PluginOperationReceipt>(predicate: #Predicate { $0.completedAt == nil })
-            var pending: [UUID: PluginOperationCommit.Snapshot] = [:]
-            for receipt in try saved.fetch(descriptor) {
-                pending[receipt.id] = try PluginOperationCommit.Snapshot(receipt)
-            }
-            // An indeterminate save can leave an unsaved receipt in the
-            // caller. A fresh completed receipt overrides its stale cache;
-            // absence of saved proof does not authorize using its edits.
-            for receipt in try modelContext.fetch(descriptor) where pending[receipt.id] == nil {
-                if let durable = try PluginOperationCommit.read(receipt.id, container: modelContext.container) {
-                    if durable.completedAt == nil { pending[durable.id] = durable }
-                } else {
-                    pending[receipt.id] = try PluginOperationCommit.Snapshot(receipt)
-                }
-            }
+            let pending = try PluginPendingOperations.capture(modelContext: modelContext)
             var workspaceIDs = Set([workspace.id])
             workspaceIDs.formUnion(WorkspaceCapabilityActivation.activations(of: workspace).compactMap(\.launchWorkspaceID))
-            for receipt in pending.values {
+            for entry in pending {
+                let receipt = entry.snapshot
                 // A definition/approval file operation affects the shared
                 // library, including workspaces not named by its domain save.
                 guard receipt.manifestDigest != nil || receipt.workspaceIDs.isEmpty

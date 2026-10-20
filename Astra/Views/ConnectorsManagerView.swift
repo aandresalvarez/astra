@@ -150,6 +150,8 @@ struct ConnectorEditorView: View {
     @State private var editingCredentialKey: String?
     @State private var replacementCredentialValue = ""
     @State private var credentialSaveError: ConnectorCredentialSaveFailurePresentation?
+    @State private var credentialOperationError: String?
+    @State private var credentialRecoveryID: UUID?
     @State private var pendingCredentialSaveContext: PendingConnectorCredentialSaveContext?
     @State private var newListItem = ""
     @State private var testResult: (Bool, String)?
@@ -439,6 +441,17 @@ struct ConnectorEditorView: View {
                                 .font(Stanford.caption(12))
                                 .foregroundStyle(.secondary)
                         }
+                        if let credentialOperationError {
+                            Label(credentialOperationError, systemImage: "exclamationmark.triangle.fill")
+                                .font(Stanford.caption(12))
+                                .foregroundStyle(Stanford.poppy)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let credentialRecoveryID {
+                                Button("Finish recovery") { finishCredentialRecovery(credentialRecoveryID) }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                            }
+                        }
                         if let credentialSaveError {
                             ViewThatFits(in: .horizontal) {
                                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -454,9 +467,8 @@ struct ConnectorEditorView: View {
 
                         if !connector.credentialKeys.isEmpty {
                             VStack(spacing: 4) {
-                                // Identity is the position, not the key string: legacy data can
-                                // carry duplicate keys, and deriving the index via firstIndex(of:)
-                                // would then replace/remove the wrong secret.
+                                // Legacy duplicate rows retain distinct UI identity. Removing
+                                // a credential removes all markers for its canonical key.
                                 ForEach(Array(connector.credentialKeys.enumerated()), id: \.offset) { idx, key in
                                     if idx > 0 {
                                         SubtleDivider()
@@ -536,10 +548,10 @@ struct ConnectorEditorView: View {
                                             Button {
                                                 pendingDeletion = PendingConnectorDeletion(
                                                     title: "Remove secret “\(key)”?",
-                                                    message: "Remove the \(key) secret from \(connectorDisplayName)? This deletes its stored Keychain value.",
+                                                    message: "Remove the \(key) secret from \(connectorDisplayName)? Queued tasks keep their accepted credentials until they finish.",
                                                     confirmTitle: "Remove Secret"
                                                 ) {
-                                                    connector.removeCredential(at: idx)
+                                                    removeCredential(key)
                                                 }
                                             } label: {
                                                 Image(systemName: "trash")
@@ -1028,11 +1040,7 @@ struct ConnectorEditorView: View {
     private func addCredential() {
         let key = newCredKey.trimmingCharacters(in: .whitespaces).uppercased()
         guard !key.isEmpty, !newCredValue.isEmpty else { return }
-        let outcome = connector.saveCredentialChecked(
-            key: key,
-            value: newCredValue,
-            allowUserInteraction: true
-        )
+        guard let outcome = storeCredential(newCredValue, key: key) else { return }
         guard outcome.isSaved else {
             credentialSaveError = presentation(for: outcome, key: key)
             pendingCredentialSaveContext = .newCredential
@@ -1041,8 +1049,52 @@ struct ConnectorEditorView: View {
         credentialSaveError = nil
         pendingCredentialSaveContext = nil
         testResult = nil
-        saveSharingChange()
         cancelCredentialEntry()
+    }
+
+    private func storeCredential(_ value: String, key: String) -> ConnectorCredentialSaveOutcome? {
+        do {
+            let result = try ConnectorCredentialEditor.save(value, forKey: key, on: connector,
+                modelContext: modelContext, allowUserInteraction: true)
+            credentialOperationError = nil
+            credentialRecoveryID = nil
+            return result
+        } catch { showCredentialOperationError(error); return nil }
+    }
+
+    private func removeCredential(_ key: String) {
+        do {
+            try ConnectorCredentialEditor.remove(key, from: connector, modelContext: modelContext)
+            credentialOperationError = nil
+            credentialRecoveryID = nil
+            credentialSaveError = nil
+            pendingCredentialSaveContext = nil
+            testResult = nil
+        } catch { showCredentialOperationError(error) }
+    }
+
+    private func finishCredentialRecovery(_ id: UUID) {
+        do {
+            try ConnectorCredentialEditor.recover(id, modelContext: modelContext)
+            credentialOperationError = nil
+            credentialRecoveryID = nil
+            testResult = nil
+        } catch { showCredentialOperationError(error) }
+    }
+
+    private func showCredentialOperationError(_ error: Error) {
+        credentialSaveError = nil
+        pendingCredentialSaveContext = nil
+        credentialRecoveryID = nil
+        if let problem = error as? PluginOperationProblem {
+            switch problem {
+            case .savedRecoveryPending(let id):
+                credentialRecoveryID = id
+                credentialOperationError = problem.localizedDescription
+            case .commitUncertain:
+                credentialOperationError = ConnectorCredentialEditor.Failure.restartRequired.localizedDescription
+            }
+        } else { credentialOperationError = error.localizedDescription }
     }
 
     private func cancelCredentialEntry() {
@@ -1057,11 +1109,7 @@ struct ConnectorEditorView: View {
     private func saveCredentialReplacement(for key: String) {
         let normalizedKey = key.trimmingCharacters(in: .whitespaces).uppercased()
         guard !normalizedKey.isEmpty, !replacementCredentialValue.isEmpty else { return }
-        let outcome = connector.saveCredentialChecked(
-            key: normalizedKey,
-            value: replacementCredentialValue,
-            allowUserInteraction: true
-        )
+        guard let outcome = storeCredential(replacementCredentialValue, key: normalizedKey) else { return }
         guard outcome.isSaved else {
             credentialSaveError = presentation(for: outcome, key: normalizedKey)
             pendingCredentialSaveContext = .replacement(key: normalizedKey)
@@ -1070,7 +1118,6 @@ struct ConnectorEditorView: View {
         credentialSaveError = nil
         pendingCredentialSaveContext = nil
         testResult = nil
-        saveSharingChange()
         cancelCredentialReplacement()
     }
 

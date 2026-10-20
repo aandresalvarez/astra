@@ -11,11 +11,14 @@ final class ConnectorCredentialGenerationTransaction {
     enum Failure: Error, LocalizedError {
         case changedAccount, readFailed(String), copyFailed(String)
         case legacyCredentialRejected(String, ConnectorCredentialAdmissionVerdict)
+        case conflictingLegacyValues(String)
         var errorDescription: String? {
             switch self {
             case .changedAccount: return "The account changed before its credentials could be prepared. Retry."
             case .readFailed(let key): return "Couldn't read the saved \(key). Unlock the credential store and retry."
             case .copyFailed(let key): return "Couldn't preserve the saved \(key) for this account. Retry."
+            case .conflictingLegacyValues(let key):
+                return "There are different saved values for \(key). Replace that credential before changing other secrets."
             case .legacyCredentialRejected(let key, let verdict):
                 return verdict.message(forKey: key) ?? "The saved \(key) must be corrected before migrating this account."
             }
@@ -86,10 +89,13 @@ final class ConnectorCredentialGenerationTransaction {
                 switch ConnectorSecretSeam.required.readCredential(key: key, facts: source, store: KeychainSecretStore()) {
                 case .value(let value): copies.append((key, value))
                 case .missing:
-                    if let index = stored.credentialKeys.firstIndex(where: { ConnectorCredentialKey.same($0, key) }),
-                       index < stored.credentialValues.count, !stored.credentialValues[index].isEmpty {
-                        legacyValues.append((key, stored.credentialValues[index]))
-                    }
+                    let candidates = Set(stored.credentialKeys.indices.compactMap { index -> String? in
+                        guard ConnectorCredentialKey.same(stored.credentialKeys[index], key),
+                              index < stored.credentialValues.count, !stored.credentialValues[index].isEmpty else { return nil }
+                        return stored.credentialValues[index]
+                    })
+                    guard candidates.count <= 1 else { throw Failure.conflictingLegacyValues(key) }
+                    if let value = candidates.first { legacyValues.append((key, value)) }
                 case .unavailable: throw Failure.readFailed(key)
                 }
             }
