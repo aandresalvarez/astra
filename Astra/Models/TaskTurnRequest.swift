@@ -52,6 +52,9 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     /// does not change what it runs with. Nil for older requests, which read
     /// the live rows.
     public let pluginOverrides: PluginOverrideRecords?
+    /// Independent authored selections, with complete accepted attachments.
+    /// Nil is the legacy live-row contract; an empty array means none accepted.
+    public let authoredSkills: [SkillLaunchRecord]?
     /// What Remove kept of the workspace's removed activations at
     /// submission: the only record keeping their override rows out of
     /// scope, which an Add while the request waits consumes. Nil for older
@@ -85,6 +88,7 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         self.pluginDefinitions = pluginDefinitions
         pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
         pluginOverrides = task.workspace.map(PluginOverrideRecords.init(workspace:))
+        authoredSkills = SkillLaunchRecord.captureAuthored(for: task)
         retiredPluginActivations = task.workspace.map(WorkspaceCapabilityActivation.retiredActivations(of:))
     }
 }
