@@ -49,9 +49,11 @@ enum ConnectorCredentialMigration {
         let previous = Snapshot(account)
         let keys = Set(account.credentialKeys.map(ConnectorCredentialKey.canonical)).union(promoted)
         let prepared = try ConnectorCredentialGenerationTransaction.prepare(account: account, isNew: false,
-            keeping: keys, replacing: [], modelContext: modelContext, migratingSettings: promoted)
+            keeping: keys, replacing: [], modelContext: modelContext, migratingSettings: promoted, settingConflicts: .reject)
         var attemptedCommit = false
         do {
+            let settled = Set(prepared.settledSettingFields.map { ConnectorCredentialKey.canonical($0.key) })
+            guard promoted.isSubset(of: settled) else { throw Failure.invalidLegacyShape }
             try requireReady(scope, modelContext: modelContext)
             account.credentialNamespaceID = prepared.namespaceID
             account.credentialKeys = keys.sorted()

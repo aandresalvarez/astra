@@ -409,13 +409,13 @@ struct PluginAccountCredentialGenerationTests {
     }
 
 
-    @Test("Add admits a valid raw setting into its private generation before publishing it")
-    func addMigratesValidLegacySetting() throws {
+    @Test("Add admits a valid raw setting into its private generation before publishing it", arguments: ["PROJECT", "project"])
+    func addMigratesValidLegacySetting(storedKey: String) throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
             let env = try Fixture()
             defer { env.disk.disk.removeFiles() }
             let account = try env.enable("before-valid-setting-migration")
-            account.configKeys = ["PROJECT"]
+            account.configKeys = [storedKey]
             account.configValues = ["  ENG-4242  "]
             try env.disk.context.save()
             let namespace = account.credentialNamespaceID

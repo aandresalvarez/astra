@@ -29,7 +29,13 @@ enum PluginAccountCredentialCutoverPlan {
             let moved = PluginConnectorFieldTrust.settingsStoredAsCredentials(of: declared, in: package)
             for binding in activation.bindings where !binding.isDeleted && components.contains(binding.componentID) {
                 guard let account = binding.account, !account.isDeleted, account.originPackageID == package.id else { continue }
-                let promoted = Set(moved.filter { !account.configValue($0).isEmpty }.map(ConnectorCredentialKey.canonical))
+                let declared = Set(moved.map(ConnectorCredentialKey.canonical))
+                let promoted = Set(account.configKeys.indices.compactMap { index -> String? in
+                    let key = ConnectorCredentialKey.canonical(account.configKeys[index])
+                    guard declared.contains(key), index < account.configValues.count,
+                          !account.configValues[index].isEmpty else { return nil }
+                    return key
+                })
                 let addsKey = spec.credentialHints.contains { hint in
                     !account.credentialKeys.contains { ConnectorCredentialKey.same($0, hint.key) }
                 }

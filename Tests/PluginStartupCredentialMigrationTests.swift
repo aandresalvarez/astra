@@ -140,21 +140,25 @@ struct PluginStartupCredentialMigrationTests {
         }
     }
 
-    @Test("A newer accepted vault value wins over a stale raw setting")
-    func newerVaultWins() throws {
+    @Test("An accepted credential never discards a conflicting legacy setting", arguments: ["ENG-1", "your-token-here"])
+    func newerVaultWins(raw: String) throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
             let env = try ConnectorCredentialEditorTests.Fixture()
             defer { env.disk.disk.removeFiles() }
             let account = try env.enable()
             account.originPackageID = "imported.tracker"
             account.configKeys = ["tracker_project"]
-            account.configValues = ["your-token-here"]
+            account.configValues = [raw]
             #expect(account.restorePreviouslyStoredCredential(key: "TRACKER_PROJECT", value: "ENG-2"))
             try env.disk.context.save()
-            #expect(try ConnectorCredentialMigration.migrate(account, mirroredBy: [env.disk.workspace], modelContext: env.disk.context,
-                resolver: PluginConnectorFieldTrustTests.StubCreator.self))
+            let namespace = account.credentialNamespaceID
+            #expect(throws: ConnectorCredentialGenerationTransaction.Failure.self) {
+                _ = try ConnectorCredentialMigration.migrate(account, mirroredBy: [env.disk.workspace], modelContext: env.disk.context,
+                    resolver: PluginConnectorFieldTrustTests.StubCreator.self)
+            }
             #expect(account.currentCredentialValue(forKey: "TRACKER_PROJECT") == "ENG-2")
-            #expect(account.configKeys.isEmpty)
+            #expect(account.configValues == [raw])
+            #expect(account.credentialNamespaceID == namespace)
         }
     }
 
@@ -251,6 +255,23 @@ struct PluginStartupCredentialMigrationTests {
                 #expect(account.currentCredentialValue(forKey: "SECOND_TOKEN") == nil)
                 #expect(account.credentialValues.contains(raw))
             }
+        }
+    }
+
+    @Test("A leading empty duplicate cannot hide a valid legacy setting from migration")
+    func duplicatePlainFieldsKeepAdmittedValue() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try ConnectorCredentialEditorTests.Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable()
+            account.originPackageID = "imported.tracker"
+            account.configKeys = ["TRACKER_PROJECT", "TRACKER_PROJECT"]
+            account.configValues = ["", "ENG-1"]
+            try env.disk.context.save()
+            #expect(try ConnectorCredentialMigration.migrate(account, mirroredBy: [env.disk.workspace], modelContext: env.disk.context,
+                resolver: PluginConnectorFieldTrustTests.StubCreator.self))
+            #expect(account.currentCredentialValue(forKey: "TRACKER_PROJECT") == "ENG-1")
+            #expect(account.configKeys.isEmpty)
         }
     }
 
