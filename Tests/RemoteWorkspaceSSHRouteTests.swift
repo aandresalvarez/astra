@@ -101,6 +101,16 @@ struct RemoteWorkspaceSSHRouteTests {
         #expect(route.instruction.contains("do not record SSH as disabled"))
     }
 
+    @Test("Rendered targets keep argument boundaries and tilde expansion")
+    func renderedTargetsAreShellWords() {
+        let spaced = SSHConnection(name: "s", host: "host.example.test", user: "agent", keyPath: "/Users/me/My Keys/id")
+        #expect(RemoteWorkspaceSSHRoute.connectTarget(for: spaced) == "-i '/Users/me/My Keys/id' agent@host.example.test")
+        let home = SSHConnection(name: "h", host: "host.example.test", user: "agent", keyPath: "~/My Keys/it's")
+        #expect(RemoteWorkspaceSSHRoute.connectTarget(for: home) == "-i ~/'My Keys/it'\\''s' agent@host.example.test")
+        #expect(RemoteWorkspaceSSHRoute.shellWord("~/.ssh/id_ed25519") == "~/.ssh/id_ed25519")
+        #expect(RemoteWorkspaceSSHRoute.shellWord("deid-jsn-workbench") == "deid-jsn-workbench")
+    }
+
     // MARK: - Resolved from the recorded manifest
 
     /// Records a manifest the way a launch does and resolves the route from it.
@@ -212,6 +222,33 @@ struct RemoteWorkspaceSSHRouteTests {
             manifest.providerRender.deniedShellPatterns = ["ssh:*"]
         }
         #expect(denied.route == .unavailable(.policyDeniesShell))
+    }
+
+    @Test("Only targets the guard allows are advertised for the native route")
+    func perTargetGuardDisposition() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        defer { withExtendedLifetime(container) {} }
+        let manifest = try recorded(.claudeCode, level: .autonomous, in: context) { manifest in
+            manifest.providerRender.deniedShellPatterns = ["ssh staging:*", "ssh staging *"]
+        }.manifest
+        func resolve(_ targets: [String]) throws -> RemoteWorkspaceSSHRoute {
+            try #require(RemoteWorkspaceSSHRoute.resolve(
+                targets: targets,
+                manifest: manifest,
+                requirements: TaskRuntimeRequirementSet(hostControlTools: [], requiresDockerWorkspaceShell: false, requiresBrowserControl: false),
+                environment: .host,
+                runtimeCapabilityProfile: .defaultProfile(for: .claudeCode),
+                sshClientAvailable: true,
+                hostControlHelperAvailable: true
+            ))
+        }
+        let mixed = try resolve(["staging", "deid-jsn-workbench"])
+        #expect(mixed.route == .nativeShell)
+        #expect(mixed.targets == ["deid-jsn-workbench"])
+        #expect(!mixed.instruction.contains("staging"))
+        let onlyDenied = try resolve(["staging"])
+        #expect(onlyDenied.route == .unavailable(.policyDeniesShell))
     }
 
     @Test("ASTRA's sandbox without network is never a native route")

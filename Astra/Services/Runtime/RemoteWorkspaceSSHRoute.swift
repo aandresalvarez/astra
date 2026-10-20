@@ -74,11 +74,16 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
         sshClientAvailable: Bool,
         hostControlHelperAvailable: Bool
     ) -> RemoteWorkspaceSSHRoute? {
-        guard let probeTarget = targets.first else { return nil }
+        guard !targets.isEmpty else { return nil }
+        // Every advertised target is asked about, so a policy that allows ssh to
+        // one host does not get the others advertised as reachable.
+        let guardPolicy = AgentRuntimePolicyGuard(manifest: manifest)
+        let shellTargets = targets.filter {
+            guardPolicy.disposition(toolName: "Bash", command: "ssh \($0) true") != .denied
+        }
         let facts = Facts(
             workspaceIsContainerized: environment.isContainerized,
-            shellDisposition: AgentRuntimePolicyGuard(manifest: manifest)
-                .disposition(toolName: "Bash", command: "ssh \(probeTarget) true"),
+            shellDisposition: shellTargets.isEmpty ? .denied : .allowed,
             shellWithdrawnForHostControl: HostControlPlaneMCPProjection.withdrawsNativeShell(
                 environment: environment,
                 permissionPolicy: manifest.providerRender.launchPermissionPolicy,
@@ -92,7 +97,8 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
                 && runtimeCapabilityProfile.canDeliverHostControlPlane
                 && requirements.offeredHostControlTools.contains("ssh")
         )
-        return RemoteWorkspaceSSHRoute(targets: targets, route: route(for: facts))
+        let route = route(for: facts)
+        return RemoteWorkspaceSSHRoute(targets: route == .nativeShell ? shellTargets : targets, route: route)
     }
 
     /// The launch's call, made once the run's manifest is recorded.
@@ -116,9 +122,22 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
         )
     }
 
-    /// `ssh <target>` for one connection, as the agent types it.
+    /// `ssh <target>` for one connection, as the agent types it into a shell:
+    /// each argument quoted where it needs to be, so an identity path with a
+    /// space stays one argument, and a leading `~/` left for the shell to expand.
     static func connectTarget(for connection: SSHConnection) -> String {
-        connection.sshDestinationArguments(expandingTilde: false).joined(separator: " ")
+        connection.sshDestinationArguments(expandingTilde: false).map(shellWord).joined(separator: " ")
+    }
+
+    static func shellWord(_ argument: String) -> String {
+        let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,./_-")
+        func quoted(_ text: String) -> String {
+            text.unicodeScalars.allSatisfy(safe.contains) && !text.isEmpty
+                ? text
+                : "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+        if argument.hasPrefix("~/") { return "~/" + quoted(String(argument.dropFirst(2))) }
+        return quoted(argument)
     }
 
     var instruction: String {
