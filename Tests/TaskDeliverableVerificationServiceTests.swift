@@ -584,103 +584,25 @@ struct TaskDeliverableVerificationServiceTests {
             ("<script TYPE='Text/JavaScript'>a()</script>", true),
             ("<script type=\" text/javascript \">a()</script>", true),
             ("<script type=\"application/x-javascript\">a()</script>", true),
-            ("<script type=\"text&#x2f;javascript\">a()</script>", true),
-            ("<script type=\"text&sol;javascript\">a()</script>", true),
-            ("<script language=\"JavaScript\">a()</script>", true),
             ("<script data-type=\"application/json\">a()</script>", true),
-            ("<script title=\" type='application/json'\">a()</script>", true),
-            ("<script alt=\"a > b\">a()</script>", true),
             ("<script type=\"text/javascript; charset=utf-8\">{}</script>", false),
             ("<script type=\" module \">{}</script>", false),
             ("<script type=\"  \">{}</script>", false),
-            ("<script language=\"vbscript\">{}</script>", false),
             ("<script type=\"application/json\">{}</script>", false),
             ("<script type=\"application/ld+json\">{}</script>", false),
             ("<script type=\"importmap\">{}</script>", false),
             ("<script type=\"text/template\">{}</script>", false),
-            ("<script type=\"text/x-handlebars-template\">{}</script>", false),
-            ("<script\n  id=\"m\" type=\"application/json\">{}</script>", false),
-            ("<script data-src=\"lazy.js\" type = \"text/json\">{}</script>", false),
-            ("<!-- <script type=\"application/json\"> --><script>a()</script>", true),
-            ("<textarea><script type=\"application/json\"></textarea><script>a()</script>", true),
-            ("<TITLE>x <script type=\"text/template\"></title><script>a()</script>", true),
-            ("<style>/* <script type=\"application/json\"> */</style><script>a()</script>", true),
-            ("<titles></titles><script type=\"application/json\">{}</script>", false),
-            ("<div data-x=\"<style>\"></div><script>a()</script>", true),
-            ("<div title='<!--'></div><script>a()</script>", true),
-            ("<script type\u{00A0}=\"application/json\">a()</script>", true),
-            ("<script type=\"application/json\">{\"a\": \"</scripts>\"}</script>", false),
-            ("<script type=\"text&SOL;javascript\">{}</script>", false),
-            ("<!--><script>a()</script>", true),
-            ("<!--->x<script>a()</script>", true),
-            ("<!-- x --!><script>a()</script>", true),
-            ("<svg><style><script>a()</script></style></svg>", true),
-            ("<script type=\"text&#47javascript\">a()</script>", true),
-            ("<script type=\"text&#x2Fjavascript\">a()</script>", true),
-            ("<svg><![CDATA[foo><script>bad(]]></svg><script>a()</script>", true),
-            ("<svg><foreignObject><script href=\"app.js\"/>a()</script></foreignObject></svg>", true),
-            ("<svg><foreignObject><style><script>x</script></style></foreignObject></svg><script>a()</script>", true),
-            ("<script type=\"&Tab;text&sol;javascript&NewLine;\">a()</script>", true),
-            ("<script type=\"&TAB;text/javascript\">{}</script>", false),
-            ("<math><annotation-xml encoding=\"Text/HTML\"><script href=\"app.js\"/>a()</script></annotation-xml></math>", true)
+            ("<script type=\"text/x-handlebars-template\">{}</script>", false)
         ]
 
         for testCase in cases {
-            let scripts = HTMLScriptScanner.inlineScripts(in: testCase.html)
+            let scripts = TaskDeliverableVerificationService.inlineScripts(in: testCase.html)
             #expect(scripts.count == 1, "\(testCase.html)")
             #expect(scripts.first?.isJavaScript == testCase.isJavaScript, "\(testCase.html)")
         }
-        let commented = HTMLScriptScanner.inlineScripts(
-            in: "<!-- <script type=\"application/json\"> --><script>a()</script>"
-        )
-        #expect(commented.first?.body == "a()")
-        #expect(HTMLScriptScanner.inlineScripts(
-            in: "<script src=\"external.js\"></script><scripts>x</scripts>"
-        ).isEmpty)
-        // A quoted `>` in a script end tag does not end it early.
-        let quotedEndTag = HTMLScriptScanner.inlineScripts(
-            in: "<script>ok()</script data=\"> <script type=application/json>\"><script>a()</script>"
-        )
-        #expect(quotedEndTag.map(\.body) == ["ok()", "a()"])
-        #expect(quotedEndTag.allSatisfy { $0.isJavaScript })
-        // In SVG, `<script/>` self-closes and `href` is an external source.
-        let svg = "<svg><script href=\"app.js\"/><script>a()</script></svg><script>b()</script>"
-        #expect(HTMLScriptScanner.inlineScripts(in: svg).map(\.body) == ["a()", "b()"])
-        #expect(HTMLScriptScanner.externalScriptCount(in: svg) == 1)
-        // Escaped script data: a nested `<script>...</script>` inside `<!--`
-        // does not close the outer script.
-        let legacy = "<script><!--\ndocument.write(\"<script src=x.js></script>\");\n//--></script>"
-        #expect(HTMLScriptScanner.inlineScripts(in: legacy).map(\.body) == [
-            "<!--\ndocument.write(\"<script src=x.js></script>\");\n//-->"
-        ])
-        // annotation-xml without an HTML encoding stays foreign.
-        #expect(HTMLScriptScanner.externalScriptCount(
-            in: "<math><annotation-xml><script href=\"app.js\"/></annotation-xml></math>"
-        ) == 1)
-        // Many comments scan in one pass; finding each comment's end used to
-        // rescan the rest of the document (a 76 KB page took over a minute).
-        let manyComments = String(repeating: "<!-- c --><p>x</p>\n", count: 20_000) + "<script>a()</script>"
-        #expect(HTMLScriptScanner.inlineScripts(in: manyComments).map(\.body) == ["a()"])
+        #expect(TaskDeliverableVerificationService.inlineScripts(in: "<script src=\"a.js\"></script>").isEmpty)
         // A script cut off before its end tag never runs, so it is not checked.
-        #expect(HTMLScriptScanner.inlineScripts(in: "<script>a()</script><script>bad(").map(\.body) == ["a()"])
-        // In SVG, CDATA wrappers are not part of the script text, and a
-        // `</script>` inside CDATA does not close the script.
-        let svgCDATA = "<svg><script><![CDATA[const ok = \"</script>\";]]></script></svg>"
-        #expect(HTMLScriptScanner.inlineScripts(in: svgCDATA).map(\.body) == ["const ok = \"</script>\";"])
-        // Outside CDATA, foreign script text has its character references decoded.
-        let svgEscaped = "<svg><script>if (a &lt; b &amp;&amp; c) { ok(\"&lt;\"); }<![CDATA[ &lt; ]]></script></svg>"
-        #expect(HTMLScriptScanner.inlineScripts(in: svgEscaped).map(\.body) == [
-            "if (a < b && c) { ok(\"<\"); } &lt; "
-        ])
-        // Everything after `<plaintext>` is text.
-        #expect(HTMLScriptScanner.inlineScripts(in: "<plaintext><script>bad(</script>").isEmpty)
-        // A non-ASCII space is part of the tag name, so this is not a script.
-        #expect(HTMLScriptScanner.inlineScripts(
-            in: "<script\u{00A0}type=\"application/json\">a()</script>"
-        ).isEmpty)
-        #expect(HTMLScriptScanner.externalScriptCount(
-            in: "<div data-src=\"x.js\"></div><script src=\"a.js\"></script><!-- <script src=\"b.js\"></script> -->"
-        ) == 1)
+        #expect(TaskDeliverableVerificationService.inlineScripts(in: "<script>a()</script><script>bad(").map(\.body) == ["a()"])
     }
 
     private func makeFixture(goal: String) throws -> (

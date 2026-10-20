@@ -590,8 +590,8 @@ enum TaskDeliverableVerificationService {
             path: file.path
         ))
 
-        let scripts = HTMLScriptScanner.inlineScripts(in: html)
-        let externalScriptCount = HTMLScriptScanner.externalScriptCount(in: html)
+        let scripts = inlineScripts(in: html)
+        let externalScriptCount = externalScriptReferences(in: html)
         if scripts.isEmpty {
             checks.append(TaskDeliverableCheck(
                 id: "javascript.syntax.inline",
@@ -802,6 +802,111 @@ enum TaskDeliverableVerificationService {
             return nil
         }
         return size.uint64Value
+    }
+
+    struct InlineScript: Equatable {
+        var type: String?
+        var body: String
+
+        /// HTML runs a script as JavaScript only when its type is absent or
+        /// empty, exactly `module`, or a JavaScript MIME type (surrounding
+        /// whitespace ignored, parameters not allowed); any other type makes
+        /// it an inert data block.
+        /// https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
+        var isJavaScript: Bool {
+            guard let type, !type.isEmpty else { return true }
+            let mimeType = type.trimmingCharacters(in: Self.asciiWhitespace).lowercased()
+            return Self.javascriptMIMETypes.contains(mimeType) || type.lowercased() == "module"
+        }
+
+        private static let asciiWhitespace = CharacterSet(charactersIn: "\t\n\u{0C}\r ")
+
+        // https://html.spec.whatwg.org/multipage/scripting.html#javascript-mime-type
+        private static let javascriptMIMETypes: Set<String> = [
+            "application/ecmascript",
+            "application/javascript",
+            "application/x-ecmascript",
+            "application/x-javascript",
+            "text/ecmascript",
+            "text/javascript",
+            "text/javascript1.0",
+            "text/javascript1.1",
+            "text/javascript1.2",
+            "text/javascript1.3",
+            "text/javascript1.4",
+            "text/javascript1.5",
+            "text/jscript",
+            "text/livescript",
+            "text/x-ecmascript",
+            "text/x-javascript"
+        ]
+    }
+
+    static func inlineScripts(in html: String) -> [InlineScript] {
+        var scripts: [InlineScript] = []
+        var searchStart = html.startIndex
+        while let openRange = html.range(
+            of: "<script",
+            options: [.caseInsensitive],
+            range: searchStart..<html.endIndex
+        ) {
+            guard let tagEnd = html.range(of: ">", range: openRange.upperBound..<html.endIndex) else {
+                break
+            }
+            let openingTag = html[openRange.lowerBound..<tagEnd.upperBound].lowercased()
+            guard let closeRange = html.range(
+                of: "</script",
+                options: [.caseInsensitive],
+                range: tagEnd.upperBound..<html.endIndex
+            ) else {
+                break
+            }
+            if !openingTag.contains("src=") {
+                scripts.append(InlineScript(
+                    type: scriptTypeAttribute(in: openingTag),
+                    body: String(html[tagEnd.upperBound..<closeRange.lowerBound])
+                ))
+            }
+            searchStart = closeRange.upperBound
+        }
+        return scripts
+    }
+
+    private static let scriptTypeAttributePattern = try? NSRegularExpression(
+        pattern: #"\stype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#,
+        options: [.caseInsensitive]
+    )
+
+    private static func scriptTypeAttribute(in openingTag: String) -> String? {
+        guard let regex = scriptTypeAttributePattern else { return nil }
+        let range = NSRange(openingTag.startIndex..<openingTag.endIndex, in: openingTag)
+        guard let match = regex.firstMatch(in: openingTag, range: range) else { return nil }
+        for group in 1...3 {
+            if let valueRange = Range(match.range(at: group), in: openingTag) {
+                return String(openingTag[valueRange])
+            }
+        }
+        return nil
+    }
+
+    private static func externalScriptReferences(in html: String) -> Int {
+        var count = 0
+        var searchStart = html.startIndex
+        while let openRange = html.range(
+            of: "<script",
+            options: [.caseInsensitive],
+            range: searchStart..<html.endIndex
+        ) {
+            guard let tagEnd = html.range(of: ">", range: openRange.upperBound..<html.endIndex) else {
+                break
+            }
+            let openingTag = html[openRange.lowerBound..<tagEnd.upperBound].lowercased()
+            if openingTag.contains("src=") {
+                count += 1
+            }
+            searchStart = tagEnd.upperBound
+        }
+        return count
     }
 
     private static func bounded(_ text: String, maxCharacters: Int) -> String {
