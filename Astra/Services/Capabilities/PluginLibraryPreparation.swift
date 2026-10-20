@@ -6,6 +6,7 @@ import ASTRACore
 /// can mutate the installed library before the journal is durable.
 @MainActor
 enum PluginLibraryPreparation {
+    enum Destination: Equatable { case installed, staged }
     struct Definition {
         let operation: PluginFileOperationJournal.Prepared
         let reviewedDigest: String
@@ -14,13 +15,12 @@ enum PluginLibraryPreparation {
     static func prepare(
         source: CapabilityPackageSource, library: CapabilityLibrary,
         approvalStore: CapabilityApprovalStore, approvedBy: String? = nil,
-        storeIdentity: String, journal: PluginFileOperationJournal
+        storeIdentity: String, journal: PluginFileOperationJournal,
+        operation: PluginFileOperationContext? = nil, destination: Destination = .installed
     ) throws -> Definition {
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("astra-plugin-prepare-\(UUID())")
         defer { try? FileManager.default.removeItem(at: scratch) }
-        var reviewed = source
-        reviewed.package = CapabilityPackageImporter.asStored(source.package)
-        let reviewedDigest = try CapabilityApprovalDigest.digest(for: reviewed)
+        let reviewedDigest = try reviewDigest(source)
         let candidate = CapabilityLibrary(directory: scratch.appendingPathComponent("Library"), publishesChanges: false)
         try candidate.install(source)
         guard let installed = candidate.installedPackage(id: source.package.id),
@@ -40,19 +40,28 @@ enum PluginLibraryPreparation {
         if installed.iconDescriptor.kind == .asset {
             let url = candidate.packageManifestURL(for: installed.id)
             var stored = try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: url))
-            stored.sourceMetadata?.url = library.packageManifestURL(for: installed.id)
+            stored.sourceMetadata?.url = (destination == .staged ? library.staging : library).packageManifestURL(for: installed.id)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(stored).write(to: url, options: .atomic)
         }
         let name = CapabilityLibrary.safeFileName(for: installed.id)
+        let target: PluginFileOperationJournal.Root = destination == .staged ? .staging : .library
         var changes: [PluginFileOperationJournal.Change] = [
-            .init(root: .library, name: name + ".json", replacement: try PluginFileImage.capture(candidate.packageURL(for: installed.id))),
-            .init(root: .library, name: name, replacement: try PluginFileImage.capture(candidate.packageManifestURL(for: installed.id).deletingLastPathComponent())),
-            .init(root: .staging, name: name + ".json", replacement: nil),
-            .init(root: .staging, name: name, replacement: nil)
+            .init(root: target, name: name + ".json", replacement: try PluginFileImage.capture(candidate.packageURL(for: installed.id))),
+            .init(root: target, name: name, replacement: try PluginFileImage.capture(candidate.packageManifestURL(for: installed.id).deletingLastPathComponent()))
         ]
+        if destination == .installed {
+            changes += [.init(root: .staging, name: name + ".json", replacement: nil), .init(root: .staging, name: name, replacement: nil)]
+        }
         if let approvalChange { changes.append(approvalChange) }
-        let operation = try journal.prepare(storeIdentity: storeIdentity, pluginIDs: [installed.id], changes: changes)
-        return Definition(operation: operation, reviewedDigest: reviewedDigest)
+        let prepared = try journal.prepare(id: operation?.id ?? UUID(), storeIdentity: storeIdentity, pluginIDs: [installed.id],
+            changes: changes, linkedMetadataDigest: operation?.metadataDigest)
+        return Definition(operation: prepared, reviewedDigest: reviewedDigest)
     }
+    static func reviewDigest(_ source: CapabilityPackageSource) throws -> String {
+        var reviewed = source
+        reviewed.package = CapabilityPackageImporter.asStored(source.package)
+        return try CapabilityApprovalDigest.digest(for: reviewed)
+    }
+
 }
