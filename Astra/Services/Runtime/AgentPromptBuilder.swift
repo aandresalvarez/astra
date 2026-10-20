@@ -5,6 +5,7 @@ import ASTRAPersistence
 
 enum PromptContextSectionKind: String, Sendable, CaseIterable {
     case currentGoal
+    case taskInputs
     case threadState
     case recentTranscript
     case changedFiles
@@ -16,6 +17,7 @@ enum PromptContextSectionKind: String, Sendable, CaseIterable {
     var displayName: String {
         switch self {
         case .currentGoal: "current goal"
+        case .taskInputs: "task inputs"
         case .threadState: "thread state"
         case .recentTranscript: "recent transcript"
         case .changedFiles: "files changed"
@@ -29,6 +31,7 @@ enum PromptContextSectionKind: String, Sendable, CaseIterable {
 
 struct PromptContextBudgetProfile: Sendable, Equatable {
     var currentGoalTokens: Int = 2_500
+    var taskInputsTokens: Int = 2_000
     var threadStateTokens: Int = 2_000
     var recentTranscriptTokens: Int = 12_000
     var changedFilesTokens: Int = 2_000
@@ -45,6 +48,7 @@ struct PromptContextBudgetProfile: Sendable, Equatable {
     func tokenBudget(for kind: PromptContextSectionKind) -> Int {
         switch kind {
         case .currentGoal: currentGoalTokens
+        case .taskInputs: taskInputsTokens
         case .threadState: threadStateTokens
         case .recentTranscript: recentTranscriptTokens
         case .changedFiles: changedFilesTokens
@@ -513,17 +517,6 @@ enum AgentPromptBuilder {
         return suffix.isEmpty ? "." : String(suffix)
     }
 
-    private static func appendInputs(for task: AgentTask, to sections: inout [PromptContextSection]) {
-        guard !task.inputs.isEmpty else { return }
-        let contextParts = PromptInputContextReader.contextParts(for: task.inputs)
-        appendSection(
-            "Context/Inputs:\n" + contextParts.joined(separator: "\n\n"),
-            kind: .supportingContext,
-            to: &sections,
-            sourcePointers: inputSourcePointers(task.inputs)
-        )
-    }
-
     private static func appendConstraints(for task: AgentTask, to sections: inout [PromptContextSection]) {
         if !task.constraints.isEmpty {
             appendSection(
@@ -794,6 +787,8 @@ enum AgentPromptBuilder {
             TaskOutputFolderSectionProvider()
         case .taskDetails:
             InitialTaskDetailsSectionProvider()
+        case .taskInputs:
+            TaskInputsPromptSectionProvider()
         case .followUpContext:
             FollowUpContextSectionProvider()
         case .capabilities:
@@ -1211,7 +1206,6 @@ enum AgentPromptBuilder {
         ) {
             let task = context.task
             appendSection("Goal: \(task.goal)", kind: .currentGoal, to: &sections, sourcePointers: taskSourcePointers(task))
-            appendInputs(for: task, to: &sections)
             appendConstraints(for: task, to: &sections)
         }
     }
@@ -1917,7 +1911,7 @@ enum AgentPromptBuilder {
             return notice.count > budget ? String(notice.prefix(budget)) : notice
         }
 
-        return String(text.prefix(contentCharacterLimit)) + separator + notice
+        return PromptUntrustedDataBlock.boundedPrefix(text, maxCharacters: contentCharacterLimit) + separator + notice
     }
 
     private static func budgetOmissionNotice(
@@ -1927,7 +1921,7 @@ enum AgentPromptBuilder {
     ) -> String {
         let originalTokens = estimatedTokens(forCharacterCount: originalCharacters)
         var lines = [
-            "[ASTRA context budget: \(section.kind.displayName) truncated from about \(originalTokens) tokens to \(tokenBudget) tokens.]",
+            "[ASTRA context budget: \(section.kind.displayName) truncated: ~\(originalTokens) to \(tokenBudget) tokens.]",
             "Use these source pointers for omitted detail:"
         ]
 
@@ -2189,13 +2183,6 @@ enum AgentPromptBuilder {
     private static func taskFolderSourcePointers(_ task: AgentTask) -> [PromptContextSourcePointer] {
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         return folder.isEmpty ? taskSourcePointers(task) : [sourcePointer(label: "task output folder", target: folder)]
-    }
-
-    private static func inputSourcePointers(_ inputs: [String]) -> [PromptContextSourcePointer] {
-        inputs.map { input in
-            let target = (input.hasPrefix("~") ? (input as NSString).expandingTildeInPath : input)
-            return sourcePointer(label: "task input", target: target)
-        }
     }
 
     private static func pathSourcePointers(_ paths: [String]) -> [PromptContextSourcePointer] {

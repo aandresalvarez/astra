@@ -128,6 +128,7 @@ struct PluginActivationReviewTests {
         Fixtures.Environment.retained.append(container)
         let context = container.mainContext
         let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
         let library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
         let v1 = Fixtures.package(version: "1.0.0")
@@ -170,6 +171,7 @@ struct PluginActivationReviewTests {
         Fixtures.Environment.retained.append(container)
         let context = container.mainContext
         let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
         let library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
         let v1 = Fixtures.package(version: "1.0.0")
@@ -202,13 +204,14 @@ struct PluginActivationReviewTests {
 
     @Test("A journaled rename destination is cleared whole, and stays journaled until that succeeds")
     func renameDestinationNamespaceIsClearedWhole() throws {
+        let env = try Fixtures.Environment()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-rename-whole-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let outbox = PluginSecretCleanupOutbox(fileURL: root.appendingPathComponent("PluginSecretCleanup.json"))
         let destination = UUID()
         func settle(kept: Set<String> = [], cleans: Bool, deleted: inout [String], cleaned: inout [UUID]) -> Bool {
             PluginSecretCleanupOutbox.settleRenameDestination(
-                destination, keys: ["DECLARED"], kept: kept, modelContext: nil, outbox: outbox,
+                destination, keys: ["DECLARED"], kept: kept, modelContext: env.context, outbox: outbox,
                 clean: { cleaned.append($0); return cleans }
             ) { deleted.append($0); return true }
         }
@@ -248,21 +251,28 @@ struct PluginActivationReviewTests {
     func importReportsAFailedRestore() throws {
         let env = try Fixtures.Environment()
         try env.install(Fixtures.package(version: "1.0.0"))
-        let library = CapabilityLibrary(directory: env.library.directory, fileManager: RestoreRefusingFileManager(hidden: "2.0.0"))
+        let library = CapabilityLibrary(directory: env.library.directory, fileManager: RestoreBlockingFileManager(hidden: "2.0.0", library: env.library.directory))
         let update = CapabilityPackageValidator.validate(
             package: Fixtures.package(version: "2.0.0"), installedPackages: library.installedPackages(), checkPrerequisites: false
         )
-        let error = #expect(throws: CapabilityPackageUpdateNotRolledBack.self) {
-            try CapabilityPackageImporter(library: library).importValidatedPackage(update, modelContext: env.context)
+        var operationID: UUID?
+        do {
+            _ = try CapabilityPackageImporter(library: library).importValidatedPackage(update, modelContext: env.context)
+            Issue.record("The retargeted recovery root should be refused")
+        } catch let problem as PluginOperationProblem {
+            if case .commitUncertain(let id) = problem { operationID = id }
+            else { throw problem }
         }
-        let failure = try #require(error)
-        defer { try? FileManager.default.removeItem(atPath: failure.snapshotPath) }
-        #expect(failure.packageID == "ops.report")
-        #expect(failure.updateError == CapabilityPackageInstallUnreadable(packageID: "ops.report").localizedDescription)
+        let id = try #require(operationID)
+        let journal = PluginFileOperationJournal(library: env.library, approvals: CapabilityApprovalStore())
+        #expect(try journal.pendingIDs() == [id])
+        let prepared = try journal.load(id)
+        let oldBytes = try #require(prepared.manifest.entries.first { $0.name == "ops-report.json" }?.before?.files[""])
+        let kept = try JSONDecoder().decode(PluginPackage.self, from: oldBytes)
+        #expect(kept.version == "1.0.0")
         #expect(env.library.installedPackage(id: "ops.report") == nil)
-        // The previous version survives only in the kept snapshot.
-        let kept = try FileManager.default.subpathsOfDirectory(atPath: failure.snapshotPath)
-        #expect(!kept.isEmpty)
+        #expect(try PluginOperationCommit.read(id, container: env.container) == nil)
+        #expect(WorkspaceCapabilityActivation.activation(for: "ops.report", in: env.workspace)?.recordedVersion == "1.0.0")
     }
 
     @Test("Remove keeps a plugin template the person changed only in its models, hooks or default skills")
@@ -509,7 +519,10 @@ struct PluginActivationReviewTests {
     }
 
     /// One runtime copy serves a run scoped to either binder, so with no
-    /// creator to read it keeps only the settings both declare.
+    /// creator to read it keeps only the settings both declare: the skill
+    /// settings an account carries plain. A binder's own connector setting
+    /// is a credential of a third-party plugin, so a plain value the row
+    /// still holds for it reaches no run.
     @Test("A shared account whose creator can't be found keeps only the settings every binder declares")
     func sharedAccountWithUnresolvableCreatorKeepsCommonSettings() throws {
         let env = try Fixtures.Environment()
@@ -517,11 +530,14 @@ struct PluginActivationReviewTests {
         let account = try #require(env.workspace.connectors.first { $0.originPackageID == "ops.report" })
         account.setConfigValue("ONLY_B", value: "b-value")
         account.setConfigValue("SHARED", value: "shared-value")
-        func binder(_ id: String, configKeys: [String]) throws -> PluginPackage {
+        account.setConfigValue("TRACKER_REGION", value: "plain-region")
+        func binder(_ id: String, settings: [String]) throws -> PluginPackage {
             var package = Fixtures.package(version: "1.0.0")
             package.id = id
             package.skills[0].name = "\(id) Agent"
-            package.connectors[0].configHints = configKeys.map { .init(key: $0, hint: $0, isList: false) }
+            package.skills[0].environmentKeys = settings
+            package.skills[0].environmentValues = settings.map { _ in "" }
+            package.connectors[0].configHints = [.init(key: "TRACKER_REGION", hint: "Region", isList: false)]
             WorkspaceCapabilityActivation.mutate(env.workspace) { $0.enableCapability(id) }
             let activation = try #require(WorkspaceCapabilityActivation.activation(for: id, in: env.workspace))
             WorkspaceCapabilityActivation.bind(
@@ -529,8 +545,8 @@ struct PluginActivationReviewTests {
             )
             return package
         }
-        let b = try binder("ops.b", configKeys: ["ONLY_B", "SHARED"])
-        let c = try binder("ops.c", configKeys: ["SHARED"])
+        let b = try binder("ops.b", settings: ["ONLY_B", "SHARED"])
+        let c = try binder("ops.c", settings: ["SHARED"])
         WorkspaceCapabilityActivation.mutate(env.workspace) { $0.capabilityIDs.removeAll { $0 == "ops.report" } }
 
         // Either order of the binders: the first one no longer decides.
@@ -540,9 +556,10 @@ struct PluginActivationReviewTests {
             ).connectors.first { $0.id == account.id })
             #expect(copy.configKeys.contains("SHARED"))
             #expect(!copy.configKeys.contains("ONLY_B") && !copy.configValues.contains("b-value"))
+            #expect(!copy.configKeys.contains("TRACKER_REGION") && !copy.configValues.contains("plain-region"))
             #expect(copy.credentialKeys.isEmpty)
         }
-        #expect(account.config["ONLY_B"] == "b-value")
+        #expect(account.config["ONLY_B"] == "b-value" && account.config["TRACKER_REGION"] == "plain-region")
     }
 
     @Test("A queued launch keeps its frozen acceptance with its frozen definitions, and takes the live one without them")
@@ -650,17 +667,23 @@ private final class HidingVersionFileManager: FileManager, @unchecked Sendable {
     }
 }
 
-/// Hides a version like `HidingVersionFileManager`, and refuses to copy a
-/// snapshot back, the way a full disk would.
-private final class RestoreRefusingFileManager: FileManager, @unchecked Sendable {
+/// Hides the replacement and retargets the actual storage directory, so
+/// recovery must retain its images instead of writing into an unrelated root.
+private final class RestoreBlockingFileManager: FileManager, @unchecked Sendable {
     let hidden: String
-    init(hidden: String) { self.hidden = hidden }
+    let library: URL
+    private var blocked = false
+    init(hidden: String, library: URL) { self.hidden = hidden; self.library = library }
     override func contents(atPath path: String) -> Data? {
         guard let data = super.contents(atPath: path) else { return nil }
-        return String(decoding: data, as: UTF8.self).contains("\"\(hidden)\"") ? nil : data
-    }
-    override func copyItem(at srcURL: URL, to dstURL: URL) throws {
-        if srcURL.path.contains("astra-capability-snapshot-") { throw CocoaError(.fileWriteOutOfSpace) }
-        try super.copyItem(at: srcURL, to: dstURL)
+        guard String(decoding: data, as: UTF8.self).contains("\"\(hidden)\"") else { return data }
+        if !blocked {
+            blocked = true
+            do {
+                try super.moveItem(at: library, to: library.deletingLastPathComponent().appendingPathComponent("RetainedLibrary"))
+                try super.createDirectory(at: library, withIntermediateDirectories: false)
+            } catch { Issue.record("Could not create the blocked-restore fixture") }
+        }
+        return nil
     }
 }

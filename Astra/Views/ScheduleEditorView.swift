@@ -680,7 +680,8 @@ struct ScheduleEditorView: View {
         s.dailyHour = dailyHour
         s.dailyMinute = dailyMinute
         s.weeklyDayOfWeek = weeklyDayOfWeek
-        s.skillIDs = Array(selectedSkillIDs)
+        // Against durable state, not the catalog loaded when the editor opened.
+        s.skillIDs = RoutineSkillCatalog.validatedSelection(Array(selectedSkillIDs), in: workspace, globalSkills: globalSkills)
         s.routinePaths = routinePaths
         s.resultMode = resultMode
 

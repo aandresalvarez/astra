@@ -6,14 +6,6 @@ import ASTRAPersistence
 import ASTRACore
 
 struct TaskSidebarContainerView: View {
-    // Not the task list — just the subscription to it. SwiftData invalidates a
-    // `@Query` on any mutation to its model type, so this one-row fetch gets
-    // exactly the same signal an unfiltered one would, for a `LIMIT 1` instead
-    // of a 726-row, ~64 ms read on the main thread inside the view transaction.
-    // `SidebarTaskStore` decides what that signal costs; see its doc comment
-    // for why most invalidations need no refetch at all.
-    @Query(SidebarTaskFetch.invalidationSignalDescriptor())
-    private var taskChangeSignal: [AgentTask]
     @Query(sort: \WorkspaceApp.name) private var workspaceApps: [WorkspaceApp]
     // Only active (non-terminal) requests drive sidebar activity counts. The
     // table is append-only and never pruned, so an unfiltered query would grow
@@ -65,13 +57,7 @@ struct TaskSidebarContainerView: View {
     }
 
     var body: some View {
-        // Reading the signal query is the subscription. `noteChanged` only
-        // schedules; it never writes observed state, so calling it from `body`
-        // cannot re-enter this update.
-        let _ = taskChangeSignal.count
-        taskStore.noteChanged(context: modelContext)
-
-        return TaskSidebarView(
+        TaskSidebarView(
             appUpdateController: appUpdateController,
             tasks: taskStore.tasks,
             tasksVersion: taskStore.tasksVersion,
@@ -100,6 +86,8 @@ struct TaskSidebarContainerView: View {
             selectedWorkspaceApp: selectedWorkspaceApp
         )
         .onAppear { taskStore.loadIfNeeded(context: modelContext) }
+        .onChange(of: modelContext) { taskStore.refreshNow(context: modelContext) }
+        .background { SidebarTaskLegacyChangeSignal(store: taskStore) }
     }
 
     /// Wraps the two handlers that can change *which* tasks exist so the rail
@@ -134,11 +122,8 @@ enum SidebarLeanPresentation {
     // completed task merely because its spinner is elsewhere. Unreads retain
     // their workspace-name context; pinned rows move that context to hover.
     static let sidebarTaskStatusesNeverAddSecondLine = false
-    // Workspace rows expose expansion with a rest-state chevron; the
-    // folder icon's fill tracks selection only, so icon fill no longer
-    // does double duty as a collapsed/expanded signal.
-    static let workspaceRowsShowRestStateDisclosure = true
-    static let workspaceDisclosureChevronWidth: CGFloat = 11
+    // The folder silhouette represents disclosure, independently of selection.
+    static let workspaceRowsShowRestStateDisclosure = false
     static let workspaceSectionHorizontalInset: CGFloat = 10
     static let workspaceRowContentLeadingPadding: CGFloat = 4
     // Keep trailing status glyphs clear of the row's rounded stroke. The
@@ -152,8 +137,6 @@ enum SidebarLeanPresentation {
     }
     static var workspaceTitleLeadingOffset: CGFloat {
         workspaceRowContentLeadingPadding
-            + workspaceDisclosureChevronWidth
-            + workspaceRowElementSpacing
             + workspaceFolderIconWidth
             + workspaceRowElementSpacing
     }
@@ -700,6 +683,10 @@ struct TaskSidebarView: View {
         .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
         .accessibilityIdentifier("TaskSidebar")
+        .modifier(WorkspaceRemovalConfirmation(
+            pendingWorkspace: $workspacePendingRemoval,
+            onRemove: onDeleteWorkspace
+        ))
         .alert("Rename Task", isPresented: Binding(
             get: { renamingTask != nil },
             set: { if !$0 { renamingTask = nil } }
@@ -1048,6 +1035,14 @@ struct TaskSidebarView: View {
                     subtitle: task.workspace?.name,
                     requests: activityRequests[task.id] ?? []
                 )
+                // Install the source on the task surface, independently of
+                // the trailing menu's native tracking and focus gestures.
+                .onDrag {
+                    beginTaskDrag()
+                    return NSItemProvider(object: task.id.uuidString as NSString)
+                } preview: {
+                    SidebarTaskDragChip(title: task.title)
+                }
             }
             .buttonStyle(.plain)
         } accessory: { showsHoverChrome in
@@ -1060,12 +1055,6 @@ struct TaskSidebarView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { updateTaskHover($0, id: task.id) }
-        .onDrag {
-            beginTaskDrag()
-            return NSItemProvider(object: task.id.uuidString as NSString)
-        } preview: {
-            SidebarTaskDragChip(title: task.title)
-        }
         .contextMenu {
             pinToggleButton(for: task)
 
@@ -1390,15 +1379,8 @@ struct TaskSidebarView: View {
         }
     }
 
-    /// One List row per workspace that bundles the folder header and
-    /// (when expanded) its task children. Putting the children inside a
-    /// single List row — instead of as sibling rows — lets SwiftUI's
-    /// `.transition` modifier actually fire: List on macOS is backed by
-    /// NSTableView which animates its own row insertions and ignores
-    /// SwiftUI transitions on row-level children. By collapsing the
-    /// workspace + tasks into one row, the conditional that toggles
-    /// the tasks lives inside the row's view tree, where transitions
-    /// behave like they do everywhere else.
+    /// Groups a folder header and its task drawer in one stable subtree so
+    /// disclosure animates the drawer's opacity and the group's height together.
     ///
     /// Child task rows keep a compact workspace-relative indent, but avoid the
     /// permanent guide rail that used to consume title width and dominate the
@@ -1513,6 +1495,7 @@ struct TaskSidebarView: View {
         }
     }
 
+    @State private var workspacePendingRemoval: Workspace?
     @State private var hoveredWorkspaceID: UUID?
     @State private var hoveredTaskID: UUID?
     @State private var hoveredScheduleID: UUID?
@@ -1657,77 +1640,25 @@ struct TaskSidebarView: View {
                 waiting: taskIndex.waitingTaskCount(in: workspace)
             )
 
-        return HStack(alignment: .center, spacing: SidebarLeanPresentation.workspaceRowElementSpacing) {
-            if workspaceSortMode == .manual {
-                Image(systemName: "line.3.horizontal")
-                    .font(Stanford.ui(10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 20, height: 28)
-                    .contentShape(Rectangle())
-                    .onDrag {
-                        beginWorkspaceDrag(workspace.id)
-                        return WorkspaceSidebarDragPayload.provider(for: workspace.id)
-                    }
-                    .help("Drag to reorder \(workspace.name)")
-                    .accessibilityLabel("Reorder \(workspace.name)")
-            }
-
-            // One button spanning chevron + folder + title. These used to be
-            // two buttons with the identical action, which made VoiceOver
-            // announce "Expand <workspace>" twice per row.
-            Button {
+        return WorkspaceFolderRow(
+            workspace: workspace,
+            isExpanded: isExpanded,
+            isSelected: isSelected,
+            isHovered: isHovered,
+            isNewTaskTarget: newTaskComposerWorkspaceID == workspace.id,
+            activityCounts: activityCounts,
+            allowsReordering: workspaceSortMode == .manual,
+            onToggle: {
                 withAnimation(accordionAnimation) {
                     toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
-            } label: {
-                HStack(spacing: SidebarLeanPresentation.workspaceRowElementSpacing) {
-                    // Rest-state disclosure: expansion used to be signalled
-                    // only by folder-icon fill, which read as two *kinds* of
-                    // folder rather than two states. The chevron stays
-                    // visible (tertiary) so rows advertise that they expand,
-                    // and brightens with the rest of the row on hover.
-                    Image(systemName: "chevron.right")
-                        .font(Stanford.ui(9, weight: .semibold))
-                        .foregroundStyle(isHovered ? .secondary : .tertiary)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .frame(width: SidebarLeanPresentation.workspaceDisclosureChevronWidth, height: 22)
-                        .animation(accordionAnimation, value: isExpanded)
-
-                    Image(systemName: isSelected ? "folder.fill" : "folder")
-                        .font(Stanford.ui(13, weight: .medium))
-                        .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
-                        .frame(width: SidebarLeanPresentation.workspaceFolderIconWidth, height: 22)
-
-                    Text(workspace.name)
-                        .font(Stanford.body(15))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+            },
+            onNewTask: { startNewTask(in: workspace) },
+            onBeginDrag: {
+                beginWorkspaceDrag(workspace.id)
+                return WorkspaceSidebarDragPayload.provider(for: workspace.id)
             }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
-            .accessibilityHint("Expands or collapses the workspace.")
-            .help(workspace.name)
-
-            workspaceRowActions(
-                for: workspace,
-                isHovered: isHovered,
-                activityCounts: activityCounts
-            )
-        }
-        .padding(.leading, SidebarLeanPresentation.workspaceRowContentLeadingPadding)
-        // Internal clearance keeps the status glyph away from the rounded row
-        // stroke; the header filter uses the same inset to preserve alignment.
-        .padding(.trailing, SidebarLeanPresentation.workspaceRowContentTrailingPadding)
-        .padding(.vertical, 6)
-        .frame(height: Stanford.sidebarWorkspaceRowHeight, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
+        )
         .onHover { updateWorkspaceHover($0, id: workspace.id) }
         .background(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
@@ -1741,46 +1672,19 @@ struct TaskSidebarView: View {
                 .animation(hoverAnimation, value: isSelected)
                 .animation(fastHoverAnimation, value: isHovered)
         )
-        .contextMenu {
-            Button {
-                startNewTask(in: workspace)
-            } label: {
-                Label("New Task", systemImage: "square.and.pencil")
-            }
-
-            Button {
-                toggleStarred(for: workspace)
-            } label: {
-                Label(workspace.isStarred ? "Unstar Workspace" : "Star Workspace", systemImage: workspace.isStarred ? "star.slash" : "star")
-            }
-
-            Divider()
-
-            Button {
-                selectedWorkspace = workspace
-                onEditWorkspace?(workspace)
-            } label: {
-                Label("Workspace Details", systemImage: "info.circle")
-            }
-
-            Button {
-                onRenameWorkspace?(workspace)
-            } label: {
-                Label("Rename", systemImage: "pencil")
-            }
-
-            Divider()
-
-            Button(role: .destructive) {
-                onDeleteWorkspace?(workspace)
-            } label: {
-                Label("Remove", systemImage: "trash")
-            }
+        .workspaceHoverCard(isHovered: isHovered) { dismiss in
+            WorkspaceHoverCard(
+                workspace: workspace,
+                taskCount: taskIndex.taskCount(in: workspace),
+                actions: workspaceActions(for: workspace),
+                dismiss: dismiss
+            )
         }
-        // Keep the destination on the fixed-height workspace header. The
-        // enclosing List row can also contain an expanded task drawer, and
-        // AppKit's table-backed row does not reliably expose that composite
-        // subtree as a SwiftUI drop destination.
+        .contextMenu {
+            WorkspaceOptionsMenu(actions: workspaceActions(for: workspace), workspace: workspace)
+        }
+        // Only the fixed-height folder header accepts workspace reordering;
+        // its expanded task drawer keeps independent task drag sources.
         .onDrop(
             of: [WorkspaceSidebarDragPayload.type],
             isTargeted: workspaceDropTargetBinding(for: workspace.id)
@@ -1814,24 +1718,13 @@ struct TaskSidebarView: View {
         return .clear
     }
 
-    private func workspaceRowActions(
-        for workspace: Workspace,
-        isHovered: Bool,
-        activityCounts: SidebarWorkspaceActivityCounts
-    ) -> some View {
-        WorkspaceRowActions(
-            workspace: workspace,
-            isNewTaskTarget: newTaskComposerWorkspaceID == workspace.id,
-            isRowHovered: isHovered,
-            activityCounts: activityCounts,
-            onNewTask: { startNewTask(in: workspace) },
-            onToggleStarred: { toggleStarred(for: workspace) },
-            onEdit: {
-                selectedWorkspace = workspace
-                onEditWorkspace?(workspace)
-            },
-            onRename: { onRenameWorkspace?(workspace) },
-            onDelete: { onDeleteWorkspace?(workspace) }
+    private func workspaceActions(for workspace: Workspace) -> WorkspaceSidebarActions {
+        WorkspaceSidebarActions(
+            newTask: { startNewTask(in: workspace) },
+            openConfiguration: { openWorkspace(workspace) },
+            toggleStarred: { toggleStarred(for: workspace) },
+            rename: { onRenameWorkspace?(workspace) },
+            remove: { workspacePendingRemoval = workspace }
         )
     }
 
@@ -1848,8 +1741,6 @@ struct TaskSidebarView: View {
 
     private func toggleWorkspaceOpenState(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
         let wasExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
-        selectedTask = nil
-        selectedWorkspace = workspace
         setAccordionState(WorkspaceSidebarAccordion.toggling(
             workspace.id,
             in: accordion,
@@ -1972,6 +1863,14 @@ struct TaskSidebarView: View {
                     attemptCount: attemptCount,
                     requests: activityRequests[task.id] ?? []
                 )
+                // Install the source on the task surface, independently of
+                // the trailing menu's native tracking and focus gestures.
+                .onDrag {
+                    beginTaskDrag()
+                    return NSItemProvider(object: task.id.uuidString as NSString)
+                } preview: {
+                    SidebarTaskDragChip(title: task.title)
+                }
             }
             .buttonStyle(.plain)
         } accessory: { showsHoverChrome in
@@ -1980,12 +1879,6 @@ struct TaskSidebarView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { updateTaskHover($0, id: task.id) }
-        .onDrag {
-            beginTaskDrag()
-            return NSItemProvider(object: task.id.uuidString as NSString)
-        } preview: {
-            SidebarTaskDragChip(title: task.title)
-        }
         .contextMenu {
             pinToggleButton(for: task)
 

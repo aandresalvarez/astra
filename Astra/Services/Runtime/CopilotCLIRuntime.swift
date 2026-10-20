@@ -1,7 +1,7 @@
 import Foundation
 import ASTRACore
 
-struct CopilotCLICapabilities: Equatable {
+struct CopilotCLICapabilities: Equatable, Sendable {
     var supportsOutputFormatJSON: Bool
     var supportsStreamingFlag: Bool
     var supportsNoAskUser: Bool
@@ -140,88 +140,21 @@ enum CopilotCLIRuntime {
         RuntimePathResolver.detectCopilotPath()
     }
 
-    /// Capability probing spawns `copilot help`. Admission evaluation calls it twice per
-    /// runtime on every debounced composer keystroke, so the result is memoised per
-    /// executable and only re-probed when the binary itself changes.
-    private static let capabilitiesLock = NSLock()
-    nonisolated(unsafe) private static var cachedCapabilities:
-        [String: (fingerprint: String, capabilities: CopilotCLICapabilities)] = [:]
-    private static let capabilitiesProbeTimeout: TimeInterval = 5
-
+    /// Presentation reads never launch or wait for a subprocess. A launch must acquire
+    /// an explicit answer through `requiredCapabilities` before constructing its policy.
     static func capabilities(executablePath: String) -> CopilotCLICapabilities {
-        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
-            return .conservative
-        }
-        let fingerprint = executableFingerprint(executablePath)
-        capabilitiesLock.lock()
-        let cached = cachedCapabilities[executablePath]
-        capabilitiesLock.unlock()
-        if let cached, cached.fingerprint == fingerprint {
-            return cached.capabilities
-        }
-
-        let probed = probeCapabilities(executablePath: executablePath)
-        capabilitiesLock.lock()
-        cachedCapabilities[executablePath] = (fingerprint: fingerprint, capabilities: probed)
-        capabilitiesLock.unlock()
-        return probed
+        CopilotCapabilityProbe.cached(executablePath: executablePath) ?? .conservative
     }
 
-    /// Populates the memo from a background context so the `@MainActor` composer path
-    /// reads a cached answer. Readiness checking already resolved and ran this binary.
-    static func warmCapabilities(executablePath: String) {
-        _ = capabilities(executablePath: executablePath)
+    static func requiredCapabilities(
+        executablePath: String,
+        timeout: TimeInterval = AgentUtilityRuntimeConfiguration.defaultTimeoutSeconds
+    ) async throws -> CopilotCLICapabilities {
+        try await CopilotCapabilityProbe.shared.answer(executablePath: executablePath, timeout: timeout)
     }
 
-    /// Drops every memoised probe. Reinstalling or upgrading the CLI in place is already
-    /// covered by the fingerprint, so this exists for explicit re-detection and tests.
-    static func invalidateCapabilitiesCache() {
-        capabilitiesLock.lock()
-        cachedCapabilities.removeAll()
-        capabilitiesLock.unlock()
-    }
-
-    /// Identity of the binary behind `executablePath`, so an in-place upgrade re-probes.
-    private static func executableFingerprint(_ executablePath: String) -> String {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: executablePath)
-        let size = (attributes?[.size] as? NSNumber)?.int64Value ?? -1
-        let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
-        return "\(size)|\(modified)"
-    }
-
-    private static func probeCapabilities(executablePath: String) -> CopilotCLICapabilities {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = ["help"]
-        process.environment = RuntimeProcessEnvironment.enriched()
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        // Drain stdout on a separate queue: `copilot help` can exceed the pipe buffer, and
-        // reading only after the process exits would deadlock the child on a full pipe.
-        let buffer = ProbeOutputBuffer()
-        let readerHandle = pipe.fileHandleForReading
-        DispatchQueue.global(qos: .userInitiated).async {
-            buffer.finish(readerHandle.readDataToEndOfFile())
-        }
-
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-        do {
-            try process.run()
-        } catch {
-            return .conservative
-        }
-        guard exited.wait(timeout: .now() + capabilitiesProbeTimeout) == .success else {
-            // A hung CLI must not stall the composer; terminate and fall back.
-            process.terminate()
-            return .conservative
-        }
-        guard let data = buffer.wait(timeout: .now() + 1) else {
-            return .conservative
-        }
-        return CopilotCLICapabilities(helpText: String(data: data, encoding: .utf8) ?? "")
+    static func invalidateCapabilitiesCache(executablePath: String) {
+        CopilotCapabilityProbe.invalidate(executablePath: executablePath)
     }
 
     static func versionSummary(executablePath: String) -> String? {
@@ -274,6 +207,7 @@ enum CopilotCLIRuntime {
         reasoningEffort: String? = nil,
         resumeSessionID: String? = nil,
         disableCustomInstructions: Bool = false,
+        diagnosticLogDirectory: String? = nil,
         permissionArguments: [String]
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
@@ -291,7 +225,7 @@ enum CopilotCLIRuntime {
         if capabilities.supportsNoAutoUpdate {
             args += ["--no-auto-update"]
         }
-        if capabilities.supportsLogDir, let logDirectory = managedLogDirectory(copilotHome: copilotHome) {
+        if capabilities.supportsLogDir, let logDirectory = diagnosticLogDirectory ?? managedLogDirectory(copilotHome: copilotHome) {
             args += ["--log-dir", logDirectory]
         }
 

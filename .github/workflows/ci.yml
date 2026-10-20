@@ -81,7 +81,9 @@ jobs:
             ${{ runner.os }}-swiftpm-
 
       - name: Run full Swift test suite
-        run: swift test --no-parallel
+        run: |
+          python3 script/permission_repair_test_harness_tests.py
+          script/swift_test.sh --no-parallel
 
   whitespace:
     name: Whitespace

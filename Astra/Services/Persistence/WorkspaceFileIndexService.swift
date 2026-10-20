@@ -134,7 +134,7 @@ public enum WorkspaceFileIndexService {
         "node_modules"
     ]
 
-    public static func roots(workspace: Workspace?, task: AgentTask?, fileManager: FileManager = .default) -> [WorkspaceFileRoot] {
+    public static func roots(workspace: Workspace?, task: AgentTask?, additionalInputPaths: [String] = [], fileManager: FileManager = .default) -> [WorkspaceFileRoot] {
         var roots: [WorkspaceFileRoot] = []
         var seen: Set<String> = []
 
@@ -202,7 +202,7 @@ public enum WorkspaceFileIndexService {
                 append(kind: .taskFolder, title: "Task Output \(name)", rawPath: path)
             }
             var inputIndex = 1
-            for path in task.inputs {
+            for path in task.inputs + additionalInputPaths {
                 if append(kind: .input, title: "Input \(inputIndex)", rawPath: path) {
                     inputIndex += 1
                 }

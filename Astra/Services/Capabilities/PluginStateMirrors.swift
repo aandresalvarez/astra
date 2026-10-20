@@ -3,18 +3,24 @@ import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 
-/// The one post-save mirror export for plugin state: an activation's
-/// settings, a binding (Add account, Make default), an account's own fields
-/// (its name, URL, service, sharing).
-///
-/// A recovery restores SwiftData from the workspace mirrors, so a saved
-/// change a mirror never got would revert. After such a save, the mirror of
-/// the workspace that made it and of every workspace carrying one of the
-/// accounts it changed (`WorkspaceConfigManager.workspacesMirroring`: a
-/// binding, a shared list, a skill) is written, now. Paths that also clean
-/// secrets write theirs before the cleanup settles (`beforeSettling`).
+/// Resolves the mirror scope of workspace/account changes. New mutations
+/// use that scope before saving through `PluginStateCommit`; legacy resource
+/// editors still call `exportAfterSave` until their save boundary is migrated.
+/// Shared accounts include every workspace carrying them through a binding,
+/// a shared list or a skill, rather than only the clicked workspace.
 @MainActor
 enum PluginStateMirrors {
+    static func affectedWorkspaces(
+        workspace: Workspace?, accounts: [Connector] = [], modelContext: ModelContext,
+        fetchWorkspaces: (() throws -> [Workspace])? = nil
+    ) throws -> [Workspace] {
+        let stored = accounts.isEmpty ? [] : try (fetchWorkspaces ?? { try modelContext.fetch(FetchDescriptor<Workspace>()) })()
+        let mirroring = try WorkspaceConfigManager.workspacesMirroring(
+            accountIDs: Set(accounts.map(\.id)), among: stored, modelContext: modelContext)
+        var seen = Set<UUID>()
+        return ((workspace.map { [$0] } ?? []) + mirroring).filter { seen.insert($0.id).inserted }
+    }
+
     /// Writes the mirrors a saved change to `workspace`'s plugin state and
     /// to `accounts` left stale. False when one couldn't be written.
     @discardableResult
@@ -25,14 +31,8 @@ enum PluginStateMirrors {
         export: ((Workspace) -> Bool)? = nil,
         fetchWorkspaces: (() throws -> [Workspace])? = nil
     ) -> Bool {
-        // Not knowing which mirrors the accounts leave stale is a failed
-        // export, not an empty one: the caller keeps or reports it.
-        guard let stored = accounts.isEmpty ? [] : try? (fetchWorkspaces ?? { try modelContext.fetch(FetchDescriptor<Workspace>()) })(),
-              let mirroring = try? WorkspaceConfigManager.workspacesMirroring(
-                  accountIDs: Set(accounts.map(\.id)), among: stored, modelContext: modelContext
-              )
-        else { return false }
-        let mirrored = (workspace.map { [$0] } ?? []) + mirroring
+        guard let mirrored = try? affectedWorkspaces(workspace: workspace, accounts: accounts,
+            modelContext: modelContext, fetchWorkspaces: fetchWorkspaces) else { return false }
         guard let export else { return WorkspaceConfigManager.exportMirrorsNow(mirrored, modelContext: modelContext) }
         var seen = Set<UUID>()
         return mirrored.filter { seen.insert($0.id).inserted }.reduce(true) { export($1) && $0 }

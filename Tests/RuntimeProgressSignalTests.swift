@@ -913,25 +913,6 @@ struct StreamVolumeAccountingTests {
         #expect(buffer.value.utf8.count == 512 * 1_024)
     }
 
-    /// So the counter is at the pipe, where bytes arrive when they arrive — and
-    /// at the final EOF drain, because `stream_bytes` is also what the exit
-    /// audit reports and a tally that stops short of EOF understates every short
-    /// run. Pinned in the source: the two call sites are the whole fix, and
-    /// nothing observable distinguishes them from the per-line version until a
-    /// provider happens to send a multi-megabyte frame.
-    @Test("Stream volume is recorded off the pipe, not per parsed line")
-    func streamVolumeIsRecordedAtThePipe() throws {
-        let runnerURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Astra")
-            .appendingPathComponent("Services")
-            .appendingPathComponent("Runtime")
-            .appendingPathComponent("AgentRuntimeProcessRunner.swift")
-        let source = try String(contentsOf: runnerURL, encoding: .utf8)
-
-        #expect(source.contains("monitor.recordStreamVolume(bytes: data.count)"))
-        #expect(source.contains("monitor.recordStreamVolume(bytes: finalStdoutData.count)"))
-        #expect(!source.contains("monitor.recordStreamVolume(bytes: line.utf8.count)"))
-    }
+    // End-to-end byte accounting (including the final partial line) is
+    // exercised by AgentRuntimePipeCompletionTests using a real worker.
 }

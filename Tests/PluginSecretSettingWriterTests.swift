@@ -44,7 +44,9 @@ struct PluginSecretSettingWriterTests {
             )
             Fixtures.Environment.retained.append(container)
             context = container.mainContext
-            workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
+            let folder = root.appendingPathComponent("workspace", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            workspace = Workspace(name: "Ops", primaryPath: folder.path)
             context.insert(workspace)
             library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
         }
@@ -115,13 +117,15 @@ struct PluginSecretSettingWriterTests {
         #expect(log == ["mirror", "keychain", "mirror", "keychain"])
 
         RecordingSecrets.reset()
-        #expect(throws: PluginOperations.OperationError.saveFailed) {
+        #expect(throws: PluginOperationProblem.self) {
             try PluginOperations.setSetting(
                 "API_TOKEN", to: "third", of: package.skills[0], pluginID: package.id, in: env.workspace,
                 modelContext: env.context, secrets: RecordingSecrets.self, rewriteMirror: { _ in false }
             )
         }
         #expect(RecordingSecrets.saved.isEmpty)
+        let pending = try ModelContext(env.container).fetch(FetchDescriptor<PluginOperationReceipt>(predicate: #Predicate { $0.completedAt == nil }))
+        #expect(pending.count == 1)
     }
 
     @Test("A marker that can't be saved writes nothing to the Keychain")

@@ -88,13 +88,18 @@ enum PluginOperations {
                     on: activation, persistence: persistence
                 ) {
                     workspace.updatedAt = Date()
-                    try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
-                    // Written now, not queued: the mirror names the secret
-                    // before the Keychain holds it.
-                    guard rewriteMirror?(workspace)
-                        ?? WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext)
-                    else { throw OperationError.saveFailed }
+                    do {
+                        try save(workspace, modelContext: modelContext, restoring: snapshot,
+                            pluginIDs: [pluginID], rewriteMirror: rewriteMirror, publishesCompleted: false, persist: persist)
+                    } catch let problem as PluginOperationProblem {
+                        // Only the marker was committed; the new value has
+                        // not reached the Keychain yet.
+                        throw PluginOperationProblem.credentialWriteDeferred(problem.operationID)
+                    }
                 }
+                // The marker and its copy were ready first. Publish only
+                // after the actual credential write has completed.
+                CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
                 return
             }
             let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
@@ -104,8 +109,10 @@ enum PluginOperations {
             // The record goes only once the Keychain value has.
             WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: settingKey, on: activation)
             do {
-                try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
+                try save(workspace, modelContext: modelContext, restoring: snapshot,
+                    pluginIDs: [pluginID], rewriteMirror: rewriteMirror, persist: persist)
             } catch {
+                if PluginOperationProblem.preventsRollback(error) { throw error }
                 // The record went back to what it was; so does the Keychain.
                 // A value it can't take back no longer matches the record.
                 if let previous, !persistence.saveSecretValue(
@@ -117,22 +124,40 @@ enum PluginOperations {
             }
             return
         }
-        WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
         // A secret an earlier definition kept under this now plain key is
-        // the person's to replace: entering the setting clears it.
+        // the person's to replace: entering the setting clears it. The
+        // cleared value is held for a save that fails, as the empty-secret
+        // branch holds its: the record then goes back to naming a value
+        // that is there again, or the loss is reported.
+        var cleared: (persistence: any SkillSecretPersisting.Type, skillID: UUID, previous: String)?
         if activation.secretSettingKeys.contains(settingKey) {
             let persistence = secrets ?? SkillSecretSeam.required
             let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
-            if persistence.deleteSecret(key: key, skillID: skillID) {
-                WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: settingKey, on: activation)
+            let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
+            guard persistence.deleteSecret(key: key, skillID: skillID) else {
+                throw OperationError.secretDeleteFailed(key: key)
             }
+            WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: settingKey, on: activation)
+            if let previous, !previous.isEmpty { cleared = (persistence, skillID, previous) }
         }
+        WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
         workspace.updatedAt = Date()
-        try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
+        do {
+            try save(workspace, modelContext: modelContext, restoring: snapshot,
+                    pluginIDs: [pluginID], rewriteMirror: rewriteMirror, persist: persist)
+        } catch {
+            if PluginOperationProblem.preventsRollback(error) { throw error }
+            if let cleared, !cleared.persistence.saveSecretValue(
+                cleared.previous, key: key, skillID: cleared.skillID, skillName: skill.name, allowUserInteraction: false
+            ) {
+                throw OperationError.secretRestoreFailed(key: key)
+            }
+            throw error
+        }
     }
 
-    /// Saves; the mirrors are written by the post-save hook in `save`
-    /// (`PluginStateMirrors`).
+    /// Saves the domain state; `save` couples it to a durable operation
+    /// receipt and confirms its mirrors through `PluginStateCommit`.
     static func persistAndExport(_ workspace: Workspace, modelContext: ModelContext) throws {
         try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
     }
@@ -175,7 +200,7 @@ enum PluginOperations {
         account.workspace = workspace
         WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation)
         workspace.updatedAt = Date()
-        try save(workspace, modelContext: modelContext, restoring: snapshot, accounts: [account])
+        try save(workspace, modelContext: modelContext, restoring: snapshot, accounts: [account], pluginIDs: [package.id], kind: .add)
         return account
     }
 
@@ -193,7 +218,7 @@ enum PluginOperations {
         let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: true)
         workspace.updatedAt = Date()
-        try save(workspace, modelContext: modelContext, restoring: snapshot, accounts: [account])
+        try save(workspace, modelContext: modelContext, restoring: snapshot, accounts: [account], pluginIDs: [pluginID], kind: .accountChange)
     }
 
     /// Every workspace deleting `account` reaches, for the delete
@@ -277,16 +302,22 @@ enum PluginOperations {
         modelContext: ModelContext,
         restoring snapshot: WorkspaceCapabilityActivation.Snapshot,
         accounts: [Connector] = [],
+        pluginIDs: [String] = [],
+        kind: PluginOperationReceipt.Kind = .configure,
+        rewriteMirror: ((Workspace) -> Bool)? = nil,
+        publishesCompleted: Bool = true,
         persist: (Workspace, ModelContext) throws -> Void = persistAndExport
     ) throws {
-        do {
-            try persist(workspace, modelContext)
-        } catch {
+        switch PluginStateCommit.save(workspace: workspace, accounts: accounts, pluginIDs: pluginIDs,
+            kind: kind, modelContext: modelContext, persist: { try persist(workspace, $0) },
+            export: rewriteMirror, publishesCompleted: publishesCompleted) {
+        case .completed: return
+        case .pendingRecovery(let id): throw PluginOperationProblem.savedRecoveryPending(id)
+        case .indeterminate(let id, _): throw PluginOperationProblem.commitUncertain(id)
+        case .notCommitted:
             modelContext.rollback()
             WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
             throw OperationError.saveFailed
         }
-        // Every plugin-state save writes the mirrors it changed.
-        PluginStateMirrors.exportAfterSave(workspace: workspace, accounts: accounts, modelContext: modelContext)
     }
 }

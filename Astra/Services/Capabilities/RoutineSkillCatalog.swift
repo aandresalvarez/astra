@@ -18,6 +18,17 @@ struct RoutineSkillCatalog: Sendable {
     var approvalRecords: [CapabilityApprovalRecord]
     var packPolicy: PackResolvedPolicy
 
+    /// `selection` less the skills durable state no longer offers: the
+    /// editor's catalog was loaded once, and a plugin removed or updated
+    /// away from a skill while the editor stayed open would otherwise be
+    /// saved as a dangling routine reference. Resolved against the library
+    /// (the scheduler's rule), once, at commit.
+    @MainActor
+    static func validatedSelection(_ selection: [String], in workspace: Workspace, globalSkills: [Skill]) -> [String] {
+        let offered = Set(WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills).map { $0.id.uuidString })
+        return selection.filter { offered.contains($0) }
+    }
+
     static func load(enabledPackIDs: [String]) async -> RoutineSkillCatalog {
         await Task.detached(priority: .userInitiated) {
             RoutineSkillCatalog(

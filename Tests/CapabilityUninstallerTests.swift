@@ -208,6 +208,8 @@ struct CapabilityUninstallerTests {
                 context.insert(workspace)
                 let (library, root) = makeCapabilityUninstallerLibrary()
                 defer { try? FileManager.default.removeItem(at: root) }
+                workspace.primaryPath = root.appendingPathComponent("Workspace").path
+                try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
                 let outbox = PluginSecretCleanupOutbox(fileURL: root.appendingPathComponent("PluginSecretCleanup.json"))
                 let package = retirementPackage(id: "held-cleanup-package")
                 try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)

@@ -5,6 +5,19 @@ import ASTRACore
 
 @Suite("Agent Runtime Capability Profile")
 struct AgentRuntimeCapabilityProfileTests {
+    @Test("A launch profile keeps its observed answer after the presentation cache is invalidated")
+    func explicitAnswerSurvivesCacheInvalidation() {
+        let path = "/not/a/real/copilot"
+        let answer = CopilotCLICapabilities(helpText: "Usage: copilot --additional-mcp-config <path>")
+        var policy = AgentRuntimeExecutionPolicy.default
+        policy.copilotCapabilities = answer
+        CopilotCLIRuntime.invalidateCapabilitiesCache(executablePath: path)
+        let profile = AgentRuntimeCapabilityProfileService.profile(for: .copilotCLI, executablePath: path,
+            copilotCapabilities: policy.copilotCapabilities)
+        #expect(profile.supportsTaskScopedMCPDelivery)
+        #expect(!AgentRuntimeCapabilityProfileService.profile(for: .copilotCLI, executablePath: path)
+            .supportsTaskScopedMCPDelivery)
+    }
     @Test("Codex and Claude expose task-scoped MCP delivery")
     func codexAndClaudeExposeTaskScopedMCPDelivery() {
         let codex = AgentRuntimeCapabilityProfile.defaultProfile(for: .codexCLI)
@@ -44,14 +57,14 @@ struct AgentRuntimeCapabilityProfileTests {
     }
 
     @Test("Copilot profile service observes installed CLI help")
-    func copilotProfileServiceObservesInstalledCLIHelp() throws {
-        let oldCopilot = try withTemporaryCopilotExecutable(helpText: "Usage: copilot --prompt <prompt>") { executablePath in
+    func copilotProfileServiceObservesInstalledCLIHelp() async throws {
+        let oldCopilot = try await withTemporaryCopilotExecutable(helpText: "Usage: copilot --prompt <prompt>") { executablePath in
             AgentRuntimeCapabilityProfileService.profile(
                 for: .copilotCLI,
                 executablePath: executablePath
             )
         }
-        let newCopilot = try withTemporaryCopilotExecutable(helpText: "Usage: copilot --additional-mcp-config <path>") { executablePath in
+        let newCopilot = try await withTemporaryCopilotExecutable(helpText: "Usage: copilot --additional-mcp-config <path>") { executablePath in
             AgentRuntimeCapabilityProfileService.profile(
                 for: .copilotCLI,
                 executablePath: executablePath
@@ -119,7 +132,7 @@ struct AgentRuntimeCapabilityProfileTests {
     private func withTemporaryCopilotExecutable<T>(
         helpText: String,
         _ body: (String) throws -> T
-    ) throws -> T {
+    ) async throws -> T {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -133,6 +146,7 @@ struct AgentRuntimeCapabilityProfileTests {
         """
         try script.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        _ = try await CopilotCLIRuntime.requiredCapabilities(executablePath: executable.path)
         return try body(executable.path)
     }
 }

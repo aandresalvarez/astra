@@ -80,7 +80,7 @@ different pattern.
 Common checks:
 
 ```bash
-swift test --filter <RelevantSuiteOrTestName>
+script/swift_test.sh --filter <RelevantSuiteOrTestName>
 ./script/build_and_run.sh --verify
 git diff --check
 ```
@@ -88,8 +88,13 @@ git diff --check
 For shared behavior, persistence, updater, or release changes, run full tests:
 
 ```bash
-swift test
+script/swift_test.sh --no-parallel
 ```
+
+The wrapper starts a private, synchronous permission-command harness before SwiftPM.
+Real repair tests fail explicitly without it; they are never silently skipped.
+This isolates their process launches from Swift Testing after reproducible local
+kernel panics in `Process.run()`. It mitigates that trigger, not the OS defect.
 
 Install the repo hooks once per clone so local commits run the same lightweight
 guardrails that agents are expected to respect:

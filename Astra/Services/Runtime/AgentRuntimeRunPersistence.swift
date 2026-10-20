@@ -14,7 +14,7 @@ enum AgentRuntimeRunPersistence {
         _ work: () -> T
     ) -> T {
         let start = DispatchTime.now().uptimeNanoseconds
-        let result = work()
+        let result = MainThreadPhase.tracking("run_finalize_\(phase)", work)
         PerformanceTelemetry.logIfNeeded(
             "run_finalize_phase",
             start: start,
@@ -47,12 +47,22 @@ enum AgentRuntimeRunPersistence {
         fields.merging(["trace_id": traceID], uniquingKeysWith: { _, new in new })
     }
 
+    // Use the same short, non-secret identity format as AuditTrace. Prefixing
+    // a full UUID produced a 40+ character token that log redaction removed.
+    static func traceID(for run: TaskRun) -> String { "run-finalize-" + run.id.uuidString.prefix(8).lowercased() }
+
     @discardableResult
     static func recordSessionTurn(
         task: AgentTask,
         run: TaskRun,
         message: String
     ) -> Bool {
+        let start = DispatchTime.now().uptimeNanoseconds
+        defer {
+            PerformanceTelemetry.logIfNeeded("run_finalize_phase", start: start,
+                thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+                fields: finalizationPhaseFields(phase: "session_projection", task: task, run: run, traceID: traceID(for: run)))
+        }
         let folder = (try? TaskWorkspaceAccess(task: task).ensureTaskFolder()) ?? ""
         guard !folder.isEmpty else { return false }
 
@@ -102,6 +112,7 @@ enum AgentRuntimeRunPersistence {
         persist: (() -> Bool)? = nil
     ) async -> Bool {
         let start = DispatchTime.now().uptimeNanoseconds
+        let traceID = traceID(for: run)
         // File discovery is independent of SwiftData. Prepare it asynchronously
         // before the ordered model commit so directory traversal does not
         // monopolize the main actor. No SwiftData model crosses actors.
@@ -110,9 +121,14 @@ enum AgentRuntimeRunPersistence {
         if let handoffDiscoveredFiles {
             discoveredFiles = handoffDiscoveredFiles
         } else {
-            discoveredFiles = await TaskOutputDiscovery.filesAsync(in: taskFolder)
+            let prepared = await TaskOutputDiscovery.prepareAsync(in: taskFolder)
+            let resumedAt = DispatchTime.now().uptimeNanoseconds
+            discoveredFiles = prepared.files
+            for (phase, milliseconds) in prepared.phaseMilliseconds(resumedAt: resumedAt) {
+                PerformanceTelemetry.log("run_finalize_phase", durationMilliseconds: milliseconds,
+                    fields: finalizationPhaseFields(phase: phase, task: task, run: run, traceID: traceID))
+            }
         }
-        let traceID = AuditTrace.make("run-finalize")
         // Bound the inline output blob now that the run is finalized. Session
         // history already captured the full output via recordSessionTurn before
         // this call, so nothing the user can re-open is lost. Assign only when it
@@ -153,12 +169,10 @@ enum AgentRuntimeRunPersistence {
         }
         task.markUnreadForCurrentStatus(at: finishedAt)
 
-        let auditFields = fields(
-            task: task,
-            run: run,
-            phase: phase,
-            persistedArtifactCount: artifactReconciliation.createdArtifacts.count
-        )
+        let auditFields = measureFinalizationPhase("audit_fields", task: task, run: run, traceID: traceID) {
+            fields(task: task, run: run, phase: phase,
+                persistedArtifactCount: artifactReconciliation.createdArtifacts.count)
+        }
         let saved = measureFinalizationPhase("save_and_auto_export", task: task, run: run, traceID: traceID) {
             if let persist { return persist() }
             if !autoExport {

@@ -58,20 +58,4 @@ enum SidebarTaskFetch {
         FetchDescriptor<AgentTask>()
     }
 
-    /// The query the sidebar view keeps purely to stay subscribed to
-    /// `AgentTask` changes, while `SidebarTaskStore` owns the real fetch.
-    ///
-    /// SwiftData invalidates a `@Query` on any mutation to its model type, not
-    /// just to rows in its result set — `SwiftDataQueryInvalidationBreadthTests`
-    /// pins that. So a one-row fetch receives exactly the same signal as the
-    /// unfiltered one it replaces, for a `LIMIT 1` instead of a 726-row read.
-    ///
-    /// Deliberately a limit rather than a never-matching predicate: a false
-    /// predicate still makes SQLite scan every row, which is most of what we
-    /// are trying to stop paying for.
-    static func invalidationSignalDescriptor() -> FetchDescriptor<AgentTask> {
-        var descriptor = FetchDescriptor<AgentTask>()
-        descriptor.fetchLimit = 1
-        return descriptor
-    }
 }

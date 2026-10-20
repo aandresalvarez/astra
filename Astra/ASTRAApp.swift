@@ -799,7 +799,7 @@ public struct ASTRAApp: App {
             )
         let startup = AstraStoreStartupCoordinator.start(isUITesting: isUITesting, appInfo: appInfo)
         modelContainer = startup.modelContainer
-        startupBlocker = startup.blocker
+        startupBlocker = startup.blocker ?? (isUITesting ? nil : PluginFileOperationStartup.blocker(modelContext: startup.modelContainer.mainContext))
         _storeLeaseHolder = StateObject(wrappedValue: StoreLeaseHolder(lease: startup.lease))
 
         Task.detached(priority: .utility) {
@@ -982,6 +982,11 @@ public struct ASTRAApp: App {
                 // skipped it, even a cleanup recorded meanwhile waits. Each
                 // pass spares what the other's pending records hold, so an
                 // unconfirmed workspace deletion is dropped only after both.
+                // Rewriting saved projections needs a trusted store, but
+                // does not require the credential-ownership scan.
+                PluginFileOperationRecovery(journal: PluginFileOperationJournal(library: CapabilityLibrary(), approvals: CapabilityApprovalStore()))
+                    .resumePending(modelContext: modelContext)
+                PluginOperationRecovery.resumePending(modelContext: modelContext)
                 if WorkspaceRecoveryTrust.allowsCleanup {
                     WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
                                                                   movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)

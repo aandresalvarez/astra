@@ -1,0 +1,209 @@
+import Foundation
+import SwiftData
+import Testing
+import ASTRAModels
+import ASTRAPersistence
+@testable import ASTRA
+
+@Suite("SwiftData reversible deletion")
+@MainActor
+struct SwiftDataDeletionPreparationTests {
+    @Test("Repeated rollback preserves empty and populated relationship graphs", arguments: [false, true], [false, true])
+    func rollbackPreservesGraph(onDisk: Bool, populated: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-deletion-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try ModelContainer(
+            for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: onDisk ? ModelConfiguration(url: root.appendingPathComponent("test.store"))
+                : ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let seed = ModelContext(container)
+        let original = Workspace(name: "Rollback", primaryPath: root.path)
+        seed.insert(original)
+        if populated {
+            let task = AgentTask(title: "Keep me", goal: "goal", workspace: original)
+            let skill = Skill(name: "Keep skill")
+            original.skills = [skill]
+            task.skills = [skill]
+            let connector = Connector(name: "Keep connector", serviceType: "jira")
+            let tool = LocalTool(name: "Keep tool")
+            original.connectors = [connector]
+            original.localTools = [tool]
+            skill.connectors = [connector]
+            skill.localTools = [tool]
+            let activation = PluginActivation(pluginID: "rollback-plugin")
+            seed.insert(activation)
+            activation.workspace = original
+            WorkspaceCapabilityActivation.bind(connector, toComponent: "connector:jira:account", of: activation)
+            original.templates = [TaskTemplate(name: "Keep template", mainGoal: "goal", workspace: original)]
+            original.schedules = [TaskSchedule(name: "Keep schedule", workspace: original)]
+            seed.insert(task)
+            seed.insert(TaskRun(task: task))
+            seed.insert(TaskEvent(task: task, type: "test", payload: "{}"))
+            seed.insert(Artifact(task: task, type: "file", path: root.appendingPathComponent("keep.txt").path))
+        }
+        try seed.save()
+
+        // A fresh context leaves relationships faulted, as after opening a
+        // workspace. In particular, empty arrays must also resolve before delete.
+        let context = ModelContext(container)
+        let workspace = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
+        for _ in 0..<3 {
+            SwiftDataDeletionPreparation.prepare(workspace)
+            context.delete(workspace)
+            context.rollback()
+            workspace.name = "Still usable"
+            try context.save()
+            let expected = populated ? 1 : 0
+            #expect(workspace.tasks.count == expected)
+            #expect(workspace.skills.count == expected)
+            #expect(workspace.connectors.count == expected)
+            #expect(workspace.localTools.count == expected)
+            #expect(workspace.templates.count == expected)
+            #expect(workspace.schedules.count == expected)
+            #expect(workspace.pluginActivations.count == expected)
+            #expect(workspace.pluginActivations.first?.bindings.count == (populated ? 1 : nil))
+            if populated {
+                #expect(workspace.skills.first?.workspace === workspace)
+                #expect(workspace.connectors.first?.workspace === workspace)
+                #expect(workspace.localTools.first?.workspace === workspace)
+                #expect(workspace.templates.first?.workspace === workspace)
+                #expect(workspace.schedules.first?.workspace === workspace)
+            }
+            if let task = workspace.tasks.first {
+                #expect(task.workspace === workspace)
+                #expect(task.runs.count == 1)
+                #expect(task.events.count == 1)
+                #expect(task.artifacts.count == 1)
+                #expect(task.skills.count == 1)
+                #expect(workspace.skills.first?.tasks.first === task)
+            }
+        }
+        // A subsequent successful deletion still performs the whole cascade.
+        SwiftDataDeletionPreparation.prepare(workspace)
+        context.delete(workspace)
+        try context.save()
+        let durable = ModelContext(container)
+        #expect(try durable.fetchCount(FetchDescriptor<Workspace>()) == 0)
+        #expect(try durable.fetchCount(FetchDescriptor<AgentTask>()) == 0)
+        #expect(try durable.fetchCount(FetchDescriptor<TaskTemplate>()) == 0)
+        #expect(try durable.fetchCount(FetchDescriptor<TaskSchedule>()) == 0)
+        #expect(try durable.fetchCount(FetchDescriptor<PluginActivation>()) == 0)
+        #expect(try durable.fetchCount(FetchDescriptor<AccountBinding>()) == 0)
+    }
+
+    @Test("A failed task-only deletion preserves its owner and permits later saves", arguments: [false, true], [
+        (hasSkill: false, populated: false), (hasSkill: false, populated: true),
+        (hasSkill: true, populated: false), (hasSkill: true, populated: true)
+    ])
+    func taskOnlyRollback(onDisk: Bool, graph: (hasSkill: Bool, populated: Bool)) throws {
+        let (hasSkill, populated) = graph
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-task-owner-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            configurations: onDisk ? ModelConfiguration(url: root.appendingPathComponent("test.store"))
+                : ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let seed = ModelContext(container)
+        let workspace = Workspace(name: "Keep workspace", primaryPath: root.path)
+        let task = AgentTask(title: "Keep task", goal: "goal", workspace: workspace)
+        let taskID = task.id
+        if hasSkill {
+            let skill = Skill(name: "Shared")
+            skill.isGlobal = true
+            task.skills = [skill]
+        }
+        seed.insert(task)
+        seed.insert(AgentTask(title: "Keep sibling", goal: "goal", workspace: workspace))
+        seed.insert(TaskTemplate(name: "Keep template", mainGoal: "goal", workspace: workspace))
+        if populated {
+            seed.insert(TaskRun(task: task))
+            seed.insert(TaskEvent(task: task, type: "test", payload: "{}"))
+            seed.insert(Artifact(task: task, type: "file", path: root.appendingPathComponent("keep.txt").path))
+        }
+        try seed.save()
+        let cleanup = TaskWorktreeCleanupStore(directory: root.appendingPathComponent("Cleanup"))
+        for attempt in 0..<3 {
+            // Each attempt starts with a faulted owner, rather than reusing
+            // the array materialized by assertions from a previous rollback.
+            let context = ModelContext(container)
+            let stored = try #require(try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })).first)
+            var attemptedSave = false
+            let result = TaskWorktreeService.saveDeletionThenDiscard(
+                [], workspace: stored.workspace, modelContext: context, resourceQueue: nil,
+                cleanupStore: cleanup,
+                delete: {
+                    SwiftDataDeletionPreparation.prepare(stored)
+                    context.delete(stored)
+                },
+                persist: { _, _ in attemptedSave = true; return false }
+            )
+            #expect(attemptedSave)
+            #expect(!result.persisted)
+            #expect(!stored.isDeleted)
+            // Force serialization after rollback instead of a no-op save.
+            stored.title = "Still usable \(attempt)"
+            stored.workspace?.name = "Owner still usable \(attempt)"
+            try context.save()
+            let durable = ModelContext(container)
+            let restored = try #require(try durable.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })).first)
+            #expect(restored.title == "Still usable \(attempt)")
+            #expect(restored.workspace?.tasks.count == 2)
+            #expect(restored.workspace?.templates.count == 1)
+            #expect(restored.skills.count == (hasSkill ? 1 : 0))
+            if hasSkill { #expect(restored.skills.first?.tasks.first === restored) }
+            #expect(restored.runs.count == (populated ? 1 : 0))
+            #expect(restored.events.count == (populated ? 1 : 0))
+            #expect(restored.artifacts.count == (populated ? 1 : 0))
+        }
+    }
+
+    @Test("Workspace rollback preserves inverse relationships owned by a global skill", arguments: [false, true])
+    func globalSkillOwners(onDisk: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-global-skill-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            configurations: onDisk ? ModelConfiguration(url: root.appendingPathComponent("test.store"))
+                : ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let seed = ModelContext(container)
+        let workspace = Workspace(name: "Delete workspace", primaryPath: root.path)
+        let skill = Skill(name: "Global owner")
+        skill.isGlobal = true
+        let connector = Connector(name: "Workspace connector")
+        let tool = LocalTool(name: "Workspace tool")
+        workspace.connectors = [connector]
+        workspace.localTools = [tool]
+        skill.connectors = [connector]
+        skill.localTools = [tool]
+        seed.insert(workspace)
+        seed.insert(skill)
+        try seed.save()
+        let context = ModelContext(container)
+        let stored = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
+        for _ in 0..<3 {
+            SwiftDataDeletionPreparation.prepare(stored)
+            context.delete(stored)
+            context.rollback()
+            stored.name = "Restored workspace"
+            try context.save()
+            let owner = try #require(try context.fetch(FetchDescriptor<Skill>()).first)
+            #expect(owner.workspace == nil)
+            #expect(owner.connectors.first?.workspace === stored)
+            #expect(owner.localTools.first?.workspace === stored)
+        }
+        SwiftDataDeletionPreparation.prepare(stored)
+        context.delete(stored)
+        try context.save()
+        let durable = ModelContext(container)
+        let surviving = try #require(try durable.fetch(FetchDescriptor<Skill>()).first)
+        #expect(surviving.connectors.isEmpty)
+        #expect(surviving.localTools.isEmpty)
+    }
+
+}

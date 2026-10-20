@@ -178,9 +178,9 @@ struct CapabilityCatalogActionService {
     }
 
     /// Approves the draft an import staged over an approved plugin
-    /// (`CapabilityLibrary.stage`) and makes it the installed definition:
-    /// the approval is saved first, then the draft replaces the approved
-    /// copy, then every activation is reconciled with it, as an import does.
+    /// (`CapabilityLibrary.stage`) through the prepared file/receipt boundary.
+    /// Reconciliation and approval either commit together or retain the draft
+    /// and restore the previous installed bytes.
     @discardableResult
     func approveStaged(
         id: String,
@@ -188,22 +188,8 @@ struct CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         approvedBy: String = "ASTRA local admin"
     ) throws -> PluginPackage {
-        guard let draft = library.stagedPackage(id: id) else {
-            throw CapabilityLibrary.RemovalError.notInstalled(id)
-        }
-        if let refusal = PluginUpdateService.refusals(for: draft, modelContext: modelContext).first { throw refusal }
-        let record = try approvalStore.save(package: draft, status: .approved, approvedBy: approvedBy, reviewNotes: "Approved the staged update.")
-        let installed = try library.commitStaged(id: id)
-        // A copy whose digest names where it is stored (an icon asset) is
-        // approved again where it now is.
-        var records = approvalStore.records()
-        if PluginUpdateService.awaitsReview(installed, records: records) {
-            _ = try approvalStore.save(package: installed, status: .approved, approvedBy: approvedBy, reviewNotes: record.reviewNotes)
-            records = approvalStore.records()
-        }
-        try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: [installed], mode: .release, approvalRecords: records)
-        CapabilityCatalogPersistenceEvents.post(.global)
-        return installed
+        try PluginStagedApproval.approve(id: id, library: library, modelContext: modelContext,
+            approvalStore: approvalStore, approvedBy: approvedBy)
     }
 
     /// Drops a staged draft: the approved copy stays what it was.
@@ -369,7 +355,6 @@ struct CapabilityCatalogActionService {
         modelContext: ModelContext
     ) throws {
         try PluginOperations.setSetting(key, to: value, of: skill, pluginID: package.id, in: workspace, modelContext: modelContext)
-        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
     }
 
     /// A new account for a connector component, bound in this workspace.
@@ -381,7 +366,6 @@ struct CapabilityCatalogActionService {
         modelContext: ModelContext
     ) throws -> Connector {
         let account = try PluginOperations.addAccount(for: connector, of: package, in: workspace, modelContext: modelContext)
-        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return account
     }
 
@@ -393,7 +377,6 @@ struct CapabilityCatalogActionService {
         modelContext: ModelContext
     ) throws {
         try PluginOperations.makeDefault(account, componentID: componentID, pluginID: package.id, in: workspace, modelContext: modelContext)
-        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
     }
 
     /// Deletes an account in every workspace, with its credentials.

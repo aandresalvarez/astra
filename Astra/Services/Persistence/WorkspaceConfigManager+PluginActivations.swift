@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRACore
 
 /// How `.astra-workspace.json` carries a workspace's plugin activations.
 ///
@@ -315,8 +316,19 @@ extension WorkspaceConfigManager {
     @MainActor
     @discardableResult
     public static func exportMirrorNow(workspace: Workspace, modelContext: ModelContext) -> Bool {
-        guard !WorkspacePersistenceCoordinator.shouldSkipAutoExport(),
-              let url = autoExportTarget(for: workspace.primaryPath).url else { return true }
+        guard !WorkspacePersistenceCoordinator.shouldSkipAutoExport() else { return true }
+        let target = autoExportTarget(for: workspace.primaryPath)
+        guard let url = target.url else {
+            // An unset folder has no filesystem mirror. A configured folder
+            // that is missing or unwritable still owes one; do not let a
+            // failed target authorize cleanup or complete an operation.
+            guard target.reason != "primary_path_empty" else { return true }
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "mirror_target_unavailable", "reason": target.reason,
+                "workspace_id": workspace.id.uuidString
+            ], level: .warning)
+            return false
+        }
         guard WorkspaceMirrorRegistry(for: modelContext)?.register([workspace.primaryPath]) ?? true else { return false }
         WorkspaceAutoExportGate.shared.retire(workspaceID: workspace.id.uuidString)
         return exportToFileResult(workspace: workspace, modelContext: modelContext, url: url).didExport

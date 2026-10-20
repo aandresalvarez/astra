@@ -215,7 +215,7 @@ struct PluginRuntimeProjection {
     /// a workspace; one detached from it falls back to its own ID.
     static func derivedID(of activation: PluginActivation, componentID: String) -> UUID {
         derivedID(
-            workspaceID: activation.workspace?.id ?? activation.id,
+            workspaceID: activation.launchWorkspaceID ?? activation.workspace?.id ?? activation.id,
             pluginID: activation.pluginID,
             componentID: componentID,
             seed: activation.namespaceSeed
@@ -425,15 +425,15 @@ struct PluginRuntimeProjection {
             found = creatorDeclaration(of: account, originID: originID, binding: binding.spec, in: binding.package, creator: creator)
         }
         guard let declaration = found else {
-            let shared = bindings.dropFirst().reduce(declaredConfigKeys(of: first.spec, in: first.package, on: copy)) {
-                $0.intersection(declaredConfigKeys(of: $1.spec, in: $1.package, on: copy))
+            let shared = bindings.dropFirst().reduce(storedConfigKeys(of: first.spec, in: first.package, on: copy)) {
+                $0.intersection(storedConfigKeys(of: $1.spec, in: $1.package, on: copy))
             }
             retain(credentials: [], config: shared, on: copy)
             return
         }
         retain(
             credentials: Set(PluginConnectorFieldTrust.asStored(declaration.spec, in: declaration.package).credentialHints.map(\.key)),
-            config: declaredConfigKeys(of: declaration.spec, in: declaration.package, on: copy),
+            config: storedConfigKeys(of: declaration.spec, in: declaration.package, on: copy),
             on: copy
         )
     }
@@ -456,13 +456,20 @@ struct PluginRuntimeProjection {
         return found.map { ($0, creatorPackage) }
     }
 
-    /// The setting keys Add gives an account of `spec`: its config hints and
-    /// its plugin's skill settings (`CapabilityInstaller`), plus the ones a
-    /// Stanford Outlook account always carries.
-    private static func declaredConfigKeys(of spec: PluginConnector, in package: PluginPackage, on copy: Connector) -> Set<String> {
-        var keys = Set(spec.configHints.map(\.key)).union(package.skills.flatMap(\.environmentKeys))
+    /// The setting keys an account of `spec` may carry plain into a run: the
+    /// settings its stored projection keeps plain
+    /// (`PluginConnectorFieldTrust.asStored`), its plugin's skill settings
+    /// (`CapabilityInstaller`) and the ones a Stanford Outlook account always
+    /// carries, less every key the plugin stores as a credential. A plain
+    /// value an older row still holds for one of those (its move into the
+    /// Keychain refused, or a different value already there) reaches no
+    /// run as a setting: it is withheld until it is a credential.
+    private static func storedConfigKeys(of spec: PluginConnector, in package: PluginPackage, on copy: Connector) -> Set<String> {
+        let stored = PluginConnectorFieldTrust.asStored(spec, in: package)
+        let promoted = PluginConnectorFieldTrust.settingsStoredAsCredentials(of: spec, in: package)
+        var keys = Set(stored.configHints.map(\.key)).union(package.skills.flatMap(\.environmentKeys))
         if copy.isStanfordOutlookMail { keys.formUnion([StanfordOutlookMail.tenantDomainKey, StanfordOutlookMail.scopesKey]) }
-        return keys
+        return keys.subtracting(promoted).subtracting(stored.credentialHints.map(\.key))
     }
 
     /// Drops from a runtime copy the credential and setting keys outside
