@@ -16,9 +16,22 @@ struct PluginCredentialCopyOnWriteTests {
         defer { SkillSecretSeam.register(previous) }
         let env = try PluginCredentialGenerationTests.Fixture()
         defer { env.disk.disk.removeFiles() }
-        if legacy { WorkspaceCapabilityActivation.mutate(env.workspace) { $0.enableCapability(env.package.id) } }
-        let original = try env.enable("submitted-secret")
-        if legacy { #expect(original.secretNamespaceID == original.id) }
+        let original: Skill
+        if legacy {
+            WorkspaceCapabilityActivation.mutate(env.workspace) { $0.enableCapability(env.package.id) }
+            WorkspaceCapabilityActivation.recordAccepted(pluginID: env.package.id, version: env.package.version,
+                digest: PluginDefinitionDigest.content(of: env.package), in: env.workspace)
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: env.package.id, in: env.workspace))
+            let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: env.component)
+            #expect(GenerationSecrets.saveSecretValue("submitted-secret", key: "API_TOKEN", skillID: namespace,
+                skillName: "Legacy", allowUserInteraction: false))
+            WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: "\(env.component)#API_TOKEN", on: activation)
+            try env.context.save()
+            original = try #require(PluginRuntimeProjection.project(workspace: env.workspace, packages: [env.package]).skills.first)
+            #expect(original.secretNamespaceID == original.id)
+        } else {
+            original = try env.enable("submitted-secret")
+        }
         let task = AgentTask(title: "Queued credential edit", goal: "Run accepted plugin", workspace: env.workspace)
         env.context.insert(task)
         let message = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: "Run accepted plugin")
@@ -38,6 +51,119 @@ struct PluginCredentialCopyOnWriteTests {
             accountsByID: [:], definitionsFrozen: true)
         let queued = try #require(PluginRuntimeProjection.project(workspace: launch, packages: [env.package]).skills.first)
         #expect(queued.environmentVariables["API_TOKEN"] == "submitted-secret")
+    }
+
+    @Test("Repeated Add preserves an existing request's secret and rotates only the current activation")
+    func repeatedAddPreservesQueuedGeneration() throws {
+        let previous = SkillSecretSeam.required
+        SkillSecretSeam.register(GenerationSecrets.self)
+        defer { SkillSecretSeam.register(previous) }
+        let env = try PluginCredentialGenerationTests.Fixture()
+        defer { env.disk.disk.removeFiles() }
+        let old = try env.enable("accepted-add-secret")
+        let task = AgentTask(title: "Repeated Add", goal: "Run the accepted plugin", workspace: env.workspace)
+        env.context.insert(task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, pluginDefinitions: [env.package])
+        env.context.insert(request)
+        try env.context.save()
+        let frozen = try #require(request.executionPolicySnapshot?.pluginActivations)
+        let current = try env.enable("new-add-secret")
+        #expect(current.id == old.id)
+        #expect(current.secretNamespaceID != old.secretNamespaceID)
+        #expect(current.environmentVariables["API_TOKEN"] == "new-add-secret")
+        let launch = Workspace(name: "Accepted Add request", primaryPath: "")
+        WorkspaceCapabilityActivation.copyActivations(frozen, of: env.workspace, to: launch,
+            accountsByID: [:], definitionsFrozen: true)
+        let queued = try #require(PluginRuntimeProjection.project(workspace: launch, packages: [env.package]).skills.first)
+        #expect(queued.environmentVariables["API_TOKEN"] == "accepted-add-secret")
+    }
+
+    @Test("A failed repeated Add never overwrites the credential referenced by the saved store")
+    func failedRepeatedAddPreservesSavedValueBeforeCommit() throws {
+        let previous = SkillSecretSeam.required
+        SkillSecretSeam.register(GenerationSecrets.self)
+        defer { SkillSecretSeam.register(previous) }
+        let env = try PluginCredentialGenerationTests.Fixture()
+        defer { env.disk.disk.removeFiles() }
+        let old = try env.enable("saved-add-secret")
+        var valueBeforeCommit: String?
+        #expect(throws: (any Error).self) {
+            try env.installer.enable(env.package, in: env.workspace, modelContext: env.context,
+                configInputs: ["API_TOKEN": "attempted-add-secret"], persist: { _, context in
+                    let saved = try! ModelContext(context.container).fetch(FetchDescriptor<PluginActivation>()).first!
+                    valueBeforeCommit = GenerationSecrets.value(in: PluginRuntimeProjection.credentialID(of: saved, componentID: env.component))
+                    return false
+                })
+        }
+        #expect(valueBeforeCommit == "saved-add-secret")
+        #expect(GenerationSecrets.value(in: old.secretNamespaceID) == "saved-add-secret")
+    }
+
+    @Test("Repeated Add keeps its complete saved generation when recovery is pending", arguments: [false, true])
+    func repeatedAddRecoversForward(failureAfterSave: Bool) throws {
+        let previous = SkillSecretSeam.required
+        SkillSecretSeam.register(GenerationSecrets.self)
+        defer { SkillSecretSeam.register(previous) }
+        let env = try PluginCredentialGenerationTests.Fixture()
+        defer { env.disk.disk.removeFiles() }
+        let old = try env.enable("previous-add-value")
+        var operationID: UUID?
+        do {
+            try env.installer.enable(env.package, in: env.workspace, modelContext: env.context,
+                configInputs: ["API_TOKEN": "committed-add-value"],
+                persist: { _, context in try! context.save(); return !failureAfterSave },
+                rewriteMirror: { _ in false })
+            Issue.record("The saved Add must report its pending recovery")
+        } catch let problem as PluginOperationProblem { operationID = problem.operationID }
+        let id = try #require(operationID)
+        let reopened = try env.disk.disk.reopen()
+        let activation = try #require(try reopened.mainContext.fetch(FetchDescriptor<PluginActivation>()).first)
+        let current = PluginRuntimeProjection.credentialID(of: activation, componentID: env.component)
+        #expect(current != old.secretNamespaceID)
+        #expect(GenerationSecrets.value(in: current) == "committed-add-value")
+        #expect(GenerationSecrets.value(in: old.secretNamespaceID) == "previous-add-value")
+        #expect(try PluginOperationCommit.read(id, container: reopened)?.completedAt == nil)
+        #expect(PluginOperationRecovery.resumePending(modelContext: reopened.mainContext).completed == 1)
+        PluginSecretCleanupOutbox.resumePending(modelContext: reopened.mainContext, outbox: env.outbox,
+            secrets: GenerationSecrets.self)
+        #expect(GenerationSecrets.value(in: current) == "committed-add-value")
+        #expect(GenerationSecrets.value(in: old.secretNamespaceID) == nil)
+        #expect(try env.outbox.entries().isEmpty)
+    }
+
+    @Test("A failed Add keeps cleanup intent for a new component when Keychain refuses compensation")
+    func refusedNewComponentCleanupRetainsIntent() throws {
+        let previous = SkillSecretSeam.required
+        SkillSecretSeam.register(GenerationSecrets.self)
+        defer { SkillSecretSeam.register(previous) }
+        let env = try PluginCredentialGenerationTests.Fixture()
+        defer { env.disk.disk.removeFiles() }
+        let old = try env.enable("previous-component-value")
+        var package = env.package
+        var added = package.skills[0]
+        added.id = "new-component"
+        added.environmentKeys = ["NEW_TOKEN"]; added.environmentValues = [""]
+        package.skills.append(added)
+        let component = CapabilityResourceOrigin.componentID(for: added)
+        let installer = CapabilityInstaller(library: env.disk.disk.library, skillSecrets: RefusingGenerationCleanup.self)
+        var attemptedNamespace: UUID?
+        #expect(throws: (any Error).self) {
+            try installer.enable(package, in: env.workspace, modelContext: env.context,
+                configInputs: ["NEW_TOKEN": "orphaned-component-value"], persist: { _, _ in
+                    let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace)!
+                    attemptedNamespace = PluginRuntimeProjection.credentialID(of: activation, componentID: component)
+                    return false
+                })
+        }
+        let orphan = try #require(attemptedNamespace)
+        #expect(GenerationSecrets.loadSecretValue(key: "NEW_TOKEN", skillID: orphan, store: KeychainSecretStore()) == "orphaned-component-value")
+        #expect(try env.outbox.pendingKeys().contains(.init(key: "NEW_TOKEN", skillID: orphan)))
+        #expect(GenerationSecrets.value(in: old.secretNamespaceID) == "previous-component-value")
+        PluginSecretCleanupOutbox.resumePending(modelContext: ModelContext(env.context.container),
+            outbox: env.outbox, secrets: GenerationSecrets.self)
+        #expect(GenerationSecrets.loadSecretValue(key: "NEW_TOKEN", skillID: orphan, store: KeychainSecretStore()) == nil)
+        #expect(GenerationSecrets.value(in: old.secretNamespaceID) == "previous-component-value")
+        #expect(try env.outbox.entries().isEmpty)
     }
 
     @Test("Before a clear commits, the saved activation still resolves its old secret without compensation")

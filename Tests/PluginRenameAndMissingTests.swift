@@ -234,6 +234,7 @@ struct PluginRound21ReviewTests {
         try installer.install(v1, into: workspace, modelContext: context, announceCatalogMutation: false)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
         let released = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:summary-agent")
+        let originalNamespaces = Set(PluginRuntimeProjection.secretNamespaces(of: activation, package: nil))
         let outbox = try #require(PluginSecretCleanupOutbox(for: context))
 
         var v2 = v1
@@ -256,7 +257,8 @@ struct PluginRound21ReviewTests {
         #expect(activation.recordedVersion == "2.0.0")
         #expect(rewritten == [workspace.id])
         #expect(owedDuringRewrite)
-        #expect(try outbox.pending() == [released])
+        let stagedReleased = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:summary-agent")
+        #expect(Set(try outbox.pending()) == originalNamespaces.union([stagedReleased]))
     }
 
     @Test("Disabling a legacy plugin writes the workspace's mirror before any cleanup")
