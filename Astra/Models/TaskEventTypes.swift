@@ -231,6 +231,8 @@ public enum TaskEventTypes {
         /// stopped because a plugin component needs the person to repair it
         /// (a CLI sign-in expired mid-task). The task view offers the repair.
         public static let runtimeRepairRequired: TaskEventType = "runtime.repair_required"
+        /// Captured RuntimeRepairContext, including guidance with no automatic action.
+        public static let runtimeRepairContext: TaskEventType = "runtime.repair_context"
         /// The user switched an existing conversation from a runtime they
         /// marked approved for PHI to one they did not, and accepted the risk.
         /// Payload is `RuntimeSensitiveDataRiskAcknowledgement`.
@@ -351,6 +353,7 @@ public enum TaskEventTypes {
         System.scheduleResult,
         System.runtimeLaunchBlocked,
         System.runtimeRepairRequired,
+        System.runtimeRepairContext,
         System.sensitiveDataRiskAcknowledged
     ]
 

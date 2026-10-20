@@ -337,13 +337,13 @@ enum PluginsSurfacePresentation {
     }
 
     /// Decided by the rule Add itself follows
-    /// (`CapabilityCatalogActionService.addRoute`), so the row never offers
+    /// (`CapabilityCatalogActionService.validateAccountSupport`), so the row never offers
     /// Reconnect for an account Add can't sign in to (a provider other than
     /// Google), and the two can't drift.
     @MainActor
     static func pendingAccountAction(for package: PluginPackage) -> PendingAccountAction {
         do {
-            _ = try CapabilityCatalogActionService.addRoute(for: package)
+            try CapabilityCatalogActionService.validateAccountSupport(for: package)
             return .reconnect
         } catch {
             return .unsupported(error.localizedDescription)

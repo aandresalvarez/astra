@@ -84,6 +84,15 @@ enum FilesShelfResponsivenessTelemetry {
         begin(source: "view_appear", taskID: taskID, workspaceID: workspaceID, scope: scope)
     }
 
+    static func phase(scope: UUID?, phase: String, startedAt: UInt64) {
+        guard let scope, let active = activeTraces[scope] else { return }
+        var fields = active.trace.result(event: "files_shelf_phase", at: startedAt).fields
+        fields["phase"] = phase
+        PerformanceTelemetry.log("files_shelf_phase",
+            durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: startedAt),
+            fields: fields, taskID: active.trace.taskID)
+    }
+
     static func chromeReady(scope: UUID) {
         guard var active = activeTraces[scope], !active.chromeReady else { return }
         active.chromeReady = true

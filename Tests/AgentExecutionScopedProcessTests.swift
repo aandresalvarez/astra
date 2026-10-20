@@ -26,6 +26,52 @@ struct AgentExecutionScopedProcessTests {
         #expect(output == "\(canonicalPath(directory.path)):scoped")
     }
 
+    @Test("Reaping releases a completion callback that captures its process")
+    func reapingReleasesCompletionCapture() async {
+        let reference = WeakProcessReference()
+        await runCapturingCompletion(reference)
+        let released = await waitUntil(timeout: 2) { reference.value == nil }
+        // Also break the cycle after a failing regression run.
+        defer { reference.value?.terminationHandler = nil }
+        #expect(released, "Finished worker callbacks must not retain the process and its output buffers")
+    }
+
+    private func runCapturingCompletion(_ reference: WeakProcessReference) async {
+        let process = AgentExecutionScopedProcess(executablePath: "/usr/bin/true", arguments: [],
+                                                   currentDirectory: "/tmp", environment: [:])
+        reference.value = process
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // The worker's line parser captures process in this same way.
+            process.terminationHandler = { _ in
+                _ = process.terminationStatus
+                continuation.resume()
+            }
+            do { try process.run() }
+            catch { process.terminationHandler = nil; continuation.resume() }
+        }
+    }
+
+    @Test("A failed launch releases callbacks and their captured process")
+    func failedLaunchReleasesCaptures() async {
+        let reference = WeakProcessReference()
+        captureFailedLaunch(reference)
+        let released = await waitUntil(timeout: 2) { reference.value == nil }
+        defer {
+            reference.value?.stdoutFileHandle.readabilityHandler = nil
+            reference.value?.terminationHandler = nil
+        }
+        #expect(released)
+    }
+
+    private func captureFailedLaunch(_ reference: WeakProcessReference) {
+        let process = AgentExecutionScopedProcess(executablePath: "/astra-missing-provider-\(UUID())", arguments: [],
+                                                   currentDirectory: "/tmp", environment: [:])
+        reference.value = process
+        process.terminationHandler = { _ in _ = process.terminationStatus }
+        process.stdoutFileHandle.readabilityHandler = { _ in _ = process.isRunning }
+        #expect(throws: (any Error).self) { try process.run() }
+    }
+
     @Test("terminate kills background child process")
     func terminateKillsBackgroundChildProcess() async throws {
         let directory = temporaryDirectory()
@@ -169,4 +215,8 @@ struct AgentExecutionScopedProcessTests {
     private func canonicalPath(_ path: String) -> String {
         path.hasPrefix("/var/") ? "/private\(path)" : path
     }
+}
+
+private final class WeakProcessReference: @unchecked Sendable {
+    weak var value: AgentExecutionScopedProcess?
 }

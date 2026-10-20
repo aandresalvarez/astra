@@ -672,9 +672,10 @@ enum TaskWorktreeService {
     /// cannot be saved, it is undone in memory and in the context: the draft
     /// gets its previous pin and isolation back, the copied binding is
     /// removed, and the temporary task's deletion is rolled back, so no later
-    /// unrelated save can commit half of a failed recovery. SwiftData's
-    /// `rollback()` drops pending changes but leaves model properties stale,
-    /// which is why the draft's fields are restored explicitly first.
+    /// unrelated save can commit half of a failed recovery. Restore an
+    /// available prior pin before rollback for SwiftData versions that leave
+    /// cached values stale. Clearing a newly reserved pin is a separate,
+    /// durable correction and must happen only after rollback.
     static func recoverFailedSubmission(
         task: AgentTask,
         existingDraft: AgentTask?,
@@ -718,24 +719,37 @@ enum TaskWorktreeService {
                 modelContext.insert(copy)
                 copiedBinding = copy
             }
+            SwiftDataDeletionPreparation.prepare(task)
             modelContext.delete(task)
             recovered = adoptingDraft
-            undoAdoption = {
-                if let draft = adoptingDraft {
-                    // Restoring nil, the usual case, always succeeds; a prior
-                    // pin that cleanup has since reserved is not readopted,
-                    // and the adopted one, whose binding goes below, is
-                    // cleared rather than left unbound.
-                    if !TaskWorktreeCheckoutReservation.commit(previousPin, to: draft) {
+            let restorePreviousDraft = {
+                guard let draft = adoptingDraft else { return }
+                let safePin = TaskWorktreeCheckoutReservation.isReserved(previousPin) ? nil : previousPin
+                if draft.executionRootPath != safePin {
+                    if !TaskWorktreeCheckoutReservation.commit(safePin, to: draft) {
                         TaskWorktreeCheckoutReservation.commit(nil, to: draft)
                     }
-                    if let previousIsolation { draft.isolationStrategy = previousIsolation }
-                    if let copiedBinding {
-                        draft.events.removeAll { $0 === copiedBinding }
-                        modelContext.delete(copiedBinding)
-                    }
+                }
+                if let previousIsolation, draft.isolationStrategy != previousIsolation {
+                    draft.isolationStrategy = previousIsolation
+                }
+            }
+            undoAdoption = {
+                if let draft = adoptingDraft, let copiedBinding {
+                    draft.events.removeAll { $0 === copiedBinding }
+                    modelContext.delete(copiedBinding)
+                }
+                // A reserved prior checkout must be cleared only after
+                // rollback. Clearing it first lets macOS 26 discard the
+                // update while leaving a cached nil; the second restoration
+                // then sees no difference, and a later save keeps the old
+                // reserved path. Leave the adopted pin until rollback so
+                // clearing it afterwards remains a tracked durable change.
+                if !TaskWorktreeCheckoutReservation.isReserved(previousPin) {
+                    restorePreviousDraft()
                 }
                 modelContext.rollback()
+                restorePreviousDraft()
             }
         }
         do {

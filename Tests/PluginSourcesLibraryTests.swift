@@ -161,7 +161,7 @@ struct PluginSourcesLibraryTests {
         #expect(try fixture.store.exclusively(pluginID: "someone-else") { true })
         // The staged approval takes the same locks.
         let source = try String(contentsOf: PluginSourcesTests.repositoryRoot().appendingPathComponent("Astra/Services/Capabilities/CapabilityCatalogActionService.swift"), encoding: .utf8)
-        #expect(source.contains("try sourceStore.exclusively(pluginID: id) {\n            try approveStagedExclusively("))
+        #expect(source.contains("try sourceStore.exclusively(pluginID: id) {\n            try PluginStagedApproval.approve("))
     }
 
     @Test("T5: recovering the workspace's own mirror holds an activation whose plugin is now installed from another source; its own source's Update is awaited as before")
@@ -276,6 +276,7 @@ struct PluginSourcesLibraryTests {
     func heldImportsAreListedAndDiscardable() throws {
         let fixture = try PluginSourcesTests.Fixture()
         let workspace = Workspace(name: "Held", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
         let folder = fixture.root.appendingPathComponent("held", isDirectory: true)
         try fixture.write(["capability.json": try PluginSourcesTests.packageJSON(id: "held-plugin", version: "1.0.0")], in: folder)

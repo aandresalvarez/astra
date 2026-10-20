@@ -17,7 +17,7 @@ extension CapabilityLibrary {
         CapabilityLibrary(
             directory: directory.deletingLastPathComponent()
                 .appendingPathComponent(directory.lastPathComponent + "Staged", isDirectory: true),
-            fileManager: fileManager
+            fileManager: fileManager, publishesChanges: publishesChanges
         )
     }
 
@@ -101,6 +101,6 @@ extension CapabilityLibrary {
             try fileManager.moveItem(at: url, to: destination)
         }
         guard !holdsUnreadableEntry(id: id) else { throw RemovalError.notInstalled(id) }
-        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
+        publishChange()
     }
 }

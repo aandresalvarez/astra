@@ -173,4 +173,15 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+/// Whether an ACL entry's principal (its 16-byte UUID qualifier) is the
+/// current effective user or a group they belong to. Swift cannot reach
+/// `<membership.h>`, so this wraps `mbr_uid_to_uuid` and
+/// `mbr_check_membership`. Fails closed (`NO`) on any lookup error.
+@interface AstraMembership : NSObject
+
++ (BOOL)currentUserMatchesPrincipal:(const unsigned char *)principalUUID;
++ (nullable NSString *)posixPrincipalForUUID:(const unsigned char *)principalUUID;
+
+@end
+
 NS_ASSUME_NONNULL_END

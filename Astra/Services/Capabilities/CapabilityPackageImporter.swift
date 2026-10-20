@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAPersistence
 
 struct CapabilityPackageImportResult {
     var package: PluginPackage
@@ -16,16 +17,6 @@ struct CapabilityPackageImportError: LocalizedError {
 
     var errorDescription: String? {
         report.summary
-    }
-}
-
-/// An Update whose installed copy couldn't be copied aside is refused: a
-/// reconciliation that failed afterwards could not put it back.
-struct CapabilityPackageSnapshotUnavailable: LocalizedError, Equatable {
-    var packageID: String
-
-    var errorDescription: String? {
-        "ASTRA couldn't keep a copy of the installed \(packageID) to go back to, so it didn't update it. Try again."
     }
 }
 
@@ -127,10 +118,6 @@ struct CapabilityPackageImporter {
         if let modelContext, let refusal = PluginUpdateService.refusals(for: package, modelContext: modelContext).first {
             throw refusal
         }
-        let previousStorage = library.makePackageStorageSnapshot(for: package.id)
-        if modelContext != nil, !previousStorage.canRestore {
-            throw CapabilityPackageSnapshotUnavailable(packageID: package.id)
-        }
         var currentSource = report.source ?? CapabilityPackageSource(
             package: package,
             manifestURL: report.sourceURL,
@@ -144,24 +131,28 @@ struct CapabilityPackageImporter {
             checkPrerequisites: false
         )
         guard currentReport.canInstall else {
-            library.discardPackageStorageSnapshot(previousStorage)
             throw CapabilityPackageImportError(report: currentReport)
         }
+        if let modelContext {
+            let approvals = CapabilityApprovalStore()
+            let journal = PluginFileOperationJournal(library: library, approvals: approvals)
+            guard let identity = PersistentStoreIdentity.current(for: modelContext) else { throw PluginDefinitionChange.Failure.unavailableStore }
+            let definition = try PluginLibraryPreparation.prepare(source: currentReport.source ?? currentSource,
+                library: library, approvalStore: approvals, storeIdentity: identity, journal: journal)
+            _ = try PluginDefinitionChange.commit(definition, library: library, journal: journal,
+                modelContext: modelContext, kind: .update, approvalRecords: { records })
+            return CapabilityPackageImportResult(package: package, report: report,
+                installedURL: package.iconDescriptor.kind == .asset
+                    ? library.packageManifestURL(for: package.id) : library.packageURL(for: package.id))
+        }
+        // Compatibility callers without a domain store perform a library-only
+        // write. They cannot reconcile activations or claim a domain commit.
+        let previousStorage = library.makePackageStorageSnapshot(for: package.id)
         do {
             if let source = currentReport.source {
                 try library.install(source)
             } else {
                 try library.install(package, sourceMetadata: .localLibrary())
-            }
-            if let modelContext {
-                // The activations are reconciled with the definition as the
-                // library stores it: one that can't be read back fails the
-                // import, rather than reconciling nothing and reporting it kept.
-                guard let installed = library.installedPackage(id: package.id) else {
-                    throw CapabilityPackageInstallUnreadable(packageID: package.id)
-                }
-                // The person chose this version: what it dropped is released.
-                try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: [installed], mode: .release)
             }
         } catch {
             // The snapshot outlives a restore only when the restore fails,

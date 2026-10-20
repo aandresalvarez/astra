@@ -24,30 +24,13 @@ enum CapabilityAccountSetupError: Error, Equatable, LocalizedError {
 
 @MainActor
 struct CapabilityCatalogActionService {
-    /// What Plugins Add does with a package.
-    enum AddRoute: Equatable {
-        /// Install, approve and enable in one step.
-        case enable
-        /// Open the install flow that connects the package's account first.
-        case connectAccount
-    }
-
-    /// OAuth providers ASTRA can sign in to: none. The Google OAuth stack is
-    /// deleted (owner decision), so a plugin that needs an account sign-in
-    /// can't be added (`PluginsSurfacePresentation.unavailableReason`).
-    static let supportedOAuthProviders: Set<String> = []
-
-    /// How Add handles `package`. A package that needs an account of a
-    /// provider ASTRA can't sign in to is refused: the router's fallback
-    /// sheet would enable it with no account, and it would read as ready
-    /// though its setup never ran. An optional account neither routes nor
-    /// refuses: the plugin works without it.
-    static func addRoute(for package: PluginPackage) throws -> AddRoute {
-        let accounts = package.setupRequirements.filter { $0.kind == .oauthAccount && $0.required }
-        if let unsupported = accounts.first(where: { !supportedOAuthProviders.contains($0.provider ?? "") }) {
+    /// Required OAuth accounts have no setup flow after the old OAuth stack
+    /// was retired. Refuse them explicitly; optional accounts do not block
+    /// the plugin's independent features. There is no sign-in route to return.
+    static func validateAccountSupport(for package: PluginPackage) throws {
+        if let unsupported = package.setupRequirements.first(where: { $0.kind == .oauthAccount && $0.required }) {
             throw CapabilityAccountSetupError.unsupportedProvider(account: unsupported.displayName, provider: unsupported.provider)
         }
-        return accounts.isEmpty ? .enable : .connectAccount
     }
 
     let installer: CapabilityInstaller
@@ -120,7 +103,7 @@ struct CapabilityCatalogActionService {
             // Every enable path (the legacy catalog's install sheets and
             // Configure included) refuses a required account ASTRA can't
             // sign in to, not only Plugins Add.
-            _ = try Self.addRoute(for: package)
+            try Self.validateAccountSupport(for: package)
             let result = try installer.install(
                 package,
                 into: workspace,
@@ -211,9 +194,9 @@ struct CapabilityCatalogActionService {
     }
 
     /// Approves the draft an import staged over an approved plugin
-    /// (`CapabilityLibrary.stage`) and makes it the installed definition:
-    /// the approval is saved first, then the draft replaces the approved
-    /// copy, then every activation is reconciled with it, as an import does.
+    /// (`CapabilityLibrary.stage`) through the prepared file/receipt boundary.
+    /// Reconciliation and approval either commit together or retain the draft
+    /// and restore the previous installed bytes.
     @discardableResult
     func approveStaged(
         id: String,
@@ -221,35 +204,12 @@ struct CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         approvedBy: String = "ASTRA local admin"
     ) throws -> PluginPackage {
-        // A library write like any other (T13): one at a time per plugin
-        // and across the library.
+        // Staged approval changes the shared library, so keep the source
+        // store's global serialization around the durable commit boundary.
         try sourceStore.exclusively(pluginID: id) {
-            try approveStagedExclusively(id: id, modelContext: modelContext, approvalStore: approvalStore, approvedBy: approvedBy)
+            try PluginStagedApproval.approve(id: id, library: library, modelContext: modelContext,
+                approvalStore: approvalStore, approvedBy: approvedBy)
         }
-    }
-
-    private func approveStagedExclusively(
-        id: String,
-        modelContext: ModelContext,
-        approvalStore: CapabilityApprovalStore,
-        approvedBy: String
-    ) throws -> PluginPackage {
-        guard let draft = library.stagedPackage(id: id) else {
-            throw CapabilityLibrary.RemovalError.notInstalled(id)
-        }
-        if let refusal = PluginUpdateService.refusals(for: draft, modelContext: modelContext).first { throw refusal }
-        let record = try approvalStore.save(package: draft, status: .approved, approvedBy: approvedBy, reviewNotes: "Approved the staged update.")
-        let installed = try library.commitStaged(id: id)
-        // A copy whose digest names where it is stored (an icon asset) is
-        // approved again where it now is.
-        var records = approvalStore.records()
-        if PluginUpdateService.awaitsReview(installed, records: records) {
-            _ = try approvalStore.save(package: installed, status: .approved, approvedBy: approvedBy, reviewNotes: record.reviewNotes)
-            records = approvalStore.records()
-        }
-        try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: [installed], mode: .release, approvalRecords: records)
-        CapabilityCatalogPersistenceEvents.post(.global)
-        return installed
     }
 
     /// Drops a staged draft: the approved copy stays what it was.
@@ -278,7 +238,7 @@ struct CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
-        _ = try Self.addRoute(for: package)
+        try Self.validateAccountSupport(for: package)
         let context = try grantPendingApproval(
             for: package, workspace: workspace, policyContext: policyContext,
             approvalStore: approvalStore, source: "plugins_add", traceID: traceID
@@ -415,7 +375,6 @@ struct CapabilityCatalogActionService {
         modelContext: ModelContext
     ) throws {
         try PluginOperations.setSetting(key, to: value, of: skill, pluginID: package.id, in: workspace, modelContext: modelContext)
-        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
     }
 
     /// A new account for a connector component, bound in this workspace.
@@ -427,7 +386,6 @@ struct CapabilityCatalogActionService {
         modelContext: ModelContext
     ) throws -> Connector {
         let account = try PluginOperations.addAccount(for: connector, of: package, in: workspace, modelContext: modelContext)
-        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return account
     }
 
@@ -439,7 +397,6 @@ struct CapabilityCatalogActionService {
         modelContext: ModelContext
     ) throws {
         try PluginOperations.makeDefault(account, componentID: componentID, pluginID: package.id, in: workspace, modelContext: modelContext)
-        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
     }
 
     /// Deletes an account in every workspace, with its credentials.

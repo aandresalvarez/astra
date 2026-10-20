@@ -28,6 +28,7 @@ struct PluginSecrecyAndSignInTests {
         Fixtures.Environment.retained.append(container)
         let context = container.mainContext
         let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
         let library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
         var v1 = Fixtures.package(version: "1.0.0")

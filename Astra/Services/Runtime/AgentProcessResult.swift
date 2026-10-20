@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 struct AgentProcessResult: Codable {
     /// Successfully written approval responses followed by provider completion.
@@ -16,6 +17,7 @@ struct AgentProcessResult: Codable {
     let policyApprovalMessage: String?
     let runtimeStopReason: String?
     let runtimeStopMessage: String?
+    let runtimeRepairContext: RuntimeRepairContext?
     let budgetExceeded: Bool
     let budgetWarning: Bool
     let finalReportedBudgetExceededAfterCompletion: Bool
@@ -36,6 +38,7 @@ struct AgentProcessResult: Codable {
         policyApprovalMessage: String? = nil,
         runtimeStopReason: String? = nil,
         runtimeStopMessage: String? = nil,
+        runtimeRepairContext: RuntimeRepairContext? = nil,
         budgetExceeded: Bool = false,
         budgetWarning: Bool = false,
         finalReportedBudgetExceededAfterCompletion: Bool = false,
@@ -61,6 +64,7 @@ struct AgentProcessResult: Codable {
         self.policyApprovalMessage = policyApprovalMessage
         self.runtimeStopReason = runtimeStopReason
         self.runtimeStopMessage = runtimeStopMessage
+        self.runtimeRepairContext = runtimeRepairContext
         self.budgetExceeded = budgetExceeded
         self.budgetWarning = budgetWarning
         self.finalReportedBudgetExceededAfterCompletion = finalReportedBudgetExceededAfterCompletion

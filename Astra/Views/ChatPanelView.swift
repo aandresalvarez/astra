@@ -1105,7 +1105,9 @@ struct ChatPanelView: View {
         // cancelled refresh returns no states (its killed probes would all read as blocked), so
         // anything short of a full map is not an answer: keep the previous states until the
         // replacement task completes rather than dropping providers from the menu.
-        guard states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
+        // Cancellation can also arrive after the service answers, while
+        // this continuation is waiting to resume on the UI actor.
+        guard !Task.isCancelled, states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
         runtimeReadinessStates = states
         alignDefaultRuntimeWithAvailability()
     }

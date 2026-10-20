@@ -96,12 +96,7 @@ enum TaskLaunchAdmissionService {
         phase: RunPhase,
         candidateRuntimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs,
         secretStore: SecretStore = AdmissionMetadataSecretStore(),
-        profile: RuntimeProfileProvider = { runtime, settings in
-            AgentRuntimeCapabilityProfileService.profile(
-                for: runtime,
-                executablePath: settings.executablePath
-            )
-        },
+        profile: RuntimeProfileProvider? = nil,
         isRuntimeUsable: RuntimeUsabilityProvider = { _, settings in
             !settings.executablePath.isEmpty
                 && FileManager.default.isExecutableFile(atPath: settings.executablePath)
@@ -120,7 +115,10 @@ enum TaskLaunchAdmissionService {
         for runtime in runtimes {
             let adapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
             let settings = adapter.launchSettings(configuration: runtimeConfiguration)
-            let runtimeProfile = profile(runtime, settings)
+            let runtimeProfile = profile?(runtime, settings)
+                ?? AgentRuntimeCapabilityProfileService.profile(for: runtime,
+                    executablePath: settings.executablePath,
+                    copilotCapabilities: executionPolicy.copilotCapabilities)
             let executionGrants = executionPolicy.permissionGrantsOverride ?? []
             let capabilitySnapshot = TaskCapabilityResolutionSnapshot.capture(
                 for: task,
@@ -176,9 +174,10 @@ enum TaskLaunchAdmissionService {
                     ? TaskRuntimeIncompatibility.invalidLaunchResourceContract(reason: $0.message)
                     : nil
             }
-            let providerCapabilities = adapter.policyCapabilities(
-                executablePath: settings.executablePath
-            )
+            let providerCapabilities = runtime == .copilotCLI
+                ? executionPolicy.copilotCapabilities.map { AgentRuntimePolicyCapabilities(copilotCLI: $0) }
+                    ?? adapter.policyCapabilities(executablePath: settings.executablePath)
+                : adapter.policyCapabilities(executablePath: settings.executablePath)
             let manifest = AgentPolicyManifestService.compilePreflightManifest(
                 task: task,
                 runID: task.id,
@@ -202,13 +201,20 @@ enum TaskLaunchAdmissionService {
             let policyIncompatibilities = blockedPolicyDiagnostics.map {
                 TaskRuntimeIncompatibility.policyBlocked(reason: $0.message)
             }
+            let discoveryIncompatibilities: [TaskRuntimeIncompatibility]
+            if runtime == .copilotCLI,
+               !transportIncompatibilities.contains(.runtimeUnavailable),
+               let reason = executionPolicy.copilotCapabilityResolution?.failureReason {
+                discoveryIncompatibilities = [.policyBlocked(reason: reason)]
+            } else { discoveryIncompatibilities = [] }
             let contract = LaunchResourceContract(plan: resourcePlan)
             candidates[runtime] = TaskRuntimeAdmissionCandidate(
                 runtime: runtime,
                 capabilityResolutionSnapshot: capabilitySnapshot,
                 launchResourcePlan: resourcePlan,
                 requirements: requirements,
-                incompatibilities: transportIncompatibilities
+                incompatibilities: discoveryIncompatibilities
+                    + transportIncompatibilities
                     + resourceIncompatibilities
                     + policyIncompatibilities,
                 policyDiagnostics: manifest.providerRender.diagnostics,

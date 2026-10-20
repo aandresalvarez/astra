@@ -3,6 +3,16 @@ import Testing
 import ASTRAPersistence
 @testable import ASTRA
 
+private final class ShelfRootProbeFileManager: FileManager, @unchecked Sendable {
+    private let lock = NSLock()
+    private var mainThreadProbes = 0
+    var checkedMainThread: Bool { lock.withLock { mainThreadProbes > 0 } }
+    override func fileExists(atPath path: String, isDirectory: UnsafeMutablePointer<ObjCBool>?) -> Bool {
+        if Thread.isMainThread { lock.withLock { mainThreadProbes += 1 } }
+        return FileManager.default.fileExists(atPath: path, isDirectory: isDirectory)
+    }
+}
+
 private actor BlockingShelfFileIndexFilter: ShelfFileIndexFiltering {
     private var queryToBlock: String?
     private var blocked = false
@@ -44,6 +54,37 @@ private actor BlockingShelfFileIndexFilter: ShelfFileIndexFiltering {
 
 @Suite("Files shelf index controller")
 struct ShelfFileIndexControllerTests {
+    @MainActor
+    @Test("Historical attachment metadata resolves away from the UI actor and refreshes with the index")
+    func historyRootsResolveOffMainActor() async throws {
+        let directory = try temporaryDirectory(name: "history-roots")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let folder = directory.appendingPathComponent("docs.html")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("reference.txt")
+        try "Synthetic reference".write(to: file, atomically: true, encoding: .utf8)
+        let manager = ShelfRootProbeFileManager()
+        let paths = [folder.path, file.path, file.path, directory.appendingPathComponent("missing").path, ""]
+        let history = await ShelfAttachmentRootResolver.resolve(paths: paths, fileManager: manager)
+        #expect(!manager.checkedMainThread)
+        #expect(history.map(\.path) == [folder.path, file.path])
+        #expect(history.map(\.isDirectory) == [true, false])
+        let workspace = WorkspaceFileRoot(id: "workspace", kind: .primary,
+            title: "Workspace", path: directory.path, isDirectory: true)
+        let initialInput = WorkspaceFileRoot(id: "initial", kind: .input,
+            title: "Input 1", path: file.path, isDirectory: false)
+        let combined = ShelfAttachmentRootResolver.merging(history, into: [initialInput, workspace])
+        #expect(combined.map(\.path) == [file.path, folder.path, directory.path])
+        #expect(combined.map(\.title) == ["Input 1", "Input 2", "Workspace"])
+        let controller = ShelfFileIndexController(store: WorkspaceFileIndexStore())
+        controller.refresh(allRoots: [workspace], additionalInputPaths: paths, scope: .task,
+            includeHidden: false, force: true, reason: "history", taskID: UUID(), responsivenessScope: nil)
+        for _ in 0..<100 where controller.isScanning { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(!controller.isScanning)
+        #expect(controller.roots.map(\.path) == [folder.path, file.path])
+        #expect(controller.nodes.contains { $0.name == "reference.txt" })
+    }
+
     @MainActor
     @Test("Scope selection happens before filesystem scanning")
     func scopeSelection() {

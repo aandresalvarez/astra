@@ -2529,8 +2529,12 @@ struct TemplateEditorView: View {
                     get: { template.defaultSkillIDs.contains(skill.id.uuidString) },
                     set: { enabled in
                         if enabled {
-                            if !template.defaultSkillIDs.contains(skill.id.uuidString) {
-                                template.defaultSkillIDs.append(skill.id.uuidString)
+                            // Still offered by durable state, not only by
+                            // the catalog loaded when the editor opened.
+                            let id = skill.id.uuidString
+                            if !template.defaultSkillIDs.contains(id), let workspace = template.workspace,
+                               RoutineSkillCatalog.validatedSelection([id], in: workspace, globalSkills: globalSkills) == [id] {
+                                template.defaultSkillIDs.append(id)
                             }
                         } else {
                             template.defaultSkillIDs.removeAll { $0 == skill.id.uuidString }
