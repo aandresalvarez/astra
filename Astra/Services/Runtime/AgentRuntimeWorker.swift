@@ -676,6 +676,12 @@ final class AgentRuntimeWorker {
             }
             return
         }
+        // Resolved once, from the values this launch actually uses; the prompt,
+        // the broker refusal, and the resource manifest read it from the policy.
+        executionPolicy = executionPolicy.withRemoteSSHRoute(RemoteWorkspaceSSHRoute.resolve(
+            task: executionTask, requirements: appliedRuntime.requirements,
+            environment: runEnvironment.runSnapshot, permissionPolicy: launchPermissionPolicy,
+            runtimeCapabilityProfile: runtimeCapabilityProfile))
         let basePrompt = (auditPhase == .resume && approvedPlan == nil
             ? AgentPromptBuilder.buildFreshFollowUpPrompt(message: sessionMessage ?? startPayload,
                 task: executionTask, executionPolicy: executionPolicy)
@@ -715,7 +721,8 @@ final class AgentRuntimeWorker {
             // independently re-derived GitHub host-control routing instead of
             // reusing the resolver's single precomputed answer.
             precomputedRuntimeRequirements: appliedRuntime.requirements,
-            runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
+            runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile,
+            remoteSSHRoute: executionPolicy.remoteSSHRoute
         )
         TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         let budgetEnforcementMode = currentBudgetEnforcementMode
@@ -796,14 +803,15 @@ final class AgentRuntimeWorker {
             ? TaskHistoryRetrievalGuidance.prompt : ""
         // Said with the level the broker binding uses, so what the agent is
         // told a proposal does and what the broker does with it agree.
+        let sshRoute = executionPolicy.remoteSSHRoute
         let autoSendGuidance = { (text: String) in
-            HostControlPlanePromptGuidance.appendingAutoSendGuidance(
+            RemoteWorkspaceSSHRoute.appendingRunGuidance(to: HostControlPlanePromptGuidance.appendingAutoSendGuidance(
                 to: text,
                 policyLevel: manifest.policyLevel,
                 usesHostControlCLIRelay: runtimeCapabilityProfile.usesHostControlCLIRelay,
                 offersGitHubHostTool: runtimeCapabilityProfile.canDeliverHostControlPlane
                     && appliedRuntime.requirements.offeredHostControlTools.contains("github")
-            )
+            ), route: sshRoute)
         }
         prompt = autoSendGuidance(prompt)
         let promptWithoutResume = prompt + historyGuidance

@@ -187,7 +187,8 @@ enum AgentPromptBuilder {
                     for: task,
                     executionPolicy: executionPolicy
                 ),
-                runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
+                runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile,
+                remoteSSHRoute: executionPolicy.remoteSSHRoute
             )
         )
     }
@@ -327,45 +328,17 @@ enum AgentPromptBuilder {
         return prompt
     }
 
-    private static func appendSSHContext(for task: AgentTask, to sections: inout [PromptContextSection]) {
-        guard let ws = task.workspace else { return }
-        let connections = SSHConnectionManager.load(workspacePath: ws.primaryPath)
-        if connections.count == 1, let conn = connections.first {
-            let alias = conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias
-            var sshBlock = "Remote Server: This workspace is connected to a remote server via SSH."
-            sshBlock += "\n- Name: \(conn.displayLabel)"
-            sshBlock += "\n- Connect with: ssh \(alias)"
-            sshBlock += "\n- Remote path: \(conn.remotePath)"
-            if !conn.configAlias.isEmpty { sshBlock += "\n- SSH config: this alias requires ~/.ssh/config and may include ProxyCommand/IAP settings; prefer the alias over the raw hostname." }
-            if !conn.keyPath.isEmpty { sshBlock += "\n- Identity file: \(conn.keyPath)" }
-            sshBlock += "\nWhen the user says \"the server\", \"the remote\", \"this connection\", or \"it\" in the context of SSH, they mean this server."
-            sshBlock += "\nASTRA host control can check SSH reachability for this alias, but it does not accept provider-supplied remote commands."
-            sshBlock += "\nRemote command execution requires a reviewed workspace capability that explicitly supports it."
-            sshBlock += "\n\(RemoteWorkspacePromptGuidance.longRunningCommandContract)"
-            appendSection(
-                sshBlock,
-                kind: .supportingContext,
-                to: &sections,
-                sourcePointers: sshSourcePointers(workspace: ws)
-            )
-        } else if connections.count > 1 {
-            var sshBlock = "Available SSH Connections:"
-            for conn in connections {
-                let alias = conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias
-                sshBlock += "\n- \(conn.displayLabel): ssh \(alias) (remote path: \(conn.remotePath))"
-                if !conn.configAlias.isEmpty { sshBlock += " [uses ~/.ssh/config alias; may include ProxyCommand/IAP]" }
-                if !conn.keyPath.isEmpty { sshBlock += " [identity: \(conn.keyPath)]" }
-            }
-            sshBlock += "\nASTRA host control can check SSH reachability for these aliases, but it does not accept provider-supplied remote commands."
-            sshBlock += "\nRemote command execution requires a reviewed workspace capability that explicitly supports it."
-            sshBlock += "\n\(RemoteWorkspacePromptGuidance.longRunningCommandContract)"
-            appendSection(
-                sshBlock,
-                kind: .supportingContext,
-                to: &sections,
-                sourcePointers: sshSourcePointers(workspace: ws)
-            )
-        }
+    private static func appendSSHContext(
+        for task: AgentTask,
+        route: RemoteWorkspaceSSHRoute?,
+        to sections: inout [PromptContextSection]
+    ) {
+        guard let ws = task.workspace,
+              let sshBlock = RemoteWorkspacePromptGuidance.connectionBlock(
+                connections: SSHConnectionManager.load(workspacePath: ws.primaryPath),
+                route: route
+              ) else { return }
+        appendSection(sshBlock, kind: .supportingContext, to: &sections, sourcePointers: sshSourcePointers(workspace: ws))
     }
     private static func appendWorkspacePaths(for task: AgentTask, to sections: inout [PromptContextSection]) {
         let access = TaskWorkspaceAccess(task: task)
@@ -724,7 +697,8 @@ enum AgentPromptBuilder {
                 ioSnapshot: ioSnapshot,
                 connectorCredentialExposurePolicy: capabilityContext.snapshot.connectorCredentialExposurePolicy,
                 runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile,
-                followsUpDeliveredRequest: executionPolicy.followsUpDeliveredRequest
+                followsUpDeliveredRequest: executionPolicy.followsUpDeliveredRequest,
+                remoteSSHRoute: executionPolicy.remoteSSHRoute
             )
         )
     }
@@ -1179,7 +1153,7 @@ enum AgentPromptBuilder {
             state _: inout PromptContextSectionProviderState,
             to sections: inout [PromptContextSection]
         ) {
-            appendSSHContext(for: context.task, to: &sections)
+            appendSSHContext(for: context.task, route: context.remoteSSHRoute, to: &sections)
             appendWorkspacePaths(for: context.task, to: &sections)
         }
     }

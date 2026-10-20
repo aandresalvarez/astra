@@ -138,6 +138,8 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
     var workspaceCommandPlacement: String
     var controlPlaneToolPlacement: String
     var shellRoute: String
+    /// The run's resolved SSH route; `nil` when the workspace has no SSH connections.
+    var remoteSSHRoute: RemoteWorkspaceSSHRoute?
     var generatedAt: Date
     var hostPathGrants: [RuntimePathGrant]
     var containerMounts: [RuntimeContainerMountGrant]
@@ -161,6 +163,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         workspaceCommandPlacement: String? = nil,
         controlPlaneToolPlacement: String? = nil,
         shellRoute: String? = nil,
+        remoteSSHRoute: RemoteWorkspaceSSHRoute? = nil,
         generatedAt: Date = Date(),
         hostPathGrants: [RuntimePathGrant] = [],
         containerMounts: [RuntimeContainerMountGrant] = [],
@@ -195,6 +198,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
                 providerPlacement: providerPlacement,
                 workspaceCommandPlacement: self.workspaceCommandPlacement
             )
+        self.remoteSSHRoute = remoteSSHRoute
         self.generatedAt = generatedAt
         self.hostPathGrants = hostPathGrants
         self.containerMounts = containerMounts
@@ -308,6 +312,9 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
             "control_plane_tool_placement": controlPlaneToolPlacement,
             "shell_route": shellRoute
         ]
+        if let remoteSSHRoute {
+            fields["ssh_route"] = remoteSSHRoute.route.wireValue
+        }
 
         fields["attachment_readable_path_count"] = String(uniquePaths(hostPathGrants.compactMap { grant in
             grant.source == .userAttachment || grant.source == .taskInput ? grant.path : nil
@@ -359,6 +366,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         case workspaceCommandPlacement
         case controlPlaneToolPlacement
         case shellRoute
+        case remoteSSHRoute
         case generatedAt
         case hostPathGrants
         case containerMounts
@@ -400,6 +408,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
                 providerPlacement: providerPlacement,
                 workspaceCommandPlacement: workspaceCommandPlacement
             )
+        remoteSSHRoute = try container.decodeIfPresent(RemoteWorkspaceSSHRoute.self, forKey: .remoteSSHRoute)
         generatedAt = try container.decode(Date.self, forKey: .generatedAt)
         hostPathGrants = try container.decodeIfPresent([RuntimePathGrant].self, forKey: .hostPathGrants) ?? []
         containerMounts = try container.decodeIfPresent([RuntimeContainerMountGrant].self, forKey: .containerMounts) ?? []

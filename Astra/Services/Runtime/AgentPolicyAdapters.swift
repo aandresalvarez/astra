@@ -1431,11 +1431,12 @@ enum AgentPolicyManifestService {
         let permissionPolicy = PermissionPolicy(providerMode: render.permissionMode)
         let usesHostControlCLIRelay = !hostControlTools.isEmpty
             && runtimeCapabilityProfile.usesHostControlCLIRelay
-        let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
+        let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.withdrawsNativeShell(
             environment: executionEnvironment,
             permissionPolicy: permissionPolicy,
-            requiredTools: requiredHostControlTools
-        ) && !usesHostControlCLIRelay
+            requiredTools: requiredHostControlTools,
+            usesHostControlCLIRelay: usesHostControlCLIRelay
+        )
         guard usesDockerWorkspaceExecutor || !hostControlTools.isEmpty else {
             return render
         }

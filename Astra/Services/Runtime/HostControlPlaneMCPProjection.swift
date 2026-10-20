@@ -258,6 +258,23 @@ enum HostControlPlaneMCPProjection {
         return permissionPolicy != .autonomous && !requiredTools.isEmpty
     }
 
+    /// Whether the policy render actually takes the provider's shell away. A
+    /// CLI-relay runtime keeps it, because the relay is itself a shell command.
+    /// `RemoteWorkspaceSSHRoute` reads this same answer, so the prompt cannot
+    /// promise `ssh <alias>` in a shell the render withdrew.
+    static func withdrawsNativeShell(
+        environment: WorkspaceExecutionEnvironment,
+        permissionPolicy: PermissionPolicy,
+        requiredTools: [String],
+        usesHostControlCLIRelay: Bool
+    ) -> Bool {
+        requiresNativeShellDenial(
+            environment: environment,
+            permissionPolicy: permissionPolicy,
+            requiredTools: requiredTools
+        ) && !usesHostControlCLIRelay
+    }
+
     static func packageUsesHostControlRuntime(_ package: PluginPackage) -> Bool {
         if package.id == githubPackageID {
             return true
@@ -370,7 +387,10 @@ enum HostControlPlaneMCPProjection {
         taskEnvironment _: [String: String] = [:],
         contextText: String = "",
         capabilityScope: TaskCapabilityPromptScope? = nil,
-        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil,
+        // The launch's resolved route, quoted by the broker when it refuses
+        // a tool this run was not offered. Never derived here.
+        sshRoute: RemoteWorkspaceSSHRoute? = nil
     ) -> [String: String] {
         let allowedTools = enabledToolNames(
             task: task,
@@ -415,6 +435,7 @@ enum HostControlPlaneMCPProjection {
             output[HostControlBrokerFileDrop.directoryEnvironmentKey] = fileDrop.directory
             output[HostControlBrokerFileDrop.tokenEnvironmentKey] = fileDrop.token
         }
+        output.merge(sshRoute?.hostControlEnvironment ?? [:]) { _, route in route }
         return output
     }
 
@@ -458,6 +479,8 @@ enum HostControlPlaneMCPProjection {
         "ASTRA_HOST_CONTROL_BQ_EXECUTABLE",
         "ASTRA_HOST_CONTROL_SSH_EXECUTABLE",
         "ASTRA_HOST_CONTROL_ALLOWED_SSH_ALIASES",
+        HostControlSSHRoute.environmentKey,
+        HostControlSSHRoute.aliasesEnvironmentKey,
         "ASTRA_HOST_CONTROL_ALLOWED_TOOLS",
         "ASTRA_HOST_CONTROL_CURRENT_DIRECTORY",
         "ASTRA_HOST_CONTROL_TASK_FOLDER",
