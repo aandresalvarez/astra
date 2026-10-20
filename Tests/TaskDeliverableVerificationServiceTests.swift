@@ -577,39 +577,45 @@ struct TaskDeliverableVerificationServiceTests {
 
     @Test("inline script type attribute decides whether a block is JavaScript")
     func inlineScriptTypeClassification() {
-        let html = """
-        <script>a()</script>
-        <script type="">b()</script>
-        <script type=module>c()</script>
-        <script TYPE='Text/JavaScript; charset=utf-8'>d()</script>
-        <script data-type="application/json">e()</script>
-        <script type="application/x-javascript">f()</script>
-        <script type="application/json">{"g": 1}</script>
-        <script type="application/ld+json">{"h": 1}</script>
-        <script type="importmap">{"imports": {}}</script>
-        <script type="text/template"><p>i</p></script>
-        <script type="text/x-handlebars-template"><p>j</p></script>
-        <script src="external.js"></script>
-        <script title=" type='application/json'">k()</script>
-        <script data-src="lazy.js" type = "text/json">{"l": 1}</script>
-        <scripts>not a script</scripts>
-        <script
-          id="m" type="application/json">{"m": 1}</script>
-        <script alt="a > b">n()</script>
-        """
+        let cases: [(html: String, isJavaScript: Bool)] = [
+            ("<script>a()</script>", true),
+            ("<script type=\"\">a()</script>", true),
+            ("<script type=module>a()</script>", true),
+            ("<script TYPE='Text/JavaScript'>a()</script>", true),
+            ("<script type=\" text/javascript \">a()</script>", true),
+            ("<script type=\"application/x-javascript\">a()</script>", true),
+            ("<script type=\"text&#x2f;javascript\">a()</script>", true),
+            ("<script type=\"text&sol;javascript\">a()</script>", true),
+            ("<script language=\"JavaScript\">a()</script>", true),
+            ("<script data-type=\"application/json\">a()</script>", true),
+            ("<script title=\" type='application/json'\">a()</script>", true),
+            ("<script alt=\"a > b\">a()</script>", true),
+            ("<script type=\"text/javascript; charset=utf-8\">{}</script>", false),
+            ("<script type=\" module \">{}</script>", false),
+            ("<script type=\"  \">{}</script>", false),
+            ("<script language=\"vbscript\">{}</script>", false),
+            ("<script type=\"application/json\">{}</script>", false),
+            ("<script type=\"application/ld+json\">{}</script>", false),
+            ("<script type=\"importmap\">{}</script>", false),
+            ("<script type=\"text/template\">{}</script>", false),
+            ("<script type=\"text/x-handlebars-template\">{}</script>", false),
+            ("<script\n  id=\"m\" type=\"application/json\">{}</script>", false),
+            ("<script data-src=\"lazy.js\" type = \"text/json\">{}</script>", false),
+            ("<!-- <script type=\"application/json\"> --><script>a()</script>", true)
+        ]
 
-        let scripts = TaskDeliverableVerificationService.inlineScripts(in: html)
-
-        #expect(scripts.map(\.isJavaScript) == [
-            true, true, true, true, true, true,
-            false, false, false, false, false,
-            true, false, false, true
-        ])
-        #expect(scripts[6].type == "application/json")
-        #expect(scripts[11].type == nil)
-        #expect(scripts[11].body == "k()")
-        #expect(scripts[12].type == "text/json")
-        #expect(scripts[14].body == "n()")
+        for testCase in cases {
+            let scripts = TaskDeliverableVerificationService.inlineScripts(in: testCase.html)
+            #expect(scripts.count == 1, "\(testCase.html)")
+            #expect(scripts.first?.isJavaScript == testCase.isJavaScript, "\(testCase.html)")
+        }
+        let commented = TaskDeliverableVerificationService.inlineScripts(
+            in: "<!-- <script type=\"application/json\"> --><script>a()</script>"
+        )
+        #expect(commented.first?.body == "a()")
+        #expect(TaskDeliverableVerificationService.inlineScripts(
+            in: "<script src=\"external.js\"></script><scripts>x</scripts>"
+        ).isEmpty)
     }
 
     private func makeFixture(goal: String) throws -> (

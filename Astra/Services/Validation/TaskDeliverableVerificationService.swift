@@ -806,19 +806,39 @@ enum TaskDeliverableVerificationService {
 
     struct InlineScript: Equatable {
         var type: String?
+        var language: String? = nil
         var body: String
 
-        /// HTML treats a script as classic or module JavaScript only when its
-        /// type is absent, empty, `module`, or a JavaScript MIME type; any
-        /// other type makes it an inert data block.
+        /// Mirrors the HTML "prepare the script element" type rules: a block
+        /// is classic or module JavaScript only when its type string is a
+        /// JavaScript MIME type essence (parameters make it inert) or exactly
+        /// `module`; any other type makes it an inert data block.
+        /// https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
         var isJavaScript: Bool {
-            guard let type else { return true }
-            let essence = type
-                .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
-                .first
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() } ?? ""
-            return essence.isEmpty || essence == "module" || Self.javascriptMIMETypes.contains(essence)
+            let typeString: String
+            if let type {
+                if type.isEmpty { return true }
+                typeString = type
+            } else if let language, !language.isEmpty {
+                typeString = "text/" + language
+            } else {
+                return true
+            }
+            if Self.javascriptMIMETypes.contains(typeString.lowercased()) {
+                return true
+            }
+            // Only a `type` attribute gets its ASCII whitespace stripped, and
+            // only for the MIME comparison; `module` must match exactly.
+            if type != nil,
+               Self.javascriptMIMETypes.contains(
+                   typeString.trimmingCharacters(in: Self.asciiWhitespace).lowercased()
+               ) {
+                return true
+            }
+            return typeString.lowercased() == "module"
         }
+
+        private static let asciiWhitespace = CharacterSet(charactersIn: "\t\n\u{0C}\r ")
 
         // https://html.spec.whatwg.org/multipage/scripting.html#javascript-mime-type
         private static let javascriptMIMETypes: Set<String> = [
@@ -855,6 +875,7 @@ enum TaskDeliverableVerificationService {
             if tag.attributes["src"] == nil {
                 scripts.append(InlineScript(
                     type: tag.attributes["type"],
+                    language: tag.attributes["language"],
                     body: String(html[tag.end..<closeRange.lowerBound])
                 ))
             }
@@ -889,6 +910,14 @@ enum TaskDeliverableVerificationService {
             options: [.caseInsensitive],
             range: searchStart..<html.endIndex
         ) {
+            // A tag-like string inside an HTML comment is not an element.
+            if let commentStart = html.range(of: "<!--", range: searchStart..<openRange.lowerBound) {
+                guard let commentEnd = html.range(of: "-->", range: commentStart.upperBound..<html.endIndex) else {
+                    return nil
+                }
+                searchStart = commentEnd.upperBound
+                continue
+            }
             var index = openRange.upperBound
             // `<scripts>` or `<script-x>` is a different element.
             if index < html.endIndex, !isTagNameTerminator(html[index]) {
@@ -940,12 +969,51 @@ enum TaskDeliverableVerificationService {
                     }
                 }
                 if attributes[name] == nil {
-                    attributes[name] = value
+                    attributes[name] = decodingCharacterReferences(value)
                 }
             }
             return nil
         }
         return nil
+    }
+
+    /// Decodes the character references an attribute value realistically
+    /// uses: numeric (`&#47;`, `&#x2f;`) and a few named ones (`&sol;`).
+    private static func decodingCharacterReferences(_ value: String) -> String {
+        guard value.contains("&") else { return value }
+        let named: [String: String] = [
+            "amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'",
+            "sol": "/", "plus": "+", "period": ".", "hyphen": "-", "dash": "-"
+        ]
+        var decoded = ""
+        var index = value.startIndex
+        while index < value.endIndex {
+            guard value[index] == "&",
+                  let semicolon = value[index...].firstIndex(of: ";") else {
+                decoded.append(value[index])
+                index = value.index(after: index)
+                continue
+            }
+            let reference = value[value.index(after: index)..<semicolon]
+            var replacement: String?
+            if reference.hasPrefix("#") {
+                let digits = reference.dropFirst()
+                let scalarValue = digits.first == "x" || digits.first == "X"
+                    ? UInt32(digits.dropFirst(), radix: 16)
+                    : UInt32(digits, radix: 10)
+                replacement = scalarValue.flatMap(Unicode.Scalar.init).map { String(Character($0)) }
+            } else {
+                replacement = named[reference.lowercased()]
+            }
+            if let replacement {
+                decoded += replacement
+                index = value.index(after: semicolon)
+            } else {
+                decoded.append(value[index])
+                index = value.index(after: index)
+            }
+        }
+        return decoded
     }
 
     private static func isTagNameTerminator(_ character: Character) -> Bool {
