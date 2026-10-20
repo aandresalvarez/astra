@@ -72,8 +72,11 @@ struct ArchitectureFitnessTests {
         // the WorkspaceApps template-pack bridge, and the portable-workspace
         // import flow, which must reconcile a share's referenced pack IDs against
         // the recipient's real catalog (surface missing packs, drop unresolved
-        // ones from the enabled set) rather than trusting arbitrary IDs.
+        // ones from the enabled set) rather than trusting arbitrary IDs. And the
+        // capability-resolution input snapshot, which reads the pack catalog once
+        // off the main actor so admission does not re-read it per lookup.
         let allowedPackAdapters: Set<String> = [
+            "Astra/Services/Capabilities/CapabilityResolutionInputs.swift",
             "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift",
             "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift",
             "Astra/Services/WorkspacePackage/WorkspacePackageImportPlan.swift"

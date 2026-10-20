@@ -374,12 +374,24 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
             let previous = state.lastResolvedSnapshot
             state = .pending(signature: request.signature, previous: previous)
 
+            // Admission itself needs the managed models and stays on the main
+            // actor, but the capability catalog, pack catalog and approval
+            // records it consults are plain files. Read them once, here, off
+            // the main actor; both passes below then resolve against them
+            // without touching the disk.
+            let inputsStartedAt = DispatchTime.now().uptimeNanoseconds
+            let inputs = await CapabilityResolutionInputs.loadDetached()
+            guard !Task.isCancelled else { return }
+            let inputsMilliseconds = PerformanceTelemetry.elapsedMilliseconds(since: inputsStartedAt)
+
             // Score the selected runtime alone first. Send only consults that
             // one verdict, and admission costs roughly the same for each
             // runtime it scores, so this is the whole pause cost minus the
             // providers nobody asked about.
             let selectedStartedAt = DispatchTime.now().uptimeNanoseconds
-            let selected = await request.evaluate(candidateRuntimes: [request.selectedRuntime])
+            let selected = await CapabilityResolutionInputs.$pinned.withValue(inputs) {
+                await request.evaluate(candidateRuntimes: [request.selectedRuntime])
+            }
             guard !Task.isCancelled else { return }
 
             // An ineligible selection is the one case that still needs the rest
@@ -389,7 +401,8 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
             logEvaluation(
                 scope: selectionIsEligible ? "selected" : "selected_blocked",
                 start: selectedStartedAt,
-                snapshot: selected
+                snapshot: selected,
+                inputsMilliseconds: inputsMilliseconds
             )
 
             if let selected, selectionIsEligible {
@@ -404,9 +417,11 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
             }
 
             let fullStartedAt = DispatchTime.now().uptimeNanoseconds
-            let full = await request.evaluate()
+            let full = await CapabilityResolutionInputs.$pinned.withValue(inputs) {
+                await request.evaluate()
+            }
             guard !Task.isCancelled else { return }
-            logEvaluation(scope: "full", start: fullStartedAt, snapshot: full)
+            logEvaluation(scope: "full", start: fullStartedAt, snapshot: full, inputsMilliseconds: inputsMilliseconds)
             state = .evaluated(signature: request.signature, snapshot: full)
         }
     }
@@ -414,7 +429,8 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
     private func logEvaluation(
         scope: String,
         start: UInt64,
-        snapshot: TaskRuntimeEligibilitySnapshot?
+        snapshot: TaskRuntimeEligibilitySnapshot?,
+        inputsMilliseconds: Double
     ) {
         PerformanceTelemetry.logIfNeeded(
             "runtime_eligibility_preview",
@@ -423,6 +439,8 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
             fields: [
                 "accepted_turn_chars": PerformanceTelemetryFields.count(request.acceptedTurnCharacterCount),
                 "candidate_count": PerformanceTelemetryFields.count(snapshot?.candidates.count ?? 0),
+                // Off the main actor; kept out of the logged duration.
+                "inputs_load_ms": String(format: "%.1f", inputsMilliseconds),
                 "scope": scope,
                 "result": snapshot == nil ? "unavailable" : "resolved"
             ],
@@ -479,16 +497,35 @@ extension ChatPanelView {
 }
 
 extension TaskMainView {
+    /// Everything the preview depends on except the typed text, read now. The
+    /// composer calls this in `body` and applies the result to the text inside
+    /// its reader, so the inputs stay dependencies of `TaskMainView` and the
+    /// text stays a dependency of the reader alone.
+    func runtimeEligibilityPreviewRequestBuilder() -> (String) -> RuntimeEligibilityPreviewRequest {
+        let task = task
+        let attachedFiles = attachedFiles
+        let selectedPolicyLevelRaw = taskPolicyLevelRaw
+        let skipPermissions = taskSkipPermissions
+        let providerSettings = providerSettingsSnapshot
+        let readinessStates = runtimeReadinessStates
+        let eventRevision = threadViewModel.appliedSnapshotRevision
+        return { messageText in
+            .existingTask(
+                task: task,
+                messageText: messageText,
+                attachedFiles: attachedFiles,
+                selectedPolicyLevelRaw: selectedPolicyLevelRaw,
+                skipPermissions: skipPermissions,
+                providerSettings: providerSettings,
+                readinessStates: readinessStates,
+                eventRevision: eventRevision
+            )
+        }
+    }
+
+    /// The request for the live draft. For actions such as Send; `body` goes
+    /// through `runtimeEligibilityPreviewRequestBuilder()` instead.
     var runtimeEligibilityPreviewRequest: RuntimeEligibilityPreviewRequest {
-        .existingTask(
-            task: task,
-            messageText: messageText,
-            attachedFiles: attachedFiles,
-            selectedPolicyLevelRaw: taskPolicyLevelRaw,
-            skipPermissions: taskSkipPermissions,
-            providerSettings: providerSettingsSnapshot,
-            readinessStates: runtimeReadinessStates,
-            eventRevision: threadViewModel.appliedSnapshotRevision
-        )
+        runtimeEligibilityPreviewRequestBuilder()(composerDraft.text)
     }
 }
