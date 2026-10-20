@@ -225,6 +225,189 @@ struct PluginAccountCredentialGenerationTests {
         }
     }
 
+    @Test("Add migrates an unmigrated account credential without dropping it", arguments: [false, true])
+    func addPreservesLegacyPlainCredential(replaceAnother: Bool) throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable("existing-api-token")
+            account.credentialKeys.append("SECOND_TOKEN")
+            account.credentialValues.append("legacy-second-token")
+            try env.disk.context.save()
+            let originalNamespace = account.credentialNamespaceID
+            #expect(account.currentCredentialValue(forKey: "SECOND_TOKEN") == nil)
+            try env.disk.installer.enable(env.package, in: env.disk.workspace, modelContext: env.disk.context,
+                credentialInputs: replaceAnother ? ["API_TOKEN": "replacement-api-token"] : [:])
+            #expect(account.id == env.disk.workspace.connectors.first?.id)
+            #expect(account.credentialNamespaceID != originalNamespace)
+            #expect(account.currentCredentialValue(forKey: "SECOND_TOKEN") == "legacy-second-token")
+            #expect(account.currentCredentialValue(forKey: "API_TOKEN") == (replaceAnother ? "replacement-api-token" : "existing-api-token"))
+            #expect(!account.credentialValues.contains("legacy-second-token"))
+            let reopened = try env.disk.disk.reopen()
+            let saved = try #require(try reopened.mainContext.fetch(FetchDescriptor<Connector>()).first)
+            #expect(saved.currentCredentialValue(forKey: "SECOND_TOKEN") == "legacy-second-token")
+        }
+    }
+
+    @Test("Rejected legacy plaintext leaves the saved account and credential untouched")
+    func legacyAdmissionRefusalKeepsOriginalState() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable("before-rejected-migration")
+            account.credentialKeys.append("SECOND_TOKEN")
+            account.credentialValues.append("your-token-here")
+            try env.disk.context.save()
+            let namespace = account.credentialNamespaceID
+            #expect(throws: ConnectorCredentialGenerationTransaction.Failure.self) {
+                try env.disk.installer.enable(env.package, in: env.disk.workspace, modelContext: env.disk.context)
+            }
+            let saved = try #require(try ModelContext(env.disk.context.container).fetch(FetchDescriptor<Connector>()).first)
+            #expect(account.credentialNamespaceID == namespace && saved.credentialNamespaceID == namespace)
+            #expect(saved.credentialValues.contains("your-token-here"))
+            #expect(account.credentialValues.contains("your-token-here"))
+            #expect(saved.currentCredentialValue(forKey: "API_TOKEN") == "before-rejected-migration")
+            #expect(saved.currentCredentialValue(forKey: "SECOND_TOKEN") == nil)
+            let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.disk.context))
+            #expect(try journal.pending().isEmpty)
+        }
+    }
+
+    @Test("A migration that fails its domain save preserves the original plaintext before and after rollback")
+    func failedLegacyMigrationKeepsSavedSource() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable("before-unsaved-migration")
+            account.credentialKeys.append("SECOND_TOKEN")
+            account.credentialValues.append("unmigrated-second-token")
+            try env.disk.context.save()
+            let namespace = account.credentialNamespaceID
+            var observedPlaintext: [String] = []
+            #expect(throws: (any Error).self) {
+                try env.disk.installer.enable(env.package, in: env.disk.workspace, modelContext: env.disk.context,
+                    persist: { _, context in
+                        let saved = try! ModelContext(context.container).fetch(FetchDescriptor<Connector>()).first!
+                        observedPlaintext = saved.credentialValues
+                        #expect(saved.credentialNamespaceID == namespace)
+                        #expect(saved.currentCredentialValue(forKey: "SECOND_TOKEN") == nil)
+                        return false
+                    })
+            }
+            #expect(observedPlaintext.contains("unmigrated-second-token"))
+            #expect(account.credentialValues.contains("unmigrated-second-token"))
+            #expect(account.credentialNamespaceID == namespace)
+            let reopened = try env.disk.disk.reopen()
+            let saved = try #require(try reopened.mainContext.fetch(FetchDescriptor<Connector>()).first)
+            #expect(saved.credentialValues.contains("unmigrated-second-token"))
+            #expect(saved.currentCredentialValue(forKey: "API_TOKEN") == "before-unsaved-migration")
+        }
+    }
+
+    @Test("A newer vault credential wins over stale legacy plaintext without admitting the stale value")
+    func newerVaultValueWinsOverLegacyPlaintext() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable("before-newer-migration")
+            #expect(account.saveCredentialChecked(key: "SECOND_TOKEN", value: "accepted-newer-second-token").isSaved)
+            let index = try #require(account.credentialKeys.firstIndex(of: "SECOND_TOKEN"))
+            account.credentialValues[index] = "your-token-here"
+            try env.disk.context.save()
+            _ = try env.enable("after-newer-migration")
+            #expect(account.currentCredentialValue(forKey: "SECOND_TOKEN") == "accepted-newer-second-token")
+            #expect(!account.credentialValues.contains("your-token-here"))
+        }
+    }
+
+    @Test("Legacy plaintext must satisfy the definition being accepted, even before it is installed")
+    func legacyMigrationUsesAcceptedFormat() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable("before-format-migration")
+            account.credentialKeys.append("SECOND_TOKEN")
+            account.credentialValues.append("legacy-second-token")
+            try env.disk.context.save()
+            let namespace = account.credentialNamespaceID
+            var strict = env.package
+            strict.version = "2.0.0"
+            strict.connectors[0].credentialHints.append(.init(key: "SECOND_TOKEN", hint: "Second token",
+                format: .init(pattern: "[A-F0-9]{32}", expectation: "32 hexadecimal characters")))
+            #expect(throws: ConnectorCredentialGenerationTransaction.Failure.self) {
+                try env.disk.installer.enable(strict, in: env.disk.workspace, modelContext: env.disk.context)
+            }
+            #expect(account.credentialNamespaceID == namespace)
+            #expect(account.credentialValues.contains("legacy-second-token"))
+            #expect(account.currentCredentialValue(forKey: "SECOND_TOKEN") == nil)
+        }
+    }
+
+    @Test("A valid legacy credential is normalized and admitted under the accepted format")
+    func legacyMigrationAcceptsTheDeclaredFormat() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable("before-valid-format")
+            let expected = "A19F2C8D4B6E7A03C5D9F1B2468E0A7C"
+            account.credentialKeys.append("SECOND_TOKEN")
+            account.credentialValues.append("  " + expected + "\n")
+            try env.disk.context.save()
+            var strict = env.package
+            strict.version = "2.0.0"
+            strict.connectors[0].credentialHints.append(.init(key: "SECOND_TOKEN", hint: "Second token",
+                format: .init(pattern: "[A-F0-9]{32}", expectation: "32 hexadecimal characters")))
+            try env.disk.installer.enable(strict, in: env.disk.workspace, modelContext: env.disk.context)
+            #expect(account.currentCredentialValue(forKey: "SECOND_TOKEN") == expected)
+            #expect(account.credentialValues.allSatisfy { $0.isEmpty })
+            let saved = try #require(try ModelContext(env.disk.context.container).fetch(FetchDescriptor<Connector>()).first)
+            #expect(saved.currentCredentialValue(forKey: "SECOND_TOKEN") == expected)
+            #expect(saved.credentialValues.allSatisfy { $0.isEmpty })
+        }
+    }
+
+    @Test("One account bound to two components must satisfy both accepted credential formats")
+    func sharedAccountUsesEveryDeclaredFormat() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            var initial = env.package
+            initial.connectors[0].id = "first-api"
+            var second = initial.connectors[0]
+            second.id = "second-api"
+            second.name = "Second API"
+            initial.connectors.append(second)
+            try env.disk.installer.enable(initial, in: env.disk.workspace, modelContext: env.disk.context,
+                credentialInputs: ["API_TOKEN": "shared-account-api-token"])
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: initial.id, in: env.disk.workspace))
+            let firstID = CapabilityResourceOrigin.componentID(for: initial.connectors[0])
+            let secondID = CapabilityResourceOrigin.componentID(for: initial.connectors[1])
+            let account = try #require(activation.accounts(forComponent: firstID).first)
+            let secondAccount = try #require(activation.accounts(forComponent: secondID).first)
+            WorkspaceCapabilityActivation.unbind(secondAccount, from: activation, componentID: secondID)
+            WorkspaceCapabilityActivation.bind(account, toComponent: secondID, of: activation, isDefault: true)
+            account.credentialKeys.append("SECOND_TOKEN")
+            account.credentialValues.append("legacy-second-token")
+            try env.disk.context.save()
+            let namespace = account.credentialNamespaceID
+            var strict = initial
+            strict.version = "2.0.0"
+            strict.connectors[0].credentialHints.append(.init(key: "SECOND_TOKEN", hint: "First constraint",
+                format: .init(pattern: ".+", expectation: "a nonempty token")))
+            strict.connectors[1].credentialHints.append(.init(key: "SECOND_TOKEN", hint: "Second constraint",
+                format: .init(pattern: "[A-F0-9]{32}", expectation: "32 hexadecimal characters")))
+            let plan = PluginAccountCredentialCutoverPlan.candidates(for: strict, activation: activation)
+            #expect(plan.count == 1)
+            #expect(plan.first?.formats["SECOND_TOKEN"]?.count == 2)
+            #expect(throws: ConnectorCredentialGenerationTransaction.Failure.self) {
+                try env.disk.installer.enable(strict, in: env.disk.workspace, modelContext: env.disk.context)
+            }
+            #expect(account.credentialNamespaceID == namespace)
+            #expect(account.credentialValues.contains("legacy-second-token"))
+            #expect(account.currentCredentialValue(forKey: "API_TOKEN") == "shared-account-api-token")
+        }
+    }
+
     @MainActor
     private struct Fixture {
         let disk: PluginAddCommitTests.Fixture
