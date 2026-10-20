@@ -65,8 +65,8 @@ struct PendingTaskCredentialReferences {
                 .compactMap(PluginActivation.componentID(ofSettingKey:)))
             components.formUnion(specs.map { CapabilityResourceOrigin.componentID(for: $0) })
             for component in components {
-                let id = PluginActivation.projectedID(workspaceID: workspaceID, pluginID: activation.pluginID,
-                                                       componentID: component, seed: activation.namespaceSeed)
+                let id = PluginActivation.credentialID(workspaceID: workspaceID, pluginID: activation.pluginID,
+                                                       componentID: component, runtimeSeed: activation.namespaceSeed, generation: activation.credentialNamespaceSeed)
                 skills.insert(id)
                 if definition == nil { unknownKeys.insert(id) }
                 for setting in activation.secretSettingKeys where PluginActivation.componentID(ofSettingKey: setting) == component {
@@ -90,13 +90,15 @@ struct PendingTaskCredentialReferences {
         }
         for account in policy.pluginAccounts ?? [] { include(account) }
         for skill in policy.pluginOverrides?.skills ?? [] {
-            includeSkill(skill.id, keys: skill.environmentKeys)
+            includeSkill(skill.credentialNamespaceID ?? skill.id, keys: skill.environmentKeys)
             for account in skill.attachedConnectors ?? [] { include(account) }
         }
         guard let data = policy.skillSnapshotsJSON.data(using: .utf8),
               let snapshots = try? JSONDecoder().decode([SkillSnapshotConfig].self, from: data) else { return false }
         for skill in snapshots {
-            if let rawID = skill.id {
+            if let namespace = skill.credentialNamespaceID {
+                includeSkill(namespace, keys: skill.environmentKeys)
+            } else if let rawID = skill.id {
                 guard let id = UUID(uuidString: rawID) else { return false }
                 includeSkill(id, keys: skill.environmentKeys)
             }

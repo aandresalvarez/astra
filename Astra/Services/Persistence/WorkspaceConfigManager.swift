@@ -286,8 +286,9 @@ public enum WorkspaceConfigManager {
     }
 
     public struct SkillConfig: Codable, Sendable {
-        public init(id: String? = nil, name: String, icon: String, description: String, allowedTools: [String], disallowedTools: [String], customTools: [String], behaviorInstructions: String, environmentKeys: [String], environmentValues: [String], isGlobal: Bool? = nil, connectorIDs: [String]? = nil, localToolIDs: [String]? = nil, connectorNames: [String]? = nil, localToolNames: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+        public init(id: String? = nil, name: String, icon: String, description: String, allowedTools: [String], disallowedTools: [String], customTools: [String], behaviorInstructions: String, environmentKeys: [String], environmentValues: [String], isGlobal: Bool? = nil, connectorIDs: [String]? = nil, localToolIDs: [String]? = nil, connectorNames: [String]? = nil, localToolNames: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, credentialNamespaceID: UUID? = nil) {
             self.id = id
+            self.credentialNamespaceID = credentialNamespaceID
             self.name = name
             self.icon = icon
             self.description = description
@@ -312,6 +313,7 @@ public enum WorkspaceConfigManager {
         }
 
         public var id: String?
+        public var credentialNamespaceID: UUID?
         public var name: String
         public var icon: String
         public var description: String
@@ -1638,7 +1640,8 @@ public enum WorkspaceConfigManager {
             originComponentKind: skill.originComponentKind,
             originSourceKind: skill.originSourceKind,
             createdAt: skill.createdAt,
-            updatedAt: skill.updatedAt
+            updatedAt: skill.updatedAt,
+            credentialNamespaceID: skill.credentialNamespaceID
         )
     }
 
@@ -2165,6 +2168,7 @@ public enum WorkspaceConfigManager {
         if !freshID, let id = config.id.flatMap(UUID.init(uuidString:)) {
             skill.id = id
         }
+        if !freshID { skill.credentialNamespaceID = config.credentialNamespaceID }
         skill.environmentKeys = config.environmentKeys
         let storedValues = Array(config.environmentValues.prefix(config.environmentKeys.count))
         skill.environmentValues = storedValues + Array(repeating: "", count: max(0, config.environmentKeys.count - storedValues.count))
@@ -2199,6 +2203,7 @@ public enum WorkspaceConfigManager {
         if !freshID, let id = snapshot.id.flatMap(UUID.init(uuidString:)) {
             skill.id = id
         }
+        if !freshID { skill.credentialNamespaceID = snapshot.credentialNamespaceID }
         skill.environmentKeys = snapshot.environmentKeys
         let storedValues = Array(snapshot.environmentValues.prefix(snapshot.environmentKeys.count))
         skill.environmentValues = storedValues + Array(repeating: "", count: max(0, snapshot.environmentKeys.count - storedValues.count))
@@ -2262,7 +2267,8 @@ public enum WorkspaceConfigManager {
             connectorSnapshots: snapshot.connectorSnapshots,
             localToolSnapshots: snapshot.localToolSnapshots,
             createdAt: snapshot.createdAt,
-            updatedAt: snapshot.updatedAt
+            updatedAt: snapshot.updatedAt,
+            credentialNamespaceID: snapshot.credentialNamespaceID
         )
     }
 
@@ -2508,7 +2514,11 @@ public enum WorkspaceConfigManager {
             task.templateID = UUID(uuidString: id)
         }
         task.templateHooksJSON = config.templateHooksJSON ?? ""
-        task.skillSnapshots = config.skillSnapshots ?? []
+        task.skillSnapshots = (config.skillSnapshots ?? []).map { snapshot in
+            var copied = snapshot
+            if freshIDs { copied.credentialNamespaceID = nil }
+            return copied
+        }
         task.executionEnvironmentSnapshotJSON = sanitizedExecutionEnvironmentJSON(
             config.executionEnvironmentSnapshotJSON,
             preservingHost: true

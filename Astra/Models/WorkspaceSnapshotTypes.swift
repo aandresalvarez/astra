@@ -58,7 +58,8 @@ extension SkillSnapshotConfig {
             connectorSnapshots: skill.connectors.map(ConnectorSnapshotConfig.init(connector:)),
             localToolSnapshots: skill.localTools.map(LocalToolSnapshotConfig.init(localTool:)),
             createdAt: skill.createdAt,
-            updatedAt: skill.updatedAt
+            updatedAt: skill.updatedAt,
+            credentialNamespaceID: skill.credentialNamespaceID
         )
     }
 }

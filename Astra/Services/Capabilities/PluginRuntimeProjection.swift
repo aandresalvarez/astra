@@ -222,6 +222,12 @@ struct PluginRuntimeProjection {
         )
     }
 
+    static func credentialID(of activation: PluginActivation, componentID: String) -> UUID {
+        PluginActivation.credentialID(workspaceID: activation.launchWorkspaceID ?? activation.workspace?.id ?? activation.id,
+            pluginID: activation.pluginID, componentID: componentID,
+            runtimeSeed: activation.namespaceSeed, generation: activation.credentialNamespaceSeed)
+    }
+
     /// The component IDs a definition declares: skills, connectors, tools.
     nonisolated static func componentIDs(of package: PluginPackage) -> [String] {
         package.skills.map { CapabilityResourceOrigin.componentID(for: $0) }
@@ -243,7 +249,7 @@ struct PluginRuntimeProjection {
         var seen = Set<String>()
         return componentIDs
             .filter { seen.insert($0).inserted }
-            .map { derivedID(of: activation, componentID: $0) }
+            .map { credentialID(of: activation, componentID: $0) }
     }
 
     /// Whether `activation` accepted another definition of its plugin than
@@ -385,10 +391,11 @@ struct PluginRuntimeProjection {
             behaviorInstructions: spec.behaviorInstructions
         )
         skill.id = derivedID(of: activation, componentID: componentID)
+        skill.credentialNamespaceID = credentialID(of: activation, componentID: componentID)
         let configured = activation.configuration(forComponent: componentID)
         skill.environmentKeys = spec.environmentKeys
         skill.environmentValues = spec.environmentKeys.enumerated().map { index, key in
-            // Secret values live in the Keychain under this skill's ID.
+            // Secret values live under this projection's credential namespace.
             guard !Skill.isSecretEnvironmentKey(key) else { return "" }
             if let value = configured[key] { return value }
             return index < spec.environmentValues.count ? spec.environmentValues[index] : ""

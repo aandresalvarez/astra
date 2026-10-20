@@ -518,10 +518,10 @@ enum PluginUpdateService {
                 .filter { PluginActivation.componentID(ofSettingKey: $0) == new }
                 .map { String($0.dropFirst(new.count + 1)) })
             let settled = PluginSecretCleanupOutbox.settleRenameDestination(
-                PluginRuntimeProjection.derivedID(of: activation, componentID: new),
+                PluginRuntimeProjection.credentialID(of: activation, componentID: new),
                 keys: spec.environmentKeys, kept: kept, modelContext: modelContext ?? activation.modelContext,
                 clean: { persistence.deleteAllSecretsReportingResult(skillID: $0) }
-            ) { persistence.deleteSecret(key: $0, skillID: PluginRuntimeProjection.derivedID(of: activation, componentID: new)) }
+            ) { persistence.deleteSecret(key: $0, skillID: PluginRuntimeProjection.credentialID(of: activation, componentID: new)) }
             return settled ? nil : new
         }
         if let blocked = pendingDestinations.first {
@@ -536,8 +536,8 @@ enum PluginUpdateService {
         for (old, new) in renames.sorted(by: { $0.key < $1.key })
         where known.contains(old) && !currentSet.contains(old) {
             if old.hasPrefix("skill:"), let spec = package.skills.first(where: { CapabilityResourceOrigin.componentID(for: $0) == new }) {
-                let oldID = PluginRuntimeProjection.derivedID(of: activation, componentID: old)
-                let newID = PluginRuntimeProjection.derivedID(of: activation, componentID: new)
+                let oldID = PluginRuntimeProjection.credentialID(of: activation, componentID: old)
+                let newID = PluginRuntimeProjection.credentialID(of: activation, componentID: new)
                 let before = copied.count
                 // The old namespace is released below, so the automatic pass
                 // also carries the secrets the successor stopped declaring:
@@ -557,7 +557,8 @@ enum PluginUpdateService {
                         true, forKey: PluginActivation.settingKey(componentID: new, key: entry.key), on: activation
                     )
                 }
-                retargetSkill(oldID, to: newID, in: workspace)
+                retargetSkill(PluginRuntimeProjection.derivedID(of: activation, componentID: old),
+                    to: PluginRuntimeProjection.derivedID(of: activation, componentID: new), in: workspace)
                 result.released.append(oldID)
             }
             WorkspaceCapabilityActivation.moveComponentState(from: old, to: new, on: activation)
@@ -613,8 +614,8 @@ enum PluginUpdateService {
         WorkspaceCapabilityActivation.releaseUndeclaredOverrides(on: activation, declaring: current, in: workspace)
         for component in dropped {
             if component.hasPrefix("skill:") {
-                let oldID = PluginRuntimeProjection.derivedID(of: activation, componentID: component)
-                retargetSkill(oldID, to: nil, in: workspace)
+                let oldID = PluginRuntimeProjection.credentialID(of: activation, componentID: component)
+                retargetSkill(PluginRuntimeProjection.derivedID(of: activation, componentID: component), to: nil, in: workspace)
                 result.released.append(oldID)
             }
             WorkspaceCapabilityActivation.dropComponentState(component, on: activation)
@@ -623,7 +624,7 @@ enum PluginUpdateService {
             if activation.secretSettingKeys.contains(stale.settingKey) {
                 result.staleSecrets.append(StaleSecret(
                     key: stale.key,
-                    skillID: PluginRuntimeProjection.derivedID(of: activation, componentID: stale.componentID)
+                    skillID: PluginRuntimeProjection.credentialID(of: activation, componentID: stale.componentID)
                 ))
             }
         }
@@ -782,7 +783,7 @@ enum PluginUpdateService {
             return skill.environmentKeys
                 .filter { Skill.isSecretEnvironmentKey($0) }
                 .filter { !activation.secretSettingKeys.contains(PluginActivation.settingKey(componentID: componentID, key: $0)) }
-                .map { StaleSecret(key: $0, skillID: PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)) }
+                .map { StaleSecret(key: $0, skillID: PluginRuntimeProjection.credentialID(of: activation, componentID: componentID)) }
         }
     }
 
@@ -837,7 +838,7 @@ enum PluginUpdateService {
         for skill in package.skills {
             let componentID = CapabilityResourceOrigin.componentID(for: skill)
             let plain = activation.configuration(forComponent: componentID)
-            let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
+            let skillID = PluginRuntimeProjection.credentialID(of: activation, componentID: componentID)
             for key in skill.environmentKeys where Skill.isSecretEnvironmentKey(key) {
                 guard let value = plain[key] else { continue }
                 let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)

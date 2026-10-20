@@ -398,6 +398,7 @@ struct PluginConnectorFieldTrustTests {
             )
             Fixtures.Environment.retained.append(container)
             let context = container.mainContext
+            context.autosaveEnabled = false
             let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
             try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
             context.insert(workspace)
@@ -418,7 +419,7 @@ struct PluginConnectorFieldTrustTests {
             try context.save()
             // The reconcile fails after the account sync: a secret the
             // definition declares again still awaits deletion.
-            let namespace = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
+            let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
             let outbox = try #require(PluginSecretCleanupOutbox(for: context))
             try outbox.writeEntries(["\(namespace.uuidString)#API_TOKEN"])
             var v2 = v1

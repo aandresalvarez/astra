@@ -492,7 +492,7 @@ enum WorkspaceDeletionCleanupService {
         // Stored rows, and the namespaces live activations name: a workspace
         // imported over this one under its ID projects into the same ones.
         guard let liveProjected = PluginSecretCleanupOutbox.liveSkillIDs(modelContext: modelContext) else { return false }
-        let liveSkills = Set(skills.map(\.id)).union(liveProjected)
+        let liveSkills = Set(skills.map(\.secretNamespaceID)).union(liveProjected)
         // Every credential is attempted; any that couldn't be cleared keeps
         // the record for an idempotent retry. A recreated connector can share
         // a stable endpoint or package namespace under a new ID, so

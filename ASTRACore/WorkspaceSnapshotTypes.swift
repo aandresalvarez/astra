@@ -88,6 +88,7 @@ public struct LocalToolSnapshotConfig: Codable, Equatable, Sendable {
 
 public struct SkillSnapshotConfig: Codable, Equatable, Sendable {
     public var id: String?
+    public var credentialNamespaceID: UUID?
     public var name: String
     public var icon: String
     public var description: String
@@ -122,9 +123,11 @@ public struct SkillSnapshotConfig: Codable, Equatable, Sendable {
         connectorSnapshots: [ConnectorSnapshotConfig]?,
         localToolSnapshots: [LocalToolSnapshotConfig]?,
         createdAt: Date?,
-        updatedAt: Date?
+        updatedAt: Date?,
+        credentialNamespaceID: UUID? = nil
     ) {
         self.id = id
+        self.credentialNamespaceID = credentialNamespaceID
         self.name = name
         self.icon = icon
         self.description = description

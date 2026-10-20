@@ -577,6 +577,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             behaviorInstructions: source.behaviorInstructions
         )
         skill.id = source.id
+        skill.credentialNamespaceID = source.credentialNamespaceID
         skill.environmentKeys = source.environmentKeys
         skill.environmentValues = source.environmentValues
         skill.originPackageID = source.originPackageID

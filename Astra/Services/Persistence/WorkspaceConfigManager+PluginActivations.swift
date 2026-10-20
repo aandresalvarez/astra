@@ -27,6 +27,7 @@ extension WorkspaceConfigManager {
             knownComponentIDs: [String]? = nil,
             secretSettingKeys: [String]? = nil,
             namespaceSeed: String? = nil,
+            credentialNamespaceSeed: String? = nil,
             digest: String? = nil,
             templateDigests: [String]? = nil,
             awaitingUpdate: Bool? = nil,
@@ -43,6 +44,7 @@ extension WorkspaceConfigManager {
             self.knownComponentIDs = knownComponentIDs
             self.secretSettingKeys = secretSettingKeys
             self.namespaceSeed = namespaceSeed
+            self.credentialNamespaceSeed = credentialNamespaceSeed
             self.digest = digest
             self.templateDigests = templateDigests
             self.awaitingUpdate = awaitingUpdate
@@ -70,6 +72,7 @@ extension WorkspaceConfigManager {
         /// The activation's namespace seed; restored only from the
         /// workspace's own mirror.
         public var namespaceSeed: String?
+        public var credentialNamespaceSeed: String?
         /// The approval digest of the definition the workspace accepted. A
         /// chosen file's activation stays off, with none of its details,
         /// unless this matches the installed copy (`CapabilityImportVerifier`).
@@ -169,6 +172,7 @@ extension WorkspaceConfigManager {
                 knownComponentIDs: activation.knownComponentIDs.isEmpty ? nil : activation.knownComponentIDs,
                 secretSettingKeys: activation.secretSettingKeys.isEmpty ? nil : activation.secretSettingKeys,
                 namespaceSeed: activation.namespaceSeed.isEmpty ? nil : activation.namespaceSeed,
+                credentialNamespaceSeed: activation.credentialNamespaceSeed.isEmpty ? nil : activation.credentialNamespaceSeed,
                 digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest,
                 templateDigests: activation.templateDigests.isEmpty ? nil : activation.templateDigests,
                 awaitingUpdate: activation.awaitingUpdate ? true : nil,
@@ -228,6 +232,7 @@ extension WorkspaceConfigManager {
             // the file replaced.
             if case .validate = trust {
                 WorkspaceCapabilityActivation.setNamespaceSeed(UUID().uuidString, on: activation)
+                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(UUID().uuidString, on: activation)
             }
             // The file's projected IDs (its workspace, its seed) name the
             // installed definition's components under the fresh seed. Mapped
@@ -262,6 +267,7 @@ extension WorkspaceConfigManager {
                 if let seed = ref.namespaceSeed, !seed.isEmpty {
                     WorkspaceCapabilityActivation.setNamespaceSeed(seed, on: activation)
                 }
+                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(ref.credentialNamespaceSeed ?? "", on: activation)
                 WorkspaceCapabilityActivation.setTemplateDigests(entries: ref.templateDigests ?? [], on: activation)
                 WorkspaceCapabilityActivation.setAwaitingUpdate(ref.awaitingUpdate ?? false, on: activation)
                 declared = nil

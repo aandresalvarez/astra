@@ -8,9 +8,9 @@ import ASTRAModels
 /// save never leaves a credential nothing records.
 ///
 /// Remove and Update find an activation's secrets through its
-/// `secretSettingKeys`, and an Add again derives the same namespace, so a
-/// value written first and recorded after could outlive every cleanup and
-/// come back.
+/// `secretSettingKeys` and credential generation. Add journals writes into
+/// its fresh namespace before storing values, so a quit can reclaim an
+/// uncommitted generation without touching an older request's secrets.
 ///
 /// - A stored activation (the row's details editor) records the key, saves
 ///   and writes the workspace's mirror before every write (a recovery from

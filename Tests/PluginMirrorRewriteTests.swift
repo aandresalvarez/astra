@@ -100,6 +100,7 @@ struct PluginMirrorRewriteTests {
         )
         Fixtures.Environment.retained.append(container)
         let context = container.mainContext
+        context.autosaveEnabled = false
         let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
         try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
@@ -112,7 +113,7 @@ struct PluginMirrorRewriteTests {
         try CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
             .install(v1, into: workspace, modelContext: context, announceCatalogMutation: false)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
-        let released = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:summary-agent")
+        let released = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:summary-agent")
         let outbox = try #require(PluginSecretCleanupOutbox(for: context))
 
         var v2 = v1
