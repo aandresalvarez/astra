@@ -652,6 +652,7 @@ final class AgentRuntimeWorker {
             workspaceAccess: executionWorkspaceAccess,
             approvedSandboxReadablePaths: approvedSandboxPaths)
         run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.runSnapshot)
+        let workspaceOrientation = await WorkspaceOrientationPromptGuidance.load(directory: executionPath)
         let inputProjection = TaskInputManifest(inputs: executionTask.inputs)
         let inputFolder = TaskWorkspaceAccess(task: executionTask).taskFolder
         do {
@@ -805,7 +806,9 @@ final class AgentRuntimeWorker {
                     && appliedRuntime.requirements.offeredHostControlTools.contains("github")
             )
         }
-        prompt = autoSendGuidance(prompt)
+        // Appended after the resource resolver read the prompt, so README text
+        // never steers capability scoping. A native resume already carries it.
+        prompt = workspaceOrientation.appending(to: autoSendGuidance(prompt))
         let promptWithoutResume = prompt + historyGuidance
         // Compact only after this launch has proved native continuation safe.
         // Fresh handoffs (including changed signatures) keep the wider context.
