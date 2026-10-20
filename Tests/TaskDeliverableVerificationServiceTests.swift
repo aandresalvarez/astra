@@ -667,6 +667,11 @@ struct TaskDeliverableVerificationServiceTests {
         // `</script>` inside CDATA does not close the script.
         let svgCDATA = "<svg><script><![CDATA[const ok = \"</script>\";]]></script></svg>"
         #expect(HTMLScriptScanner.inlineScripts(in: svgCDATA).map(\.body) == ["const ok = \"</script>\";"])
+        // Outside CDATA, foreign script text has its character references decoded.
+        let svgEscaped = "<svg><script>if (a &lt; b &amp;&amp; c) { ok(\"&lt;\"); }<![CDATA[ &lt; ]]></script></svg>"
+        #expect(HTMLScriptScanner.inlineScripts(in: svgEscaped).map(\.body) == [
+            "if (a < b && c) { ok(\"<\"); } &lt; "
+        ])
         // Everything after `<plaintext>` is text.
         #expect(HTMLScriptScanner.inlineScripts(in: "<plaintext><script>bad(</script>").isEmpty)
         // A non-ASCII space is part of the tag name, so this is not a script.

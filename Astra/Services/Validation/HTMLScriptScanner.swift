@@ -161,7 +161,7 @@ enum HTMLScriptScanner {
                     elements.append(ScriptElement(
                         attributes: attributes,
                         body: inForeign
-                            ? removingCDATAMarkers(scalars, in: tag.end..<close.start)
+                            ? foreignScriptText(scalars, in: tag.end..<close.start)
                             : string(scalars[tag.end..<close.start])
                     ))
                     index = close.end
@@ -280,26 +280,29 @@ enum HTMLScriptScanner {
         return nil
     }
 
-    /// In foreign content a CDATA section contributes only its contents to
-    /// the script text, so `<![CDATA[ … ]]>` wrappers are dropped.
-    private static func removingCDATAMarkers(
+    /// The text a browser runs for an SVG/MathML script: foreign content is
+    /// tokenized as ordinary data, so character references such as `&lt;`
+    /// are decoded, while a CDATA section contributes its contents verbatim.
+    private static func foreignScriptText(
         _ scalars: [Unicode.Scalar],
         in range: Range<Int>
     ) -> String {
-        var text = String.UnicodeScalarView()
+        var text = ""
+        var segmentStart = range.lowerBound
         var index = range.lowerBound
         while index < range.upperBound {
             if hasPrefix("<![CDATA[", in: scalars, at: index),
                let end = find("]]>", in: scalars, from: index + 9),
                end + 3 <= range.upperBound {
-                text.append(contentsOf: scalars[(index + 9)..<end])
+                text += decodingCharacterReferences(string(scalars[segmentStart..<index]))
+                text += string(scalars[(index + 9)..<end])
                 index = end + 3
+                segmentStart = index
             } else {
-                text.append(scalars[index])
                 index += 1
             }
         }
-        return String(text)
+        return text + decodingCharacterReferences(string(scalars[segmentStart..<range.upperBound]))
     }
 
     /// Finds the end tag that closes an HTML script, following the tokenizer's
@@ -386,7 +389,7 @@ enum HTMLScriptScanner {
         "fjlig": "fj"
     ]
 
-    /// Decodes character references in an attribute value: numeric ones
+    /// Decodes character references in an attribute value or foreign text: numeric ones
     /// (`&#47;`, `&#x2f`, with or without `;`) and every named reference
     /// that yields ASCII (case-sensitive, with its `;`).
     static func decodingCharacterReferences(_ value: String) -> String {
