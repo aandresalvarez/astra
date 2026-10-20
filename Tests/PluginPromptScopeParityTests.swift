@@ -83,7 +83,10 @@ struct PluginPromptScopeParityTests {
         )
         Self.retained.append(container)
         let context = container.mainContext
-        let workspace = Workspace(name: "Parity", primaryPath: "/tmp/astra-parity-\(package.id)")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Parity", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-parity-\(UUID().uuidString)", isDirectory: true)

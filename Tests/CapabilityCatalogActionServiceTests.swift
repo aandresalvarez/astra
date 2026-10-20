@@ -75,7 +75,10 @@ struct CapabilityCatalogActionServiceTests {
     func enableActionInstallsPackageAndEnablesWorkspaceResources() throws {
         let container = try makeCapabilityActionContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Actions", primaryPath: "/tmp/action-enable")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Actions", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityActionLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -103,7 +106,10 @@ struct CapabilityCatalogActionServiceTests {
     func enablePublishesExactlyOnceAndReloadsEveryWindow() throws {
         let container = try makeCapabilityActionContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "First Window", primaryPath: "/tmp/action-two-window")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "First Window", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityActionLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -138,7 +144,10 @@ struct CapabilityCatalogActionServiceTests {
     func createActionInstallsDraftPackageWithoutEnablingWorkspace() throws {
         let container = try makeCapabilityActionContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Actions", primaryPath: "/tmp/action-create")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Actions", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityActionLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -165,7 +174,10 @@ struct CapabilityCatalogActionServiceTests {
     func createAndEnableEmitsGlobalAndWorkspaceEvents() throws {
         let container = try makeCapabilityActionContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Actions", primaryPath: "/tmp/action-create-enable")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Actions", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityActionLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -189,7 +201,10 @@ struct CapabilityCatalogActionServiceTests {
     func directCreationEmitsGlobalEvent() throws {
         let container = try makeCapabilityActionContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "MCP", primaryPath: "/tmp/mcp-create")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "MCP", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityActionLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -229,7 +244,10 @@ struct CapabilityCatalogActionServiceTests {
     func removeActionDelegatesPackageCleanupToUninstaller() throws {
         let container = try makeCapabilityActionContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Actions", primaryPath: "/tmp/action-remove")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Actions", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityActionLibrary()
         defer { try? FileManager.default.removeItem(at: root) }

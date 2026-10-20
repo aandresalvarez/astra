@@ -21,6 +21,7 @@ struct CapabilityPackageRoundTripE2ETests {
         let container = try makeRoundTripContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Round Trip Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
 
         let package = roundTripPackage(name: "Created Round Trip")
@@ -98,6 +99,7 @@ struct CapabilityPackageRoundTripE2ETests {
         let container = try makeRoundTripContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Imported Source Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
 
         let package = roundTripPackage(name: "Imported Round Trip")
@@ -170,6 +172,7 @@ struct CapabilityPackageRoundTripE2ETests {
         )
         let container = try makeRoundTripContainer()
         let workspace = Workspace(name: "Unreverted Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         container.mainContext.insert(workspace)
         let package = roundTripPackage(name: "Unreverted Round Trip")
         let service = CapabilityPackageCreationService(
@@ -205,6 +208,7 @@ struct CapabilityPackageRoundTripE2ETests {
         let container = try makeRoundTripContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Invalid Package Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
 
         var package = roundTripPackage(name: "Invalid Round Trip")
@@ -265,6 +269,7 @@ struct CapabilityPackageRoundTripE2ETests {
         let container = try makeRoundTripContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Duplicate Package Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
 
         let package = roundTripPackage(name: "Duplicate Round Trip")
@@ -316,6 +321,7 @@ struct CapabilityPackageRoundTripE2ETests {
         let container = try makeRoundTripContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Install Failure Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
 
         let package = roundTripPackage(name: "Install Failure Round Trip")
@@ -359,6 +365,7 @@ struct CapabilityPackageRoundTripE2ETests {
         let container = try makeRoundTripContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Approval Order Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
 
         var installed = roundTripPackage(name: "Approval Order Round Trip")

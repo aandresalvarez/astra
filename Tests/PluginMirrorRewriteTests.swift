@@ -21,6 +21,7 @@ struct PluginMirrorRewriteTests {
         try env.install(Fixtures.package(version: "1.0.0"))
         let account = try #require(env.workspace.connectors.first)
         let other = Workspace(name: "Other", primaryPath: env.root.appendingPathComponent("other").path)
+        try FileManager.default.createDirectory(atPath: other.primaryPath, withIntermediateDirectories: true)
         env.context.insert(other)
         var otherPlugin = Fixtures.package(version: "1.0.0")
         otherPlugin.id = "ops.other"
@@ -100,6 +101,7 @@ struct PluginMirrorRewriteTests {
         Fixtures.Environment.retained.append(container)
         let context = container.mainContext
         let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
         let library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
         var v1 = Fixtures.package(version: "1.0.0")

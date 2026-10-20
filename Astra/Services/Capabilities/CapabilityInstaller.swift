@@ -141,6 +141,12 @@ struct CapabilityInstaller {
                 traceID: traceID
             )
         } catch {
+            if PluginOperationProblem.preventsRollback(error) {
+                // A saved activation must keep its matching definition. File
+                // transaction preparation also needs this outcome at its boundary.
+                CapabilityCatalogPersistenceEvents.post(.global)
+                throw error
+            }
             library.restorePackageStorage(packageStorageSnapshot)
             var fields = capabilityFields(for: package, workspace: workspace, source: "install")
             if let traceID { fields["trace_id"] = traceID }
@@ -182,7 +188,7 @@ struct CapabilityInstaller {
         policyContext: CapabilityCatalogPolicyContext? = nil,
         auditSource: String = "enable",
         traceID: String? = nil,
-        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = Self.persistActivation,
         exportMirror: (@MainActor (Workspace) -> Void)? = nil,
         rewriteMirror: (@MainActor (Workspace) -> Bool)? = nil
     ) throws -> InstallationResult {
@@ -220,7 +226,7 @@ struct CapabilityInstaller {
         // The library holds one definition for every workspace: each other
         // one whose activation kept rows while it was missing gets them as
         // overrides in the same save, so none projects a second copy.
-        let pendingElsewhere = ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).filter { other in
+        let pendingElsewhere = (try modelContext.fetch(FetchDescriptor<Workspace>())).filter { other in
             other.id != workspace.id
                 && WorkspaceCapabilityActivation.pendingOverridePluginIDs(of: other).contains(package.id)
                 && WorkspaceCapabilityActivation.activation(for: package.id, in: other) != nil
@@ -228,7 +234,7 @@ struct CapabilityInstaller {
         let pendingSnapshots = pendingElsewhere.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         var savedSkillSecrets: [SavedSkillSecret] = []
         var renamedSecrets: [PluginUpdateService.CopiedSecret] = []
-        var restoreReconciled: () -> Void = {}
+        let restoreReconciled = PluginUpdateService.captureState(of: [workspace] + pendingElsewhere)
         // Everything from here through persist() is one transaction: staging a
         // skill/connector/tool can throw (credential save denied, activation
         // swap failure, ...) partway through the loops below, after earlier
@@ -279,7 +285,6 @@ struct CapabilityInstaller {
             // release theirs, and the version and digest are recorded.
             // rollback() and the activation snapshot don't cover templates,
             // schedules and the synced account fields reconciling writes.
-            restoreReconciled = PluginUpdateService.captureState(of: [workspace])
             let reconciliation = try PluginUpdateService.reconcile(
                 activation,
                 in: workspace,
@@ -413,41 +418,40 @@ struct CapabilityInstaller {
             // The secret settings written above settle with the save: the
             // activation records them now.
             let journaledSecrets = savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }
-            // Every mirror the save changed is written before anything it
-            // released is cleaned, as Update does: this workspace's, the
-            // others whose pending rows became overrides, and each carrying
-            // an account the reconcile changed. One that can't be written
-            // keeps the cleanup for launch.
-            // Shared rows that can't be read leave the set unknown, which
-            // counts as a mirror not written: the cleanup waits for launch.
-            let mirroring = try? WorkspaceConfigManager.workspacesMirroring(
+            // Discovery is part of admission to the commit, never a best
+            // effort: unknown mirror owners cannot be recorded as an empty set.
+            let mirroring = try WorkspaceConfigManager.workspacesMirroring(
                 accountIDs: reconciliation.changedAccountIDs,
                 among: try modelContext.fetch(FetchDescriptor<Workspace>()), modelContext: modelContext
             )
-            let mirrored = [workspace] + pendingSnapshots.map(\.0) + (mirroring ?? [])
-            let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
-            guard PluginSecretCleanupOutbox.deleteThenClean(
+            let mirrored = [workspace] + pendingSnapshots.map(\.0) + mirroring
+            var committed: PluginStateCommit.Outcome?
+            let saved = PluginSecretCleanupOutbox.deleteThenClean(
                 releasedSkillIDs,
                 keys: reconciliation.staleSecrets + journaledSecrets + PluginUpdateService.journaledCopies(renamedSecrets),
                 modelContext: modelContext,
-                save: { persist(workspace, modelContext) },
-                beforeSettling: {
-                    var seen = Set<UUID>()
-                    return mirrored.filter { seen.insert($0.id).inserted }.reduce(mirroring != nil) { rewrite($1) && $0 }
+                save: {
+                    let result = PluginStateCommit.save(workspaceIDs: mirrored.map(\.id), pluginIDs: [package.id],
+                        kind: .add, modelContext: modelContext, persist: { context in
+                            guard persist(workspace, context) else { throw InstallationError.persistenceFailed(packageID: package.id) }
+                        }, export: rewriteMirror, publishesCompleted: false)
+                    committed = result
+                    if case .notCommitted = result { return false }
+                    return true // Unknown saves retain cleanup debt and recovery state.
+                }, beforeSettling: {
+                    if case .completed = committed { return true }
+                    return false
                 }
-            ) else {
-                throw InstallationError.persistenceFailed(packageID: package.id)
+            )
+            guard saved else { throw InstallationError.persistenceFailed(packageID: package.id) }
+            switch committed {
+            case .pendingRecovery(let id): throw PluginOperationProblem.savedRecoveryPending(id)
+            case .indeterminate(let id, _): throw PluginOperationProblem.commitUncertain(id)
+            default: break
             }
-            // `persist` exports the clicked workspace; the others whose
-            // pending rows became overrides in the same save are exported
-            // here, or their mirrors would restore the rows as before.
-            for (other, _) in pendingSnapshots {
-                if let exportMirror {
-                    exportMirror(other)
-                } else if !WorkspacePersistenceCoordinator.shouldSkipAutoExport() {
-                    WorkspaceConfigManager.autoExport(workspace: other, modelContext: modelContext)
-                }
-            }
+            // Compatibility notification for callers observing adopted rows.
+            // Recovery already wrote every affected mirror from saved state.
+            if let exportMirror { for (other, _) in pendingSnapshots { exportMirror(other) } }
             var enabledFields = [
                 "package_id": package.id,
                 "package_name": package.name,
@@ -471,6 +475,7 @@ struct CapabilityInstaller {
                 templateIDs: templateIDs
             )
         } catch {
+            guard !PluginOperationProblem.preventsRollback(error) else { throw error }
             // Reporting success (or even a clean failure) while leaving a
             // partial stage in place would strand the library file and any
             // saved keychain credentials against unsaved/orphaned records.
@@ -554,6 +559,10 @@ struct CapabilityInstaller {
     /// and its shared connectors and tools join the workspace; a workspace
     /// row is already on. No activation is created, so nothing projects a
     /// second copy under another ID.
+    static func persistActivation(_ workspace: Workspace?, _ context: ModelContext) -> Bool {
+        WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: context)
+    }
+
     private func enableSkillRow(
         _ skillID: UUID,
         package: PluginPackage,
@@ -579,7 +588,15 @@ struct CapabilityInstaller {
             }
             workspace.updatedAt = Date()
         }
-        guard persist(workspace, modelContext) else {
+        let commit = PluginStateCommit.save(workspace: workspace, pluginIDs: [package.id], kind: .add,
+            modelContext: modelContext, persist: { context in
+                guard persist(workspace, context) else { throw InstallationError.persistenceFailed(packageID: package.id) }
+            }, publishesCompleted: false)
+        switch commit {
+        case .completed: break
+        case .pendingRecovery(let id): throw PluginOperationProblem.savedRecoveryPending(id)
+        case .indeterminate(let id, _): throw PluginOperationProblem.commitUncertain(id)
+        case .notCommitted:
             modelContext.rollback()
             WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
             throw InstallationError.persistenceFailed(packageID: package.id)
