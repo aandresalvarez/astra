@@ -214,4 +214,36 @@ struct PluginAccountEditorSourceCoordinationTests {
         }
     }
 
+    @Test("Source mutation excludes both automatic and direct legacy skill migration", arguments: [false, true])
+    func sourceMutationExcludesLegacySkillMigration(startupEntry: Bool) throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try PluginAddCommitTests.Fixture(installed: false)
+            defer { env.disk.removeFiles() }
+            let skill = Skill(name: "Source-locked legacy skill")
+            skill.environmentKeys = ["API_TOKEN"]
+            skill.environmentValues = ["legacy-skill-source-token"]
+            skill.workspace = env.workspace
+            env.context.insert(skill)
+            try env.context.save()
+            let namespace = skill.secretNamespaceID
+            try PluginSourceStore().exclusively(pluginID: "unrelated-source") {
+                if startupEntry { StartupCredentialMigrationService.migrate(modelContext: env.context) }
+                else {
+                    #expect(throws: PluginSourceStoreError.libraryBusy) {
+                        _ = try SkillCredentialMigration.migrate(skill, modelContext: env.context)
+                    }
+                }
+            }
+            let saved = ModelContext(env.context.container)
+            let row = try #require(try saved.fetch(FetchDescriptor<Skill>()).first)
+            #expect(row.secretNamespaceID == namespace)
+            #expect(row.environmentValues == ["legacy-skill-source-token"])
+            #expect(try saved.fetchCount(FetchDescriptor<PluginOperationReceipt>()) == 0)
+            #expect(SkillSecretSeam.required.loadSecretValue(key: "API_TOKEN", skillID: namespace,
+                store: KeychainSecretStore()) == nil)
+            let journal = try #require(try SkillCredentialGenerationJournal(modelContext: env.context))
+            #expect(try journal.pending().isEmpty)
+        }
+    }
+
 }
