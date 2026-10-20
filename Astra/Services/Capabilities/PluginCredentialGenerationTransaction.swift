@@ -10,7 +10,8 @@ import ASTRAPersistence
 @MainActor
 struct PluginCredentialGenerationTransaction {
     let generation: String
-    private let namespaces: Set<UUID>
+    let producerLease: PluginCredentialProducerLease?
+    let namespaces: Set<UUID>
     private let outbox: PluginSecretCleanupOutbox?
     private let persistence: any SkillSecretPersisting.Type
 
@@ -20,26 +21,29 @@ struct PluginCredentialGenerationTransaction {
         persistence: any SkillSecretPersisting.Type
     ) throws -> Self {
         try stage(activation: activation, workspaceID: workspaceID, modelContext: modelContext,
-            replacing: (componentID, key, replacement), skillName: skillName, persistence: persistence)
+            replacing: (componentID, key, replacement), additionalComponents: [], producerLease: nil, skillName: skillName, persistence: persistence)
     }
 
     /// Add and reconciliation may touch several keys or rename components.
     /// Isolate their writes before changing the activation's saved contract.
     static func prepareCopy(
         activation: PluginActivation, workspaceID: UUID, modelContext: ModelContext,
-        skillName: String, persistence: any SkillSecretPersisting.Type
+        skillName: String, persistence: any SkillSecretPersisting.Type,
+        additionalComponents: Set<String> = [], producerLease: PluginCredentialProducerLease? = nil
     ) throws -> Self {
         try stage(activation: activation, workspaceID: workspaceID, modelContext: modelContext,
-            replacing: nil, skillName: skillName, persistence: persistence)
+            replacing: nil, additionalComponents: additionalComponents, producerLease: producerLease, skillName: skillName, persistence: persistence)
     }
 
     private static func stage(
         activation: PluginActivation, workspaceID: UUID, modelContext: ModelContext,
-        replacing: (component: String, key: String, value: String?)?, skillName: String,
+        replacing: (component: String, key: String, value: String?)?, additionalComponents: Set<String>,
+        producerLease: PluginCredentialProducerLease?, skillName: String,
         persistence: any SkillSecretPersisting.Type
     ) throws -> Self {
         guard activation.modelContext === modelContext, activation.workspace?.id == workspaceID,
               !activation.isDeleted else { throw PluginOperations.OperationError.workspaceChanged }
+        let heldLease = try PluginCredentialProducerLease.acquire(modelContext: modelContext, reusing: producerLease)
         let generation = UUID().uuidString
         let changed = replacing.map { PluginActivation.settingKey(componentID: $0.component, key: $0.key) }
         struct Write { let key: String; let component: String; let value: String; let explicit: Bool }
@@ -67,13 +71,13 @@ struct PluginCredentialGenerationTransaction {
         if let replacing {
             released.insert(PluginRuntimeProjection.credentialID(of: activation, componentID: replacing.component))
         }
-        let namespaces = Set(writes.map { destination($0.component) })
+        let namespaces = Set(writes.map { destination($0.component) }).union(additionalComponents.map(destination))
         let outbox = PluginSecretCleanupOutbox(for: modelContext)
         if let outbox {
             let previous = try outbox.entries()
             try outbox.writeEntries(Array(Set(previous + released.union(namespaces).map(\.uuidString))))
         }
-        let prepared = Self(generation: generation, namespaces: namespaces, outbox: outbox, persistence: persistence)
+        let prepared = Self(generation: generation, producerLease: heldLease, namespaces: namespaces, outbox: outbox, persistence: persistence)
         for write in writes {
             guard persistence.saveSecretValue(write.value, key: write.key, skillID: destination(write.component),
                 skillName: skillName, allowUserInteraction: write.explicit) else {

@@ -218,7 +218,8 @@ struct CapabilityInstaller {
             if let existing = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) {
                 let prepared = try PluginCredentialGenerationTransaction.prepareCopy(
                     activation: existing, workspaceID: workspace.id, modelContext: modelContext,
-                    skillName: package.name, persistence: skillSecrets)
+                    skillName: package.name, persistence: skillSecrets,
+                    additionalComponents: Set(package.skills.map(CapabilityResourceOrigin.componentID(for:))))
                 stagedGeneration = prepared
                 WorkspaceCapabilityActivation.setCredentialNamespaceSeed(prepared.generation, on: existing)
             }
@@ -244,7 +245,12 @@ struct CapabilityInstaller {
             let retainedTemplateIDs = WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: workspace)
             WorkspaceCapabilityActivation.reinstateRetired(on: activation, declaring: componentIDs, in: workspace)
             if isNewActivation {
-                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(UUID().uuidString, on: activation)
+                let prepared = try PluginCredentialGenerationTransaction.prepareCopy(
+                    activation: activation, workspaceID: workspace.id, modelContext: modelContext,
+                    skillName: package.name, persistence: skillSecrets,
+                    additionalComponents: Set(package.skills.map(CapabilityResourceOrigin.componentID(for:))))
+                stagedGeneration = prepared
+                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(prepared.generation, on: activation)
             }
             for retained in retainedAccounts
             where componentIDs.contains(retained.componentID) && activation.accounts(forComponent: retained.componentID).isEmpty {
@@ -435,6 +441,7 @@ struct CapabilityInstaller {
                 releasedSkillIDs,
                 keys: reconciliation.staleSecrets + journaledSecrets + PluginUpdateService.journaledCopies(renamedSecrets),
                 modelContext: modelContext, secrets: skillSecrets,
+                producerLease: stagedGeneration?.producerLease,
                 save: {
                     let result = PluginStateCommit.save(workspaceIDs: mirrored.map(\.id), pluginIDs: [package.id],
                         kind: .add, modelContext: modelContext, persist: { context in
@@ -454,6 +461,7 @@ struct CapabilityInstaller {
             case .indeterminate(let id, _): throw PluginOperationProblem.commitUncertain(id)
             default: break
             }
+            stagedGeneration?.completed()
             stagedAccountCredentials.forEach { $0.completed() }
             // Compatibility notification for callers observing adopted rows.
             // Recovery already wrote every affected mirror from saved state.
