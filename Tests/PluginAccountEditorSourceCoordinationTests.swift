@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
@@ -55,6 +56,25 @@ struct PluginAccountEditorSourceCoordinationTests {
             #expect(try PluginOperationCommit.read(id, container: env.disk.context.container)?.completedAt != nil)
             #expect(account.credentialNamespaceID == namespace)
             #expect(account.currentCredentialValue(forKey: "API_TOKEN") == "pending-editor-source-token")
+        }
+    }
+
+    @Test("An unrelated source mutation excludes account duplication before staging")
+    func unrelatedSourceChangeExcludesDuplication() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try ConnectorCredentialEditorTests.Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let source = try env.enable()
+            let store = PluginSourceStore()
+            try store.exclusively(pluginID: "unrelated-source") {
+                #expect(throws: PluginSourceStoreError.libraryBusy) {
+                    _ = try ConnectorCredentialDuplication.duplicate(source, in: env.disk.workspace, modelContext: env.disk.context)
+                }
+            }
+            #expect(try env.disk.context.fetchCount(FetchDescriptor<Connector>()) == 1)
+            #expect(source.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
+            let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.disk.context))
+            #expect(try journal.pending().isEmpty)
         }
     }
 
