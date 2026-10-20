@@ -10,11 +10,14 @@ import ASTRAPersistence
 final class ConnectorCredentialGenerationTransaction {
     enum Failure: Error, LocalizedError {
         case changedAccount, readFailed(String), copyFailed(String)
+        case legacyCredentialRejected(String, ConnectorCredentialAdmissionVerdict)
         var errorDescription: String? {
             switch self {
             case .changedAccount: return "The account changed before its credentials could be prepared. Retry."
             case .readFailed(let key): return "Couldn't read the saved \(key). Unlock the credential store and retry."
             case .copyFailed(let key): return "Couldn't preserve the saved \(key) for this account. Retry."
+            case .legacyCredentialRejected(let key, let verdict):
+                return verdict.message(forKey: key) ?? "The saved \(key) must be corrected before migrating this account."
             }
         }
     }
@@ -39,6 +42,7 @@ final class ConnectorCredentialGenerationTransaction {
 
     static func prepare(
         account: Connector, isNew: Bool, keeping keys: Set<String>, replacing: Set<String>, modelContext: ModelContext,
+        declaredFormats: [String: [ConnectorCredentialFormat]] = [:],
         lease: ConnectorCredentialGenerationJournal.Lease? = nil
     ) throws -> Self {
         guard account.modelContext === modelContext, !account.isDeleted else { throw Failure.changedAccount }
@@ -46,6 +50,7 @@ final class ConnectorCredentialGenerationTransaction {
         let heldLease = try journal?.acquireLease(reusing: lease)
         _ = try journal?.pending() // Reject unreadable ownership before any vault write.
         let saved = ModelContext(modelContext.container)
+        saved.autosaveEnabled = false
         let accountID = account.id
         var query = FetchDescriptor<Connector>(predicate: #Predicate { $0.id == accountID })
         query.fetchLimit = 2
@@ -68,6 +73,7 @@ final class ConnectorCredentialGenerationTransaction {
             baseURL: source.baseURL, originPackageID: source.originPackageID, originComponentID: source.originComponentID,
             credentialNamespaceID: namespaceID)
         var copies: [(String, String)] = []
+        var legacyValues: [(String, String)] = []
         if let stored {
             // A legacy plain setting being promoted can have a newer vault
             // value without a credential marker. Preserve that value too, but
@@ -79,9 +85,23 @@ final class ConnectorCredentialGenerationTransaction {
             where !replacing.contains(key) {
                 switch ConnectorSecretSeam.required.readCredential(key: key, facts: source, store: KeychainSecretStore()) {
                 case .value(let value): copies.append((key, value))
-                case .missing: continue
+                case .missing:
+                    if let index = stored.credentialKeys.firstIndex(where: { ConnectorCredentialKey.same($0, key) }),
+                       index < stored.credentialValues.count, !stored.credentialValues[index].isEmpty {
+                        legacyValues.append((key, stored.credentialValues[index]))
+                    }
                 case .unavailable: throw Failure.readFailed(key)
                 }
+            }
+        }
+        // The accepted definition may not yet be installed. Validate every
+        // declaration for a shared account instead of consulting only the
+        // previous library entry or silently choosing its first binding.
+        for (key, value) in legacyValues {
+            for format in declaredFormats[key] ?? [] {
+                let decision = ConnectorCredentialAdmission.evaluate(key: key, value: value,
+                    serviceType: source.serviceType, declaredFormat: format)
+                guard decision.isAdmitted else { throw Failure.legacyCredentialRejected(key, decision.verdict) }
             }
         }
         if let journal, let heldLease { try journal.record([staged] + (old.map { [$0] } ?? []), lease: heldLease) }
@@ -92,6 +112,26 @@ final class ConnectorCredentialGenerationTransaction {
             guard ConnectorSecretSeam.required.saveCredential(value, key: key, facts: target, allowUserInteraction: false) else {
                 prepared.discard()
                 throw Failure.copyFailed(key)
+            }
+        }
+        // The isolated saved context is never persisted. It gives admission
+        // the actual account identity and store scope while writing only to
+        // the unpublished namespace. Unadmitted legacy plaintext must not use
+        // the opaque copy path for already-accepted Keychain values above.
+        if let stored, !legacyValues.isEmpty {
+            stored.credentialNamespaceID = namespaceID
+            for (key, value) in legacyValues {
+                prepared.noteWriteAttempt()
+                switch stored.saveCredentialChecked(key: key, value: value, allowUserInteraction: false,
+                    declaredFormat: declaredFormats[key]?.first) {
+                case .saved: break
+                case .rejected(let verdict):
+                    prepared.discard()
+                    throw Failure.legacyCredentialRejected(key, verdict)
+                case .keychainWriteFailed:
+                    prepared.discard()
+                    throw Failure.copyFailed(key)
+                }
             }
         }
         return prepared
