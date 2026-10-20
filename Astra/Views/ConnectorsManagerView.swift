@@ -1079,7 +1079,12 @@ struct ConnectorEditorView: View {
             credentialOperationError = nil
             credentialRecoveryID = nil
             testResult = nil
-        } catch { showCredentialOperationError(error) }
+        } catch {
+            showCredentialOperationError(error)
+            // A temporary read/lock failure still owes this same recovery;
+            // it must not turn the button into another credential write.
+            if !(error is ConnectorCredentialEditor.Failure) { credentialRecoveryID = id }
+        }
     }
 
     private func showCredentialOperationError(_ error: Error) {
