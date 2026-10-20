@@ -159,4 +159,59 @@ struct PluginAccountEditorSourceCoordinationTests {
     }
 
 
+    @Test("An unrelated source mutation excludes skill retirement before deletion or secret collection")
+    func sourceMutationExcludesSkillRetirement() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try PluginAddCommitTests.Fixture(installed: false)
+            defer { env.disk.removeFiles() }
+            let skill = Skill(name: "Source-locked retirement", environmentVariables: ["API_TOKEN": "accepted-retirement-source-token"])
+            skill.workspace = env.workspace
+            env.context.insert(skill)
+            try env.context.save()
+            let namespace = skill.secretNamespaceID
+            try PluginSourceStore().exclusively(pluginID: "unrelated-source") {
+                #expect(throws: PluginSourceStoreError.libraryBusy) {
+                    try SkillRetirement.remove(skill, modelContext: env.context)
+                }
+            }
+            // Read saved rows, never fields on a model the old path deletes.
+            let saved = ModelContext(env.context.container)
+            #expect(try saved.fetchCount(FetchDescriptor<Skill>()) == 1)
+            #expect(try saved.fetchCount(FetchDescriptor<PluginOperationReceipt>()) == 0)
+            #expect(SkillSecretSeam.required.loadSecretValue(key: "API_TOKEN", skillID: namespace,
+                store: KeychainSecretStore()) == "accepted-retirement-source-token")
+        }
+    }
+
+    @Test("Delete preserves an outstanding skill edit's receipt instead of completing and replaying it")
+    func retirementCannotReplayPendingEdit() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try PluginAddCommitTests.Fixture(installed: false)
+            defer { env.disk.removeFiles() }
+            let skill = Skill(name: "Pending skill retirement", environmentVariables: ["API_TOKEN": "accepted-retirement-source-token"])
+            skill.workspace = env.workspace
+            env.context.insert(skill)
+            try env.context.save()
+            var operationID: UUID?
+            do {
+                try SkillCredentialEditor.save("pending-retirement-source-token", forKey: "API_TOKEN", on: skill,
+                    modelContext: env.context, rewriteMirror: { _ in false })
+                Issue.record("The saved edit must report its recovery receipt")
+            } catch let problem as PluginOperationProblem { operationID = problem.operationID }
+            let id = try #require(operationID)
+            do {
+                try SkillRetirement.remove(skill, modelContext: env.context)
+                Issue.record("Delete must retain the original pending edit")
+            } catch let problem as PluginOperationProblem {
+                if case .savedRecoveryPending(let actualID) = problem { #expect(actualID == id) }
+                else { Issue.record("Delete must retain the saved-recovery state") }
+            }
+            let saved = ModelContext(env.context.container)
+            #expect(try saved.fetchCount(FetchDescriptor<Skill>()) == 1)
+            #expect(try saved.fetchCount(FetchDescriptor<PluginOperationReceipt>()) == 1)
+            #expect(try PluginOperationCommit.read(id, container: env.context.container)?.completedAt == nil)
+            #expect(skill.environmentVariables["API_TOKEN"] == "pending-retirement-source-token")
+        }
+    }
+
 }

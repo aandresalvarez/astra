@@ -1061,11 +1061,15 @@ struct ArchitectureFitnessTests {
         let root = try repositoryRoot()
         let configure = try String(
             contentsOf: root.appendingPathComponent("Astra/Views/ConfigureView.swift"), encoding: .utf8)
+        let skills = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/SkillsTabContent.swift"), encoding: .utf8)
         let creation = try String(
             contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/CapabilityPackageCreationService.swift"),
             encoding: .utf8)
 
         #expect(configure.contains("CapabilityPersistence.saveResourceMutation"))
+        #expect(!skills.contains("WorkspacePersistenceCoordinator.saveAndAutoExport"))
+        #expect(!skills.contains("skill.cleanupKeychain("))
         let resourcesStart = try #require(configure.range(of: "struct ConnectorsTabContent"))
         let resourcesEnd = try #require(configure.range(of: "// MARK: - Templates Tab"))
         #expect(!configure[resourcesStart.lowerBound..<resourcesEnd.lowerBound].contains(
@@ -1916,7 +1920,7 @@ struct ArchitectureFitnessTests {
             // all-public struct) to stay constructible from outside this new
             // target - a hard language requirement, not scope creep.
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_200, .owner("Workspace mirror persistence")),
-            "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
+            "Astra/Views/ConfigureView.swift": .init(2_300, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
             // Self-referential: this file crossed its own 2,000-line
             // threshold from the file-access-broker tests added for issue

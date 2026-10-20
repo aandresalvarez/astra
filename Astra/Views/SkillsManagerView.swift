@@ -753,7 +753,7 @@ struct SkillEditorView: View {
                     Button(role: .destructive) {
                         pendingDestruction = PendingSkillDestruction(
                             title: "Delete Skill",
-                            message: "Delete \u{201C}\(skill.name.isEmpty ? "this skill" : skill.name)\u{201D}? This permanently removes the skill and its stored secrets. This cannot be undone.",
+                            message: "Delete \u{201C}\(skill.name.isEmpty ? "this skill" : skill.name)\u{201D}? This removes the skill from future work. Saved tasks keep their accepted settings and secrets while they still need them.",
                             confirmTitle: "Delete",
                             perform: { onDelete() }
                         )
@@ -785,6 +785,7 @@ struct SkillEditorView: View {
         }
         .onAppear { if skill.name == "New Skill" { isNameFocused = true } }
         .onDisappear {
+            guard skill.modelContext === modelContext, !skill.isDeleted else { return }
             skill.updatedAt = Date()
             WorkspacePersistenceCoordinator.flushPendingExport(workspace: workspace ?? skill.workspace, modelContext: modelContext)
         }

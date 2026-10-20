@@ -44,6 +44,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             pluginDefinitions: policy.pluginDefinitions,
             pluginAccounts: policy.pluginAccounts,
             pluginOverrides: policy.pluginOverrides,
+            authoredSkills: policy.authoredSkills,
             retiredPluginActivations: policy.retiredPluginActivations
         )
     }
@@ -71,10 +72,14 @@ enum TaskExecutionLaunchSnapshotApplicator {
             // So are the override rows' contents: an override edited or
             // deleted while it waited runs as submitted.
             var lateAttachments = LateAttachments()
+            let authoredRowIDs = applyFrozenOverrides(
+                snapshot.authoredSkills.map { PluginOverrideRecords(skills: $0) },
+                to: workspace, skillsByID: capabilityGraph.skillsByID, unlinked: &lateAttachments
+            )
             let frozenRowIDs = applyFrozenOverrides(
                 snapshot.pluginOverrides, to: workspace, skillsByID: capabilityGraph.skillsByID, unlinked: &lateAttachments
             )
-            pruneLateAttachments(lateAttachments, of: snapshot, from: workspace, keeping: frozenRowIDs)
+            pruneLateAttachments(lateAttachments, of: snapshot, from: workspace, keeping: frozenRowIDs.union(authoredRowIDs))
             workspace.launchPluginDefinitions = snapshot.pluginDefinitions
             // The activations frozen at submission, when the request has
             // them: a plugin turned off, on or reconfigured while it waited
@@ -138,11 +143,19 @@ enum TaskExecutionLaunchSnapshotApplicator {
         task.runs = detachedRuns
         task.events = source.events.map { detachedEvent($0, task: task, runs: runByID) }
         task.artifacts = source.artifacts.map { detachedArtifact($0, task: task) }
-        task.skills = source.skills.map {
-            capabilityGraph.skillsByID[$0.id] ?? detachedSkill($0)
+        if let accepted = snapshot.authoredSkills {
+            task.skills = accepted.map { record in
+                workspace?.skills.first { $0.id == record.id } ?? record.makeSkill()
+            }
+        } else {
+            // Older policies have only environment references and keep their
+            // historical live-row behavior, without inferring a deleted owner.
+            task.skills = source.skills.map {
+                capabilityGraph.skillsByID[$0.id] ?? detachedSkill($0)
+            }
+            TaskAuthoredSkillLaunchProjection.apply(task.skillSnapshots, to: task.skills,
+                excluding: workspace.map(WorkspaceCapabilityActivation.overridingRowIDs(of:)) ?? [])
         }
-        TaskAuthoredSkillLaunchProjection.apply(task.skillSnapshots, to: task.skills,
-            excluding: workspace.map(WorkspaceCapabilityActivation.overridingRowIDs(of:)) ?? [])
         return task
     }
 
@@ -353,7 +366,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
     ) {
         guard !unlinked.connectorIDs.isEmpty || !unlinked.toolIDs.isEmpty else { return }
         // One another frozen override still has attached is its row there.
-        let records = snapshot.pluginOverrides?.skills ?? []
+        let records = (snapshot.pluginOverrides?.skills ?? []) + (snapshot.authoredSkills ?? [])
         let frozenConnectors = Set(records.flatMap { $0.attachedConnectors?.map(\.id) ?? [] })
         let frozenTools = Set(records.flatMap { $0.attachedTools?.map(\.id) ?? [] })
         let bound = Set((snapshot.pluginActivations ?? []).flatMap(\.bindings).compactMap(\.accountID))

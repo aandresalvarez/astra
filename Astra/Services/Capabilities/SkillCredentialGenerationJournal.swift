@@ -90,6 +90,7 @@ struct SkillCredentialGenerationJournal {
             if live.contains(namespace) { settled.insert(namespace); continue }
             guard !requests.holdsSkill(namespace), !mirrors.holdsSkill(namespace) else { continue }
             if SkillSecretSeam.required.deleteAllSecretsReportingResult(skillID: namespace) { settled.insert(namespace) }
+            else { audit("namespace_delete_failed_kept") }
         }
         forget(settled, lease: lease)
     }
