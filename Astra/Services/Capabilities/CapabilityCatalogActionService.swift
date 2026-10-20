@@ -24,30 +24,13 @@ enum CapabilityAccountSetupError: Error, Equatable, LocalizedError {
 
 @MainActor
 struct CapabilityCatalogActionService {
-    /// What Plugins Add does with a package.
-    enum AddRoute: Equatable {
-        /// Install, approve and enable in one step.
-        case enable
-        /// Open the install flow that connects the package's account first.
-        case connectAccount
-    }
-
-    /// OAuth providers ASTRA can sign in to: none. The Google OAuth stack is
-    /// deleted (owner decision), so a plugin that needs an account sign-in
-    /// can't be added (`PluginsSurfacePresentation.unavailableReason`).
-    static let supportedOAuthProviders: Set<String> = []
-
-    /// How Add handles `package`. A package that needs an account of a
-    /// provider ASTRA can't sign in to is refused: the router's fallback
-    /// sheet would enable it with no account, and it would read as ready
-    /// though its setup never ran. An optional account neither routes nor
-    /// refuses: the plugin works without it.
-    static func addRoute(for package: PluginPackage) throws -> AddRoute {
-        let accounts = package.setupRequirements.filter { $0.kind == .oauthAccount && $0.required }
-        if let unsupported = accounts.first(where: { !supportedOAuthProviders.contains($0.provider ?? "") }) {
+    /// Required OAuth accounts have no setup flow after the old OAuth stack
+    /// was retired. Refuse them explicitly; optional accounts do not block
+    /// the plugin's independent features. There is no sign-in route to return.
+    static func validateAccountSupport(for package: PluginPackage) throws {
+        if let unsupported = package.setupRequirements.first(where: { $0.kind == .oauthAccount && $0.required }) {
             throw CapabilityAccountSetupError.unsupportedProvider(account: unsupported.displayName, provider: unsupported.provider)
         }
-        return accounts.isEmpty ? .enable : .connectAccount
     }
 
     let installer: CapabilityInstaller
@@ -97,7 +80,7 @@ struct CapabilityCatalogActionService {
             // Every enable path (the legacy catalog's install sheets and
             // Configure included) refuses a required account ASTRA can't
             // sign in to, not only Plugins Add.
-            _ = try Self.addRoute(for: package)
+            try Self.validateAccountSupport(for: package)
             let result = try installer.install(
                 package,
                 into: workspace,
@@ -218,7 +201,7 @@ struct CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
-        _ = try Self.addRoute(for: package)
+        try Self.validateAccountSupport(for: package)
         let context = try grantPendingApproval(
             for: package, workspace: workspace, policyContext: policyContext,
             approvalStore: approvalStore, source: "plugins_add", traceID: traceID

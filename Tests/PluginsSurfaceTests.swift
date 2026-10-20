@@ -330,14 +330,14 @@ struct PluginsSurfaceTests {
     @Test("Add refuses a plugin that needs an account sign-in, which this build has none of")
     func addRefusesUnsupportedOAuthProviders() throws {
         #expect(throws: CapabilityAccountSetupError.self) {
-            try CapabilityCatalogActionService.addRoute(for: builtIn("google-workspace"))
+            try CapabilityCatalogActionService.validateAccountSupport(for: builtIn("google-workspace"))
         }
-        #expect(try CapabilityCatalogActionService.addRoute(for: builtIn("jira-workflow")) == .enable)
+        try CapabilityCatalogActionService.validateAccountSupport(for: builtIn("jira-workflow"))
         for provider in ["salesforce", nil] {
             var imported = package("imported-crm", name: "CRM")
             imported.setupRequirements = [PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: provider)]
             #expect(throws: CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)) {
-                try CapabilityCatalogActionService.addRoute(for: imported)
+                try CapabilityCatalogActionService.validateAccountSupport(for: imported)
             }
         }
 
@@ -405,7 +405,7 @@ struct PluginsSurfaceTests {
             imported.setupRequirements = [
                 PluginSetupRequirement(id: "acct", kind: .oauthAccount, displayName: "Account", provider: provider, required: false)
             ]
-            #expect(try CapabilityCatalogActionService.addRoute(for: imported) == .enable)
+            try CapabilityCatalogActionService.validateAccountSupport(for: imported)
         }
     }
 
@@ -432,7 +432,7 @@ struct PluginsSurfaceTests {
                     ? googleRefused
                     : CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)
                 #expect(PluginsSurfacePresentation.pendingAccountAction(for: crm) == .unsupported(try #require(expected.errorDescription)))
-                #expect(throws: expected) { try CapabilityCatalogActionService.addRoute(for: crm) }
+                #expect(throws: expected) { try CapabilityCatalogActionService.validateAccountSupport(for: crm) }
             }
         }
         // The row reads it from that rule, not a copy of it.

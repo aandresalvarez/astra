@@ -283,7 +283,7 @@ enum PluginsSurfacePresentation {
     @MainActor
     static func pendingAccountAction(for package: PluginPackage) -> PendingAccountAction {
         do {
-            _ = try CapabilityCatalogActionService.addRoute(for: package)
+            try CapabilityCatalogActionService.validateAccountSupport(for: package)
             return .reconnect
         } catch {
             return .unsupported(error.localizedDescription)
