@@ -37,6 +37,7 @@ enum PluginUpdateService {
     enum UpdateError: Error, Equatable, LocalizedError {
         case refusedByWorkspace(workspace: String, reason: String)
         case secretCopyFailed(component: String, key: String)
+        case secretReadFailed(component: String, key: String)
         case ambiguousRename(component: String)
         /// A component takes over one the activation still holds beside it:
         /// two independently owned states can't merge.
@@ -55,6 +56,8 @@ enum PluginUpdateService {
             switch self {
             case .refusedByWorkspace(let workspace, let reason):
                 "\(workspace) can't take this version: \(reason)"
+            case .secretReadFailed(let component, let key):
+                "Couldn't read the saved \(key) of \(component). Unlock its credential store and retry the update."
             case .secretCopyFailed(let component, let key):
                 "Couldn't move the saved \(key) of \(component) to the new version."
             case .renameIntoKnownComponent(let component, let predecessor):
@@ -352,7 +355,11 @@ enum PluginUpdateService {
             // A copy the Keychain can't take back is reported ahead of the
             // failure: the successor would keep a value Update reads as its own.
             let unrestored = undo(total.copied, secrets: secrets, connectorStore: connectorStore)
-            PluginSecretCleanupOutbox(for: modelContext)?.forget(journaledCopies(total.copied))
+            // A refused undo leaves an actual orphan. Keep its intent until
+            // recovery can delete it, using the same saved-owner checks.
+            if unrestored.isEmpty {
+                PluginSecretCleanupOutbox(for: modelContext)?.forget(journaledCopies(total.copied))
+            }
             if !unrestored.isEmpty { throw UpdateError.credentialRestoreFailed(keys: unrestored) }
             throw error
         }
@@ -787,6 +794,18 @@ enum PluginUpdateService {
         }
     }
 
+    /// A locked vault is not an absent key. Never acknowledge a rename or
+    /// replace a destination value whose prior state could not be read.
+    private static func readableSecret(
+        key: String, skillID: UUID, component: String, persistence: any SkillSecretPersisting.Type
+    ) throws -> String? {
+        switch persistence.readSecretValue(key: key, skillID: skillID, store: KeychainSecretStore()) {
+        case .value(let value): return value
+        case .missing: return nil
+        case .unavailable: throw UpdateError.secretReadFailed(component: component, key: key)
+        }
+    }
+
     /// Copies each secret setting of a renamed skill (and the recorded
     /// `extraKeys`) into its successor's namespace, unless the successor
     /// already has a value of its own.
@@ -801,9 +820,9 @@ enum PluginUpdateService {
     ) throws {
         let declared = spec.environmentKeys.filter(Skill.isSecretEnvironmentKey)
         for key in declared + extraKeys.filter({ !declared.contains($0) }) {
-            guard let value = persistence.loadSecretValue(key: key, skillID: oldID, store: KeychainSecretStore()),
+            guard let value = try readableSecret(key: key, skillID: oldID, component: spec.name, persistence: persistence),
                   !value.isEmpty else { continue }
-            let existing = persistence.loadSecretValue(key: key, skillID: newID, store: KeychainSecretStore())
+            let existing = try readableSecret(key: key, skillID: newID, component: spec.name, persistence: persistence)
             guard existing?.isEmpty ?? true else { continue }
             // Journaled before the copy and settled with the activation's
             // save (`journaledCopies`): a quit between them leaves a copy
@@ -843,7 +862,7 @@ enum PluginUpdateService {
                 guard let value = plain[key] else { continue }
                 let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)
                 if !value.isEmpty {
-                    let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
+                    let previous = try readableSecret(key: key, skillID: skillID, component: skill.name, persistence: persistence)
                     let journaled = StaleSecret(key: key, skillID: skillID)
                     do {
                         try outbox?.journal([journaled])
