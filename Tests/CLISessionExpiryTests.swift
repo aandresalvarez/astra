@@ -24,7 +24,12 @@ struct CLISessionExpiryTests {
         for command in ["gcloud projects list", "cd /tmp && bq query 'select 1'", "env X=1 gsutil ls gs://b"] {
             let stop = CLISessionExpiryClassifier.stop(content: gcloudReauth, command: command)
             #expect(stop?.reason == "capability_session_expired", "missed: \(command)")
-            #expect(stop?.message.contains("gcloud auth login") == true)
+            if command.hasPrefix("cd ") {
+                #expect(stop?.repairContext?.offersAction == false)
+                #expect(stop?.repairContext?.repair.checkBinary == nil)
+            } else {
+                #expect(stop?.message.contains("gcloud auth login") == true)
+            }
         }
     }
 
@@ -258,6 +263,12 @@ struct CLISessionExpiryTests {
             ("CLOUDSDK_CONFIG=/a gcloud projects list && CLOUDSDK_CONFIG=/b gcloud projects list", gcloudExpired)
         ] {
             let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "\(command)")
+            if command.contains(" && ") {
+                #expect(stop.repairContext?.offersAction == false)
+                #expect(stop.repairContext?.repair.command == nil)
+                #expect(stop.repairContext?.repair.checkBinary == nil)
+                continue
+            }
             let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
             #expect(!family.offersSignIn, "\(command)")
             #expect(family.repair.command == nil)
@@ -665,6 +676,12 @@ struct CLISessionExpiryTests {
             "gcloud --log-http --flags-file f.yaml auth application-default print-access-token"
         ] {
             let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "missed: \(command)")
+            if command.hasPrefix("TOKEN=$(") {
+                #expect(stop.repairContext?.offersAction == false)
+                #expect(stop.repairContext?.repair.command == nil)
+                #expect(stop.repairContext?.repair.checkBinary == nil)
+                continue
+            }
             let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
             let repair = family.repair
             #expect(repair.command?.hasSuffix("gcloud auth application-default login") == true, "\(command)")
@@ -1045,6 +1062,12 @@ struct CLISessionExpiryTests {
             #expect(CLISessionExpiryClassifier.gitHubHost(in: command) == nil, "\(command)")
             // Not github.com, nor any one host: one could pass while another fails.
             let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "\(command)")
+            if command != "gh pr list -R team/app" {
+                #expect(stop.repairContext?.offersAction == false)
+                #expect(stop.repairContext?.repair.command == nil)
+                #expect(stop.repairContext?.repair.checkBinary == nil)
+                continue
+            }
             let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
             #expect(family == CLISessionExpiryClassifier.gitHub.onEveryHost(), "\(command)")
             #expect(family.repair.checkArguments == ["auth", "status", "--active"])

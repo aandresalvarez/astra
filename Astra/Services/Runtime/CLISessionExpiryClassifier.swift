@@ -268,7 +268,14 @@ enum CLISessionExpiryClassifier {
     /// when the line succeeded, the CLI must have run where its own exit
     /// status was masked (`masksExitStatus`).
     static func stop(content: String, command: String?, failed: Bool = true) -> Stop? {
-        guard let family = family(content: content, command: command, failed: failed) else { return nil }
+        guard let command, RuntimeRepairInvocationPolicy.admitsDiagnostics(command: command, content: content),
+              let family = family(content: content, command: command, failed: failed) else { return nil }
+        guard RuntimeRepairInvocationPolicy.permitsAutomaticRepair(command: command, commands: family.commands) else {
+            let message = "Authentication failed in a shell context ASTRA cannot safely identify. "
+                + "Review the command and its user, directory and credential store, then repair access manually before resuming."
+            return Stop(reason: TaskRunStopReason.capabilitySessionExpired.rawValue, message: message,
+                        repairContext: .manualReview(message: message))
+        }
         return Stop(
             reason: TaskRunStopReason.capabilitySessionExpired.rawValue, message: family.stopMessage,
             repairContext: RuntimeRepairContext(providerBinary: family.checkBinary, message: family.stopMessage,
