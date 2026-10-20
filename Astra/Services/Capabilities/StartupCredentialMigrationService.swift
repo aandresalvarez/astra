@@ -26,7 +26,7 @@ public enum StartupCredentialMigrationService {
                 AstraSecureKeychainStore.logPendingKeychainFailure(scope: "startup")
                 return
             }
-            migrateSkillSecrets(skills: skills)
+            migrateSkillSecrets(skills: skills, modelContext: modelContext)
             AstraSecureKeychainStore.logPendingKeychainFailure(scope: "startup")
         } catch { audit("fetch_failed", error: error) }
     }
@@ -51,11 +51,23 @@ public enum StartupCredentialMigrationService {
         return completed
     }
 
-    public static func migrateSkillSecrets(skills: [Skill]) {
+    @discardableResult
+    static func migrateSkillSecrets(skills: [Skill], modelContext: ModelContext,
+                                   persist: (ModelContext) throws -> Void = { try $0.save() },
+                                   rewriteMirror: ((Workspace) -> Bool)? = nil) -> Bool {
+        guard !modelContext.hasChanges else { audit("unsaved_changes"); return false }
+        var completed = true
         for skill in skills {
-            skill.migrateSecretsToKeychain()
-            KeychainService.migrateSkillFromLoginKeychain(skillID: skill.secretNamespaceID)
+            do {
+                KeychainService.migrateSkillFromLoginKeychain(skillID: skill.secretNamespaceID)
+                _ = try SkillCredentialMigration.migrate(skill, modelContext: modelContext,
+                    persist: persist, rewriteMirror: rewriteMirror)
+            } catch {
+                completed = false
+                audit("skill_migration_deferred", error: error)
+            }
         }
+        return completed
     }
 
     private static func audit(_ result: String, error: Error? = nil) {
