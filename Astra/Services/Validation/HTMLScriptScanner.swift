@@ -154,14 +154,14 @@ enum HTMLScriptScanner {
                         elements.append(ScriptElement(attributes: attributes, body: ""))
                         continue
                     }
-                    let close = inForeign
+                    // A script that never gets an end tag is never run.
+                    guard let close = inForeign
                         ? findEndTag("script", in: scalars, from: tag.end)
-                        : findScriptDataEnd(in: scalars, from: tag.end)
+                        : findScriptDataEnd(in: scalars, from: tag.end) else { break }
                     elements.append(ScriptElement(
                         attributes: attributes,
-                        body: string(scalars[tag.end..<(close?.start ?? scalars.count)])
+                        body: string(scalars[tag.end..<close.start])
                     ))
-                    guard let close else { break }
                     index = close.end
                 } else if !inForeign, name == "plaintext" {
                     // Everything after `<plaintext>` is text.

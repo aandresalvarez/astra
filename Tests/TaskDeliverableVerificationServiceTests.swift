@@ -661,6 +661,8 @@ struct TaskDeliverableVerificationServiceTests {
         // rescan the rest of the document (a 76 KB page took over a minute).
         let manyComments = String(repeating: "<!-- c --><p>x</p>\n", count: 20_000) + "<script>a()</script>"
         #expect(HTMLScriptScanner.inlineScripts(in: manyComments).map(\.body) == ["a()"])
+        // A script cut off before its end tag never runs, so it is not checked.
+        #expect(HTMLScriptScanner.inlineScripts(in: "<script>a()</script><script>bad(").map(\.body) == ["a()"])
         // Everything after `<plaintext>` is text.
         #expect(HTMLScriptScanner.inlineScripts(in: "<plaintext><script>bad(</script>").isEmpty)
         // A non-ASCII space is part of the tag name, so this is not a script.
