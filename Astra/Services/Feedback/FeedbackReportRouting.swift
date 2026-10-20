@@ -820,8 +820,8 @@ enum FeedbackTaskRuntimeEvidenceMapper {
             )
         }
         if [
-            "model_unavailable", "provider_configuration_invalid", "malformed_mcp_config",
-            "unsupported_output_format", "misconfigured",
+            "model_unavailable", "provider_configuration_invalid", "provider_home_access_denied",
+            "malformed_mcp_config", "unsupported_output_format", "misconfigured",
         ].contains(reason) {
             return Classification(
                 category: "misconfigured",

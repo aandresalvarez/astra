@@ -110,9 +110,6 @@ struct LogDiagnosticsHistory: Equatable {
 enum LogDiagnosticsService {
     static let maxIssueGroups = 12
     static let maxEvidenceLinesPerIssue = 14
-    static let maxMainLogLines = 5_000
-    static let maxTaskLogLines = 300
-    static let maxTaskLogFiles = 30
     static let maxArchiveLogFiles = 80
     static let maxArchiveCrashReports = 50
     private static let permissionWarningQuietThreshold: TimeInterval = 5 * 60
@@ -124,24 +121,8 @@ enum LogDiagnosticsService {
         logDirectory: URL = AppLogger.mainLogFile.deletingLastPathComponent(),
         includeRetainedAppLogs: Bool = false
     ) -> [LogEntry] {
-        var collected = inMemoryEntries
-        var seen = Set(inMemoryEntries.map(entrySignature))
-
-        for file in diagnosticLogFiles(in: logDirectory) {
-            let isAppLog = isAppLogFile(file)
-            if isAppLog, !inMemoryEntries.isEmpty, !includeRetainedAppLogs {
-                continue
-            }
-            let maxLines = file.lastPathComponent.hasPrefix("task-") ? maxTaskLogLines : maxMainLogLines
-            let lines = tailLines(from: file, maxLines: maxLines)
-            for entry in parsePersistedLogLines(lines, dateAnchor: modificationDate(file)) {
-                let signature = entrySignature(entry)
-                guard !seen.contains(signature) else { continue }
-                seen.insert(signature)
-                collected.append(entry)
-            }
-        }
-        return collected
+        LogDiagnosticsCollector.collect(inMemory: inMemoryEntries, directory: logDirectory,
+            includeAppLogs: includeRetainedAppLogs).entries
     }
 
     static func makeReport(
@@ -149,7 +130,8 @@ enum LogDiagnosticsService {
         generatedAt: Date = Date(),
         scope: LogDiagnosticsScope = .allRetained,
         history: LogDiagnosticsHistory = .empty,
-        crashReports: [CrashReportSummary] = []
+        crashReports: [CrashReportSummary] = [],
+        coverage: LogDiagnosticsCoverage? = nil
     ) -> LogDiagnosticsReport {
         let orderedEntries = analyzedEntries(
             entries,
@@ -172,7 +154,7 @@ enum LogDiagnosticsService {
         let visibleIssues = Array(issueGroups.prefix(maxIssueGroups))
         let notices = buildNotices(from: orderedEntries)
         let responsiveness = UIResponsivenessDiagnostics.makeReport(entries: orderedEntries)
-        let markdown = renderMarkdown(
+        var markdown = renderMarkdown(
             entries: orderedEntries,
             generatedAt: generatedAt,
             scope: scope,
@@ -184,6 +166,8 @@ enum LogDiagnosticsService {
             crashReports: crashReports,
             omittedIssueCount: max(0, issueGroups.count - visibleIssues.count)
         )
+
+        markdown += "\n\n" + (coverage?.markdown ?? "Evidence coverage: caller-provided entries; retained-log completeness was not measured.") + "\n"
 
         return LogDiagnosticsReport(
             generatedAt: generatedAt,
@@ -1223,7 +1207,8 @@ enum LogDiagnosticsService {
            entry.logLevel == .warning,
            let event = field("event", in: message),
            event != "task_selection_timeout",
-           UIResponsivenessDiagnostics.isRoutineMeasurement(event) {
+           UIResponsivenessDiagnostics.isRoutineMeasurement(event),
+           !DiagnosticPerformancePolicy.isActionable(entry) {
             let isInternalFilesShelfTiming = UIResponsivenessDiagnostics.isFilesShelfInternalTiming(event)
             return (
                 key: "performance.responsiveness.\(event)",
@@ -1422,6 +1407,13 @@ enum LogDiagnosticsService {
     )? {
         let message = entry.message
         let lower = message.lowercased()
+
+        if DiagnosticPerformancePolicy.isActionable(entry) {
+            let event = field("event", in: message) ?? "ui_stall"
+            return (key: "performance.actionable.\(event)", title: "Slow interaction needs investigation",
+                severity: .warning, signal: "event=\(event)",
+                analysis: "A user interaction or run finalization took at least three seconds, or the UI actor stalled for at least one second. This is actionable latency, not a resolved notice. Use the correlated phases to distinguish queue waits, file I/O, model work, and persistence.")
+        }
 
         if lower.contains(AuditEvent.runtimeFailureDiagnostic.rawValue) {
             let category = field("failure_category", in: message) ?? "unknown"
@@ -2421,7 +2413,7 @@ enum LogDiagnosticsService {
     }
 
     private static func localToolTestResultIsNonActionable(_ result: String) -> Bool {
-        ["success", "authenticated"].contains(result)
+        ["success", "authenticated", "authenticated_no_repository"].contains(result)
     }
 
     private static func taskIdentifier(for entry: LogEntry) -> String? {
@@ -2486,48 +2478,6 @@ enum LogDiagnosticsService {
         calendar: Calendar = .current
     ) -> [LogEntry] {
         PersistedLogEntryParser.parseLines(lines, dateAnchor: dateAnchor, calendar: calendar)
-    }
-
-    private static func diagnosticLogFiles(in directory: URL) -> [URL] {
-        guard let files = try? HostFileAccessBroker().contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-            intent: .astraManagedStorage(root: directory)
-        ) else { return [] }
-
-        let mainLogs = files
-            .filter { file in
-                let name = file.lastPathComponent
-                return name == "astra.log" || (name.hasPrefix("astra.") && name.hasSuffix(".log"))
-            }
-            .sorted { modificationDate($0) > modificationDate($1) }
-
-        let taskLogs = files
-            .filter { $0.lastPathComponent.hasPrefix("task-") && $0.pathExtension == "log" }
-            .sorted { modificationDate($0) > modificationDate($1) }
-            .prefix(maxTaskLogFiles)
-
-        return mainLogs + Array(taskLogs)
-    }
-
-    private static func isAppLogFile(_ file: URL) -> Bool {
-        let name = file.lastPathComponent
-        return name == "astra.log" || (name.hasPrefix("astra.") && name.hasSuffix(".log"))
-    }
-
-    private static func tailLines(from url: URL, maxLines: Int) -> [String] {
-        guard let content = try? HostFileAccessBroker().readString(
-            at: url,
-            encoding: .utf8,
-            intent: .astraManagedStorage(root: url.deletingLastPathComponent())
-        ) else { return [] }
-        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        guard lines.count > maxLines else { return lines }
-        return Array(lines.suffix(maxLines))
-    }
-
-    private static func entrySignature(_ entry: LogEntry) -> String {
-        "\(entry.level)|\(entry.category)|\(entry.taskID?.uuidString ?? "none")|\(entry.message)"
     }
 
     private static func uniqueDiagnosticEntries(_ entries: [LogEntry]) -> [LogEntry] {

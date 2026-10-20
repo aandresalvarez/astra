@@ -12,6 +12,7 @@ struct SidebarTaskIndex {
     private let searchText: String
     private let reviewTasksByWorkspaceID: [UUID: [AgentTask]]
     private let matchingReviewTasksByWorkspaceID: [UUID: [AgentTask]]
+    private let taskCountByWorkspaceID: [UUID: Int]
     private let anyTaskWorkspaceIDs: Set<UUID>
     // Deliberately unfiltered by search: the collapsed-drawer running signal
     // must not disappear just because a live query doesn't match the task.
@@ -47,6 +48,7 @@ struct SidebarTaskIndex {
         var reviewGroups: [UUID: [AgentTask]] = [:]
         var matchingGroups: [UUID: [AgentTask]] = [:]
         var workspaceIDs = Set<UUID>()
+        var taskCounts: [UUID: Int] = [:]
         var runningCounts: [UUID: Int] = [:]
         var waitingCounts: [UUID: Int] = [:]
         var pinned: [AgentTask] = []
@@ -84,6 +86,7 @@ struct SidebarTaskIndex {
 
             guard let workspaceID = task.workspace?.id else { continue }
             workspaceIDs.insert(workspaceID)
+            taskCounts[workspaceID, default: 0] += 1
             // A durable running request (activity.request) means a follow-up
             // the user explicitly sent is executing right now, so it counts
             // even when the task itself is still marked done — otherwise the
@@ -133,6 +136,7 @@ struct SidebarTaskIndex {
         reviewTasksByWorkspaceID = reviewGroups
         matchingReviewTasksByWorkspaceID = matchingGroups
         anyTaskWorkspaceIDs = workspaceIDs
+        taskCountByWorkspaceID = taskCounts
         runningTaskCountByWorkspaceID = runningCounts
         waitingTaskCountByWorkspaceID = waitingCounts
         pinnedTasks = Self.sortedByNewest(pinned) { $0.updatedAt }
@@ -195,6 +199,10 @@ struct SidebarTaskIndex {
 
     func hasAnyTask(in workspace: Workspace) -> Bool {
         anyTaskWorkspaceIDs.contains(workspace.id)
+    }
+
+    func taskCount(in workspace: Workspace) -> Int {
+        taskCountByWorkspaceID[workspace.id] ?? 0
     }
 
     func runningTaskCount(in workspace: Workspace) -> Int {

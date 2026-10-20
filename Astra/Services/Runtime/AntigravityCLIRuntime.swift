@@ -460,6 +460,7 @@ enum AntigravityCLIRuntime {
         resumeSessionID: String? = nil,
         permissionArguments: [String],
         structuredOutputAllowed: Bool = true,
+        model: String? = nil,
         defaults: UserDefaults = .standard
     ) -> AntigravityCLICommandPlan {
         // Plain text gives ASTRA prose and nothing else: no turn boundary, no
@@ -504,6 +505,9 @@ enum AntigravityCLIRuntime {
             args += ["--add-dir", path]
         }
         args += permissionArguments
+        if let model = model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
+            args += ["--model", model]
+        }
 
         var extraVars: [String: String] = [
             "NO_COLOR": "1",

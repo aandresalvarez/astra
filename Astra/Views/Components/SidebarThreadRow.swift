@@ -380,9 +380,4 @@ struct SidebarThreadRow: View {
             }
         }
     }
-
-    private func formatCost(_ cost: Double) -> String {
-        if cost < 0.01 { return "<$0.01" }
-        return String(format: "$%.2f", cost)
-    }
 }

@@ -212,7 +212,10 @@ enum NewTaskWorktreeComposerFlow {
             modelContext: modelContext,
             resourceQueue: resourceQueue,
             cleanupStore: cleanupStore,
-            delete: { delete(draft) }
+            delete: {
+                SwiftDataDeletionPreparation.prepare(draft)
+                delete(draft)
+            }
         )
     }
 
@@ -240,7 +243,10 @@ enum NewTaskWorktreeComposerFlow {
             modelContext: modelContext,
             resourceQueue: resourceQueue,
             cleanupStore: cleanupStore,
-            delete: { modelContext.delete(draft) }
+            delete: {
+                SwiftDataDeletionPreparation.prepare(draft)
+                modelContext.delete(draft)
+            }
         )
     }
 

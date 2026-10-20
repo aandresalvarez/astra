@@ -73,10 +73,12 @@ public struct HostFileAccessBroker {
 
     public func readData(at url: URL, intent: HostFileAccessIntent) throws -> Data {
         try requireAccess(to: url, intent: intent)
-        guard let data = fileManager.contents(atPath: url.path) else {
-            throw CocoaError(.fileReadNoSuchFile)
-        }
-        return data
+        if let data = fileManager.contents(atPath: url.path) { return data }
+        // contents(atPath:) loses its error. Query the same injected filesystem
+        // to distinguish a missing entry from a denied read without bypassing it.
+        _ = try fileManager.attributesOfItem(atPath: url.path)
+        let code: CocoaError.Code = fileManager.isReadableFile(atPath: url.path) ? .fileReadUnknown : .fileReadNoPermission
+        throw CocoaError(code, userInfo: [NSFilePathErrorKey: url.path])
     }
 
     public func readData(

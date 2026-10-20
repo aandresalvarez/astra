@@ -32,11 +32,13 @@ struct UIStressFilesShelfTests {
         let shelfOpenViewport: CGFloat = 650
         let closedMode = WorkspaceRightPanelLayoutMode.resolve(
             panel: nil,
-            usesInspectorOverlay: false
+            usesInspectorOverlay: false,
+            detailPresentation: .existingTask
         )
         let openMode = WorkspaceRightPanelLayoutMode.resolve(
             panel: .canvas(.markdown),
-            usesInspectorOverlay: false
+            usesInspectorOverlay: false,
+            detailPresentation: .existingTask
         )
 
         for _ in 0..<10_000 {

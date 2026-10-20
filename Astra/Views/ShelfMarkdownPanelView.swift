@@ -4,38 +4,6 @@ import ASTRAModels
 import ASTRAPersistence
 import ASTRACore
 
-enum ShelfFileNavigatorContentPresentation: Equatable {
-    case noWorkspacePaths
-    case scanning
-    case emptyScope
-    case populatedList
-
-    static func resolve(
-        hasConfiguredRoots: Bool,
-        hasVisibleFileRoots: Bool,
-        isSearchingFiles: Bool,
-        isScanningFiles: Bool
-    ) -> ShelfFileNavigatorContentPresentation {
-        if !hasConfiguredRoots {
-            return .noWorkspacePaths
-        }
-        if isScanningFiles && !hasVisibleFileRoots {
-            return .scanning
-        }
-        if !hasVisibleFileRoots && !isSearchingFiles {
-            return .emptyScope
-        }
-        return .populatedList
-    }
-
-    var usesListSurface: Bool {
-        switch self {
-        case .noWorkspacePaths, .scanning, .emptyScope, .populatedList:
-            true
-        }
-    }
-}
-
 enum ShelfTabStripPolicy {
     /// Every open file gets a tab with its own close button - even a lone
     /// file - so the toolbar's corner X keeps a single meaning (dismiss the
@@ -94,6 +62,7 @@ struct ShelfMarkdownPanelView: View {
     @AppStorage(AppStorageKeys.markdownShelfFileNavigatorPinned) private var isFileNavigatorPinned = false
     @State private var fileNavigatorOrganization = ShelfFileNavigatorOrganization.stored
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var historyAttachments: (taskID: UUID, paths: [String])?
     @State private var viewMode: ShelfTextViewMode = .preview
     @State private var isEditing = false
     @State private var wrapLines = true
@@ -149,6 +118,9 @@ struct ShelfMarkdownPanelView: View {
             if let responsivenessScope {
                 FilesShelfResponsivenessTelemetry.chromeReady(scope: responsivenessScope)
             }
+        }
+        .shelfAttachmentHistory(task: task) { taskID, paths in
+            historyAttachments = taskID.map { ($0, paths) }
         }
         .task(id: fileSearchText) {
             // Apply clears immediately; debounce non-empty queries so typing
@@ -968,6 +940,7 @@ struct ShelfMarkdownPanelView: View {
             taskPart = [
                 task.id.uuidString,
                 task.inputs.joined(separator: "|"),
+                currentHistoryAttachmentPaths.joined(separator: "|"),
                 TaskWorkspaceAccess(task: task).taskFolder
             ].joined(separator: "|")
         } else {
@@ -1077,6 +1050,7 @@ struct ShelfMarkdownPanelView: View {
         expandedRootIDs = []
         fileIndex.refresh(
             allRoots: roots,
+            additionalInputPaths: currentHistoryAttachmentPaths,
             scope: effectiveFileNavigatorScope,
             includeHidden: showHiddenWorkspacePaths,
             force: force,
@@ -1084,6 +1058,10 @@ struct ShelfMarkdownPanelView: View {
             taskID: task?.id,
             responsivenessScope: responsivenessScope
         )
+    }
+
+    private var currentHistoryAttachmentPaths: [String] {
+        historyAttachments?.taskID == task?.id ? (historyAttachments?.paths ?? []) : []
     }
 
     private func normalizeFileNavigatorScope() {

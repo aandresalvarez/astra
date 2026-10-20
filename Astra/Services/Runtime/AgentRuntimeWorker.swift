@@ -8,6 +8,7 @@ import ASTRAPersistence
 final class AgentRuntimeWorker {
     private(set) var isRunning = false
     private var cancellationRequested = false
+    private var capabilityPreparationTask: Task<CopilotCLICapabilities, Error>?
     private var runtimeConfiguration = AgentRuntimeConfiguration()
     private let processRunner: any AgentRuntimeProcessRunning
     private let providerSettingsSnapshotProvider: () -> ProviderSettingsSnapshot
@@ -347,6 +348,20 @@ final class AgentRuntimeWorker {
         }
 
         await CodexMCPPolicyService.warmBeforeLaunch(configuration: runtimeConfiguration)
+        guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
+            settlePrelaunchCancellation(task: task, modelContext: modelContext)
+            return
+        }
+        if selectedRuntime == .copilotCLI {
+            guard let capabilities = await prepareCopilotCapabilities(
+                executablePath: launchSettings.executablePath, task: task, modelContext: modelContext
+            ) else { return }
+            executionPolicy.copilotCapabilityResolution = capabilities
+        }
+        guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
+            settlePrelaunchCancellation(task: task, modelContext: modelContext)
+            return
+        }
         let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
             task: launchTask,
             requestedRuntime: selectedRuntime,
@@ -389,7 +404,8 @@ final class AgentRuntimeWorker {
         // than the one that was asked for.
         let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(
             for: selectedRuntime,
-            executablePath: launchSettings.executablePath
+            executablePath: launchSettings.executablePath,
+            copilotCapabilities: executionPolicy.copilotCapabilities
         )
         executionPolicy = executionPolicy.withRuntimeCapabilityProfile(runtimeCapabilityProfile)
 
@@ -636,6 +652,30 @@ final class AgentRuntimeWorker {
             workspaceAccess: executionWorkspaceAccess,
             approvedSandboxReadablePaths: approvedSandboxPaths)
         run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.runSnapshot)
+        let inputProjection = TaskInputManifest(inputs: executionTask.inputs)
+        let inputFolder = TaskWorkspaceAccess(task: executionTask).taskFolder
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try inputProjection.persist(taskFolder: inputFolder)
+            }.value
+        } catch {
+            run.status = .failed
+            run.completedAt = Date()
+            run.stopReason = "input_manifest_failed"
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error,
+                payload: "Could not prepare the selected input index: \(error.localizedDescription)", run: run))
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext,
+                taskID: task.id, auditFields: ["operation": "input_manifest_failed"])
+            return
+        }
+        guard !cancellationRequested, task.status != .cancelled else {
+            if run.status == .running || task.status != .cancelled {
+                TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            }
+            return
+        }
         let basePrompt = (auditPhase == .resume && approvedPlan == nil
             ? AgentPromptBuilder.buildFreshFollowUpPrompt(message: sessionMessage ?? startPayload,
                 task: executionTask, executionPolicy: executionPolicy)
@@ -695,7 +735,10 @@ final class AgentRuntimeWorker {
             repositoryStatus: githubRepositoryStatus
         )
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
-        let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
+        let providerCapabilities = selectedRuntime == .copilotCLI
+            ? executionPolicy.copilotCapabilities.map { AgentRuntimePolicyCapabilities(copilotCLI: $0) }
+                ?? policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
+            : policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
         let runPermissionPolicy = launchPermissionPolicy
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
@@ -1090,8 +1133,41 @@ final class AgentRuntimeWorker {
                 exitCode: result.exitCode
             )
         }
+        var startupEvidence: String?
+        if selectedRuntime == .copilotCLI, result.exitCode != 0, !cancellationRequested,
+           !result.timedOut, streamSnapshot?.rawLineCount == 0,
+           (result.error ?? "").isEmpty, (result.providerFailureOutput ?? "").isEmpty {
+            let directory = CopilotStartupEvidence.directory(
+                taskFolder: TaskWorkspaceAccess(task: executionTask).taskFolder, runID: run.id)
+            startupEvidence = await Task.detached(priority: .utility) {
+                CopilotStartupEvidence.read(directory: directory, since: startTime)
+            }.value
+        }
         let processSucceeded = result.exitCode == 0 || result.terminatedAfterTerminalProgress
-        let failureDiagnostic = (processSucceeded || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
+        // Only Copilot's silent exit 1 looks at its home, with the launch's own
+        // environment (a skill can point COPILOT_PROVIDERS_CONFIG elsewhere),
+        // resolved only once that failure has happened.
+        // Inside a container Copilot used the container's home, not the host's.
+        let copilotHomeReport = await CopilotPostFailureHomeInspection.inspect(
+            runtime: selectedRuntime, result: result, runOutput: run.output,
+            stream: streamSnapshot, startupEvidence: startupEvidence,
+            cancelled: cancellationRequested || task.status == .cancelled,
+            providerRunsInsideContainer: runEnvironment.runSnapshot.providerRunsInsideContainer
+        ) {
+            let environment = baseLaunchEnvironment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+                for: executionTask,
+                capabilityScope: capabilityResolutionSnapshot.providerLaunch,
+                contextText: providerLaunchContextText,
+                executionPolicy: executionPolicy,
+                runtimeRequirements: appliedRuntime.requirements
+            )) { _, scoped in scoped }
+            let sessionID = nativeContinuationSessionID
+            let directory = executionPath
+            return await Task.detached(priority: .utility) {
+                CopilotHomeAccessCheck.inspect(resumeSessionID: sessionID, environment: environment, workingDirectory: directory)
+            }.value
+        }
+        let failureDiagnostic = (processSucceeded || result.runtimeStopped || result.repetitionKilled || cancellationRequested || task.status == .cancelled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: selectedRuntime,
             model: task.model,
             exitCode: result.exitCode,
@@ -1104,7 +1180,8 @@ final class AgentRuntimeWorker {
             stream: streamSnapshot,
             timedOut: result.timedOut,
             budgetExceeded: result.budgetExceeded,
-            maxTurnsExceeded: result.maxTurnsExceeded
+            maxTurnsExceeded: result.maxTurnsExceeded, startupEvidence: startupEvidence,
+            copilotHomeAccess: copilotHomeReport.map { report in { report } }
         )
         if let failureDiagnostic {
             AppLogger.audit(
@@ -1179,8 +1256,50 @@ final class AgentRuntimeWorker {
     @MainActor
     func cancel() {
         cancellationRequested = true
+        capabilityPreparationTask?.cancel()
         processRunner.cancel()
     }
+    @MainActor
+    private func settlePrelaunchCancellation(task: AgentTask, modelContext: ModelContext) {
+        if task.status != .cancelled {
+            TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        }
+    }
+
+    @MainActor
+    private func prepareCopilotCapabilities(
+        executablePath: String, task: AgentTask, modelContext: ModelContext
+    ) async -> CopilotCapabilityResolution? {
+        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
+            return .unavailable("Copilot executable is missing or is not executable.")
+        }
+        let preparation = Task {
+            try await CopilotCLIRuntime.requiredCapabilities(
+                executablePath: executablePath, timeout: min(timeoutSeconds, 60))
+        }
+        capabilityPreparationTask = preparation
+        defer { capabilityPreparationTask = nil }
+        do {
+            let capabilities = try await withTaskCancellationHandler {
+                try await preparation.value
+            } onCancel: { preparation.cancel() }
+            guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
+                settlePrelaunchCancellation(task: task, modelContext: modelContext)
+                return nil
+            }
+            return .answered(capabilities)
+        } catch {
+            if cancellationRequested || Task.isCancelled || error is CancellationError || task.status == .cancelled {
+                settlePrelaunchCancellation(task: task, modelContext: modelContext)
+                return nil
+            }
+            // Admission owns durable launch blocks and their TaskRun history,
+            // including a binary removed after a cached readiness verdict.
+            return .unavailable(error.localizedDescription)
+        }
+    }
+
     // MARK: - Private
 
     private func runtimeReadinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {
@@ -1587,7 +1706,9 @@ final class AgentRuntimeWorker {
     /// invisible from the outside until someone notices a run that never moves.
     static func isTerminalRuntimeStop(_ reason: String) -> Bool {
         guard let stopReason = TaskRunStopReason(rawValue: reason) else { return false }
-        if stopReason.isDockerRuntimeBlocked {
+        // A launch refused before Copilot started (its home is unusable)
+        // fails the task, as the readiness preflight's own refusal does.
+        if stopReason.isDockerRuntimeBlocked || reason == RuntimeHomeAccessService.launchStopReason {
             return true
         }
         return [
