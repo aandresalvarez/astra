@@ -209,6 +209,14 @@ struct PluginCredentialCopyOnWriteTests {
         #expect(current.environmentVariables["API_TOKEN"] == "accepted-add-rename-token")
         #expect(current.secretNamespaceID != old.secretNamespaceID)
         #expect(GenerationSecrets.value(in: old.secretNamespaceID) == "accepted-add-rename-token")
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: updated.id, in: env.workspace))
+        let retiredPrivateCopy = PluginRuntimeProjection.credentialID(of: activation, componentID: env.component)
+        try #require(GenerationSecrets.value(in: retiredPrivateCopy) == "accepted-add-rename-token")
+        #expect(try env.outbox.pending().contains(retiredPrivateCopy))
+        PluginSecretCleanupOutbox.resumePending(modelContext: ModelContext(env.context.container),
+            outbox: env.outbox, secrets: GenerationSecrets.self)
+        #expect(GenerationSecrets.value(in: retiredPrivateCopy) == nil)
+        #expect(current.environmentVariables["API_TOKEN"] == "accepted-add-rename-token")
     }
 
     @Test("A failed Update retains cleanup for a renamed credential when compensation is refused")

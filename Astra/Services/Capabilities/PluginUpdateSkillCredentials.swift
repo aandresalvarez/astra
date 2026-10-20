@@ -40,6 +40,9 @@ final class PluginUpdateSkillCredentials {
     }
 
     func owns(_ namespace: UUID) -> Bool { prepared.values.contains { $0.namespaces.contains(namespace) } }
-    func completed() { prepared.values.forEach { $0.completed() } }
+    func completed(activations: [PluginActivation]) {
+        let live = Set(activations.filter { !$0.isDeleted }.flatMap { PluginRuntimeProjection.secretNamespaces(of: $0, package: nil) })
+        prepared.values.forEach { $0.completed(keeping: live) }
+    }
     func discard() { prepared.values.forEach { $0.discard() } }
 }

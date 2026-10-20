@@ -90,7 +90,7 @@ enum PluginOperations {
         do {
             try save(workspace, modelContext: modelContext, restoring: snapshot,
                 pluginIDs: [pluginID], rewriteMirror: rewriteMirror, persist: persist)
-            prepared?.completed()
+            prepared?.completed(keeping: Set(PluginRuntimeProjection.secretNamespaces(of: activation, package: nil)))
         } catch {
             // A saved or uncertain cutover must retain both generations and
             // their recovery intents. Only a proved noncommit can discard.

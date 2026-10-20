@@ -462,7 +462,7 @@ struct CapabilityInstaller {
             case .indeterminate(let id, _): throw PluginOperationProblem.commitUncertain(id)
             default: break
             }
-            stagedGeneration?.completed()
+            stagedGeneration?.completed(keeping: Set(PluginRuntimeProjection.secretNamespaces(of: activation, package: nil)))
             stagedAccountCredentials.forEach { $0.completed() }
             // Compatibility notification for callers observing adopted rows.
             // Recovery already wrote every affected mirror from saved state.

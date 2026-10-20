@@ -352,7 +352,7 @@ enum PluginUpdateService {
                 CapabilityCatalogPersistenceEvents.post(.global)
                 throw PluginOperationProblem.savedRecoveryPending(receipt.id)
             }
-            credentialPreparation.completed()
+            credentialPreparation.completed(activations: activations)
         } catch {
             guard !PluginOperationProblem.preventsRollback(error) else { throw error }
             modelContext.rollback()
