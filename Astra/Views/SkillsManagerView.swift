@@ -25,6 +25,7 @@ struct SkillEditorView: View {
     @State private var showEnvValues = false
     @State private var isAddingSecret = false
     @State private var secretSaveErrorMessage: String?
+    @State private var secretRecoveryID: UUID?
     @State private var pendingDestruction: PendingSkillDestruction?
     @FocusState private var isNameFocused: Bool
 
@@ -612,7 +613,7 @@ struct SkillEditorView: View {
                                         Spacer()
 
                                         Button {
-                                            skill.removeEnvironmentEntry(at: origIdx)
+                                            removeSecret(key)
                                         } label: {
                                             Image(systemName: "trash")
                                                 .font(Stanford.ui(12))
@@ -705,11 +706,6 @@ struct SkillEditorView: View {
                                 .buttonStyle(.plain)
                                 .foregroundStyle(Stanford.coolGrey)
                             }
-                            if let secretSaveErrorMessage {
-                                Text(secretSaveErrorMessage)
-                                    .font(Stanford.caption(11))
-                                    .foregroundStyle(.red)
-                            }
                         } else {
                             Button {
                                 isAddingSecret = true
@@ -719,6 +715,14 @@ struct SkillEditorView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
+                        }
+                        if let secretSaveErrorMessage {
+                            Text(secretSaveErrorMessage)
+                                .font(Stanford.caption(11))
+                                .foregroundStyle(.red)
+                        }
+                        if let secretRecoveryID {
+                            Button("Finish recovery") { finishSecretRecovery(secretRecoveryID) }
                         }
                     }
                     .padding(.vertical, 4)
@@ -789,11 +793,40 @@ struct SkillEditorView: View {
     private func addEnvVar() {
         let key = newEnvKey.trimmingCharacters(in: .whitespaces).uppercased()
         guard !key.isEmpty, !newEnvValue.isEmpty else { return }
-        guard skill.upsertEnvironmentEntry(key: key, value: newEnvValue, allowUserInteraction: true) else {
-            secretSaveErrorMessage = "Could not save \"\(key)\" to Keychain. Allow the permission prompt and try again."
-            return
+        do {
+            WorkspacePersistenceCoordinator.flushPendingExport(workspace: workspace ?? skill.workspace, modelContext: modelContext)
+            try SkillCredentialEditor.save(newEnvValue, forKey: key, on: skill, modelContext: modelContext)
+            secretRecoveryID = nil
+            cancelSecretEntry()
+        } catch { showSecretError(error) }
+    }
+
+    private func removeSecret(_ key: String) {
+        do {
+            WorkspacePersistenceCoordinator.flushPendingExport(workspace: workspace ?? skill.workspace, modelContext: modelContext)
+            try SkillCredentialEditor.remove(key, from: skill, modelContext: modelContext)
+            secretSaveErrorMessage = nil
+            secretRecoveryID = nil
+        } catch { showSecretError(error) }
+    }
+
+    private func finishSecretRecovery(_ id: UUID) {
+        do {
+            try SkillCredentialEditor.recover(id, modelContext: modelContext)
+            secretRecoveryID = nil
+            cancelSecretEntry()
+        } catch {
+            showSecretError(error)
+            secretRecoveryID = id
         }
-        cancelSecretEntry()
+    }
+
+    private func showSecretError(_ error: Error) {
+        secretRecoveryID = nil
+        if let problem = error as? PluginOperationProblem {
+            if case .savedRecoveryPending(let id) = problem { secretRecoveryID = id }
+            secretSaveErrorMessage = problem.localizedDescription
+        } else { secretSaveErrorMessage = error.localizedDescription }
     }
 
     private func addConfigItem(at envIdx: Int) {

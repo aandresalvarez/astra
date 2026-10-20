@@ -104,5 +104,59 @@ struct PluginAccountEditorSourceCoordinationTests {
             #expect(try journal.pending().isEmpty)
         }
     }
+    @Test("An unrelated source mutation excludes authored skill secret edits", arguments: [false, true])
+    func sourceMutationExcludesSkillEdits(removing: Bool) throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try PluginAddCommitTests.Fixture(installed: false)
+            defer { env.disk.removeFiles() }
+            let skill = Skill(name: "Source-locked skill", environmentVariables: ["API_TOKEN": "accepted-skill-source-token"])
+            skill.workspace = env.workspace
+            env.context.insert(skill)
+            try env.context.save()
+            let namespace = skill.secretNamespaceID
+            try PluginSourceStore().exclusively(pluginID: "unrelated-source") {
+                #expect(throws: PluginSourceStoreError.libraryBusy) {
+                    if removing { try SkillCredentialEditor.remove("API_TOKEN", from: skill, modelContext: env.context) }
+                    else { try SkillCredentialEditor.save("must-not-stage", forKey: "API_TOKEN", on: skill, modelContext: env.context) }
+                }
+            }
+            #expect(skill.secretNamespaceID == namespace)
+            #expect(skill.environmentVariables["API_TOKEN"] == "accepted-skill-source-token")
+            let journal = try #require(try SkillCredentialGenerationJournal(modelContext: env.context))
+            #expect(try journal.pending().isEmpty)
+        }
+    }
+
+    @Test("Finishing a skill edit's recovery respects the source lock and remains retryable")
+    func skillRecoveryRespectsSourceMutationLock() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try PluginAddCommitTests.Fixture(installed: false)
+            defer { env.disk.removeFiles() }
+            let skill = Skill(name: "Skill recovery", environmentVariables: ["API_TOKEN": "accepted-skill-source-token"])
+            skill.workspace = env.workspace
+            env.context.insert(skill)
+            try env.context.save()
+            var operationID: UUID?
+            do {
+                try SkillCredentialEditor.save("pending-skill-source-token", forKey: "API_TOKEN", on: skill,
+                    modelContext: env.context, rewriteMirror: { _ in false })
+                Issue.record("Saved change must owe recovery")
+            } catch let problem as PluginOperationProblem { operationID = problem.operationID }
+            let id = try #require(operationID)
+            let namespace = skill.secretNamespaceID
+            try PluginSourceStore().exclusively(pluginID: "unrelated-source") {
+                #expect(throws: PluginSourceStoreError.libraryBusy) {
+                    try SkillCredentialEditor.recover(id, modelContext: env.context)
+                }
+                let pending = try PluginOperationCommit.read(id, container: env.context.container)
+                #expect(pending?.completedAt == nil)
+            }
+            try SkillCredentialEditor.recover(id, modelContext: env.context)
+            #expect(try PluginOperationCommit.read(id, container: env.context.container)?.completedAt != nil)
+            #expect(skill.secretNamespaceID == namespace)
+            #expect(skill.environmentVariables["API_TOKEN"] == "pending-skill-source-token")
+        }
+    }
+
 
 }
