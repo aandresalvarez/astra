@@ -298,20 +298,17 @@ struct CapabilityCatalogActionService {
     func disable(
         _ package: PluginPackage,
         workspace: Workspace,
-        capabilities: WorkspaceCapabilities,
         modelContext: ModelContext,
         traceID: String = AuditTrace.make("capability-disable")
     ) -> CapabilityActivationDisabler.Result {
         guard PluginsSurfacePresentation.offersTurnOff(package) else {
-            return CapabilityActivationDisabler.Result(packageID: package.id, persisted: false)
+            return CapabilityActivationDisabler.Result(packageID: package.id, persisted: false, problem: .cannotTurnOff)
         }
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: capabilities,
             modelContext: modelContext,
-            keepingWorkspaceRows: CapabilityInstaller.syntheticSkillRowID(of: package) != nil
-        )
+            library: library)
         if result.persisted {
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
                 "source": "plugins_turn_off",
@@ -330,6 +327,18 @@ struct CapabilityCatalogActionService {
         }
         CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return result
+    }
+
+    /// Read-only presentation of saved/uncertain state receipts. Reopening
+    /// Plugins must rediscover recovery from its owner, not a vanished row.
+    func pendingStateRecoveries(modelContext: ModelContext) throws -> [PluginStateRecovery.Item] {
+        try PluginStateRecovery.pending(modelContext: modelContext)
+    }
+
+    func finishStateRecovery(_ id: UUID, modelContext: ModelContext) throws {
+        let receipt = try PluginStateRecovery.resume(id, modelContext: modelContext)
+        if receipt.workspaceIDs.isEmpty { CapabilityCatalogPersistenceEvents.post(.global) }
+        else { for workspaceID in receipt.workspaceIDs { CapabilityCatalogPersistenceEvents.post(.workspace(workspaceID)) } }
     }
 
     /// The row's Update: brings every workspace's activations of `package`

@@ -152,10 +152,8 @@ struct CapabilityDisableSaveFailureTests {
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: capabilities,
             modelContext: context,
-            availablePackages: [package],
-            persist: failingPersist
+            persist: { _ in throw NSError(domain: "synthetic.disable.save", code: 1) }
         )
 
         // Empty result and no committed deletions, flagged as rolled back so
@@ -163,12 +161,14 @@ struct CapabilityDisableSaveFailureTests {
         #expect(result.removedWorkspaceConnectorIDs.isEmpty)
         #expect(result.removedWorkspaceSkillIDs.isEmpty)
         #expect(!result.persisted)
+        #expect(result.problem == .saveFailed)
         #expect(try context.fetch(FetchDescriptor<Connector>()).count == connectorsBefore)
         let view = try String(
             contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
                 .appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift"), encoding: .utf8
         )
-        #expect(view.contains("if !result.persisted {"))
+        #expect(view.contains("if let problem = result.problem, problem.operationID == nil"))
+        #expect(view.contains("errorMessage = problem.localizedDescription"))
     }
 }
 

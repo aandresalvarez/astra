@@ -204,10 +204,7 @@ struct CapabilityDisableSharedClaimsTests {
         CapabilityActivationDisabler().disable(
             alpha,
             in: workspace,
-            capabilities: WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages()),
-            modelContext: context,
-            availablePackages: [alpha, beta]
-        )
+            modelContext: context)
 
         #expect(!workspace.enabledCapabilityIDs.contains("alpha-pkg"))
         #expect(workspace.enabledCapabilityIDs.contains("beta-pkg"))
@@ -216,10 +213,7 @@ struct CapabilityDisableSharedClaimsTests {
         CapabilityActivationDisabler().disable(
             beta,
             in: workspace,
-            capabilities: WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages()),
-            modelContext: context,
-            availablePackages: [alpha, beta]
-        )
+            modelContext: context)
         #expect(WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages()).activeSkills.isEmpty)
         #expect(workspace.installedPluginIDs.sorted() == ["alpha-pkg", "beta-pkg"])
     }

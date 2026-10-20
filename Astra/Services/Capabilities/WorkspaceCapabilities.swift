@@ -63,7 +63,10 @@ struct WorkspaceCapabilities {
     /// one on), and that must not keep it on after its plugin is off.
     var activeSkills: [Skill] {
         let overriding = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
-        let ambient = (workspaceSkills + enabledGlobalSkills).filter { !overriding.contains($0.id) }
+        let ambient = (workspaceSkills + enabledGlobalSkills).filter {
+            !overriding.contains($0.id) && WorkspaceCapabilityActivation.permitsPendingLegacyResource($0.originPackageID, id: $0.id,
+                shared: $0.isGlobal, kind: .skill, in: workspace)
+        }
         return uniqueSkills(ambient + enabledPackageSkills)
     }
 
@@ -134,7 +137,10 @@ struct WorkspaceCapabilities {
         if connector.accountBindings.contains(where: { !$0.isDeleted && $0.activation.map { !$0.isDeleted } == true }) {
             return true
         }
-        return connector.workspace.map { WorkspaceCapabilityActivation.activation(for: pluginID, in: $0) != nil } ?? false
+        return connector.workspace.map {
+            WorkspaceCapabilityActivation.activation(for: pluginID, in: $0) != nil
+                || WorkspaceCapabilityActivation.isPluginOriginDisabled(pluginID, in: $0)
+        } ?? false
     }
 
     /// Connector rows bound as accounts to any of this workspace's
@@ -163,7 +169,10 @@ struct WorkspaceCapabilities {
     var activeTools: [LocalTool] {
         let overriding = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
         let ambient = (workspaceTools + activeSkills.flatMap(\.localTools) + enabledGlobalTools)
-            .filter { !overriding.contains($0.id) }
+            .filter {
+                !overriding.contains($0.id) && WorkspaceCapabilityActivation.permitsPendingLegacyResource($0.originPackageID, id: $0.id,
+                    shared: $0.isGlobal, kind: .tool, in: workspace)
+            }
         return uniqueTools(ambient + projection.tools)
     }
 

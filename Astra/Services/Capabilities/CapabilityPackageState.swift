@@ -24,7 +24,8 @@ struct CapabilityPackageState {
     var secretStore: SecretStore = KeychainSecretStore()
 
     var linkedSkills: [Skill] {
-        uniqueSkills(directlyLinkedSkills + directlyLinkedConnectors.compactMap(\.skill) + directlyLinkedTools.compactMap(\.skill))
+        if isProjectedResourceCapability { return directlyLinkedSkills }
+        return uniqueSkills(directlyLinkedSkills + directlyLinkedConnectors.compactMap(\.skill) + directlyLinkedTools.compactMap(\.skill))
     }
 
     var linkedConnectors: [Connector] {
@@ -80,8 +81,10 @@ struct CapabilityPackageState {
         if let activation {
             return activation.isEnabled
         }
-        if workspace.enabledCapabilityIDs.contains(package.id) {
-            return true
+        // Explicit plugin enablement comes only from its activation or the
+        // pending legacy membership. An authored namesake cannot turn it on.
+        if !isProjectedResourceCapability {
+            return WorkspaceCapabilityActivation.enabledPluginIDs(of: workspace).contains(package.id)
         }
 
         if isProjectedResourceCapability {
@@ -237,6 +240,10 @@ struct CapabilityPackageState {
     private var directlyLinkedSkills: [Skill] {
         if activation != nil { return projection.skills }
         let candidates = capabilities.workspaceSkills + capabilities.availableGlobalSkills
+        if isProjectedResourceCapability {
+            guard let rowID = CapabilityInstaller.syntheticSkillRowID(of: package) else { return [] }
+            return candidates.filter { $0.id == rowID }
+        }
         let originMatches = candidates.filter {
             CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
         }
@@ -254,6 +261,7 @@ struct CapabilityPackageState {
     }
 
     private var directlyLinkedConnectors: [Connector] {
+        if isProjectedResourceCapability { return [] }
         if let activation {
             return uniqueConnectors(activation.bindings.filter { !$0.isDeleted }.compactMap(\.account))
         }
@@ -273,6 +281,7 @@ struct CapabilityPackageState {
     }
 
     private var directlyLinkedTools: [LocalTool] {
+        if isProjectedResourceCapability { return [] }
         if activation != nil { return projection.tools }
         let candidates = capabilities.workspaceTools + capabilities.availableGlobalTools
         let originMatches = candidates.filter {

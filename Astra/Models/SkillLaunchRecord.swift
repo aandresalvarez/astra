@@ -80,14 +80,18 @@ public struct SkillLaunchRecord: Codable, Equatable, Sendable {
         apply(to: skill)
         return skill
     }
-    /// Only actual authored selections grant restoration authority. A cleared
-    /// origin on a plugin override does not make it an independent selection.
+    /// Actual selections grant restoration authority: authored rows and rows
+    /// still owned by explicit pending legacy enablement. Provenance alone
+    /// grants nothing, and an activation's override is never independent.
     public static func captureAuthored(for task: AgentTask) -> [Self]? {
         guard let workspace = task.workspace else { return nil }
         let overrides = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
         return task.skills.filter {
-            !$0.isDeleted && $0.originPackageID == nil && !overrides.contains($0.id)
+            !$0.isDeleted && !overrides.contains($0.id)
                 && ($0.isGlobal || $0.workspace == nil || $0.workspace?.id == workspace.id)
+                && ($0.originPackageID == nil
+                    || WorkspaceCapabilityActivation.hasPendingLegacyEnablement($0.originPackageID, in: workspace)
+                    || ($0.isGlobal && WorkspaceCapabilityActivation.hasSharedResource(.skill, id: $0.id, in: workspace)))
         }.map { Self($0, workspaceID: workspace.id) }
     }
 

@@ -1229,8 +1229,7 @@ struct ConnectorCredentialCleanupTests {
             )
             let installedID = installed.id
             let result = CapabilityActivationDisabler().disable(
-                package, in: workspace, capabilities: capabilities, modelContext: context, availablePackages: [package]
-            )
+                package, in: workspace, modelContext: context)
             #expect(result.removedWorkspaceConnectorIDs.isEmpty)
             #expect(workspace.connectors.map(\.id) == [installedID])
             #expect(KeychainService.load(key: "SVC_TOKEN", connector: recreated) == (legacy ? "secret-value" : nil))
