@@ -96,20 +96,30 @@ enum HTMLScriptScanner {
     // do not apply.
     private static let foreignRootElements: Set<String> = ["svg", "math"]
 
+    // Foreign elements whose children are parsed as HTML again.
+    private static let htmlIntegrationPoints: Set<String> = [
+        "foreignobject", "desc", "title", "mi", "mo", "mn", "ms", "mtext"
+    ]
+
     static func scriptElements(in html: String) -> [ScriptElement] {
         let scalars = Array(html.unicodeScalars)
         var elements: [ScriptElement] = []
-        var foreignDepth = 0
+        // Open SVG/MathML roots and HTML integration points, innermost last.
+        var contexts: [(name: String, foreign: Bool)] = []
         var index = 0
         while index < scalars.count {
             guard scalars[index] == "<", index + 1 < scalars.count else {
                 index += 1
                 continue
             }
+            let inForeign = contexts.last?.foreign ?? false
             let next = scalars[index + 1]
             if hasPrefix("<!--", in: scalars, at: index) {
                 guard let end = commentEnd(in: scalars, from: index + 4) else { break }
                 index = end
+            } else if inForeign, hasPrefix("<![CDATA[", in: scalars, at: index) {
+                guard let end = find("]]>", in: scalars, from: index + 9) else { break }
+                index = end + 3
             } else if next == "!" || next == "?" {
                 // Doctype or bogus comment: ends at the next `>`.
                 guard let end = find(">", in: scalars, from: index + 2) else { break }
@@ -125,31 +135,38 @@ enum HTMLScriptScanner {
                 guard let tag = parseAttributes(scalars, from: cursor) else { break }
                 index = tag.end
                 if isEndTag {
-                    if foreignRootElements.contains(name) {
-                        foreignDepth = max(0, foreignDepth - 1)
+                    if contexts.last?.name == name {
+                        contexts.removeLast()
                     }
                     continue
                 }
-                if foreignRootElements.contains(name), !tag.selfClosing {
-                    foreignDepth += 1
+                if foreignRootElements.contains(name) {
+                    if !tag.selfClosing { contexts.append((name, true)) }
+                } else if inForeign, htmlIntegrationPoints.contains(name) {
+                    if !tag.selfClosing { contexts.append((name, false)) }
                 } else if name == "script" {
                     var attributes = tag.attributes
-                    if foreignDepth > 0, attributes["src"] == nil,
+                    if inForeign, attributes["src"] == nil,
                        let href = attributes["href"] ?? attributes["xlink:href"] {
                         attributes["src"] = href
                     }
-                    if foreignDepth > 0, tag.selfClosing {
+                    if inForeign, tag.selfClosing {
                         elements.append(ScriptElement(attributes: attributes, body: ""))
                         continue
                     }
-                    let close = findEndTag("script", in: scalars, from: tag.end)
+                    let close = inForeign
+                        ? findEndTag("script", in: scalars, from: tag.end)
+                        : findScriptDataEnd(in: scalars, from: tag.end)
                     elements.append(ScriptElement(
                         attributes: attributes,
                         body: string(scalars[tag.end..<(close?.start ?? scalars.count)])
                     ))
                     guard let close else { break }
                     index = close.end
-                } else if foreignDepth == 0, textOnlyElements.contains(name) {
+                } else if !inForeign, name == "plaintext" {
+                    // Everything after `<plaintext>` is text.
+                    break
+                } else if !inForeign, textOnlyElements.contains(name) {
                     guard let close = findEndTag(name, in: scalars, from: tag.end) else { break }
                     index = close.end
                 }
@@ -229,6 +246,52 @@ enum HTMLScriptScanner {
         }
     }
 
+    /// Finds the end tag that closes an HTML script, following the tokenizer's
+    /// script-data escape states: inside `<!--`, a nested `<script>` is
+    /// double-escaped and its `</script>` does not close the outer script.
+    private static func findScriptDataEnd(
+        in scalars: [Unicode.Scalar],
+        from start: Int
+    ) -> (start: Int, end: Int)? {
+        enum State { case data, escaped, doubleEscaped }
+        var state = State.data
+        var index = start
+        while index < scalars.count {
+            if state != .data, hasPrefix("-->", in: scalars, at: index) {
+                state = .data
+                index += 3
+            } else if state == .data, hasPrefix("<!--", in: scalars, at: index) {
+                state = .escaped
+                // Leave the dashes so `<!-->` and `<!--->` end the escape.
+                index += 2
+            } else if isTag("</script", in: scalars, at: index) {
+                if state == .doubleEscaped {
+                    state = .escaped
+                    index += 8
+                } else {
+                    guard let tag = parseAttributes(scalars, from: index + 8) else { return nil }
+                    return (index, tag.end)
+                }
+            } else if state == .escaped, isTag("<script", in: scalars, at: index) {
+                state = .doubleEscaped
+                index += 7
+            } else {
+                index += 1
+            }
+        }
+        return nil
+    }
+
+    /// True when `marker` (ASCII case-insensitive) starts at `index` and is
+    /// followed by whitespace, `/` or `>`.
+    private static func isTag(_ marker: String, in scalars: [Unicode.Scalar], at index: Int) -> Bool {
+        let needle = Array(marker.unicodeScalars)
+        let after = index + needle.count
+        return after < scalars.count
+            && matches(needle, in: scalars, at: index, caseInsensitive: true)
+            && isTagNameTerminator(scalars[after])
+    }
+
     /// Finds `</name` followed by whitespace, `/` or `>`, and the index just
     /// past that end tag's `>`, honoring quoted values inside the end tag.
     private static func findEndTag(
@@ -251,44 +314,54 @@ enum HTMLScriptScanner {
     }
 
     /// Decodes the character references an attribute value realistically
-    /// uses: numeric (`&#47;`, `&#x2f;`) and a few named ones (`&sol;`).
+    /// uses: numeric (`&#47;`, `&#x2f`, with or without `;`) and a few named
+    /// ones (`&sol;`), which are case-sensitive and need their `;`.
     static func decodingCharacterReferences(_ value: String) -> String {
         guard value.contains("&") else { return value }
-        // Named references are case-sensitive; only these spellings exist.
         let named: [String: String] = [
             "amp": "&", "AMP": "&", "lt": "<", "LT": "<", "gt": ">", "GT": ">",
             "quot": "\"", "QUOT": "\"", "apos": "'",
             "sol": "/", "plus": "+", "period": "."
         ]
-        var decoded = ""
-        var index = value.startIndex
-        while index < value.endIndex {
-            guard value[index] == "&",
-                  let semicolon = value[index...].firstIndex(of: ";") else {
-                decoded.append(value[index])
-                index = value.index(after: index)
+        let scalars = Array(value.unicodeScalars)
+        var decoded = String.UnicodeScalarView()
+        var index = 0
+        while index < scalars.count {
+            guard scalars[index] == "&" else {
+                decoded.append(scalars[index])
+                index += 1
                 continue
             }
-            let reference = value[value.index(after: index)..<semicolon]
-            var replacement: String?
-            if reference.hasPrefix("#") {
-                let digits = reference.dropFirst()
-                let scalarValue = digits.first == "x" || digits.first == "X"
-                    ? UInt32(digits.dropFirst(), radix: 16)
-                    : UInt32(digits, radix: 10)
-                replacement = scalarValue.flatMap(Unicode.Scalar.init).map { String(Character($0)) }
-            } else {
-                replacement = named[String(reference)]
+            if index + 1 < scalars.count, scalars[index + 1] == "#" {
+                var cursor = index + 2
+                let hex = cursor < scalars.count && (scalars[cursor] == "x" || scalars[cursor] == "X")
+                if hex { cursor += 1 }
+                let digitsStart = cursor
+                while cursor < scalars.count, isDigit(scalars[cursor], hex: hex) {
+                    cursor += 1
+                }
+                if cursor > digitsStart {
+                    let code = UInt32(string(scalars[digitsStart..<cursor]), radix: hex ? 16 : 10)
+                    decoded.append(code.flatMap(Unicode.Scalar.init) ?? "\u{FFFD}")
+                    if cursor < scalars.count, scalars[cursor] == ";" { cursor += 1 }
+                    index = cursor
+                    continue
+                }
+            } else if let semicolon = scalars[(index + 1)...].prefix(8).firstIndex(of: ";"),
+                      let replacement = named[string(scalars[(index + 1)..<semicolon])] {
+                decoded.append(contentsOf: replacement.unicodeScalars)
+                index = semicolon + 1
+                continue
             }
-            if let replacement {
-                decoded += replacement
-                index = value.index(after: semicolon)
-            } else {
-                decoded.append(value[index])
-                index = value.index(after: index)
-            }
+            decoded.append(scalars[index])
+            index += 1
         }
-        return decoded
+        return String(decoded)
+    }
+
+    private static func isDigit(_ scalar: Unicode.Scalar, hex: Bool) -> Bool {
+        (48...57).contains(scalar.value)
+            || (hex && ((65...70).contains(scalar.value) || (97...102).contains(scalar.value)))
     }
 
     private static func find(

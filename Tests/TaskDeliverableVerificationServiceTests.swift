@@ -614,7 +614,12 @@ struct TaskDeliverableVerificationServiceTests {
             ("<!--><script>a()</script>", true),
             ("<!--->x<script>a()</script>", true),
             ("<!-- x --!><script>a()</script>", true),
-            ("<svg><style><script>a()</script></style></svg>", true)
+            ("<svg><style><script>a()</script></style></svg>", true),
+            ("<script type=\"text&#47javascript\">a()</script>", true),
+            ("<script type=\"text&#x2Fjavascript\">a()</script>", true),
+            ("<svg><![CDATA[foo><script>bad(]]></svg><script>a()</script>", true),
+            ("<svg><foreignObject><script href=\"app.js\"/>a()</script></foreignObject></svg>", true),
+            ("<svg><foreignObject><style><script>x</script></style></foreignObject></svg><script>a()</script>", true)
         ]
 
         for testCase in cases {
@@ -639,6 +644,14 @@ struct TaskDeliverableVerificationServiceTests {
         let svg = "<svg><script href=\"app.js\"/><script>a()</script></svg><script>b()</script>"
         #expect(HTMLScriptScanner.inlineScripts(in: svg).map(\.body) == ["a()", "b()"])
         #expect(HTMLScriptScanner.externalScriptCount(in: svg) == 1)
+        // Escaped script data: a nested `<script>...</script>` inside `<!--`
+        // does not close the outer script.
+        let legacy = "<script><!--\ndocument.write(\"<script src=x.js></script>\");\n//--></script>"
+        #expect(HTMLScriptScanner.inlineScripts(in: legacy).map(\.body) == [
+            "<!--\ndocument.write(\"<script src=x.js></script>\");\n//-->"
+        ])
+        // Everything after `<plaintext>` is text.
+        #expect(HTMLScriptScanner.inlineScripts(in: "<plaintext><script>bad(</script>").isEmpty)
         // A non-ASCII space is part of the tag name, so this is not a script.
         #expect(HTMLScriptScanner.inlineScripts(
             in: "<script\u{00A0}type=\"application/json\">a()</script>"
