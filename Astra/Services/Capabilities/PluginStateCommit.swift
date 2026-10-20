@@ -18,7 +18,7 @@ enum PluginStateCommit {
         workspace: Workspace?, accounts: [Connector] = [], pluginIDs: [String] = [],
         kind: PluginOperationReceipt.Kind = .configure, modelContext: ModelContext,
         persist: (ModelContext) throws -> Void,
-        export: ((Workspace) -> Bool)? = nil
+        export: ((Workspace) -> Bool)? = nil, publishesCompleted: Bool = true
     ) -> Outcome {
         let affected: [Workspace]
         do { affected = try PluginStateMirrors.affectedWorkspaces(workspace: workspace, accounts: accounts, modelContext: modelContext) }
@@ -29,10 +29,21 @@ enum PluginStateCommit {
         case .notCommitted(let error): return .notCommitted(error)
         case .indeterminate(let id, let error): return .indeterminate(id, error)
         case .committed(let receipt, let reportedFailure):
-            guard !reportedFailure else { return .pendingRecovery(receipt.id) }
+            guard !reportedFailure else {
+                publish(receipt)
+                return .pendingRecovery(receipt.id)
+            }
             let rewritten: ((Workspace, ModelContext) -> Bool)? = export.map { write in { workspace, _ in write(workspace) } }
             let result = PluginOperationRecovery.resumePending(modelContext: modelContext, only: receipt.id, export: rewritten)
-            return result.completed == 1 ? .completed(receipt.id) : .pendingRecovery(receipt.id)
+            let completed = result.completed == 1
+            if publishesCompleted || !completed { publish(receipt) }
+            return completed ? .completed(receipt.id) : .pendingRecovery(receipt.id)
         }
     }
+
+    private static func publish(_ receipt: PluginOperationCommit.Snapshot) {
+        if receipt.workspaceIDs.isEmpty { CapabilityCatalogPersistenceEvents.post(.global) }
+        else { for id in receipt.workspaceIDs { CapabilityCatalogPersistenceEvents.post(.workspace(id)) } }
+    }
+
 }

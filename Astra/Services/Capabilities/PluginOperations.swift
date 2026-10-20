@@ -90,13 +90,16 @@ enum PluginOperations {
                     workspace.updatedAt = Date()
                     do {
                         try save(workspace, modelContext: modelContext, restoring: snapshot,
-                            pluginIDs: [pluginID], rewriteMirror: rewriteMirror, persist: persist)
+                            pluginIDs: [pluginID], rewriteMirror: rewriteMirror, publishesCompleted: false, persist: persist)
                     } catch let problem as PluginOperationProblem {
                         // Only the marker was committed; the new value has
                         // not reached the Keychain yet.
                         throw PluginOperationProblem.credentialWriteDeferred(problem.operationID)
                     }
                 }
+                // The marker and its copy were ready first. Publish only
+                // after the actual credential write has completed.
+                CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
                 return
             }
             let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
@@ -302,10 +305,12 @@ enum PluginOperations {
         pluginIDs: [String] = [],
         kind: PluginOperationReceipt.Kind = .configure,
         rewriteMirror: ((Workspace) -> Bool)? = nil,
+        publishesCompleted: Bool = true,
         persist: (Workspace, ModelContext) throws -> Void = persistAndExport
     ) throws {
         switch PluginStateCommit.save(workspace: workspace, accounts: accounts, pluginIDs: pluginIDs,
-            kind: kind, modelContext: modelContext, persist: { try persist(workspace, $0) }, export: rewriteMirror) {
+            kind: kind, modelContext: modelContext, persist: { try persist(workspace, $0) },
+            export: rewriteMirror, publishesCompleted: publishesCompleted) {
         case .completed: return
         case .pendingRecovery(let id): throw PluginOperationProblem.savedRecoveryPending(id)
         case .indeterminate(let id, _): throw PluginOperationProblem.commitUncertain(id)

@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SwiftData
 import Testing
 import ASTRACore
@@ -28,12 +29,20 @@ struct PluginOperationMirrorRecoveryTests {
         }
         try Data("Not a directory".utf8).write(to: directory)
         #expect(!WorkspaceConfigManager.exportMirrorNow(workspace: env.workspace, modelContext: env.context))
+        let changes = OSAllocatedUnfairLock<[UUID?]>(initialState: [])
+        let observation = NotificationCenter.default.addObserver(forName: .capabilityCatalogPersistenceChanged,
+            object: nil, queue: nil) { notification in
+                guard let change = notification.object as? CapabilityCatalogPersistenceChange else { return }
+                changes.withLock { $0.append(change.workspaceID) }
+            }
+        defer { NotificationCenter.default.removeObserver(observation) }
         var reportedFailure = false
         do {
             try PluginOperations.setSetting("PROJECT", to: "saved-change", of: package.skills[0],
                 pluginID: package.id, in: env.workspace, modelContext: env.context)
         } catch { reportedFailure = true }
         #expect(reportedFailure)
+        #expect(changes.withLock { $0 } == [env.workspace.id])
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
         #expect(activation.configuration(forComponent: "skill:report-agent")["PROJECT"] == "saved-change")
         let saved = ModelContext(env.container)
@@ -86,4 +95,41 @@ struct PluginOperationMirrorRecoveryTests {
         #expect(settings["skill:report-agent#PROJECT"] == "recovered-setting")
     }
 
+
+    @Test("A completed secret edit publishes once, after the credential value is written")
+    func credentialPublicationFollowsTheValueWrite() throws {
+        let env = try PluginOperationsTests.Environment()
+        var package = PluginOperationsTests.package(version: "1.0.0")
+        package.skills[0].environmentKeys.append("API_TOKEN")
+        package.skills[0].environmentValues.append("")
+        try env.install(package)
+        PublishingSecrets.reset()
+        let workspaceID = env.workspace.id
+        let notifications = OSAllocatedUnfairLock<[Bool]>(initialState: [])
+        let observation = NotificationCenter.default.addObserver(forName: .capabilityCatalogPersistenceChanged,
+            object: nil, queue: nil) { notification in
+                guard let change = notification.object as? CapabilityCatalogPersistenceChange,
+                      change.workspaceID == workspaceID else { return }
+                notifications.withLock { $0.append(PublishingSecrets.wroteValue) }
+            }
+        defer { NotificationCenter.default.removeObserver(observation) }
+        try PluginOperations.setSetting("API_TOKEN", to: "test-only", of: package.skills[0],
+            pluginID: package.id, in: env.workspace, modelContext: env.context, secrets: PublishingSecrets.self)
+        #expect(notifications.withLock { $0 } == [true])
+    }
+
+}
+
+
+private enum PublishingSecrets: SkillSecretPersisting {
+    private static let written = OSAllocatedUnfairLock(initialState: false)
+    static var wroteValue: Bool { written.withLock { $0 } }
+    static func reset() { written.withLock { $0 = false } }
+    static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? { nil }
+    static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool {
+        written.withLock { $0 = true }; return true
+    }
+    static func deleteSecret(key: String, skillID: UUID) -> Bool { true }
+    static func secretExists(key: String, skillID: UUID) -> Bool { wroteValue }
+    static func deleteAllSecrets(skillID: UUID) {}
 }

@@ -369,7 +369,6 @@ struct CapabilityCatalogActionService {
         modelContext: ModelContext
     ) throws {
         try PluginOperations.setSetting(key, to: value, of: skill, pluginID: package.id, in: workspace, modelContext: modelContext)
-        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
     }
 
     /// A new account for a connector component, bound in this workspace.
@@ -381,7 +380,6 @@ struct CapabilityCatalogActionService {
         modelContext: ModelContext
     ) throws -> Connector {
         let account = try PluginOperations.addAccount(for: connector, of: package, in: workspace, modelContext: modelContext)
-        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return account
     }
 
@@ -393,7 +391,6 @@ struct CapabilityCatalogActionService {
         modelContext: ModelContext
     ) throws {
         try PluginOperations.makeDefault(account, componentID: componentID, pluginID: package.id, in: workspace, modelContext: modelContext)
-        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
     }
 
     /// Deletes an account in every workspace, with its credentials.
