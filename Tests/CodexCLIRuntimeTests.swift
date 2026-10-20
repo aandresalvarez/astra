@@ -108,6 +108,45 @@ struct CodexCLIRuntimeTests {
         #expect(task.tokensUsed == 50)
     }
 
+    /// Captured from codex-cli 0.163: `codex exec` then `codex exec resume` twice on one
+    /// thread, each turn a one-word reply. `turn.completed` reported the thread's running
+    /// totals; the rollout's own per-turn `last_token_usage` for the three turns was
+    /// 22,903/5, 22,929/6 and 24,733/6 (input/output).
+    @MainActor
+    @Test("A resumed Codex run records its own turn's usage, not the thread's running total")
+    func codexResumedRunRecordsItsOwnTurnUsage() throws {
+        let container = try makeCodexRuntimeTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Resume", goal: "Count each turn once", runtime: .codexCLI)
+        context.insert(task)
+        let thread = "01a15b1a-33cb-7a30-a048-892b6ac52116"
+        let turns = [
+            #"{"type":"turn.completed","usage":{"input_tokens":22903,"cached_input_tokens":12288,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}"#,
+            #"{"type":"turn.completed","usage":{"input_tokens":45832,"cached_input_tokens":35072,"cache_write_input_tokens":0,"output_tokens":11,"reasoning_output_tokens":0}}"#,
+            #"{"type":"turn.completed","usage":{"input_tokens":70565,"cached_input_tokens":57856,"cache_write_input_tokens":0,"output_tokens":17,"reasoning_output_tokens":0}}"#
+        ]
+        let adapter = CodexCLIRuntimeAdapter()
+        let runs = turns.enumerated().map { index, completed in
+            let run = TaskRun(task: task)
+            // The worker presets a resumed run's session; a fresh one learns it from thread.started.
+            run.providerSessionId = index == 0 ? nil : thread
+            context.insert(run)
+            let lines = [#"{"type":"thread.started","thread_id":"\#(thread)"}"#, completed]
+            for event in lines.flatMap({ CodexCLIRuntime.parseAgentEvents(line: $0, parsesJSONLines: true) }) {
+                adapter.recordWorkerStreamEvent(
+                    .agent(event), mode: index == 0 ? .initial : .followUp,
+                    task: task, run: run, modelContext: context, recordingState: AgentEventRecordingState()
+                )
+            }
+            return run
+        }
+
+        #expect(runs.map(\.providerSessionId) == [thread, thread, thread])
+        #expect(runs.map(\.inputTokens) == [22_903, 22_929, 24_733])
+        #expect(runs.map(\.outputTokens) == [5, 6, 6])
+        #expect(task.tokensUsed == 70_565 + 17)
+    }
+
     @Test("Codex stream parser treats known lifecycle and item shapes as typed events")
     func codexStreamParserTreatsKnownLifecycleAndItemShapesAsTypedEvents() {
         let lines = [
