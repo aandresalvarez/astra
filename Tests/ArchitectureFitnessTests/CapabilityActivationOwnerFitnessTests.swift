@@ -66,7 +66,7 @@ struct CapabilityActivationOwnerFitnessTests {
         "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift": 2,
         "Astra/Services/WorkspacePackage/WorkspaceShareProjection.swift": 2,
         "Astra/Views/ComposerCapabilitySnapshot.swift": 7,
-        "Astra/Views/ConfigureView.swift": 10,
+        "Astra/Views/ConfigureView.swift": 8,
         "Astra/Views/ConnectorsManagerView.swift": 1,
         "Astra/Views/ContentView.swift": 7,
         "Astra/Views/ContentViewBrowserSessionPolicyCache.swift": 4,

@@ -100,7 +100,7 @@ struct PendingTaskCredentialReferences {
             }
         }
         for account in policy.pluginAccounts ?? [] { include(account) }
-        for skill in policy.pluginOverrides?.skills ?? [] {
+        for skill in (policy.pluginOverrides?.skills ?? []) + (policy.authoredSkills ?? []) {
             includeSkill(skill.credentialNamespaceID ?? skill.id, keys: skill.environmentKeys)
             for account in skill.attachedConnectors ?? [] { include(account) }
         }
