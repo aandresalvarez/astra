@@ -81,7 +81,8 @@ struct PluginAddCommitTests {
         let reopened = try env.disk.reopen()
         #expect(try reopened.mainContext.fetch(FetchDescriptor<PluginActivation>()).first?.recordedVersion == "2.0.0")
         try FileManager.default.removeItem(at: support)
-        #expect(PluginOperationRecovery.resumePending(modelContext: reopened.mainContext).completed == 1)
+        #expect(PluginFileOperationRecovery(journal: .init(library: env.disk.library,
+            approvals: create ? approvals : CapabilityApprovalStore())).resumePending(modelContext: reopened.mainContext).completed == 1)
     }
 
     @MainActor

@@ -1070,12 +1070,16 @@ struct ArchitectureFitnessTests {
         let resourcesEnd = try #require(configure.range(of: "// MARK: - Templates Tab"))
         #expect(!configure[resourcesStart.lowerBound..<resourcesEnd.lowerBound].contains(
             "WorkspacePersistenceCoordinator.saveAndAutoExport"))
-        // The approval goes before the library write it covers, and the one
-        // global event after both.
-        let approvalSave = try #require(creation.range(of: "let approval = try saveApprovalRecordIfNeeded"))
+        // Create orchestrates the prepared-file boundary rather than doing
+        // independent live library/approval writes. Behavioral crash tests
+        // verify replay; this guard keeps write ownership out of this facade.
+        #expect(!creation.contains("library.install("))
+        #expect(!creation.contains("approvalStore.save("))
+        #expect(!creation.contains("saveBeforeDependentWrite("))
+        #expect(creation.contains("PluginInstallationTransaction.prepare("))
+        #expect(creation.contains("pendingApproval: pendingApproval"))
         let suppressedInstall = try #require(creation.range(of: "announceCatalogMutation: false"))
         let globalPost = try #require(creation.range(of: "CapabilityCatalogPersistenceEvents.post(.global)", range: suppressedInstall.lowerBound..<creation.endIndex))
-        #expect(approvalSave.lowerBound < suppressedInstall.lowerBound)
         #expect(suppressedInstall.lowerBound < globalPost.lowerBound)
     }
 
