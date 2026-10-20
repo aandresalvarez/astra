@@ -37,11 +37,12 @@ struct PluginActivationReviewTests {
         #expect(activation.recordedVersion == "2.0.0")
         #expect(runs(env.workspace))
         #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: env.workspace, in: library).contains { $0.id == v2.id })
-        // A request queued before the Update runs what the Update accepted.
+        // A legacy request without frozen definitions keeps its own acceptance:
+        // the live Update cannot silently make its old settings runnable.
         let launch = Workspace(name: "Launch copy", primaryPath: env.workspace.primaryPath)
         launch.id = env.workspace.id
         WorkspaceCapabilityActivation.copyActivations(queued, of: env.workspace, to: launch, accountsByID: [:])
-        #expect(runs(launch))
+        #expect(!runs(launch))
     }
 
     @Test("A shared account is trimmed to its creator's installed definition while that plugin is off")
@@ -562,7 +563,7 @@ struct PluginActivationReviewTests {
         #expect(account.config["ONLY_B"] == "b-value" && account.config["TRACKER_REGION"] == "plain-region")
     }
 
-    @Test("A queued launch keeps its frozen acceptance with its frozen definitions, and takes the live one without them")
+    @Test("A queued launch keeps coherent frozen acceptance and rejects changed definitions when none were frozen")
     func queuedLaunchAcceptanceFollowsItsDefinitions() throws {
         let env = try Fixtures.Environment()
         try env.install(Fixtures.package(version: "1.0.0"))
@@ -587,11 +588,16 @@ struct PluginActivationReviewTests {
         let frozenLaunch = try launch(frozen)
         #expect(version(frozenLaunch) == "1.0.0")
         #expect(TaskCapabilityResolver(task: frozenLaunch).allBehaviorSkills.contains { $0.name == "Report Agent" })
-        // No frozen definitions: the library's v2, with the acceptance the
-        // Update recorded.
+        #expect(!CapabilityRuntimeIntegrityService.issues(for: frozenLaunch, packages: submitted, checkExecutables: false)
+            .contains { $0.message.contains("queued request") })
+        // An old request has no v1 definition to execute. Keep its v1
+        // contract and reject dispatch against v2, rather than certify old
+        // settings as if Update had reconciled this detached request.
         let olderLaunch = try launch(older)
-        #expect(version(olderLaunch) == "2.0.0")
-        #expect(!PluginRuntimeProjection.project(workspace: olderLaunch.workspace, packages: env.library.installedPackages()).skills.isEmpty)
+        #expect(version(olderLaunch) == "1.0.0")
+        #expect(PluginRuntimeProjection.project(workspace: olderLaunch.workspace, packages: env.library.installedPackages()).skills.isEmpty)
+        #expect(CapabilityRuntimeIntegrityService.issues(for: olderLaunch, packages: env.library.installedPackages(), checkExecutables: false)
+            .contains { $0.packageID == "ops.report" && $0.resourceKind == .policy && $0.message.contains("queued request") })
     }
 
     @Test("The row's Update fails, changing nothing, when the installed definition can't be read back")

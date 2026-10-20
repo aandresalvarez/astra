@@ -594,7 +594,7 @@ struct SkillEditorView: View {
                                                 .foregroundStyle(value.isEmpty ? .tertiary : .secondary)
                                                 .lineLimit(1)
                                         } else {
-                                            let inKeychain = KeychainService.exists(key: key, skillID: skill.id)
+                                            let inKeychain = KeychainService.exists(key: key, skillID: skill.secretNamespaceID)
                                             let hasValue = !skill.valueForEnvironmentKey(at: origIdx).isEmpty
                                             HStack(spacing: 4) {
                                                 Text(String(repeating: "\u{2022}", count: hasValue ? 12 : 0))
