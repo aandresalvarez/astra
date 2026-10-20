@@ -910,18 +910,23 @@ enum TaskDeliverableVerificationService {
             options: [.caseInsensitive],
             range: searchStart..<html.endIndex
         ) {
-            // A tag-like string inside an HTML comment is not an element.
-            if let commentStart = html.range(of: "<!--", range: searchStart..<openRange.lowerBound) {
-                guard let commentEnd = html.range(of: "-->", range: commentStart.upperBound..<html.endIndex) else {
-                    return nil
-                }
-                searchStart = commentEnd.upperBound
-                continue
-            }
             var index = openRange.upperBound
             // `<scripts>` or `<script-x>` is a different element.
             if index < html.endIndex, !isTagNameTerminator(html[index]) {
                 searchStart = index
+                continue
+            }
+            // Tag-like text inside a comment or a text-only element is not an
+            // element; skip the earliest such region before this tag.
+            if let region = firstTextOnlyRegion(in: html, range: searchStart..<openRange.lowerBound) {
+                guard let regionEnd = html.range(
+                    of: region.close,
+                    options: [.caseInsensitive],
+                    range: region.contentStart..<html.endIndex
+                ) else {
+                    return nil
+                }
+                searchStart = regionEnd.upperBound
                 continue
             }
             var attributes: [String: String] = [:]
@@ -975,6 +980,36 @@ enum TaskDeliverableVerificationService {
             return nil
         }
         return nil
+    }
+
+    // Elements whose content the HTML tokenizer reads as text (RCDATA,
+    // RAWTEXT, and noscript with scripting enabled), so no tags start inside.
+    private static let textOnlyElements = [
+        "textarea", "title", "style", "xmp", "iframe", "noembed", "noframes", "noscript"
+    ]
+
+    private static func firstTextOnlyRegion(
+        in html: String,
+        range: Range<String.Index>
+    ) -> (contentStart: String.Index, close: String)? {
+        var earliest: (start: String.Index, contentStart: String.Index, close: String)?
+        if let comment = html.range(of: "<!--", range: range) {
+            earliest = (comment.lowerBound, comment.upperBound, "-->")
+        }
+        for name in textOnlyElements {
+            var searchStart = range.lowerBound
+            while let open = html.range(of: "<" + name, options: [.caseInsensitive], range: searchStart..<range.upperBound) {
+                if open.upperBound < html.endIndex, !isTagNameTerminator(html[open.upperBound]) {
+                    searchStart = open.upperBound
+                    continue
+                }
+                if earliest.map({ open.lowerBound < $0.start }) ?? true {
+                    earliest = (open.lowerBound, open.upperBound, "</" + name)
+                }
+                break
+            }
+        }
+        return earliest.map { ($0.contentStart, $0.close) }
     }
 
     /// Decodes the character references an attribute value realistically

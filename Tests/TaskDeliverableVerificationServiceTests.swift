@@ -601,7 +601,11 @@ struct TaskDeliverableVerificationServiceTests {
             ("<script type=\"text/x-handlebars-template\">{}</script>", false),
             ("<script\n  id=\"m\" type=\"application/json\">{}</script>", false),
             ("<script data-src=\"lazy.js\" type = \"text/json\">{}</script>", false),
-            ("<!-- <script type=\"application/json\"> --><script>a()</script>", true)
+            ("<!-- <script type=\"application/json\"> --><script>a()</script>", true),
+            ("<textarea><script type=\"application/json\"></textarea><script>a()</script>", true),
+            ("<TITLE>x <script type=\"text/template\"></title><script>a()</script>", true),
+            ("<style>/* <script type=\"application/json\"> */</style><script>a()</script>", true),
+            ("<titles></titles><script type=\"application/json\">{}</script>", false)
         ]
 
         for testCase in cases {
