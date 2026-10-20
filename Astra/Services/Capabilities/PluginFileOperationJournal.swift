@@ -120,6 +120,9 @@ struct PluginFileOperationJournal {
         let saved = try load(prepared.id)
         guard saved.digest == prepared.digest else { throw Failure.invalidManifest }
         try validateRoots(saved.manifest)
+        // Replay or rollback can replace assets even when a later mirror
+        // step fails and no completion notification is published yet.
+        defer { CapabilityApprovalDigest.invalidate() }
         for entry in saved.manifest.entries {
             try validateRoots(saved.manifest)
             let root = roots[entry.root]!

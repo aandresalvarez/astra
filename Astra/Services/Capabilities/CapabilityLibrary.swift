@@ -60,6 +60,7 @@ struct CapabilityLibrary {
     }
 
     func publishChange() {
+        CapabilityApprovalDigest.invalidate()
         guard publishesChanges else { return }
         NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
     }

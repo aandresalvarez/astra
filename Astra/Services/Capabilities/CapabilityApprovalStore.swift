@@ -30,17 +30,32 @@ struct CapabilityApprovalRecord: Codable, Equatable, Identifiable, Sendable {
 }
 
 enum CapabilityApprovalDigest {
-    /// The last digest computed per package, reused while the package is
-    /// equal, for a render path's cache key (the rail). A changed icon
-    /// asset file alone isn't seen until the package is written again,
-    /// which every library replacement does.
-    private static let memo = OSAllocatedUnfairLock<[String: (package: PluginPackage, digest: String)]>(initialState: [:])
+    /// Presentation-only cache. Library writes, file replay and explicit
+    /// catalog refresh invalidate it; runtime admission still hashes directly.
+    private struct Memo {
+        var generation: UInt64 = 0
+        var entries: [String: (package: PluginPackage, digest: String)] = [:]
+    }
+    private static let memo = OSAllocatedUnfairLock(initialState: Memo())
+
+    static func invalidate() {
+        memo.withLock { state in
+            state.generation &+= 1
+            state.entries.removeAll()
+        }
+    }
 
     static func memoizedDigest(for package: PluginPackage) -> String? {
-        if let cached = memo.withLock({ $0[package.id] }), cached.package == package { return cached.digest }
+        let (cached, generation) = memo.withLock { ($0.entries[package.id], $0.generation) }
+        if let cached, cached.package == package { return cached.digest }
         guard let digest = try? digest(for: package) else { return nil }
-        memo.withLock { $0[package.id] = (package, digest) }
-        return digest
+        return memo.withLock { state -> String? in
+            // A hash begun before invalidation cannot repopulate the new
+            // cache with bytes read from the prior or interrupted image.
+            guard state.generation == generation else { return nil }
+            state.entries[package.id] = (package, digest)
+            return digest
+        }
     }
 
     static func digest(for package: PluginPackage) throws -> String {
