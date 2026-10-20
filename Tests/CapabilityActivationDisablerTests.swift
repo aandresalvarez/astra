@@ -61,13 +61,11 @@ struct CapabilityActivationDisablerTests {
         workspace.testEnabledCapabilityIDs = [package.id]
         workspace.enabledGlobalSkillIDs = [legacySkill.id.uuidString, ownedSkill.id.uuidString]
 
+        try context.save()
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [legacySkill, ownedSkill]),
-            modelContext: context,
-            availablePackages: [package]
-        )
+            modelContext: context)
 
         // The activation alone records that the plugin is off; legacy shared
         // rows, stamped or not, are no longer how a plugin reaches a run.

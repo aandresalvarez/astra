@@ -266,12 +266,15 @@ struct PluginRound21ReviewTests {
         let env = try Fixtures.Environment()
         var package = Fixtures.package(version: "1.0.0")
         package.connectors = []
-        // No activation: the legacy path that deletes workspace rows.
+        // Pending V19 membership has no activation yet; Turn off must save
+        // its membership and recovery mirror without deleting resource rows.
+        env.workspace.legacyEnabledCapabilityIDs = [package.id]
+        try env.context.save()
         #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) == nil)
         var rewritten: [UUID] = []
         let result = CapabilityActivationDisabler().disable(
-            package, in: env.workspace, capabilities: WorkspaceCapabilities(workspace: env.workspace),
-            modelContext: env.context, availablePackages: [package],
+            package, in: env.workspace,
+            modelContext: env.context,
             rewriteMirror: { rewritten.append($0.id); return true }
         )
         #expect(result.persisted)

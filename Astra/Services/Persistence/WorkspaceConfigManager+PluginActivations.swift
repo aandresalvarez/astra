@@ -126,7 +126,7 @@ extension WorkspaceConfigManager {
     }
 
     static func installedPluginRefs(for workspace: Workspace) -> [InstalledPluginRef] {
-        WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
+        var refs = WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
             let accounts = activation.bindings
                 .filter { !$0.isDeleted }
                 .sorted { $0.createdAt < $1.createdAt }
@@ -156,6 +156,14 @@ extension WorkspaceConfigManager {
                 awaitingUpdate: activation.awaitingUpdate ? true : nil
             )
         }
+        // Pending V19 installations are still authoritative ownership. A
+        // bare reference restores an off activation without claiming that
+        // this workspace accepted today's definition or any secret settings.
+        var seen = Set(refs.map(\.id))
+        for entry in WorkspaceCapabilityActivation.pendingLegacyInstallations(in: workspace) where seen.insert(entry.id).inserted {
+            refs.append(InstalledPluginRef(id: entry.id, version: entry.version.isEmpty ? "0.0.0" : entry.version))
+        }
+        return refs
     }
 
     /// What Remove kept of the workspace's removed activations

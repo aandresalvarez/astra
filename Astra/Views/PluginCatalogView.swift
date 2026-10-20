@@ -921,9 +921,7 @@ struct PluginCatalogView: View {
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: capabilities,
-            modelContext: modelContext,
-            availablePackages: capabilityInventoryPackages
+            modelContext: modelContext
         )
         // A rolled-back disable left the package enabled; it isn't saved
         // again or reported as done.
@@ -931,8 +929,7 @@ struct PluginCatalogView: View {
             removalError = "ASTRA couldn't disable \(package.name), so it stays enabled. Try again."
             return
         }
-        workspace.updatedAt = Date()
-        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
+        if let problem = result.problem { removalError = problem.localizedDescription; return }
         AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
             "source": "configure",
             "trace_id": traceID,

@@ -45,6 +45,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             pluginAccounts: policy.pluginAccounts,
             pluginOverrides: policy.pluginOverrides,
             authoredSkills: policy.authoredSkills,
+            pendingLegacyPluginState: policy.pendingLegacyPluginState,
             retiredPluginActivations: policy.retiredPluginActivations
         )
     }
@@ -65,6 +66,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             workspace: workspace
         )
         if let workspace, let live = source.workspace {
+            WorkspaceCapabilityActivation.applyFrozenPendingLegacy(snapshot.pendingLegacyPluginState, to: workspace)
             // The accounts and definitions frozen with them: an account
             // edited or deleted, or a plugin updated, while the request
             // waited does not change the run either.

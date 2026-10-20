@@ -8,7 +8,8 @@ import Testing
 struct PluginsSurfaceFitnessTests {
     private let viewFiles = [
         "Astra/Views/Capabilities/PluginsSurfaceView.swift",
-        "Astra/Views/Capabilities/PluginRowDetailsView.swift"
+        "Astra/Views/Capabilities/PluginRowDetailsView.swift",
+        "Astra/Views/Capabilities/PluginStateRecoverySection.swift"
     ]
 
     @Test("Plugins surface delegates capability side effects to the action service")

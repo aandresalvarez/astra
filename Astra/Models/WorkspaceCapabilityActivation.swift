@@ -51,13 +51,6 @@ public enum WorkspaceCapabilityActivation {
         return ids
     }
 
-    /// Carries the V19 enablement a migration hasn't moved yet into a launch
-    /// copy, so the run sees the plugins `enabledPluginIDs(of:)` does.
-    public static func copyPendingLegacyEnablement(from source: Workspace, to target: Workspace) {
-        guard target.legacyEnabledCapabilityIDs != source.legacyEnabledCapabilityIDs else { return }
-        target.legacyEnabledCapabilityIDs = source.legacyEnabledCapabilityIDs
-    }
-
     /// The workspace's live activations in a stable order (creation, then ID).
     public static func activations(of workspace: Workspace) -> [PluginActivation] {
         workspace.pluginActivations
@@ -576,6 +569,7 @@ public enum WorkspaceCapabilityActivation {
         public let state: WorkspaceCapabilityActivationState
         public let activations: [PluginActivationRecord]
         public let retired: [RetiredPluginActivation]
+        public let pendingLegacy: PendingLegacyState
         public let updatedAt: Date
     }
 
@@ -584,6 +578,7 @@ public enum WorkspaceCapabilityActivation {
             state: state(of: workspace),
             activations: activations(of: workspace).map(PluginActivationRecord.init),
             retired: retiredActivations(of: workspace),
+            pendingLegacy: pendingLegacyState(of: workspace),
             updatedAt: workspace.updatedAt
         )
     }
@@ -609,6 +604,7 @@ public enum WorkspaceCapabilityActivation {
             record.restore(onto: activation)
         }
         setRetired(snapshot.retired, on: workspace)
+        restorePendingLegacy(snapshot.pendingLegacy, to: workspace)
         workspace.updatedAt = snapshot.updatedAt
     }
 
