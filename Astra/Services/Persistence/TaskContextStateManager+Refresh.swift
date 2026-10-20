@@ -134,7 +134,9 @@ extension TaskContextStateManager {
         onTiming: ((RefreshTiming) -> Void)? = nil
     ) async -> Bool {
         // Read off the model before leaving the actor; the load takes only
-        // sendable values.
+        // sendable values. The reads traverse `workspace`, `runs` and
+        // `artifacts`, so they sit behind the deleted-model guard too.
+        guard !task.isDeleted, task.modelContext != nil else { return false }
         let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
         let taskID = task.id
         let outputPaths = TaskOutputObservation.candidatePaths(for: task)
@@ -320,6 +322,9 @@ extension TaskContextStateManager {
                 paths: outputPaths + (existing?.filesChanged ?? [])
             )
             : nil
+        // An observation cut short comes back nil, which the apply would
+        // answer with a live rescan; cancelled, there is no apply to have.
+        guard !Task.isCancelled else { return nil }
         return LoadedContextState(
             folder: folder,
             existing: existing,

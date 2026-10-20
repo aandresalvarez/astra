@@ -405,11 +405,11 @@ struct TaskContextStateOffMainRefreshTests {
         let fixture = try makeFixture("other-roots")
         defer { fixture.cleanup() }
         try populateOutputs(fixture)
-        let elsewhere = TaskOutputObservation.observe(
+        let elsewhere = try #require(TaskOutputObservation.observe(
             taskFolder: fixture.root.appendingPathComponent("elsewhere").path,
             workspacePath: fixture.root.path,
             paths: []
-        )
+        ))
         TaskOutputPathResolver.liveScanCountForTesting = 0
 
         let resolver = TaskOutputPathResolver(task: fixture.task, observation: elsewhere)
@@ -417,6 +417,42 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(resolver.discoveredFiles == TaskOutputDiscovery.files(in: fixture.folder))
         #expect(!resolver.discoveredFiles.isEmpty)
         #expect(TaskOutputPathResolver.liveScanCountForTesting == 1)
+    }
+
+    /// A superseded refresh must stop its walk, not finish it while the
+    /// refresh replacing it starts its own: the walk polls per entry.
+    @Test("A cancelled output walk stops at the next entry")
+    func cancelledWalkStopsPromptly() throws {
+        let fixture = try makeFixture("cancelled-walk")
+        defer { fixture.cleanup() }
+        try populateOutputs(fixture)
+        var polls = 0
+
+        let files = TaskGeneratedFiles.files(in: fixture.folder, fileManager: .default) {
+            polls += 1
+            return polls > 3
+        }
+
+        #expect(files == nil)
+        #expect(polls == 4)
+        // Opt-in: the plain form still returns everything.
+        #expect(TaskGeneratedFiles.files(in: fixture.folder).count > 20)
+    }
+
+    @Test("An observation taken under a cancelled task comes back empty-handed")
+    func observationUnderCancelledTaskIsNil() async throws {
+        let fixture = try makeFixture("cancelled-observe")
+        defer { fixture.cleanup() }
+        try populateOutputs(fixture)
+        let folder = fixture.folder
+        let workspace = fixture.root.path
+
+        let observed = await Task.detached { () -> Bool in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return TaskOutputObservation.observe(taskFolder: folder, workspacePath: workspace, paths: []) != nil
+        }.value
+
+        #expect(observed == false)
     }
 
     /// Every kind of path the derive classifies: discovered outputs, nested

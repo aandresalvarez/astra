@@ -35,17 +35,25 @@ public struct TaskOutputObservation: Sendable {
     /// gathered on the actor before the hop, plus the state file's remembered
     /// ones. A path recorded after they were gathered is simply not here, and
     /// the resolver answers it live: a handful of lookups, not a scan.
+    ///
+    /// Nil once the calling task is cancelled, checked per entry of the walk
+    /// and per path: a superseded refresh must not finish its scan while the
+    /// one replacing it starts its own.
     public nonisolated static func observe(
         taskFolder: String,
         workspacePath: String,
         paths: [String]
-    ) -> TaskOutputObservation {
-        let discovered = TaskOutputDiscovery.files(in: taskFolder)
+    ) -> TaskOutputObservation? {
+        guard let discovered = TaskOutputDiscovery.files(
+            in: taskFolder,
+            isCancelled: { Task.isCancelled }
+        ) else { return nil }
         let scope = TaskOutputVisibilityScope(taskFolder: taskFolder, workspacePath: workspacePath)
         var normalizedPaths: [String: String] = [:]
         var userFacingPaths: [String: Bool] = [:]
         var existingPaths: [String: Bool] = [:]
         for path in paths + discovered.map(\.path) where normalizedPaths[path] == nil {
+            guard !Task.isCancelled else { return nil }
             let normalized = TaskArtifactPathNormalizer.normalizedPath(
                 path,
                 workspacePath: workspacePath,
@@ -71,7 +79,8 @@ public struct TaskOutputObservation: Sendable {
 
     /// The model paths an observation should cover: every recorded file
     /// change and every artifact. In-memory reads only — the same ones the
-    /// apply makes right after, so they arrive already faulted.
+    /// apply makes right after, so they arrive already faulted. They traverse
+    /// relationships, so only for a task that is still live.
     @MainActor
     public static func candidatePaths(for task: AgentTask) -> [String] {
         task.runs.flatMap(\.fileChanges).map(\.path) + task.artifacts.map(\.path)
