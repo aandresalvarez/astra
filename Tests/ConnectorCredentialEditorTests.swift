@@ -161,7 +161,7 @@ struct ConnectorCredentialEditorTests {
         }
     }
 
-    @Test("Conflicting legacy values require an explicit replacement instead of silently choosing one")
+    @Test("Unrelated edits retain conflicting legacy values until their explicit replacement")
     func conflictingLegacyValuesNeedExplicitChoice() throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
             let env = try Fixture()
@@ -171,18 +171,17 @@ struct ConnectorCredentialEditorTests {
             account.credentialValues += ["legacy-first-second-token", "legacy-other-second-token"]
             try env.disk.context.save()
             let namespace = account.credentialNamespaceID
-            #expect(throws: ConnectorCredentialGenerationTransaction.Failure.self) {
-                _ = try ConnectorCredentialEditor.save("must-not-replace-api", forKey: "API_TOKEN", on: account,
-                    modelContext: env.disk.context)
-            }
-            #expect(account.credentialNamespaceID == namespace)
-            #expect(account.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
+            #expect(try ConnectorCredentialEditor.save("updated-api-token", forKey: "API_TOKEN", on: account,
+                modelContext: env.disk.context).isSaved)
+            #expect(account.credentialNamespaceID != namespace)
+            #expect(account.currentCredentialValue(forKey: "API_TOKEN") == "updated-api-token")
+            #expect(account.currentCredentialValue(forKey: "SECOND_TOKEN") == nil)
             #expect(account.credentialValues.contains("legacy-first-second-token"))
             #expect(account.credentialValues.contains("legacy-other-second-token"))
             #expect(try ConnectorCredentialEditor.save("chosen-second-token", forKey: "SECOND_TOKEN", on: account,
                 modelContext: env.disk.context).isSaved)
             #expect(account.currentCredentialValue(forKey: "SECOND_TOKEN") == "chosen-second-token")
-            #expect(account.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
+            #expect(account.currentCredentialValue(forKey: "API_TOKEN") == "updated-api-token")
             #expect(account.credentialKeys.filter { ConnectorCredentialKey.same($0, "SECOND_TOKEN") }.count == 1)
         }
     }
@@ -266,6 +265,32 @@ struct ConnectorCredentialEditorTests {
             let saved = try #require(try reopened.mainContext.fetch(FetchDescriptor<Connector>()).first)
             #expect(saved.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
             #expect(saved.currentCredentialValue(forKey: "SECOND_TOKEN") == "additional-editor-token")
+        }
+    }
+
+    @Test("Pending legacy fields can be corrected individually without changing the other field", arguments: [false, true], ["your-token-here", "legacy-valid-second-value"])
+    func invalidLegacyFieldsCanBeCorrectedIndividually(removingFirst: Bool, secondLegacyValue: String) throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable()
+            account.credentialKeys += ["LEGACY_A", "LEGACY_B"]
+            account.credentialValues += ["changeme", secondLegacyValue]
+            try env.disk.context.save()
+            if removingFirst {
+                try ConnectorCredentialEditor.remove("LEGACY_A", from: account, modelContext: env.disk.context)
+            } else {
+                #expect(try ConnectorCredentialEditor.save("corrected-first-value", forKey: "LEGACY_A", on: account,
+                    modelContext: env.disk.context).isSaved)
+            }
+            #expect(account.credentialValues.contains(secondLegacyValue))
+            #expect(account.currentCredentialValue(forKey: "LEGACY_B") == nil)
+            #expect(account.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
+            #expect(try ConnectorCredentialEditor.save("corrected-second-value", forKey: "LEGACY_B", on: account,
+                modelContext: env.disk.context).isSaved)
+            #expect(account.currentCredentialValue(forKey: "LEGACY_A") == (removingFirst ? nil : "corrected-first-value"))
+            #expect(account.currentCredentialValue(forKey: "LEGACY_B") == "corrected-second-value")
+            #expect(!account.credentialValues.contains("changeme") && !account.credentialValues.contains(secondLegacyValue))
         }
     }
 
