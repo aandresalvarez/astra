@@ -619,7 +619,10 @@ struct TaskDeliverableVerificationServiceTests {
             ("<script type=\"text&#x2Fjavascript\">a()</script>", true),
             ("<svg><![CDATA[foo><script>bad(]]></svg><script>a()</script>", true),
             ("<svg><foreignObject><script href=\"app.js\"/>a()</script></foreignObject></svg>", true),
-            ("<svg><foreignObject><style><script>x</script></style></foreignObject></svg><script>a()</script>", true)
+            ("<svg><foreignObject><style><script>x</script></style></foreignObject></svg><script>a()</script>", true),
+            ("<script type=\"&Tab;text&sol;javascript&NewLine;\">a()</script>", true),
+            ("<script type=\"&TAB;text/javascript\">{}</script>", false),
+            ("<math><annotation-xml encoding=\"Text/HTML\"><script href=\"app.js\"/>a()</script></annotation-xml></math>", true)
         ]
 
         for testCase in cases {
@@ -650,6 +653,10 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(HTMLScriptScanner.inlineScripts(in: legacy).map(\.body) == [
             "<!--\ndocument.write(\"<script src=x.js></script>\");\n//-->"
         ])
+        // annotation-xml without an HTML encoding stays foreign.
+        #expect(HTMLScriptScanner.externalScriptCount(
+            in: "<math><annotation-xml><script href=\"app.js\"/></annotation-xml></math>"
+        ) == 1)
         // Everything after `<plaintext>` is text.
         #expect(HTMLScriptScanner.inlineScripts(in: "<plaintext><script>bad(</script>").isEmpty)
         // A non-ASCII space is part of the tag name, so this is not a script.

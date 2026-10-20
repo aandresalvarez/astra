@@ -142,7 +142,7 @@ enum HTMLScriptScanner {
                 }
                 if foreignRootElements.contains(name) {
                     if !tag.selfClosing { contexts.append((name, true)) }
-                } else if inForeign, htmlIntegrationPoints.contains(name) {
+                } else if inForeign, isHTMLIntegrationPoint(name, attributes: tag.attributes) {
                     if !tag.selfClosing { contexts.append((name, false)) }
                 } else if name == "script" {
                     var attributes = tag.attributes
@@ -246,6 +246,14 @@ enum HTMLScriptScanner {
         }
     }
 
+    private static func isHTMLIntegrationPoint(_ name: String, attributes: [String: String]) -> Bool {
+        if name == "annotation-xml" {
+            let encoding = attributes["encoding"]?.lowercased()
+            return encoding == "text/html" || encoding == "application/xhtml+xml"
+        }
+        return htmlIntegrationPoints.contains(name)
+    }
+
     /// Finds the end tag that closes an HTML script, following the tokenizer's
     /// script-data escape states: inside `<!--`, a nested `<script>` is
     /// double-escaped and its `</script>` does not close the outer script.
@@ -313,16 +321,29 @@ enum HTMLScriptScanner {
         return nil
     }
 
-    /// Decodes the character references an attribute value realistically
-    /// uses: numeric (`&#47;`, `&#x2f`, with or without `;`) and a few named
-    /// ones (`&sol;`), which are case-sensitive and need their `;`.
+    // Every named reference in the HTML table that decodes to ASCII. Only
+    // ASCII can form a JavaScript type, so references to other characters
+    // never change how a script is classified and may stay literal.
+    // https://html.spec.whatwg.org/multipage/named-characters.html
+    private static let asciiNamedReferences: [String: String] = [
+        "Tab": "\t", "NewLine": "\n", "excl": "!", "quot": "\"", "QUOT": "\"",
+        "num": "#", "dollar": "$", "percnt": "%", "amp": "&", "AMP": "&",
+        "apos": "'", "lpar": "(", "rpar": ")", "ast": "*", "midast": "*",
+        "plus": "+", "comma": ",", "period": ".", "sol": "/", "colon": ":",
+        "semi": ";", "lt": "<", "LT": "<", "equals": "=", "gt": ">", "GT": ">",
+        "quest": "?", "commat": "@", "lsqb": "[", "lbrack": "[", "bsol": "\\",
+        "rsqb": "]", "rbrack": "]", "Hat": "^", "lowbar": "_", "UnderBar": "_",
+        "grave": "`", "DiacriticalGrave": "`", "lcub": "{", "lbrace": "{",
+        "verbar": "|", "vert": "|", "VerticalLine": "|", "rcub": "}", "rbrace": "}",
+        "fjlig": "fj"
+    ]
+
+    /// Decodes character references in an attribute value: numeric ones
+    /// (`&#47;`, `&#x2f`, with or without `;`) and every named reference
+    /// that yields ASCII (case-sensitive, with its `;`).
     static func decodingCharacterReferences(_ value: String) -> String {
         guard value.contains("&") else { return value }
-        let named: [String: String] = [
-            "amp": "&", "AMP": "&", "lt": "<", "LT": "<", "gt": ">", "GT": ">",
-            "quot": "\"", "QUOT": "\"", "apos": "'",
-            "sol": "/", "plus": "+", "period": "."
-        ]
+        let named = asciiNamedReferences
         let scalars = Array(value.unicodeScalars)
         var decoded = String.UnicodeScalarView()
         var index = 0
@@ -347,7 +368,7 @@ enum HTMLScriptScanner {
                     index = cursor
                     continue
                 }
-            } else if let semicolon = scalars[(index + 1)...].prefix(8).firstIndex(of: ";"),
+            } else if let semicolon = scalars[(index + 1)...].prefix(20).firstIndex(of: ";"),
                       let replacement = named[string(scalars[(index + 1)..<semicolon])] {
                 decoded.append(contentsOf: replacement.unicodeScalars)
                 index = semicolon + 1
