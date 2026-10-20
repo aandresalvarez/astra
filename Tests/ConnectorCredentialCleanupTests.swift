@@ -1194,8 +1194,8 @@ struct ConnectorCredentialCleanupTests {
         #expect(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: trusted.upperBound..<app.endIndex) != nil)
     }
 
-    @Test("Turning a plugin off keeps its account and every credential, shared namespace or not")
-    func disableSparesSharedNamespace() throws {
+    @Test("Turning a plugin off keeps isolated credentials and legacy shared aliases", arguments: [false, true])
+    func disableSparesSharedNamespace(legacy: Bool) throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-credential-cleanup-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1212,11 +1212,15 @@ struct ConnectorCredentialCleanupTests {
                 package, into: workspace, modelContext: context, credentialInputs: ["SVC_TOKEN": "secret-value"]
             )
             let installed = try #require(workspace.connectors.first)
+            if legacy {
+                installed.credentialNamespaceID = nil
+                #expect(installed.restorePreviouslyStoredCredential(key: "SVC_TOKEN", value: "secret-value"))
+            }
             let recreated = recreation(of: installed)
             recreated.isGlobal = true
             context.insert(recreated)
             try context.save()
-            #expect(KeychainService.load(key: "SVC_TOKEN", connector: recreated) == "secret-value")
+            #expect(KeychainService.load(key: "SVC_TOKEN", connector: recreated) == (legacy ? "secret-value" : nil))
 
             let capabilities = WorkspaceCapabilities(
                 workspace: workspace,
@@ -1229,7 +1233,7 @@ struct ConnectorCredentialCleanupTests {
             )
             #expect(result.removedWorkspaceConnectorIDs.isEmpty)
             #expect(workspace.connectors.map(\.id) == [installedID])
-            #expect(KeychainService.load(key: "SVC_TOKEN", connector: recreated) == "secret-value")
+            #expect(KeychainService.load(key: "SVC_TOKEN", connector: recreated) == (legacy ? "secret-value" : nil))
             #expect(KeychainService.load(key: "SVC_TOKEN", connector: installed) == "secret-value")
         }
     }

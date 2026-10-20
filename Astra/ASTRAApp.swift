@@ -921,6 +921,7 @@ public struct ASTRAApp: App {
             let pendingWorktreeCleanup = ((try? worktreeCleanup.pendingURLs()).map { !$0.isEmpty } ?? true)
                 || ((try? worktreeCleanup.ownership.creationJournal.pendingURLs()).map { !$0.isEmpty } ?? true)
                 || connectorCleanup
+                || ConnectorCredentialGenerationJournal.requiresRecoveryScan(modelContext: modelContext)
             // Every folder a mirror was written into is probed too, wherever
             // it is. The store's own workspaces are recorded first, so ones
             // imported before the registry existed are covered from now on.
@@ -993,6 +994,7 @@ public struct ASTRAApp: App {
                 if WorkspaceRecoveryTrust.allowsCleanup {
                     WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
                                                                   movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
+                    ConnectorCredentialGenerationJournal.resumeAfterWorkspaceRecovery(modelContext: modelContext)
                     ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
                     PluginSecretCleanupOutbox.resumePending(modelContext: modelContext)
                     WorkspaceDeletionCleanupService.dropUnconfirmed(

@@ -1,0 +1,114 @@
+import Foundation
+import SwiftData
+import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
+
+/// Prepares an unreachable credential generation. Only the account's model
+/// reference is published by the caller's existing durable operation commit.
+@MainActor
+final class ConnectorCredentialGenerationTransaction {
+    enum Failure: Error, LocalizedError {
+        case changedAccount, readFailed(String), copyFailed(String)
+        var errorDescription: String? {
+            switch self {
+            case .changedAccount: return "The account changed before its credentials could be prepared. Retry."
+            case .readFailed(let key): return "Couldn't read the saved \(key). Unlock the credential store and retry."
+            case .copyFailed(let key): return "Couldn't preserve the saved \(key) for this account. Retry."
+            }
+        }
+    }
+    let namespaceID: UUID
+    var accountID: UUID { staged.connectorID }
+    private var writeAttempted = false
+    private let previous: ConnectorKeychainCleanup?
+    private let staged: ConnectorKeychainCleanup
+    private let journal: ConnectorCredentialGenerationJournal?
+    let lease: ConnectorCredentialGenerationJournal.Lease?
+
+    private init(namespaceID: UUID, previous: ConnectorKeychainCleanup?, staged: ConnectorKeychainCleanup,
+                 journal: ConnectorCredentialGenerationJournal?, lease: ConnectorCredentialGenerationJournal.Lease?) {
+        self.namespaceID = namespaceID
+        self.previous = previous
+        self.staged = staged
+        self.journal = journal
+        self.lease = lease
+    }
+
+    func noteWriteAttempt() { writeAttempted = true }
+
+    static func prepare(
+        account: Connector, isNew: Bool, keeping keys: Set<String>, replacing: Set<String>, modelContext: ModelContext,
+        lease: ConnectorCredentialGenerationJournal.Lease? = nil
+    ) throws -> Self {
+        guard account.modelContext === modelContext, !account.isDeleted else { throw Failure.changedAccount }
+        let journal = try ConnectorCredentialGenerationJournal(modelContext: modelContext)
+        let heldLease = try journal?.acquireLease(reusing: lease)
+        _ = try journal?.pending() // Reject unreadable ownership before any vault write.
+        let saved = ModelContext(modelContext.container)
+        let accountID = account.id
+        var query = FetchDescriptor<Connector>(predicate: #Predicate { $0.id == accountID })
+        query.fetchLimit = 2
+        let rows = try saved.fetch(query)
+        guard rows.count <= 1 else { throw Failure.changedAccount }
+        let stored = rows.first
+        if let stored {
+            guard !isNew, stored.credentialNamespaceID == account.credentialNamespaceID,
+                  stored.baseURL == account.baseURL, stored.serviceType == account.serviceType else { throw Failure.changedAccount }
+        } else {
+            guard isNew || modelContext.insertedModelsArray.contains(where: { ($0 as? Connector) === account })
+            else { throw Failure.changedAccount }
+        }
+        let namespaceID = UUID()
+        let old = stored?.keychainCleanup
+        var staged = account.keychainCleanup
+        staged.credentialNamespaceID = namespaceID
+        let source = ConnectorSecretFacts(connector: stored ?? account)
+        let target = ConnectorSecretFacts(id: source.id, name: source.name, serviceType: source.serviceType,
+            baseURL: source.baseURL, originPackageID: source.originPackageID, originComponentID: source.originComponentID,
+            credentialNamespaceID: namespaceID)
+        var copies: [(String, String)] = []
+        if let stored {
+            // A legacy plain setting being promoted can have a newer vault
+            // value without a credential marker. Preserve that value too, but
+            // never probe arbitrary undeclared/retired keys: only current
+            // saved fields explicitly retained by this transaction are owners.
+            let plainKeys = stored.configKeys.filter { !stored.configValue($0).isEmpty }
+            let sourceKeys = Set((stored.credentialKeys + plainKeys).map(ConnectorCredentialKey.canonical))
+            for key in sourceKeys.intersection(keys).sorted()
+            where !replacing.contains(key) {
+                switch ConnectorSecretSeam.required.readCredential(key: key, facts: source, store: KeychainSecretStore()) {
+                case .value(let value): copies.append((key, value))
+                case .missing: continue
+                case .unavailable: throw Failure.readFailed(key)
+                }
+            }
+        }
+        if let journal, let heldLease { try journal.record([staged] + (old.map { [$0] } ?? []), lease: heldLease) }
+        let prepared = Self(namespaceID: namespaceID, previous: old, staged: staged, journal: journal, lease: heldLease)
+        for (key, value) in copies {
+            // An opaque value already admitted to this same logical account.
+            prepared.noteWriteAttempt()
+            guard ConnectorSecretSeam.required.saveCredential(value, key: key, facts: target, allowUserInteraction: false) else {
+                prepared.discard()
+                throw Failure.copyFailed(key)
+            }
+        }
+        return prepared
+    }
+
+    func completed() {
+        if let journal, let lease { journal.forget([staged], lease: lease) }
+    }
+
+    /// Called only after a proved noncommit or before any model cutover.
+    func discard() {
+        let facts = ConnectorSecretFacts(id: staged.connectorID, name: staged.name, serviceType: staged.serviceType,
+            baseURL: staged.baseURL, originPackageID: staged.originPackageID, originComponentID: staged.originComponentID,
+            credentialNamespaceID: staged.credentialNamespaceID)
+        let cleared = !writeAttempted || ConnectorSecretSeam.required.deleteAllCredentialsReportingResult(facts: facts, sparing: [])
+        if let journal, let lease {
+            journal.forget((previous.map { [$0] } ?? []) + (cleared ? [staged] : []), lease: lease)
+        }
+    }
+}

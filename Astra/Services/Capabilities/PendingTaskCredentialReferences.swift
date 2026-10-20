@@ -25,7 +25,8 @@ struct PendingTaskCredentialReferences {
         accounts.contains(cleanup.connectorID) || !accountNamespaces.isDisjoint(with:
             KeychainSecretStore.connectorEntityIDs(
                 id: cleanup.connectorID, serviceType: cleanup.serviceType, baseURL: cleanup.baseURL,
-                originPackageID: cleanup.originPackageID, originComponentID: cleanup.originComponentID
+                originPackageID: cleanup.originPackageID, originComponentID: cleanup.originComponentID,
+                credentialNamespaceID: cleanup.credentialNamespaceID
             ))
     }
 
@@ -83,13 +84,18 @@ struct PendingTaskCredentialReferences {
             }
             for binding in activation.bindings {
                 guard let id = binding.accountID else { continue }
-                accounts.insert(id)
-                accountNamespaces.insert(KeychainSecretStore.connectorEntityID(for: id))
-                if policy.pluginAccounts == nil {
+                if let frozen = policy.pluginAccounts {
+                    if !frozen.contains(where: { $0.id == id }) {
+                        // An older partial snapshot has only a logical ID;
+                        // its missing credential generation remains unknown.
+                        accounts.insert(id)
+                        accountNamespaces.insert(KeychainSecretStore.connectorEntityID(for: id))
+                    }
+                } else {
                     var descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.id == id })
                     descriptor.fetchLimit = 1
                     guard let account = try? context.fetch(descriptor).first else { return false }
-                    accountNamespaces.formUnion(KeychainSecretStore.connectorEntityIDs(for: account))
+                    include(PluginAccountRecord(account))
                 }
             }
         }
@@ -113,14 +119,16 @@ struct PendingTaskCredentialReferences {
             }
             for rawID in skill.connectorIDs ?? [] {
                 guard let id = UUID(uuidString: rawID) else { return false }
-                accounts.insert(id)
-                accountNamespaces.insert(KeychainSecretStore.connectorEntityID(for: id))
+                if !(skill.connectorSnapshots ?? []).contains(where: { $0.id.flatMap(UUID.init(uuidString:)) == id }) {
+                    accounts.insert(id)
+                    accountNamespaces.insert(KeychainSecretStore.connectorEntityID(for: id))
+                }
             }
             for account in skill.connectorSnapshots ?? [] {
                 guard let rawID = account.id, let id = UUID(uuidString: rawID) else { return false }
-                accounts.insert(id)
                 accountNamespaces.formUnion(KeychainSecretStore.connectorEntityIDs(id: id,
-                    serviceType: account.serviceType, baseURL: account.baseURL, originPackageID: nil, originComponentID: nil))
+                    serviceType: account.serviceType, baseURL: account.baseURL, originPackageID: nil, originComponentID: nil,
+                    credentialNamespaceID: account.credentialNamespaceID))
             }
         }
         return true
@@ -132,9 +140,9 @@ struct PendingTaskCredentialReferences {
     }
 
     private mutating func include(_ account: PluginAccountRecord) {
-        accounts.insert(account.id)
         accountNamespaces.formUnion(KeychainSecretStore.connectorEntityIDs(id: account.id,
             serviceType: account.serviceType, baseURL: account.baseURL,
-            originPackageID: account.originPackageID, originComponentID: account.originComponentID))
+            originPackageID: account.originPackageID, originComponentID: account.originComponentID,
+            credentialNamespaceID: account.credentialNamespaceID))
     }
 }

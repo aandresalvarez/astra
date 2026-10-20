@@ -606,6 +606,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             authMethod: source.authMethod
         )
         connector.id = source.id
+        connector.credentialNamespaceID = source.credentialNamespaceID
         connector.credentialKeys = source.credentialKeys
         connector.credentialValues = source.credentialValues
         connector.configKeys = source.configKeys

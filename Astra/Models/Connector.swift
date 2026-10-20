@@ -5,6 +5,8 @@ import ASTRACore
 @Model
 public final class Connector {
     public var id: UUID
+    /// Mutable only at a credential cutover; account and binding IDs stay stable.
+    public var credentialNamespaceID: UUID?
     public var name: String
     public var serviceType: String  // "jira", "slack", "github", "database", "rest_api", "custom"
     public var icon: String
@@ -81,7 +83,8 @@ public final class Connector {
             serviceType: serviceType,
             baseURL: baseURL,
             originPackageID: originPackageID,
-            originComponentID: originComponentID
+            originComponentID: originComponentID,
+            credentialNamespaceID: credentialNamespaceID
         )
     }
 
@@ -455,7 +458,8 @@ public final class Connector {
         ConnectorKeychainCleanup(
             connectorID: id, name: name, serviceType: serviceType, baseURL: baseURL,
             originPackageID: originPackageID, originComponentID: originComponentID,
-            isStanfordOutlookMail: isStanfordOutlookMail
+            isStanfordOutlookMail: isStanfordOutlookMail,
+            credentialNamespaceID: credentialNamespaceID
         )
     }
 
@@ -885,6 +889,7 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
     public let originPackageID: String?
     public let originComponentID: String?
     public let isStanfordOutlookMail: Bool
+    public var credentialNamespaceID: UUID? = nil
 
     /// True when every credential namespace was cleared, so a caller with a
     /// durable record can keep it for a retry otherwise. Namespaces in
@@ -900,7 +905,8 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
         }
         let cleared = ConnectorSecretSeam.required.deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts(
             id: connectorID, name: name, serviceType: serviceType, baseURL: baseURL,
-            originPackageID: originPackageID, originComponentID: originComponentID
+            originPackageID: originPackageID, originComponentID: originComponentID,
+            credentialNamespaceID: credentialNamespaceID
         ), sparing: sparing)
         AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
             "connector_id": connectorID.uuidString,

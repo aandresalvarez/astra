@@ -1670,7 +1670,8 @@ public enum WorkspaceConfigManager {
             originSourceKind: connector.originSourceKind,
             accountAlias: connector.accountAlias,
             createdAt: connector.createdAt,
-            updatedAt: connector.updatedAt
+            updatedAt: connector.updatedAt,
+            credentialNamespaceID: connector.credentialNamespaceID
         )
     }
 
@@ -2059,6 +2060,7 @@ public enum WorkspaceConfigManager {
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             connector.id = id
         }
+        connector.credentialNamespaceID = config.credentialNamespaceID
         connector.credentialKeys = config.credentialKeys
         connector.credentialValues = Array(repeating: "", count: config.credentialKeys.count)
         connector.configKeys = config.configKeys
@@ -2095,6 +2097,7 @@ public enum WorkspaceConfigManager {
         if let id = snapshot.id.flatMap(UUID.init(uuidString:)) {
             connector.id = id
         }
+        connector.credentialNamespaceID = snapshot.credentialNamespaceID
         connector.credentialKeys = snapshot.credentialKeys
         connector.credentialValues = Array(repeating: "", count: snapshot.credentialKeys.count)
         connector.configKeys = snapshot.configKeys
@@ -2247,29 +2250,6 @@ public enum WorkspaceConfigManager {
         template.createdAt = config.createdAt ?? template.createdAt
         template.updatedAt = config.updatedAt ?? template.updatedAt
         return template
-    }
-
-    static func redactedSkillSnapshot(_ snapshot: SkillSnapshotConfig) -> SkillSnapshotConfig {
-        SkillSnapshotConfig(
-            id: snapshot.id,
-            name: snapshot.name,
-            icon: snapshot.icon,
-            description: snapshot.description,
-            allowedTools: snapshot.allowedTools,
-            disallowedTools: snapshot.disallowedTools,
-            customTools: snapshot.customTools,
-            behaviorInstructions: snapshot.behaviorInstructions,
-            environmentKeys: snapshot.environmentKeys,
-            environmentValues: Array(repeating: "", count: snapshot.environmentKeys.count),
-            isGlobal: snapshot.isGlobal,
-            connectorIDs: snapshot.connectorIDs,
-            localToolIDs: snapshot.localToolIDs,
-            connectorSnapshots: snapshot.connectorSnapshots,
-            localToolSnapshots: snapshot.localToolSnapshots,
-            createdAt: snapshot.createdAt,
-            updatedAt: snapshot.updatedAt,
-            credentialNamespaceID: snapshot.credentialNamespaceID
-        )
     }
 
     private static func makeImportedSchedule(
@@ -2514,11 +2494,7 @@ public enum WorkspaceConfigManager {
             task.templateID = UUID(uuidString: id)
         }
         task.templateHooksJSON = config.templateHooksJSON ?? ""
-        task.skillSnapshots = (config.skillSnapshots ?? []).map { snapshot in
-            var copied = snapshot
-            if freshIDs { copied.credentialNamespaceID = nil }
-            return copied
-        }
+        task.skillSnapshots = importedSkillSnapshots(config.skillSnapshots ?? [], freshIDs: freshIDs)
         task.executionEnvironmentSnapshotJSON = sanitizedExecutionEnvironmentJSON(
             config.executionEnvironmentSnapshotJSON,
             preservingHost: true
