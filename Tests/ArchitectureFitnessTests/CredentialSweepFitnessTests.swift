@@ -338,6 +338,21 @@ struct CredentialSweepFitnessTests {
         #expect(noRollback.upperBound < release.lowerBound)
     }
 
+    @Test("Account editor delegates credential mutations and recovery to the durable service")
+    func accountEditorUsesDurableCredentialBoundary() throws {
+        let view = try fileText("Astra/Views/ConnectorsManagerView.swift")
+        let service = try fileText("Astra/Services/Capabilities/ConnectorCredentialEditor.swift")
+        #expect(!view.contains("connector.saveCredentialChecked(") && !view.contains("connector.removeCredential("))
+        #expect(view.contains("ConnectorCredentialEditor.save(") && view.contains("ConnectorCredentialEditor.remove("))
+        #expect(view.contains("ConnectorCredentialEditor.recover("))
+        #expect(service.contains("ConnectorCredentialGenerationTransaction.prepare("))
+        #expect(service.contains("PluginStateCommit.save("))
+        #expect(!service.contains("account.removeCredential("))
+        let recovery = try body(from: "static func recover(", until: "private static func change(", in: service)
+        #expect(recovery.contains("PluginOperationRecovery.resumePending("))
+        #expect(!recovery.contains("saveCredentialChecked(") && !recovery.contains("change("))
+    }
+
     // MARK: - Helpers
 
     private func body(
