@@ -5,6 +5,8 @@ import ASTRACore
 @Model
 public final class Connector {
     public var id: UUID
+    /// Mutable only at a credential cutover; account and binding IDs stay stable.
+    public var credentialNamespaceID: UUID?
     public var name: String
     public var serviceType: String  // "jira", "slack", "github", "database", "rest_api", "custom"
     public var icon: String

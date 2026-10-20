@@ -53,6 +53,7 @@ struct PluginV21MigrationTests {
             let workspaces = try context.fetch(FetchDescriptor<Workspace>())
             let accounts = try context.fetch(FetchDescriptor<Connector>())
             #expect(Set(accounts.map(\.id)) == Set(ids.accounts))
+            #expect(accounts.allSatisfy { $0.credentialNamespaceID == nil })
             for (index, id) in ids.workspaces.enumerated() {
                 let workspace = try #require(workspaces.first { $0.id == id })
                 let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
@@ -69,6 +70,31 @@ struct PluginV21MigrationTests {
             #expect(!PluginActivationMigration.needsMigration(modelContext: context, packages: [package]))
             #expect(try PluginActivationMigration.migrate(modelContext: context, packages: [package]) == .init())
         }
+    }
+
+    @Test("The first V21 schema owns optional credential generations across reopening")
+    func currentAccountGenerationReference() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = root.appendingPathComponent("credential-reference.store")
+        let namespace = UUID()
+        let accountID: UUID
+        do {
+            let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(url: store)])
+            let account = Connector(name: "Versioned account")
+            accountID = account.id
+            account.credentialNamespaceID = namespace
+            container.mainContext.insert(account)
+            container.mainContext.insert(Connector(name: "Legacy namespace"))
+            try container.mainContext.save()
+        }
+        let reopened = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: store)])
+        let accounts = try reopened.mainContext.fetch(FetchDescriptor<Connector>())
+        #expect(accounts.first { $0.id == accountID }?.credentialNamespaceID == namespace)
+        #expect(accounts.first { $0.id != accountID }?.credentialNamespaceID == nil)
+        #expect(accounts.count == 2)
     }
 
     private func writeOriginalStore(
