@@ -96,10 +96,12 @@ enum CapabilityApprovalDigest {
 struct CapabilityApprovalStore {
     let directory: URL
     private let fileManager: FileManager
+    private let publishesChanges: Bool
 
-    init(directory: URL = Self.approvalsDirectory(), fileManager: FileManager = .default) {
+    init(directory: URL = Self.approvalsDirectory(), fileManager: FileManager = .default, publishesChanges: Bool = true) {
         self.directory = directory
         self.fileManager = fileManager
+        self.publishesChanges = publishesChanges
     }
 
     static func approvalsDirectory(
@@ -194,7 +196,7 @@ struct CapabilityApprovalStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(record)
         try data.write(to: recordURL(for: record), options: [.atomic])
-        NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil)
+        if publishesChanges { NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil) }
         return record
     }
 
@@ -222,7 +224,7 @@ struct CapabilityApprovalStore {
         )
         let fileManager = fileManager
         return (record, {
-            defer { NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil) }
+            defer { if publishesChanges { NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil) } }
             if let previous {
                 try previous.write(to: url, options: [.atomic])
             } else if fileManager.fileExists(atPath: url.path) {

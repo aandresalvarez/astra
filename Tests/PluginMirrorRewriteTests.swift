@@ -114,14 +114,21 @@ struct PluginMirrorRewriteTests {
         // The cleanup is still owed while the mirrors are rewritten; one
         // that can't be written keeps it.
         var owedDuringRewrite = false
-        try PluginUpdateService.reconcileAll(
-            modelContext: context, packages: packages, mode: .release, secrets: AcceptingSkillDeletes.self,
-            approvalRecords: Fixtures.approvals(packages),
-            rewriteMirror: { _ in
-                owedDuringRewrite = (try? outbox.pending())?.contains(released) ?? false
-                return false
-            }
-        )
+        var pendingOperation: UUID?
+        do {
+            try PluginUpdateService.reconcileAll(
+                modelContext: context, packages: packages, mode: .release, secrets: AcceptingSkillDeletes.self,
+                approvalRecords: Fixtures.approvals(packages),
+                rewriteMirror: { _ in
+                    owedDuringRewrite = (try? outbox.pending())?.contains(released) ?? false
+                    return false
+                }
+            )
+        } catch let problem as PluginOperationProblem {
+            if case .savedRecoveryPending(let id) = problem { pendingOperation = id }
+            else { throw problem }
+        }
+        #expect(pendingOperation != nil)
         #expect(owedDuringRewrite)
         #expect(activation.recordedVersion == "2.0.0")
         #expect(try outbox.pending() == [released])
@@ -131,6 +138,8 @@ struct PluginMirrorRewriteTests {
             modelContext: context, outbox: outbox, secrets: AcceptingSkillDeletes.self, rewriteMirror: { _ in false }
         )
         #expect(try outbox.pending() == [released])
+        let resumed = PluginOperationRecovery.resumePending(modelContext: context, only: try #require(pendingOperation), export: { _, _ in true })
+        #expect(resumed.completed == 1 && resumed.deferred == 0)
         var rewritten: [UUID] = []
         PluginSecretCleanupOutbox.resumePending(modelContext: context, outbox: outbox, secrets: AcceptingSkillDeletes.self, rewriteMirror: {
             rewritten.append($0.id)

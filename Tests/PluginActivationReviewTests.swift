@@ -128,6 +128,7 @@ struct PluginActivationReviewTests {
         Fixtures.Environment.retained.append(container)
         let context = container.mainContext
         let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
         let library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
         let v1 = Fixtures.package(version: "1.0.0")
@@ -170,6 +171,7 @@ struct PluginActivationReviewTests {
         Fixtures.Environment.retained.append(container)
         let context = container.mainContext
         let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
         let library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
         let v1 = Fixtures.package(version: "1.0.0")
@@ -249,21 +251,28 @@ struct PluginActivationReviewTests {
     func importReportsAFailedRestore() throws {
         let env = try Fixtures.Environment()
         try env.install(Fixtures.package(version: "1.0.0"))
-        let library = CapabilityLibrary(directory: env.library.directory, fileManager: RestoreRefusingFileManager(hidden: "2.0.0"))
+        let library = CapabilityLibrary(directory: env.library.directory, fileManager: RestoreBlockingFileManager(hidden: "2.0.0", library: env.library.directory))
         let update = CapabilityPackageValidator.validate(
             package: Fixtures.package(version: "2.0.0"), installedPackages: library.installedPackages(), checkPrerequisites: false
         )
-        let error = #expect(throws: CapabilityPackageUpdateNotRolledBack.self) {
-            try CapabilityPackageImporter(library: library).importValidatedPackage(update, modelContext: env.context)
+        var operationID: UUID?
+        do {
+            _ = try CapabilityPackageImporter(library: library).importValidatedPackage(update, modelContext: env.context)
+            Issue.record("The retargeted recovery root should be refused")
+        } catch let problem as PluginOperationProblem {
+            if case .commitUncertain(let id) = problem { operationID = id }
+            else { throw problem }
         }
-        let failure = try #require(error)
-        defer { try? FileManager.default.removeItem(atPath: failure.snapshotPath) }
-        #expect(failure.packageID == "ops.report")
-        #expect(failure.updateError == CapabilityPackageInstallUnreadable(packageID: "ops.report").localizedDescription)
+        let id = try #require(operationID)
+        let journal = PluginFileOperationJournal(library: env.library, approvals: CapabilityApprovalStore())
+        #expect(try journal.pendingIDs() == [id])
+        let prepared = try journal.load(id)
+        let oldBytes = try #require(prepared.manifest.entries.first { $0.name == "ops-report.json" }?.before?.files[""])
+        let kept = try JSONDecoder().decode(PluginPackage.self, from: oldBytes)
+        #expect(kept.version == "1.0.0")
         #expect(env.library.installedPackage(id: "ops.report") == nil)
-        // The previous version survives only in the kept snapshot.
-        let kept = try FileManager.default.subpathsOfDirectory(atPath: failure.snapshotPath)
-        #expect(!kept.isEmpty)
+        #expect(try PluginOperationCommit.read(id, container: env.container) == nil)
+        #expect(WorkspaceCapabilityActivation.activation(for: "ops.report", in: env.workspace)?.recordedVersion == "1.0.0")
     }
 
     @Test("Remove keeps a plugin template the person changed only in its models, hooks or default skills")
@@ -658,17 +667,23 @@ private final class HidingVersionFileManager: FileManager, @unchecked Sendable {
     }
 }
 
-/// Hides a version like `HidingVersionFileManager`, and refuses to copy a
-/// snapshot back, the way a full disk would.
-private final class RestoreRefusingFileManager: FileManager, @unchecked Sendable {
+/// Hides the replacement and retargets the actual storage directory, so
+/// recovery must retain its images instead of writing into an unrelated root.
+private final class RestoreBlockingFileManager: FileManager, @unchecked Sendable {
     let hidden: String
-    init(hidden: String) { self.hidden = hidden }
+    let library: URL
+    private var blocked = false
+    init(hidden: String, library: URL) { self.hidden = hidden; self.library = library }
     override func contents(atPath path: String) -> Data? {
         guard let data = super.contents(atPath: path) else { return nil }
-        return String(decoding: data, as: UTF8.self).contains("\"\(hidden)\"") ? nil : data
-    }
-    override func copyItem(at srcURL: URL, to dstURL: URL) throws {
-        if srcURL.path.contains("astra-capability-snapshot-") { throw CocoaError(.fileWriteOutOfSpace) }
-        try super.copyItem(at: srcURL, to: dstURL)
+        guard String(decoding: data, as: UTF8.self).contains("\"\(hidden)\"") else { return data }
+        if !blocked {
+            blocked = true
+            do {
+                try super.moveItem(at: library, to: library.deletingLastPathComponent().appendingPathComponent("RetainedLibrary"))
+                try super.createDirectory(at: library, withIntermediateDirectories: false)
+            } catch { Issue.record("Could not create the blocked-restore fixture") }
+        }
+        return nil
     }
 }

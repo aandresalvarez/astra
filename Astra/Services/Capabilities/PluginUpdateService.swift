@@ -263,8 +263,13 @@ enum PluginUpdateService {
         secrets: (any SkillSecretPersisting.Type)? = nil,
         connectorStore: SecretStore? = nil,
         approvalRecords: [CapabilityApprovalRecord]? = nil,
-        rewriteMirror: ((Workspace) -> Bool)? = nil
+        rewriteMirror: ((Workspace) -> Bool)? = nil,
+        fileOperation: PluginFileOperationJournal.Prepared? = nil,
+        fileJournal: PluginFileOperationJournal? = nil,
+        operationKind: PluginOperationReceipt.Kind = .update,
+        persist: ((ModelContext) throws -> Void)? = nil
     ) throws -> Int {
+        guard (fileOperation == nil) == (fileJournal == nil) else { throw PluginFileOperationJournal.Failure.invalidManifest }
         let approvalRecords = approvalRecords ?? CapabilityApprovalStore().records()
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let activations = try modelContext.fetch(FetchDescriptor<PluginActivation>())
@@ -296,21 +301,49 @@ enum PluginUpdateService {
                 changed += 1
                 if !changedWorkspaces.contains(where: { $0 === workspace }) { changedWorkspaces.append(workspace) }
             }
-            guard changed > 0 else { return 0 }
+            guard changed > 0 || fileOperation != nil else { return 0 }
             let mirrored = changedWorkspaces + (try WorkspaceConfigManager.workspacesMirroring(
                 accountIDs: total.changedAccountIDs, among: try modelContext.fetch(FetchDescriptor<Workspace>()), modelContext: modelContext
             ))
-            let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
+            let workspaceIDs = Array(Set(mirrored.map(\.id)))
+            var committed: PluginOperationCommit.Outcome?
+            var recoveryComplete = false
             let saved = PluginSecretCleanupOutbox.deleteThenClean(
                 total.released, keys: total.staleSecrets + journaledCopies(total.copied), modelContext: modelContext, secrets: secrets,
-                save: { WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext) },
+                save: {
+                    let outcome = PluginOperationCommit.save(id: fileOperation?.id ?? UUID(), kind: operationKind,
+                        pluginIDs: fileOperation?.manifest.pluginIDs ?? packages.map(\.id), workspaceIDs: workspaceIDs,
+                        manifestDigest: fileOperation?.digest, modelContext: modelContext,
+                        persist: persist ?? { context in
+                            guard WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: context) else { throw UpdateError.saveFailed }
+                        })
+                    committed = outcome
+                    if case .notCommitted = outcome { return false }
+                    // Indeterminate retains both cleanup debt and prepared
+                    // files, rather than granting permission to undo a save.
+                    return true
+                },
                 beforeSettling: {
-                    var seen = Set<UUID>()
-                    return mirrored.filter { seen.insert($0.id).inserted }.reduce(true) { rewrite($1) && $0 }
+                    guard case .committed(let receipt, let reportedFailure) = committed, !reportedFailure else { return false }
+                    let export: ((Workspace, ModelContext) -> Bool)? = rewriteMirror.map { write in { workspace, _ in write(workspace) } }
+                    if let journal = fileJournal, let prepared = fileOperation {
+                        recoveryComplete = PluginFileOperationRecovery(journal: journal)
+                            .resumePending(modelContext: modelContext, only: prepared.id, export: export).completed == 1
+                    } else {
+                        recoveryComplete = PluginOperationRecovery.resumePending(modelContext: modelContext,
+                            only: receipt.id, export: export).completed == 1
+                    }
+                    return recoveryComplete
                 }
             )
             guard saved else { throw UpdateError.saveFailed }
+            if case .indeterminate(let id, _) = committed { throw PluginOperationProblem.commitUncertain(id) }
+            if !recoveryComplete, case .committed(let receipt, _) = committed {
+                CapabilityCatalogPersistenceEvents.post(.global)
+                throw PluginOperationProblem.savedRecoveryPending(receipt.id)
+            }
         } catch {
+            guard !PluginOperationProblem.preventsRollback(error) else { throw error }
             modelContext.rollback()
             restore()
             // A copy the Keychain can't take back is reported ahead of the
@@ -329,6 +362,7 @@ enum PluginUpdateService {
         var restorers: [() -> Void] = []
         var seen = Set<UUID>()
         for workspace in workspaces where seen.insert(workspace.id).inserted {
+            SwiftDataPluginRelationshipPreparation.prepare(workspace)
             let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
             restorers.append { WorkspaceCapabilityActivation.restore(snapshot, to: workspace) }
             for template in workspace.templates where !template.isDeleted {

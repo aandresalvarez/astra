@@ -138,6 +138,8 @@ struct CapabilityInstallerTests {
         context.insert(workspace)
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
+        workspace.primaryPath = root.appendingPathComponent("Workspace").path
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         let spec = jira.connectors[0]
         let installer = CapabilityInstaller(library: library)

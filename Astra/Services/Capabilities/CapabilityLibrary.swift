@@ -38,10 +38,12 @@ struct CapabilityLibrary {
 
     let directory: URL
     let fileManager: FileManager
+    let publishesChanges: Bool
 
-    init(directory: URL = Self.capabilitiesDirectory(), fileManager: FileManager = .default) {
+    init(directory: URL = Self.capabilitiesDirectory(), fileManager: FileManager = .default, publishesChanges: Bool = true) {
         self.directory = directory
         self.fileManager = fileManager
+        self.publishesChanges = publishesChanges
     }
 
     static func capabilitiesDirectory(
@@ -55,6 +57,11 @@ struct CapabilityLibrary {
             fileManager: fileManager
         )
             .appendingPathComponent("Capabilities", isDirectory: true)
+    }
+
+    func publishChange() {
+        guard publishesChanges else { return }
+        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
     }
 
     func ensureDirectoryExists() throws {
@@ -194,7 +201,7 @@ struct CapabilityLibrary {
         let data = try encoder.encode(storedPackage)
         try removeItemIfPresent(at: packageManifestURL(for: storedPackage.id).deletingLastPathComponent())
         try data.write(to: packageURL(for: storedPackage.id), options: [.atomic])
-        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
+        publishChange()
     }
 
     func install(_ source: CapabilityPackageSource) throws {
@@ -238,7 +245,7 @@ struct CapabilityLibrary {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(storedPackage)
         try data.write(to: manifestURL, options: [.atomic])
-        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
+        publishChange()
     }
 
     @discardableResult
@@ -297,7 +304,7 @@ struct CapabilityLibrary {
             removedPackage = true
         }
         if removedPackage {
-            NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
+            publishChange()
         }
         return changed
     }
@@ -331,7 +338,7 @@ struct CapabilityLibrary {
         } else {
             try fileManager.removeItem(at: url)
         }
-        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
+        publishChange()
         return package
     }
 

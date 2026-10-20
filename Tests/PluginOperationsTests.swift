@@ -631,26 +631,21 @@ struct PluginOperationsTests {
         }
     }
 
-    @Test("An Update whose installed copy can't be copied aside is refused and leaves the installed copy")
-    func updateNeedsARestorableSnapshot() throws {
+    @Test("An Update whose prepared recovery cannot be written leaves the installed copy untouched")
+    func updateNeedsDurableRecovery() throws {
         let env = try Environment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
         try env.library.install(Self.package(version: "1.0.0"), sourceMetadata: .localLibrary())
-        let library = CapabilityLibrary(directory: env.library.directory, fileManager: SnapshotRefusingFileManager())
+        let journal = PluginFileOperationJournal(library: env.library, approvals: CapabilityApprovalStore())
+        try Data("Blocks the journal directory".utf8).write(to: journal.directory)
         let report = CapabilityPackageValidator.validate(
-            package: Self.package(version: "2.0.0"), installedPackages: library.installedPackages(), checkPrerequisites: false
+            package: Self.package(version: "2.0.0"), installedPackages: env.library.installedPackages(), checkPrerequisites: false
         )
-        #expect(throws: CapabilityPackageSnapshotUnavailable(packageID: "ops.report")) {
-            try CapabilityPackageImporter(library: library).importValidatedPackage(report, modelContext: env.context)
+        #expect(throws: (any Error).self) {
+            try CapabilityPackageImporter(library: env.library).importValidatedPackage(report, modelContext: env.context)
         }
         #expect(env.library.installedPackage(id: "ops.report")?.version == "1.0.0")
-    }
-
-    /// Fails only the copy that sets an installed package aside.
-    final class SnapshotRefusingFileManager: FileManager, @unchecked Sendable {
-        override func copyItem(at srcURL: URL, to dstURL: URL) throws {
-            if dstURL.path.contains("astra-capability-snapshot-") { throw CocoaError(.fileWriteNoPermission) }
-            try super.copyItem(at: srcURL, to: dstURL)
-        }
+        #expect(try ModelContext(env.container).fetch(FetchDescriptor<PluginOperationReceipt>()).isEmpty)
     }
 
     @Test("An MCP server ID another installed plugin declares is refused")
