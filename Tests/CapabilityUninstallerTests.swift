@@ -238,7 +238,7 @@ struct CapabilityUninstallerTests {
                         exportMirror: { changed in
                             exported.append(changed.id)
                             pendingWhileExporting = (try? outbox.pending()) ?? []
-                            return mirrorWritable
+                            return mirrorWritable && WorkspaceConfigManager.exportMirrorNow(workspace: changed, modelContext: context)
                         }
                     )
                     #expect(mirrorWritable)
@@ -291,8 +291,7 @@ struct CapabilityUninstallerTests {
             {"installedPlugins":[{"id":"held-mirror-package","version":"1.0.0","knownComponentIDs":["\#(component)"],"namespaceSeed":"kept-seed"}]}
             """#.utf8).write(to: mirror)
             try outbox.write([namespace])
-            #expect(PluginSecretCleanupOutbox.activationNamespacesInStoredMirrors(modelContext: context)?
-                .first { $0.0.id == workspace.id }?.1.contains(namespace) == true)
+            #expect(PluginCredentialMirrorReferences.capture(modelContext: context)?.holdsSkill(namespace) == true)
 
             // While it can't be rewritten, the namespace stays recorded.
             try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: mirror.path)
