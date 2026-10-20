@@ -86,8 +86,10 @@ enum CapabilityRuntimeIntegrityService {
         )
         let availableConnectors = availableConnectors(for: task)
 
+        let contractIssues = PluginQueuedContractValidation.issues(in: workspace, packages: packages)
+        let heldContracts = Set(contractIssues.map(\.packageID))
         var checks: [(PluginPackage, CapabilityRuntimeIntegrityIssue.Source)] = []
-        for package in packages where rawEnabledPackageIDs.contains(package.id) {
+        for package in packages where rawEnabledPackageIDs.contains(package.id) && !heldContracts.contains(package.id) {
             if runtimeEnabledPackageIDs.contains(package.id) {
                 guard shouldCheckEnabledPackage(
                     package,
@@ -115,7 +117,7 @@ enum CapabilityRuntimeIntegrityService {
         }
 
         var seenChecks = Set<String>()
-        var issues: [CapabilityRuntimeIntegrityIssue] = []
+        var issues = contractIssues
         for (package, source) in checks where seenChecks.insert("\(source.rawValue):\(package.id)").inserted {
             if source == .enabledPackage,
                let policyContext {

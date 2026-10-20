@@ -627,14 +627,12 @@ public enum WorkspaceCapabilityActivation {
     /// Copies `records` (activations `source` had when a request was
     /// submitted, or has now) onto `target`, as `copyActivations(from:)` does.
     ///
-    /// `definitionsFrozen` says the request also froze the plugin
-    /// definitions it was submitted with: the records' own acceptance (the
-    /// version, digest and components they were reconciled against, and
-    /// whether they awaited Update) then belongs with those definitions and
-    /// is kept. A request without them runs the library's current
-    /// definitions, so it takes the acceptance from the live activation: one
-    /// queued before an Update runs what the Update accepted, and none runs a
-    /// plugin awaiting Update.
+    /// `definitionsFrozen` says the request also retained the plugin's
+    /// definition. Acceptance, settings, namespaces and bindings always come
+    /// from the same record. Without that definition, projection compares the
+    /// record with the current library and holds an incompatible request; a
+    /// live Update must never stamp new acceptance onto old settings. An
+    /// explicit live hold also applies to legacy requests without definitions.
     ///
     /// An override whose row's contents the request froze (`frozenRowIDs`)
     /// is kept even when the store no longer has the row.
@@ -647,13 +645,13 @@ public enum WorkspaceCapabilityActivation {
         frozenRowIDs: Set<UUID> = []
     ) {
         for record in records {
-            let accepted = definitionsFrozen ? nil : activations(of: source).first { $0.id == record.id }
+            let liveHold = !definitionsFrozen && activations(of: source).contains { $0.id == record.id && $0.awaitingUpdate }
             let activation = PluginActivation(
                 id: record.id,
                 pluginID: record.pluginID,
                 isEnabled: record.isEnabled,
-                recordedVersion: accepted?.recordedVersion ?? record.recordedVersion,
-                recordedDigest: accepted?.recordedDigest ?? record.recordedDigest,
+                recordedVersion: record.recordedVersion,
+                recordedDigest: record.recordedDigest,
                 createdAt: record.createdAt
             )
             activation.launchWorkspaceID = record.workspaceID ?? source.id
@@ -667,9 +665,9 @@ public enum WorkspaceCapabilityActivation {
             activation.overriddenComponentIDs = live.map(\.componentID)
             activation.overridingRowIDs = live.map(\.rowID)
             activation.secretSettingKeys = record.secretSettingKeys
-            activation.knownComponentIDs = accepted?.knownComponentIDs ?? record.knownComponentIDs
+            activation.knownComponentIDs = record.knownComponentIDs
             activation.templateDigests = record.templateDigests
-            activation.awaitingUpdate = accepted?.awaitingUpdate ?? record.awaitingUpdate
+            activation.awaitingUpdate = record.awaitingUpdate || liveHold
             activation.namespaceSeed = record.namespaceSeed
             activation.credentialNamespaceSeed = record.credentialNamespaceSeed
             activation.revision = record.revision
