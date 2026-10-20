@@ -12,16 +12,10 @@ struct CapabilityPackageCreationResult {
 
 enum CapabilityPackageCreationError: LocalizedError {
     case invalidPackage(CapabilityPackageValidationReport)
-    /// The install failed and the approval saved ahead of it couldn't be
-    /// taken back: that version stays approved.
-    case approvalNotReverted(installError: String)
-
     var errorDescription: String? {
         switch self {
         case .invalidPackage(let report):
             return report.summary
-        case .approvalNotReverted(let installError):
-            return "\(installError) ASTRA also couldn't take back the approval it saved for this version, so it is still approved."
         }
     }
 }
@@ -66,15 +60,10 @@ struct CapabilityPackageCreationService {
         guard let mutationPermit else {
             return try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore,
                 modelContext: modelContext, approvals: approvalStore) { permit in
-                let written = CapabilityPackageValidator.validate(package: package,
-                    installedPackages: library.installedPackages(), checkPrerequisites: false).package ?? package
-                return try sourceStore.forgettingProvenance(pluginID: package.id,
-                    leaving: .install(digest: PluginSourceCatalog.contentDigest(written))) {
-                    try create(package, enableHere: enableHere, sourceURL: sourceURL, workspace: workspace,
-                        modelContext: modelContext, credentialInputs: credentialInputs, configInputs: configInputs,
-                        baseURLOverrides: baseURLOverrides, allowCredentialUserInteraction: allowCredentialUserInteraction,
-                        policyContext: policyContext, traceID: traceID, mutationPermit: permit)
-                }
+                try create(package, enableHere: enableHere, sourceURL: sourceURL, workspace: workspace,
+                    modelContext: modelContext, credentialInputs: credentialInputs, configInputs: configInputs,
+                    baseURLOverrides: baseURLOverrides, allowCredentialUserInteraction: allowCredentialUserInteraction,
+                    policyContext: policyContext, traceID: traceID, mutationPermit: permit)
             }
         }
         try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore,
@@ -84,10 +73,13 @@ struct CapabilityPackageCreationService {
             installedPackages: library.installedPackages(),
             checkPrerequisites: false
         )
-        guard validation.blockers.isEmpty, let validatedPackage = validation.package else {
+        guard validation.blockers.isEmpty, let checkedPackage = validation.package else {
             throw CapabilityPackageCreationError.invalidPackage(validation)
         }
 
+        var located = checkedPackage
+        if located.iconDescriptor.kind == .asset { located.sourceMetadata?.url = package.sourceMetadata?.url }
+        let validatedPackage = PluginInstallationTransaction.reviewedPackage(located)
         let writtenSourceURL: URL?
         if let sourceURL {
             writtenSourceURL = try sourceExporter.export(validatedPackage, to: sourceURL)
@@ -95,69 +87,31 @@ struct CapabilityPackageCreationService {
             writtenSourceURL = nil
         }
 
-        if enableHere {
-            let pendingApprovalRecord = try pendingApprovalRecordForImmediateEnablement(
-                package: validatedPackage,
-                workspace: workspace,
-                policyContext: policyContext
-            )
+        return try PluginSourceDefinitionOperation(library: library, store: sourceStore).installing(validatedPackage,
+            clearSource: true, modelContext: modelContext, approvals: approvalStore) { operation in
+            guard enableHere else {
+                let transaction = try PluginInstallationTransaction.prepare(package: validatedPackage, library: library,
+                    modelContext: modelContext, approvals: approvalStore, operation: operation)
+                let installed = try transaction.commitWithoutEnabling(modelContext: modelContext)
+                return CapabilityPackageCreationResult(package: installed, sourceURL: writtenSourceURL,
+                    approvalRecord: nil, installationResult: nil)
+            }
+            let pendingApproval = try pendingApprovalRecordForImmediateEnablement(
+                package: validatedPackage, workspace: workspace, policyContext: policyContext)
             var enablePolicyContext = policyContext ?? CapabilityCatalogPolicyContext.currentUser(
-                workspace: workspace,
-                approvalRecords: approvalStore.records()
-            )
-            if let pendingApprovalRecord,
-               !enablePolicyContext.approvalRecords.contains(pendingApprovalRecord) {
-                enablePolicyContext.approvalRecords.append(pendingApprovalRecord)
+                workspace: workspace, approvalRecords: approvalStore.records())
+            if let pendingApproval, !enablePolicyContext.approvalRecords.contains(pendingApproval) {
+                enablePolicyContext.approvalRecords.append(pendingApproval)
             }
-
-            // The approval is written before the library entry it covers: an
-            // exit between the two must not leave a new version installed
-            // with no approval for its digest.
-            let approval = try saveApprovalRecordIfNeeded(
-                pendingApprovalRecord,
-                package: validatedPackage
-            )
-            let installationResult: CapabilityInstaller.InstallationResult
-            do {
-                installationResult = try installer.install(
-                    validatedPackage,
-                    into: workspace,
-                    modelContext: modelContext,
-                    credentialInputs: credentialInputs,
-                    configInputs: configInputs,
-                    baseURLOverrides: baseURLOverrides,
-                    allowCredentialUserInteraction: allowCredentialUserInteraction,
-                    policyContext: enablePolicyContext,
-                    traceID: traceID,
-                    announceCatalogMutation: false, mutationPermit: mutationPermit
-                )
-            } catch let installError {
-                guard !PluginOperationProblem.preventsRollback(installError) else { throw installError }
-                do {
-                    try approval?.revert()
-                } catch {
-                    throw CapabilityPackageCreationError.approvalNotReverted(installError: installError.localizedDescription)
-                }
-                throw installError
-            }
-            let approvalRecord = approval?.record
+            let installation = try installer.install(validatedPackage, into: workspace, modelContext: modelContext,
+                credentialInputs: credentialInputs, configInputs: configInputs, baseURLOverrides: baseURLOverrides,
+                allowCredentialUserInteraction: allowCredentialUserInteraction, policyContext: enablePolicyContext,
+                traceID: traceID, announceCatalogMutation: false, approvalStore: approvalStore,
+                pendingApproval: pendingApproval, fileOperation: operation, mutationPermit: mutationPermit)
             CapabilityCatalogPersistenceEvents.post(.global)
-            return CapabilityPackageCreationResult(
-                package: validatedPackage,
-                sourceURL: writtenSourceURL,
-                approvalRecord: approvalRecord,
-                installationResult: installationResult
-            )
+            return CapabilityPackageCreationResult(package: validatedPackage, sourceURL: writtenSourceURL,
+                approvalRecord: pendingApproval, installationResult: installation)
         }
-
-        try library.install(validatedPackage)
-        CapabilityCatalogPersistenceEvents.post(.global)
-        return CapabilityPackageCreationResult(
-            package: validatedPackage,
-            sourceURL: writtenSourceURL,
-            approvalRecord: nil,
-            installationResult: nil
-        )
     }
 
     private func pendingApprovalRecordForImmediateEnablement(
@@ -177,17 +131,4 @@ struct CapabilityPackageCreationService {
         )
     }
 
-    private func saveApprovalRecordIfNeeded(
-        _ pendingRecord: CapabilityApprovalRecord?,
-        package: PluginPackage
-    ) throws -> (record: CapabilityApprovalRecord, revert: () throws -> Void)? {
-        guard let pendingRecord else { return nil }
-        return try approvalStore.saveBeforeDependentWrite(
-            package: package,
-            status: pendingRecord.status,
-            approvedBy: pendingRecord.approvedBy,
-            reviewNotes: pendingRecord.reviewNotes,
-            approvedAt: pendingRecord.approvedAt
-        )
-    }
 }

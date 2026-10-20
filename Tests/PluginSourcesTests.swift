@@ -700,29 +700,35 @@ struct PluginSourcesTests {
 
     }
 
-    @Test("T5: a Create that exits after its library write forgets the source")
+    @Test("T5: Create retains its source intent until receipt-based file replay completes")
     func createExitAfterWriteForgets() throws {
         let fixture = try Fixture()
         let (library, files) = fixture.journaledLibrary()
         let source = try #require(PluginSource.make(from: fixture.root.appendingPathComponent("source").path))
         let package = try Self.package(id: "created", version: "1.0.0")
-        // A record from the source's earlier copy, since removed by hand.
         try fixture.store.recordProvenance(pluginID: package.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(package))
+        let before = fixture.store.provenance()[package.id]
         let workspace = Workspace(name: "Sources", primaryPath: fixture.root.appendingPathComponent("ws").path)
         try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
-        files.snapshots = []
-        _ = try CapabilityCatalogActionService(library: library, sourceStore: fixture.store).create(
-            package, enableHere: false, sourceURL: nil, workspace: workspace, modelContext: fixture.context,
-            policyContext: .workspaceUser(workspace: workspace, isAdmin: true, currentAppVersion: SemanticVersion(1, 0, 0), approvalRecords: []),
-            traceID: AuditTrace.make("test")
-        )
-        try files.restoreLastSnapshot()
+        files.refuseLibraryRemovals = true
+        var operationID: UUID?
+        do {
+            _ = try CapabilityCatalogActionService(library: library, sourceStore: fixture.store).create(
+                package, enableHere: false, sourceURL: nil, workspace: workspace, modelContext: fixture.context,
+                policyContext: .workspaceUser(workspace: workspace, isAdmin: true, currentAppVersion: SemanticVersion(1, 0, 0), approvalRecords: []),
+                traceID: AuditTrace.make("test"))
+            Issue.record("The refused replay must retain its correlated source intent")
+        } catch let problem as PluginOperationProblem { operationID = problem.operationID }
+        let id = try #require(operationID)
+        #expect(library.installedPackage(id: package.id) != nil)
+        #expect(fixture.store.provenance()[package.id] == before)
+        #expect(try PluginSourceOperationJournal(store: fixture.store).pendingIDs() == [id])
+        files.refuseLibraryRemovals = false
+        #expect(PluginSourceOperationRecovery(library: library, store: fixture.store).resumePending(modelContext: fixture.context) == 0)
         let installed = try #require(library.installedPackage(id: package.id))
-        #expect(fixture.store.provenance()[package.id]?.pendingForget != nil)
-        #expect(!PluginSourceCatalog.isOwnCopy(installed, of: source, provenance: fixture.store.provenance()))
-        PluginSourceCoordinator(store: fixture.store, installedPackages: { library.installedPackages() }).reload()
         #expect(fixture.store.provenance()[package.id] == nil)
+        #expect(!PluginSourceCatalog.isOwnCopy(installed, of: source, provenance: fixture.store.provenance()))
     }
 
     @Test("T5: a local install that exits before its library write keeps the old copy the source's own")

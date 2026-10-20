@@ -18,13 +18,13 @@ enum PluginStateCommit {
         workspace: Workspace?, accounts: [Connector] = [], pluginIDs: [String] = [],
         kind: PluginOperationReceipt.Kind = .configure, modelContext: ModelContext,
         persist: (ModelContext) throws -> Void,
-        export: ((Workspace) -> Bool)? = nil, publishesCompleted: Bool = true
+        export: ((Workspace) -> Bool)? = nil, publishesCompleted: Bool = true, files: PluginFileCommit? = nil
     ) -> Outcome {
         let affected: [Workspace]
         do { affected = try PluginStateMirrors.affectedWorkspaces(workspace: workspace, accounts: accounts, modelContext: modelContext) }
         catch { return .notCommitted(error) }
         return save(workspaceIDs: affected.map(\.id), pluginIDs: pluginIDs, kind: kind,
-            modelContext: modelContext, persist: persist, export: export, publishesCompleted: publishesCompleted)
+            modelContext: modelContext, persist: persist, export: export, publishesCompleted: publishesCompleted, files: files)
     }
 
     /// Callers reconciling multiple activations resolve the complete scope
@@ -32,10 +32,11 @@ enum PluginStateCommit {
     static func save(
         workspaceIDs: [UUID], pluginIDs: [String], kind: PluginOperationReceipt.Kind,
         modelContext: ModelContext, persist: (ModelContext) throws -> Void,
-        export: ((Workspace) -> Bool)? = nil, publishesCompleted: Bool = true
+        export: ((Workspace) -> Bool)? = nil, publishesCompleted: Bool = true, files: PluginFileCommit? = nil
     ) -> Outcome {
-        let outcome = PluginOperationCommit.save(kind: kind, pluginIDs: pluginIDs, workspaceIDs: Array(Set(workspaceIDs)),
-            modelContext: modelContext, persist: persist)
+        let outcome = PluginOperationCommit.save(id: files?.prepared.id ?? UUID(), kind: kind,
+            pluginIDs: files?.prepared.manifest.pluginIDs ?? pluginIDs, workspaceIDs: Array(Set(workspaceIDs)),
+            manifestDigest: files?.prepared.digest, modelContext: modelContext, persist: persist)
         switch outcome {
         case .notCommitted(let error): return .notCommitted(error)
         case .indeterminate(let id, let error): return .indeterminate(id, error)
@@ -45,8 +46,9 @@ enum PluginStateCommit {
                 return .pendingRecovery(receipt.id)
             }
             let rewritten: ((Workspace, ModelContext) -> Bool)? = export.map { write in { workspace, _ in write(workspace) } }
-            let result = PluginOperationRecovery.resumePending(modelContext: modelContext, only: receipt.id, export: rewritten)
-            let completed = result.completed == 1
+            let completed: Bool
+            if let files { completed = files.resume(modelContext: modelContext, export: rewritten).completed == 1 }
+            else { completed = PluginOperationRecovery.resumePending(modelContext: modelContext, only: receipt.id, export: rewritten).completed == 1 }
             if publishesCompleted || !completed { publish(receipt) }
             return completed ? .completed(receipt.id) : .pendingRecovery(receipt.id)
         }

@@ -79,6 +79,8 @@ struct CapabilityCatalogActionService {
         policyContext: CapabilityCatalogPolicyContext,
         source: String,
         traceID: String,
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
+        pendingApproval: CapabilityApprovalRecord? = nil,
         mutationPermit: PluginMutationScope.Permit? = nil
     ) throws -> CapabilityInstaller.InstallationResult {
         do {
@@ -95,7 +97,7 @@ struct CapabilityCatalogActionService {
                 baseURLOverrides: baseURLOverrides,
                 allowCredentialUserInteraction: allowCredentialUserInteraction,
                 policyContext: policyContext,
-                traceID: traceID, mutationPermit: mutationPermit
+                traceID: traceID, approvalStore: approvalStore, pendingApproval: pendingApproval, mutationPermit: mutationPermit
             )
             CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
             return result
@@ -219,19 +221,38 @@ struct CapabilityCatalogActionService {
         return try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore,
             modelContext: modelContext, approvals: approvalStore) { permit in
             try Self.validateAccountSupport(for: package)
-            let context = try grantPendingApproval(
-                for: package, workspace: workspace, policyContext: policyContext,
-                approvalStore: approvalStore, source: "plugins_add", traceID: traceID
-            )
-            return try enable(package, workspace: workspace, modelContext: modelContext,
-                policyContext: context, source: "plugins_add", traceID: traceID, mutationPermit: permit)
+            let stored = PluginInstallationTransaction.reviewedPackage(package)
+            let pending = try CapabilityApprovalGrant.pendingRecord(for: stored, context: policyContext,
+                approvedBy: "user", reviewNotes: "Added in Plugins.")
+            var context = policyContext
+            if let pending { context.approvalRecords.append(pending) }
+            do {
+                let result = try enable(stored, workspace: workspace, modelContext: modelContext,
+                    policyContext: context, source: "plugins_add", traceID: traceID,
+                    approvalStore: approvalStore, pendingApproval: pending, mutationPermit: permit)
+                if let pending { auditAddedApproval(pending, workspace: workspace, traceID: traceID) }
+                return result
+            } catch {
+                if let pending, let problem = error as? PluginOperationProblem,
+                   (try? PluginOperationCommit.read(problem.operationID, container: modelContext.container)) != nil,
+                   approvalStore.records().contains(pending) {
+                    auditAddedApproval(pending, workspace: workspace, traceID: traceID)
+                }
+                throw error
+            }
         }
     }
 
-    /// The approval Add writes when the policy holds `package` for review:
-    /// the person adding it is the reviewer. Returns the context to enable
-    /// against. Audited like the catalog review's approval: the record is a
-    /// durable permission change even when the enable after it never happens.
+    private func auditAddedApproval(_ record: CapabilityApprovalRecord, workspace: Workspace, traceID: String) {
+        AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: [
+            "source": "plugins_add", "trace_id": traceID, "package_id": record.packageID,
+            "package_version": record.packageVersion, "status": record.status.rawValue,
+            "workspace_id": workspace.id.uuidString, "digest_prefix": String(record.sourceDigest.prefix(12))
+        ])
+    }
+
+    /// An explicit approval independent of installation (legacy review UI).
+    /// Add/Create instead prepare their approval in the file transaction.
     func grantPendingApproval(
         for package: PluginPackage,
         workspace: Workspace,

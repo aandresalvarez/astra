@@ -11,6 +11,56 @@ struct PluginSourceDefinitionOperation {
     let library: CapabilityLibrary
     let store: PluginSourceStore
 
+    /// Add preserves the active copy's source and an independent draft's
+    /// origin. Create clears only the active owner. No digest comparison can
+    /// publish that change: a linked source/file/domain receipt must commit it.
+    func installing<Result>(_ package: PluginPackage, clearSource: Bool = false,
+        modelContext: ModelContext, existing: PluginFileOperationContext? = nil,
+        approvals: CapabilityApprovalStore = CapabilityApprovalStore(),
+        perform: (PluginFileOperationContext?) throws -> Result) throws -> Result {
+        if let existing { return try perform(existing) }
+        let before = try store.savedProvenance()[package.id]
+        let currentDigest = library.installedPackage(id: package.id).map(PluginSourceCatalog.contentDigest)
+        let digest = PluginSourceCatalog.contentDigest(CapabilityPackageImporter.asStored(package))
+        let active = before?.resolved(installedDigest: currentDigest)
+        let after: PluginSourceStore.Provenance?
+        if !clearSource, let active, active.names(digest) { after = active }
+        else if let review = before?.pendingReview {
+            var held = PluginSourceStore.Provenance(sourceID: "", digest: "")
+            held.pendingReview = review
+            after = held
+        } else if let before, let draft = library.stagedPackage(id: package.id),
+                  before.pendingDigest == PluginSourceCatalog.contentDigest(draft) {
+            var held = PluginSourceStore.Provenance(sourceID: "", digest: "")
+            held.pendingReview = .init(digest: try CapabilityApprovalDigest.digest(for: draft), sourceID: before.sourceID)
+            after = held
+        } else { after = nil }
+        guard before != after else { return try perform(nil) }
+        let journal = PluginSourceOperationJournal(store: store)
+        let prepared = try journal.prepare(pluginID: package.id, after: after, modelContext: modelContext)
+        let identity = after.flatMap { PluginSourceStore.mirrorIdentity(pluginID: package.id, digest: digest, provenance: [package.id: $0]) }
+        let operation = PluginFileOperationContext(id: prepared.id, metadataDigest: prepared.digest,
+            metadata: journal.handler(modelContext: modelContext), plannedSource: .installed(source: identity))
+        do { return try perform(operation) }
+        catch {
+            _ = journal.resumeOrphans(modelContext: modelContext,
+                files: PluginFileOperationJournal(library: library, approvals: approvals))
+            throw error
+        }
+    }
+
+    /// A call-scoped projection of the prepared target for held-import
+    /// matching. The journal owns the target; this never writes provenance.
+    func projectedProvenance(_ source: PluginInstalledCopy?, package: PluginPackage) -> [String: PluginSourceStore.Provenance] {
+        var provenance = store.provenance()
+        guard let source else { return provenance }
+        let prefix = PluginSource.metadataKind + ":"
+        if let identity = source.source, identity.hasPrefix(prefix) {
+            provenance[package.id] = .init(sourceID: String(identity.dropFirst(prefix.count)), digest: PluginSourceCatalog.contentDigest(package))
+        } else { provenance[package.id] = nil }
+        return provenance
+    }
+
     /// Caller holds the existing global library serialization throughout.
     func importPackage(_ report: CapabilityPackageValidationReport, sourceID: String?,
         modelContext: ModelContext, replacesInstalledCopy: Bool = false) throws -> CapabilityPackageImportResult {

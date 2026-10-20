@@ -92,14 +92,19 @@ struct CapabilityInstaller {
         policyContext: CapabilityCatalogPolicyContext? = nil,
         traceID: String? = nil,
         announceCatalogMutation: Bool = true,
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
+        pendingApproval: CapabilityApprovalRecord? = nil,
+        fileOperation: PluginFileOperationContext? = nil,
         mutationPermit: PluginMutationScope.Permit? = nil
     ) throws -> InstallationResult {
         guard let mutationPermit else {
-            return try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore, modelContext: modelContext) { permit in
+            return try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore,
+                modelContext: modelContext, approvals: approvalStore) { permit in
                 try install(package, into: workspace, modelContext: modelContext,
                     credentialInputs: credentialInputs, configInputs: configInputs, baseURLOverrides: baseURLOverrides,
                     allowCredentialUserInteraction: allowCredentialUserInteraction, policyContext: policyContext,
-                    traceID: traceID, announceCatalogMutation: announceCatalogMutation, mutationPermit: permit)
+                    traceID: traceID, announceCatalogMutation: announceCatalogMutation, approvalStore: approvalStore,
+                    pendingApproval: pendingApproval, fileOperation: fileOperation, mutationPermit: permit)
             }
         }
         try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore, modelContext: modelContext, permit: mutationPermit) { _ in }
@@ -119,58 +124,28 @@ struct CapabilityInstaller {
         // A stored skill row the catalog lists as a package is not a
         // library entry: it is only turned on.
         if Self.syntheticSkillRowID(of: package) != nil {
-            return try enable(
-                package,
-                in: workspace,
-                modelContext: modelContext,
-                policyContext: effectivePolicyContext,
-                auditSource: "install",
-                traceID: traceID, mutationPermit: mutationPermit
-            )
-        }
-        // Snapshot the pre-install library state so a failed enable can be
-        // compensated instead of leaving an orphaned or overwritten file.
-        let packageStorageSnapshot = library.makePackageStorageSnapshot(for: package.id)
-        do {
-            try library.install(package)
-        } catch {
-            var fields = capabilityFields(for: package, workspace: workspace, source: "install")
-            if let traceID { fields["trace_id"] = traceID }
-            fields["result"] = "library_install_failed"
-            fields["error_type"] = String(describing: type(of: error))
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
-            throw error
-        }
-        let result: InstallationResult
-        do {
-            result = try enable(
-                package,
-                in: workspace,
-                modelContext: modelContext,
-                credentialInputs: credentialInputs,
-                configInputs: configInputs,
-                baseURLOverrides: baseURLOverrides,
-                allowCredentialUserInteraction: allowCredentialUserInteraction,
-                policyContext: effectivePolicyContext,
-                auditSource: "install",
-                traceID: traceID, mutationPermit: mutationPermit
-            )
-        } catch {
-            if PluginOperationProblem.preventsRollback(error) {
-                // A saved activation must keep its matching definition. File
-                // transaction preparation also needs this outcome at its boundary.
-                CapabilityCatalogPersistenceEvents.post(.global)
-                throw error
+            func enableStoredSkill(_ files: PluginFileCommit?) throws -> InstallationResult {
+                try enable(package, in: workspace, modelContext: modelContext, policyContext: effectivePolicyContext,
+                    auditSource: "install", traceID: traceID, fileCommit: files, mutationPermit: mutationPermit)
             }
-            library.restorePackageStorage(packageStorageSnapshot)
-            var fields = capabilityFields(for: package, workspace: workspace, source: "install")
-            if let traceID { fields["trace_id"] = traceID }
-            fields["result"] = "enable_failed_library_rolled_back"
-            fields["restored_previous_file"] = packageStorageSnapshot.snapshotURL == nil ? "false" : "true"
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
-            throw error
+            if let pendingApproval {
+                let files = try PluginFileCommit.approval(pendingApproval, package: package,
+                    library: library, approvals: approvalStore, modelContext: modelContext)
+                return try files.perform(modelContext: modelContext) { try enableStoredSkill(files) }
+            }
+            return try enableStoredSkill(nil)
         }
-        library.discardPackageStorageSnapshot(packageStorageSnapshot)
+        let result = try PluginSourceDefinitionOperation(library: library, store: sourceStore).installing(package,
+            modelContext: modelContext, existing: fileOperation, approvals: approvalStore) { operation in
+            let transaction = try PluginInstallationTransaction.prepare(package: package, library: library,
+                modelContext: modelContext, approvals: approvalStore, approval: pendingApproval, operation: operation)
+            return try transaction.perform(modelContext: modelContext) { files in
+                try enable(package, in: workspace, modelContext: modelContext,
+                    credentialInputs: credentialInputs, configInputs: configInputs, baseURLOverrides: baseURLOverrides,
+                    allowCredentialUserInteraction: allowCredentialUserInteraction, policyContext: effectivePolicyContext,
+                    auditSource: "install", traceID: traceID, fileCommit: files, sourceOverride: operation?.plannedSource, mutationPermit: mutationPermit)
+            }
+        }
         var installedFields = [
             "package_id": package.id,
             "package_name": package.name,
@@ -206,6 +181,8 @@ struct CapabilityInstaller {
         persist: @MainActor (Workspace?, ModelContext) -> Bool = Self.persistActivation,
         exportMirror: (@MainActor (Workspace) -> Void)? = nil,
         rewriteMirror: (@MainActor (Workspace) -> Bool)? = nil,
+        fileCommit: PluginFileCommit? = nil,
+        sourceOverride: PluginInstalledCopy? = nil,
         mutationPermit: PluginMutationScope.Permit? = nil
     ) throws -> InstallationResult {
         guard let mutationPermit else {
@@ -214,7 +191,7 @@ struct CapabilityInstaller {
                     credentialInputs: credentialInputs, configInputs: configInputs, baseURLOverrides: baseURLOverrides,
                     allowCredentialUserInteraction: allowCredentialUserInteraction, policyContext: policyContext,
                     auditSource: auditSource, traceID: traceID, persist: persist, exportMirror: exportMirror,
-                    rewriteMirror: rewriteMirror, mutationPermit: permit)
+                    rewriteMirror: rewriteMirror, fileCommit: fileCommit, sourceOverride: sourceOverride, mutationPermit: permit)
             }
         }
         try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore, modelContext: modelContext, permit: mutationPermit) { _ in }
@@ -239,7 +216,7 @@ struct CapabilityInstaller {
         // A skill the catalog lists as its own package is a stored row: Add
         // turns that row on, keeping its ID and its Keychain secrets.
         if let skillID = Self.syntheticSkillRowID(of: package) {
-            return try enableSkillRow(skillID, package: package, workspace: workspace, modelContext: modelContext, persist: persist)
+            return try enableSkillRow(skillID, package: package, workspace: workspace, modelContext: modelContext, persist: persist, fileCommit: fileCommit)
         }
 
         // A new activation derives the namespaces a Remove may not have
@@ -293,7 +270,7 @@ struct CapabilityInstaller {
             // The accounts its components created here before a Remove come
             // back bound, stamped again, rather than as duplicates: only to a
             // copy from the source the removed one came from (T5).
-            let addingFrom = sourceStore.installedCopy(of: library.installedPackage(id: package.id)).source
+            let addingFrom = (sourceOverride ?? sourceStore.installedCopy(of: library.installedPackage(id: package.id))).source
             let retainedAccounts = WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: workspace, addingFrom: addingFrom)
             // So do its templates' IDs: a schedule names one, and only the
             // same source's copy may be what it runs.
@@ -301,7 +278,8 @@ struct CapabilityInstaller {
             // A chosen file's activation that waited for this copy (same
             // digest, same source) gets its settings, overrides and accounts,
             // before reinstating forgets the plugin's retired record.
-            PluginPendingImport.restore(on: activation, package: package, in: workspace, provenance: sourceStore.provenance())
+            PluginPendingImport.restore(on: activation, package: package, in: workspace,
+                provenance: PluginSourceDefinitionOperation(library: library, store: sourceStore).projectedProvenance(sourceOverride, package: package))
             WorkspaceCapabilityActivation.reinstateRetired(on: activation, declaring: componentIDs, in: workspace)
             for retained in retainedAccounts
             where componentIDs.contains(retained.componentID) && activation.accounts(forComponent: retained.componentID).isEmpty {
@@ -468,7 +446,7 @@ struct CapabilityInstaller {
                     let result = PluginStateCommit.save(workspaceIDs: mirrored.map(\.id), pluginIDs: [package.id],
                         kind: .add, modelContext: modelContext, persist: { context in
                             guard persist(workspace, context) else { throw InstallationError.persistenceFailed(packageID: package.id) }
-                        }, export: rewriteMirror, publishesCompleted: false)
+                        }, export: rewriteMirror, publishesCompleted: false, files: fileCommit)
                     committed = result
                     if case .notCommitted = result { return false }
                     return true // Unknown saves retain cleanup debt and recovery state.
@@ -602,7 +580,8 @@ struct CapabilityInstaller {
         package: PluginPackage,
         workspace: Workspace,
         modelContext: ModelContext,
-        persist: @MainActor (Workspace?, ModelContext) -> Bool
+        persist: @MainActor (Workspace?, ModelContext) -> Bool,
+        fileCommit: PluginFileCommit? = nil
     ) throws -> InstallationResult {
         var descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.id == skillID })
         descriptor.fetchLimit = 1
@@ -625,7 +604,7 @@ struct CapabilityInstaller {
         let commit = PluginStateCommit.save(workspace: workspace, pluginIDs: [package.id], kind: .add,
             modelContext: modelContext, persist: { context in
                 guard persist(workspace, context) else { throw InstallationError.persistenceFailed(packageID: package.id) }
-            }, publishesCompleted: false)
+            }, publishesCompleted: false, files: fileCommit)
         switch commit {
         case .completed: break
         case .pendingRecovery(let id): throw PluginOperationProblem.savedRecoveryPending(id)
