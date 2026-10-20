@@ -657,6 +657,10 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(HTMLScriptScanner.externalScriptCount(
             in: "<math><annotation-xml><script href=\"app.js\"/></annotation-xml></math>"
         ) == 1)
+        // Many comments scan in one pass; finding each comment's end used to
+        // rescan the rest of the document (a 76 KB page took over a minute).
+        let manyComments = String(repeating: "<!-- c --><p>x</p>\n", count: 20_000) + "<script>a()</script>"
+        #expect(HTMLScriptScanner.inlineScripts(in: manyComments).map(\.body) == ["a()"])
         // Everything after `<plaintext>` is text.
         #expect(HTMLScriptScanner.inlineScripts(in: "<plaintext><script>bad(</script>").isEmpty)
         // A non-ASCII space is part of the tag name, so this is not a script.

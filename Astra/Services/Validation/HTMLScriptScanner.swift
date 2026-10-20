@@ -238,12 +238,15 @@ enum HTMLScriptScanner {
     private static func commentEnd(in scalars: [Unicode.Scalar], from start: Int) -> Int? {
         if hasPrefix(">", in: scalars, at: start) { return start + 1 }
         if hasPrefix("->", in: scalars, at: start) { return start + 2 }
-        let close = find("-->", in: scalars, from: start).map { $0 + 3 }
-        let bangClose = find("--!>", in: scalars, from: start).map { $0 + 4 }
-        switch (close, bangClose) {
-        case let (close?, bangClose?): return min(close, bangClose)
-        case let (close, bangClose): return close ?? bangClose
+        // One forward pass: searching for each ending separately rescans to
+        // the end of the document for every comment.
+        var index = start
+        while index < scalars.count {
+            if hasPrefix("-->", in: scalars, at: index) { return index + 3 }
+            if hasPrefix("--!>", in: scalars, at: index) { return index + 4 }
+            index += 1
         }
+        return nil
     }
 
     private static func isHTMLIntegrationPoint(_ name: String, attributes: [String: String]) -> Bool {
@@ -411,9 +414,12 @@ enum HTMLScriptScanner {
     }
 
     private static func hasPrefix(_ prefix: String, in scalars: [Unicode.Scalar], at index: Int) -> Bool {
-        let needle = Array(prefix.unicodeScalars)
-        return index + needle.count <= scalars.count
-            && matches(needle, in: scalars, at: index, caseInsensitive: false)
+        var cursor = index
+        for scalar in prefix.unicodeScalars {
+            guard cursor < scalars.count, scalars[cursor] == scalar else { return false }
+            cursor += 1
+        }
+        return true
     }
 
     private static func matches(
