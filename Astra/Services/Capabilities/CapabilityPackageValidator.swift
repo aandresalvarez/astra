@@ -415,6 +415,12 @@ enum CapabilityPackageValidator {
         // (`PluginActivation.settingKey`) and split at the last `#`, so a key
         // containing one would be read back under the wrong component.
         for skill in package.skills {
+            let duplicates = Dictionary(grouping: skill.environmentKeys, by: { $0 })
+                .filter { $0.value.count > 1 }.keys.sorted()
+            for key in duplicates {
+                issues.append(issue(.blocker, .invalidComponentIdentity, "Duplicate setting name",
+                    "\(skill.name) declares \(key) more than once; each setting needs one field.", component: key))
+            }
             for key in skill.environmentKeys where key.contains("#") {
                 issues.append(issue(
                     .blocker,
@@ -585,14 +591,16 @@ enum CapabilityPackageValidator {
             // differ only in case would be one Keychain item.
             let stored = connector.credentialHints.map(\.key)
                 + PluginConnectorFieldTrust.settingsStoredAsCredentials(of: connector, in: package)
-            let collisions = Dictionary(grouping: Set(stored), by: ConnectorCredentialKey.canonical).filter { $0.value.count > 1 }
+            let collisions = Dictionary(grouping: stored, by: ConnectorCredentialKey.canonical).filter { $0.value.count > 1 }
             for (canonical, spellings) in collisions.sorted(by: { $0.key < $1.key }) {
                 let name = displayName(connector.name, fallback: connector.serviceType)
                 issues.append(issue(
                     .blocker,
                     .invalidComponentIdentity,
-                    "Credential keys differ only in case",
-                    "\(name) declares \(spellings.sorted().joined(separator: " and ")), which are stored as one key, \(canonical).",
+                    Set(spellings).count == 1 ? "Duplicate credential key" : "Credential keys differ only in case",
+                    Set(spellings).count == 1
+                        ? "\(name) declares \(canonical) more than once; each credential needs one field."
+                        : "\(name) declares \(spellings.sorted().joined(separator: " and ")), which are stored as one key, \(canonical).",
                     component: name
                 ))
             }
