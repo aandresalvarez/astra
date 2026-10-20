@@ -1115,7 +1115,10 @@ struct ConnectorCredentialCleanupTests {
         )
         defer { try? FileManager.default.removeItem(at: outbox.directory) }
         try withTemporaryCredentialKeychain {
-            let workspace = Workspace(name: "WS", primaryPath: "/tmp/astra-connector-cleanup-ws")
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-configure-cleanup-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let workspace = Workspace(name: "WS", primaryPath: folder.path)
             let connector = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
             connector.isGlobal = true
             context.insert(workspace)
@@ -1139,6 +1142,7 @@ struct ConnectorCredentialCleanupTests {
             })
             #expect(try context.fetchCount(FetchDescriptor<Connector>()) == 0)
             #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
+            #expect(FileManager.default.fileExists(atPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath)))
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
             #expect(outbox.pending()?.records.isEmpty == true)
         }
