@@ -806,10 +806,11 @@ final class AgentRuntimeWorker {
                     && appliedRuntime.requirements.offeredHostControlTools.contains("github")
             )
         }
+        prompt = autoSendGuidance(prompt)
         // Appended after the resource resolver read the prompt, so README text
-        // never steers capability scoping. A native resume already carries it.
-        prompt = workspaceOrientation.appending(to: autoSendGuidance(prompt))
-        let promptWithoutResume = prompt + historyGuidance
+        // never steers capability scoping; and to a native resume as well, whose
+        // session may predate the orientation and whose folder may have changed.
+        let promptWithoutResume = workspaceOrientation.appending(to: prompt) + historyGuidance
         // Compact only after this launch has proved native continuation safe.
         // Fresh handoffs (including changed signatures) keep the wider context.
         if auditPhase == .resume, approvedPlan == nil, nativeContinuationSessionID != nil {
@@ -818,7 +819,7 @@ final class AgentRuntimeWorker {
                 permissionPolicy: launchPermissionPolicy, contextText: providerLaunchContextText,
                 repositoryStatus: githubRepositoryStatus, runEnvironment: runEnvironment))
         }
-        prompt += historyGuidance
+        prompt = workspaceOrientation.appending(to: prompt) + historyGuidance
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
         guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
             prompt: prompt,

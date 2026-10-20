@@ -106,11 +106,25 @@ enum PromptContextPreviewPresentation {
 }
 
 struct PromptContextPreviewSheet: View {
-    let manifest: PromptAssemblyManifest
+    private let assembledManifest: PromptAssemblyManifest
+    /// The launch appends a listing of this directory after assembly; the
+    /// sheet reads it off the main actor so the preview shows it too.
+    private let orientationDirectory: String?
+    @State private var orientation = WorkspaceOrientationPromptGuidance.empty
     @Environment(\.dismiss) private var dismiss
     @State private var expandedSectionIndexes: Set<Int> = [0]
     @State private var isFullPromptExpanded = false
     @State private var didCopyPrompt = false
+
+    init(manifest: PromptAssemblyManifest, orientationDirectory: String? = nil) {
+        assembledManifest = manifest
+        self.orientationDirectory = orientationDirectory
+    }
+
+    private var manifest: PromptAssemblyManifest {
+        guard let orientationDirectory else { return assembledManifest }
+        return orientation.appending(to: assembledManifest, directory: orientationDirectory)
+    }
 
     private var summary: PromptContextPreviewSummary {
         PromptContextPreviewPresentation.summary(for: manifest)
@@ -138,6 +152,10 @@ struct PromptContextPreviewSheet: View {
         .frame(minWidth: 680, minHeight: 560)
         .background(Stanford.panelBackground)
         .accessibilityIdentifier("ContextPreviewSheet")
+        .task(id: orientationDirectory) {
+            guard let orientationDirectory else { return }
+            orientation = await WorkspaceOrientationPromptGuidance.load(directory: orientationDirectory)
+        }
     }
 
     private var header: some View {
@@ -423,6 +441,7 @@ struct PromptContextPreviewSheet: View {
         case .browser: return "safari"
         case .memories: return "brain"
         case .supportingContext: return "info.circle"
+        case .workspaceOrientation: return "folder"
         }
     }
 }
