@@ -613,7 +613,7 @@ struct ContentView: View {
             taskOpenResponsivenessScope: taskOpenResponsivenessScope,
             filesShelfResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
-            isComposingTask: isComposingTask,
+            detailPresentation: detailPresentation,
             taskQueue: runtime.taskQueue,
             browserSession: currentBrowserSession,
             isBrowserPinnedToTask: browserPinnedToTaskBinding,
@@ -658,7 +658,6 @@ struct ContentView: View {
             onOpenGeneratedFile: openGeneratedFile,
             canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
             onOpenWorkspaceFile: openWorkspaceFileInShelf,
-            isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: workspaceAppStudioSession,
             onStartWorkspaceAppStudio: { prompt in startWorkspaceAppStudio(initialPrompt: prompt) },
             onStartMCPInstallReview: { request in pendingMCPInstallRequest = request },
@@ -2890,7 +2889,7 @@ private struct ContentDetailAreaView: View {
     let taskOpenResponsivenessScope: UUID
     let filesShelfResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
-    let isComposingTask: Bool
+    let detailPresentation: ContentDetailPresentation
     let taskQueue: TaskQueue
     @ObservedObject var browserSession: ShelfBrowserSession
     @Binding var isBrowserPinnedToTask: Bool
@@ -2951,7 +2950,6 @@ private struct ContentDetailAreaView: View {
     let onOpenGeneratedFile: (String) -> Void
     let canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool
     let onOpenWorkspaceFile: (String) -> Void
-    let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
     let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
@@ -2977,7 +2975,9 @@ private struct ContentDetailAreaView: View {
                 usesInspectorOverlay ? nil : rightPanelWidth(for: panel, availableWidth: availableWidth, isOverlay: false)
             } ?? 0
             let layoutMode = WorkspaceRightPanelLayoutMode.resolve(
-                panel: activePanel, usesInspectorOverlay: usesInspectorOverlay
+                panel: activePanel,
+                usesInspectorOverlay: usesInspectorOverlay,
+                detailPresentation: detailPresentation
             )
             let detailProposalWidth = layoutMode.detailProposalWidth(
                 availableWidth: availableWidth, panelWidth: dockedPanelWidth
@@ -3308,7 +3308,7 @@ private struct ContentDetailAreaView: View {
             selectedTask: selectedTask,
             taskOpenResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
-            isComposingTask: isComposingTask,
+            detailPresentation: detailPresentation,
             taskQueue: taskQueue,
             sshReloadTrigger: sshReloadTrigger,
             isPlanCanvasVisible: isPlanCanvasVisible,
@@ -3339,7 +3339,6 @@ private struct ContentDetailAreaView: View {
             onImportWorkspace: onImportWorkspace,
             onOpenGeneratedFile: onOpenGeneratedFile,
             canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
-            isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: studioSession,
             onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
             onStartMCPInstallReview: onStartMCPInstallReview,
@@ -3409,7 +3408,7 @@ private struct ContentDetailContentView: View {
     let selectedTask: AgentTask?
     let taskOpenResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
-    let isComposingTask: Bool
+    let detailPresentation: ContentDetailPresentation
     let taskQueue: TaskQueue
     let sshReloadTrigger: Int
     let isPlanCanvasVisible: Bool
@@ -3440,7 +3439,6 @@ private struct ContentDetailContentView: View {
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
     let canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool
-    let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
     let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
@@ -3452,12 +3450,7 @@ private struct ContentDetailContentView: View {
     let onCancelStudio: () -> Void
 
     var body: some View {
-        switch ContentDetailPresentation.resolve(
-            selectedTask: selectedTask,
-            effectiveWorkspace: effectiveWorkspace,
-            isComposingTask: isComposingTask,
-            isComposingWorkspaceApp: isComposingWorkspaceApp
-        ) {
+        switch detailPresentation {
         case .draftTask:
             if let task = selectedTask {
                 ChatPanelView(

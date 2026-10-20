@@ -70,7 +70,19 @@ public enum SSHConnectionManager {
 
     public static func load(workspacePath: String) -> [SSHConnection] {
         migrateLegacyConnectionsIfNeeded(workspacePath: workspacePath)
-        let path = connectionsFilePath(for: workspacePath)
+        return readConnections(at: connectionsFilePath(for: workspacePath), workspacePath: workspacePath)
+    }
+
+    /// Projection must not migrate domain files as a side effect. Prefer the
+    /// canonical file, falling back to the legacy location without moving it.
+    static func loadForExport(workspacePath: String) -> [SSHConnection] {
+        guard let path = connectionFilePaths(for: workspacePath).first(where: {
+            FileManager.default.fileExists(atPath: $0)
+        }) else { return [] }
+        return readConnections(at: path, workspacePath: workspacePath)
+    }
+
+    private static func readConnections(at path: String, workspacePath: String) -> [SSHConnection] {
         let hostFileAccess = HostFileAccessBroker()
         guard let data = try? hostFileAccess.readData(
             at: URL(fileURLWithPath: path),

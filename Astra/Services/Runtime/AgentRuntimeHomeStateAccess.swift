@@ -87,10 +87,12 @@ struct AgentRuntimeHomeStateAccess: Equatable, Sendable {
 
 protocol AgentRuntimeSandboxContract {
     var homeStateAccess: AgentRuntimeHomeStateAccess { get }
+    var homeAccessPolicy: RuntimeHomeAccessPolicy { get }
 }
 
 extension AgentRuntimeSandboxContract {
     var homeStateAccess: AgentRuntimeHomeStateAccess { .none }
+    var homeAccessPolicy: RuntimeHomeAccessPolicy { .none }
 }
 
 extension AgentRuntimeAdapterRegistry {

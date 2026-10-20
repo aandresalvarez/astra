@@ -33,6 +33,21 @@ struct FilesShelfResponsivenessTelemetryTests {
     }
 
     @MainActor
+    @Test("Files phase timing retains the presentation trace without recording content")
+    func phaseTimingHasPresentationOwner() {
+        let taskID = UUID()
+        let scope = UUID()
+        FilesShelfResponsivenessTelemetry.begin(source: "test", taskID: taskID, workspaceID: nil, scope: scope)
+        FilesShelfResponsivenessTelemetry.phase(scope: scope, phase: "dispatch", startedAt: DispatchTime.now().uptimeNanoseconds)
+        AppLogger.flushForTesting()
+        let message = AppLogger.entries.last { $0.taskID == taskID && $0.message.contains("event=files_shelf_phase") }?.message
+        #expect(message?.contains("phase=dispatch") == true)
+        #expect(message?.contains("trace_id=files-shelf") == true)
+        #expect(message?.contains("path=") == false)
+        FilesShelfResponsivenessTelemetry.cancel(scope: scope, reason: "test_complete")
+    }
+
+    @MainActor
     @Test("Chrome first-results and index-ready milestones log once per trace")
     func lifecycleLogsEachMilestoneOnce() {
         let taskID = UUID()

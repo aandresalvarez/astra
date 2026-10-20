@@ -15,10 +15,9 @@ enum WorkspaceSidebarAccordion {
     struct State: Equatable {
         /// The single user-opened drawer; nil when every drawer is closed.
         var openWorkspaceID: UUID?
-        /// Drawers the user explicitly closed. Two duties: keeps a dismissed
-        /// search reveal closed for the rest of the query, and stops the
-        /// deferred selection `onChange` (a collapse click also selects the
-        /// workspace it closed) from reopening the drawer one frame later.
+        /// Drawers the user explicitly closed. Keeps a dismissed search reveal
+        /// closed for the query and prevents selection reconciliation from
+        /// reopening a drawer the user chose to close.
         /// Cleared per drawer on reopen and wholesale on query changes.
         var dismissedWorkspaceIDs: Set<UUID> = []
     }
@@ -61,9 +60,8 @@ enum WorkspaceSidebarAccordion {
     }
 
     /// Observed selection change (the `onChange` echo). Unlike `selecting`,
-    /// this respects an explicit dismissal: the collapse click that closed a
-    /// drawer also selected its workspace, and that echo must not undo the
-    /// collapse one frame later.
+    /// this respects an explicit dismissal so reconciliation cannot undo a
+    /// folder-only collapse. Header clicks themselves never change selection.
     static func selectionChanged(_ workspaceID: UUID?, in state: State) -> State {
         guard let workspaceID, !state.dismissedWorkspaceIDs.contains(workspaceID) else {
             return state

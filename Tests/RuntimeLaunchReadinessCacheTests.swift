@@ -265,4 +265,42 @@ struct LaunchReadinessPreflightCacheTests {
         #expect(fixture.run.stopReason == "runtime_readiness_failed")
         #expect(await cache.hit(for: readinessConfiguration()) == nil)
     }
+
+    /// Copilot's home is not this preflight's to judge: it runs before the
+    /// task's environment, sandbox boundary and container placement exist,
+    /// so the final-plan guard (`guardedSandboxedPlan`) decides instead.
+    @Test("The worker preflight leaves Copilot's home to the final-plan guard", .enabled(if: getuid() != 0))
+    func preflightLeavesCopilotHomeToFinalPlanGuard() async throws {
+        let fixture = try fixture()
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o000)
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/copilot --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.0.98\n", stderr: "")
+        )
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { _ in "/opt/copilot" },
+            isExecutable: { _ in true },
+            copilotStateHome: home.path,
+            homeAccessCheck: { request in
+                Issue.record("Descriptor preflight must leave home inspection to the final plan guard")
+                return await RuntimeHomeAccessService.check(request)
+            }
+        )
+        let configuration = readinessConfiguration(.copilotCLI, executablePath: "/opt/copilot")
+
+        let passed = await AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunch(
+            task: fixture.task, run: fixture.run, modelContext: fixture.container.mainContext,
+            phase: "resume", configuration: configuration,
+            readinessService: service, verdictCache: RuntimeLaunchReadinessCache()
+        )
+
+        #expect(passed)
+        #expect(CopilotHomeAccessCheck.launchBlocker(
+            home: home.path, resumeSessionID: nil, environment: [:], workingDirectory: nil
+        ) != nil)
+    }
 }

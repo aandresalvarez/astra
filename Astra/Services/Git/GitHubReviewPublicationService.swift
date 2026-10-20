@@ -1087,6 +1087,10 @@ final class GitHubReviewPublicationService {
             reviewID: response.id,
             authorization: authorization
         )
+        // This receipt transaction can roll back after a confirmed network
+        // post. Resolve only this task's graph before the first reversible
+        // edit, so SwiftData does not snapshot lazy relationship futures.
+        SwiftDataTaskRollbackPreparation.prepare(task)
         let persistedEventIDs = Set(task.events.map(\.id))
         let priorState = TaskStateMachine.ExternalOutcomeReceiptSnapshot(task: task, run: run)
         do {

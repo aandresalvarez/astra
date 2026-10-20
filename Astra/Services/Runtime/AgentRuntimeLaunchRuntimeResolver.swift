@@ -100,12 +100,6 @@ enum AgentRuntimeLaunchRuntimeResolver {
             defaultPolicyLevelRaw: defaultPolicyLevelRaw,
             phase: phase,
             secretStore: KeychainSecretStore(),
-            profile: { runtime, settings in
-                AgentRuntimeCapabilityProfileService.profile(
-                    for: runtime,
-                    executablePath: settings.executablePath
-                )
-            },
             isRuntimeUsable: { runtime, _ in
                 runtimeIsExecutable(runtime, configuration: runtimeConfiguration)
             },

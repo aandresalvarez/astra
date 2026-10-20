@@ -424,7 +424,7 @@ struct ArchitectureFitnessTests {
         let root = try repositoryRoot()
         let checkedFiles = [
             "Astra/Services/Runtime/AgentPromptBuilder.swift",
-            "Astra/Services/Runtime/PromptInputContextReader.swift",
+            "Astra/Services/Runtime/TaskInputsPromptSectionProvider.swift",
             "Astra/Services/Runtime/PromptContextIOSnapshotLoader.swift"
         ]
         let forbiddenPatterns = [
@@ -1713,7 +1713,7 @@ struct ArchitectureFitnessTests {
         #expect(preCommitScript.contains("script/focused_validation_plan_tests.sh"))
         #expect(preCommitScript.contains("script/focused_test_targets.sh"))
         #expect(preCommitScript.contains("script/focused_test_targets_tests.sh"))
-        #expect(preCommitScript.contains(#"swift test --filter "$target""#))
+        #expect(preCommitScript.contains(#"script/swift_test.sh --filter "$target""#))
         #expect(preCommitScript.contains(#"${#changed_files[@]} > 0"#))
         #expect(preCommitScript.contains("git diff --cached --check"))
         #expect(branchProtectionScript.contains(#""enforce_admins": false"#))
@@ -1739,8 +1739,8 @@ struct ArchitectureFitnessTests {
         #expect(prePushScript.contains("script/focused_test_targets.sh"))
         #expect(prePushScript.contains("script/focused_test_targets_tests.sh"))
         #expect(prePushScript.contains("FOCUSED_SWIFT_TEST_FILTER="))
-        #expect(prePushScript.components(separatedBy: "run swift test --filter").count == 3)
-        #expect(prePushScript.contains(#"swift test --filter "$target""#))
+        #expect(prePushScript.components(separatedBy: "run script/swift_test.sh --filter").count == 3)
+        #expect(prePushScript.contains(#"script/swift_test.sh --filter "$target""#))
         #expect(prePushScript.contains(#"${#changed_files[@]} > 0"#))
         #expect(prePushScript.contains("RuntimeReadinessServiceTests"))
         #expect(prePushScript.contains("WorkspacePersistenceTests"))
@@ -1757,7 +1757,7 @@ struct ArchitectureFitnessTests {
         #expect(ciWorkflow.contains("Full Swift test suite"))
         #expect(ciWorkflow.contains("workflow_dispatch:"))
         #expect(!ciWorkflow.contains("schedule:"))
-        #expect(ciWorkflow.contains("swift test"))
+        #expect(ciWorkflow.contains("script/swift_test.sh --no-parallel"))
         #expect(ciWorkflow.contains("fetch-depth: 0"))
         #expect(ciWorkflow.range(of: #"runs-on:\s+macos[-A-Za-z0-9_.]*"#, options: .regularExpression) != nil)
         #expect(ciWorkflow.contains("git diff --check"))
@@ -2246,8 +2246,8 @@ struct ArchitectureFitnessTests {
     /// `@Query`. An unfiltered `@Query private var tasks: [AgentTask]` in the
     /// container re-read all 726 rows — ~64 ms on the main thread, inside the
     /// view transaction — on every mutation to any task, which meant on every
-    /// streamed token of any running task. The store keeps a one-row query for
-    /// the invalidation signal and pays for the full read only when membership
+    /// streamed token of any running task. The store observes saves and its held models for
+    /// change signals and pays for the full read only when membership
     /// actually changed.
     ///
     /// Reintroducing the query would restore the stall silently: the sidebar
@@ -2260,8 +2260,8 @@ struct ArchitectureFitnessTests {
         #expect(!text.isEmpty, "TaskSidebarView.swift is empty; the guard would pass vacuously")
 
         #expect(
-            text.contains("SidebarTaskFetch.invalidationSignalDescriptor()"),
-            "The sidebar container must subscribe through the one-row signal query, not an unfiltered fetch"
+            text.contains("taskStore.loadIfNeeded(context: modelContext)"),
+            "The sidebar must start the observed store without an AgentTask query"
         )
         #expect(
             !text.contains("@Query private var tasks: [AgentTask]"),

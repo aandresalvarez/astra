@@ -869,7 +869,7 @@ struct AgentRuntimeAdapterTests {
         #expect(copilotPlan.environment["XDG_CACHE_HOME"] == "/tmp/astra-provider-home/.cache")
         #expect(copilotPlan.environment["XDG_CONFIG_HOME"] == "/tmp/astra-provider-home/.config")
         #expect(copilotPlan.providerDetectedFields["runtime"] == AgentRuntimeID.copilotCLI.rawValue)
-
+        #expect(["supports_private_env_filter", "uses_private_env_filter"].allSatisfy { LogSanitizer.sanitizeFields(copilotPlan.commandPlannedFields)[$0] != nil })
         #expect(antigravityPlan.runtime == .antigravityCLI)
         #expect(antigravityPlan.executablePath == "/bin/agy-not-present")
         // This binary was never probed for `--output-format`, and an
@@ -1158,12 +1158,12 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Copilot launch permission flags follow manifest render when execution policy disagrees")
     @MainActor
-    func copilotLaunchPermissionFlagsFollowManifestRenderWhenExecutionPolicyDisagrees() throws {
+    func copilotLaunchPermissionFlagsFollowManifestRenderWhenExecutionPolicyDisagrees() async throws {
         let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-render-contract-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: workspaceURL) }
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
-        let copilotPath = try Self.writeFakeCopilotExecutable(in: workspaceURL)
+        let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: workspaceURL)
 
         let workspace = Workspace(name: "Copilot Render", primaryPath: workspaceURL.path)
         let task = AgentTask(
@@ -1176,7 +1176,7 @@ struct AgentRuntimeAdapterTests {
         let manifestPermissionArguments = ProviderPolicyRender.copilotLaunchPermissionArguments(
             policy: .restricted,
             allowedTools: ["read"],
-            capabilities: CopilotCLICapabilities(helpText: Self.fakeCopilotHelpText()),
+            capabilities: CopilotCLICapabilities(helpText: CopilotAdapterFixture.helpText()),
             localToolCommands: [],
             runtimeSupportTools: Self.copilotRuntimeSupportToolPermissions(),
             allowAllPathsForSSHConnections: false
@@ -1640,7 +1640,7 @@ struct AgentRuntimeAdapterTests {
         let permissionArguments = ProviderPolicyRender.copilotLaunchPermissionArguments(
             policy: .restricted,
             allowedTools: ["read"],
-            capabilities: CopilotCLICapabilities(helpText: Self.fakeCopilotHelpText()),
+            capabilities: CopilotCLICapabilities(helpText: CopilotAdapterFixture.helpText()),
             localToolCommands: [],
             runtimeSupportTools: Self.copilotRuntimeSupportToolPermissions(),
             allowAllPathsForSSHConnections: false
@@ -1769,12 +1769,12 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Copilot artifact launch grants bootstrap write without counting it as a task tool")
     @MainActor
-    func copilotArtifactLaunchGrantsBootstrapWriteWithoutCountingAsTaskTool() throws {
+    func copilotArtifactLaunchGrantsBootstrapWriteWithoutCountingAsTaskTool() async throws {
         let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-artifact-bootstrap-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: workspaceURL) }
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
-        let copilotPath = try Self.writeFakeCopilotExecutable(in: workspaceURL)
+        let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: workspaceURL)
 
         let workspace = Workspace(name: "Copilot Artifact", primaryPath: workspaceURL.path)
         let task = AgentTask(
@@ -1834,12 +1834,12 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Copilot informational launch does not get artifact bootstrap write")
     @MainActor
-    func copilotInformationalLaunchDoesNotGetArtifactBootstrapWrite() throws {
+    func copilotInformationalLaunchDoesNotGetArtifactBootstrapWrite() async throws {
         let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-info-bootstrap-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: workspaceURL) }
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
-        let copilotPath = try Self.writeFakeCopilotExecutable(in: workspaceURL)
+        let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: workspaceURL)
 
         let workspace = Workspace(name: "Copilot Info", primaryPath: workspaceURL.path)
         let task = AgentTask(
@@ -1891,12 +1891,12 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Copilot main launch honors the task's chosen reasoning effort outside artifact bootstrap")
     @MainActor
-    func copilotLaunchHonorsTaskReasoningEffort() throws {
+    func copilotLaunchHonorsTaskReasoningEffort() async throws {
         let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-reasoning-effort-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: workspaceURL) }
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
-        let copilotPath = try Self.writeFakeCopilotExecutable(in: workspaceURL)
+        let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: workspaceURL)
 
         let workspace = Workspace(name: "Copilot Effort", primaryPath: workspaceURL.path)
         let task = AgentTask(
@@ -2459,12 +2459,12 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Copilot Docker workspace mode routes native shell through ASTRA MCP helper")
     @MainActor
-    func copilotDockerWorkspaceModeRoutesNativeShellThroughAstraMCPHelper() throws {
+    func copilotDockerWorkspaceModeRoutesNativeShellThroughAstraMCPHelper() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-docker-workspace-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let copilotPath = try Self.writeFakeCopilotExecutable(in: root)
+        let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: root)
 
         let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
         let task = AgentTask(
@@ -2667,7 +2667,7 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Copilot Docker workspace mode avoids broad native shell in Auto policy")
     @MainActor
-    func copilotDockerWorkspaceModeAvoidsBroadNativeShellInAutoPolicy() throws {
+    func copilotDockerWorkspaceModeAvoidsBroadNativeShellInAutoPolicy() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-docker-auto-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2688,6 +2688,8 @@ struct AgentRuntimeAdapterTests {
         exit 0
         """.write(to: copilotPath, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copilotPath.path)
+
+        _ = try await CopilotCLIRuntime.requiredCapabilities(executablePath: copilotPath.path)
 
         let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
         let task = AgentTask(
@@ -2746,14 +2748,14 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Copilot Docker Auto preflight manifest persists restricted launch flags")
     @MainActor
-    func copilotDockerAutoPreflightManifestPersistsRestrictedLaunchFlags() throws {
+    func copilotDockerAutoPreflightManifestPersistsRestrictedLaunchFlags() async throws {
         let container = try makeAgentRuntimeAdapterContainer()
         let context = container.mainContext
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-docker-auto-preflight-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let copilotPath = try Self.writeFakeCopilotExecutable(in: root)
+        let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: root)
 
         let workspace = Workspace(name: "Docker Auto Preflight", primaryPath: root.path)
         let task = AgentTask(
@@ -2968,7 +2970,7 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Copilot browser bridge launch plan uses ASTRA browser MCP tool when supported")
     @MainActor
-    func copilotBrowserBridgeLaunchPlanUsesAstraBrowserMCPToolWhenSupported() throws {
+    func copilotBrowserBridgeLaunchPlanUsesAstraBrowserMCPToolWhenSupported() async throws {
         ShelfBrowserBridgeRegistry.shared.reset()
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-browser-mcp-\(UUID().uuidString)", isDirectory: true)
@@ -2977,7 +2979,7 @@ struct AgentRuntimeAdapterTests {
             try? FileManager.default.removeItem(at: root)
         }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let copilotPath = try Self.writeFakeCopilotExecutable(in: root)
+        let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: root)
 
         let workspace = Workspace(name: "Browser MCP", primaryPath: root.path)
         let task = AgentTask(
@@ -3050,12 +3052,12 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Copilot GitHub host-control launch plan blocks when MCP config is unsupported")
     @MainActor
-    func copilotGitHubHostControlLaunchPlanBlocksWhenMCPConfigIsUnsupported() throws {
+    func copilotGitHubHostControlLaunchPlanBlocksWhenMCPConfigIsUnsupported() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-github-no-mcp-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let copilotPath = try Self.writeFakeCopilotExecutable(in: root, supportsAdditionalMCPConfig: false)
+        let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: root, supportsAdditionalMCPConfig: false)
 
         let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
         workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
@@ -3107,12 +3109,12 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Copilot GitHub host-control launch strips native gh grants when MCP config is supported")
     @MainActor
-    func copilotGitHubHostControlLaunchStripsNativeGHGrantsWhenMCPConfigIsSupported() throws {
+    func copilotGitHubHostControlLaunchStripsNativeGHGrantsWhenMCPConfigIsSupported() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-copilot-github-host-control-no-native-gh-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let copilotPath = try Self.writeFakeCopilotExecutable(in: root, supportsAdditionalMCPConfig: true)
+        let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: root, supportsAdditionalMCPConfig: true)
 
         let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
         workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
@@ -3166,7 +3168,7 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Host-control launch diagnostics name the required host tools")
     @MainActor
-    func hostControlLaunchDiagnosticsNameRequiredHostTools() throws {
+    func hostControlLaunchDiagnosticsNameRequiredHostTools() async throws {
         let sharedMetadata = HostControlPlaneRuntimeLaunchGuard.planMetadata(
             runtime: .openCodeCLI,
             requiredTools: ["gcloud", "bq"]
@@ -3179,7 +3181,7 @@ struct AgentRuntimeAdapterTests {
             .appendingPathComponent("astra-copilot-docker-host-control-detail-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let copilotPath = try Self.writeFakeCopilotExecutable(in: root, supportsAdditionalMCPConfig: false)
+        let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: root, supportsAdditionalMCPConfig: false)
 
         let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
         let task = AgentTask(
@@ -3305,7 +3307,7 @@ struct AgentRuntimeAdapterTests {
             ? ProviderPolicyRender.copilotLaunchPermissionArguments(
                 policy: .restricted,
                 allowedTools: manifestAllowedTools,
-                capabilities: CopilotCLICapabilities(helpText: Self.fakeCopilotHelpText()),
+                capabilities: CopilotCLICapabilities(helpText: CopilotAdapterFixture.helpText()),
                 localToolCommands: [],
                 runtimeSupportTools: Self.copilotRuntimeSupportToolPermissions(),
                 allowAllPathsForSSHConnections: false
@@ -3350,35 +3352,6 @@ struct AgentRuntimeAdapterTests {
             approvalsGranted: [],
             approvalGrants: []
         )
-    }
-
-    private static func writeFakeCopilotExecutable(
-        in directory: URL,
-        supportsAdditionalMCPConfig: Bool = true
-    ) throws -> String {
-        let url = directory.appendingPathComponent("copilot")
-        let script = """
-        #!/bin/sh
-        if [ "$1" = "help" ]; then
-          cat <<'HELP'
-        \(fakeCopilotHelpText(supportsAdditionalMCPConfig: supportsAdditionalMCPConfig))
-        HELP
-          exit 0
-        fi
-        if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
-          echo "copilot fake 1.0"
-          exit 0
-        fi
-        exit 0
-        """
-        try script.write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
-        return url.path
-    }
-
-    private static func fakeCopilotHelpText(supportsAdditionalMCPConfig: Bool = true) -> String {
-        let mcpConfigHelp = supportsAdditionalMCPConfig ? " --additional-mcp-config CONFIG" : ""
-        return "--allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL\(mcpConfigHelp)"
     }
 
     private static func argumentValues(after flag: String, in arguments: [String]) -> [String] {

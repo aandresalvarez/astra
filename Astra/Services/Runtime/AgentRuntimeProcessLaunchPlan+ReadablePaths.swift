@@ -34,6 +34,7 @@ extension AgentRuntimeProcessLaunchPlan {
         )
         plan.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
         plan.executionSandboxBoundaryReceipt = executionSandboxBoundaryReceipt
+        plan.containerProviderCommandIndex = containerProviderCommandIndex
         return plan
     }
 
@@ -62,6 +63,7 @@ extension AgentRuntimeProcessLaunchPlan {
         )
         plan.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
         plan.executionSandboxBoundaryReceipt = executionSandboxBoundaryReceipt
+        plan.containerProviderCommandIndex = containerProviderCommandIndex
         return plan
     }
 
