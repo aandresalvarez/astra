@@ -1169,6 +1169,8 @@ struct ConnectorsTabContent: View {
     var onManageCapabilities: () -> Void = {}
     @Environment(\.modelContext) private var modelContext
     @State private var selectedConnector: Connector?
+    @State private var duplicationError: String?
+    @State private var duplicationRecoveryID: UUID?
     @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
     private var globalConnectors: [Connector]
 
@@ -1227,6 +1229,23 @@ struct ConnectorsTabContent: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
 
+            if let duplicationError {
+                HStack {
+                    Label(duplicationError, systemImage: "exclamationmark.triangle")
+                        .font(Stanford.caption(12))
+                    Spacer()
+                    if let id = duplicationRecoveryID {
+                        Button("Finish recovery") {
+                            do {
+                                try ConnectorCredentialEditor.recover(id, modelContext: modelContext)
+                                self.duplicationError = nil
+                                duplicationRecoveryID = nil
+                            } catch { self.duplicationError = error.localizedDescription }
+                        }
+                    }
+                }
+                .padding(12)
+            }
             Divider()
 
             ZStack(alignment: .topLeading) {
@@ -1425,10 +1444,20 @@ struct ConnectorsTabContent: View {
     }
 
     private func duplicateConnector(_ connector: Connector) {
-        let copy = CapabilitySharing.duplicateForWorkspace(connector, in: workspace)
-        modelContext.insert(copy)
-        selectedConnector = copy
-        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
+        do {
+            selectedConnector = try ConnectorCredentialDuplication.duplicate(connector, in: workspace, modelContext: modelContext)
+            duplicationError = nil
+            duplicationRecoveryID = nil
+        } catch {
+            duplicationRecoveryID = nil
+            if let problem = error as? PluginOperationProblem {
+                switch problem {
+                case .savedRecoveryPending(let id): duplicationRecoveryID = id
+                case .commitUncertain: break
+                }
+            }
+            duplicationError = error.localizedDescription
+        }
     }
 
     private func deleteConnector(_ connector: Connector) {

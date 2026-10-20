@@ -30,11 +30,7 @@ enum CapabilitySharing {
         workspace.updatedAt = Date()
     }
 
-    static func duplicateForWorkspace(
-        _ connector: Connector,
-        in workspace: Workspace,
-        secretStore: SecretStore = KeychainSecretStore()
-    ) -> Connector {
+    static func makeWorkspaceCopy(_ connector: Connector, in workspace: Workspace) -> Connector {
         let copy = Connector(
             name: duplicatedName(for: connector, in: workspace),
             serviceType: connector.serviceType,
@@ -51,8 +47,12 @@ enum CapabilitySharing {
         copy.notes = connector.notes
         copy.workspace = workspace
         copy.isGlobal = false
-        copyCredentials(from: connector, to: copy, secretStore: secretStore)
-        disableShared(connector, in: workspace)
+        // Preserve the selected creator's storage/format provenance.
+        copy.originPackageID = connector.originPackageID
+        copy.originPackageVersion = connector.originPackageVersion
+        copy.originComponentID = connector.originComponentID
+        copy.originComponentKind = connector.originComponentKind
+        copy.originSourceKind = connector.originSourceKind
         return copy
     }
 
@@ -89,29 +89,6 @@ enum CapabilitySharing {
         copy.isGlobal = false
         disableShared(tool, in: workspace)
         return copy
-    }
-
-    private static func copyCredentials(
-        from source: Connector,
-        to destination: Connector,
-        secretStore: SecretStore
-    ) {
-        let sourceEntityIDs = KeychainSecretStore.connectorEntityIDs(for: source)
-        let destinationEntityIDs = KeychainSecretStore.connectorEntityIDs(for: destination)
-        for key in source.credentialKeys {
-            guard let value = sourceEntityIDs.compactMap({ secretStore.load(key: key, entityID: $0) }).first,
-                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                continue
-            }
-            for destinationEntityID in destinationEntityIDs {
-                secretStore.save(
-                    key: key,
-                    value: value,
-                    entityID: destinationEntityID,
-                    label: "Astra: \(destination.name)"
-                )
-            }
-        }
     }
 
     private static func duplicatedName(for connector: Connector, in workspace: Workspace) -> String {
