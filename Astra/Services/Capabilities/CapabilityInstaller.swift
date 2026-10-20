@@ -268,7 +268,7 @@ struct CapabilityInstaller {
                 let account = candidate.account
                 let prepared = try ConnectorCredentialGenerationTransaction.prepare(account: account, isNew: false,
                     keeping: candidate.keeping, replacing: [], modelContext: modelContext, declaredFormats: candidate.formats,
-                    lease: stagedAccountCredentials.first?.lease)
+                    migratingSettings: candidate.migratingSettings, lease: stagedAccountCredentials.first?.lease)
                 stagedAccountCredentials.append(prepared)
                 account.credentialNamespaceID = prepared.namespaceID
                 // Every retained legacy value has now passed admission or

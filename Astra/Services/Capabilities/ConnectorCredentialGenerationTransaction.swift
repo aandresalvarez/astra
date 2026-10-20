@@ -55,6 +55,7 @@ final class ConnectorCredentialGenerationTransaction {
     static func prepare(
         account: Connector, isNew: Bool, keeping keys: Set<String>, replacing: Set<String>, modelContext: ModelContext,
         declaredFormats: [String: [ConnectorCredentialFormat]] = [:],
+        migratingSettings: Set<String> = [],
         legacyHandling: LegacyHandling = .migrate,
         copying sourceAccount: Connector? = nil,
         lease: ConnectorCredentialGenerationJournal.Lease? = nil
@@ -118,10 +119,17 @@ final class ConnectorCredentialGenerationTransaction {
                 switch ConnectorSecretSeam.required.readCredential(key: key, facts: source, store: KeychainSecretStore()) {
                 case .value(let value): copies.append((key, value))
                 case .missing:
-                    let fields = stored.credentialKeys.indices.compactMap { index -> LegacyField? in
+                    var fields = stored.credentialKeys.indices.compactMap { index -> LegacyField? in
                         guard ConnectorCredentialKey.same(stored.credentialKeys[index], key) else { return nil }
                         return LegacyField(key: stored.credentialKeys[index],
                             value: index < stored.credentialValues.count ? stored.credentialValues[index] : "")
+                    }
+                    if migratingSettings.contains(key) {
+                        fields += stored.configKeys.indices.compactMap { index -> LegacyField? in
+                            guard ConnectorCredentialKey.same(stored.configKeys[index], key) else { return nil }
+                            return LegacyField(key: stored.configKeys[index],
+                                value: index < stored.configValues.count ? stored.configValues[index] : "")
+                        }
                     }
                     let candidates = Set(fields.map(\.value).filter { !$0.isEmpty })
                     if case .preservePending = legacyHandling, !candidates.isEmpty {

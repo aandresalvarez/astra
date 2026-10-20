@@ -10,6 +10,7 @@ enum PluginAccountCredentialCutoverPlan {
         let account: Connector
         var keeping: Set<String>
         var formats: [String: [ConnectorCredentialFormat]]
+        var migratingSettings: Set<String>
     }
 
     static func formats(of spec: PluginConnector) -> [String: [ConnectorCredentialFormat]] {
@@ -40,12 +41,13 @@ enum PluginAccountCredentialCutoverPlan {
                 let declaredFormats = formats(of: spec)
                 if let index = result.firstIndex(where: { $0.account.id == account.id }) {
                     result[index].keeping.formUnion(keeping)
+                    result[index].migratingSettings.formUnion(promoted)
                     for (key, constraints) in declaredFormats {
                         for constraint in constraints where !result[index].formats[key, default: []].contains(constraint) {
                             result[index].formats[key, default: []].append(constraint)
                         }
                     }
-                } else { result.append(Candidate(account: account, keeping: keeping, formats: declaredFormats)) }
+                } else { result.append(Candidate(account: account, keeping: keeping, formats: declaredFormats, migratingSettings: promoted)) }
             }
         }
         return result

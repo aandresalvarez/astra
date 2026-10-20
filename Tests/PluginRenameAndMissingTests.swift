@@ -278,10 +278,10 @@ struct PluginRound21ReviewTests {
         #expect(rewritten == [env.workspace.id])
     }
 
-    @Test("A startup move whose undo can't be saved keeps its Keychain copies for the stored rows")
-    func startupUndoKeepsKeychainUntilSaved() throws {
-        let env = try Fixtures.Environment()
-        func legacyRow() -> Connector {
+    @Test("Startup keeps its original fields before commit and its new credentials after a saved failure", arguments: [false, true])
+    func startupCommitDeterminesRecovery(saveLands: Bool) throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixtures.Environment()
             let row = Connector(name: "Tracker", serviceType: "tracker", baseURL: "https://tracker.example.com", authMethod: "bearer")
             row.originPackageID = "imported.tracker"
             row.originComponentID = "connector:tracker:tracker-api"
@@ -289,19 +289,17 @@ struct PluginRound21ReviewTests {
             row.configValues = ["ENG-1"]
             env.context.insert(row)
             row.workspace = env.workspace
-            return row
-        }
-        for (undoSaves, keeps) in [(false, true), (true, false)] {
-            let store = MockSecretStore()
-            let row = legacyRow()
-            var saves = [true, undoSaves]
-            #expect(!StartupCredentialMigrationService.moveSettingsStoredAsCredentials(
-                of: [row], mirroredBy: [env.workspace], modelContext: env.context,
-                resolver: PluginConnectorFieldTrustTests.StubCreator.self, store: store,
-                rewriteMirror: { _ in false }, save: { _ in saves.removeFirst() }
-            ))
-            #expect(row.configValue("TRACKER_PROJECT") == "ENG-1")
-            #expect((PluginConnectorFieldTrustTests.held("TRACKER_PROJECT", of: row, in: store) == "ENG-1") == keeps)
+            try env.context.save()
+            #expect(!StartupCredentialMigrationService.migrateAccounts([row], mirroredBy: [env.workspace], modelContext: env.context,
+                resolver: PluginConnectorFieldTrustTests.StubCreator.self,
+                persist: { context in
+                    if saveLands { try context.save() }
+                }, rewriteMirror: { _ in false }))
+            #expect(row.configValue("TRACKER_PROJECT") == (saveLands ? "" : "ENG-1"))
+            #expect(row.currentCredentialValue(forKey: "TRACKER_PROJECT") == (saveLands ? "ENG-1" : nil))
+            let saved = try #require(try ModelContext(env.context.container).fetch(FetchDescriptor<Connector>()).first)
+            #expect(saved.configValue("TRACKER_PROJECT") == (saveLands ? "" : "ENG-1"))
+            #expect(saved.currentCredentialValue(forKey: "TRACKER_PROJECT") == (saveLands ? "ENG-1" : nil))
         }
     }
 

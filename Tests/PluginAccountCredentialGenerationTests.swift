@@ -408,6 +408,52 @@ struct PluginAccountCredentialGenerationTests {
         }
     }
 
+
+    @Test("Add admits a valid raw setting into its private generation before publishing it")
+    func addMigratesValidLegacySetting() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable("before-valid-setting-migration")
+            account.configKeys = ["PROJECT"]
+            account.configValues = ["  ENG-4242  "]
+            try env.disk.context.save()
+            let namespace = account.credentialNamespaceID
+            var accepted = env.package
+            accepted.version = "2.0.0"
+            accepted.connectors[0].configHints = [.init(key: "PROJECT", hint: "Project", isList: false)]
+            _ = try env.disk.installer.enable(accepted, in: env.disk.workspace, modelContext: env.disk.context)
+            #expect(account.credentialNamespaceID != namespace)
+            #expect(account.configKeys.isEmpty)
+            // An opaque value keeps significant spaces; only a declared
+            // format or known issuer permits trimming its storage form.
+            #expect(account.currentCredentialValue(forKey: "PROJECT") == "  ENG-4242  ")
+            #expect(account.currentCredentialValue(forKey: "API_TOKEN") == "before-valid-setting-migration")
+        }
+    }
+
+    @Test("Add cannot promote an invalid legacy plain setting without admission")
+    func addRejectsInvalidLegacySetting() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable("before-legacy-setting-migration")
+            account.configKeys = ["PROJECT"]
+            account.configValues = ["your-token-here"]
+            try env.disk.context.save()
+            let namespace = account.credentialNamespaceID
+            var accepted = env.package
+            accepted.version = "2.0.0"
+            accepted.connectors[0].configHints = [.init(key: "PROJECT", hint: "Project", isList: false)]
+            #expect(throws: ConnectorCredentialGenerationTransaction.Failure.self) {
+                try env.disk.installer.enable(accepted, in: env.disk.workspace, modelContext: env.disk.context)
+            }
+            #expect(account.credentialNamespaceID == namespace)
+            #expect(account.configValues == ["your-token-here"])
+            #expect(account.currentCredentialValue(forKey: "PROJECT") == nil)
+        }
+    }
+
     @MainActor
     private struct Fixture {
         let disk: PluginAddCommitTests.Fixture
