@@ -150,17 +150,23 @@ struct WorkspaceImportOrchestrator {
     let modelContext: ModelContext
     let taskQueue: TaskQueue
 
+    /// `sharedAccountIDs`: the file account IDs the person confirmed may be
+    /// one row across the workspaces imported together. Each file is its own
+    /// trust domain, so without a confirmation (the import has no review
+    /// step yet) every workspace gets its own row
+    /// (`WorkspaceConfigManager.ImportSession`).
     func importWorkspaces(
         from urls: [URL],
         existingWorkspaces: [Workspace],
+        sharedAccountIDs: Set<String> = [],
         askDuplicateAction: (String, Int) -> TaskLifecycleCoordinator.DuplicateAction
     ) -> WorkspaceImportResult {
         let coordinator = TaskLifecycleCoordinator(modelContext: modelContext, taskQueue: taskQueue)
         var imported: [Workspace] = []
         var knownWorkspaces = existingWorkspaces
         // One for the whole action: the child workspaces of a parent
-        // `Workspaces` folder keep the shared accounts they had in common.
-        let importSession = WorkspaceConfigManager.ImportSession()
+        // `Workspaces` folder share only the accounts the person confirmed.
+        let importSession = WorkspaceConfigManager.ImportSession(sharedAccountIDs: sharedAccountIDs)
 
         for candidate in WorkspaceImportDiscovery.candidates(for: urls) {
             let workspace: Workspace?
