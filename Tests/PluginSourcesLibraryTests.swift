@@ -34,6 +34,7 @@ struct PluginSourcesLibraryTests {
         let fromB = try #require(plugins.first { $0.source.id == sourceB.id })
         #expect(fromA.canAdd && fromB.canAdd)
         let workspace = Workspace(name: "Raced", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
         let service = CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
 
@@ -115,6 +116,7 @@ struct PluginSourcesLibraryTests {
         }
         #expect(try offered(0).canAdd && offered(1).canAdd && offered(2).canAdd)
         let workspace = Workspace(name: "Library", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
         let service = CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
 
@@ -180,6 +182,7 @@ struct PluginSourcesLibraryTests {
         let coordinator = PluginSourceCoordinator(store: fixture.store, installedPackages: { fixture.library.installedPackages() })
         coordinator.reload()
         let workspace = Workspace(name: "Recovered", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
         let service = CapabilityCatalogActionService(library: fixture.library, sourceStore: fixture.store)
         try service.importReviewed(try #require(coordinator.listings.first?.plugins.first), workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
@@ -276,6 +279,7 @@ struct PluginSourcesLibraryTests {
     func heldImportsAreListedAndDiscardable() throws {
         let fixture = try PluginSourcesTests.Fixture()
         let workspace = Workspace(name: "Held", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
         let folder = fixture.root.appendingPathComponent("held", isDirectory: true)

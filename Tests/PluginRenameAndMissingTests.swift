@@ -222,6 +222,7 @@ struct PluginRound21ReviewTests {
         Fixtures.Environment.retained.append(container)
         let context = container.mainContext
         let workspace = Workspace(name: "Ops", primaryPath: root.appendingPathComponent("workspace").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
         let library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
         var v1 = Fixtures.package(version: "1.0.0")
@@ -240,11 +241,18 @@ struct PluginRound21ReviewTests {
         v2.skills.removeLast()
         var rewritten: [UUID] = []
         var owedDuringRewrite = false
-        try installer.enable(v2, in: workspace, modelContext: context, rewriteMirror: { written in
-            rewritten.append(written.id)
-            owedDuringRewrite = (try? outbox.pending())?.contains(released) ?? false
-            return false
-        })
+        var operationID: UUID?
+        do {
+            try installer.enable(v2, in: workspace, modelContext: context, rewriteMirror: { written in
+                rewritten.append(written.id)
+                owedDuringRewrite = (try? outbox.pending())?.contains(released) ?? false
+                return false
+            })
+            Issue.record("A saved Add with a refused mirror must retain recovery debt")
+        } catch let problem as PluginOperationProblem { operationID = problem.operationID }
+        let id = try #require(operationID)
+        let receipt = try #require(try PluginOperationCommit.read(id, container: container))
+        #expect(receipt.kind == .add && receipt.workspaceIDs == [workspace.id] && receipt.completedAt == nil)
         #expect(activation.recordedVersion == "2.0.0")
         #expect(rewritten == [workspace.id])
         #expect(owedDuringRewrite)

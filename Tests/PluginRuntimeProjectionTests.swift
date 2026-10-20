@@ -142,7 +142,10 @@ struct PluginRuntimeProjectionTests {
     @Test("Adding a catalog skill turns its stored row on instead of projecting a copy")
     func syntheticSkillPackageEnablesItsRow() throws {
         let context = try makeContext()
-        let workspace = Workspace(name: "Synthetic", primaryPath: "/tmp/projection-synthetic")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Synthetic", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let shared = Skill(name: "Shared Analyst", allowedTools: ["Read"])
         shared.isGlobal = true
@@ -191,7 +194,10 @@ struct PluginRuntimeProjectionTests {
     func addSeedsKnownComponentsAndKeepsDefault() throws {
         let context = try makeContext()
         let jira = try builtIn("jira-workflow")
-        let workspace = Workspace(name: "Known", primaryPath: "/tmp/projection-known")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Known", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let chosen = Connector(name: "Chosen", serviceType: jira.connectors[0].serviceType)
         chosen.workspace = workspace
@@ -382,7 +388,10 @@ struct PluginRuntimeProjectionTests {
     func addReleasesDroppedConnectorBindings() throws {
         let context = try makeContext()
         let jira = try builtIn("jira-workflow")
-        let workspace = Workspace(name: "Dropped", primaryPath: "/tmp/projection-dropped")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Dropped", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-dropped-\(UUID().uuidString)", isDirectory: true)
@@ -404,8 +413,14 @@ struct PluginRuntimeProjectionTests {
     func activationRunsOnlyTheDefinitionItAccepted() throws {
         let context = try makeContext()
         let gcloud = try builtIn("gcloud-workflow")
-        let a = Workspace(name: "A", primaryPath: "/tmp/projection-accepted-a")
-        let b = Workspace(name: "B", primaryPath: "/tmp/projection-accepted-b")
+        let aFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: aFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: aFolder) }
+        let a = Workspace(name: "A", primaryPath: aFolder.path)
+        let bFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: bFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: bFolder) }
+        let b = Workspace(name: "B", primaryPath: bFolder.path)
         context.insert(a)
         context.insert(b)
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

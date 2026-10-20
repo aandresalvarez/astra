@@ -46,29 +46,10 @@ struct CapabilityCatalogActionService {
         sourceStore: PluginSourceStore = PluginSourceStore()
     ) {
         self.installer = CapabilityInstaller(library: library, appVersion: appVersion, sourceStore: sourceStore)
-        self.creationService = CapabilityPackageCreationService(library: library, appVersion: appVersion)
+        self.creationService = CapabilityPackageCreationService(library: library, appVersion: appVersion, sourceStore: sourceStore)
         self.uninstaller = CapabilityUninstaller(library: library, sourceStore: sourceStore)
         self.library = library
         self.sourceStore = sourceStore
-    }
-
-    /// Runs a library write after which the copy in the library is no
-    /// source's: a Remove, or a file import or Create. A provenance record
-    /// left behind would make a later file copy with the same bytes look
-    /// like that source's own, so the forget is journaled around the write
-    /// (`PluginSourceStore.forgettingProvenance`). It runs with no source
-    /// import, other local install or Remove of the same ID in between
-    /// (`PluginSourceStore.exclusively`); the library write validates
-    /// against the library as it is then.
-    private func forgettingSource<Result>(
-        of packageID: String?,
-        leaving intent: PluginSourceStore.Provenance.PendingForget,
-        _ libraryWrite: () throws -> Result
-    ) throws -> Result {
-        guard let packageID else { return try libraryWrite() }
-        return try sourceStore.exclusively(pluginID: packageID) {
-            try sourceStore.forgettingProvenance(pluginID: packageID, leaving: intent, libraryWrite)
-        }
     }
 
     /// Writes the package's shareable source JSON to `url`. The exported
@@ -97,7 +78,8 @@ struct CapabilityCatalogActionService {
         allowCredentialUserInteraction: Bool = false,
         policyContext: CapabilityCatalogPolicyContext,
         source: String,
-        traceID: String
+        traceID: String,
+        mutationPermit: PluginMutationScope.Permit? = nil
     ) throws -> CapabilityInstaller.InstallationResult {
         do {
             // Every enable path (the legacy catalog's install sheets and
@@ -113,7 +95,7 @@ struct CapabilityCatalogActionService {
                 baseURLOverrides: baseURLOverrides,
                 allowCredentialUserInteraction: allowCredentialUserInteraction,
                 policyContext: policyContext,
-                traceID: traceID
+                traceID: traceID, mutationPermit: mutationPermit
             )
             CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
             return result
@@ -141,24 +123,11 @@ struct CapabilityCatalogActionService {
     ) throws -> CapabilityCatalogCreateActionResult {
         let source = enableHere ? "create_and_enable" : "create_install_only"
         do {
-            // The copy Create writes is the validated package.
-            let written = CapabilityPackageValidator.validate(
-                package: package, installedPackages: library.installedPackages(), checkPrerequisites: false
-            ).package ?? package
-            let result = try forgettingSource(
-                of: package.id, leaving: .install(digest: PluginSourceCatalog.contentDigest(written))
-            ) {
-                try creationService.create(
-                    package,
-                    enableHere: enableHere,
-                    sourceURL: sourceURL,
-                    workspace: workspace,
-                    modelContext: modelContext,
-                    allowCredentialUserInteraction: allowCredentialUserInteraction,
-                    policyContext: policyContext,
-                    traceID: traceID
-                )
-            }
+            let result = try creationService.create(
+                package, enableHere: enableHere, sourceURL: sourceURL, workspace: workspace,
+                modelContext: modelContext, allowCredentialUserInteraction: allowCredentialUserInteraction,
+                policyContext: policyContext, traceID: traceID
+            )
             // Creation always changes the global library. The creation service
             // owns that event; this additional scoped event represents only
             // the optional workspace enablement.
@@ -247,19 +216,16 @@ struct CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
-        try Self.validateAccountSupport(for: package)
-        let context = try grantPendingApproval(
-            for: package, workspace: workspace, policyContext: policyContext,
-            approvalStore: approvalStore, source: "plugins_add", traceID: traceID
-        )
-        return try enable(
-            package,
-            workspace: workspace,
-            modelContext: modelContext,
-            policyContext: context,
-            source: "plugins_add",
-            traceID: traceID
-        )
+        return try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore,
+            modelContext: modelContext, approvals: approvalStore) { permit in
+            try Self.validateAccountSupport(for: package)
+            let context = try grantPendingApproval(
+                for: package, workspace: workspace, policyContext: policyContext,
+                approvalStore: approvalStore, source: "plugins_add", traceID: traceID
+            )
+            return try enable(package, workspace: workspace, modelContext: modelContext,
+                policyContext: context, source: "plugins_add", traceID: traceID, mutationPermit: permit)
+        }
     }
 
     /// The approval Add writes when the policy holds `package` for review:

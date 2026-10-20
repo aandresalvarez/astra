@@ -272,7 +272,10 @@ struct PluginsSurfaceTests {
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
         )
         let context = container.mainContext
-        let workspace = Workspace(name: "Add", primaryPath: "/tmp/plugins-add")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Add", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-plugins-add-\(UUID().uuidString)", isDirectory: true)

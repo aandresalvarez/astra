@@ -32,17 +32,20 @@ struct CapabilityPackageCreationService {
     let sourceExporter: CapabilityPackageSourceExporter
     let approvalStore: CapabilityApprovalStore
     let installer: CapabilityInstaller
+    let sourceStore: PluginSourceStore
 
     init(
         library: CapabilityLibrary = CapabilityLibrary(),
         sourceExporter: CapabilityPackageSourceExporter = CapabilityPackageSourceExporter(),
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
-        appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0)
+        appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
+        sourceStore: PluginSourceStore = PluginSourceStore()
     ) {
         self.library = library
         self.sourceExporter = sourceExporter
         self.approvalStore = approvalStore
-        self.installer = CapabilityInstaller(library: library, appVersion: appVersion)
+        self.sourceStore = sourceStore
+        self.installer = CapabilityInstaller(library: library, appVersion: appVersion, sourceStore: sourceStore)
     }
 
     @discardableResult
@@ -57,8 +60,25 @@ struct CapabilityPackageCreationService {
         baseURLOverrides: [String: String] = [:],
         allowCredentialUserInteraction: Bool = false,
         policyContext: CapabilityCatalogPolicyContext? = nil,
-        traceID: String? = nil
+        traceID: String? = nil,
+        mutationPermit: PluginMutationScope.Permit? = nil
     ) throws -> CapabilityPackageCreationResult {
+        guard let mutationPermit else {
+            return try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore,
+                modelContext: modelContext, approvals: approvalStore) { permit in
+                let written = CapabilityPackageValidator.validate(package: package,
+                    installedPackages: library.installedPackages(), checkPrerequisites: false).package ?? package
+                return try sourceStore.forgettingProvenance(pluginID: package.id,
+                    leaving: .install(digest: PluginSourceCatalog.contentDigest(written))) {
+                    try create(package, enableHere: enableHere, sourceURL: sourceURL, workspace: workspace,
+                        modelContext: modelContext, credentialInputs: credentialInputs, configInputs: configInputs,
+                        baseURLOverrides: baseURLOverrides, allowCredentialUserInteraction: allowCredentialUserInteraction,
+                        policyContext: policyContext, traceID: traceID, mutationPermit: permit)
+                }
+            }
+        }
+        try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore,
+            modelContext: modelContext, permit: mutationPermit) { _ in }
         let validation = CapabilityPackageValidator.validate(
             package: package,
             installedPackages: library.installedPackages(),
@@ -109,9 +129,10 @@ struct CapabilityPackageCreationService {
                     allowCredentialUserInteraction: allowCredentialUserInteraction,
                     policyContext: enablePolicyContext,
                     traceID: traceID,
-                    announceCatalogMutation: false
+                    announceCatalogMutation: false, mutationPermit: mutationPermit
                 )
             } catch let installError {
+                guard !PluginOperationProblem.preventsRollback(installError) else { throw installError }
                 do {
                     try approval?.revert()
                 } catch {

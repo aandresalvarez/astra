@@ -606,6 +606,7 @@ struct PluginSourcesTests {
         // Through the action service: Remove, then a file import, each forget it.
         let context = fixture.context
         let workspace = Workspace(name: "Sources", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
         let library = fixture.library
         let service = CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
@@ -631,6 +632,7 @@ struct PluginSourcesTests {
         let digest = PluginSourceCatalog.contentDigest(package)
         try fixture.store.recordProvenance(pluginID: package.id, sourceID: source.id, digest: digest)
         let workspace = Workspace(name: "Sources", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
         let service = CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
 
@@ -707,6 +709,7 @@ struct PluginSourcesTests {
         // A record from the source's earlier copy, since removed by hand.
         try fixture.store.recordProvenance(pluginID: package.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(package))
         let workspace = Workspace(name: "Sources", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
         files.snapshots = []
         _ = try CapabilityCatalogActionService(library: library, sourceStore: fixture.store).create(
@@ -755,6 +758,7 @@ struct PluginSourcesTests {
         try library.install(old, sourceMetadata: .localLibrary())
         try fixture.store.recordProvenance(pluginID: old.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(old))
         let workspace = Workspace(name: "Sources", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
         files.failLibraryWrites = true
         let newer = try Self.package(id: "failing", version: "2.0.0")
@@ -786,6 +790,7 @@ struct PluginSourcesTests {
         coordinator.reload()
         let offered = try #require(coordinator.listings.first?.plugins.first)
         let workspace = Workspace(name: "Bound", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
         let service = CapabilityCatalogActionService(library: fixture.library, sourceStore: fixture.store)
         try service.importReviewed(offered, workspace: workspace, modelContext: fixture.context, coordinator: coordinator)

@@ -133,7 +133,8 @@ struct PluginOperationsTests {
         let env = try Environment()
         let package = Self.package(version: "1.0.0")
         try env.install(package)
-        let other = Workspace(name: "Other", primaryPath: "/tmp/plugin-ops-other")
+        let other = Workspace(name: "Other", primaryPath: env.root.appendingPathComponent("settings-other").path)
+        try FileManager.default.createDirectory(atPath: other.primaryPath, withIntermediateDirectories: true)
         env.context.insert(other)
         try env.installer.install(package, into: other, modelContext: env.context, announceCatalogMutation: false)
 
