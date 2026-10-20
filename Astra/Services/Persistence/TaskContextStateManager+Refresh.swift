@@ -22,6 +22,9 @@ extension TaskContextStateManager {
         /// else has to be handled on the actor, because recovering from it
         /// writes.
         let loadWasUsable: Bool
+        /// The output folder and path facts, observed after `stamp`.
+        let outputs: TaskOutputObservation?
+        let observeMilliseconds: Double
     }
 
     /// What the state file looked like at one moment, as cheaply as the
@@ -94,16 +97,29 @@ extension TaskContextStateManager {
     /// durability ordering untouched — the common task-open case is a no-op
     /// refresh that never saves at all.
     ///
-    /// **The output-folder scan deliberately does not move.** It did, and five
-    /// rounds of review went into the consequences. Off the actor its result
-    /// can go stale between the scan and the apply, and every way of closing
-    /// that costs what the scan cost: validating on the actor is one
-    /// `attributesOfItem` per traversed directory, which freezes selection on
-    /// any large output tree exactly as the scan did; validating off the actor
-    /// is itself stale by the hop it takes; and recovering by rescanning under
-    /// the actor restores the freeze for precisely the busy tasks the move was
-    /// meant to help. The scan stays in `updateDerivedFields`, where it runs at
-    /// the moment its result is used and cannot be stale at all.
+    /// The output-folder scan and every per-path filesystem check move too,
+    /// as one `TaskOutputObservation` taken in the same hop, so the apply is
+    /// model work only. An earlier attempt moved the scan alone and tried to
+    /// validate the tree itself — a stamp per traversed directory, re-stat'd on
+    /// the actor — which costs what the scan cost. This validates ordering
+    /// instead, with the stamp already here, and that is the property the
+    /// on-actor scan actually had:
+    ///
+    /// - The actor never serialized the scan against what writes outputs —
+    ///   the agent processes. A file landing just after an on-actor scan was
+    ///   just as missing from the saved state. What the actor ordered was
+    ///   ASTRA's own writes of the derived state, and those all land in
+    ///   `current_state.json`.
+    /// - The observation is taken *after* the closing stamp. So any save the
+    ///   stamp still matches at the apply happened before the observation,
+    ///   and any save after it fails the match and retries with a fresh one.
+    ///   A refresh can therefore never put an older view of the folder over a
+    ///   newer one — the regression the directory stamps were reaching for.
+    /// - What remains is a change landing in the hop with no save behind it,
+    ///   which is the same staleness an external write right after an
+    ///   on-actor scan had. The next refresh sees it, and `recordTurn` and the
+    ///   launch-path `refresh(task:)` still scan under the actor, so a prompt
+    ///   never reads a folder older than its own turn.
     ///
     /// `refresh(task:)` itself is deliberately left alone. It is the durable
     /// launch path, where callers depend on the write having happened by the
@@ -121,6 +137,7 @@ extension TaskContextStateManager {
         // sendable values.
         let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
         let taskID = task.id
+        let outputPaths = TaskOutputObservation.candidatePaths(for: task)
 
         // Retried off the actor rather than repaired on it: recovering by
         // redoing the refresh under the actor spends exactly what this avoids.
@@ -128,13 +145,19 @@ extension TaskContextStateManager {
         // retry forever.
         let refreshStart = DispatchTime.now().uptimeNanoseconds
         var loadMilliseconds = 0.0
+        var observeMilliseconds = 0.0
         var attempts = 0
         for _ in 0..<maxRevalidationAttempts {
             attempts += 1
             let loadStart = DispatchTime.now().uptimeNanoseconds
-            let loadedState = await loadOffActor(workspacePath: workspacePath, taskID: taskID)
+            let loadedState = await loadOffActor(
+                workspacePath: workspacePath,
+                taskID: taskID,
+                outputPaths: outputPaths
+            )
             loadMilliseconds += elapsedMilliseconds(since: loadStart)
             guard let loaded = loadedState else { return false }
+            observeMilliseconds += loaded.observeMilliseconds
             #if DEBUG
             // Runs on the main actor in exactly the window the guards below
             // exist for, so a test can create the interleaving deterministically
@@ -186,11 +209,13 @@ extension TaskContextStateManager {
                 existing: loaded.existing,
                 folder: loaded.folder,
                 task: task,
-                followUpMessage: followUpMessage
+                followUpMessage: followUpMessage,
+                outputObservation: loaded.outputs
             )
             onTiming?(RefreshTiming(
                 totalMilliseconds: elapsedMilliseconds(since: refreshStart),
                 loadMilliseconds: loadMilliseconds,
+                observeMilliseconds: observeMilliseconds,
                 applyMilliseconds: elapsedMilliseconds(since: applyStart),
                 attempts: attempts,
                 saved: saved
@@ -206,18 +231,21 @@ extension TaskContextStateManager {
     /// told apart. The task-open phase reports a single number, and 76FB97C5
     /// took 1.9–2.3 s on it while a sibling task took 60–150 ms. `loadMilliseconds`
     /// includes the wait to get the main actor back after the off-actor read,
-    /// so a busy actor shows up there; `applyMilliseconds` is the on-actor
-    /// derive and output-folder scan. Only a refresh that applied reports: the
-    /// early exits and the synchronous fallback do not.
+    /// so a busy actor shows up there, and the off-actor output observation;
+    /// `applyMilliseconds` is the on-actor derive, which no longer touches the
+    /// output folder. Only a refresh that applied reports: the early exits and
+    /// the synchronous fallback do not.
     public struct RefreshTiming: Sendable, Equatable {
         public let totalMilliseconds: Double
         public let loadMilliseconds: Double
+        /// The part of `loadMilliseconds` spent observing the output folder.
+        public let observeMilliseconds: Double
         public let applyMilliseconds: Double
         public let attempts: Int
         public let saved: Bool
     }
 
-    private static func elapsedMilliseconds(since start: UInt64) -> Double {
+    private nonisolated static func elapsedMilliseconds(since start: UInt64) -> Double {
         Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
     }
 
@@ -235,7 +263,8 @@ extension TaskContextStateManager {
         return refresh(task: task, followUpMessage: followUpMessage)
     }
 
-    /// The off-actor half: resolve the folder and read the state.
+    /// The off-actor half: resolve the folder, read the state, observe the
+    /// outputs.
     ///
     /// `nonisolated` rather than `Task.detached`. A detached task inherits
     /// nothing, cancellation included, so cancelling the caller left this
@@ -243,7 +272,8 @@ extension TaskContextStateManager {
     /// actor runs off it just the same, and does inherit cancellation.
     private nonisolated static func loadOffActor(
         workspacePath: String,
-        taskID: UUID
+        taskID: UUID,
+        outputPaths: [String]
     ) async -> LoadedContextState? {
         guard !Task.isCancelled else { return nil }
         guard let folder = try? TaskFolderResolvingAdapter.ensureTaskFolder(
@@ -277,12 +307,27 @@ extension TaskContextStateManager {
         interleaveDuringLoadForTesting?()
         #endif
         let afterRead = StateFileIdentity(atPath: path)
+        // After the closing stamp, never before it: that order is what makes
+        // the stamp check at the apply cover this observation too. See
+        // `refreshLoadingOffMainActor`. Skipped when the apply cannot use it.
+        let straddled = !beforeRead.matches(afterRead)
+        guard !Task.isCancelled else { return nil }
+        let observeStart = DispatchTime.now().uptimeNanoseconds
+        let outputs = usable && !straddled
+            ? TaskOutputObservation.observe(
+                taskFolder: folder,
+                workspacePath: workspacePath,
+                paths: outputPaths + (existing?.filesChanged ?? [])
+            )
+            : nil
         return LoadedContextState(
             folder: folder,
             existing: existing,
             stamp: afterRead,
-            readStraddledAWrite: !beforeRead.matches(afterRead),
-            loadWasUsable: usable
+            readStraddledAWrite: straddled,
+            loadWasUsable: usable,
+            outputs: outputs,
+            observeMilliseconds: elapsedMilliseconds(since: observeStart)
         )
     }
 

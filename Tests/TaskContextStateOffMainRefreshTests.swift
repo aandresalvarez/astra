@@ -291,6 +291,175 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(state.turns.contains { $0.ask == "written between load and apply" })
     }
 
+    /// The point of the observation: the apply must not touch the output
+    /// folder at all, however big it is — no scan, and no symlink-resolving
+    /// visibility or existence check per path. Counted rather than timed,
+    /// because wall-clock budgets are unreliable under a parallel suite and a
+    /// count of zero is independent of folder size by construction. It must
+    /// also derive exactly what the on-actor scan does.
+    @Test("The apply answers every output question from the off-actor observation")
+    func applyDoesNoOutputFilesystemWork() async throws {
+        let fixture = try makeFixture("observation")
+        defer { fixture.cleanup() }
+        let path = URL(fileURLWithPath: fixture.folder)
+            .appendingPathComponent(TaskContextStateManager.jsonFileName)
+        let seededBytes = try Data(contentsOf: path)
+        try populateOutputs(fixture)
+
+        TaskContextStateManager.refresh(task: fixture.task)
+        let expected = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+
+        // Back to the state from before the outputs, so the off-actor
+        // refresh has the same derive to do and a save to make.
+        try seededBytes.write(to: path)
+        TaskOutputPathResolver.liveScanCountForTesting = 0
+        TaskOutputPathResolver.liveLookupCountForTesting = 0
+        TaskContextStateManager.fallbackCountForTesting = 0
+        #expect(await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task))
+
+        #expect(TaskContextStateManager.fallbackCountForTesting == 0)
+        #expect(TaskOutputPathResolver.liveScanCountForTesting == 0, "the apply rescanned the output folder")
+        #expect(TaskOutputPathResolver.liveLookupCountForTesting == 0, "the apply checked a path on the actor")
+        var actual = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        actual.updatedAt = expected.updatedAt
+        #expect(actual == expected)
+        // The fixture has to reach every kind of answer, or equality proves
+        // nothing about the ones it skipped.
+        #expect(actual.artifacts.contains { $0.path.hasSuffix("reports/missing.md") && $0.isStale })
+        #expect(actual.artifacts.contains { $0.path.hasSuffix("nested/deep/data.csv") && !$0.isStale })
+        #expect(actual.changedFiles.contains { $0.path.hasSuffix("src/app.swift") })
+        #expect(actual.changedFiles.contains { $0.path.hasSuffix("reports/report_19.md") })
+        #expect(!actual.filesChanged.contains { $0.contains(".venv") })
+    }
+
+    /// The observation covers the paths the model held when the refresh
+    /// started. One recorded during the hop is answered live — a lookup for
+    /// that path, not a rescan — rather than dropped.
+    @Test("A file change recorded during the hop is still classified")
+    func changeRecordedDuringHopIsClassifiedLive() async throws {
+        let fixture = try makeFixture("late-change")
+        defer { fixture.cleanup() }
+        let late = URL(fileURLWithPath: fixture.folder).appendingPathComponent("reports/late.md")
+        TaskContextStateManager.interleaveForTesting = {
+            try? FileManager.default.createDirectory(
+                at: late.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? "late".write(to: late, atomically: true, encoding: .utf8)
+            let run = TaskRun(task: fixture.task)
+            run.appendFileChange(Self.writeChange(late.path))
+            fixture.container.mainContext.insert(run)
+            try? fixture.container.mainContext.save()
+        }
+        defer { TaskContextStateManager.interleaveForTesting = nil }
+        TaskOutputPathResolver.liveScanCountForTesting = 0
+        TaskOutputPathResolver.liveLookupCountForTesting = 0
+
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        #expect(state.changedFiles.contains { $0.path.hasSuffix("reports/late.md") })
+        #expect(TaskOutputPathResolver.liveScanCountForTesting == 0)
+        #expect(TaskOutputPathResolver.liveLookupCountForTesting > 0)
+    }
+
+    /// The ordering the stamp guarantees for the observation: a save that
+    /// lands after it — here `recordTurn`, having seen a newer folder — fails
+    /// the stamp, so the refresh re-observes instead of putting its older
+    /// view of the folder back over the newer one.
+    @Test("A save after the observation makes the refresh observe again")
+    func saveAfterObservationIsNotOverwrittenWithAnOlderFolder() async throws {
+        let fixture = try makeFixture("older-folder")
+        defer { fixture.cleanup() }
+        let run = TaskRun(task: fixture.task)
+        run.status = .completed
+        run.setOutput("answer")
+        run.completedAt = Date()
+        fixture.container.mainContext.insert(run)
+        try fixture.container.mainContext.save()
+        let late = URL(fileURLWithPath: fixture.folder).appendingPathComponent("reports/after-observation.md")
+        TaskContextStateManager.revalidationRetryCountForTesting = 0
+        nonisolated(unsafe) var perturbed = false
+        TaskContextStateManager.interleaveForTesting = {
+            guard !perturbed else { return }
+            perturbed = true
+            try? FileManager.default.createDirectory(
+                at: late.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? "new".write(to: late, atomically: true, encoding: .utf8)
+            TaskContextStateManager.recordTurn(task: fixture.task, run: run, message: "after the observation")
+        }
+        defer { TaskContextStateManager.interleaveForTesting = nil }
+
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task)
+
+        #expect(TaskContextStateManager.revalidationRetryCountForTesting == 1)
+        let state = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        #expect(state.turns.contains { $0.ask == "after the observation" })
+        #expect(state.artifacts.contains { $0.path.hasSuffix("reports/after-observation.md") })
+    }
+
+    @Test("An observation taken under other roots is ignored, not trusted")
+    func observationUnderOtherRootsIsIgnored() throws {
+        let fixture = try makeFixture("other-roots")
+        defer { fixture.cleanup() }
+        try populateOutputs(fixture)
+        let elsewhere = TaskOutputObservation.observe(
+            taskFolder: fixture.root.appendingPathComponent("elsewhere").path,
+            workspacePath: fixture.root.path,
+            paths: []
+        )
+        TaskOutputPathResolver.liveScanCountForTesting = 0
+
+        let resolver = TaskOutputPathResolver(task: fixture.task, observation: elsewhere)
+
+        #expect(resolver.discoveredFiles == TaskOutputDiscovery.files(in: fixture.folder))
+        #expect(!resolver.discoveredFiles.isEmpty)
+        #expect(TaskOutputPathResolver.liveScanCountForTesting == 1)
+    }
+
+    /// Every kind of path the derive classifies: discovered outputs, nested
+    /// ones, a generated-dependency tree, recorded changes inside the task
+    /// folder, relative to the workspace and outside both, and artifacts that
+    /// exist and that do not.
+    private func populateOutputs(_ fixture: Fixture) throws {
+        let folder = URL(fileURLWithPath: fixture.folder)
+        let files = (0..<20).map { "reports/report_\($0).md" } + ["nested/deep/data.csv", ".venv/lib/site.py"]
+        for relative in files {
+            let url = folder.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try relative.write(to: url, atomically: true, encoding: .utf8)
+        }
+        let source = fixture.root.appendingPathComponent("src/app.swift")
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "app".write(to: source, atomically: true, encoding: .utf8)
+
+        let context = fixture.container.mainContext
+        let run = TaskRun(task: fixture.task)
+        run.status = .completed
+        run.completedAt = Date()
+        for path in [folder.appendingPathComponent("reports/report_19.md").path, "src/app.swift", "/outside/elsewhere.txt"] {
+            run.appendFileChange(Self.writeChange(path))
+        }
+        context.insert(run)
+        context.insert(Artifact(task: fixture.task, type: "csv", path: folder.appendingPathComponent("nested/deep/data.csv").path))
+        context.insert(Artifact(task: fixture.task, type: "markdown", path: folder.appendingPathComponent("reports/missing.md").path))
+        context.insert(Artifact(task: fixture.task, type: "swift", path: "src/app.swift"))
+        try context.save()
+    }
+
+    private static func writeChange(_ path: String) -> StoredFileChange {
+        StoredFileChange(
+            path: path,
+            changeType: StoredFileChangeKind.write.rawValue,
+            content: nil,
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )
+    }
+
     nonisolated private static func corruptCopies(in folder: String) -> [String] {
         ((try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? [])
             .filter { $0.contains(".corrupt-") }
