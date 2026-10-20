@@ -385,10 +385,6 @@ struct PluginSourceStore {
         try encoder.encode(records).write(to: provenanceURL, options: .atomic)
     }
 
-    /// How long `exclusively` waits for another process's library write
-    /// before refusing (`libraryBusy`); a write is a few file copies.
-    var libraryLockWait: TimeInterval = 5
-
     /// Runs one Add from a source, file import, Create, Remove or staged
     /// approval of a plugin (`body`), with no other for the same ID running
     /// across sources, and no other library write at all (T5, T13): an
@@ -407,8 +403,8 @@ struct PluginSourceStore {
     /// this process is refused, not queued: the paths are synchronous on
     /// the main actor, so one that arrives meanwhile is re-entering from
     /// inside the first. Another process's hold on the plugin is refused
-    /// too; its hold on the library is waited for (`libraryLockWait`), as a
-    /// write of an unrelated plugin is short and the next check sees it.
+    /// too, as is its hold on the library. These synchronous UI paths must
+    /// never sleep on the main actor; an explicit retry rechecks conflicts.
     func exclusively<Result>(pluginID: String, _ body: () throws -> Result) throws -> Result {
         let key = CapabilityLibrary.safeFileName(for: pluginID).lowercased()
         guard Self.heldPluginKeys.withLock({ $0.insert(key).inserted }) else {
@@ -433,11 +429,7 @@ struct PluginSourceStore {
         defer { Self.heldLibrary.withLock { $0 = false } }
         let descriptor = try openLock(libraryLockURL)
         defer { close(descriptor) }
-        let deadline = Date().addingTimeInterval(libraryLockWait)
-        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
-            guard errno == EWOULDBLOCK, Date() < deadline else { throw PluginSourceStoreError.libraryBusy }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw PluginSourceStoreError.libraryBusy }
         defer { flock(descriptor, LOCK_UN) }
         return try body()
     }

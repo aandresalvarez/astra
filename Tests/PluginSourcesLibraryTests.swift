@@ -143,23 +143,22 @@ struct PluginSourcesLibraryTests {
         }
         #expect(library.installedPackage(id: "mcp-b") == nil)
 
-        // Another process holding the library: an unrelated install waits
-        // for it and then proceeds; one held past the wait is refused.
+        // Another process must not freeze the main actor while holding
+        // this descriptor. Refuse promptly and recheck on an explicit retry.
         let held = open(fixture.store.libraryLockURL.path, O_RDWR | O_CLOEXEC)
         #expect(held >= 0)
         defer { close(held) }
         #expect(flock(held, LOCK_EX | LOCK_NB) == 0)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { flock(held, LOCK_UN) }
+        let start = ContinuousClock.now
+        #expect(throws: PluginSourceStoreError.libraryBusy) {
+            try service.importReviewed(try offered(2), workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
+        }
+        #expect(start.duration(to: .now) < .milliseconds(250))
+        #expect(library.installedPackage(id: "unrelated") == nil)
+        flock(held, LOCK_UN)
         try service.importReviewed(try offered(2), workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
         #expect(library.installedPackage(id: "unrelated") != nil)
-        #expect(flock(held, LOCK_EX | LOCK_NB) == 0)
-        var impatient = fixture.store
-        impatient.libraryLockWait = 0.2
-        #expect(throws: PluginSourceStoreError.libraryBusy) {
-            try impatient.exclusively(pluginID: "someone-else") {}
-        }
-        flock(held, LOCK_UN)
-        #expect(try impatient.exclusively(pluginID: "someone-else") { true })
+        #expect(try fixture.store.exclusively(pluginID: "someone-else") { true })
         // The staged approval takes the same locks.
         let source = try String(contentsOf: PluginSourcesTests.repositoryRoot().appendingPathComponent("Astra/Services/Capabilities/CapabilityCatalogActionService.swift"), encoding: .utf8)
         #expect(source.contains("try sourceStore.exclusively(pluginID: id) {\n            try approveStagedExclusively("))
