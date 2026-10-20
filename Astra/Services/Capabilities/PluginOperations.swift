@@ -117,7 +117,6 @@ enum PluginOperations {
             }
             return
         }
-        WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
         // A secret an earlier definition kept under this now plain key is
         // the person's to replace: entering the setting clears it. The
         // cleared value is held for a save that fails, as the empty-secret
@@ -128,11 +127,13 @@ enum PluginOperations {
             let persistence = secrets ?? SkillSecretSeam.required
             let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
             let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
-            if persistence.deleteSecret(key: key, skillID: skillID) {
-                WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: settingKey, on: activation)
-                if let previous, !previous.isEmpty { cleared = (persistence, skillID, previous) }
+            guard persistence.deleteSecret(key: key, skillID: skillID) else {
+                throw OperationError.secretDeleteFailed(key: key)
             }
+            WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: settingKey, on: activation)
+            if let previous, !previous.isEmpty { cleared = (persistence, skillID, previous) }
         }
+        WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
         workspace.updatedAt = Date()
         do {
             try save(workspace, modelContext: modelContext, restoring: snapshot, persist: persist)
