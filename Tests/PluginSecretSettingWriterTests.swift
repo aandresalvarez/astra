@@ -165,7 +165,7 @@ struct PluginSecretSettingWriterTests {
                      announceCatalogMutation: false)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: store.workspace))
         let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
-        #expect(RecordingSecrets.journalAtWrite == ["\(namespace.uuidString)#API_TOKEN"])
+        #expect(Set(RecordingSecrets.journalAtWrite) == [namespace.uuidString, "\(namespace.uuidString)#API_TOKEN"])
         // Settled with the save: the activation records it now.
         #expect(try outbox.entries().isEmpty)
         #expect(try store.storedSecretKeys(of: package.id) == [PluginActivation.settingKey(componentID: "skill:report-agent", key: "API_TOKEN")])

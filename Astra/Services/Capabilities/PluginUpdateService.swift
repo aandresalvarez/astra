@@ -277,6 +277,7 @@ enum PluginUpdateService {
         let approvalRecords = approvalRecords ?? CapabilityApprovalStore().records()
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let activations = try modelContext.fetch(FetchDescriptor<PluginActivation>())
+        let credentialPreparation = PluginUpdateSkillCredentials(modelContext: modelContext, persistence: secrets ?? SkillSecretSeam.required)
         var total = Reconciliation()
         var changedWorkspaces: [Workspace] = []
         var changed = 0
@@ -296,6 +297,7 @@ enum PluginUpdateService {
                     activation, in: workspace, to: package, mode: mode, modelContext: modelContext, secrets: secrets,
                     connectorStore: connectorStore,
                     awaitsReview: awaitsReview(package, in: workspace, records: approvalRecords),
+                    credentialPreparation: credentialPreparation,
                     copied: &total.copied
                 )
                 total.released += result.released
@@ -306,6 +308,7 @@ enum PluginUpdateService {
                 if !changedWorkspaces.contains(where: { $0 === workspace }) { changedWorkspaces.append(workspace) }
             }
             guard changed > 0 || fileOperation != nil else { return 0 }
+            total.released += credentialPreparation.released
             let mirrored = changedWorkspaces + (try WorkspaceConfigManager.workspacesMirroring(
                 accountIDs: total.changedAccountIDs, among: try modelContext.fetch(FetchDescriptor<Workspace>()), modelContext: modelContext
             ))
@@ -316,6 +319,7 @@ enum PluginUpdateService {
             var recoveryComplete = false
             let saved = PluginSecretCleanupOutbox.deleteThenClean(
                 total.released, keys: total.staleSecrets + journaledCopies(total.copied), modelContext: modelContext, secrets: secrets,
+                producerLease: credentialPreparation.producerLease,
                 save: {
                     let outcome = PluginOperationCommit.save(id: fileOperation?.id ?? UUID(), kind: operationKind,
                         pluginIDs: fileOperation?.manifest.pluginIDs ?? packages.map(\.id), workspaceIDs: workspaceIDs,
@@ -348,13 +352,16 @@ enum PluginUpdateService {
                 CapabilityCatalogPersistenceEvents.post(.global)
                 throw PluginOperationProblem.savedRecoveryPending(receipt.id)
             }
+            credentialPreparation.completed()
         } catch {
             guard !PluginOperationProblem.preventsRollback(error) else { throw error }
             modelContext.rollback()
             restore()
             // A copy the Keychain can't take back is reported ahead of the
             // failure: the successor would keep a value Update reads as its own.
-            let unrestored = undo(total.copied, secrets: secrets, connectorStore: connectorStore)
+            let legacyCopies = total.copied.filter { $0.account != nil || !credentialPreparation.owns($0.skillID) }
+            let unrestored = undo(legacyCopies, secrets: secrets, connectorStore: connectorStore)
+            credentialPreparation.discard()
             // A refused undo leaves an actual orphan. Keep its intent until
             // recovery can delete it, using the same saved-owner checks.
             if unrestored.isEmpty {
@@ -472,6 +479,7 @@ enum PluginUpdateService {
         secrets: (any SkillSecretPersisting.Type)? = nil,
         connectorStore: SecretStore? = nil,
         awaitsReview: Bool = false,
+        credentialPreparation: PluginUpdateSkillCredentials? = nil,
         copied: inout [CopiedSecret]
     ) throws -> Reconciliation {
         let persistence = secrets ?? SkillSecretSeam.required
@@ -516,6 +524,12 @@ enum PluginUpdateService {
             throw UpdateError.renameIntoKnownComponent(component: new, predecessor: old)
         }
 
+        if renames.contains(where: { old, new in
+            known.contains(old) && !currentSet.contains(old) && new.hasPrefix("skill:")
+        }) {
+            try credentialPreparation?.prepare(activation, in: workspace, package: package)
+        }
+
         // A rename destination whose namespace is still journaled for
         // deletion (a component removed earlier whose cleanup failed) is
         // cleared first, so the renamed one never inherits its old values.
@@ -525,8 +539,10 @@ enum PluginUpdateService {
             let kept = Set(activation.secretSettingKeys
                 .filter { PluginActivation.componentID(ofSettingKey: $0) == new }
                 .map { String($0.dropFirst(new.count + 1)) })
+            let destination = PluginRuntimeProjection.credentialID(of: activation, componentID: new)
+            if credentialPreparation?.owns(destination) == true { return nil }
             let settled = PluginSecretCleanupOutbox.settleRenameDestination(
-                PluginRuntimeProjection.credentialID(of: activation, componentID: new),
+                destination,
                 keys: spec.environmentKeys, kept: kept, modelContext: modelContext ?? activation.modelContext,
                 clean: { persistence.deleteAllSecretsReportingResult(skillID: $0) }
             ) { persistence.deleteSecret(key: $0, skillID: PluginRuntimeProjection.credentialID(of: activation, componentID: new)) }
@@ -610,6 +626,11 @@ enum PluginUpdateService {
         // A kept setting the definition now declares secret leaves the plain
         // settings in this save, its value moved into the Keychain through
         // the journal first; undone with the rest if the save fails.
+        let promotesSecret = package.skills.contains { skill in
+            let configured = activation.configuration(forComponent: CapabilityResourceOrigin.componentID(for: skill))
+            return skill.environmentKeys.contains { Skill.isSecretEnvironmentKey($0) && configured[$0].map { !$0.isEmpty } == true }
+        }
+        if promotesSecret { try credentialPreparation?.prepare(activation, in: workspace, package: package) }
         try moveSettingsNowSecret(
             of: activation, in: package, persistence: persistence,
             outbox: (modelContext ?? activation.modelContext).flatMap(PluginSecretCleanupOutbox.init(for:)),

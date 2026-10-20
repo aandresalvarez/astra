@@ -50,9 +50,14 @@ struct PluginSecretCleanupOutbox {
         modelContext: ModelContext,
         outbox: PluginSecretCleanupOutbox? = nil,
         secrets: (any SkillSecretPersisting.Type)? = nil,
+        producerLease: PluginCredentialProducerLease? = nil,
         save: () -> Bool,
         beforeSettling: () -> Bool = { true }
     ) -> Bool {
+        let heldLease: PluginCredentialProducerLease?
+        do { heldLease = try PluginCredentialProducerLease.acquire(modelContext: modelContext, reusing: producerLease) }
+        catch { return false }
+        defer { withExtendedLifetime(heldLease) {} }
         let outbox = outbox ?? PluginSecretCleanupOutbox(for: modelContext)
         let unique = Array(Set(skillIDs))
         let uniqueKeys = Array(Set(keys))
@@ -77,7 +82,7 @@ struct PluginSecretCleanupOutbox {
             ], level: .warning)
             return true
         }
-        settle(unique, keys: uniqueKeys, modelContext: modelContext, outbox: outbox, secrets: secrets, clean: cleaner(secrets))
+        settle(unique, keys: uniqueKeys, modelContext: modelContext, outbox: outbox, secrets: secrets, clean: cleaner(secrets), producerLease: heldLease)
         return true
     }
 
@@ -98,6 +103,10 @@ struct PluginSecretCleanupOutbox {
         let outbox = outbox ?? PluginSecretCleanupOutbox(for: modelContext)
         guard let pending = try? outbox?.pending(), let keys = try? outbox?.pendingKeys(),
               !pending.isEmpty || !keys.isEmpty else { return }
+        let heldLease: PluginCredentialProducerLease?
+        do { heldLease = try PluginCredentialProducerLease.acquire(modelContext: modelContext) }
+        catch { return }
+        defer { withExtendedLifetime(heldLease) {} }
         let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: modelContext) }
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
               workspaces.reduce(true, { rewrite($1) && $0 }) else {
@@ -106,7 +115,7 @@ struct PluginSecretCleanupOutbox {
             ], level: .error)
             return
         }
-        settle(pending, keys: keys, modelContext: modelContext, outbox: outbox, secrets: secrets, clean: cleaner(secrets))
+        settle(pending, keys: keys, modelContext: modelContext, outbox: outbox, secrets: secrets, clean: cleaner(secrets), producerLease: heldLease)
     }
 
     /// Settles the recorded single secrets among `keys` (secret settings a
@@ -196,8 +205,10 @@ struct PluginSecretCleanupOutbox {
         modelContext: ModelContext,
         outbox: PluginSecretCleanupOutbox?,
         secrets: (any SkillSecretPersisting.Type)? = nil,
-        clean: (UUID) -> Bool = { SkillKeychainCleanup(skillID: $0).run() }
+        clean: (UUID) -> Bool = { SkillKeychainCleanup(skillID: $0).run() },
+        producerLease: PluginCredentialProducerLease?
     ) {
+        defer { withExtendedLifetime(producerLease) {} }
         // What is live can't be told without the store: every record stays.
         guard PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext),
               let pendingTasks = PendingTaskCredentialReferences.capture(modelContext: modelContext),
