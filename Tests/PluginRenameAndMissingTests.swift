@@ -258,7 +258,9 @@ struct PluginRound21ReviewTests {
         #expect(rewritten == [workspace.id])
         #expect(owedDuringRewrite)
         let stagedReleased = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:summary-agent")
-        #expect(Set(try outbox.pending()) == originalNamespaces.union([stagedReleased]))
+        let stagedSkills = v2.skills.map { PluginRuntimeProjection.credentialID(of: activation, componentID: CapabilityResourceOrigin.componentID(for: $0)) }
+        let pending = Set(try outbox.pending())
+        #expect(pending == originalNamespaces.union([stagedReleased]).union(stagedSkills))
     }
 
     @Test("Disabling a legacy plugin writes the workspace's mirror before any cleanup")

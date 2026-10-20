@@ -204,13 +204,18 @@ struct PluginCredentialCopyOnWriteTests {
         update.skills[0].replaces = [env.component]
         update.skills[0].id = "renamed-update-component"
         let component = CapabilityResourceOrigin.componentID(for: update.skills[0])
-        let orphan = PluginRuntimeProjection.credentialID(of: activation, componentID: component)
+        var stagedOrphan: UUID?
         #expect(throws: (any Error).self) {
             try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [update], mode: .release,
-                secrets: RefusingGenerationCleanup.self, persist: { _ in throw CocoaError(.fileWriteUnknown) })
+                secrets: RefusingGenerationCleanup.self, persist: { _ in
+                    stagedOrphan = PluginRuntimeProjection.credentialID(of: activation, componentID: component)
+                    throw CocoaError(.fileWriteUnknown)
+                })
         }
+        let orphan = try #require(stagedOrphan)
+        #expect(orphan != PluginActivation.credentialID(workspaceID: env.workspace.id, pluginID: env.package.id, componentID: component, runtimeSeed: activation.namespaceSeed, generation: activation.credentialNamespaceSeed))
         #expect(GenerationSecrets.value(in: orphan) == "saved-update-value")
-        #expect(try env.outbox.pendingKeys().contains(.init(key: "API_TOKEN", skillID: orphan)))
+        #expect(try env.outbox.pending().contains(orphan))
         #expect(GenerationSecrets.value(in: old.secretNamespaceID) == "saved-update-value")
         PluginSecretCleanupOutbox.resumePending(modelContext: ModelContext(env.context.container),
             outbox: env.outbox, secrets: GenerationSecrets.self)

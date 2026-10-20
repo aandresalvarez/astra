@@ -159,7 +159,7 @@ struct PluginActivationReviewTests {
         #expect(try outbox.pendingKeys().isEmpty)
     }
 
-    @Test("A rename onto a component whose old secrets are still journaled clears them first, and waits while it can't")
+    @Test("A rename uses a fresh generation while old destination cleanup remains pending")
     func renameDestinationSettlesItsPendingCleanup() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-rename-dest-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -190,16 +190,13 @@ struct PluginActivationReviewTests {
         v2.skills[0].replaces = ["skill:report-agent"]
         try library.install(v2, sourceMetadata: .builtIn())
         let packages = library.installedPackages()
-        #expect(throws: PluginUpdateService.UpdateError.secretCleanupPending(key: "skill:renamed-agent")) {
-            try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsRefusingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
-        }
-        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .automatic, secrets: SecretsRefusingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
-        #expect(activation.recordedVersion == "1.0.0")
-        #expect(activation.knownComponentIDs.contains("skill:report-agent"))
-        #expect(try outbox.entries() == [destination.uuidString])
-
-        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsAcceptingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release,
+            secrets: SecretsRefusingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
         #expect(activation.recordedVersion == "2.0.0")
+        let current = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:renamed-agent")
+        #expect(current != destination)
+        #expect(try outbox.entries().contains(destination.uuidString))
+        PluginSecretCleanupOutbox.resumePending(modelContext: context, outbox: outbox, secrets: SecretsAcceptingDeletes.self)
         #expect(!(try outbox.entries()).contains(destination.uuidString))
     }
 
@@ -311,7 +308,7 @@ struct PluginActivationReviewTests {
         #expect(decoded.knownComponentIDs == activation.knownComponentIDs)
     }
 
-    @Test("An Update that can't take back a secret it copied reports the restore, not only the failure")
+    @Test("A failed private credential copy reports its key and preserves the saved activation")
     func updateReportsUnrestoredCopiedSecret() throws {
         let env = try Fixtures.Environment()
         var v1 = Fixtures.package(version: "1.0.0")
@@ -325,9 +322,13 @@ struct PluginActivationReviewTests {
         v2.skills[0].replaces = ["skill:report-agent"]
         try env.library.install(v2, sourceMetadata: .builtIn())
         CopyFailingSecrets.sources.withLock { $0.insert(PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")) }
+        for key in ["A_TOKEN", "B_TOKEN"] {
+            WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: "skill:report-agent#\(key)", on: activation)
+        }
+        try env.context.save()
 
-        // A_TOKEN is copied, B_TOKEN can't be, and A_TOKEN's copy can't be deleted.
-        #expect(throws: PluginUpdateService.UpdateError.credentialRestoreFailed(keys: ["A_TOKEN"])) {
+        // A_TOKEN stages privately; B_TOKEN fails before the saved owner changes.
+        #expect(throws: PluginUpdateService.UpdateError.secretCopyFailed(component: v2.name, key: "B_TOKEN")) {
             try PluginUpdateService.reconcileAll(
                 modelContext: env.context, packages: env.library.installedPackages(), mode: .release, secrets: CopyFailingSecrets.self,
                 approvalRecords: PluginOperationsTests.approvals(env.library.installedPackages())

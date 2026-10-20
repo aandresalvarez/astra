@@ -10,7 +10,7 @@ import ASTRACore
 /// Rename copies journaled before they are written, settings whose secrecy
 /// changed, and accounts whose sign-in method was withdrawn. Fixtures are
 /// `PluginOperationsTests`'s.
-@Suite("Journaled rename copies, secrecy changes, withdrawn sign-in methods")
+@Suite("Journaled rename copies, secrecy changes, withdrawn sign-in methods", .serialized)
 @MainActor
 struct PluginSecrecyAndSignInTests {
     typealias Fixtures = PluginOperationsTests
@@ -43,7 +43,8 @@ struct PluginSecrecyAndSignInTests {
         )
         try context.save()
         let outbox = try #require(PluginSecretCleanupOutbox(for: context))
-        let newID = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:summary-agent")
+        let originalID = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
+        let originalNamespaces = Set(PluginRuntimeProjection.secretNamespaces(of: activation, package: nil).map(\.uuidString))
 
         var v2 = v1
         v2.version = "2.0.0"
@@ -51,12 +52,18 @@ struct PluginSecrecyAndSignInTests {
         v2.skills[0].name = "Summary Agent"
         v2.skills[0].replaces = ["report-agent"]
         RenameSecrets.reset(holding: PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent"))
-        RenameSecrets.onSave = { RenameSecrets.journalAtWrite = (try? outbox.pendingKeys()) ?? [] }
+        RenameSecrets.onSave = { namespace in RenameSecrets.journalAtWrite[namespace] = (try? outbox.entries()) ?? [] }
         try PluginUpdateService.reconcileAll(
             modelContext: context, packages: [v2], mode: .release, secrets: RenameSecrets.self, approvalRecords: []
         )
-        #expect(RenameSecrets.journalAtWrite == [.init(key: "API_TOKEN", skillID: newID)])
-        #expect(RenameSecrets.saved == ["API_TOKEN@\(newID.uuidString)"])
+        let newID = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:summary-agent")
+        let stagedSource = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
+        #expect(newID != originalID && stagedSource != originalID)
+        let namespaces = originalNamespaces.union([stagedSource.uuidString, newID.uuidString])
+        #expect(Set(RenameSecrets.journalAtWrite[stagedSource] ?? []) == namespaces)
+        #expect(Set(RenameSecrets.journalAtWrite[newID] ?? []) == namespaces.union(["\(newID.uuidString)#API_TOKEN"]))
+        #expect(RenameSecrets.saved == ["API_TOKEN@\(stagedSource.uuidString)", "API_TOKEN@\(newID.uuidString)"])
+        #expect(RenameSecrets.loadSecretValue(key: "API_TOKEN", skillID: newID, store: KeychainSecretStore()) == "tok")
         #expect(activation.secretSettingKeys.contains(PluginActivation.settingKey(componentID: "skill:summary-agent", key: "API_TOKEN")))
         // Settled with the save: the activation owns the copy.
         #expect(try outbox.pendingKeys().isEmpty)
@@ -82,7 +89,9 @@ struct PluginSecrecyAndSignInTests {
         try PluginUpdateService.reconcileAll(
             modelContext: env.context, packages: [v2], mode: .release, secrets: RenameSecrets.self, approvalRecords: []
         )
-        #expect(RenameSecrets.saved == ["API_TOKEN@\(skillID.uuidString)"])
+        let promotedID = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:report-agent")
+        #expect(promotedID != skillID)
+        #expect(RenameSecrets.saved == ["API_TOKEN@\(promotedID.uuidString)"])
         #expect(activation.configuration(forComponent: "skill:report-agent")["API_TOKEN"] == nil)
         #expect(activation.secretSettingKeys.contains(tokenKey))
         let mirror = try #require(WorkspaceConfigManager.export(workspace: env.workspace, modelContext: env.context))
@@ -132,34 +141,34 @@ struct PluginSecrecyAndSignInTests {
 /// Skill secrets holding one value in `source`'s namespace, recording writes and deletes.
 private enum RenameSecrets: SkillSecretPersisting {
     private struct State {
-        var source = UUID()
+        var values: [UUID: [String: String]] = [:]
         var saved: [String] = []
         var deleted: [String] = []
     }
     private static let state = OSAllocatedUnfairLock(initialState: State())
-    nonisolated(unsafe) static var onSave: (() -> Void)?
-    nonisolated(unsafe) static var journalAtWrite: [PluginUpdateService.StaleSecret] = []
+    nonisolated(unsafe) static var onSave: ((UUID) -> Void)?
+    nonisolated(unsafe) static var journalAtWrite: [UUID: [String]] = [:]
     static var saved: [String] { state.withLock(\.saved) }
     static var deleted: [String] { state.withLock(\.deleted) }
     static func reset(holding source: UUID) {
-        state.withLock { $0 = State(source: source) }
+        state.withLock { $0 = State(values: [source: ["API_TOKEN": "tok"]]) }
         onSave = nil
-        journalAtWrite = []
+        journalAtWrite = [:]
     }
 
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? {
-        state.withLock { $0.source == skillID ? "tok" : nil }
+        state.withLock { $0.values[skillID]?[key] }
     }
     static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool {
-        onSave?()
-        state.withLock { $0.saved.append("\(key)@\(skillID.uuidString)") }
+        onSave?(skillID)
+        state.withLock { $0.saved.append("\(key)@\(skillID.uuidString)"); $0.values[skillID, default: [:]][key] = value }
         return true
     }
     static func deleteSecret(key: String, skillID: UUID) -> Bool {
-        state.withLock { $0.deleted.append("\(key)@\(skillID.uuidString)") }
+        state.withLock { $0.deleted.append("\(key)@\(skillID.uuidString)"); $0.values[skillID]?[key] = nil }
         return true
     }
-    static func secretExists(key: String, skillID: UUID) -> Bool { false }
-    static func deleteAllSecrets(skillID: UUID) {}
-    static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool { true }
+    static func secretExists(key: String, skillID: UUID) -> Bool { state.withLock { $0.values[skillID]?[key] != nil } }
+    static func deleteAllSecrets(skillID: UUID) { state.withLock { $0.values[skillID] = nil } }
+    static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool { deleteAllSecrets(skillID: skillID); return true }
 }
