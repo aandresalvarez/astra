@@ -153,7 +153,7 @@ struct PluginMirrorRewriteTests {
         var rewritten: [UUID] = []
         PluginSecretCleanupOutbox.resumePending(modelContext: context, outbox: outbox, secrets: AcceptingSkillDeletes.self, rewriteMirror: {
             rewritten.append($0.id)
-            return true
+            return WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: context)
         })
         #expect(rewritten == [workspace.id])
         #expect(try outbox.pending().isEmpty)

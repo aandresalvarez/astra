@@ -84,6 +84,7 @@ enum ConnectorCredentialCleanup {
     @discardableResult
     static func run(
         _ cleanups: [ConnectorKeychainCleanup], modelContext: ModelContext, retained: [ConnectorKeychainCleanup]? = nil,
+        extraMirrors: [String]? = nil,
         perform: (([ConnectorKeychainCleanup], Ownership) -> Bool)? = nil
     ) -> Bool {
         guard !cleanups.isEmpty else { return true }
@@ -102,9 +103,11 @@ enum ConnectorCredentialCleanup {
             ], level: .error)
             return false
         }
-        guard let references = PendingTaskCredentialReferences.capture(modelContext: modelContext) else { return false }
-        let ready = cleanups.filter { !references.holdsAccount($0) }
-        let ownership = Ownership(stored, retained: retained)
+        guard let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+              let mirroredRequests = PluginCredentialMirrorReferences.capture(modelContext: modelContext, extraMirrors: extraMirrors),
+              let mirroredOwners = connectorsInStoredMirrors(modelContext: modelContext, extraMirrors: extraMirrors) else { return false }
+        let ready = cleanups.filter { !references.holdsAccount($0) && !mirroredRequests.holdsAccount($0) }
+        let ownership = Ownership(stored, retained: retained + mirroredOwners.owners)
         let cleared = perform.map { $0(ready, ownership) } ?? run(ready, ownership: ownership)
         return ready.count == cleanups.count && cleared
     }
@@ -343,7 +346,7 @@ enum ConnectorCredentialCleanup {
                 ], level: .error)
             case .committed:
                 guard !staleIDs.contains(entry.record.cleanup.connectorID),
-                      run([entry.record.cleanup], modelContext: ModelContext(modelContext.container), retained: workspaceRetained + owners)
+                      run([entry.record.cleanup], modelContext: ModelContext(modelContext.container), retained: workspaceRetained + owners, extraMirrors: extraMirrors)
                 else { continue }
             }
             store.remove([entry.record.url])
@@ -386,39 +389,16 @@ enum ConnectorCredentialCleanup {
             let connectors: [Entry]?
             let skills: [Skill]?
         }
-        guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()) else { return nil }
-        let excluded = excludingWorkspaceIDs ?? Set(WorkspaceDeletionCleanupStore(for: modelContext).pending().map(\.workspaceID))
+        guard let mirrors = CredentialRecoveryMirrors.read(modelContext: modelContext, extraMirrors: extraMirrors,
+            excludingWorkspaceIDs: excludingWorkspaceIDs) else { return nil }
         var all = Set<UUID>()
         var byWorkspace: [(Workspace, Set<UUID>)] = []
         var owners: [ConnectorKeychainCleanup] = []
         var skillIDs = Set<UUID>()
         var skillsByWorkspace: [(Workspace, Set<UUID>)] = []
-        // Only a stored workspace's own mirror can be exported again.
-        var files: [(workspace: Workspace?, path: String)] = workspaces.flatMap { workspace in
-            [
-                WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath),
-                WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspace.primaryPath)
-            ].filter { !$0.isEmpty }.map { (workspace, $0) }
-        }
-        let own = Set(files.map { WorkspacePathPresentation.resolvedPath($0.path) })
-        for extra in Set(extraMirrors ?? WorkspaceRecoveryTrust.loadedMirrors)
-        where !own.contains(WorkspacePathPresentation.resolvedPath(extra)) {
-            files.append((nil, extra))
-        }
-        // A stored workspace's legacy mirror counts only without its current
-        // one, as recovery reads it; an export then replaces what it lists.
-        var readCurrent = Set<UUID>()
-        for (workspace, file) in files {
-            if let workspace, readCurrent.contains(workspace.id) { continue }
-            let data: Data
-            do {
-                data = try Data(contentsOf: URL(fileURLWithPath: file))
-            } catch {
-                if WorkspaceFileLayout.isMissingFile(error) { continue }
-                return nil
-            }
-            guard let listed = try? JSONDecoder().decode(Listed.self, from: data) else { return nil }
-            if workspace == nil, let id = listed.id.flatMap(UUID.init(uuidString:)), excluded.contains(id) { continue }
+        for mirror in mirrors {
+            let workspace = mirror.workspace
+            guard let listed = try? JSONDecoder().decode(Listed.self, from: mirror.data) else { return nil }
             var ids = Set<UUID>()
             for entry in listed.connectors ?? [] {
                 // Unmanaged and never inserted: only its facts are read.
@@ -439,7 +419,6 @@ enum ConnectorCredentialCleanup {
             // export rewrites it. Any other copy names owners, which every
             // cleanup spares, but can't be rewritten, so it holds nothing.
             if let workspace {
-                readCurrent.insert(workspace.id)
                 all.formUnion(ids)
                 byWorkspace.append((workspace, ids))
                 skillsByWorkspace.append((workspace, skills))
