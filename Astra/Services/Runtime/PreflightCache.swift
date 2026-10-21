@@ -66,11 +66,7 @@ public actor PreflightCache {
            now().timeIntervalSince(cached.checkedAt) < ttl {
             return cached.status
         }
-        let checked = await checker.check(
-            binary: prereq.binary,
-            livenessArgs: prereq.livenessArgs,
-            semantic: prereq.semantic
-        )
+        let checked = await checker.check(prereq)
         var fresh = normalizedStatus(checked, for: prereq)
         if case .healthy(let executablePath, _) = fresh,
            let contextualCheck = prereq.contextualCheck,
