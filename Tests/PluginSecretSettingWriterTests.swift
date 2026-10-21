@@ -213,6 +213,7 @@ struct PluginSecretSettingWriterTests {
         WorkspaceCapabilityActivation.setSecretRecorded(
             true, forKey: PluginActivation.settingKey(componentID: "skill:report-agent", key: "API_TOKEN"), on: activation
         )
+        try env.context.save()
         let account = try #require(env.workspace.connectors.first)
         let known = activation.knownComponentIDs
 

@@ -66,10 +66,13 @@ struct PluginRenameAndMissingTests {
             #expect(RecordingCleanup.deleted.isEmpty)
         }
         RecordingCleanup.reset()
+        let originalBindings = Set(activation.bindings.map(\.persistentModelID))
         // The first collision, by predecessor ID, is the one named.
         #expect(throws: PluginUpdateService.UpdateError.renameIntoKnownComponent(component: y, predecessor: x)) {
             try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [v2], mode: .release, secrets: RecordingCleanup.self)
         }
+        #expect(!env.context.hasChanges)
+        #expect(Set(activation.bindings.map(\.persistentModelID)) == originalBindings)
         unchanged()
         try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [v2], mode: .automatic, secrets: RecordingCleanup.self)
         unchanged()

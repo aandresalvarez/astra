@@ -211,6 +211,7 @@ struct PluginOperationsTests {
     @Test("Import through the action service: a valid file is installed, a blocked one refused")
     func importThroughActionService() throws {
         let env = try Environment()
+        try env.context.save()
         let package = Self.package(version: "1.0.0")
         let data = try JSONEncoder().encode(package)
         let report = CapabilityPackageValidator.validate(data: data, installedPackages: [], checkPrerequisites: false)
@@ -445,6 +446,7 @@ struct PluginOperationsTests {
         let weekly = try #require(env.workspace.templates.first { $0.name == "Weekly" })
         let daily = try #require(env.workspace.templates.first { $0.name == "Daily" })
         weekly.mainGoal = "Write it my way"
+        try env.context.save()
 
         var v2 = Self.package(version: "2.0.0")
         v2.templates = [Self.template("Weekly", goal: "Write it better"), Self.template("Daily", goal: "Note it well")]

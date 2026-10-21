@@ -85,9 +85,9 @@ extension WorkspaceCapabilityActivation {
     }
 
     static func restorePendingLegacy(_ state: PendingLegacyState, to workspace: Workspace) {
-        workspace.legacyEnabledCapabilityIDs = state.enabledPluginIDs
-        workspace.legacyInstalledPluginIDs = state.installedPluginIDs
-        workspace.legacyInstalledPluginVersions = state.installedPluginVersions
+        if workspace.legacyEnabledCapabilityIDs != state.enabledPluginIDs { workspace.legacyEnabledCapabilityIDs = state.enabledPluginIDs }
+        if workspace.legacyInstalledPluginIDs != state.installedPluginIDs { workspace.legacyInstalledPluginIDs = state.installedPluginIDs }
+        if workspace.legacyInstalledPluginVersions != state.installedPluginVersions { workspace.legacyInstalledPluginVersions = state.installedPluginVersions }
     }
 
 }

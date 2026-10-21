@@ -186,6 +186,7 @@ struct CapabilityInstallerTests {
         let editedSettings = try #require(activation.accounts(forComponent: component).first)
         #expect(editedSettings.baseURL == "https://clinic.atlassian.net" && editedSettings.config["JIRA_PROJECTS"] == "CLIN, OPS")
         editedSettings.configValues = editedSettings.configKeys.map { $0 == "JIRA_PROJECTS" ? "CLIN" : editedSettings.config[$0] ?? "" }
+        try context.save()
         // And an Update keeps what the person entered.
         var next = jira
         next.version = "99.0.0"

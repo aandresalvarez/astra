@@ -46,6 +46,7 @@ enum PluginUpdateService {
         /// value waiting to be cleared from the Keychain.
         case secretCleanupPending(key: String)
         case storeUnreadable
+        case pendingEdits
         /// The plugin's installed definition couldn't be read back.
         case definitionUnreadable(plugin: String)
         case saveFailed
@@ -68,6 +69,8 @@ enum PluginUpdateService {
                 "The earlier saved \(key) couldn't be cleared from the Keychain yet, so this version can't use it. Try again."
             case .storeUnreadable:
                 "Couldn't read the workspaces that use this plugin."
+            case .pendingEdits:
+                "Save or discard your current edits before updating plugins."
             case .definitionUnreadable(let plugin):
                 "Couldn't read the installed \(plugin), so nothing was updated. Install it again and retry."
             case .saveFailed:
@@ -274,6 +277,9 @@ enum PluginUpdateService {
         metadata: PluginFileOperationRecovery.MetadataHandler? = nil
     ) throws -> Int {
         guard (fileOperation == nil) == (fileJournal == nil) else { throw PluginFileOperationJournal.Failure.invalidManifest }
+        // This operation owns its changes only. Reject editor work before
+        // preparing credentials, saving a receipt, or entering rollback.
+        guard !modelContext.hasChanges else { throw UpdateError.pendingEdits }
         let approvalRecords = approvalRecords ?? CapabilityApprovalStore().records()
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let activations = try modelContext.fetch(FetchDescriptor<PluginActivation>())
@@ -399,16 +405,16 @@ enum PluginUpdateService {
                              account.connectorDescription, account.icon, account.notes, account.originPackageVersion,
                              account.originComponentID, account.credentialNamespaceID)
                 restorers.append {
-                    account.credentialKeys = saved.0
-                    account.credentialValues = saved.1
-                    account.configKeys = saved.2
-                    account.configValues = saved.3
-                    account.connectorDescription = saved.4
-                    account.icon = saved.5
-                    account.notes = saved.6
-                    account.originPackageVersion = saved.7
-                    account.originComponentID = saved.8
-                    account.credentialNamespaceID = saved.9
+                    if account.credentialKeys != saved.0 { account.credentialKeys = saved.0 }
+                    if account.credentialValues != saved.1 { account.credentialValues = saved.1 }
+                    if account.configKeys != saved.2 { account.configKeys = saved.2 }
+                    if account.configValues != saved.3 { account.configValues = saved.3 }
+                    if account.connectorDescription != saved.4 { account.connectorDescription = saved.4 }
+                    if account.icon != saved.5 { account.icon = saved.5 }
+                    if account.notes != saved.6 { account.notes = saved.6 }
+                    if account.originPackageVersion != saved.7 { account.originPackageVersion = saved.7 }
+                    if account.originComponentID != saved.8 { account.originComponentID = saved.8 }
+                    if account.credentialNamespaceID != saved.9 { account.credentialNamespaceID = saved.9 }
                 }
             }
         }
@@ -445,24 +451,24 @@ enum PluginUpdateService {
         }
 
         func restore(onto template: TaskTemplate) {
-            template.defaultSkillIDs = defaultSkillIDs
-            template.name = name
-            template.icon = icon
-            template.templateDescription = templateDescription
-            template.mainGoal = mainGoal
-            template.beforeGoal = beforeGoal
-            template.afterGoal = afterGoal
-            template.variablesJSON = variablesJSON
-            template.mainBudget = mainBudget
-            template.beforeBudget = beforeBudget
-            template.afterBudget = afterBudget
-            template.passContextToMain = passContextToMain
-            template.passContextToAfter = passContextToAfter
-            template.originPackageID = originPackageID
-            template.originPackageVersion = originPackageVersion
-            template.originComponentID = originComponentID
-            template.originComponentKind = originComponentKind
-            template.originSourceKind = originSourceKind
+            if template.defaultSkillIDs != defaultSkillIDs { template.defaultSkillIDs = defaultSkillIDs }
+            if template.name != name { template.name = name }
+            if template.icon != icon { template.icon = icon }
+            if template.templateDescription != templateDescription { template.templateDescription = templateDescription }
+            if template.mainGoal != mainGoal { template.mainGoal = mainGoal }
+            if template.beforeGoal != beforeGoal { template.beforeGoal = beforeGoal }
+            if template.afterGoal != afterGoal { template.afterGoal = afterGoal }
+            if template.variablesJSON != variablesJSON { template.variablesJSON = variablesJSON }
+            if template.mainBudget != mainBudget { template.mainBudget = mainBudget }
+            if template.beforeBudget != beforeBudget { template.beforeBudget = beforeBudget }
+            if template.afterBudget != afterBudget { template.afterBudget = afterBudget }
+            if template.passContextToMain != passContextToMain { template.passContextToMain = passContextToMain }
+            if template.passContextToAfter != passContextToAfter { template.passContextToAfter = passContextToAfter }
+            if template.originPackageID != originPackageID { template.originPackageID = originPackageID }
+            if template.originPackageVersion != originPackageVersion { template.originPackageVersion = originPackageVersion }
+            if template.originComponentID != originComponentID { template.originComponentID = originComponentID }
+            if template.originComponentKind != originComponentKind { template.originComponentKind = originComponentKind }
+            if template.originSourceKind != originSourceKind { template.originSourceKind = originSourceKind }
         }
     }
 
