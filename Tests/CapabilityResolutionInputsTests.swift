@@ -136,7 +136,7 @@ struct CapabilityResolutionInputsTests {
         let request = request(for: environment.task)
 
         let live = try #require(await request.evaluate())
-        let inputs = await CapabilityResolutionInputs.loadDetached()
+        let inputs = try #require(await CapabilityResolutionInputs.loadDetached())
         let pinned = try #require(await CapabilityResolutionInputs.$pinned.withValue(inputs) {
             await request.evaluate()
         })
@@ -208,5 +208,38 @@ struct CapabilityResolutionInputsTests {
         #expect(probe.count(.capabilityLibrary) == 1)
         #expect(probe.count(.approvalRecords) == 1)
         #expect(probe.count(.packCatalog) == 1)
+    }
+
+    /// A keystroke cancels the preview while its read may still be running.
+    /// The read must stop with it rather than run on beside the next one.
+    @Test("A cancelled caller gets no inputs, and its read stops")
+    func cancelledLoadReturnsNothing() async {
+        let load = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await CapabilityResolutionInputs.loadDetached()
+        }
+        #expect(await load.value == nil)
+    }
+
+    @Test("A load that is told to stop reads no further store")
+    func stoppedLoadReadsNoFurtherStore() {
+        let probe = Probe()
+        var checks = 0
+        let inputs = CapabilityResolutionInputs.$diskReadProbe.withValue(probe) {
+            CapabilityResolutionInputs.load(
+                library: CapabilityLibrary(),
+                approvals: CapabilityApprovalStore(),
+                packCatalog: AstraPackCatalog(),
+                stopIf: {
+                    checks += 1
+                    return checks > 1
+                }
+            )
+        }
+
+        #expect(inputs == nil)
+        #expect(probe.count(.capabilityLibrary) == 1)
+        #expect(probe.count(.approvalRecords) == 0)
+        #expect(probe.count(.packCatalog) == 0)
     }
 }

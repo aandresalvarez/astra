@@ -320,4 +320,61 @@ struct RuntimeEligibilityPreviewScopeTests {
         #expect(await task.value == false)
         #expect(await RuntimeEligibilityPreviewRequest.yieldToMainRunLoop())
     }
+
+    /// A yield lets other main-actor work run, including an edit to state the
+    /// pass reads. Verdicts scored before the edit must not be mixed with
+    /// ones scored after it, so the pass starts again and agrees with a
+    /// fresh evaluation of the edited state.
+    @Test("An edit during a yield restarts the pass against the new state")
+    func editDuringYieldRestartsPass() async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let workspace = try #require(environment.task.workspace)
+        let request = request(for: environment.task)
+
+        var yields = 0
+        let snapshot = try #require(await request.evaluate(betweenRuntimes: {
+            yields += 1
+            if yields == 1 {
+                workspace.enabledCapabilityIDs.append(PluginCatalog.builtInPackages[0].id)
+            }
+            return true
+        }))
+        let fresh = try #require(await request.evaluate())
+
+        #expect(yields > AgentRuntimeAdapterRegistry.runtimeIDs.count - 1, "the edit did not restart the pass")
+        #expect(snapshot.candidates.count == fresh.candidates.count)
+        for (runtime, candidate) in fresh.candidates {
+            #expect(snapshot.candidates[runtime]?.contractDigest == candidate.contractDigest, "\(runtime) scored against stale state")
+        }
+        #expect(snapshot.launchBlock == fresh.launchBlock)
+    }
+
+    @Test("State that keeps changing still yields a complete verdict, in one stretch")
+    func continuousEditsFallBackToOneStretch() async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let workspace = try #require(environment.task.workspace)
+        let request = request(for: environment.task)
+
+        var yields = 0
+        let snapshot = try #require(await request.evaluate(betweenRuntimes: {
+            yields += 1
+            workspace.enabledCapabilityIDs.append("astra-edit-\(yields)")
+            return true
+        }))
+
+        // Each attempt is cut short at its first yield; after three, the rest
+        // is scored without yielding.
+        #expect(yields == 3)
+        #expect(snapshot.candidates.count == AgentRuntimeAdapterRegistry.runtimeIDs.count)
+    }
 }

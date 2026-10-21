@@ -399,8 +399,8 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
             // the main actor; both passes below then resolve against them
             // without touching the disk.
             let inputsStartedAt = DispatchTime.now().uptimeNanoseconds
-            let inputs = await CapabilityResolutionInputs.loadDetached()
-            guard !Task.isCancelled else { return }
+            guard let inputs = await CapabilityResolutionInputs.loadDetached(),
+                  !Task.isCancelled else { return }
             let inputsMilliseconds = PerformanceTelemetry.elapsedMilliseconds(since: inputsStartedAt)
 
             // Score the selected runtime alone first. Send only consults that

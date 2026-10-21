@@ -1,5 +1,7 @@
 import CryptoKit
 import Foundation
+import Observation
+import SwiftData
 import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
@@ -193,12 +195,38 @@ enum TaskLaunchAdmissionService {
         /// Scores every runtime, calling `betweenRuntimes` after each one but
         /// the last. Returns nil, leaving the rest unscored, as soon as it
         /// answers false.
+        ///
+        /// `evaluate` reads the task, its workspace and the global catalog in
+        /// one main-actor stretch, so its verdicts share one domain state.
+        /// Here an edit can land during a yield (a capability enabled in
+        /// another window, a connector saved), and the remaining runtimes
+        /// would be scored against it. So a pass that saw any model it read
+        /// change, or a save of the task's context, starts again. After `attempts` such
+        /// passes it scores the rest in one stretch, as `evaluate` does,
+        /// rather than never finishing.
         func evaluateIncrementally(
-            betweenRuntimes: @MainActor () async -> Bool
+            betweenRuntimes: @MainActor () async -> Bool,
+            attempts: Int = 3
         ) async -> TaskRuntimeEligibilitySnapshot? {
+            for _ in 0..<max(attempts, 1) {
+                // A composer projection is never inserted; its workspace is.
+                let changes = AdmissionDomainChangeMonitor(
+                    savesOf: task.modelContext ?? task.workspace?.modelContext
+                )
+                var candidates: [AgentRuntimeID: TaskRuntimeAdmissionCandidate] = [:]
+                for (index, runtime) in runtimes.enumerated() {
+                    if index > 0 {
+                        guard await betweenRuntimes() else { return nil }
+                        if changes.changed { break }
+                    }
+                    candidates[runtime] = changes.tracking { candidate(for: runtime) }
+                }
+                if !changes.changed, candidates.count == runtimes.count {
+                    return snapshot(candidates: candidates)
+                }
+            }
             var candidates: [AgentRuntimeID: TaskRuntimeAdmissionCandidate] = [:]
-            for (index, runtime) in runtimes.enumerated() {
-                if index > 0, await !betweenRuntimes() { return nil }
+            for runtime in runtimes {
                 candidates[runtime] = candidate(for: runtime)
             }
             return snapshot(candidates: candidates)
@@ -347,6 +375,53 @@ enum TaskLaunchAdmissionService {
                 candidates: candidates,
                 launchBlock: launchBlock
             )
+        }
+    }
+
+    /// Notices when the domain state an incremental pass read has moved: a
+    /// change to any observable model property read while scoring (SwiftData
+    /// models are `Observable`), or a save of the context those models live
+    /// in, which also covers inserts that no tracked read could see. Saves
+    /// of other contexts are not this pass's state until merged, and would
+    /// only restart it for nothing.
+    private final class AdmissionDomainChangeMonitor: @unchecked Sendable {
+        private let lock = NSLock()
+        private var didChange = false
+        private var saveObserver: NSObjectProtocol?
+
+        init(savesOf context: ModelContext?) {
+            guard let context else { return }
+            saveObserver = NotificationCenter.default.addObserver(
+                forName: ModelContext.didSave,
+                object: context,
+                queue: nil
+            ) { [weak self] _ in
+                self?.markChanged()
+            }
+        }
+
+        deinit {
+            if let saveObserver {
+                NotificationCenter.default.removeObserver(saveObserver)
+            }
+        }
+
+        var changed: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return didChange
+        }
+
+        func tracking<Result>(_ body: () -> Result) -> Result {
+            withObservationTracking(body) { [weak self] in
+                self?.markChanged()
+            }
+        }
+
+        private func markChanged() {
+            lock.lock()
+            didChange = true
+            lock.unlock()
         }
     }
 

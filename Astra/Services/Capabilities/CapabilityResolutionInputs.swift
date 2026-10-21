@@ -63,22 +63,55 @@ struct CapabilityResolutionInputs: Sendable {
         approvals: CapabilityApprovalStore = CapabilityApprovalStore(),
         packCatalog: AstraPackCatalog = AstraPackCatalog()
     ) -> CapabilityResolutionInputs {
-        CapabilityResolutionInputs.$pinned.withValue(nil) {
-            CapabilityResolutionInputs(
-                libraryDirectory: library.directory.standardizedFileURL,
-                packageDefinitions: CapabilityRuntimeResourceMatcher.packageDefinitions(library: library),
-                approvalsDirectory: approvals.directory.standardizedFileURL,
-                approvalRecords: approvals.records(),
-                packBuiltInDirectory: packCatalog.builtInDirectory?.standardizedFileURL,
-                packLocalStorageRoot: packCatalog.localStorageRoot?.standardizedFileURL,
-                packCatalog: packCatalog.load()
+        // `stopIf` never answers true here, so there is always a result.
+        load(library: library, approvals: approvals, packCatalog: packCatalog, stopIf: { false })!
+    }
+
+    /// `load()` on a background thread, for callers on the main actor. Nil
+    /// when the caller is cancelled: the cancellation reaches the detached
+    /// read, which stops before its next store, so a preview superseded by a
+    /// keystroke does not leave a scan running beside the next one.
+    static func loadDetached() async -> CapabilityResolutionInputs? {
+        let read = Task.detached(priority: .userInitiated) {
+            load(
+                library: CapabilityLibrary(),
+                approvals: CapabilityApprovalStore(),
+                packCatalog: AstraPackCatalog(),
+                stopIf: { Task.isCancelled }
             )
+        }
+        return await withTaskCancellationHandler {
+            await read.value
+        } onCancel: {
+            read.cancel()
         }
     }
 
-    /// `load()` on a background thread, for callers on the main actor.
-    static func loadDetached() async -> CapabilityResolutionInputs {
-        await Task.detached(priority: .userInitiated) { load() }.value
+    /// Reads the three stores in turn, giving up between them once `stopIf`
+    /// answers true.
+    static func load(
+        library: CapabilityLibrary,
+        approvals: CapabilityApprovalStore,
+        packCatalog: AstraPackCatalog,
+        stopIf: () -> Bool
+    ) -> CapabilityResolutionInputs? {
+        CapabilityResolutionInputs.$pinned.withValue(nil) {
+            guard !stopIf() else { return nil }
+            let packageDefinitions = CapabilityRuntimeResourceMatcher.packageDefinitions(library: library)
+            guard !stopIf() else { return nil }
+            let approvalRecords = approvals.records()
+            guard !stopIf() else { return nil }
+            let catalog = packCatalog.load()
+            return CapabilityResolutionInputs(
+                libraryDirectory: library.directory.standardizedFileURL,
+                packageDefinitions: packageDefinitions,
+                approvalsDirectory: approvals.directory.standardizedFileURL,
+                approvalRecords: approvalRecords,
+                packBuiltInDirectory: packCatalog.builtInDirectory?.standardizedFileURL,
+                packLocalStorageRoot: packCatalog.localStorageRoot?.standardizedFileURL,
+                packCatalog: catalog
+            )
+        }
     }
 
     // MARK: - Reader hooks
