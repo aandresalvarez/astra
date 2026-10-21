@@ -7,6 +7,44 @@ import ASTRACore
 /// library, installer and runtime keep working unchanged underneath it.
 @Suite("Plugin manifest")
 struct PluginManifestTests {
+    @Test("An MCP process-start check that the package cannot carry is rejected")
+    func processStartCheckIsNotSilentlyAccepted() throws {
+        var package = try builtIn("google-workspace")
+        package.mcpServers = [PluginMCPServer(id: "fixture", displayName: "Fixture MCP", transport: .stdio, command: "astra-test-mcp-missing")]
+        package.prerequisites = []
+        var manifest = PluginManifestConverter.manifest(from: package)
+        let index = try #require(manifest.components.firstIndex { $0.kind == .mcp })
+        manifest.components[index].setup.check = PluginSetupStep(kind: .processStarts)
+        #expect(throws: PluginManifestError.unrepresentableSetup(component: "Fixture MCP")) {
+            try PluginManifestConverter.checkedPackage(from: manifest)
+        }
+    }
+
+    @Test("Projecting an MCP package does not invent a check with no executable prerequisite")
+    func packageProjectionDoesNotInventProcessChecks() throws {
+        var package = try builtIn("google-workspace")
+        package.prerequisites = []
+        let manifest = PluginManifestConverter.manifest(from: package)
+        #expect(manifest.components.filter { $0.kind == .mcp }.allSatisfy { $0.setup.isEmpty })
+        #expect(try canonical(PluginManifestConverter.checkedPackage(from: manifest)) == canonical(package))
+    }
+
+    @Test("An explicit read-only MCP executable check remains actionable when its command is missing")
+    func representableMCPAvailabilityCheckIsPreserved() async throws {
+        var package = try builtIn("google-workspace")
+        let command = "astra-test-mcp-missing"
+        package.mcpServers = [PluginMCPServer(id: "fixture", displayName: "Fixture MCP", transport: .stdio, command: command)]
+        package.prerequisites = [CLIPrerequisite(binary: command, livenessArgs: [], displayName: "Fixture executable", purpose: "Launches the MCP server.", installHint: "Install the server.")]
+        let manifest = PluginManifestConverter.manifest(from: package)
+        let restored = try PluginManifestConverter.checkedPackage(from: manifest)
+        let prerequisite = try #require(restored.prerequisites.first)
+        let runner = StubBinaryRunner()
+        let status = await EnvironmentHealthChecker(runner: runner, fallbackDirectories: []).check(binary: prerequisite.binary, livenessArgs: prerequisite.livenessArgs)
+        #expect(status == .missingBinary)
+        #expect(PluginsSurfacePresentation.pendingSetupChecks(for: restored, statuses: [prerequisite.id: status]) == 1)
+        #expect(await runner.recordedCalls().map(\.args) == [["which", command]])
+    }
+
     @Test("Every built-in capability survives package → manifest → package unchanged")
     func builtInsRoundTripLosslessly() throws {
         let files = try builtInFiles()
