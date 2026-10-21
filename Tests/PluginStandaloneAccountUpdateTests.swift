@@ -51,7 +51,8 @@ struct PluginStandaloneAccountUpdateTests {
                     })
             }
             #expect(beforeCommit == nil)
-            #expect(PluginAccountRecord(account) == before)
+            #expect(PluginAccountRecord(account) == before,
+                "Timestamp drift after rollback: created=\(account.createdAt.timeIntervalSinceReferenceDate - before.createdAt.timeIntervalSinceReferenceDate), updated=\(account.updatedAt.timeIntervalSinceReferenceDate - before.updatedAt.timeIntervalSinceReferenceDate)")
             #expect(try env.context.fetchCount(FetchDescriptor<PluginOperationReceipt>()) == receipts)
             #expect(account.configValues == ["legacy-account-update-token"])
         }

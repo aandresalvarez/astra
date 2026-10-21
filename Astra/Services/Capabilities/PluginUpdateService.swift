@@ -406,20 +406,31 @@ enum PluginUpdateService {
             }
             for account in WorkspaceCapabilityActivation.activations(of: workspace)
                 .flatMap(\.bindings).compactMap(\.account) where !account.isDeleted {
-                let saved = (account.credentialKeys, account.credentialValues, account.configKeys, account.configValues,
-                             account.connectorDescription, account.icon, account.notes, account.originPackageVersion,
-                             account.originComponentID, account.credentialNamespaceID)
+                let saved = (
+                    credentialKeys: account.credentialKeys,
+                    credentialValues: account.credentialValues,
+                    configKeys: account.configKeys,
+                    configValues: account.configValues,
+                    connectorDescription: account.connectorDescription,
+                    icon: account.icon,
+                    notes: account.notes,
+                    originPackageVersion: account.originPackageVersion,
+                    originComponentID: account.originComponentID,
+                    credentialNamespaceID: account.credentialNamespaceID,
+                    updatedAt: account.updatedAt
+                )
                 restorers.append {
-                    if account.credentialKeys != saved.0 { account.credentialKeys = saved.0 }
-                    if account.credentialValues != saved.1 { account.credentialValues = saved.1 }
-                    if account.configKeys != saved.2 { account.configKeys = saved.2 }
-                    if account.configValues != saved.3 { account.configValues = saved.3 }
-                    if account.connectorDescription != saved.4 { account.connectorDescription = saved.4 }
-                    if account.icon != saved.5 { account.icon = saved.5 }
-                    if account.notes != saved.6 { account.notes = saved.6 }
-                    if account.originPackageVersion != saved.7 { account.originPackageVersion = saved.7 }
-                    if account.originComponentID != saved.8 { account.originComponentID = saved.8 }
-                    if account.credentialNamespaceID != saved.9 { account.credentialNamespaceID = saved.9 }
+                    if account.credentialKeys != saved.credentialKeys { account.credentialKeys = saved.credentialKeys }
+                    if account.credentialValues != saved.credentialValues { account.credentialValues = saved.credentialValues }
+                    if account.configKeys != saved.configKeys { account.configKeys = saved.configKeys }
+                    if account.configValues != saved.configValues { account.configValues = saved.configValues }
+                    if account.connectorDescription != saved.connectorDescription { account.connectorDescription = saved.connectorDescription }
+                    if account.icon != saved.icon { account.icon = saved.icon }
+                    if account.notes != saved.notes { account.notes = saved.notes }
+                    if account.originPackageVersion != saved.originPackageVersion { account.originPackageVersion = saved.originPackageVersion }
+                    if account.originComponentID != saved.originComponentID { account.originComponentID = saved.originComponentID }
+                    if account.credentialNamespaceID != saved.credentialNamespaceID { account.credentialNamespaceID = saved.credentialNamespaceID }
+                    if account.updatedAt != saved.updatedAt { account.updatedAt = saved.updatedAt }
                 }
             }
         }
