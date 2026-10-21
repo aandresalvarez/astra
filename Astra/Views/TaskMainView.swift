@@ -267,6 +267,7 @@ struct TaskMainView: View {
     @State private var sensitiveDataSwitchPrompt = RuntimeSensitiveDataSwitchPrompt()
     @State private var isPreparingGitPublishProposal = false
     @State private var gitPublishPreparationError: String?
+    @StateObject private var repairActionPresentation = TaskRepairActionPresentation()
     @FocusState private var isComposerFocused: Bool
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -538,6 +539,7 @@ struct TaskMainView: View {
             onResolved: { threadViewModel.refreshSnapshot(for: task) }
         )
         .runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)
+        .taskRepairNotice(repairActionPresentation, taskID: task.id, runID: latestRun?.id)
         .alert("Couldn’t Fork Conversation", isPresented: isForkCreationErrorPresented) {
             Button("OK", role: .cancel) { forkCreationError = nil }
         } message: {
@@ -3865,7 +3867,7 @@ struct TaskMainView: View {
         case .resume:
             onResumeTask?(task)
         case .runRepair:
-            Task { RepairActionRunner.run(await TaskRunStopEvidence.signInRepair(events: sortedEvents, runID: latestRun?.id, task: task)) }
+            repairActionPresentation.start(events: sortedEvents, runID: latestRun?.id, task: task)
         case .reportProblem:
             reportCurrentFailure()
         case .openArtifact:
