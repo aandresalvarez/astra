@@ -10,7 +10,7 @@ import ASTRACore
 /// pin the main thread indefinitely: `updateDerivedFields` re-fires on every
 /// task update, so each pass restarted before the previous one could finish and
 /// the app never came back.
-public struct TaskOutputVisibilityScope {
+public struct TaskOutputVisibilityScope: Sendable, Equatable {
     public let taskFolder: TaskOutputArtifactPathPolicy.ResolvedRoot
     public let workspace: TaskOutputArtifactPathPolicy.ResolvedRoot
 
@@ -44,7 +44,20 @@ extension TaskContextStateManager {
         task: AgentTask,
         scope: TaskOutputVisibilityScope
     ) -> Bool {
-        let normalizedPath = TaskArtifactPathNormalizer.normalizedPath(path, task: task)
+        isUserFacingNormalizedOutputPath(
+            TaskArtifactPathNormalizer.normalizedPath(path, task: task),
+            scope: scope
+        )
+    }
+
+    /// The classification half, for a path that is already normalized.
+    /// Normalizing is idempotent, so this answers exactly what the task form
+    /// does for the same path; it reads no model state, which is what lets
+    /// `TaskOutputObservation` run it off the main actor.
+    public nonisolated static func isUserFacingNormalizedOutputPath(
+        _ normalizedPath: String,
+        scope: TaskOutputVisibilityScope
+    ) -> Bool {
         guard !normalizedPath.isEmpty else { return false }
 
         // Settle the generated-dependency case lexically, before any symlink

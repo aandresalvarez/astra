@@ -119,8 +119,9 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     /// sometimes answers a resumed turn with reasoning only (Cursor).
     public let retriesEmptyResumedTurnWithoutResume: Bool
     /// Whether the usage a resumed launch reports covers the provider's whole session
-    /// (Antigravity's result, Copilot's session shutdown), not just that launch. The
-    /// recorder takes off what earlier runs of the same session already recorded.
+    /// (Antigravity's result, Copilot's session shutdown, Codex's `turn.completed`),
+    /// not just that launch. The recorder takes off what earlier runs of the same
+    /// session already recorded.
     public let reportsCumulativeSessionUsage: Bool
     /// Whether capability-package MCP servers are materialized into this
     /// runtime's launches. Runtimes without support surface the skip

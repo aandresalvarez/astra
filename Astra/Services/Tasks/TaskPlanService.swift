@@ -68,8 +68,40 @@ enum TaskPlanService: Sendable {
         encode(payload)
     }
 
+    /// Reads only the plan rows when the task is in a store. Context-state
+    /// derivation, turn intent and the handoff each reconstruct the plan every
+    /// turn, and after a save `task.events` comes back as faults: on a long
+    /// task each reconstruction then fetched every conversation event one row
+    /// at a time to find the handful that can change the plan.
+    ///
+    /// The reader matches on `task.id`, which a duplicated workspace import
+    /// can share between two live tasks. Any row owned by another task means
+    /// the id alone cannot answer, so that rare case replays the relationship.
     static func reconstruct(for task: AgentTask) -> TaskPlanState {
-        reconstruct(from: task.events, recoveryRuns: task.runs)
+        let owner = task.persistentModelID
+        guard let modelContext = task.modelContext,
+              let input = try? TaskPlanStateReader.read(taskID: task.id, modelContext: modelContext),
+              let newest = try? newestEvent(taskID: task.id, modelContext: modelContext),
+              newest.task?.persistentModelID == owner,
+              input.events.allSatisfy({ $0.task?.persistentModelID == owner }),
+              input.recoveryRuns.allSatisfy({ $0.task?.persistentModelID == owner }) else {
+            return reconstruct(from: task.events, recoveryRuns: task.runs)
+        }
+        let latestEventAt = newest.timestamp
+        var state = reconstruct(from: input.events, recoveryRuns: input.recoveryRuns)
+        // The relationship replay stamps the newest event of any type, plan or
+        // not; keep that rather than the newest plan event.
+        state.latestEventAt = latestEventAt
+        return state
+    }
+
+    private static func newestEvent(taskID: UUID, modelContext: ModelContext) throws -> TaskEvent? {
+        var descriptor = FetchDescriptor<TaskEvent>(
+            predicate: #Predicate<TaskEvent> { $0.task?.id == taskID },
+            sortBy: [SortDescriptor(\TaskEvent.timestamp, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        return try modelContext.fetch(descriptor).first
     }
 
     static func reconstruct(from events: [TaskEvent], recoveryRuns: [TaskRun]) -> TaskPlanState {
@@ -80,10 +112,10 @@ enum TaskPlanService: Sendable {
 
     static func reconstruct(from events: [TaskEvent]) -> TaskPlanState {
         var state = TaskPlanState.empty
+        let reconstruction = sortedEventsForReconstruction(events)
+        state.latestEventAt = reconstruction.latestEventAt
 
-        for event in sortedEventsForReconstruction(events) {
-            state.latestEventAt = event.timestamp
-
+        for event in reconstruction.planEvents {
             switch event.type {
             case TaskPlanEventTypes.created:
                 guard let plan = decodePlanPayload(event.payload) else { continue }
@@ -148,27 +180,38 @@ enum TaskPlanService: Sendable {
         return state
     }
 
-    private static func sortedEventsForReconstruction(_ events: [TaskEvent]) -> [TaskEvent] {
-        events.enumerated()
-            .sorted { lhs, rhs in
-                let timestampOrder = lhs.element.timestamp.compare(rhs.element.timestamp)
-                if timestampOrder != .orderedSame {
-                    return timestampOrder == .orderedAscending
-                }
-
-                let lhsPriority = reconstructionPriority(for: lhs.element.type)
-                let rhsPriority = reconstructionPriority(for: rhs.element.type)
-                if lhsPriority != rhsPriority {
-                    return lhsPriority < rhsPriority
-                }
-
-                return lhs.offset < rhs.offset
+    /// The plan events in replay order, and the newest timestamp of any event.
+    ///
+    /// Only events with a state-mutation code change the plan; every other
+    /// type falls through the replay untouched and contributes nothing but
+    /// `latestEventAt`, which is the newest timestamp either way. So each
+    /// event is read once — its timestamp and type are SwiftData getters, and
+    /// a long task holds thousands of conversation events — and only the plan
+    /// events are sorted, by those read-once keys. Filtering first keeps their
+    /// relative input order, so the offset tie-break orders them as before.
+    private static func sortedEventsForReconstruction(
+        _ events: [TaskEvent]
+    ) -> (planEvents: [TaskEvent], latestEventAt: Date?) {
+        var latestEventAt: Date?
+        var planEvents: [(offset: Int, timestamp: Date, priority: Int, event: TaskEvent)] = []
+        for (offset, event) in events.enumerated() {
+            let timestamp = event.timestamp
+            if latestEventAt.map({ timestamp > $0 }) ?? true {
+                latestEventAt = timestamp
             }
-            .map(\.element)
-    }
-
-    private static func reconstructionPriority(for eventType: String) -> Int {
-        stateMutationCode(for: eventType) ?? 20
+            guard let priority = stateMutationCode(for: event.type) else { continue }
+            planEvents.append((offset, timestamp, priority, event))
+        }
+        let ordered = planEvents.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp {
+                return lhs.timestamp < rhs.timestamp
+            }
+            if lhs.priority != rhs.priority {
+                return lhs.priority < rhs.priority
+            }
+            return lhs.offset < rhs.offset
+        }
+        return (ordered.map(\.event), latestEventAt)
     }
 
     static func approvedPlan(for task: AgentTask) -> TaskPlanPayload? {

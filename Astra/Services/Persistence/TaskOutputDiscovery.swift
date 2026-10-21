@@ -125,24 +125,41 @@ public enum TaskOutputDiscovery {
     }
 
     public static func files(in taskFolder: String, fileManager: FileManager = .default) -> [TaskOutputDiscoveredFile] {
+        files(in: taskFolder, fileManager: fileManager, isCancelled: { false }) ?? []
+    }
+
+    /// `files(in:)` that polls `isCancelled` per entry and returns nil once it
+    /// says so, for a caller that will discard a cancelled result anyway.
+    public static func files(
+        in taskFolder: String,
+        fileManager: FileManager = .default,
+        isCancelled: () -> Bool
+    ) -> [TaskOutputDiscoveredFile]? {
         guard !taskFolder.isEmpty else { return [] }
         let folderURL = URL(fileURLWithPath: taskFolder)
         let folderPath = folderURL.standardizedFileURL.path
         let resolvedFolderPath = folderURL.resolvingSymlinksInPath().standardizedFileURL.path
         guard fileManager.fileExists(atPath: folderPath) else { return [] }
 
-        return TaskGeneratedFileQuerySeam.required.files(in: folderPath, fileManager: fileManager)
-            .compactMap { path in
-                discoveredFile(
-                    path: path,
-                    taskFolderPath: folderPath,
-                    resolvedTaskFolderPath: resolvedFolderPath,
-                    fileManager: fileManager
-                )
-            }
-            .sorted { lhs, rhs in
-                lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedAscending
-            }
+        guard let paths = TaskGeneratedFileQuerySeam.required.files(
+            in: folderPath,
+            fileManager: fileManager,
+            isCancelled: isCancelled
+        ) else { return nil }
+        var discovered: [TaskOutputDiscoveredFile] = []
+        for path in paths {
+            guard !isCancelled() else { return nil }
+            guard let file = discoveredFile(
+                path: path,
+                taskFolderPath: folderPath,
+                resolvedTaskFolderPath: resolvedFolderPath,
+                fileManager: fileManager
+            ) else { continue }
+            discovered.append(file)
+        }
+        return discovered.sorted { lhs, rhs in
+            lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedAscending
+        }
     }
 
     public static func filesChanged(during run: TaskRun, from files: [TaskOutputDiscoveredFile]) -> [TaskOutputDiscoveredFile] {

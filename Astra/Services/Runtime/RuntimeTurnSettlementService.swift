@@ -52,27 +52,27 @@ enum RuntimeTurnSettlementService {
     }
 
     static func checkpoint(for run: TaskRun, task: AgentTask) throws -> Checkpoint? {
-        guard let event = task.events.first(where: {
-            !$0.isDeleted && $0.run?.id == run.id && $0.type == TaskEventTypes.System.runtimeResultCaptured.rawValue
-        }) else { return nil }
+        guard let event = TaskEventTypeLookup.first(
+            ofType: TaskEventTypes.System.runtimeResultCaptured.rawValue, task: task, run: run
+        ) else { return nil }
         let value = try JSONDecoder().decode(Checkpoint.self, from: Data(event.payload.utf8))
         guard value.version == 1 else { throw Failure.incompatibleCheckpoint }
         return value
     }
 
     static func verdict(for run: TaskRun, task: AgentTask) -> Verdict? {
-        task.events.first {
-            !$0.isDeleted && $0.run?.id == run.id && $0.type == TaskEventTypes.System.runtimeTurnSettled.rawValue
-        }.flatMap { event in
+        TaskEventTypeLookup.first(
+            ofType: TaskEventTypes.System.runtimeTurnSettled.rawValue, task: task, run: run
+        ).flatMap { event in
             guard let value = try? JSONDecoder().decode(Verdict.self, from: Data(event.payload.utf8)), value.version == 1 else { return nil }
             return value
         }
     }
 
     static func hasUnsettledResult(task: AgentTask, run: TaskRun) -> Bool {
-        task.events.contains {
-            !$0.isDeleted && $0.run?.id == run.id && $0.type == TaskEventTypes.System.runtimeResultCaptured.rawValue
-        } && verdict(for: run, task: task) == nil
+        TaskEventTypeLookup.first(
+            ofType: TaskEventTypes.System.runtimeResultCaptured.rawValue, task: task, run: run
+        ) != nil && verdict(for: run, task: task) == nil
     }
 
     /// Whether a run's provider finished its work. Auto allows a connector the
