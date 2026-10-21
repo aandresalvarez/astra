@@ -23,17 +23,24 @@ enum TaskRunStopEvidence {
             .flatMap(RepairAction.decode(from:))
     }
 
+    @MainActor
+    static func presentationRepair(events: [TaskEventSnapshot], runID: UUID?, task: AgentTask) -> RepairAction? {
+        guard var repair = repair(events: events, runID: runID) else { return nil }
+        repair = repair.checking(in: TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: repair.checkBinary))
+        repair.checkWorkingDirectory = TaskLifecycleCoordinator.checkWorkingDirectory(for: task)
+        repair = CLISessionExpiryClassifier.checkingCredentialFile(CLISessionExpiryClassifier.checkingLaunchHost(repair))
+        return repair.targetingCredentialStore(repair.checkEnvironment)
+    }
+
     /// Resolves the stopped run's exact verification context on click,
     /// outside the render path. Task-selected directories and Enterprise
     /// hosts require manual setup; their read-only checks keep their target.
     /// An explicit ADC file is verified without replacing that file.
     @MainActor
     static func signInRepair(events: [TaskEventSnapshot], runID: UUID?, task: AgentTask) async -> RepairAction? {
-        guard var repair = repair(events: events, runID: runID) else { return nil }
-        repair = repair.checking(in: TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: repair.checkBinary))
-        repair.checkWorkingDirectory = TaskLifecycleCoordinator.checkWorkingDirectory(for: task)
-        repair = CLISessionExpiryClassifier.checkingCredentialFile(CLISessionExpiryClassifier.checkingLaunchHost(repair))
-        return await CLISessionExpiryClassifier.checkingCheckoutHost(repair).targetingCredentialStore(repair.checkEnvironment)
+        guard let repair = presentationRepair(events: events, runID: runID, task: task) else { return nil }
+        let resolved = await CLISessionExpiryClassifier.checkingCheckoutHost(repair)
+        return resolved.targetingCredentialStore(resolved.checkEnvironment)
     }
 
     private static func latestPayload(events: [TaskEventSnapshot], runID: UUID?, type: TaskEventType) -> String? {
