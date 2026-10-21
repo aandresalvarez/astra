@@ -229,6 +229,9 @@ extension WorkspaceConfigManager {
 
     static func sanitizeCreated(_ connector: Connector, trust: CapabilityImportTrustPolicy, report: inout CapabilityImportTrustReport) {
         guard case .validate = trust else { return }
+        // A selected file cannot select local vault addresses, including
+        // historical stable endpoint aliases it might otherwise inherit.
+        connector.credentialNamespaceID = UUID()
         if connector.isGlobal {
             connector.isGlobal = false
             report.sharedRowsLocalized += 1
@@ -283,6 +286,7 @@ extension WorkspaceConfigManager {
             guard let id = snapshot.id, let row = restored[id] else { return snapshot }
             var remapped = snapshot
             remapped.id = row.id.uuidString
+            remapped.credentialNamespaceID = row.credentialNamespaceID
             remapped.name = row.name
             return remapped
         }

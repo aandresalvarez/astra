@@ -114,6 +114,7 @@ struct PluginsSurfaceView: View {
                     .foregroundStyle(Stanford.statusError)
             }
             let current = state
+            PluginStateRecoverySection(onChanged: onCatalogChanged, onError: { errorMessage = $0 })
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
@@ -540,9 +541,10 @@ struct PluginsSurfaceView: View {
 
     private func disable(_ package: PluginPackage) {
         let result = CapabilityCatalogActionService().disable(
-            package, workspace: workspace, capabilities: capabilities, modelContext: modelContext
+            package, workspace: workspace, modelContext: modelContext
         )
-        if !result.persisted { errorMessage = "Couldn't turn off \(package.name). Try again." }
+        if let problem = result.problem, problem.operationID == nil { errorMessage = problem.localizedDescription }
+        else if !result.persisted && result.problem == nil { errorMessage = "Couldn't turn off \(package.name). Try again." }
         onCatalogChanged()
     }
 

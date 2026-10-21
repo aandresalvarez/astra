@@ -30,10 +30,10 @@ struct RuntimeRepairInvocationTests {
     @Test("Automatic repair admits a small direct invocation and retains its chosen host")
     func directInvocation() throws {
         let stop = try #require(CLISessionExpiryClassifier.stop(content: output,
-            command: "GH_HOST=github.example.com /opt/team/bin/gh api user"))
+            command: "GH_HOST=github.com /opt/team/bin/gh api user"))
         #expect(stop.repairContext?.offersAction == true)
         #expect(stop.repairContext?.repair.checkBinary == "/opt/team/bin/gh")
-        #expect(stop.repairContext?.repair.checkArguments?.last == "github.example.com")
+        #expect(stop.repairContext?.repair.checkArguments?.last == "github.com")
     }
 
     @Test("Complex shell diagnostics offer manual review without an inferred executable check")

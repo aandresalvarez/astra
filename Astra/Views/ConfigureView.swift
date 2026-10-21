@@ -278,78 +278,6 @@ struct ConfigureView: View {
     }
 }
 
-private struct ConfigureSelectionList<Content: View>: View {
-    let maxContentWidth: CGFloat
-    @ViewBuilder let content: Content
-
-    init(maxContentWidth: CGFloat = 640, @ViewBuilder content: () -> Content) {
-        self.maxContentWidth = maxContentWidth
-        self.content = content()
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                content
-            }
-            .padding(16)
-            .frame(maxWidth: maxContentWidth, alignment: .leading)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-}
-
-private struct ConfigureSelectionSection<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: Content
-    private let columns = [
-        GridItem(.adaptive(minimum: 330, maximum: 460), spacing: 12, alignment: .top)
-    ]
-
-    init(_ title: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(title)
-                .font(Stanford.caption(10).weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                content
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct ConfigureSelectionCard<Content: View>: View {
-    @ViewBuilder let content: Content
-
-    init(@ViewBuilder content: () -> Content) {
-        self.content = content()
-    }
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-
-        HStack(spacing: 12) {
-            content
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(shape.fill(Color.primary.opacity(0.018)))
-        .overlay {
-            shape.stroke(Stanford.borderSubtle, lineWidth: 1)
-        }
-        .clipShape(shape)
-    }
-}
 
 // MARK: - Capability Creation Wizard
 
@@ -1169,6 +1097,8 @@ struct ConnectorsTabContent: View {
     var onManageCapabilities: () -> Void = {}
     @Environment(\.modelContext) private var modelContext
     @State private var selectedConnector: Connector?
+    @State private var duplicationError: String?
+    @State private var duplicationRecoveryID: UUID?
     @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
     private var globalConnectors: [Connector]
 
@@ -1227,6 +1157,23 @@ struct ConnectorsTabContent: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
 
+            if let duplicationError {
+                HStack {
+                    Label(duplicationError, systemImage: "exclamationmark.triangle")
+                        .font(Stanford.caption(12))
+                    Spacer()
+                    if let id = duplicationRecoveryID {
+                        Button("Finish recovery") {
+                            do {
+                                try ConnectorCredentialEditor.recover(id, modelContext: modelContext)
+                                self.duplicationError = nil
+                                duplicationRecoveryID = nil
+                            } catch { self.duplicationError = error.localizedDescription }
+                        }
+                    }
+                }
+                .padding(12)
+            }
             Divider()
 
             ZStack(alignment: .topLeading) {
@@ -1425,10 +1372,20 @@ struct ConnectorsTabContent: View {
     }
 
     private func duplicateConnector(_ connector: Connector) {
-        let copy = CapabilitySharing.duplicateForWorkspace(connector, in: workspace)
-        modelContext.insert(copy)
-        selectedConnector = copy
-        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
+        do {
+            selectedConnector = try ConnectorCredentialDuplication.duplicate(connector, in: workspace, modelContext: modelContext)
+            duplicationError = nil
+            duplicationRecoveryID = nil
+        } catch {
+            duplicationRecoveryID = nil
+            if let problem = error as? PluginOperationProblem {
+                switch problem {
+                case .savedRecoveryPending(let id): duplicationRecoveryID = id
+                case .commitUncertain: break
+                }
+            }
+            duplicationError = error.localizedDescription
+        }
     }
 
     private func deleteConnector(_ connector: Connector) {
@@ -1710,268 +1667,6 @@ struct ToolsTabContent: View {
         selectedTool = copy
         CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
     }
-}
-
-// MARK: - Skills Tab
-
-struct SkillsTabContent: View {
-    var workspace: Workspace
-    var focusItemID: UUID?
-    var onManageCapabilities: () -> Void = {}
-    @Environment(\.modelContext) private var modelContext
-    @State private var selectedSkill: Skill?
-
-    @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
-    private var globalSkills: [Skill]
-
-    private var workspaceSkills: [Skill] {
-        workspace.skills.filter { !$0.isGlobal && !$0.isSystemBuiltIn }.sorted { $0.name < $1.name }
-    }
-
-    private var sharedLibrarySkills: [Skill] {
-        globalSkills.filter { globalSkill in
-            !globalSkill.isSystemBuiltIn &&
-            !workspaceSkills.contains { $0.id == globalSkill.id }
-        }
-        .sorted { $0.name < $1.name }
-    }
-
-    private var hasVisibleSkills: Bool {
-        !workspaceSkills.isEmpty || !sharedLibrarySkills.isEmpty
-    }
-
-    var body: some View {
-        let showingDetail = selectedSkill != nil
-
-        VStack(spacing: 0) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Skills")
-                        .font(Stanford.heading(18))
-
-                    Text("Intent & Behavior")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                HStack(spacing: 10) {
-                    if showingDetail {
-                        Button {
-                            selectedSkill = nil
-                        } label: {
-                            Label("Back", systemImage: "chevron.left")
-                                .font(Stanford.body(13))
-                        }
-                    } else {
-                        Button { onManageCapabilities() } label: {
-                            Label("Manage Capabilities", systemImage: "square.grid.2x2")
-                                .font(Stanford.body(13))
-                        }
-
-                        Button { createSkill() } label: {
-                            Label("New Skill", systemImage: "plus")
-                                .font(Stanford.body(13))
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-
-            Divider()
-
-            ZStack(alignment: .topLeading) {
-                if let skill = selectedSkill {
-                    SkillEditorView(skill: skill, workspace: workspace, onDelete: {
-                        deleteSkill(skill)
-                    })
-                } else if !hasVisibleSkills {
-                    emptyState
-                } else {
-                    ConfigureSelectionList(maxContentWidth: 980) {
-                        if !workspaceSkills.isEmpty {
-                            ConfigureSelectionSection("Workspace Skills") {
-                                ForEach(workspaceSkills) { skill in
-                                    ConfigureSelectionCard {
-                                        Button {
-                                            selectedSkill = skill
-                                        } label: {
-                                            HStack(spacing: 12) {
-                                                skillRow(skill)
-                                                Spacer(minLength: 0)
-                                                Image(systemName: "chevron.right")
-                                                    .font(Stanford.ui(11, weight: .semibold))
-                                                    .foregroundStyle(.tertiary)
-                                            }
-                                            .contentShape(Rectangle())
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .buttonStyle(.plain)
-                                    }
-                                }
-                            }
-                        }
-
-                        if !sharedLibrarySkills.isEmpty {
-                            ConfigureSelectionSection("Shared Library") {
-                                ForEach(sharedLibrarySkills) { skill in
-                                    let enabled = workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString)
-
-                                    ConfigureSelectionCard {
-                                        HStack(spacing: 12) {
-                                            Button {
-                                                selectedSkill = skill
-                                            } label: {
-                                                HStack(spacing: 12) {
-                                                    skillRow(skill)
-                                                    Spacer(minLength: 0)
-                                                    Image(systemName: "chevron.right")
-                                                        .font(Stanford.ui(11, weight: .semibold))
-                                                        .foregroundStyle(.tertiary)
-                                                }
-                                                .contentShape(Rectangle())
-                                            }
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .buttonStyle(.plain)
-
-                                            Button(enabled ? "Disable" : "Enable") {
-                                                toggleGlobalSkill(skill)
-                                            }
-                                            .font(Stanford.caption(12))
-                                            .buttonStyle(.bordered)
-                                            .controlSize(.small)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onAppear {
-            if let focusItemID,
-               let skill = workspace.skills.first(where: { $0.id == focusItemID }) {
-                selectedSkill = skill
-            }
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "puzzlepiece.extension")
-                .font(Stanford.ui(36))
-                .foregroundStyle(ConfigureTab.skills.color.opacity(0.5))
-            Text("No Skills Yet")
-                .font(Stanford.heading(18))
-                .foregroundStyle(Stanford.black)
-            Text("Skills define what your agent can do — which tools it can use, behavioral instructions, and attached connectors and tools.")
-                .font(Stanford.body(14))
-                .foregroundStyle(Stanford.coolGrey)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
-
-            HStack(spacing: 12) {
-                Button {
-                    createSkill()
-                } label: {
-                    Label("Create Blank", systemImage: "plus")
-                        .font(Stanford.body(14))
-                }
-
-                Button {
-                    onManageCapabilities()
-                } label: {
-                    Label("Manage Capabilities", systemImage: "square.grid.2x2")
-                        .font(Stanford.body(14))
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(ConfigureTab.skills.color)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func skillRow(_ skill: Skill) -> some View {
-        let subtitle = skill.skillDescription.isEmpty
-            ? "\(skill.allowedTools.count) capabilities configured"
-            : skill.skillDescription
-
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                ConfigureCardIcon(
-                    systemName: skill.icon,
-                    color: skill.isGlobal ? Stanford.poppy : ConfigureTab.skills.color
-                )
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(skill.name.isEmpty ? "Untitled" : skill.name)
-                        .font(Stanford.body(14))
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Stanford.black)
-                        .lineLimit(1)
-
-                    Text(subtitle)
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .help(subtitle)
-                }
-            }
-
-            HStack(spacing: 6) {
-                ConfigureCardChip(title: "\(skill.allowedTools.count) capabilities")
-                if !skill.connectors.isEmpty {
-                    ConfigureCardChip(title: "\(skill.connectors.count) connector\(skill.connectors.count == 1 ? "" : "s")")
-                }
-                if !skill.localTools.isEmpty {
-                    ConfigureCardChip(title: "\(skill.localTools.count) tool\(skill.localTools.count == 1 ? "" : "s")")
-                }
-            }
-        }
-    }
-
-    private func createSkill() {
-        let skill = Skill(name: "New Skill", allowedTools: Skill.defaultAllowed)
-        skill.workspace = workspace
-        modelContext.insert(skill)
-        selectedSkill = skill
-        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
-        AppLogger.audit(.skillCreated, category: "UI", fields: [
-            "skill_id": skill.id.uuidString,
-            "workspace_id": workspace.id.uuidString,
-            "allowed_tools_count": String(skill.allowedTools.count)
-        ])
-    }
-
-    private func toggleGlobalSkill(_ skill: Skill) {
-        let idString = skill.id.uuidString
-        WorkspaceCapabilityActivation.mutate(workspace) { $0.toggleGlobalSkill(idString) }
-        workspace.updatedAt = Date()
-        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
-        AppLogger.audit(.skillToolPermissionChanged, category: "UI", fields: [
-            "skill_id": skill.id.uuidString,
-            "workspace_id": workspace.id.uuidString,
-            "enabled_global": String(workspace.enabledGlobalSkillIDs.contains(idString))
-        ])
-    }
-
-    private func deleteSkill(_ skill: Skill) {
-        if selectedSkill?.id == skill.id {
-            selectedSkill = nil
-        }
-        skill.cleanupKeychain()
-        let wasGlobal = skill.isGlobal
-        modelContext.delete(skill)
-        CapabilityPersistence.saveResourceMutation(
-            workspace: workspace, isGlobal: wasGlobal, modelContext: modelContext)
-    }
-
 }
 
 // MARK: - Templates Tab

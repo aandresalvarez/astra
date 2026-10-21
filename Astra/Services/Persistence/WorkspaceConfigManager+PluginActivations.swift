@@ -26,7 +26,10 @@ extension WorkspaceConfigManager {
             knownComponentIDs: [String]? = nil,
             secretSettingKeys: [String]? = nil,
             namespaceSeed: String? = nil,
-            digest: String? = nil
+            credentialNamespaceSeed: String? = nil,
+            digest: String? = nil,
+            templateDigests: [String]? = nil,
+            awaitingUpdate: Bool? = nil
         ) {
             self.id = id
             self.activationID = activationID
@@ -39,7 +42,10 @@ extension WorkspaceConfigManager {
             self.knownComponentIDs = knownComponentIDs
             self.secretSettingKeys = secretSettingKeys
             self.namespaceSeed = namespaceSeed
+            self.credentialNamespaceSeed = credentialNamespaceSeed
             self.digest = digest
+            self.templateDigests = templateDigests
+            self.awaitingUpdate = awaitingUpdate
         }
 
         public var id: String
@@ -63,10 +69,17 @@ extension WorkspaceConfigManager {
         /// The activation's namespace seed; restored only from the
         /// workspace's own mirror.
         public var namespaceSeed: String?
+        public var credentialNamespaceSeed: String?
         /// The approval digest of the definition the workspace accepted. A
         /// chosen file's activation stays off, with none of its details,
         /// unless this matches the installed copy (`CapabilityImportVerifier`).
         public var digest: String?
+        /// The template rows' content digests (`componentID#digest`). Restored
+        /// only from the workspace's own mirror, whose rows keep their stamps.
+        public var templateDigests: [String]?
+        /// Whether an automatic reconcile held the activation back from its
+        /// library definition; restored only from the workspace's own mirror.
+        public var awaitingUpdate: Bool?
     }
 
     public struct PluginAccountRef: Codable, Sendable, Equatable {
@@ -113,7 +126,9 @@ extension WorkspaceConfigManager {
     }
 
     static func installedPluginRefs(for workspace: Workspace) -> [InstalledPluginRef] {
-        WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
+        var refs = WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
+            let configuration = PluginLaunchConfiguration.activation(activation)
+            let settings = Dictionary(zip(configuration.keys, configuration.values), uniquingKeysWith: { _, last in last })
             let accounts = activation.bindings
                 .filter { !$0.isDeleted }
                 .sorted { $0.createdAt < $1.createdAt }
@@ -129,7 +144,7 @@ extension WorkspaceConfigManager {
             return InstalledPluginRef(
                 id: activation.pluginID,
                 version: activation.recordedVersion.isEmpty ? "0.0.0" : activation.recordedVersion,
-                settings: activation.configuration.isEmpty ? nil : activation.configuration,
+                settings: settings.isEmpty ? nil : settings,
                 overriddenComponentIDs: activation.overriddenComponentIDs.isEmpty ? nil : activation.overriddenComponentIDs,
                 overridingRowIDs: activation.overridingRowIDs.isEmpty ? nil : activation.overridingRowIDs,
                 accounts: accounts.isEmpty ? nil : accounts,
@@ -137,9 +152,20 @@ extension WorkspaceConfigManager {
                 knownComponentIDs: activation.knownComponentIDs.isEmpty ? nil : activation.knownComponentIDs,
                 secretSettingKeys: activation.secretSettingKeys.isEmpty ? nil : activation.secretSettingKeys,
                 namespaceSeed: activation.namespaceSeed.isEmpty ? nil : activation.namespaceSeed,
-                digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest
+                credentialNamespaceSeed: activation.credentialNamespaceSeed.isEmpty ? nil : activation.credentialNamespaceSeed,
+                digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest,
+                templateDigests: activation.templateDigests.isEmpty ? nil : activation.templateDigests,
+                awaitingUpdate: activation.awaitingUpdate ? true : nil
             )
         }
+        // Pending V19 installations are still authoritative ownership. A
+        // bare reference restores an off activation without claiming that
+        // this workspace accepted today's definition or any secret settings.
+        var seen = Set(refs.map(\.id))
+        for entry in WorkspaceCapabilityActivation.pendingLegacyInstallations(in: workspace) where seen.insert(entry.id).inserted {
+            refs.append(InstalledPluginRef(id: entry.id, version: entry.version.isEmpty ? "0.0.0" : entry.version))
+        }
+        return refs
     }
 
     /// What Remove kept of the workspace's removed activations
@@ -179,6 +205,7 @@ extension WorkspaceConfigManager {
             // the file replaced.
             if case .validate = trust {
                 WorkspaceCapabilityActivation.setNamespaceSeed(UUID().uuidString, on: activation)
+                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(UUID().uuidString, on: activation)
             }
             // The file's projected IDs (its workspace, its seed) name the
             // installed definition's components under the fresh seed. Mapped
@@ -213,6 +240,9 @@ extension WorkspaceConfigManager {
                 if let seed = ref.namespaceSeed, !seed.isEmpty {
                     WorkspaceCapabilityActivation.setNamespaceSeed(seed, on: activation)
                 }
+                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(ref.credentialNamespaceSeed ?? "", on: activation)
+                WorkspaceCapabilityActivation.setTemplateDigests(entries: ref.templateDigests ?? [], on: activation)
+                WorkspaceCapabilityActivation.setAwaitingUpdate(ref.awaitingUpdate ?? false, on: activation)
                 declared = nil
                 // The workspace's own mirror keeps the activation's identity,
                 // so its secret settings resolve again. A chosen file never
@@ -318,5 +348,42 @@ extension WorkspaceConfigManager {
         guard WorkspaceMirrorRegistry(for: modelContext)?.register([workspace.primaryPath]) ?? true else { return false }
         WorkspaceAutoExportGate.shared.retire(workspaceID: workspace.id.uuidString)
         return exportToFileResult(workspace: workspace, modelContext: modelContext, url: url).didExport
+    }
+
+    /// Rewrites each of `workspaces`' mirrors now (`exportMirrorNow`), the
+    /// rest too after one fails. True when every one was written.
+    @MainActor
+    public static func exportMirrorsNow(_ workspaces: [Workspace], modelContext: ModelContext) -> Bool {
+        var seen = Set<UUID>()
+        return workspaces.filter { seen.insert($0.id).inserted }.reduce(true) { written, workspace in
+            exportMirrorNow(workspace: workspace, modelContext: modelContext) && written
+        }
+    }
+
+    /// Those of `workspaces` whose mirror carries any of `accountIDs`, as
+    /// `export` collects its rows: the workspace's own, its skills', a
+    /// shared one it lists, and an account any plugin's binding names
+    /// there. The one answer to which mirrors a changed account leaves stale.
+    /// Throws when the shared rows can't be read: an answer missing a
+    /// workspace would let a destructive caller leave its mirror stale, so
+    /// there is no partial answer. `globalRows` stands in for the fetch in
+    /// tests.
+    @MainActor
+    public static func workspacesMirroring(
+        accountIDs: Set<UUID>, among workspaces: [Workspace], modelContext: ModelContext,
+        globalRows: (() throws -> (skills: [Skill], connectors: [Connector]))? = nil
+    ) throws -> [Workspace] {
+        guard !accountIDs.isEmpty else { return [] }
+        let (globalSkills, globalConnectors) = try (globalRows ?? {
+            (try modelContext.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal })),
+             try modelContext.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal })))
+        })()
+        return workspaces.filter { workspace in
+            !workspace.isDeleted && connectorsForExport(
+                workspace: workspace,
+                skills: skillsForExport(workspace: workspace, globalSkills: globalSkills),
+                globalConnectors: globalConnectors
+            ).contains { accountIDs.contains($0.id) }
+        }
     }
 }

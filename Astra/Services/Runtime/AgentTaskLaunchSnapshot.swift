@@ -33,7 +33,10 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
     /// live library and rows.
     let pluginDefinitions: [PluginPackage]?
     let pluginAccounts: [PluginAccountRecord]?
+    let accountInventory: TaskAccountInventorySnapshot?
     let pluginOverrides: PluginOverrideRecords?
+    let authoredSkills: [SkillLaunchRecord]?
+    let pendingLegacyPluginState: WorkspaceCapabilityActivation.PendingLegacyState?
     /// The removed activations' record frozen with them
     /// (`TaskExecutionPolicySnapshotV1.retiredPluginActivations`); nil reads
     /// the live workspace's.
@@ -59,13 +62,16 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         skillSnapshotsJSON = task.skillSnapshotsJSON
         runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
         pluginActivations = task.workspace.map {
-            WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.init)
+            WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.forLaunch)
         }
         // A launch copy carries its request's frozen definitions on; a live
         // task is projected from the library as it is now.
         pluginDefinitions = task.workspace?.launchPluginDefinitions
+        accountInventory = TaskExecutionLaunchSnapshotApplicator.accountInventory(for: task)
         pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
         pluginOverrides = task.workspace.map(PluginOverrideRecords.init(workspace:))
+        authoredSkills = SkillLaunchRecord.captureAuthored(for: task)
+        pendingLegacyPluginState = task.workspace.map(WorkspaceCapabilityActivation.pendingLegacyState(of:))
         retiredPluginActivations = task.workspace.map(WorkspaceCapabilityActivation.retiredActivations(of:))
     }
 
@@ -91,7 +97,10 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         pluginActivations: [PluginActivationRecord]? = nil,
         pluginDefinitions: [PluginPackage]? = nil,
         pluginAccounts: [PluginAccountRecord]? = nil,
+        accountInventory: TaskAccountInventorySnapshot? = nil,
         pluginOverrides: PluginOverrideRecords? = nil,
+        authoredSkills: [SkillLaunchRecord]? = nil,
+        pendingLegacyPluginState: WorkspaceCapabilityActivation.PendingLegacyState? = nil,
         retiredPluginActivations: [RetiredPluginActivation]? = nil
     ) {
         self.id = id
@@ -115,7 +124,10 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         self.pluginActivations = pluginActivations
         self.pluginDefinitions = pluginDefinitions
         self.pluginAccounts = pluginAccounts
+        self.accountInventory = accountInventory
         self.pluginOverrides = pluginOverrides
+        self.authoredSkills = authoredSkills
+        self.pendingLegacyPluginState = pendingLegacyPluginState
         self.retiredPluginActivations = retiredPluginActivations
     }
 }

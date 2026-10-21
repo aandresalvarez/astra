@@ -18,9 +18,6 @@ struct CapabilityInstaller {
         /// above because the remedy is different: nothing about this install
         /// can recover it, and they have to re-enter the value.
         case credentialRestoreFailed(packageID: String, keys: [String])
-        /// An earlier Remove's secrets are still waiting to be cleared from
-        /// the Keychain; a new activation would derive the same namespaces.
-        case secretCleanupPending(packageID: String)
 
         var errorDescription: String? {
             switch self {
@@ -34,8 +31,6 @@ struct CapabilityInstaller {
                 let reason = verdict.message(forKey: key)
                     ?? "\(key) is not a valid credential for this connector."
                 return "Enabling \(id) was stopped: \(reason)"
-            case .secretCleanupPending(let id):
-                return "\(id) can't be added yet: the secrets it had here before haven't been cleared from the Keychain. Try again."
             case .credentialRestoreFailed(let id, let keys):
                 let names = keys.joined(separator: ", ")
                 return """
@@ -59,15 +54,20 @@ struct CapabilityInstaller {
     /// Where skill secret settings are stored; nil reads the registered
     /// seam when used, so building an installer never needs it.
     private let skillSecretsOverride: (any SkillSecretPersisting.Type)?
+    /// What the Keychain holds for an account's key; nil reads the
+    /// account's own namespaces (`Connector.currentCredentialValue`).
+    private let heldCredentialOverride: ((Connector, String) -> String?)?
 
     init(
         library: CapabilityLibrary = CapabilityLibrary(),
         appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
-        skillSecrets: (any SkillSecretPersisting.Type)? = nil
+        skillSecrets: (any SkillSecretPersisting.Type)? = nil,
+        heldCredential: ((Connector, String) -> String?)? = nil
     ) {
         self.library = library
         self.appVersion = appVersion
         self.skillSecretsOverride = skillSecrets
+        self.heldCredentialOverride = heldCredential
     }
 
     @discardableResult
@@ -81,7 +81,10 @@ struct CapabilityInstaller {
         allowCredentialUserInteraction: Bool = false,
         policyContext: CapabilityCatalogPolicyContext? = nil,
         traceID: String? = nil,
-        announceCatalogMutation: Bool = true
+        announceCatalogMutation: Bool = true,
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
+        pendingApproval: CapabilityApprovalRecord? = nil,
+        fileOperation: PluginFileOperationContext? = nil
     ) throws -> InstallationResult {
         let effectivePolicyContext = policyContext ?? defaultPolicyContext(for: workspace)
         let blockers = uniqueMessages(
@@ -99,50 +102,24 @@ struct CapabilityInstaller {
         // A stored skill row the catalog lists as a package is not a
         // library entry: it is only turned on.
         if Self.syntheticSkillRowID(of: package) != nil {
-            return try enable(
-                package,
-                in: workspace,
-                modelContext: modelContext,
-                policyContext: effectivePolicyContext,
-                auditSource: "install",
-                traceID: traceID
-            )
+            func enableStoredSkill(_ files: PluginFileCommit?) throws -> InstallationResult {
+                try enable(package, in: workspace, modelContext: modelContext, policyContext: effectivePolicyContext,
+                    auditSource: "install", traceID: traceID, fileCommit: files)
+            }
+            if let pendingApproval {
+                let files = try PluginFileCommit.approval(pendingApproval, package: package,
+                    library: library, approvals: approvalStore, modelContext: modelContext)
+                return try files.perform(modelContext: modelContext) { try enableStoredSkill(files) }
+            }
+            return try enableStoredSkill(nil)
         }
-        // Snapshot the pre-install library state so a failed enable can be
-        // compensated instead of leaving an orphaned or overwritten file.
-        let packageStorageSnapshot = library.makePackageStorageSnapshot(for: package.id)
-        do {
-            try library.install(package)
-        } catch {
-            var fields = capabilityFields(for: package, workspace: workspace, source: "install")
-            if let traceID { fields["trace_id"] = traceID }
-            fields["result"] = "library_install_failed"
-            fields["error_type"] = String(describing: type(of: error))
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
-            throw error
-        }
-        let result: InstallationResult
-        do {
-            result = try enable(
-                package,
-                in: workspace,
-                modelContext: modelContext,
-                credentialInputs: credentialInputs,
-                configInputs: configInputs,
-                baseURLOverrides: baseURLOverrides,
-                allowCredentialUserInteraction: allowCredentialUserInteraction,
-                policyContext: effectivePolicyContext,
-                auditSource: "install",
-                traceID: traceID
-            )
-        } catch {
-            library.restorePackageStorage(packageStorageSnapshot)
-            var fields = capabilityFields(for: package, workspace: workspace, source: "install")
-            if let traceID { fields["trace_id"] = traceID }
-            fields["result"] = "enable_failed_library_rolled_back"
-            fields["restored_previous_file"] = packageStorageSnapshot.snapshotURL == nil ? "false" : "true"
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
-            throw error
+        let transaction = try PluginInstallationTransaction.prepare(package: package, library: library,
+            modelContext: modelContext, approvals: approvalStore, approval: pendingApproval, operation: fileOperation)
+        let result = try transaction.perform(modelContext: modelContext) { files in
+            try enable(package, in: workspace, modelContext: modelContext,
+                credentialInputs: credentialInputs, configInputs: configInputs, baseURLOverrides: baseURLOverrides,
+                allowCredentialUserInteraction: allowCredentialUserInteraction, policyContext: effectivePolicyContext,
+                auditSource: "install", traceID: traceID, fileCommit: files)
         }
         var installedFields = [
             "package_id": package.id,
@@ -176,8 +153,10 @@ struct CapabilityInstaller {
         policyContext: CapabilityCatalogPolicyContext? = nil,
         auditSource: String = "enable",
         traceID: String? = nil,
-        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
-        exportMirror: (@MainActor (Workspace) -> Void)? = nil
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = Self.persistActivation,
+        exportMirror: (@MainActor (Workspace) -> Void)? = nil,
+        rewriteMirror: (@MainActor (Workspace) -> Bool)? = nil,
+        fileCommit: PluginFileCommit? = nil
     ) throws -> InstallationResult {
         var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
         if let traceID { startFields["trace_id"] = traceID }
@@ -200,26 +179,32 @@ struct CapabilityInstaller {
         // A skill the catalog lists as its own package is a stored row: Add
         // turns that row on, keeping its ID and its Keychain secrets.
         if let skillID = Self.syntheticSkillRowID(of: package) {
-            return try enableSkillRow(skillID, package: package, workspace: workspace, modelContext: modelContext, persist: persist)
+            return try enableSkillRow(skillID, package: package, workspace: workspace, modelContext: modelContext, persist: persist, fileCommit: fileCommit)
         }
 
-        // A new activation derives the namespaces a Remove may not have
-        // finished clearing: settle them first, and wait while one is pending.
-        if WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) == nil,
-           !PluginSecretCleanupOutbox.settleBeforeAdding(package, to: workspace, modelContext: modelContext) {
-            throw InstallationError.secretCleanupPending(packageID: package.id)
+        guard workspace.modelContext === modelContext, !workspace.isDeleted else {
+            throw InstallationError.persistenceFailed(packageID: package.id)
         }
+        try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
+        let isNewActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) == nil
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         // The library holds one definition for every workspace: each other
         // one whose activation kept rows while it was missing gets them as
         // overrides in the same save, so none projects a second copy.
-        let pendingElsewhere = ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).filter { other in
+        let pendingElsewhere = (try modelContext.fetch(FetchDescriptor<Workspace>())).filter { other in
             other.id != workspace.id
                 && WorkspaceCapabilityActivation.pendingOverridePluginIDs(of: other).contains(package.id)
                 && WorkspaceCapabilityActivation.activation(for: package.id, in: other) != nil
         }
+        for other in pendingElsewhere {
+            try PluginActivationAdmission.requireCurrent(in: other, modelContext: modelContext)
+        }
         let pendingSnapshots = pendingElsewhere.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
+        var stagedGeneration: PluginCredentialGenerationTransaction?
+        var stagedAccountCredentials: [ConnectorCredentialGenerationTransaction] = []
         var savedSkillSecrets: [SavedSkillSecret] = []
+        var renamedSecrets: [PluginUpdateService.CopiedSecret] = []
+        let restoreReconciled = PluginUpdateService.captureState(of: [workspace] + pendingElsewhere)
         // Everything from here through persist() is one transaction: staging a
         // skill/connector/tool can throw (credential save denied, activation
         // swap failure, ...) partway through the loops below, after earlier
@@ -234,6 +219,15 @@ struct CapabilityInstaller {
             var localToolIDs: [UUID] = []
             var templateIDs: [UUID] = []
 
+            if let existing = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) {
+                let prepared = try PluginCredentialGenerationTransaction.prepareCopy(
+                    activation: existing, workspaceID: workspace.id, modelContext: modelContext,
+                    skillName: package.name, persistence: skillSecrets,
+                    additionalComponents: Set(package.skills.map(CapabilityResourceOrigin.componentID(for:))))
+                stagedGeneration = prepared
+                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(prepared.generation, on: existing)
+            }
+
             // The activation owns everything this workspace keeps for the
             // plugin. Skills and tools are not stored: the runtime projects
             // them from the library entry and this record.
@@ -241,28 +235,61 @@ struct CapabilityInstaller {
                 $0.enableCapability(package.id)
                 $0.recordInstalledPlugin(id: package.id, version: package.version)
             }
-            WorkspaceCapabilityActivation.recordAccepted(
-                pluginID: package.id,
-                version: package.version,
-                digest: PluginDefinitionDigest.content(of: package),
-                in: workspace
-            )
             guard let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
             // Added back after a Remove: the same projected IDs (templates
             // and schedules name them) and the person's overrides again,
-            // the rows the migration kept while it was missing included.
+            // before reconciling derives anything from them, the rows the
+            // migration kept while it was missing included.
             let componentIDs = PluginRuntimeProjection.componentIDs(of: package)
+            // The accounts its components created here before a Remove come
+            // back bound, stamped again, rather than as duplicates.
+            let retainedAccounts = WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: workspace)
+            let retainedTemplateIDs = WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: workspace)
             WorkspaceCapabilityActivation.reinstateRetired(on: activation, declaring: componentIDs, in: workspace)
+            if isNewActivation {
+                let prepared = try PluginCredentialGenerationTransaction.prepareCopy(
+                    activation: activation, workspaceID: workspace.id, modelContext: modelContext,
+                    skillName: package.name, persistence: skillSecrets,
+                    additionalComponents: Set(package.skills.map(CapabilityResourceOrigin.componentID(for:))))
+                stagedGeneration = prepared
+                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(prepared.generation, on: activation)
+            }
+            for retained in retainedAccounts
+            where componentIDs.contains(retained.componentID) && activation.accounts(forComponent: retained.componentID).isEmpty {
+                CapabilityResourceOrigin.stamp(retained.account, package: package, componentID: retained.componentID)
+                WorkspaceCapabilityActivation.bind(
+                    retained.account, toComponent: retained.componentID, of: activation, isDefault: retained.isDefault
+                )
+            }
             for (other, _) in pendingSnapshots {
                 guard let otherActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: other) else { continue }
                 WorkspaceCapabilityActivation.adoptPendingOverrides(on: otherActivation, declaring: componentIDs, in: other)
             }
-            // A row replacing a component this version no longer declares
-            // is the workspace's own again: nothing would project it.
-            WorkspaceCapabilityActivation.releaseUndeclaredOverrides(on: activation, declaring: componentIDs, in: workspace)
-            WorkspaceCapabilityActivation.setKnownComponents(activation.knownComponentIDs + componentIDs, on: activation)
+            // Adding a version this workspace had at another one is an Update
+            // for it: renamed components keep their state, dropped ones
+            // release theirs, and the version and digest are recorded.
+            // rollback() and the activation snapshot don't cover templates,
+            // schedules and the synced account fields reconciling writes.
+            // Reconciliation can promote account settings into secrets. Give
+            // every account it may touch a private generation first too.
+            for candidate in PluginAccountCredentialCutoverPlan.candidates(for: package, activation: activation) {
+                let prepared = try PluginUpdateAccountCredentials.stage(candidate, modelContext: modelContext,
+                    lease: stagedAccountCredentials.first?.lease)
+                stagedAccountCredentials.append(prepared)
+            }
+            stagedAccountCredentials.forEach { $0.noteWriteAttempt() }
+            let reconciliation = try PluginUpdateService.reconcile(
+                activation,
+                in: workspace,
+                to: package,
+                mode: .release,
+                secrets: skillSecrets,
+                preparedGeneration: stagedGeneration,
+                copied: &renamedSecrets
+            )
+            let releasedSkillIDs = reconciliation.released
             // An account bound to a connector component this version no
             // longer declares is released (the account itself stays, listed
             // under "Accounts not used by a plugin"). The workspace's own
@@ -277,7 +304,10 @@ struct CapabilityInstaller {
             }
 
             let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
-            let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
+            // A skill setting an account carries as a plain setting, unless a
+            // connector of this plugin stores that key as a credential.
+            let movedSettings = Set(package.connectors.flatMap { PluginConnectorFieldTrust.settingsStoredAsCredentials(of: $0, in: package) })
+            let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys).filter { !movedSettings.contains($0) }
 
             for pluginSkill in package.skills {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
@@ -285,10 +315,11 @@ struct CapabilityInstaller {
                 try saveSkillSettings(
                     pluginSkill,
                     componentID: componentID,
-                    projectedID: projectedID,
+                    credentialID: PluginRuntimeProjection.credentialID(of: activation, componentID: componentID),
                     activation: activation,
                     configInputs: skillConfigInputs,
                     packageID: package.id,
+                    modelContext: modelContext,
                     savedSecrets: &savedSkillSecrets
                 )
                 appendUnique(projectedID, to: &skillIDs)
@@ -296,32 +327,54 @@ struct CapabilityInstaller {
 
             for pluginConnector in package.connectors {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginConnector)
+                // This component's own inputs over the shared ones: two
+                // connectors with one name or field key never trade values.
+                let ownConfigInputs = PluginSetupInputs.view(configInputs, component: componentID)
                 let bound = activation.accounts(forComponent: componentID).first
                 // What the inputs change: with a bound account, only what
                 // differs from it (`AccountSetupEdits`); the rest it keeps.
+                // The account's structure, entered as declared fields: its
+                // endpoint (validated) and its name, never a setting or secret.
+                let structure = try AccountStructure(pluginConnector, inputs: ownConfigInputs)
+                let explicitConfigKeys = Set(ownConfigInputs.keys.filter {
+                    configInputs[PluginSetupInputs.key($0, component: componentID)] != nil
+                })
+                let explicitEndpoint = baseURLOverrides[componentID] != nil || pluginConnector.accountBaseURLField.map {
+                    explicitConfigKeys.contains($0.key)
+                } == true
                 let edits = AccountSetupEdits(
-                    pluginConnector, bound: bound, configInputs: configInputs,
-                    baseURLOverride: baseURLOverrides[pluginConnector.name]
+                    pluginConnector, bound: bound, configInputs: ownConfigInputs,
+                    baseURLOverride: PluginSetupInputs.baseURL(in: baseURLOverrides, for: pluginConnector) ?? structure.baseURL,
+                    explicitConfigKeys: explicitConfigKeys, explicitEndpoint: explicitEndpoint
+                )
+                let fields = StoredConnectorFields(
+                    pluginConnector, in: package,
+                    credentialInputs: PluginSetupInputs.view(credentialInputs, component: componentID),
+                    configInputs: ownConfigInputs
                 )
                 let configKeys = connectorConfigKeys(
-                    hints: pluginConnector.configHints,
+                    hints: fields.connector.configHints,
                     extraConfigKeys: packageEnvironmentKeys,
                     configInputs: edits.config
                 )
                 let boundURL = bound.map(\.baseURL).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
                 let baseURL = edits.baseURL ?? boundURL ?? pluginConnector.baseURL
                 let hasScopedInputs = connectorHasScopedInputs(
-                    pluginConnector,
+                    fields.connector,
                     configKeys: configKeys,
-                    credentialInputs: credentialInputs,
+                    credentialInputs: fields.credentialInputs,
                     configInputs: edits.config,
                     baseURLOverridden: edits.baseURL != nil
-                )
+                ) || structure.alias.map { $0 != bound?.name } ?? false
                 // The account replacing this component's default takes its
                 // place as the workspace's default for the service.
                 let inheritsDefault = activation.bindings.contains {
                     !$0.isDeleted && $0.componentID == componentID && $0.isDefault
                 }
+                // And its age, which elects the next default.
+                let boundAge = activation.bindings.first {
+                    !$0.isDeleted && $0.componentID == componentID && $0.account?.id == bound?.id
+                }?.createdAt
                 let account: Connector
                 if let bound, !hasScopedInputs {
                     // Adding again keeps the account the workspace chose.
@@ -332,16 +385,17 @@ struct CapabilityInstaller {
                     // inputs would change is replaced here, not edited for
                     // every workspace that uses it.
                     account = try upsertWorkspaceConnector(
-                        pluginConnector,
+                        fields,
                         package: package,
                         workspace: workspace,
                         existing: bound.flatMap { $0.isGlobal ? nil : $0 },
                         modelContext: modelContext,
-                        credentialInputs: credentialInputs,
                         configInputs: edits.accountConfig,
                         extraConfigKeys: packageEnvironmentKeys,
                         baseURL: baseURL,
-                        allowCredentialUserInteraction: allowCredentialUserInteraction
+                        alias: structure.alias,
+                        allowCredentialUserInteraction: allowCredentialUserInteraction,
+                        stagedCredentials: &stagedAccountCredentials
                     )
                     if let bound, bound.id != account.id, bound.isGlobal {
                         // Only this component moves to the new account; the
@@ -349,7 +403,7 @@ struct CapabilityInstaller {
                         WorkspaceCapabilityActivation.unbind(bound, from: activation, componentID: componentID)
                     }
                 }
-                WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: inheritsDefault)
+                WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: inheritsDefault, createdAt: boundAge)
                 appendUnique(account.id, to: &connectorIDs)
             }
 
@@ -361,25 +415,51 @@ struct CapabilityInstaller {
                 )
             }
 
-            for pluginTemplate in package.templates {
-                let template = upsertWorkspaceTemplate(pluginTemplate, package: package, workspace: workspace, modelContext: modelContext)
+            for template in PluginTemplateSync.sync(package, in: workspace, modelContext: modelContext, reusingIDs: retainedTemplateIDs) {
                 appendUnique(template.id, to: &templateIDs)
             }
 
             workspace.updatedAt = Date()
-            guard persist(workspace, modelContext) else {
-                throw InstallationError.persistenceFailed(packageID: package.id)
-            }
-            // `persist` exports the clicked workspace; the others whose
-            // pending rows became overrides in the same save are exported
-            // here, or their mirrors would restore the rows as before.
-            for (other, _) in pendingSnapshots {
-                if let exportMirror {
-                    exportMirror(other)
-                } else if !WorkspacePersistenceCoordinator.shouldSkipAutoExport() {
-                    WorkspaceConfigManager.autoExport(workspace: other, modelContext: modelContext)
+            // The secret settings written above settle with the save: the
+            // activation records them now.
+            let journaledSecrets = savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }
+            // Discovery is part of admission to the commit, never a best
+            // effort: unknown mirror owners cannot be recorded as an empty set.
+            let mirroring = try WorkspaceConfigManager.workspacesMirroring(
+                accountIDs: reconciliation.changedAccountIDs.union(stagedAccountCredentials.map(\.accountID)),
+                among: try modelContext.fetch(FetchDescriptor<Workspace>()), modelContext: modelContext
+            )
+            let mirrored = [workspace] + pendingSnapshots.map(\.0) + mirroring
+            var committed: PluginStateCommit.Outcome?
+            let saved = PluginSecretCleanupOutbox.deleteThenClean(
+                releasedSkillIDs,
+                keys: reconciliation.staleSecrets + journaledSecrets + PluginUpdateService.journaledCopies(renamedSecrets),
+                modelContext: modelContext, secrets: skillSecrets,
+                producerLease: stagedGeneration?.producerLease,
+                save: {
+                    let result = PluginStateCommit.save(workspaceIDs: mirrored.map(\.id), pluginIDs: [package.id],
+                        kind: .add, modelContext: modelContext, persist: { context in
+                            guard persist(workspace, context) else { throw InstallationError.persistenceFailed(packageID: package.id) }
+                        }, export: rewriteMirror, publishesCompleted: false, files: fileCommit)
+                    committed = result
+                    if case .notCommitted = result { return false }
+                    return true // Unknown saves retain cleanup debt and recovery state.
+                }, beforeSettling: {
+                    if case .completed = committed { return true }
+                    return false
                 }
+            )
+            guard saved else { throw InstallationError.persistenceFailed(packageID: package.id) }
+            switch committed {
+            case .pendingRecovery(let id): throw PluginOperationProblem.savedRecoveryPending(id)
+            case .indeterminate(let id, _): throw PluginOperationProblem.commitUncertain(id)
+            default: break
             }
+            stagedGeneration?.completed(keeping: Set(PluginRuntimeProjection.secretNamespaces(of: activation, package: nil)))
+            stagedAccountCredentials.forEach { $0.completed() }
+            // Compatibility notification for callers observing adopted rows.
+            // Recovery already wrote every affected mirror from saved state.
+            if let exportMirror { for (other, _) in pendingSnapshots { exportMirror(other) } }
             var enabledFields = [
                 "package_id": package.id,
                 "package_name": package.name,
@@ -403,15 +483,39 @@ struct CapabilityInstaller {
                 templateIDs: templateIDs
             )
         } catch {
+            guard !PluginOperationProblem.preventsRollback(error) else { throw error }
             // Reporting success (or even a clean failure) while leaving a
             // partial stage in place would strand the library file and any
             // saved keychain credentials against unsaved/orphaned records.
             // rollback() drops the inserted resources; restore() undoes the
             // membership-array mutations it does not revert.
             modelContext.rollback()
+            restoreReconciled()
             WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
             for (other, snapshot) in pendingSnapshots { WorkspaceCapabilityActivation.restore(snapshot, to: other) }
+            // Private account generations are discarded as a whole below. Only
+            // legacy/nonparticipant writes require compensating individual keys.
+            let compensated = renamedSecrets.filter { copied in
+                guard let namespace = copied.account?.facts.credentialNamespaceID else { return true }
+                return !stagedAccountCredentials.contains { $0.namespaceID == namespace }
+            }
             let unrestored = restoreSkillSecrets(savedSkillSecrets)
+                + PluginUpdateService.undo(compensated, secrets: skillSecrets)
+            // A refused compensation still owes cleanup. Retaining the
+            // batch is safe: recovery checks saved owners before deleting,
+            // and already-restored keys settle idempotently.
+            if unrestored.isEmpty {
+                PluginSecretSettingWriter.forgetJournaled(
+                    savedSkillSecrets.map { PluginUpdateService.StaleSecret(key: $0.key, skillID: $0.skillID) }
+                        + PluginUpdateService.journaledCopies(renamedSecrets),
+                    modelContext: modelContext
+                )
+            }
+            // The published generation was restored first. These unique
+            // staged namespaces can now be reclaimed without compensation
+            // touching any credential the saved activation still references.
+            stagedGeneration?.discard()
+            stagedAccountCredentials.forEach { $0.discard() }
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
             fields["result"] = "enable_failed_rolled_back"
@@ -469,7 +573,7 @@ struct CapabilityInstaller {
     /// the value it replaced, so a failed enable can put it back.
     /// The stored skill row a catalog-synthesized `skill.<uuid>` package
     /// stands for (`CapabilityCatalogInventory`), nil for a real plugin.
-    static func syntheticSkillRowID(of package: PluginPackage) -> UUID? {
+    nonisolated static func syntheticSkillRowID(of package: PluginPackage) -> UUID? {
         let kind = package.sourceMetadata?.kind
         guard package.id.hasPrefix("skill."), kind == "workspace" || kind == "shared" else { return nil }
         return UUID(uuidString: String(package.id.dropFirst("skill.".count)))
@@ -479,12 +583,17 @@ struct CapabilityInstaller {
     /// and its shared connectors and tools join the workspace; a workspace
     /// row is already on. No activation is created, so nothing projects a
     /// second copy under another ID.
+    static func persistActivation(_ workspace: Workspace?, _ context: ModelContext) -> Bool {
+        WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: context)
+    }
+
     private func enableSkillRow(
         _ skillID: UUID,
         package: PluginPackage,
         workspace: Workspace,
         modelContext: ModelContext,
-        persist: @MainActor (Workspace?, ModelContext) -> Bool
+        persist: @MainActor (Workspace?, ModelContext) -> Bool,
+        fileCommit: PluginFileCommit? = nil
     ) throws -> InstallationResult {
         var descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.id == skillID })
         descriptor.fetchLimit = 1
@@ -504,7 +613,15 @@ struct CapabilityInstaller {
             }
             workspace.updatedAt = Date()
         }
-        guard persist(workspace, modelContext) else {
+        let commit = PluginStateCommit.save(workspace: workspace, pluginIDs: [package.id], kind: .add,
+            modelContext: modelContext, persist: { context in
+                guard persist(workspace, context) else { throw InstallationError.persistenceFailed(packageID: package.id) }
+            }, publishesCompleted: false, files: fileCommit)
+        switch commit {
+        case .completed: break
+        case .pendingRecovery(let id): throw PluginOperationProblem.savedRecoveryPending(id)
+        case .indeterminate(let id, _): throw PluginOperationProblem.commitUncertain(id)
+        case .notCommitted:
             modelContext.rollback()
             WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
             throw InstallationError.persistenceFailed(packageID: package.id)
@@ -530,15 +647,16 @@ struct CapabilityInstaller {
     }
 
     /// Stores a skill's configured settings on the activation: non-secret
-    /// values under `componentID.KEY`, secret ones in the Keychain under the
-    /// projected skill's ID.
+    /// values under `componentID#KEY`, secret ones under the activation's
+    /// credential namespace.
     private func saveSkillSettings(
         _ pluginSkill: PluginSkill,
         componentID: String,
-        projectedID: UUID,
+        credentialID: UUID,
         activation: PluginActivation,
         configInputs: [String: String],
         packageID: String,
+        modelContext: ModelContext,
         savedSecrets: inout [SavedSkillSecret]
     ) throws {
         for key in pluginSkill.environmentKeys {
@@ -551,17 +669,17 @@ struct CapabilityInstaller {
             }
             guard !value.isEmpty else { continue }
             let persistence = skillSecrets
-            let previous = persistence.loadSecretValue(key: key, skillID: projectedID, store: KeychainSecretStore())
-            guard persistence.saveSecretValue(
-                value,
-                key: key,
-                skillID: projectedID,
-                skillName: pluginSkill.name,
-                allowUserInteraction: false
-            ) else {
+            let previous = persistence.loadSecretValue(key: key, skillID: credentialID, store: KeychainSecretStore())
+            // Journaled before the write, settled with the Add's save: a quit
+            // between them leaves a value launch cleans, never one unrecorded.
+            let written = try PluginSecretSettingWriter.writeJournaled(
+                value, key: key, skillName: pluginSkill.name, skillID: credentialID,
+                modelContext: modelContext, persistence: persistence
+            )
+            guard written else {
                 throw InstallationError.credentialSaveFailed(packageID: packageID, key: key)
             }
-            savedSecrets.append(SavedSkillSecret(key: key, skillID: projectedID, previousValue: previous))
+            savedSecrets.append(SavedSkillSecret(key: key, skillID: credentialID, previousValue: previous))
             WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: settingKey, on: activation)
         }
     }
@@ -593,18 +711,40 @@ struct CapabilityInstaller {
         return unrestored
     }
 
+    /// A connector component's fields as its account stores them
+    /// (`PluginConnectorFieldTrust.asStored`), with the credential inputs
+    /// that fill them: a setting stored as a credential takes its value from
+    /// either input, whichever the caller filled.
+    struct StoredConnectorFields {
+        let connector: PluginConnector
+        let movedSettings: Set<String>
+        let credentialInputs: [String: String]
+
+        init(_ declared: PluginConnector, in package: PluginPackage, credentialInputs: [String: String], configInputs: [String: String]) {
+            connector = PluginConnectorFieldTrust.asStored(declared, in: package)
+            movedSettings = PluginConnectorFieldTrust.settingsStoredAsCredentials(of: declared, in: package)
+            var inputs = credentialInputs
+            for key in movedSettings where (inputs[key] ?? "").isEmpty {
+                if let value = configInputs[key], !value.isEmpty { inputs[key] = value }
+            }
+            self.credentialInputs = inputs
+        }
+    }
+
     private func upsertWorkspaceConnector(
-        _ pluginConnector: PluginConnector,
+        _ fields: StoredConnectorFields,
         package: PluginPackage,
         workspace: Workspace,
         existing: Connector?,
         modelContext: ModelContext,
-        credentialInputs: [String: String],
         configInputs: [String: String],
         extraConfigKeys: [String],
         baseURL: String,
-        allowCredentialUserInteraction: Bool
+        alias: String? = nil,
+        allowCredentialUserInteraction: Bool,
+        stagedCredentials: inout [ConnectorCredentialGenerationTransaction]
     ) throws -> Connector {
+        let pluginConnector = fields.connector
         let connector = existing ?? existingWorkspaceConnector(
             for: pluginConnector,
             package: package,
@@ -617,17 +757,67 @@ struct CapabilityInstaller {
             baseURL: baseURL,
             authMethod: pluginConnector.authMethod
         )
-        if connector.modelContext == nil {
-            modelContext.insert(connector)
+        let isNew = connector.modelContext == nil
+        if isNew { modelContext.insert(connector) }
+        // A row from before its plugin's settings were credentials can hold
+        // one as plain text: it moves to the Keychain with this save. One
+        // the Keychain already holds a different value for is not: the
+        // Keychain's is kept, and the row's stays on it as a setting for the
+        // person to settle, as `Connector.moveSettingsToKeychain` leaves it.
+        var credentialInputs = fields.credentialInputs
+        var unsettled: [(key: String, value: String)] = []
+        for key in fields.movedSettings where (credentialInputs[key] ?? "").isEmpty && !connector.configValue(key).isEmpty {
+            let plain = connector.configValue(key)
+            let held: String?
+            if let heldCredentialOverride { held = heldCredentialOverride(connector, key) }
+            else {
+                switch ConnectorSecretSeam.required.readCredential(key: ConnectorCredentialKey.canonical(key),
+                    facts: ConnectorSecretFacts(connector: connector), store: KeychainSecretStore()) {
+                case .value(let value): held = value
+                case .missing: held = nil
+                case .unavailable: throw ConnectorCredentialGenerationTransaction.Failure.readFailed(key)
+                }
+            }
+            if let held, !held.isEmpty, held != plain {
+                unsettled.append((key, plain))
+            } else {
+                credentialInputs[key] = plain
+            }
         }
-        connector.name = pluginConnector.name
+        // The account owns its configured credentials independently of the
+        // plugin's hints. A repeated Add may add keys, but cannot remove the
+        // person's other credentials just because this definition omits them.
+        let targetKeys = Set(connector.credentialKeys.map(ConnectorCredentialKey.canonical))
+            .union(pluginConnector.credentialHints.map { ConnectorCredentialKey.canonical($0.key) })
+        let changedKeys = targetKeys != Set(connector.credentialKeys.map(ConnectorCredentialKey.canonical))
+        let legacyIdentityChanges = connector.credentialNamespaceID == nil && (
+            connector.baseURL != baseURL || connector.serviceType != pluginConnector.serviceType
+            || connector.originPackageID != package.id
+            || connector.originComponentID != CapabilityResourceOrigin.componentID(for: pluginConnector))
+        let prepared: ConnectorCredentialGenerationTransaction?
+        if let existing = stagedCredentials.first(where: { $0.accountID == connector.id }) {
+            prepared = existing
+        } else if isNew || changedKeys || legacyIdentityChanges || credentialInputs.values.contains(where: { !$0.isEmpty }) {
+            let participant = try ConnectorCredentialGenerationTransaction.prepare(account: connector, isNew: isNew,
+                keeping: targetKeys,
+                replacing: Set(credentialInputs.filter { !$0.value.isEmpty }.keys.map(ConnectorCredentialKey.canonical)),
+                modelContext: modelContext, declaredFormats: PluginAccountCredentialCutoverPlan.formats(of: pluginConnector),
+                lease: stagedCredentials.first?.lease)
+            stagedCredentials.append(participant)
+            connector.credentialNamespaceID = participant.namespaceID
+            prepared = participant
+        } else { prepared = nil }
+        connector.name = alias ?? pluginConnector.name
         connector.serviceType = pluginConnector.serviceType
         connector.icon = pluginConnector.icon
         connector.connectorDescription = pluginConnector.description
         connector.baseURL = baseURL
         connector.authMethod = pluginConnector.authMethod
         connector.notes = pluginConnector.notes
-        connector.credentialKeys = pluginConnector.credentialHints.map(\.key)
+        var retainedKeys = connector.credentialKeys.map(ConnectorCredentialKey.canonical)
+        for key in pluginConnector.credentialHints.map({ ConnectorCredentialKey.canonical($0.key) })
+        where !retainedKeys.contains(key) { retainedKeys.append(key) }
+        connector.credentialKeys = retainedKeys
         connector.credentialValues = Array(repeating: "", count: connector.credentialKeys.count)
         connector.configKeys = connectorConfigKeys(
             hints: pluginConnector.configHints,
@@ -635,6 +825,16 @@ struct CapabilityInstaller {
             configInputs: configInputs
         )
         connector.configValues = connector.configKeys.map { configInputs[$0] ?? "" }
+        for (key, value) in unsettled {
+            if let index = connector.credentialKeys.firstIndex(where: { ConnectorCredentialKey.same($0, key) }) {
+                connector.credentialKeys.remove(at: index)
+                connector.credentialValues.remove(at: index)
+            }
+            if !connector.configKeys.contains(key) {
+                connector.configKeys.append(key)
+                connector.configValues.append(value)
+            }
+        }
         connector.isGlobal = false
         connector.workspace = workspace
         connector.skill = nil
@@ -652,93 +852,37 @@ struct CapabilityInstaller {
             hints: pluginConnector.credentialHints,
             credentialInputs: credentialInputs,
             allowCredentialUserInteraction: allowCredentialUserInteraction,
-            packageID: package.id
+            packageID: package.id,
+            willWrite: {
+                guard let prepared else { throw ConnectorCredentialGenerationTransaction.Failure.changedAccount }
+                prepared.noteWriteAttempt()
+            }
         )
         return connector
     }
 
-    /// Saves each hinted credential in order, and on a mid-batch failure
-    /// undoes only what this call itself changed: `enable()`'s catch only
-    /// calls `modelContext.rollback()`, which reverts the connector's
-    /// `credentialKeys` array but never touches Keychain, so without this,
-    /// an earlier hint's successful Keychain write survives a later hint's
-    /// failure. A hint that had no saved value before this call gets its
-    /// Keychain entry deleted (it would otherwise be orphaned under a
-    /// connector the user can no longer see or manage). A hint that
-    /// already had a value — e.g. re-enabling an existing connector — gets
-    /// that prior value restored instead of deleted, since rollback leaves
-    /// the connector's `credentialKeys` still listing it as configured;
-    /// deleting it there would silently break an unrelated, previously
-    /// working credential. A restore that cannot land is reported rather than
-    /// swallowed: see `InstallationError.credentialRestoreFailed`.
-    ///
-    /// Looks up each hint's prior value with `currentCredentialValue(forKey:)`
-    /// right before overwriting it, rather than snapshotting `connector
-    /// .credentials` once up front: the caller resets `credentialKeys` to
-    /// the package's declared hint spelling just before this runs, which
-    /// isn't necessarily uppercase, while every saved credential is stored
-    /// under its uppercased key — a bulk snapshot keyed off that
-    /// just-reset array would silently miss existing secrets for
-    /// non-uppercase hint keys.
+    /// Inputs go through admission into an unreachable generation. Its
+    /// participant owns rollback, so a later failure never compensates by
+    /// overwriting the accepted generation of this or a queued account.
     private func saveConnectorCredentials(
         _ connector: Connector,
         hints: [PluginConnector.CredentialHint],
         credentialInputs: [String: String],
         allowCredentialUserInteraction: Bool,
-        packageID: String
+        packageID: String,
+        willWrite: () throws -> Void
     ) throws {
-        var savedThisCall: [(key: String, previousValue: String?)] = []
         for hint in hints {
             guard let value = credentialInputs[hint.key], !value.isEmpty else { continue }
-            let previousValue = connector.currentCredentialValue(forKey: hint.key)
-            let outcome = connector.saveCredentialChecked(
-                key: hint.key,
-                value: value,
-                allowUserInteraction: allowCredentialUserInteraction,
-                declaredFormat: hint.format
-            )
+            try willWrite()
+            let outcome = connector.saveCredentialChecked(key: hint.key, value: value,
+                allowUserInteraction: allowCredentialUserInteraction, declaredFormat: hint.format)
             guard outcome.isSaved else {
-                // The compensating rollback runs for a rejection too: an
-                // earlier hint in this batch may already have overwritten a
-                // working credential.
-                //
-                // Restoration deliberately does not go back through admission.
-                // It used to, and that made the rollback able to fail for the
-                // same reason the install did — a package that tightened a
-                // format since the value was stored, or a reuse scan that now
-                // sees it on a sibling connector — leaving this call reporting
-                // a failed install while the connector kept the failed
-                // install's credential and the user's working one was gone. A
-                // value already in the Keychain has been admitted once; the
-                // question at rollback is only whether the write lands.
-                var unrestored: [String] = []
-                for saved in savedThisCall {
-                    if let previousValue = saved.previousValue {
-                        let restored = connector.restorePreviouslyStoredCredential(
-                            key: saved.key,
-                            value: previousValue,
-                            allowUserInteraction: allowCredentialUserInteraction
-                        )
-                        if !restored { unrestored.append(saved.key) }
-                    } else {
-                        connector.removeCredential(forKey: saved.key)
-                    }
-                }
-                // Reported ahead of the failure that caused it. Both are true,
-                // but only one of them says a credential that was working
-                // before this install is not there any more, and no amount of
-                // retrying the install will bring it back.
-                if !unrestored.isEmpty {
-                    throw InstallationError.credentialRestoreFailed(
-                        packageID: packageID, keys: unrestored.sorted())
-                }
                 if let verdict = outcome.rejection {
-                    throw InstallationError.credentialRejected(
-                        packageID: packageID, key: hint.key, verdict: verdict)
+                    throw InstallationError.credentialRejected(packageID: packageID, key: hint.key, verdict: verdict)
                 }
                 throw InstallationError.credentialSaveFailed(packageID: packageID, key: hint.key)
             }
-            savedThisCall.append((key: hint.key, previousValue: previousValue))
         }
     }
 
@@ -747,19 +891,41 @@ struct CapabilityInstaller {
         extraConfigKeys: [String],
         configInputs: [String: String]
     ) -> [String] {
-        var keys = hints.map(\.key)
+        var keys = hints.filter { !$0.isAccountStructure }.map(\.key)
         for key in extraConfigKeys where configInputs[key] != nil && !keys.contains(key) {
             keys.append(key)
         }
         return keys
     }
 
+    /// The fields a connector declares as its account's structure
+    /// (`account.baseURL`, `account.alias`), from one component's inputs: the
+    /// endpoint must be one credentials can be sent to
+    /// (`PluginConnectorFieldTrust.endpointProblem`), else the setup is
+    /// refused and says why.
+    struct AccountStructure {
+        let baseURL: String?
+        let alias: String?
+
+        init(_ pluginConnector: PluginConnector, inputs: [String: String]) throws {
+            func value(_ field: PluginConnector.ConfigHint?) -> String? {
+                let trimmed = field.flatMap { inputs[$0.key] }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            baseURL = value(pluginConnector.accountBaseURLField)
+            alias = value(pluginConnector.accountAliasField)
+            if let baseURL, let problem = PluginConnectorFieldTrust.endpointProblem(baseURL) {
+                throw InstallationError.blocked(["\(pluginConnector.name): \(problem)"])
+            }
+        }
+    }
+
     /// The setup inputs that change a component's bound account. A setup
-    /// sheet submits every field it shows, prefilled, so a value equal to
-    /// what the account has, or to the definition's default where the
-    /// account has its own, is no edit; a setting the inputs don't name, or
-    /// leave empty, keeps the account's value (`accountConfig`). Without a
-    /// bound account every input is the new account's.
+    /// sheet's component-scoped fields start from the bound account. A
+    /// different value is an edit, including an explicit reset to a default.
+    /// Legacy shared/onboarding inputs still submit untouched definition
+    /// defaults, so those preserve a bound account's own value. Missing or
+    /// empty fields keep the account's value (`accountConfig`).
     struct AccountSetupEdits {
         /// The settings and URL the person changed.
         let config: [String: String]
@@ -767,7 +933,8 @@ struct CapabilityInstaller {
         /// The account's settings with the changes applied.
         let accountConfig: [String: String]
 
-        init(_ pluginConnector: PluginConnector, bound: Connector?, configInputs: [String: String], baseURLOverride: String?) {
+        init(_ pluginConnector: PluginConnector, bound: Connector?, configInputs: [String: String], baseURLOverride: String?,
+             explicitConfigKeys: Set<String> = [], explicitEndpoint: Bool = false) {
             guard let bound else {
                 config = configInputs
                 baseURL = baseURLOverride
@@ -780,11 +947,12 @@ struct CapabilityInstaller {
             config = configInputs.filter { key, value in
                 let value = trimmed(value)
                 let existing = trimmed(current[key])
-                return !value.isEmpty && value != existing && !(value == defaultURL && !existing.isEmpty)
+                return !value.isEmpty && value != existing
+                    && !(value == defaultURL && !existing.isEmpty && !explicitConfigKeys.contains(key))
             }
             let url = trimmed(baseURLOverride)
             let boundURL = trimmed(bound.baseURL)
-            baseURL = url.isEmpty || url == boundURL || (url == defaultURL && !boundURL.isEmpty) ? nil : url
+            baseURL = url.isEmpty || url == boundURL || (url == defaultURL && !boundURL.isEmpty && !explicitEndpoint) ? nil : url
             accountConfig = current.merging(config) { _, edited in edited }
         }
     }
@@ -809,65 +977,29 @@ struct CapabilityInstaller {
         }
     }
 
-    private func upsertWorkspaceTemplate(
-        _ pluginTemplate: PluginTemplate,
-        package: PluginPackage,
-        workspace: Workspace,
-        modelContext: ModelContext
-    ) -> TaskTemplate {
-        // The row stamped with this component is the plugin's template (the
-        // migration keeps the stamp while the plugin is missing, so it is
-        // the component's mapping when the plugin is back); so is one this
-        // plugin stamped before components were recorded, by name. A row
-        // the person authored is never taken over by its name: the plugin
-        // gets its own, stamped, beside it.
-        let componentID = CapabilityResourceOrigin.componentID(for: pluginTemplate)
-        let template = workspace.templates.first {
-            $0.originPackageID == package.id && $0.originComponentID == componentID
-        } ?? workspace.templates.first {
-            $0.originPackageID == package.id && ($0.originComponentID ?? "").isEmpty && $0.name == pluginTemplate.name
-        } ?? TaskTemplate(
-            name: pluginTemplate.name,
-            mainGoal: pluginTemplate.mainGoal,
-            workspace: workspace,
-            icon: pluginTemplate.icon,
-            templateDescription: pluginTemplate.description
-        )
-        if template.modelContext == nil {
-            modelContext.insert(template)
-        }
-        template.icon = pluginTemplate.icon
-        template.templateDescription = pluginTemplate.description
-        template.mainGoal = pluginTemplate.mainGoal
-        template.beforeGoal = pluginTemplate.beforeGoal
-        template.afterGoal = pluginTemplate.afterGoal
-        template.mainBudget = pluginTemplate.mainBudget
-        template.beforeBudget = pluginTemplate.beforeBudget
-        template.afterBudget = pluginTemplate.afterBudget
-        template.variablesJSON = pluginTemplate.variablesJSON
-        template.passContextToMain = pluginTemplate.passContextToMain
-        template.passContextToAfter = pluginTemplate.passContextToAfter
-        CapabilityResourceOrigin.stamp(template, package: package, componentID: componentID)
-        template.updatedAt = Date()
-        return template
-    }
-
-    /// A workspace row this plugin's component created itself. A row the
-    /// person authored is never taken over just because its name and service
-    /// match: Add would overwrite its URL, keys and skill attachment, and a
-    /// Remove could not put them back. Only the activation's own binding
-    /// (`existing`) or a row this component stamped is reused.
+    /// A workspace row this plugin's component created itself: one stamped
+    /// by this plugin and stamped with or bound to this component (or one it
+    /// `replaces`). A row the person authored is never taken over just
+    /// because its name and service match: Add would overwrite its URL, keys
+    /// and skill attachment, and a Remove could not put them back. A row of
+    /// another component (two same-named connectors with distinct IDs) is
+    /// that component's account, and Add makes this one its own. The
+    /// activation's own binding comes in as `existing`.
     private func existingWorkspaceConnector(
         for pluginConnector: PluginConnector,
         package: PluginPackage,
         workspace: Workspace
     ) -> Connector? {
-        let componentID = CapabilityResourceOrigin.componentID(for: pluginConnector)
-        return workspace.connectors.first {
-            $0.name == pluginConnector.name
-                && $0.serviceType == pluginConnector.serviceType
-                && CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
-                && $0.originComponentID == componentID
+        let identities = Set([CapabilityResourceOrigin.componentID(for: pluginConnector)]
+            + CapabilityResourceOrigin.replacedComponentIDs(for: pluginConnector))
+        return workspace.connectors.first { candidate in
+            guard candidate.name == pluginConnector.name,
+                  candidate.serviceType == pluginConnector.serviceType,
+                  CapabilityResourceOrigin.isOwnedBy(candidate, packageID: package.id)
+            else { return false }
+            let stamp = candidate.originComponentID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let served = Set(candidate.accountBindings.filter { !$0.isDeleted }.map(\.componentID) + (stamp.isEmpty ? [] : [stamp]))
+            return !served.isDisjoint(with: identities)
         }
     }
 
@@ -932,11 +1064,9 @@ struct CapabilityInstaller {
         baseURLOverrides: [String: String]
     ) -> [String] {
         package.connectors.compactMap { connector in
-            let baseURL = baseURLOverrides[connector.name] ?? connector.baseURL
-            guard let violation = ConnectorSecurityPolicy.credentialTransportViolation(
-                baseURL: baseURL,
-                authMethod: connector.authMethod,
-                credentialKeys: connector.credentialHints.map(\.key)
+            let baseURL = PluginSetupInputs.baseURL(in: baseURLOverrides, for: connector) ?? connector.baseURL
+            guard let violation = PluginConnectorFieldTrust.credentialTransportViolation(
+                of: connector, in: package, baseURL: baseURL
             ) else {
                 return nil
             }

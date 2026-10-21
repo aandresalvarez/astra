@@ -1479,19 +1479,6 @@ final class TaskLifecycleCoordinator {
         return String(collapsed.prefix(240)) + "..."
     }
 
-    // MARK: - Migration
-
-    func migrateConnectorCredentials(workspaces: [Workspace], globalConnectors: [Connector] = []) {
-        StartupCredentialMigrationService.migrateConnectorCredentials(
-            workspaces: workspaces,
-            globalConnectors: globalConnectors
-        )
-    }
-
-    func migrateSkillSecrets(skills: [Skill]) {
-        StartupCredentialMigrationService.migrateSkillSecrets(skills: skills)
-    }
-
     // MARK: - Seeding
 
     func seedSkills(for workspace: Workspace) {

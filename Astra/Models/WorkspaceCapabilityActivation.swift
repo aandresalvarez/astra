@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 
@@ -48,13 +49,6 @@ public enum WorkspaceCapabilityActivation {
             ids.append(id)
         }
         return ids
-    }
-
-    /// Carries the V19 enablement a migration hasn't moved yet into a launch
-    /// copy, so the run sees the plugins `enabledPluginIDs(of:)` does.
-    public static func copyPendingLegacyEnablement(from source: Workspace, to target: Workspace) {
-        guard target.legacyEnabledCapabilityIDs != source.legacyEnabledCapabilityIDs else { return }
-        target.legacyEnabledCapabilityIDs = source.legacyEnabledCapabilityIDs
     }
 
     /// The workspace's live activations in a stable order (creation, then ID).
@@ -134,7 +128,8 @@ public enum WorkspaceCapabilityActivation {
         return result
     }
 
-    /// Records the version and digest a workspace accepted for a plugin.
+    /// Records the version and digest a workspace accepted for a plugin; an
+    /// accepted definition is no longer awaited.
     public static func recordAccepted(
         pluginID: String,
         version: String,
@@ -144,7 +139,18 @@ public enum WorkspaceCapabilityActivation {
         updateActivation(for: pluginID, in: workspace) { activation in
             if activation.recordedVersion != version { activation.recordedVersion = version }
             if activation.recordedDigest != digest { activation.recordedDigest = digest }
+            if activation.awaitingUpdate { activation.awaitingUpdate = false }
         }
+    }
+
+    /// Records (or clears) that an automatic reconcile held the activation
+    /// back from its library definition. Returns whether it changed.
+    @discardableResult
+    public static func setAwaitingUpdate(_ awaiting: Bool, on activation: PluginActivation) -> Bool {
+        guard activation.awaitingUpdate != awaiting else { return false }
+        activation.awaitingUpdate = awaiting
+        touch(activation)
+        return true
     }
 
     /// Sets one non-secret setting (`PluginActivation.settingKey`); nil
@@ -191,6 +197,55 @@ public enum WorkspaceCapabilityActivation {
         guard activation.namespaceSeed != seed else { return }
         activation.namespaceSeed = seed
         touch(activation)
+    }
+
+    public static func setCredentialNamespaceSeed(_ seed: String, on activation: PluginActivation) {
+        guard activation.credentialNamespaceSeed != seed else { return }
+        activation.credentialNamespaceSeed = seed
+        touch(activation)
+    }
+
+    /// Records each plugin template row's content digest (by component) as a
+    /// sync wrote it.
+    public static func setTemplateDigests(_ digests: [String: String], on activation: PluginActivation) {
+        setTemplateDigests(entries: digests.sorted { $0.key < $1.key }.map { "\($0.key)#\($0.value)" }, on: activation)
+    }
+
+    /// Restores recorded `componentID#digest` entries as they were stored.
+    public static func setTemplateDigests(entries: [String], on activation: PluginActivation) {
+        guard activation.templateDigests != entries else { return }
+        activation.templateDigests = entries
+        touch(activation)
+    }
+
+    /// A digest of everything the person can edit on a plugin's template
+    /// row: what a sync writes, and what only they set (model overrides,
+    /// hooks, default skills), so an edit to either keeps the row theirs.
+    public static func templateContentDigest(of row: TaskTemplate) -> String {
+        let fields: [String] = [
+            row.name, row.icon, row.templateDescription, row.beforeGoal, row.mainGoal, row.afterGoal,
+            "\(row.beforeBudget)", "\(row.mainBudget)", "\(row.afterBudget)",
+            row.variablesJSON, "\(row.passContextToMain)", "\(row.passContextToAfter)",
+            row.beforeModel, row.mainModel, row.afterModel, row.hooksJSON
+        ] + ["skills"] + row.defaultSkillIDs
+        let data = (try? JSONEncoder().encode(fields)) ?? Data()
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Rewrites a template row's default skills where ASTRA, not the
+    /// person, moves a skill (a rename, a release, a migration, a validated
+    /// import's fresh IDs). A plugin's row that was unedited stays unedited:
+    /// the digest its activation records follows the rewrite.
+    public static func rewriteDefaultSkills(of row: TaskTemplate, in workspace: Workspace?, _ rewrite: ([String]) -> [String]) {
+        let rewritten = rewrite(row.defaultSkillIDs)
+        guard rewritten != row.defaultSkillIDs else { return }
+        let before = "\(row.originComponentID ?? "")#\(templateContentDigest(of: row))"
+        row.defaultSkillIDs = rewritten
+        guard let workspace, let packageID = row.originPackageID, let componentID = row.originComponentID,
+              let activation = activation(for: packageID, in: workspace),
+              activation.templateDigests.contains(before) else { return }
+        let after = "\(componentID)#\(templateContentDigest(of: row))"
+        setTemplateDigests(entries: activation.templateDigests.map { $0 == before ? after : $0 }, on: activation)
     }
 
     /// Records the components of the definition the activation was
@@ -408,6 +463,105 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
+    /// Moves everything an activation keeps for component `old` (settings,
+    /// recorded secret keys, account bindings, an override) to component
+    /// `new`, for a rename an Update declares. What `new` already has wins:
+    /// its own setting keeps its value, an account bound to both stays bound
+    /// once, and its own override stays.
+    public static func moveComponentState(from old: String, to new: String, on activation: PluginActivation) {
+        func renamed(_ key: String) -> String? {
+            guard PluginActivation.componentID(ofSettingKey: key) == old else { return nil }
+            return PluginActivation.settingKey(componentID: new, key: String(key.dropFirst(old.count + 1)))
+        }
+        var keys: [String] = []
+        var values: [String] = []
+        let destination = Set(activation.configKeys.filter { PluginActivation.componentID(ofSettingKey: $0) == new })
+        for (index, key) in activation.configKeys.enumerated() {
+            let value = index < activation.configValues.count ? activation.configValues[index] : ""
+            let target = renamed(key) ?? key
+            guard renamed(key) == nil || !destination.contains(target), !keys.contains(target) else { continue }
+            keys.append(target)
+            values.append(value)
+        }
+        if activation.configKeys != keys { activation.configKeys = keys }
+        if activation.configValues != values { activation.configValues = values }
+        var secrets: [String] = []
+        for key in activation.secretSettingKeys {
+            let target = renamed(key) ?? key
+            if !secrets.contains(target) { secrets.append(target) }
+        }
+        if activation.secretSettingKeys != secrets { activation.secretSettingKeys = secrets }
+        let newBindings = activation.bindings.filter { !$0.isDeleted && $0.componentID == new }
+        for binding in activation.bindings where !binding.isDeleted && binding.componentID == old {
+            if let id = binding.account?.id, let kept = newBindings.first(where: { $0.account?.id == id }) {
+                // The account is bound to `new` already; it keeps the
+                // default, the age and the name (`alias`) it had through `old`.
+                if binding.isDefault { kept.isDefault = true }
+                if binding.createdAt < kept.createdAt { kept.createdAt = binding.createdAt }
+                if kept.alias.isEmpty, !binding.alias.isEmpty { kept.alias = binding.alias }
+                activation.bindings.removeAll { $0 === binding }
+                binding.modelContext?.delete(binding)
+            } else {
+                binding.componentID = new
+            }
+        }
+        if activation.overriddenComponentIDs.contains(old) {
+            let row = activation.overridingRowID(forComponent: old)
+            setOverridden(false, componentID: old, on: activation)
+            if !activation.overriddenComponentIDs.contains(new) {
+                setOverridden(true, componentID: new, rowID: row, on: activation)
+            }
+        }
+        touch(activation)
+    }
+
+    /// Releases everything an activation keeps for a component its plugin
+    /// no longer declares: settings, recorded secret keys, account bindings
+    /// (the accounts stay) and an override (the authored row stays).
+    public static func dropComponentState(_ componentID: String, on activation: PluginActivation) {
+        dropSettings(on: activation) { PluginActivation.componentID(ofSettingKey: $0) == componentID }
+        // Through `unbind`, so the workspace's default for the service moves
+        // to a remaining account when the dropped binding held it.
+        for binding in activation.bindings where !binding.isDeleted && binding.componentID == componentID {
+            if let account = binding.account {
+                unbind(account, from: activation, componentID: componentID)
+            } else {
+                activation.bindings.removeAll { $0 === binding }
+                binding.modelContext?.delete(binding)
+            }
+        }
+        setOverridden(false, componentID: componentID, on: activation)
+        touch(activation)
+    }
+
+    /// Drops the settings (and recorded secret keys) of `componentID` whose
+    /// keys its definition no longer declares.
+    public static func dropSettings(
+        of componentID: String,
+        notIn declared: Set<String>,
+        on activation: PluginActivation
+    ) {
+        let before = (activation.configKeys, activation.secretSettingKeys)
+        dropSettings(on: activation) { key in
+            PluginActivation.componentID(ofSettingKey: key) == componentID
+                && !declared.contains(String(key.dropFirst(componentID.count + 1)))
+        }
+        if before != (activation.configKeys, activation.secretSettingKeys) { touch(activation) }
+    }
+
+    private static func dropSettings(on activation: PluginActivation, where shouldDrop: (String) -> Bool) {
+        var keys: [String] = []
+        var values: [String] = []
+        for (index, key) in activation.configKeys.enumerated() where !shouldDrop(key) {
+            keys.append(key)
+            values.append(index < activation.configValues.count ? activation.configValues[index] : "")
+        }
+        if activation.configKeys != keys { activation.configKeys = keys }
+        if activation.configValues != values { activation.configValues = values }
+        let secrets = activation.secretSettingKeys.filter { !shouldDrop($0) }
+        if activation.secretSettingKeys != secrets { activation.secretSettingKeys = secrets }
+    }
+
     /// The enablement state, every activation's full record, what Remove
     /// kept of removed ones and the workspace's `updatedAt`, for undoing
     /// in-memory changes after a failed save.
@@ -415,6 +569,7 @@ public enum WorkspaceCapabilityActivation {
         public let state: WorkspaceCapabilityActivationState
         public let activations: [PluginActivationRecord]
         public let retired: [RetiredPluginActivation]
+        public let pendingLegacy: PendingLegacyState
         public let updatedAt: Date
     }
 
@@ -423,6 +578,7 @@ public enum WorkspaceCapabilityActivation {
             state: state(of: workspace),
             activations: activations(of: workspace).map(PluginActivationRecord.init),
             retired: retiredActivations(of: workspace),
+            pendingLegacy: pendingLegacyState(of: workspace),
             updatedAt: workspace.updatedAt
         )
     }
@@ -448,7 +604,8 @@ public enum WorkspaceCapabilityActivation {
             record.restore(onto: activation)
         }
         setRetired(snapshot.retired, on: workspace)
-        workspace.updatedAt = snapshot.updatedAt
+        restorePendingLegacy(snapshot.pendingLegacy, to: workspace)
+        if workspace.updatedAt != snapshot.updatedAt { workspace.updatedAt = snapshot.updatedAt }
     }
 
     /// Copies every activation of `source` onto `target`, a never-inserted
@@ -465,6 +622,14 @@ public enum WorkspaceCapabilityActivation {
 
     /// Copies `records` (activations `source` had when a request was
     /// submitted, or has now) onto `target`, as `copyActivations(from:)` does.
+    ///
+    /// `definitionsFrozen` says the request also retained the plugin's
+    /// definition. Acceptance, settings, namespaces and bindings always come
+    /// from the same record. Without that definition, projection compares the
+    /// record with the current library and holds an incompatible request; a
+    /// live Update must never stamp new acceptance onto old settings. An
+    /// explicit live hold also applies to legacy requests without definitions.
+    ///
     /// An override whose row's contents the request froze (`frozenRowIDs`)
     /// is kept even when the store no longer has the row.
     public static func copyActivations(
@@ -472,9 +637,11 @@ public enum WorkspaceCapabilityActivation {
         of source: Workspace,
         to target: Workspace,
         accountsByID: [UUID: Connector],
+        definitionsFrozen: Bool = false,
         frozenRowIDs: Set<UUID> = []
     ) {
         for record in records {
+            let liveHold = !definitionsFrozen && activations(of: source).contains { $0.id == record.id && $0.awaitingUpdate }
             let activation = PluginActivation(
                 id: record.id,
                 pluginID: record.pluginID,
@@ -495,7 +662,10 @@ public enum WorkspaceCapabilityActivation {
             activation.overridingRowIDs = live.map(\.rowID)
             activation.secretSettingKeys = record.secretSettingKeys
             activation.knownComponentIDs = record.knownComponentIDs
+            activation.templateDigests = record.templateDigests
+            activation.awaitingUpdate = record.awaitingUpdate || liveHold
             activation.namespaceSeed = record.namespaceSeed
+            activation.credentialNamespaceSeed = record.credentialNamespaceSeed
             activation.revision = record.revision
             activation.updatedAt = record.updatedAt
             activation.workspace = target
@@ -762,26 +932,68 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
     public let overridingRowIDs: [String]
     public let secretSettingKeys: [String]
     public let knownComponentIDs: [String]
+    public let templateDigests: [String]
+    public let awaitingUpdate: Bool
     public let namespaceSeed: String
+    public let credentialNamespaceSeed: String
     public let revision: Int
     public let createdAt: Date
     public let updatedAt: Date
     public let bindings: [Binding]
 
+    /// A field added after records were first frozen into queued requests
+    /// decodes as empty when absent, so a request an earlier build queued
+    /// still launches with its snapshot.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        workspaceID = try container.decodeIfPresent(UUID.self, forKey: .workspaceID)
+        pluginID = try container.decode(String.self, forKey: .pluginID)
+        isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+        recordedVersion = try container.decode(String.self, forKey: .recordedVersion)
+        recordedDigest = try container.decode(String.self, forKey: .recordedDigest)
+        configKeys = try container.decode([String].self, forKey: .configKeys)
+        configValues = try container.decode([String].self, forKey: .configValues)
+        overriddenComponentIDs = try container.decode([String].self, forKey: .overriddenComponentIDs)
+        overridingRowIDs = try container.decode([String].self, forKey: .overridingRowIDs)
+        secretSettingKeys = try container.decodeIfPresent([String].self, forKey: .secretSettingKeys) ?? []
+        knownComponentIDs = try container.decodeIfPresent([String].self, forKey: .knownComponentIDs) ?? []
+        templateDigests = try container.decodeIfPresent([String].self, forKey: .templateDigests) ?? []
+        awaitingUpdate = try container.decodeIfPresent(Bool.self, forKey: .awaitingUpdate) ?? false
+        namespaceSeed = try container.decodeIfPresent(String.self, forKey: .namespaceSeed) ?? ""
+        credentialNamespaceSeed = try container.decodeIfPresent(String.self, forKey: .credentialNamespaceSeed) ?? ""
+        revision = try container.decode(Int.self, forKey: .revision)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        bindings = try container.decode([Binding].self, forKey: .bindings)
+    }
+
     public init(_ activation: PluginActivation) {
+        self.init(activation, configuration: (activation.configKeys, activation.configValues))
+    }
+
+    /// A queued request carries credential references, never legacy plaintext.
+    public static func forLaunch(_ activation: PluginActivation) -> Self {
+        Self(activation, configuration: PluginLaunchConfiguration.activation(activation))
+    }
+
+    private init(_ activation: PluginActivation, configuration: (keys: [String], values: [String])) {
         id = activation.id
         workspaceID = activation.launchWorkspaceID ?? activation.workspace?.id
         pluginID = activation.pluginID
         isEnabled = activation.isEnabled
         recordedVersion = activation.recordedVersion
         recordedDigest = activation.recordedDigest
-        configKeys = activation.configKeys
-        configValues = activation.configValues
+        configKeys = configuration.keys
+        configValues = configuration.values
         overriddenComponentIDs = activation.overriddenComponentIDs
         overridingRowIDs = activation.overridingRowIDs
         secretSettingKeys = activation.secretSettingKeys
         knownComponentIDs = activation.knownComponentIDs
+        templateDigests = activation.templateDigests
+        awaitingUpdate = activation.awaitingUpdate
         namespaceSeed = activation.namespaceSeed
+        credentialNamespaceSeed = activation.credentialNamespaceSeed
         revision = activation.revision
         createdAt = activation.createdAt
         updatedAt = activation.updatedAt
@@ -820,10 +1032,15 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
         if activation.knownComponentIDs != knownComponentIDs {
             activation.knownComponentIDs = knownComponentIDs
         }
+        if activation.templateDigests != templateDigests { activation.templateDigests = templateDigests }
+        if activation.awaitingUpdate != awaitingUpdate { activation.awaitingUpdate = awaitingUpdate }
         if activation.namespaceSeed != namespaceSeed { activation.namespaceSeed = namespaceSeed }
+        if activation.credentialNamespaceSeed != credentialNamespaceSeed { activation.credentialNamespaceSeed = credentialNamespaceSeed }
         if activation.createdAt != createdAt { activation.createdAt = createdAt }
         let current = activation.bindings.filter { !$0.isDeleted }
-        if current.map(Self.bindingKey) != bindings.map(Self.bindingKey) {
+        // SwiftData's to-many order is not binding identity. A no-op restore
+        // must retain the existing rows instead of recreating equal links.
+        if current.map(Self.bindingKey).sorted() != bindings.map(Self.bindingKey).sorted() {
             let accountsByID = Dictionary(
                 current.compactMap { binding in binding.account.map { ($0.id, $0) } },
                 uniquingKeysWith: { first, _ in first }
@@ -877,6 +1094,7 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
 /// column, so it is never captured.)
 public struct PluginAccountRecord: Codable, Equatable, Sendable {
     public let id: UUID
+    public let credentialNamespaceID: UUID?
     public let name: String
     public let serviceType: String
     public let icon: String
@@ -898,7 +1116,16 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
     public let updatedAt: Date
 
     public init(_ account: Connector) {
+        self.init(account, configuration: (account.configKeys, account.configValues))
+    }
+
+    public static func forLaunch(_ account: Connector) -> Self {
+        Self(account, configuration: PluginLaunchConfiguration.account(account))
+    }
+
+    private init(_ account: Connector, configuration: (keys: [String], values: [String])) {
         id = account.id
+        credentialNamespaceID = account.credentialNamespaceID
         name = account.name
         serviceType = account.serviceType
         icon = account.icon
@@ -906,8 +1133,8 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
         baseURL = account.baseURL
         authMethod = account.authMethod
         credentialKeys = account.credentialKeys
-        configKeys = account.configKeys
-        configValues = account.configValues
+        configKeys = configuration.keys
+        configValues = configuration.values
         isGlobal = account.isGlobal
         testHTTPMethod = account.testHTTPMethod
         notes = account.notes
@@ -929,12 +1156,13 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
             .filter { !$0.isDeleted }
             .compactMap(\.account)
             .filter { !$0.isDeleted && seen.insert($0.id).inserted }
-            .map(PluginAccountRecord.init)
+            .map(PluginAccountRecord.forLaunch)
     }
 
     /// Writes these contents onto `account`, a launch copy (never a stored
     /// row): its credential values are left as they are.
     public func apply(to account: Connector) {
+        account.credentialNamespaceID = credentialNamespaceID
         account.name = name
         account.serviceType = serviceType
         account.icon = icon

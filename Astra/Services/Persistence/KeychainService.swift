@@ -10,7 +10,8 @@ extension ConnectorSecretFacts {
             serviceType: connector.serviceType,
             baseURL: connector.baseURL,
             originPackageID: connector.originPackageID,
-            originComponentID: connector.originComponentID
+            originComponentID: connector.originComponentID,
+            credentialNamespaceID: connector.credentialNamespaceID
         )
     }
 }
@@ -42,13 +43,7 @@ public enum KeychainService {
     /// `ModelSecretPersistence.swift`) calls, since it no longer has a live
     /// `Connector` (Track A2.5).
     private static func connectorServices(facts: ConnectorSecretFacts) -> [String] {
-        KeychainSecretStore.connectorEntityIDs(
-            id: facts.id,
-            serviceType: facts.serviceType,
-            baseURL: facts.baseURL,
-            originPackageID: facts.originPackageID,
-            originComponentID: facts.originComponentID
-        )
+        KeychainSecretStore.connectorEntityIDs(for: facts)
     }
 
     private static func skillService(for skillID: UUID) -> String {

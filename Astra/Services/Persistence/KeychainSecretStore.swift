@@ -9,6 +9,10 @@ import ASTRAModels
 public struct KeychainSecretStore: SecretStore {
     public init() {}
 
+    public func read(key: String, entityID: String) -> SecretReadOutcome {
+        AstraSecureKeychainStore.read(service: entityID, account: key)
+    }
+
     public func load(key: String, entityID: String) -> String? {
         AstraSecureKeychainStore.load(service: entityID, account: key)
     }
@@ -46,7 +50,8 @@ public struct KeychainSecretStore: SecretStore {
             serviceType: connector.serviceType,
             baseURL: connector.baseURL,
             originPackageID: connector.originPackageID,
-            originComponentID: connector.originComponentID
+            originComponentID: connector.originComponentID,
+            credentialNamespaceID: connector.credentialNamespaceID
         )
     }
 
@@ -58,8 +63,10 @@ public struct KeychainSecretStore: SecretStore {
         serviceType: String,
         baseURL: String,
         originPackageID: String?,
-        originComponentID: String?
+        originComponentID: String?,
+        credentialNamespaceID: UUID? = nil
     ) -> [String] {
+        if let credentialNamespaceID { return [connectorEntityID(for: credentialNamespaceID)] }
         var entityIDs = [connectorEntityID(for: id)]
         if let stableEntityID = stableConnectorEntityID(
             serviceType: serviceType,
@@ -70,6 +77,12 @@ public struct KeychainSecretStore: SecretStore {
             entityIDs.append(stableEntityID)
         }
         return unique(entityIDs)
+    }
+
+    public static func connectorEntityIDs(for facts: ConnectorSecretFacts) -> [String] {
+        connectorEntityIDs(id: facts.id, serviceType: facts.serviceType, baseURL: facts.baseURL,
+            originPackageID: facts.originPackageID, originComponentID: facts.originComponentID,
+            credentialNamespaceID: facts.credentialNamespaceID)
     }
 
     public static func stableConnectorEntityID(for connector: Connector) -> String? {

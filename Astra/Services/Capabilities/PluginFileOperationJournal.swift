@@ -8,7 +8,7 @@ import ASTRAPersistence
 /// directions until the domain receipt and every mirror confirm completion.
 struct PluginFileOperationJournal {
     enum Failure: Error { case pendingOperation, invalidManifest, changedRoot, missingJournal }
-    enum Root: String, Codable, CaseIterable { case library, staging, approvals }
+    enum Root: String, Codable, CaseIterable { case library, staging, approvals, quarantine }
     struct Change {
         let root: Root
         let name: String
@@ -28,6 +28,7 @@ struct PluginFileOperationJournal {
         let pluginIDs: [String]
         let roots: [String: Pin]
         let entries: [Entry]
+        let linkedMetadataDigest: String?
     }
     struct Prepared {
         let manifest: Manifest
@@ -46,13 +47,14 @@ struct PluginFileOperationJournal {
                  .staging: library.directory.deletingLastPathComponent()
                     .appendingPathComponent(library.directory.lastPathComponent + "Staged", isDirectory: true)
                     .standardizedFileURL.resolvingSymlinksInPath(),
-                 .approvals: approvals.directory.standardizedFileURL.resolvingSymlinksInPath()]
+                 .approvals: approvals.directory.standardizedFileURL.resolvingSymlinksInPath(),
+                 .quarantine: library.quarantineDirectory.standardizedFileURL.resolvingSymlinksInPath()]
         directory = library.directory.deletingLastPathComponent()
             .appendingPathComponent(library.directory.lastPathComponent + "Operations", isDirectory: true)
             .standardizedFileURL.resolvingSymlinksInPath()
     }
 
-    func prepare(id: UUID = UUID(), storeIdentity: String, pluginIDs: [String], changes: [Change]) throws -> Prepared {
+    func prepare(id: UUID = UUID(), storeIdentity: String, pluginIDs: [String], changes: [Change], linkedMetadataDigest: String? = nil) throws -> Prepared {
         try manager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         guard try pendingIDs().isEmpty else { throw Failure.pendingOperation }
         var pins: [String: Pin] = [:]
@@ -75,8 +77,8 @@ struct PluginFileOperationJournal {
             guard bytes <= 64 * 1_024 * 1_024 else { throw Failure.invalidManifest }
             return Entry(root: change.root, name: change.name, before: before, after: after)
         }
-        let manifest = Manifest(version: 1, id: id, storeIdentity: storeIdentity,
-            pluginIDs: Array(Set(pluginIDs)).sorted(), roots: pins, entries: entries)
+        let manifest = Manifest(version: linkedMetadataDigest == nil ? 1 : 2, id: id, storeIdentity: storeIdentity,
+            pluginIDs: Array(Set(pluginIDs)).sorted(), roots: pins, entries: entries, linkedMetadataDigest: linkedMetadataDigest)
         let data = try encode(manifest)
         guard data.count <= Self.maximumManifestBytes else { throw Failure.invalidManifest }
         try data.write(to: url(id), options: [.atomic])
@@ -99,7 +101,9 @@ struct PluginFileOperationJournal {
         let data = try handle.read(upToCount: Self.maximumManifestBytes + 1) ?? Data()
         guard data.count <= Self.maximumManifestBytes else { throw Failure.invalidManifest }
         let manifest = try JSONDecoder().decode(Manifest.self, from: data)
-        guard manifest.version == 1, manifest.id == id, !manifest.entries.isEmpty,
+        guard (manifest.version == 1 && manifest.linkedMetadataDigest == nil)
+                || (manifest.version == 2 && manifest.linkedMetadataDigest?.isEmpty == false) else { throw Failure.invalidManifest }
+        guard manifest.id == id, !manifest.entries.isEmpty,
               manifest.entries.count <= 32, !manifest.storeIdentity.isEmpty else { throw Failure.invalidManifest }
         var seen = Set<String>()
         for entry in manifest.entries {
@@ -116,6 +120,9 @@ struct PluginFileOperationJournal {
         let saved = try load(prepared.id)
         guard saved.digest == prepared.digest else { throw Failure.invalidManifest }
         try validateRoots(saved.manifest)
+        // Replay or rollback can replace assets even when a later mirror
+        // step fails and no completion notification is published yet.
+        defer { CapabilityApprovalDigest.invalidate() }
         for entry in saved.manifest.entries {
             try validateRoots(saved.manifest)
             let root = roots[entry.root]!

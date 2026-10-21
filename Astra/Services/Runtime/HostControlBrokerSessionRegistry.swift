@@ -248,10 +248,13 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             credentialExposurePolicy: .allowAllCredentials
         ).configuredCredentialLabels())
         let exposedLabels = narratedApprovedLabels.union(approvedLabels)
+        // The bindings' default rides along, so a call that names no account
+        // reaches the one the person made default instead of being refused.
         var environment = ConnectorRuntimeProjection(
             connectors: brokeredConnectors,
             secretStore: secretStore,
-            credentialExposurePolicy: .approvedLabels(exposedLabels)
+            credentialExposurePolicy: .approvedLabels(exposedLabels),
+            defaultConnectorIDs: capabilityScope.defaultConnectorIDs
         ).environmentVariables()
         let withheld = BrokeredCredentialWithholdingProjection.manifest(
             connectors: brokeredConnectors,

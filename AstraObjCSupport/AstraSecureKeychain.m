@@ -933,20 +933,31 @@ recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
                                 service:(NSString *)service
                            keychainPath:(NSString *)keychainPath
                        bootstrapService:(NSString *)bootstrapService {
+    OSStatus status = errSecNotAvailable;
+    NSString *value = [self secretForAccount:account service:service keychainPath:keychainPath
+                          bootstrapService:bootstrapService status:&status];
+    return value.length > 0 ? value : nil;
+}
+
++ (nullable NSString *)secretForAccount:(NSString *)account
+                                service:(NSString *)service
+                           keychainPath:(NSString *)keychainPath
+                       bootstrapService:(NSString *)bootstrapService
+                                 status:(OSStatus *)outStatus {
     @synchronized (self) {
+    if (outStatus != NULL) { *outStatus = errSecNotAvailable; }
     Boolean previousInteraction = true;
     [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
     @try {
     SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
     if (keychain == NULL) { return nil; }
-
     OSStatus status = errSecSuccess;
-    NSData *data = [self readSecretDataForAccount:account
-                                          service:service
-                                         keychain:keychain
-                                           status:&status];
-    if (data.length == 0) { return nil; }
-    return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    NSData *data = [self readSecretDataForAccount:account service:service keychain:keychain status:&status];
+    if (outStatus != NULL) { *outStatus = status; }
+    if (status != errSecSuccess) { return nil; }
+    NSString *value = data == nil ? nil : [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (value == nil && outStatus != NULL) { *outStatus = errSecDecode; }
+    return value;
     } @finally {
         [self restoreKeychainUserInteraction:previousInteraction];
     }

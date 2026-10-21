@@ -418,6 +418,7 @@ enum WorkspaceDeletionCleanupService {
     static func settle(
         _ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext,
         retained: [ConnectorKeychainCleanup] = [], retainedSkillIDs: Set<UUID> = [], movedMirrors: [String] = [],
+        extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil,
         identity: (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
         cleanConnectors: (([ConnectorKeychainCleanup], ConnectorCredentialCleanup.Ownership) -> Bool)? = nil,
         cleanSkill: ((SkillKeychainCleanup) -> Bool)? = nil
@@ -492,17 +493,19 @@ enum WorkspaceDeletionCleanupService {
         // Stored rows, and the namespaces live activations name: a workspace
         // imported over this one under its ID projects into the same ones.
         guard let liveProjected = PluginSecretCleanupOutbox.liveSkillIDs(modelContext: modelContext) else { return false }
-        let liveSkills = Set(skills.map(\.id)).union(liveProjected)
+        let liveSkills = Set(skills.map(\.secretNamespaceID)).union(liveProjected)
+        guard let mirrored = PluginCredentialMirrorReferences.capture(modelContext: modelContext,
+            extraMirrors: extraMirrors, excludingWorkspaceIDs: excludingWorkspaceIDs ?? [record.workspaceID]) else { return false }
         // Every credential is attempted; any that couldn't be cleared keeps
         // the record for an idempotent retry. A recreated connector can share
         // a stable endpoint or package namespace under a new ID, so
         // connector ownership is per namespace.
-        let ready = record.connectors.filter { !requests.holdsAccount($0) }
+        let ready = record.connectors.filter { !requests.holdsAccount($0) && !mirrored.holdsAccount($0) }
         let ownership = ConnectorCredentialCleanup.Ownership(connectors, retained: retained)
         let attempted = cleanConnectors.map { $0(ready, ownership) } ?? ConnectorCredentialCleanup.run(ready, ownership: ownership)
         var cleared = ready.count == record.connectors.count && attempted
         for skill in record.skills where !liveSkills.contains(skill.skillID) && !retainedSkillIDs.contains(skill.skillID) {
-            if requests.holdsSkill(skill.skillID) { cleared = false; continue }
+            if requests.holdsSkill(skill.skillID) || mirrored.holdsSkill(skill.skillID) { cleared = false; continue }
             cleared = (cleanSkill.map { $0(skill) } ?? skill.run()) && cleared
         }
         if !cleared {
@@ -564,7 +567,7 @@ enum WorkspaceDeletionCleanupService {
                     record, modelContext: ModelContext(modelContext.container),
                     retained: others.flatMap(\.connectors) + intentOwners,
                     retainedSkillIDs: Set(others.flatMap { $0.skills.map(\.skillID) }).union(mirrored.skillIDs),
-                    movedMirrors: movedMirrors
+                    movedMirrors: movedMirrors, extraMirrors: extraMirrors, excludingWorkspaceIDs: deleting
                 ) else { continue }
                 store.remove(record)
                 held = others

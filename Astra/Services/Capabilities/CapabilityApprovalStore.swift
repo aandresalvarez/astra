@@ -30,17 +30,32 @@ struct CapabilityApprovalRecord: Codable, Equatable, Identifiable, Sendable {
 }
 
 enum CapabilityApprovalDigest {
-    /// The last digest computed per package, reused while the package is
-    /// equal, for a render path's cache key (the rail). A changed icon
-    /// asset file alone isn't seen until the package is written again,
-    /// which every library replacement does.
-    private static let memo = OSAllocatedUnfairLock<[String: (package: PluginPackage, digest: String)]>(initialState: [:])
+    /// Presentation-only cache. Library writes, file replay and explicit
+    /// catalog refresh invalidate it; runtime admission still hashes directly.
+    private struct Memo {
+        var generation: UInt64 = 0
+        var entries: [String: (package: PluginPackage, digest: String)] = [:]
+    }
+    private static let memo = OSAllocatedUnfairLock(initialState: Memo())
+
+    static func invalidate() {
+        memo.withLock { state in
+            state.generation &+= 1
+            state.entries.removeAll()
+        }
+    }
 
     static func memoizedDigest(for package: PluginPackage) -> String? {
-        if let cached = memo.withLock({ $0[package.id] }), cached.package == package { return cached.digest }
+        let (cached, generation) = memo.withLock { ($0.entries[package.id], $0.generation) }
+        if let cached, cached.package == package { return cached.digest }
         guard let digest = try? digest(for: package) else { return nil }
-        memo.withLock { $0[package.id] = (package, digest) }
-        return digest
+        return memo.withLock { state -> String? in
+            // A hash begun before invalidation cannot repopulate the new
+            // cache with bytes read from the prior or interrupted image.
+            guard state.generation == generation else { return nil }
+            state.entries[package.id] = (package, digest)
+            return digest
+        }
     }
 
     static func digest(for package: PluginPackage) throws -> String {
@@ -96,10 +111,12 @@ enum CapabilityApprovalDigest {
 struct CapabilityApprovalStore {
     let directory: URL
     private let fileManager: FileManager
+    private let publishesChanges: Bool
 
-    init(directory: URL = Self.approvalsDirectory(), fileManager: FileManager = .default) {
+    init(directory: URL = Self.approvalsDirectory(), fileManager: FileManager = .default, publishesChanges: Bool = true) {
         self.directory = directory
         self.fileManager = fileManager
+        self.publishesChanges = publishesChanges
     }
 
     static func approvalsDirectory(
@@ -194,8 +211,41 @@ struct CapabilityApprovalStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(record)
         try data.write(to: recordURL(for: record), options: [.atomic])
-        NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil)
+        if publishesChanges { NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil) }
         return record
+    }
+
+    /// `save` for an approval a library write depends on, so it can go first:
+    /// an exit before that write leaves a record for a digest nobody
+    /// installed, which approves nothing. `revert` takes it back when the
+    /// write fails, restoring a record it replaced, and throws when it
+    /// can't: the approval is then still in force.
+    func saveBeforeDependentWrite(
+        package: PluginPackage,
+        status: CapabilityApprovalStatus,
+        approvedBy: String,
+        reviewNotes: String = "",
+        approvedAt: Date = Date()
+    ) throws -> (record: CapabilityApprovalRecord, revert: () throws -> Void) {
+        let digest = try CapabilityApprovalDigest.digest(for: package)
+        let url = recordURL(for: CapabilityApprovalRecord(
+            packageID: package.id, packageVersion: package.version, status: status, approvedBy: approvedBy,
+            approvedAt: approvedAt, reviewNotes: reviewNotes, sourceDigest: digest
+        ))
+        let previous = try? HostFileAccessBroker(fileManager: fileManager)
+            .readData(at: url, intent: .astraManagedStorage(root: directory))
+        let record = try save(
+            package: package, status: status, approvedBy: approvedBy, reviewNotes: reviewNotes, approvedAt: approvedAt
+        )
+        let fileManager = fileManager
+        return (record, {
+            defer { if publishesChanges { NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil) } }
+            if let previous {
+                try previous.write(to: url, options: [.atomic])
+            } else if fileManager.fileExists(atPath: url.path) {
+                try fileManager.removeItem(at: url)
+            }
+        })
     }
 
     func recordURL(for record: CapabilityApprovalRecord) -> URL {

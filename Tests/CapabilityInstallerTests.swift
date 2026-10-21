@@ -80,7 +80,10 @@ struct CapabilityInstallerTests {
     func installWritesLibraryAndRecordsActivation() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Capability Workspace", primaryPath: "/tmp/capability-workspace")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Capability Workspace", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -90,8 +93,7 @@ struct CapabilityInstallerTests {
         let result = try CapabilityInstaller(library: library).install(
             package,
             into: workspace,
-            modelContext: context,
-            configInputs: ["GCP_PROJECT": "astra-dev"]
+            modelContext: context
         )
 
         #expect(library.installedPackages().map(\.id) == [package.id])
@@ -104,13 +106,15 @@ struct CapabilityInstallerTests {
         #expect(workspace.installedVersion(of: package.id) == package.version)
 
         // The connector component's account is a workspace row bound to the
-        // activation; the configured value lives on it.
+        // activation. This plugin isn't a bundled one, so its setting is a
+        // credential field of the account (Keychain), not a plain setting.
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
         let connector = try #require(workspace.connectors.first)
         #expect(workspace.connectors.map(\.name) == ["Google Cloud"])
         #expect(activation.accounts(forComponent: "connector:google_cloud:google-cloud").map(\.id) == [connector.id])
         #expect(connector.skill == nil)
-        #expect(connector.config == ["GCP_PROJECT": "astra-dev"])
+        #expect(connector.config.isEmpty)
+        #expect(connector.credentialKeys == ["GCP_TOKEN", "GCP_PROJECT"])
         #expect(result.connectorIDs == [connector.id])
 
         let capabilities = WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages())
@@ -123,8 +127,8 @@ struct CapabilityInstallerTests {
         #expect(result.skillIDs == [skill.id])
         #expect(result.localToolIDs == [tool.id])
         #expect(tool.skill?.id == skill.id)
-        // The value went to the account, not the skill: the package has a
-        // connector, so the skill's own setting stays at its default.
+        // Nothing reached the skill: the package has a connector, so the
+        // skill's own setting stays at its default.
         #expect(skill.environmentVariables["GCP_PROJECT"] == "")
         #expect(activation.configKeys.isEmpty)
     }
@@ -133,10 +137,15 @@ struct CapabilityInstallerTests {
     func addAgainKeepsBoundAccountSetup() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Jira site", primaryPath: "/tmp/capability-add-again")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Jira site", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
+        workspace.primaryPath = root.appendingPathComponent("Workspace").path
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         let spec = jira.connectors[0]
         let installer = CapabilityInstaller(library: library)
@@ -149,10 +158,10 @@ struct CapabilityInstallerTests {
         account.configValues = ["CLIN", "https://clinic.atlassian.net"]
         try context.save()
 
-        // The setup sheet starts from the bound account.
+        // The setup sheet starts from the bound account, per component.
         let initial = CapabilitySetupPresentation.initialValues(for: jira, in: workspace)
-        #expect(initial.baseURLs[spec.name] == "https://clinic.atlassian.net")
-        #expect(initial.config["JIRA_PROJECTS"] == "CLIN")
+        #expect(initial.baseURLs[component] == "https://clinic.atlassian.net")
+        #expect(initial.config[PluginSetupInputs.key("JIRA_PROJECTS", component: component)] == "CLIN")
         // What it submitted with nothing edited before: every default.
         try installer.enable(
             jira, in: workspace, modelContext: context,
@@ -164,6 +173,29 @@ struct CapabilityInstallerTests {
         #expect(kept.baseURL == "https://clinic.atlassian.net")
         #expect(kept.config["JIRA_PROJECTS"] == "CLIN")
         #expect(kept.config["JIRA_BASE_URL"] == "https://clinic.atlassian.net")
+        // As R3's sheet submits them, keyed by component, untouched: the same.
+        try installer.enable(
+            jira, in: workspace, modelContext: context,
+            configInputs: [PluginSetupInputs.key("JIRA_PROJECTS", component: component): ""],
+            baseURLOverrides: [component: initial.baseURLs[component]!]
+        )
+        #expect(kept.baseURL == "https://clinic.atlassian.net" && kept.config["JIRA_PROJECTS"] == "CLIN")
+        // A settings edit with the bound URL left untouched keeps the URL.
+        try installer.enable(
+            jira, in: workspace, modelContext: context,
+            configInputs: [PluginSetupInputs.key("JIRA_PROJECTS", component: component): "CLIN, OPS"],
+            baseURLOverrides: [component: initial.baseURLs[component]!]
+        )
+        let editedSettings = try #require(activation.accounts(forComponent: component).first)
+        #expect(editedSettings.baseURL == "https://clinic.atlassian.net" && editedSettings.config["JIRA_PROJECTS"] == "CLIN, OPS")
+        editedSettings.configValues = editedSettings.configKeys.map { $0 == "JIRA_PROJECTS" ? "CLIN" : editedSettings.config[$0] ?? "" }
+        try context.save()
+        // And an Update keeps what the person entered.
+        var next = jira
+        next.version = "99.0.0"
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: [next], mode: .release, approvalRecords: [])
+        #expect(activation.recordedVersion == "99.0.0")
+        #expect(editedSettings.baseURL == "https://clinic.atlassian.net" && editedSettings.config["JIRA_PROJECTS"] == "CLIN")
 
         // An edit applies, and what it doesn't name stays.
         try installer.enable(
@@ -182,7 +214,10 @@ struct CapabilityInstallerTests {
     func addMatchesTemplatesByStampNotName() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Templates", primaryPath: "/tmp/capability-templates")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Templates", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -206,15 +241,22 @@ struct CapabilityInstallerTests {
         #expect(stamped.originComponentID == CapabilityResourceOrigin.componentID(for: spec))
         #expect(workspace.templates.count == 2)
 
-        // A row kept with its component's stamp (as while the plugin was
-        // missing) is the component's template when it is added again, even
-        // renamed: Add adopts it rather than make another.
+        // A stamped row is found by its component, never by name. One the
+        // person edited since it was written (here, renamed) is theirs
+        // (`PluginTemplateSync`): Add again keeps it, unstamped, and writes
+        // the plugin's template beside it; the authored row stays untouched.
         stamped.name = "Renamed by me"
         try context.save()
         try CapabilityInstaller(library: library).enable(package, in: workspace, modelContext: context)
-        #expect(workspace.templates.count == 2)
-        #expect(authored.mainGoal == "My own goal")
-        #expect(stamped.originComponentID == CapabilityResourceOrigin.componentID(for: spec))
+        #expect(workspace.templates.count == 3)
+        #expect(authored.mainGoal == "My own goal" && authored.originPackageID == nil)
+        #expect(stamped.name == "Renamed by me" && stamped.originPackageID == nil)
+        let rewritten = try #require(workspace.templates.first { $0.originPackageID == package.id })
+        #expect(rewritten.originComponentID == CapabilityResourceOrigin.componentID(for: spec))
+        // An unedited stamped row is the one Add again writes, not another.
+        try CapabilityInstaller(library: library).enable(package, in: workspace, modelContext: context)
+        #expect(workspace.templates.count == 3)
+        #expect(workspace.templates.filter { $0.originPackageID == package.id }.map(\.id) == [rewritten.id])
         withExtendedLifetime(container) {}
     }
 
@@ -222,7 +264,10 @@ struct CapabilityInstallerTests {
     func installRecordsOriginMetadataOnResources() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Origin", primaryPath: "/tmp/capability-origin")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Origin", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -280,7 +325,10 @@ struct CapabilityInstallerTests {
     func installStoresConfiguredSourceEnvValuesOnConnector() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Jira Config", primaryPath: "/tmp/jira-config")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Jira Config", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -317,12 +365,199 @@ struct CapabilityInstallerTests {
         #expect(resolver.resolvedEnvironmentVariables["JIRA_PROJECTS"] == nil)
     }
 
+    @Test("two same-named connectors of one service with distinct IDs each get their own account")
+    func sameNamedConnectorsGetSeparateAccounts() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Two Sites", primaryPath: workspaceFolder.path)
+        context.insert(workspace)
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = makeAnalystCapabilityPackage()
+        var second = package.connectors[0]
+        package.connectors[0].id = "gcp-prod"
+        second.id = "gcp-staging"
+        second.configHints = [.init(key: "GCP_REGION", hint: "Region", isList: false)]
+        package.connectors.append(second)
+        // A plain skill setting each account carries; the connectors' own
+        // settings are credentials (not a bundled plugin).
+        package.skills[0].environmentKeys.append("GCP_DATASET")
+        package.skills[0].environmentValues.append("")
+        let installer = CapabilityInstaller(library: library)
+        try installer.install(package, into: workspace, modelContext: context, configInputs: ["GCP_DATASET": "prod"])
+
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        let prodID = CapabilityResourceOrigin.componentID(for: package.connectors[0])
+        let stagingID = CapabilityResourceOrigin.componentID(for: second)
+        let prod = try #require(activation.accounts(forComponent: prodID).first)
+        let staging = try #require(activation.accounts(forComponent: stagingID).first)
+        #expect(workspace.connectors.count == 2 && prod.id != staging.id)
+        #expect(prod.originComponentID == prodID && staging.originComponentID == stagingID)
+        #expect(prod.credentialKeys == ["GCP_TOKEN", "GCP_PROJECT"] && staging.credentialKeys == ["GCP_TOKEN", "GCP_REGION"])
+        #expect(prod.config == ["GCP_DATASET": "prod"] && staging.config == ["GCP_DATASET": "prod"])
+
+        // Adding again with new settings keeps each component on its own row.
+        try installer.install(package, into: workspace, modelContext: context, configInputs: ["GCP_DATASET": "staging"])
+        #expect(workspace.connectors.count == 2)
+        #expect(activation.accounts(forComponent: prodID).map(\.id) == [prod.id])
+        #expect(activation.accounts(forComponent: stagingID).map(\.id) == [staging.id])
+        #expect(staging.credentialKeys == ["GCP_TOKEN", "GCP_REGION"] && staging.config == ["GCP_DATASET": "staging"])
+    }
+
+    /// The setup sheet keys each connector's fields and base URL by its
+    /// component ID; two same-named connectors keep their own values.
+    @Test("Setup keyed by component ID reaches only that component's account")
+    func componentKeyedSetupStaysWithItsConnector() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Two Jiras", primaryPath: workspaceFolder.path)
+        context.insert(workspace)
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let index = try #require(package.connectors.firstIndex { $0.configHints.contains { $0.key == "JIRA_PROJECTS" } })
+        var server = package.connectors[index]
+        server.id = "jira-server"
+        package.connectors.insert(server, at: index + 1)
+        let cloud = package.connectors[index]
+        #expect(cloud.name == server.name && cloud.setupComponentID != server.setupComponentID)
+        try CapabilityInstaller(library: library).install(
+            package, into: workspace, modelContext: context,
+            configInputs: [PluginSetupInputs.key("JIRA_PROJECTS", component: cloud.setupComponentID): "ENG"],
+            baseURLOverrides: [cloud.setupComponentID: "https://cloud.atlassian.net", server.setupComponentID: "https://jira.example.edu"]
+        )
+
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        let cloudAccount = try #require(activation.accounts(forComponent: cloud.setupComponentID).first)
+        let serverAccount = try #require(activation.accounts(forComponent: server.setupComponentID).first)
+        #expect(cloudAccount.id != serverAccount.id)
+        #expect(cloudAccount.baseURL == "https://cloud.atlassian.net" && serverAccount.baseURL == "https://jira.example.edu")
+        #expect(cloudAccount.configValue("JIRA_PROJECTS") == "ENG")
+        #expect(!serverAccount.configValues.contains("ENG"))
+    }
+
+    /// Two connectors of one plugin that declare the same fields, each with
+    /// its own account values in the source workspace: copying the setup
+    /// gives each component its own, never one value for both.
+    @Test("Copied setup keeps each same-key connector's own values")
+    func copiedSetupKeepsEachComponentsOwnValues() throws {
+        let container = try makeCapabilityInstallerContainer()
+        let context = container.mainContext
+        let sourceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: sourceFolder) }
+        let source = Workspace(name: "Source", primaryPath: sourceFolder.path)
+        let targetFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: targetFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: targetFolder) }
+        let target = Workspace(name: "Target", primaryPath: targetFolder.path)
+        context.insert(source)
+        context.insert(target)
+        let (library, root) = makeCapabilityInstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let index = try #require(package.connectors.firstIndex { $0.configHints.contains { $0.key == "JIRA_PROJECTS" } })
+        var server = package.connectors[index]
+        server.id = "jira-server"
+        package.connectors.insert(server, at: index + 1)
+        let cloud = package.connectors[index]
+        let installer = CapabilityInstaller(library: library)
+        try installer.install(
+            package, into: source, modelContext: context,
+            configInputs: [PluginSetupInputs.key("JIRA_PROJECTS", component: cloud.setupComponentID): "ENG"],
+            baseURLOverrides: [cloud.setupComponentID: "https://cloud.atlassian.net", server.setupComponentID: "https://jira.example.edu"]
+        )
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: source))
+        let store = MockSecretStore()
+        let cloudAccount = try #require(activation.accounts(forComponent: cloud.setupComponentID).first)
+        let serverAccount = try #require(activation.accounts(forComponent: server.setupComponentID).first)
+        for (account, token) in [(cloudAccount, "cloud-token"), (serverAccount, "server-token")] {
+            for entityID in KeychainSecretStore.connectorEntityIDs(for: account) {
+                store.save(key: "JIRA_API_TOKEN", value: token, entityID: entityID, label: nil)
+            }
+        }
+
+        let copied = CapabilitySetupCopier(secretStore: store).installationInputs(for: package, from: source)
+        #expect(copied.credentialInputs[PluginSetupInputs.key("JIRA_API_TOKEN", component: cloud.setupComponentID)] == "cloud-token")
+        #expect(copied.credentialInputs[PluginSetupInputs.key("JIRA_API_TOKEN", component: server.setupComponentID)] == "server-token")
+        #expect(copied.credentialInputs["JIRA_API_TOKEN"] == nil)
+        #expect(copied.configInputs[PluginSetupInputs.key("JIRA_PROJECTS", component: cloud.setupComponentID)] == "ENG")
+        #expect(copied.configInputs["JIRA_PROJECTS"] == nil)
+        #expect(copied.baseURLOverrides == [
+            cloud.setupComponentID: "https://cloud.atlassian.net", server.setupComponentID: "https://jira.example.edu"
+        ])
+        // Onboarding's flat view leaves out the token the two hold differently.
+        let flat = PluginSetupInputs.flattened(copied, for: package.connectors)
+        #expect(flat.credentialInputs["JIRA_API_TOKEN"] == nil)
+        #expect(flat.configInputs["JIRA_PROJECTS"] == "ENG")
+
+        // Added from the copy, each component's account gets its own.
+        try installer.install(
+            package, into: target, modelContext: context,
+            configInputs: copied.configInputs, baseURLOverrides: copied.baseURLOverrides
+        )
+        let added = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: target))
+        let addedCloud = try #require(added.accounts(forComponent: cloud.setupComponentID).first)
+        let addedServer = try #require(added.accounts(forComponent: server.setupComponentID).first)
+        #expect(addedCloud.baseURL == "https://cloud.atlassian.net" && addedServer.baseURL == "https://jira.example.edu")
+        #expect(addedCloud.configValue("JIRA_PROJECTS") == "ENG")
+        #expect(!addedServer.configValues.contains("ENG"))
+    }
+
+    @Test("A component reads its own setup over the shared one, never another component's")
+    func setupInputViewsArePerComponent() {
+        let inputs = [
+            "SHARED": "s",
+            PluginSetupInputs.key("TOKEN", component: "connector:jira:a"): "a",
+            PluginSetupInputs.key("TOKEN", component: "connector:jira:b"): "b"
+        ]
+        #expect(PluginSetupInputs.view(inputs, component: "connector:jira:a") == ["SHARED": "s", "TOKEN": "a"])
+        #expect(PluginSetupInputs.view(inputs, component: "connector:jira:c") == ["SHARED": "s"])
+
+        // Copied setup (keyed by component) flattens to the shared keys
+        // onboarding holds, leaving out what two components hold differently.
+        let first = PluginConnector(name: "Jira", serviceType: "jira", icon: "", description: "", baseURL: "", authMethod: "bearer",
+                                    credentialHints: [.init(key: "TOKEN", hint: "")], configHints: [], notes: "")
+        var second = first
+        second.id = "jira-server"
+        let flat = PluginSetupInputs.flattened(OnboardingCapabilityInstallationInputs(
+            credentialInputs: [
+                PluginSetupInputs.key("TOKEN", component: first.setupComponentID): "a",
+                PluginSetupInputs.key("TOKEN", component: second.setupComponentID): "b",
+                PluginSetupInputs.key("EMAIL", component: first.setupComponentID): "e"
+            ],
+            configInputs: [
+                PluginSetupInputs.key("DATASET", component: first.setupComponentID): "d",
+                PluginSetupInputs.key("DATASET", component: second.setupComponentID): "d"
+            ],
+            baseURLOverrides: [first.setupComponentID: "https://x", second.setupComponentID: "https://y"]
+        ), for: [first, second])
+        #expect(flat.credentialInputs == ["EMAIL": "e"])
+        #expect(flat.configInputs == ["DATASET": "d"])
+        #expect(flat.baseURLOverrides.isEmpty)
+    }
+
     @Test("configured source values stay scoped to their workspace")
     func configuredSourceValuesStayScopedToWorkspace() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let firstWorkspace = Workspace(name: "First Jira", primaryPath: "/tmp/first-jira")
-        let secondWorkspace = Workspace(name: "Second Jira", primaryPath: "/tmp/second-jira")
+        let firstWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: firstWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: firstWorkspaceFolder) }
+        let firstWorkspace = Workspace(name: "First Jira", primaryPath: firstWorkspaceFolder.path)
+        let secondWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: secondWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: secondWorkspaceFolder) }
+        let secondWorkspace = Workspace(name: "Second Jira", primaryPath: secondWorkspaceFolder.path)
         context.insert(firstWorkspace)
         context.insert(secondWorkspace)
 
@@ -381,8 +616,14 @@ struct CapabilityInstallerTests {
     func installSharesLibraryEntryAcrossWorkspaces() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let firstWorkspace = Workspace(name: "First", primaryPath: "/tmp/first-capability")
-        let secondWorkspace = Workspace(name: "Second", primaryPath: "/tmp/second-capability")
+        let firstWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: firstWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: firstWorkspaceFolder) }
+        let firstWorkspace = Workspace(name: "First", primaryPath: firstWorkspaceFolder.path)
+        let secondWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: secondWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: secondWorkspaceFolder) }
+        let secondWorkspace = Workspace(name: "Second", primaryPath: secondWorkspaceFolder.path)
         context.insert(firstWorkspace)
         context.insert(secondWorkspace)
 
@@ -411,7 +652,10 @@ struct CapabilityInstallerTests {
     func updateRefreshesProjectionWithoutRows() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Update", primaryPath: "/tmp/update-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Update", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -446,7 +690,10 @@ struct CapabilityInstallerTests {
     func updateReleasesSharedAccountsByTheirOwnListing() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Released Shared", primaryPath: "/tmp/released-shared-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Released Shared", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -483,8 +730,10 @@ struct CapabilityInstallerTests {
         let active = Set(capabilities.activeConnectors.map(\.id))
         #expect(active.contains(listed.id))
         #expect(!active.contains(bindingOnly.id))
-        // The workspace's own account is one of its connectors again.
-        #expect(active.contains(own.id))
+        // The workspace's own account is still the plugin's while the plugin
+        // is added here (`WorkspaceCapabilities.isPluginAccount`): it is shown
+        // with the plugin, not as one of the workspace's authored connectors.
+        #expect(!active.contains(own.id))
         let task = AgentTask(title: "Query", goal: "Run a BigQuery query", workspace: workspace)
         context.insert(task)
         let runtime = Set(TaskCapabilityResolver(task: task).allConnectors.map(\.id))
@@ -496,7 +745,10 @@ struct CapabilityInstallerTests {
     func addLeavesLegacyRowsAlone() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Legacy rows", primaryPath: "/tmp/duplicate-update")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Legacy rows", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -525,7 +777,10 @@ struct CapabilityInstallerTests {
     func addLeavesMatchingAuthoredConnectorAlone() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Authored account", primaryPath: "/tmp/authored-account")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Authored account", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -565,7 +820,10 @@ struct CapabilityInstallerTests {
     func standaloneElementPackagesProject() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Standalone", primaryPath: "/tmp/standalone-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Standalone", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -594,7 +852,10 @@ struct CapabilityInstallerTests {
     func installerBlocksUnsatisfiedDependencies() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Blocked", primaryPath: "/tmp/blocked-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Blocked", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -619,7 +880,10 @@ struct CapabilityInstallerTests {
     func installerBlocksPolicyDeniedPackages() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Policy Blocked", primaryPath: "/tmp/policy-blocked-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Policy Blocked", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -653,7 +917,10 @@ struct CapabilityInstallerTests {
     func installerAppliesDefaultPolicyWhenContextIsOmitted() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Default Policy Blocked", primaryPath: "/tmp/default-policy-blocked")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Default Policy Blocked", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -681,7 +948,10 @@ struct CapabilityInstallerTests {
     func installerEnforcesRoleScopedPolicyContexts() throws {
         let deniedContainer = try makeCapabilityInstallerContainer()
         let deniedContext = deniedContainer.mainContext
-        let deniedWorkspace = Workspace(name: "Denied Role", primaryPath: "/tmp/denied-role")
+        let deniedWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: deniedWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: deniedWorkspaceFolder) }
+        let deniedWorkspace = Workspace(name: "Denied Role", primaryPath: deniedWorkspaceFolder.path)
         deniedContext.insert(deniedWorkspace)
 
         let (deniedLibrary, deniedRoot) = makeCapabilityInstallerLibrary()
@@ -715,7 +985,10 @@ struct CapabilityInstallerTests {
 
         let allowedContainer = try makeCapabilityInstallerContainer()
         let allowedContext = allowedContainer.mainContext
-        let allowedWorkspace = Workspace(name: "Allowed Role", primaryPath: "/tmp/allowed-role")
+        let allowedWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: allowedWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: allowedWorkspaceFolder) }
+        let allowedWorkspace = Workspace(name: "Allowed Role", primaryPath: allowedWorkspaceFolder.path)
         allowedContext.insert(allowedWorkspace)
         let (allowedLibrary, allowedRoot) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: allowedRoot) }
@@ -739,7 +1012,10 @@ struct CapabilityInstallerTests {
     func installerBlocksUnsafeLocalToolCommands() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Unsafe Tool", primaryPath: "/tmp/unsafe-tool")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Unsafe Tool", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -772,7 +1048,10 @@ struct CapabilityInstallerTests {
     func installerBlocksUnsafeLocalToolArguments() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Unsafe Tool Arguments", primaryPath: "/tmp/unsafe-tool-args")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Unsafe Tool Arguments", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -805,7 +1084,10 @@ struct CapabilityInstallerTests {
     func installerBlocksCredentialedHTTPConnectors() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Unsafe Connector", primaryPath: "/tmp/unsafe-connector")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Unsafe Connector", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -839,7 +1121,10 @@ struct CapabilityInstallerTests {
     func installerAcceptsSafeMCPServerDeclarations() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Safe MCP", primaryPath: "/tmp/safe-mcp")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Safe MCP", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -869,7 +1154,10 @@ struct CapabilityInstallerTests {
     func installerBlocksUnsafeMCPServerDeclarations() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Unsafe MCP", primaryPath: "/tmp/unsafe-mcp")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Unsafe MCP", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -902,11 +1190,16 @@ struct CapabilityInstallerTests {
     func uninstallRemovesPackageAndKeepsAccounts() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Remove", primaryPath: "/tmp/remove-capability")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Remove", primaryPath: workspaceFolder.path)
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
+        workspace.primaryPath = root.appendingPathComponent("Workspace").path
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
 
         var package = makeAnalystCapabilityPackage()
         package.templates = [
@@ -970,13 +1263,24 @@ struct CapabilityInstallerTests {
     func uninstallKeepsOtherPluginActivations() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let firstWorkspace = Workspace(name: "First", primaryPath: "/tmp/remove-first")
-        let secondWorkspace = Workspace(name: "Second", primaryPath: "/tmp/remove-second")
+        let firstWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: firstWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: firstWorkspaceFolder) }
+        let firstWorkspace = Workspace(name: "First", primaryPath: firstWorkspaceFolder.path)
+        let secondWorkspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: secondWorkspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: secondWorkspaceFolder) }
+        let secondWorkspace = Workspace(name: "Second", primaryPath: secondWorkspaceFolder.path)
         context.insert(firstWorkspace)
         context.insert(secondWorkspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
+        firstWorkspace.primaryPath = root.appendingPathComponent("First").path
+        secondWorkspace.primaryPath = root.appendingPathComponent("Second").path
+        for workspace in [firstWorkspace, secondWorkspace] {
+            try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
+        }
 
         var firstPackage = makeAnalystCapabilityPackage()
         firstPackage.id = "stanford.bigquery.first"

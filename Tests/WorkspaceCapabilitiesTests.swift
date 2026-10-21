@@ -448,6 +448,8 @@ struct WorkspaceCapabilitiesTests {
             templates: []
         )
 
+        // Explicit pending V19 membership owns this legacy readiness state.
+        workspace.legacyEnabledCapabilityIDs = [package.id]
         let capabilities = WorkspaceCapabilities(
             workspace: workspace,
             globalSkills: [skill],
@@ -490,6 +492,8 @@ struct WorkspaceCapabilitiesTests {
         workspace.enabledGlobalConnectorIDs = [connector.id.uuidString]
 
         let package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
+        // Explicit pending V19 membership owns this legacy readiness state.
+        workspace.legacyEnabledCapabilityIDs = [package.id]
         let capabilities = WorkspaceCapabilities(
             workspace: workspace,
             globalSkills: [skill],
@@ -591,6 +595,8 @@ struct WorkspaceCapabilitiesTests {
             templates: []
         )
 
+        // Explicit pending V19 membership owns this legacy readiness state.
+        workspace.legacyEnabledCapabilityIDs = [package.id]
         let capabilities = WorkspaceCapabilities(workspace: workspace)
         let state = CapabilityPackageState(
             package: package,
@@ -620,6 +626,8 @@ struct WorkspaceCapabilitiesTests {
         workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
 
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        // Explicit pending V19 membership owns this legacy readiness state.
+        workspace.legacyEnabledCapabilityIDs = [package.id]
         let capabilities = WorkspaceCapabilities(
             workspace: workspace,
             globalSkills: [skill],
@@ -643,6 +651,7 @@ struct WorkspaceCapabilitiesTests {
         skill.connectors = [connector]
         workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        workspace.legacyEnabledCapabilityIDs = [package.id]
         func state() -> CapabilityPackageState {
             CapabilityPackageState(
                 package: package, workspace: workspace,
@@ -730,6 +739,8 @@ struct WorkspaceCapabilitiesTests {
             templates: []
         )
 
+        // Explicit pending V19 membership owns this legacy readiness state.
+        workspace.legacyEnabledCapabilityIDs = [package.id]
         let capabilities = WorkspaceCapabilities(workspace: workspace, globalConnectors: [connector])
         let state = CapabilityPackageState(
             package: package,
@@ -864,41 +875,26 @@ struct WorkspaceCapabilitiesTests {
         ).isEmpty)
     }
 
-    @Test("disabling a workspace-only capability removes its local skill activation")
+    @Test("a workspace-only skill has no Turn off state and cannot be deleted through it")
     @MainActor
     func disablingWorkspaceOnlyCapabilityRemovesLocalSkillActivation() throws {
         let container = try makeCapabilitiesPersistenceContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Local Capability", primaryPath: "/tmp/local-capability")
         context.insert(workspace)
-
         let skill = Skill(name: "Local Analyst", allowedTools: ["Read"])
         skill.workspace = workspace
         context.insert(skill)
-
-        let capabilities = WorkspaceCapabilities(workspace: workspace)
-        let package = try #require(CapabilityCatalogInventory.configuredPackages(
-            catalogPackages: [],
-            capabilities: capabilities,
-            workspace: workspace
-        ).first)
-
-        let result = CapabilityActivationDisabler().disable(
-            package,
-            in: workspace,
-            capabilities: capabilities,
-            modelContext: context,
-            availablePackages: []
-        )
         try context.save()
-
-        #expect(result.removedWorkspaceSkillIDs == [skill.id])
-        #expect(workspace.skills.filter { $0.id == skill.id }.isEmpty)
-        #expect(CapabilityCatalogInventory.configuredPackages(
-            catalogPackages: [],
-            capabilities: WorkspaceCapabilities(workspace: workspace),
-            workspace: workspace
-        ).isEmpty)
+        let package = try #require(CapabilityCatalogInventory.configuredPackages(catalogPackages: [],
+            capabilities: WorkspaceCapabilities(workspace: workspace), workspace: workspace).first)
+        let result = CapabilityActivationDisabler().disable(package, in: workspace, modelContext: context)
+        #expect(!result.persisted && result.problem == .cannotTurnOff)
+        #expect(result.removedWorkspaceSkillIDs.isEmpty)
+        #expect(workspace.skills.map(\.id) == [skill.id])
+        #expect(try context.fetchCount(FetchDescriptor<PluginOperationReceipt>()) == 0)
+        #expect(CapabilityCatalogInventory.configuredPackages(catalogPackages: [],
+            capabilities: WorkspaceCapabilities(workspace: workspace), workspace: workspace).map(\.id) == [package.id])
     }
 
     @Test("turning a plugin off keeps an authored workspace skill of the same name")
@@ -906,7 +902,10 @@ struct WorkspaceCapabilitiesTests {
     func turningOffKeepsAuthoredSkill() throws {
         let container = try makeCapabilitiesPersistenceContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Local Package Match", primaryPath: "/tmp/local-package-match")
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("astra-turn-off-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = Workspace(name: "Local Package Match", primaryPath: root.path)
         context.insert(workspace)
 
         let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
@@ -919,14 +918,11 @@ struct WorkspaceCapabilitiesTests {
         let capabilities = WorkspaceCapabilities(workspace: workspace)
         #expect(CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities).isEnabled)
 
+        try context.save()
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: capabilities,
-            modelContext: context,
-            availablePackages: [package]
-        )
-        try context.save()
+            modelContext: context)
 
         #expect(result.persisted)
         #expect(result.removedWorkspaceSkillIDs.isEmpty)
@@ -940,12 +936,15 @@ struct WorkspaceCapabilitiesTests {
         ).isEnabled == false)
     }
 
-    @Test("disabling a catalog package removes matching shared skill activation")
+    @Test("an independent shared choice neither enables a library namesake nor leaves with it")
     @MainActor
     func disablingCatalogPackageRemovesMatchingSharedSkillActivation() throws {
         let container = try makeCapabilitiesPersistenceContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Shared Package Match", primaryPath: "/tmp/shared-package-match")
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("astra-turn-off-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = Workspace(name: "Shared Package Match", primaryPath: root.path)
         context.insert(workspace)
 
         let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
@@ -957,19 +956,17 @@ struct WorkspaceCapabilitiesTests {
         package.sourceMetadata = .builtIn()
 
         let capabilities = WorkspaceCapabilities(workspace: workspace, globalSkills: [skill])
-        #expect(CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities).isEnabled)
+        #expect(!CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities).isEnabled)
 
+        try context.save()
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: capabilities,
-            modelContext: context,
-            availablePackages: [package]
-        )
-        try context.save()
+            modelContext: context)
 
-        #expect(result.disabledSkillIDs == [skill.id])
-        #expect(workspace.enabledGlobalSkillIDs.isEmpty)
+        #expect(result.persisted && result.problem == nil)
+        #expect(result.disabledSkillIDs.isEmpty)
+        #expect(workspace.enabledGlobalSkillIDs == [skill.id.uuidString])
         #expect(CapabilityPackageState(
             package: package,
             workspace: workspace,
@@ -982,7 +979,10 @@ struct WorkspaceCapabilitiesTests {
     func turningOffDeletesNothing() throws {
         let container = try makeCapabilitiesPersistenceContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Disable Origin", primaryPath: "/tmp/disable-origin")
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("astra-turn-off-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = Workspace(name: "Disable Origin", primaryPath: root.path)
         context.insert(workspace)
 
         let sharedSkill = Skill(name: "Jira Agent", allowedTools: ["Read"])
@@ -1003,10 +1003,7 @@ struct WorkspaceCapabilitiesTests {
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [sharedSkill]),
-            modelContext: context,
-            availablePackages: [package]
-        )
+            modelContext: context)
 
         #expect(result == .init(packageID: package.id))
         #expect(workspace.enabledGlobalSkillIDs == [sharedSkill.id.uuidString])
@@ -1021,7 +1018,10 @@ struct WorkspaceCapabilitiesTests {
     func disablingPackageKeepsSharedSkillClaimedByRemainingPackage() throws {
         let container = try makeCapabilitiesPersistenceContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Shared Claims", primaryPath: "/tmp/shared-claims")
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("astra-turn-off-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = Workspace(name: "Shared Claims", primaryPath: root.path)
         context.insert(workspace)
 
         let skill = Skill(name: "Shared Analyst", allowedTools: ["Read"])
@@ -1033,13 +1033,11 @@ struct WorkspaceCapabilitiesTests {
         workspace.testEnabledCapabilityIDs = [firstPackage.id, secondPackage.id]
         workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
 
+        try context.save()
         let result = CapabilityActivationDisabler().disable(
             firstPackage,
             in: workspace,
-            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [skill]),
-            modelContext: context,
-            availablePackages: [firstPackage, secondPackage]
-        )
+            modelContext: context)
 
         #expect(result.disabledSkillIDs.isEmpty)
         #expect(workspace.enabledCapabilityIDs == [secondPackage.id])
@@ -1078,6 +1076,9 @@ struct WorkspaceCapabilitiesTests {
             templates: []
         )
 
+        let activation = WorkspaceCapabilityActivation.updateActivation(for: package.id, in: workspace) { $0 }
+        WorkspaceCapabilityActivation.setOverridden(true, componentID: CapabilityResourceOrigin.componentID(for: package.skills[0]),
+            rowID: skill.id, on: activation)
         let capabilities = WorkspaceCapabilities(workspace: workspace)
         let packages = CapabilityCatalogInventory.packages(catalogPackages: [package], capabilities: capabilities)
 
@@ -1138,39 +1139,18 @@ struct WorkspaceCapabilitiesTests {
         connector.configKeys = ["JIRA_PROJECT"]
         connector.configValues = ["ASTRA"]
         workspace.enabledGlobalConnectorIDs = [connector.id.uuidString]
-        let store = MockSecretStore()
-        store.save(
-            key: "JIRA_TOKEN",
-            value: "shared-token",
-            entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
-            label: nil
-        )
-        store.save(
-            key: "BLANK_TOKEN",
-            value: "   ",
-            entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
-            label: nil
-        )
-
-        let copy = CapabilitySharing.duplicateForWorkspace(connector, in: workspace, secretStore: store)
+        let copy = CapabilitySharing.makeWorkspaceCopy(connector, in: workspace)
 
         #expect(connector.isGlobal)
         #expect(connector.workspace == nil)
-        #expect(!workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString))
+        #expect(workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString))
         #expect(copy.workspace === workspace)
         #expect(!copy.isGlobal)
         #expect(copy.id != connector.id)
         #expect(copy.name == "Shared Jira Copy")
         #expect(copy.credentialKeys == ["JIRA_TOKEN", "BLANK_TOKEN"])
         #expect(copy.config == ["JIRA_PROJECT": "ASTRA"])
-        #expect(store.load(
-            key: "JIRA_TOKEN",
-            entityID: KeychainSecretStore.connectorEntityID(for: copy.id)
-        ) == "shared-token")
-        #expect(store.load(
-            key: "BLANK_TOKEN",
-            entityID: KeychainSecretStore.connectorEntityID(for: copy.id)
-        ) == nil)
+        #expect(copy.credentialValues.allSatisfy { $0.isEmpty })
     }
 
     @Test("duplicating a shared tool creates a local copy without removing the shared definition")

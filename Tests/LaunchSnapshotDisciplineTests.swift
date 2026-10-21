@@ -61,10 +61,12 @@ struct LaunchSnapshotDisciplineTests {
         "validationStrategy"
     ]
 
-    /// Snapshot fields that are not task fields: the workspace state a launch
-    /// copy is built with. `detachedTask` reads each one off the snapshot.
-    private static let snapshotOwnedWorkspaceFields: Set<String> = [
-        "pluginActivations", "pluginDefinitions", "pluginAccounts", "pluginOverrides", "retiredPluginActivations"
+    /// Derived resource records are frozen with workspace state, rather than
+    /// assigned to scalar AgentTask fields. The behavioral retirement tests
+    /// verify that authored records and their attachments stay authoritative.
+    private static let snapshotOwnedResourceFields: Set<String> = [
+        "pluginActivations", "pluginDefinitions", "pluginAccounts", "pluginOverrides", "retiredPluginActivations",
+        "authoredSkills", "pendingLegacyPluginState", "accountInventory"
     ]
 
     // MARK: - Freeze chain
@@ -79,7 +81,7 @@ struct LaunchSnapshotDisciplineTests {
         //    which detachedTask copies from the source task, not the snapshot).
         let snapshotProperties = try Set(
             capturedNames(in: snapshotSource, pattern: #"(?m)^    let ([A-Za-z_]\w*):"#)
-        ).subtracting(["id"]).subtracting(Self.snapshotOwnedWorkspaceFields)
+        ).subtracting(["id"]).subtracting(Self.snapshotOwnedResourceFields)
         #expect(
             snapshotProperties == Self.snapshotOwnedFields,
             "AgentTaskLaunchSnapshot gained or lost a field. Update snapshotOwnedFields and re-audit the allowlists below: \(symmetricDifference(snapshotProperties, Self.snapshotOwnedFields))"
@@ -94,7 +96,7 @@ struct LaunchSnapshotDisciplineTests {
             "TaskExecutionLaunchSnapshotApplicator.detachedTask must assign every snapshot-owned field from the snapshot: \(symmetricDifference(applied, Self.snapshotOwnedFields))"
         )
 
-        for field in Self.snapshotOwnedWorkspaceFields {
+        for field in Self.snapshotOwnedResourceFields {
             #expect(
                 applicatorSource.contains("snapshot.\(field)") && requestSource.contains("public let \(field):"),
                 "\(field) must be captured by TaskExecutionPolicySnapshotV1 and applied from the snapshot by detachedTask."

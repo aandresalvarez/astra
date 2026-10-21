@@ -28,6 +28,25 @@ struct PluginDefinitionAcceptanceTests {
         #expect(PluginDefinitionDigest.content(of: package) == accepted)
     }
 
+    @Test("A repeated credential declaration is rejected before the account editor sees it")
+    func duplicateCredentialKeysAreRejected() {
+        var package = Self.package()
+        package.connectors[0].credentialHints = [.init(key: "API_TOKEN", hint: "First"), .init(key: "API_TOKEN", hint: "Second")]
+        let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+        #expect(!report.canInstall)
+        #expect(report.issues.contains { $0.title == "Duplicate credential key" })
+    }
+
+    @Test("A repeated skill setting is rejected instead of creating two rows for one value")
+    func duplicateSkillKeysAreRejected() {
+        var package = Self.package()
+        package.skills[0].environmentKeys = ["REGION", "REGION"]
+        package.skills[0].environmentValues = ["us", "eu"]
+        let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+        #expect(!report.canInstall)
+        #expect(report.issues.contains { $0.title == "Duplicate setting name" })
+    }
+
     private static func package() -> PluginPackage {
         PluginPackage(id: "acceptance.fixture", name: "Accepted", icon: "checkmark", description: "Acceptance",
             author: "Tests", category: "Tests", tags: [], version: "1.0.0",

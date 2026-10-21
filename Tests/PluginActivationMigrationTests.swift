@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import os
 import ASTRAModels
 @testable import ASTRAPersistence
 @testable import ASTRA
@@ -102,6 +103,9 @@ struct PluginActivationMigrationTests {
         let fixture = try Fixture()
         let context = fixture.context
         try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        // Launch reconciles right after migrating: a plugin recorded at its
+        // legacy version runs once it records the library's.
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: fixture.packages, mode: .automatic)
         let a = try fixture.workspace(fixture.aID)
         let b = try fixture.workspace(fixture.bID)
 
@@ -370,38 +374,6 @@ struct PluginActivationMigrationTests {
         #expect(try outbox.pending().isEmpty)
     }
 
-    @Test("Adding a plugin again first clears what its Remove left pending, and waits while it can't")
-    func reAddSettlesPendingSecrets() throws {
-        let fixture = try Fixture()
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("astra-plugin-secret-readd-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let outbox = PluginSecretCleanupOutbox(fileURL: directory.appendingPathComponent("PluginSecretCleanup.json"))
-        let workspace = try fixture.workspace(fixture.cID)
-        let component = CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0])
-        let reused = PluginActivation.projectedID(workspaceID: workspace.id, pluginID: "gcloud-workflow", componentID: component)
-        let unrelated = UUID()
-        try outbox.write([reused, unrelated])
-        #expect(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: workspace) == nil)
-
-        // A delete that fails keeps the record and holds the Add back.
-        #expect(!PluginSecretCleanupOutbox.settleBeforeAdding(
-            fixture.gcloud, to: workspace, modelContext: fixture.context, outbox: outbox, clean: { _ in false }
-        ))
-        #expect(Set(try outbox.pending()) == [reused, unrelated])
-        var cleaned: [UUID] = []
-        #expect(PluginSecretCleanupOutbox.settleBeforeAdding(
-            fixture.gcloud, to: workspace, modelContext: fixture.context, outbox: outbox, clean: { cleaned.append($0); return true }
-        ))
-        // Only the namespaces the new activation would reuse are settled.
-        #expect(cleaned == [reused])
-        #expect(try outbox.pending() == [unrelated])
-
-        // A record that can't be read never lets the Add through.
-        try Data("not json".utf8).write(to: outbox.fileURL)
-        #expect(!PluginSecretCleanupOutbox.settleBeforeAdding(fixture.gcloud, to: workspace, modelContext: fixture.context, outbox: outbox))
-    }
-
     @Test("A plugin missing from the library keeps its activation and its rows")
     func missingLibraryEntryKeepsActivationAndRows() throws {
         let fixture = try Fixture()
@@ -583,6 +555,47 @@ struct PluginActivationMigrationTests {
         #expect(skill.environmentValues == [""])
     }
 
+    @Test("A V19 row stamped with the identity a stable ID replaced moves its settings to the renamed component")
+    func stampedPredecessorRowMigrates() throws {
+        let fixture = try Fixture(gcloudSkillProject: "my-project")
+        var gcloud = fixture.gcloud
+        let legacy = CapabilityResourceOrigin.componentID(for: gcloud.skills[0])
+        gcloud.skills[0].id = "gcp-operator"
+        gcloud.skills[0].replaces = [legacy]
+        let packages = fixture.packages.map { $0.id == gcloud.id ? gcloud : $0 }
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: packages)
+
+        let a = try fixture.workspace(fixture.aID)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: gcloud.id, in: a))
+        let renamed = CapabilityResourceOrigin.componentID(for: gcloud.skills[0])
+        #expect(activation.configuration[PluginActivation.settingKey(componentID: renamed, key: "GCP_PROJECT")] == "my-project")
+        // The row became the projection, not an authored row beside it.
+        #expect(try fixture.context.fetch(FetchDescriptor<Skill>()).allSatisfy { $0.id != fixture.gcloudSkillID })
+        #expect(activation.overriddenComponentIDs.isEmpty)
+    }
+
+    @Test("A V19 account stamped with the identity a stable ID replaced is bound to the renamed component")
+    func stampedPredecessorAccountMigrates() throws {
+        let fixture = try Fixture()
+        var jira = fixture.jira
+        let legacy = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        jira.connectors[0].id = "jira-site"
+        jira.connectors[0].replaces = [legacy]
+        let packages = fixture.packages.map { $0.id == jira.id ? jira : $0 }
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: packages)
+
+        // Bound by the migration itself: the activation is seeded from the
+        // current definition, so no later reconcile need move it.
+        let a = try fixture.workspace(fixture.aID)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: a))
+        let renamed = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        #expect(Set(activation.accounts(forComponent: renamed).map(\.id)) == [fixture.jiraAccount1ID, fixture.jiraAccount2ID])
+        #expect(activation.accounts(forComponent: legacy).isEmpty)
+        try PluginUpdateService.reconcileAll(modelContext: fixture.context, packages: packages, mode: .automatic)
+        let projected = PluginRuntimeProjection.project(workspace: a, packages: [jira]).connectors.map(\.id)
+        #expect(Set(projected) == [fixture.jiraAccount1ID, fixture.jiraAccount2ID])
+    }
+
     @Test("A plugin tool whose description was edited stays an authored row")
     func editedToolDescriptionIsKept() throws {
         let fixture = try Fixture(editedToolDescription: "My own words")
@@ -622,6 +635,9 @@ struct PluginActivationMigrationTests {
     func editedSharedSkillFollowsItsActivation() throws {
         let fixture = try Fixture()
         try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        // Launch reconciles right after migrating: a plugin recorded at its
+        // legacy version runs once it records the library's.
+        try PluginUpdateService.reconcileAll(modelContext: fixture.context, packages: fixture.packages, mode: .automatic)
         let a = try fixture.workspace(fixture.aID)
         let shared = try fixture.context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
         func activeSkillIDs() -> Set<UUID> {
@@ -642,6 +658,9 @@ struct PluginActivationMigrationTests {
     func editedWorkspaceRowsFollowTheirActivation() throws {
         let fixture = try Fixture(editedToolDescription: "My own words", workspaceScopedRows: true)
         try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        // Launch reconciles right after migrating: a plugin recorded at its
+        // legacy version runs once it records the library's.
+        try PluginUpdateService.reconcileAll(modelContext: fixture.context, packages: fixture.packages, mode: .automatic)
         let a = try fixture.workspace(fixture.aID)
         let tools = try fixture.context.fetch(FetchDescriptor<LocalTool>())
         let toolIDs = Set(tools.map(\.id))
@@ -1034,37 +1053,24 @@ struct PluginActivationMigrationTests {
         }
     }
 
-    @Test("A failed migration that cannot take back a copied secret says so")
-    func failedSecretRollbackIsReported() throws {
-        guard AstraSecureKeychainTestSupport.isAvailable else { return }
-        let keychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
-        let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
-        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
-        defer {
-            AstraSecureKeychainTestSupport.cleanup(keychainPath: keychainPath, bootstrapService: bootstrap, services: [])
-        }
-        try AstraSecureKeychainStore.$keychainPathOverride.withValue(keychainPath) {
-            try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
-                let fixture = try Fixture(gcloudSkillSecret: "s3cret")
-                #expect(SkillSecretSeam.required.saveSecretValue(
-                    "s3cret", key: "GCP_API_TOKEN", skillID: fixture.gcloudSkillID, skillName: "GCloud", allowUserInteraction: false
-                ))
-                try FileManager.default.createDirectory(
-                    at: fixture.storeDirectory.appendingPathComponent("PluginSecretCleanup.json", isDirectory: true),
-                    withIntermediateDirectories: true
-                )
-                // The copy lands; taking it back (a delete, as nothing was
-                // there before) does not.
-                #expect(throws: PluginActivationMigration.MigrationError.credentialRestoreFailed(keys: ["GCP_API_TOKEN"])) {
-                    try PluginActivationMigration.migrate(
-                        modelContext: fixture.context,
-                        packages: fixture.packagesDeclaringSecret,
-                        secrets: UndeletableSkillSecrets.self
-                    )
-                }
-                // The store side is still put back.
-                #expect(WorkspaceCapabilityActivation.activations(of: try fixture.workspace(fixture.aID)).isEmpty)
+    @Test("An unwritable cleanup journal prevents every skill credential copy")
+    func unwritableJournalStopsSecretCopy() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let fixture = try Fixture(gcloudSkillSecret: "s3cret")
+            #expect(SkillSecretSeam.required.saveSecretValue("s3cret", key: "GCP_API_TOKEN",
+                skillID: fixture.gcloudSkillID, skillName: "GCloud", allowUserInteraction: false))
+            try FileManager.default.createDirectory(
+                at: fixture.storeDirectory.appendingPathComponent("PluginSecretCleanup.json", isDirectory: true),
+                withIntermediateDirectories: true)
+            UndeletableSkillSecrets.reset()
+            #expect(throws: PluginActivationMigration.MigrationError.cleanupUnrecordable) {
+                try PluginActivationMigration.migrate(modelContext: fixture.context,
+                    packages: fixture.packagesDeclaringSecret, secrets: UndeletableSkillSecrets.self)
             }
+            #expect(UndeletableSkillSecrets.savedNamespaces.isEmpty)
+            #expect(SkillSecretSeam.required.loadSecretValue(key: "GCP_API_TOKEN", skillID: fixture.gcloudSkillID,
+                store: KeychainSecretStore()) == "s3cret")
+            #expect(WorkspaceCapabilityActivation.activations(of: try fixture.workspace(fixture.aID)).isEmpty)
         }
     }
 
@@ -1198,6 +1204,9 @@ struct PluginActivationMigrationTests {
     func railActivationResourcesIncludeOverrides() throws {
         let fixture = try Fixture(editedToolDescription: "My own words")
         try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        // Launch reconciles right after migrating; an activation still on its
+        // legacy version waits for Update and doesn't run.
+        try PluginUpdateService.reconcileAll(modelContext: fixture.context, packages: fixture.packages, mode: .automatic)
         let a = try fixture.workspace(fixture.aID)
         let shared = try fixture.context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
         let tools = try fixture.context.fetch(FetchDescriptor<LocalTool>())
@@ -1298,6 +1307,7 @@ struct PluginActivationMigrationTests {
         let fixture = try Fixture()
         let context = fixture.context
         try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: fixture.packages, mode: .automatic)
         let a = try fixture.workspace(fixture.aID)
         let accounts = try context.fetch(FetchDescriptor<Connector>())
         let first = try #require(accounts.first { $0.id == fixture.jiraAccount1ID })
@@ -1341,6 +1351,9 @@ struct PluginActivationMigrationTests {
         let fixture = try Fixture(editedToolDescription: "My own words", workspaceScopedRows: true)
         let context = fixture.context
         try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        // Launch runs the automatic reconcile; until then a plugin migrated
+        // from a legacy version awaits Update and projects nothing.
+        try PluginUpdateService.reconcileAll(modelContext: context, packages: fixture.packages, mode: .automatic)
         let a = try fixture.workspace(fixture.aID)
         let edited = try #require(try context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.editedJiraSkillID })
         edited.environmentKeys = ["JIRA_API_TOKEN", "JIRA_SITE"]
@@ -1550,8 +1563,8 @@ struct PluginActivationMigrationTests {
         #expect(Set((jira.accounts ?? []).map(\.connectorID)) == [fixture.jiraAccount1ID.uuidString, fixture.jiraAccount2ID.uuidString])
     }
 
-    @Test("An activation that accepted another definition needs action, and Add again accepts the installed one")
-    func activationAwaitingUpdateOffersAddAgain() throws {
+    @Test("An activation that accepted another definition needs action, and offers Update to accept the installed one")
+    func activationAwaitingUpdateOffersUpdate() throws {
         let fixture = try Fixture()
         let context = fixture.context
         try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
@@ -1572,7 +1585,7 @@ struct PluginActivationMigrationTests {
         )
         let surface = PluginsSurfacePresentation.makeState([input], query: "")
         #expect(surface.actionNeeded.map(\.id) == [newer.id] && surface.ready.isEmpty)
-        #expect(surface.actionNeeded.first?.verb == .add)
+        #expect(surface.actionNeeded.first?.verb == .update)
 
         try Self.add(newer, to: a, context: context)
         #expect(try !state().awaitsUpdate)
@@ -1610,12 +1623,16 @@ struct PluginActivationMigrationTests {
 
 /// The real skill-secret persistence, except that a delete never lands.
 private enum UndeletableSkillSecrets: SkillSecretPersisting {
+    private static let writes = OSAllocatedUnfairLock<[UUID]>(initialState: [])
+    static var savedNamespaces: [UUID] { writes.withLock { $0 } }
+    static func reset() { writes.withLock { $0 = [] } }
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? {
         SkillSecretSeam.required.loadSecretValue(key: key, skillID: skillID, store: store)
     }
 
     static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool {
-        SkillSecretSeam.required.saveSecretValue(
+        writes.withLock { $0.append(skillID) }
+        return SkillSecretSeam.required.saveSecretValue(
             value, key: key, skillID: skillID, skillName: skillName, allowUserInteraction: allowUserInteraction
         )
     }
@@ -1720,6 +1737,8 @@ struct PluginMigrationFixture {
                 let connector = V19.Connector()
                 connector.name = "Jira"
                 connector.serviceType = jiraSpec.serviceType
+                // As Add made it: signed in with the method the plugin declares.
+                connector.authMethod = jiraSpec.authMethod
                 connector.baseURL = baseURL
                 connector.originPackageID = "jira-workflow"
                 connector.originComponentID = CapabilityResourceOrigin.componentID(for: jiraSpec)

@@ -21,6 +21,7 @@ struct CapabilityPackageRoundTripE2ETests {
         let container = try makeRoundTripContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Round Trip Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
 
         let package = roundTripPackage(name: "Created Round Trip")
@@ -37,7 +38,6 @@ struct CapabilityPackageRoundTripE2ETests {
             sourceURL: sourceURL,
             workspace: workspace,
             modelContext: context,
-            configInputs: ["ROUNDTRIP_PROJECT": "dev"],
             policyContext: CapabilityCatalogPolicyContext.workspaceUser(
                 workspace: workspace,
                 isAdmin: true,
@@ -68,6 +68,11 @@ struct CapabilityPackageRoundTripE2ETests {
         #expect(workspace.installedVersion(of: package.id) == package.version)
         #expect(skills.contains { $0.originPackageID == package.id && $0.name == package.name })
         #expect(tools.contains { $0.originPackageID == package.id && $0.name == "jq" })
+        // A plugin made in ASTRA isn't a bundled one: its setting is stored as
+        // a credential, in the Keychain, never as plain text on the account.
+        let account = try #require(workspace.connectors.first { $0.originPackageID == package.id })
+        #expect(account.credentialKeys.contains("ROUNDTRIP_PROJECT"))
+        #expect(!account.configKeys.contains("ROUNDTRIP_PROJECT"))
 
         let runDecision = CapabilityCatalogPolicy.decision(
             for: installedPackage,
@@ -94,6 +99,7 @@ struct CapabilityPackageRoundTripE2ETests {
         let container = try makeRoundTripContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Imported Source Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
 
         let package = roundTripPackage(name: "Imported Round Trip")
@@ -136,7 +142,6 @@ struct CapabilityPackageRoundTripE2ETests {
             importedPackage,
             into: workspace,
             modelContext: context,
-            configInputs: ["ROUNDTRIP_PROJECT": "dev"],
             policyContext: CapabilityCatalogPolicyContext.workspaceUser(
                 workspace: workspace,
                 isAdmin: true,
@@ -146,8 +151,45 @@ struct CapabilityPackageRoundTripE2ETests {
         )
 
         #expect(result.packageID == importedPackage.id)
+        // An imported plugin's setting is stored as a credential.
+        let account = try #require(workspace.connectors.first { $0.originPackageID == importedPackage.id })
+        #expect(account.credentialKeys.contains("ROUNDTRIP_PROJECT"))
+        #expect(!account.configKeys.contains("ROUNDTRIP_PROJECT"))
         #expect(workspace.enabledCapabilityIDs.contains(importedPackage.id))
         #expect(library.installedPackage(id: importedPackage.id)?.sourceMetadata == .localLibrary())
+    }
+
+    @Test("create prepares every participant before publishing any approval")
+    func createPreparationFailurePublishesNoApproval() throws {
+        let root = try roundTripTemporaryDirectory(named: "astra-capability-unreverted-e2e")
+        defer { try? FileManager.default.removeItem(at: root) }
+        // A library path that is a file: the install fails after the approval is saved.
+        let libraryURL = root.appendingPathComponent("app-library")
+        try Data("not a directory".utf8).write(to: libraryURL)
+        let library = CapabilityLibrary(directory: libraryURL)
+        let approvalStore = CapabilityApprovalStore(
+            directory: root.appendingPathComponent("approvals", isDirectory: true), fileManager: RemoveRefusingFileManager()
+        )
+        let container = try makeRoundTripContainer()
+        let workspace = Workspace(name: "Unreverted Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
+        container.mainContext.insert(workspace)
+        let package = roundTripPackage(name: "Unreverted Round Trip")
+        let service = CapabilityPackageCreationService(
+            library: library, sourceExporter: CapabilityPackageSourceExporter(), approvalStore: approvalStore,
+            appVersion: SemanticVersion(1, 0, 0)
+        )
+
+        do {
+            _ = try service.create(
+                package, enableHere: true, sourceURL: nil, workspace: workspace, modelContext: container.mainContext,
+                policyContext: CapabilityCatalogPolicyContext.workspaceUser(
+                    workspace: workspace, isAdmin: true, currentAppVersion: SemanticVersion(1, 0, 0), approvalRecords: []
+                )
+            )
+            Issue.record("The install should fail.")
+        } catch { }
+        #expect(approvalStore.records().isEmpty)
     }
 
     @Test("create flow rejects invalid packages without partial writes")
@@ -163,6 +205,7 @@ struct CapabilityPackageRoundTripE2ETests {
         let container = try makeRoundTripContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Invalid Package Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
 
         var package = roundTripPackage(name: "Invalid Round Trip")
@@ -223,6 +266,7 @@ struct CapabilityPackageRoundTripE2ETests {
         let container = try makeRoundTripContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Duplicate Package Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
 
         let package = roundTripPackage(name: "Duplicate Round Trip")
@@ -274,6 +318,7 @@ struct CapabilityPackageRoundTripE2ETests {
         let container = try makeRoundTripContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Install Failure Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
 
         let package = roundTripPackage(name: "Install Failure Round Trip")
@@ -303,6 +348,52 @@ struct CapabilityPackageRoundTripE2ETests {
             #expect(approvalStore.records().isEmpty)
             #expect(workspace.enabledCapabilityIDs.isEmpty)
         }
+    }
+
+    /// A failed approval write stands in for an exit between the two writes:
+    /// the new version must not be in the library without its approval.
+    @Test("create flow writes an update's approval before replacing the library entry")
+    func createFlowWritesApprovalBeforeReplacingLibraryEntry() throws {
+        let root = try roundTripTemporaryDirectory(named: "astra-capability-approval-order-e2e")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let blockedApprovalsURL = root.appendingPathComponent("blocked-approvals")
+        try Data("not a directory".utf8).write(to: blockedApprovalsURL)
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("app-library", isDirectory: true))
+        let container = try makeRoundTripContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Approval Order Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
+        context.insert(workspace)
+
+        var installed = roundTripPackage(name: "Approval Order Round Trip")
+        installed.version = "1.0.0"
+        try library.install(installed, sourceMetadata: .localLibrary())
+        var update = installed
+        update.version = "1.1.0"
+        let service = CapabilityPackageCreationService(
+            library: library,
+            sourceExporter: CapabilityPackageSourceExporter(),
+            approvalStore: CapabilityApprovalStore(directory: blockedApprovalsURL),
+            appVersion: SemanticVersion(1, 0, 0)
+        )
+
+        #expect(throws: (any Error).self) {
+            try service.create(
+                update,
+                enableHere: true,
+                sourceURL: nil,
+                workspace: workspace,
+                modelContext: context,
+                policyContext: CapabilityCatalogPolicyContext.workspaceUser(
+                    workspace: workspace,
+                    isAdmin: true,
+                    currentAppVersion: SemanticVersion(1, 0, 0),
+                    approvalRecords: []
+                )
+            )
+        }
+        #expect(library.installedPackage(id: installed.id)?.version == "1.0.0")
+        #expect(workspace.enabledCapabilityIDs.isEmpty)
     }
 }
 
@@ -342,4 +433,11 @@ private func roundTripTemporaryDirectory(named prefix: String) throws -> URL {
         .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+}
+
+/// Refuses every removal: an approval saved ahead of a write can't be taken back.
+private final class RemoveRefusingFileManager: FileManager, @unchecked Sendable {
+    override func removeItem(at URL: URL) throws {
+        throw CocoaError(.fileWriteNoPermission)
+    }
 }

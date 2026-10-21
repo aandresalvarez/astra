@@ -165,7 +165,8 @@ struct TaskCapabilityResolver {
         let connEnvVars = ConnectorRuntimeProjection(
             connectors: liveConnectors,
             secretStore: secretStore,
-            credentialExposurePolicy: connectorCredentialExposurePolicy
+            credentialExposurePolicy: connectorCredentialExposurePolicy,
+            defaultConnectorIDs: pluginProjection.defaultAccountIDs
         )
             .environmentVariables()
 
@@ -191,7 +192,8 @@ struct TaskCapabilityResolver {
         // the skill of a connector a shared list turned on.
         let overriding = overridingRowIDs()
         for connector in connectors {
-            guard let skill = connector.skill, !overriding.contains(skill.id) else { continue }
+            guard let skill = connector.skill, !overriding.contains(skill.id),
+                  permitsLegacyOrigin(skill.originPackageID, id: skill.id, shared: skill.isGlobal, kind: .skill) else { continue }
             combined.append(skill)
         }
         return uniqueSkills(combined)
@@ -213,10 +215,11 @@ struct TaskCapabilityResolver {
             if connector.isGlobal {
                 return enabledGlobalIDs.contains(connector.id.uuidString)
             }
-            return connector.workspace?.id == workspaceID
+            return connector.workspace?.id == workspaceID && !WorkspaceCapabilities.isPluginAccount(connector)
         }
         let standalone = task.workspace?.connectors.filter {
             $0.skill == nil && !$0.isGlobal && !bindingOnly.contains($0.id)
+                && !WorkspaceCapabilities.isPluginAccount($0)
         } ?? []
         var all = fromSkills + enabledPackageConnectors() + standalone
 
@@ -247,6 +250,7 @@ struct TaskCapabilityResolver {
         let fromSkills = pinnedTools + enabledPackageSkills().flatMap(\.localTools)
         let standalone = task.workspace?.localTools.filter {
             $0.skill == nil && !$0.isGlobal && !overriding.contains($0.id)
+                && permitsLegacyOrigin($0.originPackageID, id: $0.id, shared: false, kind: .tool)
         } ?? []
         var all = fromSkills + standalone + enabledPackageLocalTools()
 
@@ -310,7 +314,15 @@ struct TaskCapabilityResolver {
     /// kept a pin from before the migration).
     private func pinnedSkills() -> [Skill] {
         let overriding = overridingRowIDs()
-        return task.skills.filter { !overriding.contains($0.id) }
+        return task.skills.filter {
+            !overriding.contains($0.id) && permitsLegacyOrigin($0.originPackageID, id: $0.id, shared: $0.isGlobal, kind: .skill)
+        }
+    }
+
+    private func permitsLegacyOrigin(_ pluginID: String?, id: UUID, shared: Bool,
+                                     kind: WorkspaceCapabilityActivation.SharedResourceKind) -> Bool {
+        guard let workspace = task.workspace else { return true }
+        return WorkspaceCapabilityActivation.permitsPendingLegacyResource(pluginID, id: id, shared: shared, kind: kind, in: workspace)
     }
 
     private func overridingRowIDs() -> Set<UUID> {
@@ -807,10 +819,12 @@ struct TaskCapabilityResolver {
         // agree with the aliases every prompt and broker route quotes.
         // `connectorCredentialExposurePolicy` is unchanged, so a connector
         // without an approved grant still contributes config and no secret.
+        let defaultConnectorIDs = pluginProjection.defaultAccountIDs
         let connectorEnvVars = ConnectorRuntimeProjection(
             connectors: effectiveReachableConnectors,
             secretStore: secretStore,
-            credentialExposurePolicy: connectorCredentialExposurePolicy
+            credentialExposurePolicy: connectorCredentialExposurePolicy,
+            defaultConnectorIDs: defaultConnectorIDs
         )
             .environmentVariables()
 
@@ -848,7 +862,8 @@ struct TaskCapabilityResolver {
             reachableConnectors: effectiveReachableConnectors,
             reachableLocalTools: reachableLocalTools ?? scopedTools,
             reachablePackageIDs: Self.uniqueStrings(reachablePackageIDs ?? enabledPackageIDs),
-            reachableBehaviorInstructions: reachableBehaviorInstructions
+            reachableBehaviorInstructions: reachableBehaviorInstructions,
+            defaultConnectorIDs: defaultConnectorIDs
         )
     }
 
@@ -1382,6 +1397,10 @@ struct TaskCapabilityPromptScope {
     /// skill, which is the same reachability-follows-narration bug one layer
     /// down.
     let reachableBehaviorInstructions: [String]
+    /// The accounts the workspace's plugin bindings mark as their service's
+    /// default (`PluginRuntimeProjection.defaultAccountIDs`), so every
+    /// `ASTRA_CONNECTORS` built from this scope marks the same ones.
+    let defaultConnectorIDs: Set<UUID>
 
     /// The browser bridge is wired for this run. Reachability-wide, because
     /// attaching a route the turn never named costs nothing.
@@ -1424,7 +1443,8 @@ extension TaskCapabilityPromptScope {
             connectorEnvVars: ConnectorRuntimeProjection(
                 connectors: reachableConnectors,
                 secretStore: secretStore,
-                credentialExposurePolicy: policy
+                credentialExposurePolicy: policy,
+                defaultConnectorIDs: defaultConnectorIDs
             ).environmentVariables()
         )
         return scope

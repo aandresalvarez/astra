@@ -120,6 +120,9 @@ struct CapabilityResourceKindParityTests {
         let context = container.mainContext
         let first = Workspace(name: "First", primaryPath: root.appendingPathComponent("a").path)
         let second = Workspace(name: "Second", primaryPath: root.appendingPathComponent("b").path)
+        for workspace in [first, second] {
+            try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
+        }
         context.insert(first)
         context.insert(second)
 
@@ -201,10 +204,7 @@ struct CapabilityDisableSharedClaimsTests {
         CapabilityActivationDisabler().disable(
             alpha,
             in: workspace,
-            capabilities: WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages()),
-            modelContext: context,
-            availablePackages: [alpha, beta]
-        )
+            modelContext: context)
 
         #expect(!workspace.enabledCapabilityIDs.contains("alpha-pkg"))
         #expect(workspace.enabledCapabilityIDs.contains("beta-pkg"))
@@ -213,10 +213,7 @@ struct CapabilityDisableSharedClaimsTests {
         CapabilityActivationDisabler().disable(
             beta,
             in: workspace,
-            capabilities: WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages()),
-            modelContext: context,
-            availablePackages: [alpha, beta]
-        )
+            modelContext: context)
         #expect(WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages()).activeSkills.isEmpty)
         #expect(workspace.installedPluginIDs.sorted() == ["alpha-pkg", "beta-pkg"])
     }

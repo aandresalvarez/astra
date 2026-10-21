@@ -74,7 +74,13 @@ struct PluginActivationOwnershipTests {
                 let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
                 try FileManager.default.createDirectory(at: mirror, withIntermediateDirectories: true)
 
-                try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packagesDeclaringSecret)
+                var pendingID: UUID?
+                do {
+                    try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packagesDeclaringSecret)
+                    Issue.record("A committed migration must report its pending mirror")
+                } catch let problem as PluginOperationProblem { pendingID = problem.operationID }
+                let operationID = try #require(pendingID)
+                #expect(try PluginOperationCommit.read(operationID, container: context.container)?.completedAt == nil)
                 // The row is deleted, but its namespace waits for the mirror.
                 #expect(try context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.gcloudSkillID } == nil)
                 let outbox = try #require(PluginSecretCleanupOutbox(for: context))
@@ -85,6 +91,7 @@ struct PluginActivationOwnershipTests {
                 // it writes the mirror again first, then cleans.
                 try FileManager.default.removeItem(at: mirror)
                 try Data(#"{"skills":[{"id":"\#(fixture.gcloudSkillID.uuidString)"}]}"#.utf8).write(to: mirror)
+                #expect(PluginOperationRecovery.resumePending(modelContext: context, only: operationID).completed == 1)
                 PluginSecretCleanupOutbox.resumePending(modelContext: context)
                 #expect(try outbox.pending().isEmpty)
                 #expect(!persistence.secretExists(key: "GCP_API_TOKEN", skillID: fixture.gcloudSkillID))
@@ -146,6 +153,10 @@ struct PluginActivationOwnershipTests {
         WorkspaceCapabilityActivation.recordAccepted(
             pluginID: accepted.id, version: accepted.version, digest: PluginDefinitionDigest.content(of: accepted), in: a
         )
+        // Accepted as Update records it: the components it declares (an
+        // Update releases a dropped one's state).
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: accepted.id, in: a))
+        WorkspaceCapabilityActivation.setKnownComponents(PluginRuntimeProjection.componentIDs(of: accepted), on: activation)
         var changed = accepted
         changed.localTools[0].arguments = "--changed"
         let index = CapabilityRailWorkspaceResourceIndex(

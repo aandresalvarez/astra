@@ -83,7 +83,8 @@ public final class Connector {
             serviceType: serviceType,
             baseURL: baseURL,
             originPackageID: originPackageID,
-            originComponentID: originComponentID
+            originComponentID: originComponentID,
+            credentialNamespaceID: credentialNamespaceID
         )
     }
 
@@ -145,7 +146,7 @@ public final class Connector {
         allowUserInteraction: Bool = false,
         declaredFormat: ConnectorCredentialFormat? = nil
     ) -> ConnectorCredentialSaveOutcome {
-        let upperKey = key.uppercased()
+        let upperKey = ConnectorCredentialKey.canonical(key)
         let decision = admissionDecision(key: upperKey, value: value, declaredFormat: declaredFormat, store: nil)
         guard decision.isAdmitted else {
             recordCredentialRejection(key: upperKey, verdict: decision.verdict)
@@ -183,7 +184,7 @@ public final class Connector {
         value: String,
         allowUserInteraction: Bool = false
     ) -> Bool {
-        let upperKey = key.uppercased()
+        let upperKey = ConnectorCredentialKey.canonical(key)
         let saved = ConnectorSecretSeam.required.saveCredential(
             value,
             key: upperKey,
@@ -197,7 +198,7 @@ public final class Connector {
     /// Store-injectable twin of `restorePreviouslyStoredCredential(key:value:allowUserInteraction:)`.
     @discardableResult
     func restorePreviouslyStoredCredential(key: String, value: String, store: SecretStore) -> Bool {
-        let upperKey = key.uppercased()
+        let upperKey = ConnectorCredentialKey.canonical(key)
         let saved = ConnectorSecretSeam.required.saveCredential(
             value, key: upperKey, facts: secretFacts, store: store)
         recordCredentialSaveResult(key: upperKey, saved: saved)
@@ -224,7 +225,7 @@ public final class Connector {
         store: SecretStore,
         declaredFormat: ConnectorCredentialFormat? = nil
     ) -> ConnectorCredentialSaveOutcome {
-        let upperKey = key.uppercased()
+        let upperKey = ConnectorCredentialKey.canonical(key)
         let decision = admissionDecision(key: upperKey, value: value, declaredFormat: declaredFormat, store: store)
         guard decision.isAdmitted else {
             recordCredentialRejection(key: upperKey, verdict: decision.verdict)
@@ -309,7 +310,7 @@ public final class Connector {
     /// Records the key only after the Keychain write succeeds — audit logging lives in `ConnectorSecretPersistence`.
     private func recordCredentialSaveResult(key upperKey: String, saved: Bool) {
         // Find existing entry case-insensitively to avoid duplicates
-        if let idx = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
+        if let idx = credentialKeys.firstIndex(where: { ConnectorCredentialKey.same($0, upperKey) }) {
             if saved {
                 // Normalize key to uppercase and clear legacy value
                 credentialKeys[idx] = upperKey
@@ -343,7 +344,7 @@ public final class Connector {
     /// credential batch (e.g. one hint saved, a later one failed) without
     /// needing the key's current position in `credentialKeys`.
     public func removeCredential(forKey key: String) {
-        let upperKey = key.uppercased()
+        let upperKey = ConnectorCredentialKey.canonical(key)
         if let index = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
             removeCredential(at: index)
         } else {
@@ -359,25 +360,56 @@ public final class Connector {
     /// checking "does this key already have a value" cannot trust that
     /// array's current casing to find an already-uppercased Keychain entry.
     public func currentCredentialValue(forKey key: String) -> String? {
-        let value = ConnectorSecretSeam.required.loadCredential(key: key.uppercased(), facts: secretFacts)
+        let value = ConnectorSecretSeam.required.loadCredential(key: ConnectorCredentialKey.canonical(key), facts: secretFacts)
         return (value?.isEmpty == false) ? value : nil
     }
 
-    /// Migrate any legacy plaintext credentials to Keychain.
-    public func migrateToKeychain() {
-        let facts = secretFacts
-        for (index, key) in credentialKeys.enumerated() {
-            guard index < credentialValues.count else { continue }
-            let value = credentialValues[index]
-            guard !value.isEmpty else { continue }
-
-            let migrated = ConnectorSecretSeam.required.credentialExists(key: key, facts: facts)
-                || ConnectorSecretSeam.required.saveCredential(value, key: key, facts: facts, allowUserInteraction: false)
-            if migrated {
-                credentialValues[index] = ""
+    /// Moves each of `keys` that holds a plain value on this row into the
+    /// Keychain, one at a time: a setting leaves `configKeys` (and becomes a
+    /// credential key) only once its value reads back from the Keychain, so
+    /// a failed write keeps it here for the next try. A different value the
+    /// Keychain already holds for the key is left for the person to settle.
+    /// Each Keychain write is handed to `record` as it lands, for a caller
+    /// whose later step can fail to `undo`.
+    @discardableResult
+    public func moveSettingsToKeychain(
+        _ keys: Set<String>,
+        store: SecretStore = SecretStoreSeam.required,
+        recording record: (ConnectorSettingSecretWrite) -> Void = { _ in }
+    ) -> [String] {
+        let secrets = ConnectorSecretSeam.required
+        var moved: [String] = []
+        for key in configKeys where keys.contains(key) {
+            let value = configValue(key)
+            guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let upperKey = ConnectorCredentialKey.canonical(key)
+            let facts = secretFacts
+            func held() -> String? { secrets.loadAllCredentials(keys: [upperKey], facts: facts, store: store)[upperKey] }
+            let existing = held()
+            if let existing, !existing.isEmpty, existing != value { continue }
+            if existing != value {
+                guard secrets.saveCredential(value, key: upperKey, facts: facts, store: store) else { continue }
+                record(ConnectorSettingSecretWrite(key: upperKey, facts: facts, previousValue: existing))
+                guard held() == value else { continue }
             }
+            if let index = configKeys.firstIndex(of: key) {
+                configKeys.remove(at: index)
+                if index < configValues.count { configValues.remove(at: index) }
+            }
+            if !credentialKeys.contains(where: { $0.caseInsensitiveCompare(key) == .orderedSame }) {
+                while credentialValues.count < credentialKeys.count { credentialValues.append("") }
+                credentialKeys.append(key)
+                credentialValues.append("")
+            }
+            moved.append(key)
         }
-        ConnectorSecretSeam.required.synchronizeCredentialNamespaces(keys: credentialKeys, facts: facts)
+        if !moved.isEmpty {
+            updatedAt = Date()
+            AuditLoggingSeam.required.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
+                "scope": "connector_setting", "result": "moved", "key_count": String(moved.count)
+            ], level: .info)
+        }
+        return moved
     }
 
     /// Delete all Keychain entries when connector is deleted.
@@ -391,7 +423,8 @@ public final class Connector {
         ConnectorKeychainCleanup(
             connectorID: id, name: name, serviceType: serviceType, baseURL: baseURL,
             originPackageID: originPackageID, originComponentID: originComponentID,
-            isStanfordOutlookMail: isStanfordOutlookMail
+            isStanfordOutlookMail: isStanfordOutlookMail,
+            credentialNamespaceID: credentialNamespaceID
         )
     }
 
@@ -821,6 +854,7 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
     public let originPackageID: String?
     public let originComponentID: String?
     public let isStanfordOutlookMail: Bool
+    public var credentialNamespaceID: UUID? = nil
 
     /// True when every credential namespace was cleared, so a caller with a
     /// durable record can keep it for a retry otherwise. Namespaces in
@@ -836,12 +870,35 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
         }
         let cleared = ConnectorSecretSeam.required.deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts(
             id: connectorID, name: name, serviceType: serviceType, baseURL: baseURL,
-            originPackageID: originPackageID, originComponentID: originComponentID
+            originPackageID: originPackageID, originComponentID: originComponentID,
+            credentialNamespaceID: credentialNamespaceID
         ), sparing: sparing)
         AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
             "connector_id": connectorID.uuidString,
             "service_type": serviceType
         ])
         return cleared && registryCleared
+    }
+}
+
+/// A setting's value `Connector.moveSettingsToKeychain` wrote into the
+/// Keychain, and what the Keychain held for its key before (nil: nothing),
+/// for a caller whose later step fails (a save, a mirror rewrite) to put
+/// back. A failed move left behind would make the next one find a value of
+/// its own there and refuse.
+public struct ConnectorSettingSecretWrite: Equatable, Sendable {
+    public let key: String
+    public let facts: ConnectorSecretFacts
+    public let previousValue: String?
+
+    /// Puts back what the write replaced in `store`, the one it was made
+    /// to. False when the Keychain refused.
+    @discardableResult
+    public func undo(store: SecretStore = SecretStoreSeam.required) -> Bool {
+        let secrets = ConnectorSecretSeam.required
+        if let previousValue, !previousValue.isEmpty {
+            return secrets.saveCredential(previousValue, key: key, facts: facts, store: store)
+        }
+        return secrets.deleteCredential(key: key, facts: facts, store: store)
     }
 }

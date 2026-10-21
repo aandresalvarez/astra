@@ -286,8 +286,9 @@ public enum WorkspaceConfigManager {
     }
 
     public struct SkillConfig: Codable, Sendable {
-        public init(id: String? = nil, name: String, icon: String, description: String, allowedTools: [String], disallowedTools: [String], customTools: [String], behaviorInstructions: String, environmentKeys: [String], environmentValues: [String], isGlobal: Bool? = nil, connectorIDs: [String]? = nil, localToolIDs: [String]? = nil, connectorNames: [String]? = nil, localToolNames: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+        public init(id: String? = nil, name: String, icon: String, description: String, allowedTools: [String], disallowedTools: [String], customTools: [String], behaviorInstructions: String, environmentKeys: [String], environmentValues: [String], isGlobal: Bool? = nil, connectorIDs: [String]? = nil, localToolIDs: [String]? = nil, connectorNames: [String]? = nil, localToolNames: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, credentialNamespaceID: UUID? = nil) {
             self.id = id
+            self.credentialNamespaceID = credentialNamespaceID
             self.name = name
             self.icon = icon
             self.description = description
@@ -312,6 +313,7 @@ public enum WorkspaceConfigManager {
         }
 
         public var id: String?
+        public var credentialNamespaceID: UUID?
         public var name: String
         public var icon: String
         public var description: String
@@ -1275,9 +1277,7 @@ public enum WorkspaceConfigManager {
             connectorsByID[connector.id.uuidString] = connector
             if let fileID = cc.id { connectorsByID[fileID] = connector }
             // Skills name it as the file does (`connectorNames`), sanitized or not.
-            for name in [cc.name, connector.name] where connectorsByName[name] == nil {
-                connectorsByName[name] = connector
-            }
+            for name in [cc.name, connector.name] where connectorsByName[name] == nil { connectorsByName[name] = connector }
         }
 
         // A shared account can be reused by identity/name with a different UUID.
@@ -1347,9 +1347,10 @@ public enum WorkspaceConfigManager {
 
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)
-            // Skill IDs from the file resolve to the rows it created (fresh
-            // under `.validate`).
-            template.defaultSkillIDs = template.defaultSkillIDs.map { skillsByID[$0]?.id.uuidString ?? projectedIDs[$0] ?? $0 }
+            // Skill IDs from the file resolve to the rows it created (fresh under `.validate`).
+            WorkspaceCapabilityActivation.rewriteDefaultSkills(of: template, in: workspace) { ids in
+                ids.map { skillsByID[$0]?.id.uuidString ?? projectedIDs[$0] ?? $0 }
+            }
             sanitizeCreated(template, trust: capabilityTrust, report: &trustReport)
             modelContext.insert(template)
         }
@@ -1448,12 +1449,12 @@ public enum WorkspaceConfigManager {
         try data.write(to: url)
     }
 
-    private static func fetchGlobalSkills(modelContext: ModelContext) -> [Skill] {
+    static func fetchGlobalSkills(modelContext: ModelContext) -> [Skill] {
         let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal })
         return (try? modelContext.fetch(descriptor)) ?? []
     }
 
-    private static func fetchGlobalConnectors(modelContext: ModelContext) -> [Connector] {
+    static func fetchGlobalConnectors(modelContext: ModelContext) -> [Connector] {
         let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal })
         return (try? modelContext.fetch(descriptor)) ?? []
     }
@@ -1582,7 +1583,7 @@ public enum WorkspaceConfigManager {
         []
     }
 
-    private static func skillsForExport(workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
+    static func skillsForExport(workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalSkillIDs.compactMap(UUID.init(uuidString:)))
         let taskSkills = workspace.tasks.flatMap(\.skills)
         let enabledGlobals = globalSkills.filter { enabledGlobalIDs.contains($0.id) }
@@ -1590,7 +1591,7 @@ public enum WorkspaceConfigManager {
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 
-    private static func connectorsForExport(
+    static func connectorsForExport(
         workspace: Workspace,
         skills: [Skill],
         globalConnectors: [Connector]
@@ -1639,13 +1640,16 @@ public enum WorkspaceConfigManager {
             originComponentKind: skill.originComponentKind,
             originSourceKind: skill.originSourceKind,
             createdAt: skill.createdAt,
-            updatedAt: skill.updatedAt
+            updatedAt: skill.updatedAt,
+            credentialNamespaceID: skill.credentialNamespaceID
         )
     }
 
     private static func connectorConfig(_ connector: Connector) -> ConnectorConfig? {
         guard !connector.isDeleted, connector.modelContext != nil else { return nil }
         guard ConnectorSecurityPolicy.isRuntimeSafe(connector) else { return nil }
+        let config = ConnectorSettingStorageSeam.exportableConfig(keys: connector.configKeys, values: connector.configValues,
+                                                                  originPackageID: connector.originPackageID, originComponentID: connector.originComponentID)
         return ConnectorConfig(
             id: connector.id.uuidString,
             name: connector.name,
@@ -1655,8 +1659,8 @@ public enum WorkspaceConfigManager {
             baseURL: connector.baseURL,
             authMethod: connector.authMethod,
             credentialKeys: connector.credentialKeys,
-            configKeys: connector.configKeys,
-            configValues: connector.configValues,
+            configKeys: config.keys,
+            configValues: config.values,
             isGlobal: connector.isGlobal,
             notes: connector.notes,
             originPackageID: connector.originPackageID,
@@ -1666,7 +1670,8 @@ public enum WorkspaceConfigManager {
             originSourceKind: connector.originSourceKind,
             accountAlias: connector.accountAlias,
             createdAt: connector.createdAt,
-            updatedAt: connector.updatedAt
+            updatedAt: connector.updatedAt,
+            credentialNamespaceID: connector.credentialNamespaceID
         )
     }
 
@@ -2055,6 +2060,7 @@ public enum WorkspaceConfigManager {
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             connector.id = id
         }
+        connector.credentialNamespaceID = config.credentialNamespaceID
         connector.credentialKeys = config.credentialKeys
         connector.credentialValues = Array(repeating: "", count: config.credentialKeys.count)
         connector.configKeys = config.configKeys
@@ -2091,6 +2097,7 @@ public enum WorkspaceConfigManager {
         if let id = snapshot.id.flatMap(UUID.init(uuidString:)) {
             connector.id = id
         }
+        connector.credentialNamespaceID = snapshot.credentialNamespaceID
         connector.credentialKeys = snapshot.credentialKeys
         connector.credentialValues = Array(repeating: "", count: snapshot.credentialKeys.count)
         connector.configKeys = snapshot.configKeys
@@ -2164,6 +2171,7 @@ public enum WorkspaceConfigManager {
         if !freshID, let id = config.id.flatMap(UUID.init(uuidString:)) {
             skill.id = id
         }
+        if !freshID { skill.credentialNamespaceID = config.credentialNamespaceID }
         skill.environmentKeys = config.environmentKeys
         let storedValues = Array(config.environmentValues.prefix(config.environmentKeys.count))
         skill.environmentValues = storedValues + Array(repeating: "", count: max(0, config.environmentKeys.count - storedValues.count))
@@ -2198,6 +2206,7 @@ public enum WorkspaceConfigManager {
         if !freshID, let id = snapshot.id.flatMap(UUID.init(uuidString:)) {
             skill.id = id
         }
+        if !freshID { skill.credentialNamespaceID = snapshot.credentialNamespaceID }
         skill.environmentKeys = snapshot.environmentKeys
         let storedValues = Array(snapshot.environmentValues.prefix(snapshot.environmentKeys.count))
         skill.environmentValues = storedValues + Array(repeating: "", count: max(0, snapshot.environmentKeys.count - storedValues.count))
@@ -2241,28 +2250,6 @@ public enum WorkspaceConfigManager {
         template.createdAt = config.createdAt ?? template.createdAt
         template.updatedAt = config.updatedAt ?? template.updatedAt
         return template
-    }
-
-    static func redactedSkillSnapshot(_ snapshot: SkillSnapshotConfig) -> SkillSnapshotConfig {
-        SkillSnapshotConfig(
-            id: snapshot.id,
-            name: snapshot.name,
-            icon: snapshot.icon,
-            description: snapshot.description,
-            allowedTools: snapshot.allowedTools,
-            disallowedTools: snapshot.disallowedTools,
-            customTools: snapshot.customTools,
-            behaviorInstructions: snapshot.behaviorInstructions,
-            environmentKeys: snapshot.environmentKeys,
-            environmentValues: Array(repeating: "", count: snapshot.environmentKeys.count),
-            isGlobal: snapshot.isGlobal,
-            connectorIDs: snapshot.connectorIDs,
-            localToolIDs: snapshot.localToolIDs,
-            connectorSnapshots: snapshot.connectorSnapshots,
-            localToolSnapshots: snapshot.localToolSnapshots,
-            createdAt: snapshot.createdAt,
-            updatedAt: snapshot.updatedAt
-        )
     }
 
     private static func makeImportedSchedule(
@@ -2507,7 +2494,7 @@ public enum WorkspaceConfigManager {
             task.templateID = UUID(uuidString: id)
         }
         task.templateHooksJSON = config.templateHooksJSON ?? ""
-        task.skillSnapshots = config.skillSnapshots ?? []
+        task.skillSnapshots = importedSkillSnapshots(config.skillSnapshots ?? [], freshIDs: freshIDs)
         task.executionEnvironmentSnapshotJSON = sanitizedExecutionEnvironmentJSON(
             config.executionEnvironmentSnapshotJSON,
             preservingHost: true
@@ -2997,7 +2984,6 @@ public enum WorkspaceConfigManager {
         guard !skills.contains(where: { $0.id == skill.id }) else { return }
         skills.append(skill)
     }
-
 
     private static func importedActiveWorkingPath(
         _ activeWorkingPath: String?,

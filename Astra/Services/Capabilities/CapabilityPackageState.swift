@@ -24,7 +24,8 @@ struct CapabilityPackageState {
     var secretStore: SecretStore = KeychainSecretStore()
 
     var linkedSkills: [Skill] {
-        uniqueSkills(directlyLinkedSkills + directlyLinkedConnectors.compactMap(\.skill) + directlyLinkedTools.compactMap(\.skill))
+        if isProjectedResourceCapability { return directlyLinkedSkills }
+        return uniqueSkills(directlyLinkedSkills + directlyLinkedConnectors.compactMap(\.skill) + directlyLinkedTools.compactMap(\.skill))
     }
 
     var linkedConnectors: [Connector] {
@@ -80,8 +81,10 @@ struct CapabilityPackageState {
         if let activation {
             return activation.isEnabled
         }
-        if workspace.enabledCapabilityIDs.contains(package.id) {
-            return true
+        // Explicit plugin enablement comes only from its activation or the
+        // pending legacy membership. An authored namesake cannot turn it on.
+        if !isProjectedResourceCapability {
+            return WorkspaceCapabilityActivation.enabledPluginIDs(of: workspace).contains(package.id)
         }
 
         if isProjectedResourceCapability {
@@ -141,8 +144,11 @@ struct CapabilityPackageState {
         }
 
         let activeConnectors = activeLinkedConnectors
+        // The same sign-in drift `attentionMessages` reports, so a component
+        // that says reconnect never sits under a plugin that says ready.
         let messages = missingPackageConnectorMessages(activeLinkedConnectors: activeConnectors)
             + activeConnectors.flatMap(readinessMessages(for:))
+            + linkedConnectors.flatMap(authMethodMessages(for:))
 
         return messages.isEmpty
             ? .ready
@@ -200,7 +206,21 @@ struct CapabilityPackageState {
         }
         let credentialMessages = activeConnectors.contains(where: { $0.id == connector.id })
             ? readinessMessages(for: connector) : []
-        return missingConnectorMessages + credentialMessages
+        return missingConnectorMessages + credentialMessages + authMethodMessages(for: connector)
+    }
+
+    /// An account this plugin created whose sign-in method the current
+    /// definition no longer declares stays bound but runs nothing until the
+    /// person reconnects it (`PluginRuntimeProjection.signsInWithWithdrawnMethod`):
+    /// it needs a step.
+    private func authMethodMessages(for connector: Connector) -> [String] {
+        // The account's own component, from its binding; a loose match only
+        // when it has none (two components of one service differ).
+        let boundComponent = activation?.bindings.first { !$0.isDeleted && $0.account?.id == connector.id }?.componentID
+        let spec = boundComponent.flatMap { id in package.connectors.first { CapabilityResourceOrigin.componentID(for: $0) == id } }
+            ?? package.connectors.first { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
+        guard let spec, PluginRuntimeProjection.signsInWithWithdrawnMethod(connector, spec: spec, package: package) else { return [] }
+        return ["\(connector.name): this version signs in with \(spec.authMethod); reconnect the account"]
     }
 
     private var activeLinkedConnectors: [Connector] {
@@ -220,6 +240,10 @@ struct CapabilityPackageState {
     private var directlyLinkedSkills: [Skill] {
         if activation != nil { return projection.skills }
         let candidates = capabilities.workspaceSkills + capabilities.availableGlobalSkills
+        if isProjectedResourceCapability {
+            guard let rowID = CapabilityInstaller.syntheticSkillRowID(of: package) else { return [] }
+            return candidates.filter { $0.id == rowID }
+        }
         let originMatches = candidates.filter {
             CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
         }
@@ -237,6 +261,7 @@ struct CapabilityPackageState {
     }
 
     private var directlyLinkedConnectors: [Connector] {
+        if isProjectedResourceCapability { return [] }
         if let activation {
             return uniqueConnectors(activation.bindings.filter { !$0.isDeleted }.compactMap(\.account))
         }
@@ -256,6 +281,7 @@ struct CapabilityPackageState {
     }
 
     private var directlyLinkedTools: [LocalTool] {
+        if isProjectedResourceCapability { return [] }
         if activation != nil { return projection.tools }
         let candidates = capabilities.workspaceTools + capabilities.availableGlobalTools
         let originMatches = candidates.filter {

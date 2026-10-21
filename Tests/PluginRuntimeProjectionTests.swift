@@ -5,6 +5,7 @@ import ASTRAModels
 @testable import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
+import HostControlToolSupport
 
 /// Identity and ownership rules of `PluginRuntimeProjection` and the services
 /// that write activations (Plugins 2.0 R1 review).
@@ -141,7 +142,10 @@ struct PluginRuntimeProjectionTests {
     @Test("Adding a catalog skill turns its stored row on instead of projecting a copy")
     func syntheticSkillPackageEnablesItsRow() throws {
         let context = try makeContext()
-        let workspace = Workspace(name: "Synthetic", primaryPath: "/tmp/projection-synthetic")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Synthetic", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let shared = Skill(name: "Shared Analyst", allowedTools: ["Read"])
         shared.isGlobal = true
@@ -190,7 +194,10 @@ struct PluginRuntimeProjectionTests {
     func addSeedsKnownComponentsAndKeepsDefault() throws {
         let context = try makeContext()
         let jira = try builtIn("jira-workflow")
-        let workspace = Workspace(name: "Known", primaryPath: "/tmp/projection-known")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Known", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let chosen = Connector(name: "Chosen", serviceType: jira.connectors[0].serviceType)
         chosen.workspace = workspace
@@ -244,8 +251,8 @@ struct PluginRuntimeProjectionTests {
         try context.save()
 
         let inputs = CapabilitySetupCopier(secretStore: MockSecretStore()).installationInputs(for: jira, from: workspace)
-        #expect(inputs.baseURLOverrides[spec.name] == "https://own.atlassian.net")
-        #expect(inputs.configInputs["JIRA_PROJECTS"] == nil)
+        #expect(inputs.baseURLOverrides[spec.setupComponentID] == "https://own.atlassian.net")
+        #expect(inputs.configInputs[PluginSetupInputs.key("JIRA_PROJECTS", component: spec.setupComponentID)] == nil)
     }
 
     @Test("Copying setup does not turn back on a plugin the source turned off")
@@ -381,7 +388,10 @@ struct PluginRuntimeProjectionTests {
     func addReleasesDroppedConnectorBindings() throws {
         let context = try makeContext()
         let jira = try builtIn("jira-workflow")
-        let workspace = Workspace(name: "Dropped", primaryPath: "/tmp/projection-dropped")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Dropped", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-dropped-\(UUID().uuidString)", isDirectory: true)
@@ -403,8 +413,14 @@ struct PluginRuntimeProjectionTests {
     func activationRunsOnlyTheDefinitionItAccepted() throws {
         let context = try makeContext()
         let gcloud = try builtIn("gcloud-workflow")
-        let a = Workspace(name: "A", primaryPath: "/tmp/projection-accepted-a")
-        let b = Workspace(name: "B", primaryPath: "/tmp/projection-accepted-b")
+        let aFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: aFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: aFolder) }
+        let a = Workspace(name: "A", primaryPath: aFolder.path)
+        let bFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: bFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: bFolder) }
+        let b = Workspace(name: "B", primaryPath: bFolder.path)
         context.insert(a)
         context.insert(b)
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -476,7 +492,128 @@ struct PluginRuntimeProjectionTests {
         #expect(detached.skills.contains { $0.originComponentID == component })
     }
 
+    /// Make default on the second of two accounts: a broker call that names
+    /// no account reaches it, and naming the other still reaches that one.
+    @Test("An aliasless broker call reaches the account made default, and a named one still wins")
+    func aliaslessBrokerCallUsesTheWorkspaceDefault() throws {
+        let context = try makeContext()
+        let jira = try builtIn("jira-workflow")
+        let workspace = Workspace(name: "Defaults", primaryPath: "/tmp/projection-defaults")
+        context.insert(workspace)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(jira.id) }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+        let component = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        let accounts = ["Ops", "Research"].map { name in
+            let account = Connector(name: name, serviceType: "jira", baseURL: "https://\(name.lowercased()).atlassian.net", authMethod: "basic")
+            account.workspace = workspace
+            context.insert(account)
+            WorkspaceCapabilityActivation.bind(account, toComponent: component, of: activation)
+            return account
+        }
+        WorkspaceCapabilityActivation.bind(accounts[1], toComponent: component, of: activation, isDefault: true)
+        let task = AgentTask(title: "Issues", goal: "list the open issues", workspace: workspace, runtime: .claudeCode)
+        context.insert(task)
+        try context.save()
+
+        let configuration = Self.brokerConfiguration(for: task)
+        #expect(configuration.connectorManifest.connectors.count == 2)
+        #expect(configuration.connectorManifest.connectors.filter { $0.isDefault == true }.map(\.id) == [accounts[1].id.uuidString])
+        let resolve = { HostControlBrokeredServices.resolveConnector(forServiceType: "jira", alias: $0, in: configuration).connector?.id }
+        #expect(resolve(nil) == accounts[1].id.uuidString)
+        let other = try #require(configuration.connectorManifest.connectors.first { $0.id == accounts[0].id.uuidString })
+        #expect(resolve(other.alias) == accounts[0].id.uuidString)
+    }
+
+    /// Turn off keeps plugin A's bindings, its default included. While A is
+    /// off, B's oldest account stands in; turning A on gives the default back.
+    @Test("With the default's plugin off, an aliasless call reaches the oldest enabled account, and A's again once it's back")
+    func projectedDefaultFallsBackToTheOldestEnabledAccount() throws {
+        let context = try makeContext()
+        let jira = try builtIn("jira-workflow")
+        var other = jira
+        other.id = "jira-ops"
+        other.skills[0].name = "Jira Ops Agent"
+        let workspace = Workspace(name: "Fallback", primaryPath: "/tmp/projection-fallback")
+        context.insert(workspace)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableCapability(jira.id)
+            $0.enableCapability(other.id)
+        }
+        let component = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        func account(_ name: String, boundTo pluginID: String, at offset: TimeInterval) throws -> Connector {
+            let row = Connector(name: name, serviceType: "jira", baseURL: "https://\(name.lowercased()).atlassian.net", authMethod: "basic")
+            row.workspace = workspace
+            context.insert(row)
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace))
+            WorkspaceCapabilityActivation.bind(row, toComponent: component, of: activation)
+            let binding = try #require(activation.bindings.first { $0.account?.id == row.id })
+            binding.createdAt = Date(timeIntervalSince1970: 1_000 + offset)
+            return row
+        }
+        let primary = try account("Primary", boundTo: jira.id, at: 0)
+        let older = try account("Older", boundTo: other.id, at: 10)
+        _ = try account("Newer", boundTo: other.id, at: 20)
+        try context.save()
+
+        func aliaslessCall() -> String? {
+            let projection = PluginRuntimeProjection.project(workspace: workspace, packages: [jira, other], connectorMode: .runtimeCopies)
+            let manifest = ConnectorRuntimeProjection(
+                connectors: projection.connectors, secretStore: MockSecretStore(), defaultConnectorIDs: projection.defaultAccountIDs
+            ).manifestJSON()
+            return HostControlBrokeredServices.resolveConnector(
+                forServiceType: "jira", alias: nil, in: HostControlToolConfiguration(connectorsJSON: manifest)
+            ).connector?.id
+        }
+        #expect(aliaslessCall() == primary.id.uuidString)
+
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.removeAll { $0 == jira.id } }
+        let kept = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+        #expect(!kept.isEnabled && kept.bindings.contains { $0.isDefault && $0.account?.id == primary.id })
+        #expect(aliaslessCall() == older.id.uuidString)
+
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(jira.id) }
+        #expect(aliaslessCall() == primary.id.uuidString)
+    }
+
+    @Test("Accounts enabled outside a plugin carry no default, so an aliasless call is still refused")
+    func directAccountsKeepTheRefusal() throws {
+        let context = try makeContext()
+        let workspace = Workspace(name: "Direct", primaryPath: "/tmp/projection-direct")
+        context.insert(workspace)
+        for name in ["Ops", "Research"] {
+            let account = Connector(name: name, serviceType: "jira", baseURL: "https://\(name.lowercased()).atlassian.net", authMethod: "basic")
+            account.workspace = workspace
+            context.insert(account)
+        }
+        let task = AgentTask(title: "Issues", goal: "list the open issues", workspace: workspace, runtime: .claudeCode)
+        context.insert(task)
+        try context.save()
+
+        let configuration = Self.brokerConfiguration(for: task)
+        #expect(configuration.connectorManifest.connectors.count == 2)
+        #expect(configuration.connectorManifest.connectors.allSatisfy { $0.isDefault == nil })
+        let resolution = HostControlBrokeredServices.resolveConnector(forServiceType: "jira", alias: nil, in: configuration)
+        guard case .ambiguous(alias: nil, _) = resolution else {
+            Issue.record("Expected the aliasless call to be refused, got \(resolution)")
+            return
+        }
+    }
+
     // MARK: - Helpers
+
+    /// The broker's configuration as a launch of `task` builds it.
+    private static func brokerConfiguration(for task: AgentTask) -> HostControlToolConfiguration {
+        let store = MockSecretStore()
+        let scope = TaskCapabilityResolver(task: task, runtime: .claudeCode, secretStore: store).resolvedScope(.fullInventory)
+        let environment = HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: task,
+            runtime: .claudeCode,
+            capabilityScope: scope,
+            requiredTools: ["jira"],
+            secretStore: store
+        )
+        return HostControlToolConfiguration(connectorsJSON: environment["ASTRA_CONNECTORS"] ?? #"{"connectors":[]}"#)
+    }
 
     private func makeContext() throws -> ModelContext {
         let container = try ModelContainer(

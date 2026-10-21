@@ -68,6 +68,14 @@ NS_ASSUME_NONNULL_BEGIN
                            keychainPath:(NSString *)keychainPath
                        bootstrapService:(NSString *)bootstrapService;
 
+/// Read with a call-scoped status. A missing bootstrap/keychain reports
+/// unavailable, never item-not-found (which refers only to a credential).
++ (nullable NSString *)secretForAccount:(NSString *)account
+                                service:(NSString *)service
+                           keychainPath:(NSString *)keychainPath
+                       bootstrapService:(NSString *)bootstrapService
+                                 status:(OSStatus *)status;
+
 /// Delete the item for (`service`, `account`). Returns `YES` if it was removed
 /// or did not exist.
 + (BOOL)deleteSecretForAccount:(NSString *)account

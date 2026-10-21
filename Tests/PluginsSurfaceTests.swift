@@ -184,9 +184,9 @@ struct PluginsSurfaceTests {
         let service = CapabilityCatalogActionService(library: CapabilityLibrary(directory: root))
 
         #expect(!PluginsSurfacePresentation.offersTurnOff(ownRow))
-        #expect(!service.disable(ownRow, workspace: workspace, capabilities: capabilities, modelContext: context).persisted)
+        #expect(!service.disable(ownRow, workspace: workspace, modelContext: context).persisted)
         #expect(PluginsSurfacePresentation.offersTurnOff(sharedRow))
-        #expect(service.disable(sharedRow, workspace: workspace, capabilities: capabilities, modelContext: context).persisted)
+        #expect(service.disable(sharedRow, workspace: workspace, modelContext: context).persisted)
 
         #expect(!workspace.enabledGlobalSkillIDs.contains(shared.id.uuidString))
         #expect(Set(try context.fetch(FetchDescriptor<Skill>()).map(\.id)) == [own.id, shared.id])
@@ -211,7 +211,10 @@ struct PluginsSurfaceTests {
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
         )
         let context = container.mainContext
-        let workspace = Workspace(name: "Add", primaryPath: "/tmp/plugins-add")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Add", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-plugins-add-\(UUID().uuidString)", isDirectory: true)
@@ -298,11 +301,11 @@ struct PluginsSurfaceTests {
         context.insert(workspace)
         let plugin = package("turn-off-plugin", name: "Turn Off Plugin")
         WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs = [plugin.id, "kept-plugin"] }
+        try context.save()
         let traceID = AuditTrace.make("turn-off")
 
         let result = CapabilityCatalogActionService().disable(
             plugin, workspace: workspace,
-            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: []),
             modelContext: context, traceID: traceID
         )
 

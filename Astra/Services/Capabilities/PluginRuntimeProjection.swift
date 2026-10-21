@@ -41,25 +41,52 @@ struct PluginRuntimeProjection {
     /// two plugins bind is emitted once, wired to the first plugin's skill;
     /// scope pruning keeps it for any of its owners.
     var accountOwnerSkillIDs: [UUID: Set<UUID>] = [:]
+    /// The projected accounts a binding marks as their service's default in
+    /// this workspace (`AccountBinding.isDefault`, set by Make default), or,
+    /// for a service whose default isn't projected, its oldest projected
+    /// account (`projectedDefaults`). The broker resolves a call that names
+    /// no account to the one default of its service; this is the only place
+    /// that flag leaves the bindings.
+    var defaultAccountIDs: Set<UUID> = []
 
     static let empty = PluginRuntimeProjection(skills: [], tools: [], connectors: [], unboundConnectorComponents: [:])
 
     /// Projects every enabled activation of `workspace` whose plugin is in
     /// `packages` (the caller's enabled, policy-allowed definitions), except
-    /// one that awaits Update (`awaitsUpdate`).
+    /// one that awaits Update (`awaitsUpdate`). `definitions` are the
+    /// installed definitions a shared account's creator is looked up in when
+    /// that plugin is not among `packages` (off here, or not runnable); nil
+    /// reads the library, only when such an account is bound.
     static func project(
         workspace: Workspace?,
         packages: [PluginPackage],
-        connectorMode: ConnectorMode = .accounts
+        connectorMode: ConnectorMode = .accounts,
+        definitions: [PluginPackage]? = nil
     ) -> PluginRuntimeProjection {
         guard let workspace, !packages.isEmpty else { return .empty }
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var definitionsByID: [String: PluginPackage]?
+        func creator(_ packageID: String) -> PluginPackage? {
+            if let package = packagesByID[packageID] { return package }
+            if definitionsByID == nil {
+                definitionsByID = Dictionary(
+                    (definitions ?? CapabilityRuntimeResourceMatcher.packageDefinitions()).map { ($0.id, $0) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+            }
+            return definitionsByID?[packageID]
+        }
         var skills: [Skill] = []
         var tools: [LocalTool] = []
         var connectors: [Connector] = []
         var unbound: [String: [String]] = [:]
         var seenConnectorIDs = Set<UUID>()
+        // A runtime copy is filtered once every plugin that binds its
+        // account is known: the copy serves any of them.
+        var copies: [UUID: (account: Connector, copy: Connector)] = [:]
+        var bindingOwners: [UUID: [(spec: PluginConnector, package: PluginPackage)]] = [:]
         var owners: [UUID: Set<UUID>] = [:]
+        var projectedBindings: [AccountBinding] = []
 
         for activation in WorkspaceCapabilityActivation.activations(of: workspace) where activation.isEnabled {
             guard let package = packagesByID[activation.pluginID], !awaitsUpdate(activation, to: package) else { continue }
@@ -108,25 +135,35 @@ struct PluginRuntimeProjection {
             for spec in package.connectors {
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
                 guard !overridden.contains(componentID) else { continue }
-                let accounts = activation.accounts(forComponent: componentID).filter { !$0.isDeleted }
+                // An account whose sign-in method this definition withdrew
+                // stays bound, but nothing runs with it until it reconnects.
+                let accounts = activation.accounts(forComponent: componentID)
+                    .filter { !$0.isDeleted && !Self.signsInWithWithdrawnMethod($0, spec: spec, package: package) }
                 if accounts.isEmpty {
                     unbound[package.id, default: []].append(componentID)
                 }
                 if let primarySkill {
                     for account in accounts { owners[account.id, default: []].insert(primarySkill.id) }
                 }
-                for account in accounts where seenConnectorIDs.insert(account.id).inserted {
-                    switch connectorMode {
-                    case .accounts:
-                        connectors.append(account)
-                    case .runtimeCopies:
-                        let copy = TaskExecutionLaunchSnapshotApplicator.detachedConnector(account, skill: primarySkill)
-                        // A bound account is in scope through its binding,
-                        // wherever the row itself lives, and runs under the
-                        // name this workspace knows it by.
-                        copy.isGlobal = true
-                        copy.name = WorkspaceCapabilityActivation.alias(of: account, in: workspace)
-                        connectors.append(copy)
+                projectedBindings += activation.bindings.filter { binding in
+                    !binding.isDeleted && binding.componentID == componentID && binding.account.map { !$0.isDeleted } == true
+                }
+                for account in accounts {
+                    if connectorMode == .runtimeCopies { bindingOwners[account.id, default: []].append((spec, package)) }
+                    if seenConnectorIDs.insert(account.id).inserted {
+                        switch connectorMode {
+                        case .accounts:
+                            connectors.append(account)
+                        case .runtimeCopies:
+                            let copy = TaskExecutionLaunchSnapshotApplicator.detachedConnector(account, skill: primarySkill)
+                            // A bound account is in scope through its binding,
+                            // wherever the row itself lives, and runs under the
+                            // name this workspace knows it by.
+                            copy.isGlobal = true
+                            copy.name = WorkspaceCapabilityActivation.alias(of: account, in: workspace)
+                            copies[account.id] = (account, copy)
+                            connectors.append(copy)
+                        }
                     }
                 }
             }
@@ -152,12 +189,16 @@ struct PluginRuntimeProjection {
                 tools.append(makeTool(spec, package: package, activation: activation, componentID: componentID, skill: primarySkill))
             }
         }
+        for (id, entry) in copies {
+            retainDeclaredKeys(of: entry.account, on: entry.copy, bindings: bindingOwners[id] ?? [], creator: creator)
+        }
         return PluginRuntimeProjection(
             skills: skills,
             tools: tools,
             connectors: connectors,
             unboundConnectorComponents: unbound,
-            accountOwnerSkillIDs: owners
+            accountOwnerSkillIDs: owners,
+            defaultAccountIDs: projectedDefaults(projectedBindings)
         )
     }
 
@@ -181,8 +222,14 @@ struct PluginRuntimeProjection {
         )
     }
 
+    static func credentialID(of activation: PluginActivation, componentID: String) -> UUID {
+        PluginActivation.credentialID(workspaceID: activation.launchWorkspaceID ?? activation.workspace?.id ?? activation.id,
+            pluginID: activation.pluginID, componentID: componentID,
+            runtimeSeed: activation.namespaceSeed, generation: activation.credentialNamespaceSeed)
+    }
+
     /// The component IDs a definition declares: skills, connectors, tools.
-    static func componentIDs(of package: PluginPackage) -> [String] {
+    nonisolated static func componentIDs(of package: PluginPackage) -> [String] {
         package.skills.map { CapabilityResourceOrigin.componentID(for: $0) }
             + package.connectors.map { CapabilityResourceOrigin.componentID(for: $0) }
             + package.localTools.map { CapabilityResourceOrigin.componentID(for: $0) }
@@ -202,28 +249,37 @@ struct PluginRuntimeProjection {
         var seen = Set<String>()
         return componentIDs
             .filter { seen.insert($0).inserted }
-            .map { derivedID(of: activation, componentID: $0) }
+            .map { credentialID(of: activation, componentID: $0) }
     }
 
     /// Whether `activation` accepted another definition of its plugin than
     /// `package`: the library holds one definition for every workspace, so
     /// an import, an Add elsewhere or the built-in sync replaces it here too.
-    /// Until this workspace accepts it (Add again records the version,
-    /// content digest and components), its plugin doesn't run here, in a
-    /// run or a queued launch: a different version, different content under
-    /// the same version (`PluginDefinitionDigest`, which leaves out where a
-    /// copy came from, so two copies of one definition agree), or a
-    /// component the activation never recorded. A digest recorded before
-    /// content digests, or none (a mirror written before V20 carries only
-    /// the version), can't be compared, so only the version and components
-    /// are; an activation with no recorded version either has nothing to
-    /// compare. Known components are compared as a superset because an Add
-    /// keeps the ones a definition dropped, for secret cleanup.
+    /// An automatic pass that would have released something, or that met a
+    /// definition awaiting its review or changed under the same version,
+    /// held it back (`awaitingUpdate`); otherwise it differs in its version,
+    /// its content under the same version (`PluginDefinitionDigest`, which
+    /// leaves out where a copy came from, so two copies of one definition
+    /// agree), or its components. A digest recorded before content digests,
+    /// or none (a mirror written before V20 carries only the version), can't
+    /// be compared, so only the version and components are; an activation
+    /// with no recorded version either has nothing to compare. Its plugin
+    /// doesn't run, here or in a queued launch, until Update reconciles it;
+    /// the Plugins row offers Update meanwhile.
     static func awaitsUpdate(_ activation: PluginActivation, to package: PluginPackage) -> Bool {
+        if activation.awaitingUpdate { return true }
         if !activation.recordedVersion.isEmpty, activation.recordedVersion != package.version { return true }
         if PluginDefinitionDigest.matches(activation.recordedDigest, package) == false { return true }
-        return !activation.knownComponentIDs.isEmpty
-            && !Set(componentIDs(of: package)).isSubset(of: Set(activation.knownComponentIDs))
+        return !activation.knownComponentIDs.isEmpty && Set(activation.knownComponentIDs) != Set(componentIDs(of: package))
+    }
+
+    /// Whether `account`, which `package` created for `spec`'s component,
+    /// signs in with a method the definition no longer declares. Derived
+    /// from the definition, never stored: the account stays bound, out of
+    /// every run and not ready (`CapabilityPackageState` asks it to
+    /// reconnect), until it signs in with the declared method.
+    static func signsInWithWithdrawnMethod(_ account: Connector, spec: PluginConnector, package: PluginPackage) -> Bool {
+        account.originPackageID == package.id && !spec.authMethod.isEmpty && spec.authMethod != account.authMethod
     }
 
     /// `packages` without the plugins whose activation in `workspace` awaits
@@ -247,6 +303,27 @@ struct PluginRuntimeProjection {
     static let projectedSourceKind = "plugin_activation"
 
     // MARK: - Private
+
+    /// Per service, the projected accounts a binding marks default. Turning
+    /// a plugin off keeps its bindings, default included, so turning it on
+    /// gives the default back; meanwhile a service whose default is on such
+    /// a binding falls back to its oldest projected binding (by creation,
+    /// then ID), so a call that names no account still has one to reach.
+    private static func projectedDefaults(_ bindings: [AccountBinding]) -> Set<UUID> {
+        let byService = Dictionary(grouping: bindings) {
+            ($0.account?.serviceType ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        var defaults = Set<UUID>()
+        for group in byService.values {
+            let stored = group.filter(\.isDefault).compactMap { $0.account?.id }
+            if !stored.isEmpty {
+                defaults.formUnion(stored)
+            } else if let oldest = group.min(by: { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) })?.account {
+                defaults.insert(oldest.id)
+            }
+        }
+        return defaults
+    }
 
     /// An override whose row the store no longer has gives the component
     /// back to the plugin, so deleting the replacement never silently drops
@@ -314,10 +391,11 @@ struct PluginRuntimeProjection {
             behaviorInstructions: spec.behaviorInstructions
         )
         skill.id = derivedID(of: activation, componentID: componentID)
+        skill.credentialNamespaceID = credentialID(of: activation, componentID: componentID)
         let configured = activation.configuration(forComponent: componentID)
         skill.environmentKeys = spec.environmentKeys
         skill.environmentValues = spec.environmentKeys.enumerated().map { index, key in
-            // Secret values live in the Keychain under this skill's ID.
+            // Secret values live under this projection's credential namespace.
             guard !Skill.isSecretEnvironmentKey(key) else { return "" }
             if let value = configured[key] { return value }
             return index < spec.environmentValues.count ? spec.environmentValues[index] : ""
@@ -328,6 +406,95 @@ struct PluginRuntimeProjection {
         skill.createdAt = activation.createdAt
         skill.updatedAt = activation.updatedAt
         return skill
+    }
+
+    /// An account a plugin created carries the credentials and settings its
+    /// creator's installed definition declares, whether or not that plugin
+    /// is on here. A key an update stopped declaring stays on the row
+    /// (Update keeps what the person entered) but never reaches a run. A
+    /// creator whose definition can't be found (unreadable, or removed while
+    /// its provenance stayed) fails closed: no credential reaches the run,
+    /// and only the settings every plugin that binds it declares do, since
+    /// the one copy serves a run scoped to any of them. An account no
+    /// plugin created keeps everything the person entered. A setting its
+    /// creator stores as a credential (`PluginConnectorFieldTrust`) reaches
+    /// the run from the Keychain; one an older row still holds as plain text
+    /// is kept as a setting until Add moves it.
+    private static func retainDeclaredKeys(
+        of account: Connector,
+        on copy: Connector,
+        bindings: [(spec: PluginConnector, package: PluginPackage)],
+        creator: (String) -> PluginPackage?
+    ) {
+        guard let originID = account.originPackageID, !originID.isEmpty, let first = bindings.first else { return }
+        var found: (spec: PluginConnector, package: PluginPackage)?
+        for binding in bindings where found == nil {
+            found = creatorDeclaration(of: account, originID: originID, binding: binding.spec, in: binding.package, creator: creator)
+        }
+        guard let declaration = found else {
+            let shared = bindings.dropFirst().reduce(storedConfigKeys(of: first.spec, in: first.package, on: copy)) {
+                $0.intersection(storedConfigKeys(of: $1.spec, in: $1.package, on: copy))
+            }
+            retain(credentials: [], config: shared, on: copy)
+            return
+        }
+        retain(
+            credentials: Set(PluginConnectorFieldTrust.asStored(declaration.spec, in: declaration.package).credentialHints.map(\.key)),
+            config: storedConfigKeys(of: declaration.spec, in: declaration.package, on: copy),
+            on: copy
+        )
+    }
+
+    /// The connector declaration that created `account`: `binding` when the
+    /// account is `package`'s, else its creator's component of the same ID,
+    /// or the one that `replaces` it (a stamp an Update hasn't moved yet).
+    private static func creatorDeclaration(
+        of account: Connector,
+        originID: String,
+        binding spec: PluginConnector,
+        in package: PluginPackage,
+        creator: (String) -> PluginPackage?
+    ) -> (spec: PluginConnector, package: PluginPackage)? {
+        if originID == package.id { return (spec, package) }
+        guard let creatorPackage = creator(originID), let stamp = account.originComponentID else { return nil }
+        let connectors = creatorPackage.connectors
+        let found = connectors.first { CapabilityResourceOrigin.componentID(for: $0) == stamp }
+            ?? connectors.first { CapabilityResourceOrigin.replacedComponentIDs(for: $0).contains(stamp) }
+        return found.map { ($0, creatorPackage) }
+    }
+
+    /// The setting keys an account of `spec` may carry plain into a run: the
+    /// settings its stored projection keeps plain
+    /// (`PluginConnectorFieldTrust.asStored`), its plugin's skill settings
+    /// (`CapabilityInstaller`) and the ones a Stanford Outlook account always
+    /// carries, less every key the plugin stores as a credential. A plain
+    /// value an older row still holds for one of those (its move into the
+    /// Keychain refused, or a different value already there) reaches no
+    /// run as a setting: it is withheld until it is a credential.
+    private static func storedConfigKeys(of spec: PluginConnector, in package: PluginPackage, on copy: Connector) -> Set<String> {
+        let stored = PluginConnectorFieldTrust.asStored(spec, in: package)
+        let promoted = PluginConnectorFieldTrust.settingsStoredAsCredentials(of: spec, in: package)
+        var keys = Set(stored.configHints.map(\.key)).union(package.skills.flatMap(\.environmentKeys))
+        if copy.isStanfordOutlookMail { keys.formUnion([StanfordOutlookMail.tenantDomainKey, StanfordOutlookMail.scopesKey]) }
+        return keys.subtracting(promoted).subtracting(stored.credentialHints.map(\.key))
+    }
+
+    /// Drops from a runtime copy the credential and setting keys outside
+    /// the declared sets, with their values. Credential keys compare
+    /// canonically (`ConnectorCredentialKey`): a saved one is stored
+    /// uppercased whatever the declaration's spelling.
+    private static func retain(credentials: Set<String>, config: Set<String>, on copy: Connector) {
+        let declared = Set(credentials.map(ConnectorCredentialKey.canonical))
+        let keptCredentials = copy.credentialKeys.indices.filter { declared.contains(ConnectorCredentialKey.canonical(copy.credentialKeys[$0])) }
+        if keptCredentials.count < copy.credentialKeys.count {
+            copy.credentialValues = keptCredentials.map { $0 < copy.credentialValues.count ? copy.credentialValues[$0] : "" }
+            copy.credentialKeys = keptCredentials.map { copy.credentialKeys[$0] }
+        }
+        let keptConfig = copy.configKeys.indices.filter { config.contains(copy.configKeys[$0]) }
+        if keptConfig.count < copy.configKeys.count {
+            copy.configValues = keptConfig.map { $0 < copy.configValues.count ? copy.configValues[$0] : "" }
+            copy.configKeys = keptConfig.map { copy.configKeys[$0] }
+        }
     }
 
     private static func makeTool(

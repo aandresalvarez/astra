@@ -63,7 +63,10 @@ struct WorkspaceCapabilities {
     /// one on), and that must not keep it on after its plugin is off.
     var activeSkills: [Skill] {
         let overriding = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
-        let ambient = (workspaceSkills + enabledGlobalSkills).filter { !overriding.contains($0.id) }
+        let ambient = (workspaceSkills + enabledGlobalSkills).filter {
+            !overriding.contains($0.id) && WorkspaceCapabilityActivation.permitsPendingLegacyResource($0.originPackageID, id: $0.id,
+                shared: $0.isGlobal, kind: .skill, in: workspace)
+        }
         return uniqueSkills(ambient + enabledPackageSkills)
     }
 
@@ -111,14 +114,33 @@ struct WorkspaceCapabilities {
             }
             return connector.workspace?.id == workspace.id
         }
-        // An account bound to one of this workspace's plugins is in scope only
-        // through its binding, so turning the plugin off takes it out, unless
-        // the workspace also lists it on its own (as the runtime does,
+        // An account is in scope only through its binding, so turning its
+        // plugin off, removing the plugin or dropping the component takes it
+        // out: a row bound here, or a workspace row a plugin created. A
+        // shared row this workspace listed itself stays an authored choice
+        // (`bindingOnlyAccountIDs`, as the runtime does in
         // `TaskCapabilityResolver.allConnectors`).
         let bindingOnly = WorkspaceCapabilityActivation.bindingOnlyAccountIDs(of: workspace)
-        let authored = (workspaceConnectors + attached + enabledGlobalConnectors)
-            .filter { !bindingOnly.contains($0.id) }
-        return uniqueConnectors(authored + projection.connectors)
+        let authored = (workspaceConnectors + attached).filter { !Self.isPluginAccount($0) }
+            + enabledGlobalConnectors
+        return uniqueConnectors(authored.filter { !bindingOnly.contains($0.id) } + projection.connectors)
+    }
+
+    /// A workspace row a plugin created for one of its connector components,
+    /// while an activation binds it or its plugin is still added there (a
+    /// dropped component's account stays out). A stamped row nothing owns,
+    /// one the migration couldn't bind or one Remove left stamped because
+    /// its credentials couldn't be copied out, is the person's.
+    static func isPluginAccount(_ connector: Connector) -> Bool {
+        let pluginID = (connector.originPackageID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !connector.isGlobal, !pluginID.isEmpty else { return false }
+        if connector.accountBindings.contains(where: { !$0.isDeleted && $0.activation.map { !$0.isDeleted } == true }) {
+            return true
+        }
+        return connector.workspace.map {
+            WorkspaceCapabilityActivation.activation(for: pluginID, in: $0) != nil
+                || WorkspaceCapabilityActivation.isPluginOriginDisabled(pluginID, in: $0)
+        } ?? false
     }
 
     /// Connector rows bound as accounts to any of this workspace's
@@ -147,7 +169,10 @@ struct WorkspaceCapabilities {
     var activeTools: [LocalTool] {
         let overriding = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
         let ambient = (workspaceTools + activeSkills.flatMap(\.localTools) + enabledGlobalTools)
-            .filter { !overriding.contains($0.id) }
+            .filter {
+                !overriding.contains($0.id) && WorkspaceCapabilityActivation.permitsPendingLegacyResource($0.originPackageID, id: $0.id,
+                    shared: $0.isGlobal, kind: .tool, in: workspace)
+            }
         return uniqueTools(ambient + projection.tools)
     }
 
