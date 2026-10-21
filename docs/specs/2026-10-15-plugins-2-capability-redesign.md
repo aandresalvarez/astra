@@ -60,9 +60,31 @@ a database transaction. Their services must use a common explicit boundary:
 
 A saved change awaiting its copy must be reported as saved with recovery pending,
 not as an ordinary failed save. Publish its committed scope so cached views also
-refresh on that outcome. If only a secret's marker was saved, explicitly report
-that the **new credential was not written**. A pending library/approval manifest
-cannot be completed by an ordinary mirror-only retry.
+refresh on that outcome. A pending library/approval manifest cannot be completed
+by an ordinary mirror-only retry.
+
+### Credential publication
+
+A credential replacement must prepare a complete, fresh generation in Keychain
+before publishing it. Journal its unreachable namespace for recovery without
+recording secret values. Never overwrite a namespace that saved domain state,
+an accepted request or a recoverable copy can still reference.
+
+Only after all required writes succeed may the same domain/receipt save publish
+the generation reference, credential markers and any account URL/auth changes.
+If a write fails, do not commit those changes or mark the replacement configured;
+the previously saved account and its generation remain unchanged. Report that the
+new credential was not written. A marker alone is not evidence of a usable value:
+missing or unverified generation values block readiness and runtime use, with no
+fallback to an older UUID, endpoint alias or generation. In particular, an old
+secret must never resolve for a new endpoint because its replacement failed.
+
+Once the generation and domain receipt are committed, a mirror failure recovers
+forward; it never repeats the secret write or restores a prior generation into
+the current account. Accepted requests may continue using their explicitly frozen
+old generation and endpoint until credential liveness releases them. Clearing a
+secret follows the same publication rule with that key omitted from the new
+generation, rather than deleting a value an accepted request still owns.
 
 ### Accepted requests and credentials
 
@@ -880,17 +902,16 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   projected template IDs, requirement 8) is not part of R1-R5; until a
   phase takes it, the "It also emits the plugin's templates" line under
   Runtime describes the target, not what ships.
-- **Secret settings are owned before they are stored.** A plugin skill's
-  secret setting reaches the Keychain only through
-  `PluginSecretSettingWriter`. For a stored activation (the row's details
-  editor), the key is added to `secretSettingKeys` and saved before the
-  value is written, and removed again if the Keychain refuses; clearing
-  deletes the value before removing the key. For an activation saved later
-  in the same transaction (Add, and setup through Add), each key is recorded
-  in `PluginSecretCleanupOutbox` as `namespace#KEY` before the write; Add's
-  save settles it, a failed Add takes it back, and at launch a record no live
-  activation names is deleted. A quit between any two steps leaves a value
-  that Remove, Update or launch cleanup can find, never one nothing records.
+- **Secret settings use prepared generations (stabilized 2026-10-21).**
+  Existing activation settings use `PluginCredentialGenerationTransaction`;
+  account edits use `ConnectorCredentialGenerationTransaction`. New Add writes
+  are journaled through `PluginSecretSettingWriter` before the caller saves
+  their owner. Required values are complete in an unreachable namespace before
+  its reference and markers are published with the domain receipt. Failed writes
+  cannot leave an apparently configured replacement or expose an old credential
+  at a changed endpoint. The original R3 marker-before-write and delete-before-
+  marker-removal sequence is superseded by the credential publication contract
+  above; cleanup waits for accepted requests and recoverable copies.
 - **Unapproved definitions move no state.** A definition awaiting review (a
   local draft with no approval for its digest, an approval for another
   digest, or a pack review gate) reconciles, at launch or on Update, to
