@@ -1182,11 +1182,19 @@ final class TaskLifecycleCoordinator {
                             config.tasks = freshExport.tasks
                         }
                     }
+                    guard let credentialIdentity = WorkspaceReplacementCredentialIdentity(
+                        workspace: existing, modelContext: modelContext
+                    ) else {
+                        AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
+                            "operation": "replace_workspace", "reason": "credential_owner_snapshot_failed"
+                        ], level: .error)
+                        return nil
+                    }
                     let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
                     return replaceWorkspace(existing, replacementPath: config.primaryPath) {
                         WorkspaceConfigManager.importWorkspace(
                             from: config, modelContext: modelContext, scheduleTrustPolicy: scheduleTrustPolicy,
-                            capabilityTrust: .validate(.live())
+                            capabilityTrust: .validate(.live()), replacementCredentialIdentity: credentialIdentity
                         )
                     }
                 case .duplicate:

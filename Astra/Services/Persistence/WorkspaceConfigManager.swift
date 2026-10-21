@@ -1192,14 +1192,16 @@ public enum WorkspaceConfigManager {
         modelContext: ModelContext,
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
         taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
-        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState
+        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState,
+        replacementCredentialIdentity: WorkspaceReplacementCredentialIdentity? = nil
     ) -> Workspace {
         importWorkspaceResult(
             from: config,
             modelContext: modelContext,
             scheduleTrustPolicy: scheduleTrustPolicy,
             taskRecoveryTrustPolicy: taskRecoveryTrustPolicy,
-            capabilityTrust: capabilityTrust
+            capabilityTrust: capabilityTrust,
+            replacementCredentialIdentity: replacementCredentialIdentity
         ).workspace
     }
 
@@ -1215,7 +1217,8 @@ public enum WorkspaceConfigManager {
         modelContext: ModelContext,
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
         taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
-        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState
+        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState,
+        replacementCredentialIdentity: WorkspaceReplacementCredentialIdentity? = nil
     ) -> WorkspaceConfigImportResult {
         let additionalPaths = config.additionalPaths.filter { !TaskWorktreeCheckoutReservation.isReserved($0) }
         let droppedAdditionalPaths = config.additionalPaths.filter { !additionalPaths.contains($0) }
@@ -1261,9 +1264,13 @@ public enum WorkspaceConfigManager {
         // A picked file may not re-parent a shared row this machine already has,
         // nor give a row it creates an ID it chose: secrets live under UUID
         // namespaces, so a reused UUID would read another row's credentials.
-        // Created rows get fresh IDs; the maps stay keyed by the file's IDs.
+        // Created rows get fresh IDs unless the explicit replacement's local
+        // owner independently vouched for the unchanged resource. The maps
+        // stay keyed by the file's IDs.
         var reusedRowIDs = Set<String>()
         let freshIDs: Bool = { if case .validate = capabilityTrust { return true } else { return false } }()
+        let retainedConnectorIDs = replacementCredentialIdentity?.connectorIDs(in: config) ?? []
+        let retainedSkillIDs = replacementCredentialIdentity?.skillIDs(in: config) ?? []
         var importedConnectorIDs: [String: String] = [:]
         for cc in config.connectors ?? [] {
             let reused = reusedGlobalConnector(for: cc, modelContext: modelContext)
@@ -1273,7 +1280,7 @@ public enum WorkspaceConfigManager {
                 continue
             }
             if reused == nil { sanitizeCreated(connector, trust: capabilityTrust, report: &trustReport) }
-            if reused == nil, freshIDs { connector.id = UUID() }
+            if reused == nil, freshIDs, !retainedConnectorIDs.contains(cc.id ?? "") { connector.id = UUID() }
             connector.workspace = (connector.isGlobal ? nil : workspace)
             if connector.isGlobal { activation.enableGlobalConnector(connector.id.uuidString) }
             if connector.modelContext == nil {
@@ -1320,7 +1327,7 @@ public enum WorkspaceConfigManager {
             let reused = reusedGlobalSkill(for: sc, modelContext: modelContext)
             // The fresh ID is set before the skill is built: building it moves
             // its secrets into the Keychain under its ID.
-            let skill = reused ?? makeSkill(from: sc, freshID: freshIDs)
+            let skill = reused ?? makeSkill(from: sc, freshID: freshIDs && !retainedSkillIDs.contains(sc.id ?? ""))
             if reused == nil { sanitizeCreated(skill, trust: capabilityTrust, report: &trustReport) }
             if skill.modelContext == nil {
                 modelContext.insert(skill)
