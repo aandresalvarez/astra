@@ -329,7 +329,7 @@ struct PluginRound21ReviewTests {
         // Update doesn't add the declared spelling beside it.
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
         var copied: [PluginUpdateService.CopiedSecret] = []
-        PluginUpdateService.syncOwnedAccounts(of: activation, to: package, copied: &copied)
+        try PluginUpdateService.syncOwnedAccounts(of: activation, to: package, copied: &copied)
         #expect(account.credentialKeys == ["TRACKER_TOKEN"])
 
         // A setting and a credential that differ only in case are one stored
