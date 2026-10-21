@@ -13,7 +13,13 @@ enum TaskRunStopEvidence {
 
     /// The repair the run stopped for (a plugin sign-in expired mid-task).
     static func repair(events: [TaskEventSnapshot], runID: UUID?) -> RepairAction? {
-        latestPayload(events: events, runID: runID, type: TaskEventTypes.System.runtimeRepairRequired)
+        // The typed event owns both automatic and manual setup. A manual
+        // repair deliberately has no legacy executable-action event.
+        if let captured = latestPayload(events: events, runID: runID, type: TaskEventTypes.System.runtimeRepairContext) {
+            return RuntimeRepairContext.decode(from: captured)?.repair
+                ?? RuntimeRepairContext.manualReview(message: "The saved repair context could not be read.").repair
+        }
+        return latestPayload(events: events, runID: runID, type: TaskEventTypes.System.runtimeRepairRequired)
             .flatMap(RepairAction.decode(from:))
     }
 
