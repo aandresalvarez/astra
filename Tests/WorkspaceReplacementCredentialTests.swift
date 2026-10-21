@@ -39,28 +39,45 @@ struct WorkspaceReplacementCredentialTests {
         withExtendedLifetime((first, second)) {}
     }
 
+    @Test("A verified replacement retains an existing account stored only under its legacy alias")
+    func replacementKeepsLegacyAlias() throws {
+        try exercise(mutation: "same", action: .replace, expectConnector: true, expectSkill: true, stableOnly: true)
+    }
+
+    @Test("An unrelated selected file cannot inherit another workspace's legacy token")
+    func unrelatedImportDoesNotInheritAlias() throws {
+        try exercise(mutation: "unrelated", action: .duplicate, expectConnector: false, expectSkill: false)
+    }
+
     @Test("Duplicate imports keep independent credential identities")
     func duplicateDoesNotInherit() throws {
         try exercise(mutation: "same", action: .duplicate, expectConnector: false, expectSkill: false)
     }
 
     private func exercise(mutation: String, action: TaskLifecycleCoordinator.DuplicateAction,
-                          expectConnector: Bool, expectSkill: Bool) throws {
+                          expectConnector: Bool, expectSkill: Bool, stableOnly: Bool = false) throws {
         let fixture = try NewTaskWorktreeFixture()
         defer { fixture.cleanUp() }
         let container = try NewTaskWorktreeFixture.container()
         let context = container.mainContext
         context.autosaveEnabled = false
+        defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) }
         let workspace = Workspace(name: "Original", primaryPath: fixture.storage.path)
         context.insert(workspace)
         let account = Connector(name: "Jira", serviceType: "jira", baseURL: "https://team.atlassian.net", authMethod: "basic")
+        if stableOnly {
+            account.id = try #require(UUID(uuidString: "A5000000-0000-4000-8000-000000000001"))
+        }
         account.workspace = workspace
         context.insert(account)
         let secrets = MockSecretStore()
         account.credentialKeys = ["JIRA_API_TOKEN"]
         account.credentialValues = [""]
-        #expect(secrets.save(key: "JIRA_API_TOKEN", value: "synthetic-account-secret",
-            entityID: try #require(KeychainSecretStore.connectorEntityIDs(for: account).first), label: nil))
+        let namespaces = KeychainSecretStore.connectorEntityIDs(for: account)
+        #expect(namespaces.count == 2)
+        for namespace in stableOnly ? Array(namespaces.dropFirst()) : namespaces {
+            #expect(secrets.save(key: "JIRA_API_TOKEN", value: "synthetic-account-secret", entityID: namespace, label: nil))
+        }
         let skill = Skill(name: "Local researcher", allowedTools: ["Read"], behaviorInstructions: "Read project notes")
         skill.workspace = workspace
         context.insert(skill)
@@ -95,7 +112,10 @@ struct WorkspaceReplacementCredentialTests {
             try context.save()
         default: break
         }
-        let url = fixture.storage.appendingPathComponent(".astra-workspace.json")
+        let importFolder = mutation == "unrelated" ? fixture.root.appendingPathComponent("Unrelated") : fixture.storage
+        try FileManager.default.createDirectory(at: importFolder, withIntermediateDirectories: true)
+        if mutation == "unrelated" { config.id = UUID().uuidString }
+        let url = importFolder.appendingPathComponent(".astra-workspace.json")
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(config).write(to: url)
@@ -104,7 +124,7 @@ struct WorkspaceReplacementCredentialTests {
             persistWorkspaceChange: { _, context in
                 mutation != "saveFailure" && (try? context.save()) != nil
             }
-        ).importFromConfig(at: url, existingWorkspaces: [workspace], askDuplicateAction: { _, _ in action })
+        ).importFromConfig(at: url, existingWorkspaces: mutation == "unrelated" ? [] : [workspace], askDuplicateAction: { _, _ in action })
         if mutation == "saveFailure" {
             #expect(replacement == nil)
             #expect(account.credentials(store: secrets)["JIRA_API_TOKEN"] == "synthetic-account-secret")
@@ -118,6 +138,23 @@ struct WorkspaceReplacementCredentialTests {
         #expect((importedSkill.id == originalSkillID) == expectSkill)
         #expect(importedAccount.credentials(store: secrets)["JIRA_API_TOKEN"] == (expectConnector ? "synthetic-account-secret" : nil))
         #expect(importedSkill.valueForEnvironmentKey(at: 0, store: secrets) == (expectSkill ? "synthetic-skill-secret" : ""))
+        if !expectConnector {
+            let portable = try #require(WorkspaceConfigManager.export(workspace: result, modelContext: context))
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let reloaded = try decoder.decode(WorkspaceConfigManager.WorkspaceConfig.self, from: encoder.encode(portable))
+            let store = fixture.root.appendingPathComponent("recovery.store")
+            let recoveryContainer = try ModelContainer(for: ASTRASchema.current,
+                configurations: [ModelConfiguration(url: store)])
+            _ = WorkspaceConfigManager.importWorkspace(from: reloaded, modelContext: recoveryContainer.mainContext)
+            try recoveryContainer.mainContext.save()
+            let reopened = try ModelContainer(for: ASTRASchema.current,
+                configurations: [ModelConfiguration(url: store)])
+            let recoveredAccount = try #require(reopened.mainContext.fetch(FetchDescriptor<Connector>()).first)
+            #expect(recoveredAccount.credentials(store: secrets)["JIRA_API_TOKEN"] == nil)
+            #expect(KeychainSecretStore.connectorEntityIDs(for: recoveredAccount).count == 1)
+            withExtendedLifetime((recoveryContainer, reopened)) {}
+        }
         WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context)
         withExtendedLifetime(container) {}
     }
