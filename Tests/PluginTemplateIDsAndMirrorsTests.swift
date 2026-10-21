@@ -89,7 +89,7 @@ struct PluginTemplateIDsAndMirrorsTests {
         // Add account, then Make default.
         let second = try PluginOperations.addAccount(for: package.connectors[0], of: package, in: env.workspace, modelContext: env.context)
         #expect(try plugin(in: env.workspace, package.id)?.accounts?.contains { $0.connectorID == second.id.uuidString } == true)
-        try PluginOperations.makeDefault(second, componentID: componentID, pluginID: package.id, in: env.workspace, modelContext: env.context)
+        try PluginOperations.makeDefault(second, componentID: componentID, package: package, in: env.workspace, modelContext: env.context)
         #expect(try plugin(in: env.workspace, package.id)?.accounts?.first { $0.connectorID == second.id.uuidString }?.isDefault == true)
         // An edit of the account itself reaches the other workspace's mirror too.
         account.name = "Renamed Tracker"

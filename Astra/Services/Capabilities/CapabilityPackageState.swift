@@ -216,11 +216,13 @@ struct CapabilityPackageState {
     private func authMethodMessages(for connector: Connector) -> [String] {
         // The account's own component, from its binding; a loose match only
         // when it has none (two components of one service differ).
-        let boundComponent = activation?.bindings.first { !$0.isDeleted && $0.account?.id == connector.id }?.componentID
-        let spec = boundComponent.flatMap { id in package.connectors.first { CapabilityResourceOrigin.componentID(for: $0) == id } }
-            ?? package.connectors.first { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
-        guard let spec, PluginRuntimeProjection.signsInWithWithdrawnMethod(connector, spec: spec, package: package) else { return [] }
-        return ["\(connector.name): this version signs in with \(spec.authMethod); reconnect the account"]
+        let boundComponents = Set(activation?.bindings.filter { !$0.isDeleted && $0.account?.id == connector.id }.map(\.componentID) ?? [])
+        let specs = package.connectors.filter { spec in
+            boundComponents.isEmpty ? CapabilityRuntimeResourceMatcher.connectorMatches(spec, connector: connector)
+                : boundComponents.contains(CapabilityResourceOrigin.componentID(for: spec))
+        }
+        return specs.filter { PluginRuntimeProjection.signsInWithWithdrawnMethod(connector, spec: $0, package: package) }
+            .map { "\(connector.name) (\($0.name)): this version signs in with \($0.authMethod); reconnect the account" }
     }
 
     private var activeLinkedConnectors: [Connector] {

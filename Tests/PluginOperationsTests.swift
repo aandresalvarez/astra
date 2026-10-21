@@ -28,7 +28,7 @@ struct PluginOperationsTests {
             case "add": _ = try PluginOperations.addAccount(for: package.connectors[0], of: package,
                 in: env.workspace, modelContext: env.context)
             default: try PluginOperations.makeDefault(account, componentID: CapabilityResourceOrigin.componentID(for: package.connectors[0]),
-                pluginID: package.id, in: env.workspace, modelContext: env.context)
+                package: package, in: env.workspace, modelContext: env.context)
             }
             Issue.record("The operation accepted unrelated pending edits")
         } catch { #expect(error as? PluginOperations.OperationError == .pendingEdits) }
@@ -186,7 +186,7 @@ struct PluginOperationsTests {
         #expect(second.workspace?.id == workspace.id)
         #expect(activation.accounts(forComponent: component).map(\.id) == [first.id, second.id])
 
-        try PluginOperations.makeDefault(second, componentID: component, pluginID: package.id, in: workspace, modelContext: env.context)
+        try PluginOperations.makeDefault(second, componentID: component, package: package, in: workspace, modelContext: env.context)
         #expect(activation.accounts(forComponent: component).first?.id == second.id)
         #expect(try PluginOperations.workspacesUsing(second).map(\.id) == [workspace.id])
 

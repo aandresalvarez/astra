@@ -20,6 +20,17 @@ struct RuntimeRepairInvocationTests {
         #expect(!stop.message.contains("Run `gh auth login`"))
     }
 
+    @Test("Command-local executable search paths require manual repair", arguments: [
+        "PATH=/opt/team/bin gh api user", "env PATH=/opt/team/bin gh api user",
+        "env -u PATH gh api user", "env --unset=PATH gh api user", "env -uPATH gh api user",
+        "env -i gh api user"
+    ])
+    func changedSearchPathIsManual(command: String) throws {
+        let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command))
+        #expect(stop.repairContext?.offersAction == false)
+        #expect(stop.repairContext?.repair.checkBinary == nil)
+    }
+
     @Test("Defining a shell function does not prove its CLI ran", arguments: [
         "f() { gh api user; }; cat incident.txt", "function f { gh api user; }; cat incident.txt"
     ])
