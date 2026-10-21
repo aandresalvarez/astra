@@ -377,4 +377,43 @@ struct RuntimeEligibilityPreviewScopeTests {
         #expect(yields == 3)
         #expect(snapshot.candidates.count == AgentRuntimeAdapterRegistry.runtimeIDs.count)
     }
+
+    /// The new-task composer scores a detached projection, which no other
+    /// code edits. Its full pass must run to the end without restarting.
+    @Test("A new-task composer's incremental pass does not restart itself")
+    func newTaskIncrementalPassDoesNotRestart() async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let workspace = try #require(environment.task.workspace)
+        let request = RuntimeEligibilityPreviewRequest.newTask(
+            draftTask: nil,
+            workspace: workspace,
+            selectedSkills: [],
+            attachedFiles: [],
+            acceptedTurn: "Summarize this folder",
+            requestedRuntime: .claudeCode,
+            runtimeExplicitlySelected: false,
+            selectedPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            skipPermissions: false,
+            defaultModel: "test-model",
+            defaultBudget: 1_000,
+            providerSettings: .headlessScenario,
+            readinessStates: Dictionary(
+                uniqueKeysWithValues: AgentRuntimeAdapterRegistry.runtimeIDs.map { ($0, RuntimeReadinessState.ready) }
+            )
+        )
+
+        var yields = 0
+        let snapshot = try #require(await request.evaluate(betweenRuntimes: {
+            yields += 1
+            return true
+        }))
+
+        #expect(yields == AgentRuntimeAdapterRegistry.runtimeIDs.count - 1, "the pass restarted on its own reads")
+        #expect(snapshot.candidates.count == AgentRuntimeAdapterRegistry.runtimeIDs.count)
+    }
 }
