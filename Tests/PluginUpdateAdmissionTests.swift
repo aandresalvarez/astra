@@ -9,6 +9,26 @@ import ASTRACore
 @MainActor
 @Suite("Plugin Update admission", .serialized)
 struct PluginUpdateAdmissionTests {
+    @Test("Update rollback restores account modification and binding ordering timestamps")
+    func rollbackIncludesAccountModificationTime() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try ConnectorCredentialEditorTests.Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable()
+            let before = PluginAccountRecord(account)
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: env.package.id, in: env.disk.workspace))
+            let binding = try #require(activation.bindings.first)
+            let beforeActivation = PluginActivationRecord(activation)
+            let restore = PluginUpdateService.captureState(of: [env.disk.workspace])
+            account.updatedAt = account.updatedAt.addingTimeInterval(60)
+            account.notes = "Rejected update notes"
+            binding.createdAt = binding.createdAt.addingTimeInterval(60)
+            restore()
+            #expect(PluginAccountRecord(account) == before)
+            #expect(PluginActivationRecord(activation) == beforeActivation)
+        }
+    }
+
     @Test("Restoring equal saved bindings in a different order retains their persistent identities")
     func bindingOrderDoesNotRecreateSavedRows() throws {
         let env = try PluginOperationsTests.Environment()
@@ -56,7 +76,7 @@ struct PluginUpdateAdmissionTests {
                 persist: { _ in throw NSError(domain: "synthetic.update.retry", code: 1) })
         }
         #expect(PluginActivationRecord(activation) == accepted)
-        #expect(!env.context.hasChanges)
+        #expect(!env.context.hasChanges, "Pending models after rollback: \(env.context.changedModelsArray.map { String(reflecting: type(of: $0)) })")
         #expect(try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [updated], mode: .release) == 1)
         #expect(activation.recordedVersion == "2.0.0")
     }

@@ -151,16 +151,13 @@ struct PluginActivationReviewTests {
             try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsRefusingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
         }
         #expect(activation.recordedVersion == "1.0.0")
-        // A failed operation restores array-backed values explicitly. SwiftData
-        // can keep that restored baseline marked dirty; finish the caller's
-        // restored state before entering the next clean-context transaction.
-        try context.save()
+        #expect(!context.hasChanges)
         try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .automatic, secrets: SecretsRefusingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
         #expect(activation.recordedVersion == "1.0.0")
         #expect(PluginRuntimeProjection.project(workspace: workspace, packages: packages).skills.isEmpty)
         #expect(try outbox.pendingKeys() == [.init(key: "API_TOKEN", skillID: namespace)])
 
-        try context.save()
+        #expect(!context.hasChanges)
         try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsAcceptingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
         #expect(activation.recordedVersion == "2.0.0")
         #expect(try outbox.pendingKeys().isEmpty)
