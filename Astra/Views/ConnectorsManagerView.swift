@@ -698,7 +698,7 @@ struct ConnectorEditorView: View {
                     Button(role: .destructive) {
                         pendingDeletion = PendingConnectorDeletion(
                             title: "Delete \(connectorDisplayName)?",
-                            message: "Delete the connector \(connectorDisplayName)? This removes its configuration and any stored Keychain secrets. This cannot be undone.",
+                            message: "Delete the connector \(connectorDisplayName)? This removes its configuration and saved keys. Tasks already accepted may keep access until they finish or are cancelled. To revoke access, revoke the credentials with the provider. This cannot be undone.",
                             confirmTitle: "Delete Connector"
                         ) {
                             cancelOutlookSignIn()
