@@ -53,6 +53,10 @@ extension TaskGeneratedFileShelfDestination {
 
 enum TaskGeneratedFiles: Sendable {
     static func files(in folder: String, fileManager: FileManager = .default) -> [String] {
+        files(in: folder, fileManager: fileManager, isCancelled: { false }) ?? []
+    }
+
+    static func files(in folder: String, fileManager: FileManager, isCancelled: () -> Bool) -> [String]? {
         guard !folder.isEmpty else { return [] }
         let rootURL = URL(fileURLWithPath: folder)
             .resolvingSymlinksInPath()
@@ -73,6 +77,7 @@ enum TaskGeneratedFiles: Sendable {
 
         var files: [String] = []
         while let url = enumerator.nextObject() as? URL {
+            guard !isCancelled() else { return nil }
             guard !hostFileAccess.shouldSkip(url, intent: accessIntent) else {
                 enumerator.skipDescendants()
                 continue

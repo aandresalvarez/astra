@@ -415,6 +415,7 @@ enum TaskOpenResponsivenessTelemetry {
             durationMilliseconds: timing.totalMilliseconds,
             fields: [
                 "load_ms": String(format: "%.2f", timing.loadMilliseconds),
+                "observe_ms": String(format: "%.2f", timing.observeMilliseconds),
                 "apply_ms": String(format: "%.2f", timing.applyMilliseconds),
                 "attempts": String(timing.attempts),
                 "saved": String(timing.saved)

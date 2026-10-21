@@ -488,11 +488,15 @@ public enum TaskContextStateManager {
     /// `events` is injectable only so tests can compare indexes.
     @MainActor @discardableResult
     static func applyRefresh(
-        existing: TaskContextState?, folder: String, task: AgentTask, followUpMessage: String, events: TaskContextEventIndex? = nil
+        existing: TaskContextState?, folder: String, task: AgentTask, followUpMessage: String,
+        outputObservation: TaskOutputObservation? = nil, events: TaskContextEventIndex? = nil
     ) -> Bool {
         var state = existing ?? initialState(for: task)
         TaskObjectiveAssessmentEventStore.reconcileProjection(&state, task: task)
-        updateDerivedFields(&state, task: task, latestRun: latestRun(for: task), events: events ?? TaskContextEventIndex(task: task))
+        updateDerivedFields(
+            &state, task: task, latestRun: latestRun(for: task),
+            events: events ?? TaskContextEventIndex(task: task), outputObservation: outputObservation
+        )
         reconcileObjectiveAssessmentProjection(&state, task: task, followUpMessage: followUpMessage)
         // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
         guard existing != state else { return false }
@@ -830,15 +834,14 @@ public enum TaskContextStateManager {
 
     @MainActor
     private static func updateDerivedFields(
-        _ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?, events: TaskContextEventIndex
+        _ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?, events: TaskContextEventIndex,
+        outputObservation: TaskOutputObservation? = nil
     ) {
         let planState = TaskPlanReconstructionSeam.required.reconstruct(for: task)
-        // Enumerates the task folder and resolves every file in it, here at
-        // the moment the result is used. Hoisting this off the actor was tried
-        // and reverted: validating the hoisted result costs a stat per
-        // traversed directory on the actor, which is the same freeze. See
-        // `refreshLoadingOffMainActor`.
-        let discoveredTaskOutputFiles = TaskOutputDiscovery.files(for: task)
+        // Every filesystem question below goes through here. See
+        // `TaskOutputObservation` for when it is answered off the actor.
+        let outputs = TaskOutputPathResolver(task: task, observation: outputObservation)
+        let discoveredTaskOutputFiles = outputs.discoveredFiles
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
             firstConversationRequest(in: events),
@@ -884,20 +887,15 @@ public enum TaskContextStateManager {
         let eventBlockerMessages = eventBlockers.map { boundedInline($0.payload, maxCharacters: 220) }
         state.blockers = dedupeKeepingOrder(planBlockers + eventBlockerMessages, limit: maxListItems)
 
-        // One scope for the whole pass. Every `isUserFacingOutputPath` below
-        // resolves symlinks on the path it is handed; resolving the two roots
-        // alongside them, once per call, is what turned a large task folder
-        // into an unrecoverable main-thread spin.
-        let visibility = TaskOutputVisibilityScope(access: TaskWorkspaceAccess(task: task))
         let changedFiles = task.runs
             .sorted { $0.startedAt < $1.startedAt }
             .flatMap(\.fileChanges)
             .map(\.path)
-            .filter { isUserFacingOutputPath($0, task: task, scope: visibility) }
+            .filter(outputs.isUserFacing)
         let discoveredChangedFiles = discoveredTaskOutputFiles.map(\.path)
         state.filesChanged = dedupeKeepingOrder(
             (state.filesChanged + changedFiles + discoveredChangedFiles)
-                .filter { isUserFacingOutputPath($0, task: task, scope: visibility) },
+                .filter(outputs.isUserFacing),
             limit: 50
         )
         state.openQuestions = dedupeKeepingOrder(state.openQuestions + recentQuestions(in: events), limit: 10)
@@ -914,8 +912,8 @@ public enum TaskContextStateManager {
         state.testCommand = normalizedTestCommand(task)
         state.decisionFacts = decisionFacts(for: state, task: task, planState: planState)
         state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers, eventBlockers: eventBlockers)
-        state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, scope: visibility)
-        state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, scope: visibility)
+        state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, outputs: outputs)
+        state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, outputs: outputs)
         state.verification = verificationState(task: task, events: events, latestRun: latestRun, artifacts: state.artifacts)
         state.validationContract = validationContractState(events: events, planState: planState)
         state.latestHandoff = latestHandoffState(events: events)
@@ -1232,7 +1230,7 @@ public enum TaskContextStateManager {
     private static func changedFileReferences(
         for task: AgentTask,
         discoveredFiles: [TaskOutputDiscoveredFile],
-        scope: TaskOutputVisibilityScope
+        outputs: TaskOutputPathResolver
     ) -> [TaskContextState.ChangedFile] {
         let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
         var output: [TaskContextState.ChangedFile] = []
@@ -1240,7 +1238,7 @@ public enum TaskContextStateManager {
 
         for run in sortedRuns {
             for change in run.fileChanges {
-                guard isUserFacingOutputPath(change.path, task: task, scope: scope) else { continue }
+                guard outputs.isUserFacing(change.path) else { continue }
                 let pointers = [
                     sourcePointer(kind: "run", id: run.id.uuidString, summary: "Provider run"),
                     sourcePointer(kind: "file_change", id: change.id.uuidString, path: change.path, summary: "\(change.changeType) file change")
@@ -1282,14 +1280,14 @@ public enum TaskContextStateManager {
     private static func artifactReferences(
         for task: AgentTask,
         discoveredFiles: [TaskOutputDiscoveredFile],
-        scope: TaskOutputVisibilityScope
+        outputs: TaskOutputPathResolver
     ) -> [TaskContextState.ArtifactReference] {
         var references: [TaskContextState.ArtifactReference] = []
         var indexByPath: [String: Int] = [:]
 
         for artifact in task.artifacts.sorted(by: { $0.createdAt < $1.createdAt }) {
-            let path = TaskArtifactPathNormalizer.normalizedPath(artifact.path, task: task)
-            guard isUserFacingOutputPath(path, task: task, scope: scope) else { continue }
+            let path = outputs.normalizedPath(artifact.path)
+            guard outputs.isUserFacingNormalized(path) else { continue }
             let key = artifactReferenceKey(path)
             guard !key.isEmpty else { continue }
 
@@ -1303,7 +1301,7 @@ public enum TaskContextStateManager {
                 type: ArtifactKind(rawValue: artifact.type).rawValue,
                 path: path,
                 version: artifact.version,
-                isStale: !FileManager.default.fileExists(atPath: path),
+                isStale: !outputs.fileExists(normalizedPath: path),
                 sourcePointers: [pointer]
             )
 
