@@ -10,7 +10,7 @@ public struct TaskAccountInventorySnapshot: Codable, Equatable, Sendable {
         public let parentSkill: SkillLaunchRecord?
 
         public init(_ connector: Connector, workspaceID: UUID?) {
-            account = PluginAccountRecord(connector)
+            account = PluginAccountRecord.forLaunch(connector)
             skillID = connector.skill?.id
             parentSkill = workspaceID.flatMap { id in connector.skill.map { SkillLaunchRecord($0, workspaceID: id) } }
         }

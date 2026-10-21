@@ -62,7 +62,7 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         skillSnapshotsJSON = task.skillSnapshotsJSON
         runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
         pluginActivations = task.workspace.map {
-            WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.init)
+            WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.forLaunch)
         }
         // A launch copy carries its request's frozen definitions on; a live
         // task is projected from the library as it is now.

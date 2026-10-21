@@ -97,6 +97,37 @@ struct PluginStandaloneUpdateCredentialTests {
         }
     }
 
+    @Test("Public request and recovery export do not serialize legacy secret settings")
+    func acceptedRequestDoesNotExportLegacySecret() throws {
+        try withLegacySetting { env, package, activation, _, _ in
+            let request = try #require(try env.context.fetch(FetchDescriptor<TaskTurnRequest>()).first)
+            let json = try #require(request.executionPolicySnapshotJSON)
+            #expect(!json.contains("legacy-update-promotion-token"))
+            let mirror = env.disk.root.appendingPathComponent("legacy-secret-request.json")
+            try WorkspaceConfigManager.exportToFile(workspace: env.workspace, modelContext: env.context, url: mirror)
+            #expect(try !String(contentsOf: mirror, encoding: .utf8).contains("legacy-update-promotion-token"))
+            #expect(activation.configuration(forComponent: CapabilityResourceOrigin.componentID(for: package.skills[0]))["API_TOKEN"] == "legacy-update-promotion-token")
+        }
+    }
+
+    @Test("Export redacts an older saved request without changing its durable snapshot")
+    func oldRequestExportDoesNotCopyLegacySecret() throws {
+        try withLegacySetting { env, _, activation, _, _ in
+            let request = try #require(try env.context.fetch(FetchDescriptor<TaskTurnRequest>()).first)
+            let json = try #require(request.executionPolicySnapshotJSON)
+            var older = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+            older["pluginActivations"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode([PluginActivationRecord(activation)]))
+            let legacyJSON = try #require(String(data: JSONSerialization.data(withJSONObject: older), encoding: .utf8))
+            try #require(legacyJSON.contains("legacy-update-promotion-token"))
+            request.executionPolicySnapshotJSON = legacyJSON
+            try env.context.save()
+            let mirror = env.disk.root.appendingPathComponent("older-request-export.json")
+            try WorkspaceConfigManager.exportToFile(workspace: env.workspace, modelContext: env.context, url: mirror)
+            #expect(try !String(contentsOf: mirror, encoding: .utf8).contains("legacy-update-promotion-token"))
+            #expect(request.executionPolicySnapshotJSON == legacyJSON)
+        }
+    }
+
     private func withLegacySetting(_ body: (PluginAddCommitTests.Fixture, PluginPackage, PluginActivation, AgentTask, AgentTaskLaunchSnapshot) throws -> Void) throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
             let env = try PluginAddCommitTests.Fixture(installed: false)
