@@ -165,6 +165,36 @@ struct PluginRepairDestinationTests {
         #expect(repair.checkEnvironment == environment)
     }
 
+    @Test("A task-selected PATH cannot sign in through ASTRA's ambient executable", arguments: ["gh", "gcloud"])
+    func projectedPathRequiresManualSetup(binary: String) throws {
+        let original = binary == "gh" ? CLISessionExpiryClassifier.gitHub.repair : CLISessionExpiryClassifier.googleCloud.repair
+        for path in ["/opt/team/bin", "", "relative/bin:/usr/bin"] {
+            let environment = ["PATH": path]
+            let repair = original.checking(in: environment).targetingCredentialStore(environment)
+            #expect(repair.command == nil)
+            #expect(repair.verb == "Check")
+            #expect(repair.checkEnvironment == environment)
+            #expect(repair.checkBinary == binary)
+            #expect(repair.checkArguments == original.checkArguments)
+            #expect(repair.executionCommand == nil)
+            let terminal = TerminalSpy()
+            RepairActionRunner.run(repair, terminal: terminal,
+                resolveExecutable: { "/opt/homebrew/bin/" + $0 }, isInstalled: { _ in true })
+            #expect(terminal.launched.isEmpty)
+        }
+    }
+
+    @Test("An unchanged PATH or an explicitly pinned CLI does not change repair targeting")
+    func unchangedExecutableSelectionRemainsAvailable() throws {
+        let ambient = try #require(ProcessInfo.processInfo.environment["PATH"])
+        let github = CLISessionExpiryClassifier.gitHub.repair
+        #expect(github.targetingCredentialStore(["PATH": ambient]).command == github.command)
+        var pinned = github
+        pinned.command = "/opt/homebrew/bin/gh auth login"
+        pinned.checkBinary = "/opt/homebrew/bin/gh"
+        #expect(pinned.targetingCredentialStore(["PATH": "/opt/team/bin"]).command == pinned.command)
+    }
+
     private final class TerminalSpy: TerminalCommandLaunching {
         private let commands = OSAllocatedUnfairLock(initialState: [String]())
         var launched: [String] { commands.withLock { $0 } }
