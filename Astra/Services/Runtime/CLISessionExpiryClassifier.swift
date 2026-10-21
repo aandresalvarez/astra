@@ -270,8 +270,7 @@ enum CLISessionExpiryClassifier {
     /// when the line succeeded, the CLI must have run where its own exit
     /// status was masked (`masksExitStatus`).
     static func stop(content: String, command: String?, failed: Bool = true) -> Stop? {
-        guard let command, RuntimeRepairInvocationPolicy.admitsDiagnostics(command: command, content: content),
-              let family = family(content: content, command: command, failed: failed) else { return nil }
+        guard let command, let family = family(content: content, command: command, failed: failed) else { return nil }
         guard RuntimeRepairInvocationPolicy.permitsAutomaticRepair(command: command, commands: family.commands) else {
             let message = "Authentication failed in a shell context ASTRA cannot safely identify. "
                 + "Review the command and its user, directory and credential store, then repair access manually before resuming."
@@ -289,7 +288,8 @@ enum CLISessionExpiryClassifier {
         content: String, command: String?, failed: Bool = true,
         isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> Family? {
-        guard let command, !command.isEmpty else { return nil }
+        guard let command, !command.isEmpty,
+              RuntimeRepairInvocationPolicy.admitsDiagnostics(command: command, content: content) else { return nil }
         let lowered = content.lowercased()
         let applicationDefault = readsOnlyApplicationDefault(command)
         guard var family = families.first(where: { family in
@@ -914,7 +914,8 @@ enum CLISessionExpiryClassifier {
                     levels[top].compounds.append(nil)
                 // An `elif`'s condition and its `then` body are one: skipping
                 // one skips the other.
-                case "then", "do", "else", "elif" where !levels[top].compounds.isEmpty:
+                case "then", "do", "else", "elif":
+                    guard !levels[top].compounds.isEmpty else { break }
                     guard ["else", "elif"].contains(word) || levels[top].compounds[levels[top].compounds.count - 1] == nil else { break }
                     levels[top].compounds[levels[top].compounds.count - 1] = nextBody
                     nextBody += 1
