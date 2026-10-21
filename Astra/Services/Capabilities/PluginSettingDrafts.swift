@@ -10,7 +10,7 @@ struct PluginSettingDrafts {
     var failures: [String: String] = [:]
 
     static func source(package: PluginPackage, activation: PluginActivation?) -> String {
-        "\(activation?.revision ?? -1)|\(PluginDefinitionDigest.content(of: package))"
+        "\(activation?.id.uuidString ?? "none")|\(activation?.revision ?? -1)|\(PluginDefinitionDigest.content(of: package))"
     }
 
     static func load(

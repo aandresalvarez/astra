@@ -659,7 +659,7 @@ enum PluginUpdateService {
 
         let beforeAccounts = copied.count
         result.changedAccountIDs = try accountPreparation?.prepare(activation, package: package) ?? []
-        result.changedAccountIDs.formUnion(syncOwnedAccounts(of: activation, to: package, store: connectorStore, copied: &copied))
+        result.changedAccountIDs.formUnion(try syncOwnedAccounts(of: activation, to: package, store: connectorStore, copied: &copied))
         if !result.changedAccountIDs.isEmpty { result.moved = true }
         result.copied += copied[beforeAccounts...]
 
@@ -803,7 +803,7 @@ enum PluginUpdateService {
     @discardableResult
     static func syncOwnedAccounts(
         of activation: PluginActivation, to package: PluginPackage, store: SecretStore? = nil, copied: inout [CopiedSecret]
-    ) -> Set<UUID> {
+    ) throws -> Set<UUID> {
         let store = store ?? SecretStoreSeam.required
         var changed = Set<UUID>()
         for declared in package.connectors {
@@ -816,7 +816,9 @@ enum PluginUpdateService {
             let predecessors = Set(CapabilityResourceOrigin.replacedComponentIDs(for: spec))
             for account in activation.accounts(forComponent: componentID)
             where !account.isDeleted && account.originPackageID == package.id {
-                var touched = !account.moveSettingsToKeychain(moved, store: store) { copied.append(CopiedSecret($0)) }.isEmpty
+                var touched = try PluginAccountStructureReconciliation.apply(to: account, declaration: spec)
+                let migrated = account.moveSettingsToKeychain(moved, store: store) { copied.append(CopiedSecret($0)) }
+                if !migrated.isEmpty { touched = true }
                 if let stamp = account.originComponentID, predecessors.contains(stamp) {
                     account.originComponentID = componentID
                     touched = true
@@ -828,7 +830,7 @@ enum PluginUpdateService {
                     account.credentialValues.append("")
                     touched = true
                 }
-                for hint in spec.configHints where !account.configKeys.contains(hint.key) {
+                for hint in spec.configHints where !hint.isAccountStructure && !account.configKeys.contains(hint.key) {
                     while account.configValues.count < account.configKeys.count { account.configValues.append("") }
                     account.configKeys.append(hint.key)
                     account.configValues.append("")

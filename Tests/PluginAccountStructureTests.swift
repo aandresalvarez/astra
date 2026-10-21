@@ -60,6 +60,73 @@ struct PluginAccountStructureTests {
         #expect(mirror.connectors?.first { $0.id == account.id.uuidString }?.baseURL == "https://acme.tracker.example.com")
     }
 
+    @Test("Update never adds endpoint or account-name fields to configuration", arguments: [false, true])
+    func updateKeepsOneStructureOwner(legacyDuplicates: Bool) throws {
+        let env = try Fixtures.Environment()
+        var package = Fixtures.package(version: "1.0.0")
+        try env.install(package)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
+        let account = try #require(activation.accounts(forComponent: package.connectors[0].setupComponentID).first)
+        account.name = "Configured account"
+        account.baseURL = "https://configured.example.com"
+        if legacyDuplicates {
+            account.configKeys += ["TRACKER_SITE", "TRACKER_ACCOUNT_NAME"]
+            account.configValues += ["https://stale.example.com", "Stale duplicate"]
+        }
+        package.version = "2.0.0"
+        package.connectors[0].configHints = Self.multiTenant().connectors[0].configHints
+        var copied: [PluginUpdateService.CopiedSecret] = []
+        _ = try PluginUpdateService.syncOwnedAccounts(of: activation, to: package, store: MockSecretStore(), copied: &copied)
+        #expect(!account.configKeys.contains("TRACKER_SITE"))
+        #expect(!account.configKeys.contains("TRACKER_ACCOUNT_NAME"))
+        #expect(account.baseURL == "https://configured.example.com")
+        #expect(account.name == "Configured account")
+        #expect(account.configKeys == ["PROJECT"])
+    }
+
+    @Test("Update moves legacy structure values into empty account fields without dropping other settings")
+    func updateRecoversLegacyStructure() throws {
+        let env = try Fixtures.Environment()
+        var package = Fixtures.package(version: "1.0.0")
+        try env.install(package)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
+        let account = try #require(activation.accounts(forComponent: package.connectors[0].setupComponentID).first)
+        account.name = ""
+        account.baseURL = ""
+        account.configKeys += ["TRACKER_SITE", "TRACKER_ACCOUNT_NAME"]
+        account.configValues += ["https://saved.example.com", "Saved name"]
+        package.connectors[0].configHints = Self.multiTenant().connectors[0].configHints
+        var copied: [PluginUpdateService.CopiedSecret] = []
+        _ = try PluginUpdateService.syncOwnedAccounts(of: activation, to: package, store: MockSecretStore(), copied: &copied)
+        #expect(account.baseURL == "https://saved.example.com")
+        #expect(account.name == "Saved name")
+        #expect(account.configKeys == ["PROJECT"])
+        #expect(account.configValues == ["default-project"])
+    }
+
+    @Test("Invalid legacy endpoint values are retained and refuse Update", arguments: [
+        "http://unsafe.example.com", "https://name:password@unsafe.example.com"
+    ])
+    func invalidLegacyStructureIsNotLost(endpoint: String) throws {
+        let env = try Fixtures.Environment()
+        var package = Fixtures.package(version: "1.0.0")
+        try env.install(package)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
+        let account = try #require(activation.accounts(forComponent: package.connectors[0].setupComponentID).first)
+        account.baseURL = ""
+        account.configKeys += ["TRACKER_SITE"]
+        account.configValues += [endpoint]
+        package.connectors[0].configHints = Self.multiTenant().connectors[0].configHints
+        var copied: [PluginUpdateService.CopiedSecret] = []
+        #expect(throws: CapabilityInstaller.InstallationError.self) {
+            try PluginUpdateService.syncOwnedAccounts(of: activation, to: package, store: MockSecretStore(), copied: &copied)
+        }
+        #expect(account.baseURL.isEmpty)
+        #expect(account.configKeys.contains("TRACKER_SITE"))
+        #expect(account.configValues.contains(endpoint))
+        #expect(copied.isEmpty)
+    }
+
     @Test("An endpoint that isn't HTTPS, or carries a password, is refused with the reason")
     func badEndpointIsRefused() throws {
         let package = Self.multiTenant()

@@ -28,7 +28,7 @@ struct PluginRepairTests {
         var verified = 0
         let coordinator = PluginRepairCoordinator(
             check: { _ in await checks.next() },
-            run: { runs.append($0.command ?? "") },
+            run: { runs.append($0.command ?? ""); return .launched },
             sleep: { _ in },
             interval: 1,
             maxWait: 20
@@ -42,10 +42,39 @@ struct PluginRepairTests {
         #expect(await checks.calls == 5)
     }
 
+    @Test("A refused command launch never polls or verifies another healthy CLI")
+    func refusedLaunchDoesNotPoll() async {
+        let checks = CheckScript([true, true])
+        var verified = 0
+        let coordinator = PluginRepairCoordinator(check: { _ in await checks.next() },
+            sleep: { _ in }, interval: 1, maxWait: 3)
+        var repair = CLISessionExpiryClassifier.gitHub.repair
+        repair.command = "/tmp/untrusted-gh auth login"
+        coordinator.start(repair, owner: "refused") { verified += 1 }
+        for _ in 0..<20 { await Task.yield() }
+        #expect(await checks.calls == 0)
+        #expect(verified == 0)
+        #expect(coordinator.phase(for: repair, owner: "refused") != .waiting)
+        #expect(coordinator.phase(for: repair, owner: "refused") == .refused)
+        #expect(coordinator.statusText(for: repair, owner: "refused")?.contains("Couldn't start repair") == true)
+    }
+
+    @Test("A guidance-only Check still verifies when there is no command or URL to launch")
+    func guidanceOnlyCheckStillPolls() async {
+        let coordinator = PluginRepairCoordinator(check: { _ in true }, run: { _ in .refused },
+            sleep: { _ in }, interval: 1, maxWait: 3)
+        var repair = CLISessionExpiryClassifier.gitHub.repair
+        repair.command = nil
+        repair.url = nil
+        coordinator.start(repair, owner: "manual-check")
+        await waitUntil { coordinator.phase(for: repair, owner: "manual-check") == .verified }
+        #expect(coordinator.phase(for: repair, owner: "manual-check") == .verified)
+    }
+
     @Test("A repair that never passes stops checking and says so")
     func neverPassingTimesOut() async {
         let coordinator = PluginRepairCoordinator(
-            check: { _ in false }, run: { _ in }, sleep: { _ in }, interval: 1, maxWait: 3
+            check: { _ in false }, run: { _ in .launched }, sleep: { _ in }, interval: 1, maxWait: 3
         )
         let repair = CLISessionExpiryClassifier.googleCloud.repair
         coordinator.start(repair, owner: "gcloud-workflow")
@@ -56,7 +85,7 @@ struct PluginRepairTests {
     @Test("Cancelling the polls clears their waiting phase")
     func cancelClearsWaiting() async {
         let coordinator = PluginRepairCoordinator(
-            check: { _ in false }, run: { _ in }, sleep: { _ in try? await Task.sleep(nanoseconds: 50_000_000) }, interval: 1, maxWait: 100
+            check: { _ in false }, run: { _ in .launched }, sleep: { _ in try? await Task.sleep(nanoseconds: 50_000_000) }, interval: 1, maxWait: 100
         )
         let repair = CLISessionExpiryClassifier.googleCloud.repair
         coordinator.start(repair, owner: "gcloud-workflow")
@@ -69,7 +98,7 @@ struct PluginRepairTests {
     func samePresentationRepairsDoNotAlias() async {
         var verified: [String] = []
         let coordinator = PluginRepairCoordinator(
-            check: { _ in true }, run: { _ in }, sleep: { _ in await Task.yield() }, interval: 1, maxWait: 20
+            check: { _ in true }, run: { _ in .launched }, sleep: { _ in await Task.yield() }, interval: 1, maxWait: 20
         )
         let repair = CLISessionExpiryClassifier.googleCloud.repair
         var otherCheck = repair
@@ -92,7 +121,7 @@ struct PluginRepairTests {
     @Test("A repair with nothing to check just runs")
     func uncheckedRepairJustRuns() {
         var runs = 0
-        let coordinator = PluginRepairCoordinator(check: { _ in false }, run: { _ in runs += 1 }, sleep: { _ in })
+        let coordinator = PluginRepairCoordinator(check: { _ in false }, run: { _ in runs += 1; return .launched }, sleep: { _ in })
         let repair = RepairAction(strategy: .url, componentName: "Docs", title: "Docs", verb: "Open", detail: "")
         coordinator.start(repair, owner: "gcloud-workflow")
         #expect(runs == 1)
