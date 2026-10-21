@@ -48,7 +48,7 @@ public struct SkillLaunchRecord: Codable, Equatable, Sendable {
         updatedAt = skill.updatedAt
         attachedConnectors = skill.connectors
             .filter { !$0.isDeleted && ($0.isGlobal || $0.workspace?.id == workspaceID) }
-            .map(PluginAccountRecord.init)
+            .map(PluginAccountRecord.forLaunch)
         attachedTools = skill.localTools
             .filter { !$0.isDeleted && ($0.isGlobal || $0.workspace == nil || $0.workspace?.id == workspaceID) }
             .map(PluginOverrideRecords.ToolRecord.init)

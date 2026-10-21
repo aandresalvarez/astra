@@ -98,6 +98,37 @@ struct PluginStandaloneAccountUpdateTests {
         }
     }
 
+    @Test("Public request and recovery export do not serialize legacy secret settings")
+    func acceptedRequestDoesNotExportLegacySecret() throws {
+        try withLegacySetting { env, _, account, _, _ in
+            let request = try #require(try env.context.fetch(FetchDescriptor<TaskTurnRequest>()).first)
+            let json = try #require(request.executionPolicySnapshotJSON)
+            #expect(!json.contains("legacy-account-update-token"))
+            let mirror = env.disk.root.appendingPathComponent("legacy-secret-request.json")
+            try WorkspaceConfigManager.exportToFile(workspace: env.workspace, modelContext: env.context, url: mirror)
+            #expect(try !String(contentsOf: mirror, encoding: .utf8).contains("legacy-account-update-token"))
+            #expect(account.configValues == ["legacy-account-update-token"])
+        }
+    }
+
+    @Test("Export redacts an older saved request without changing its durable snapshot")
+    func oldRequestExportDoesNotCopyLegacySecret() throws {
+        try withLegacySetting { env, _, account, _, _ in
+            let request = try #require(try env.context.fetch(FetchDescriptor<TaskTurnRequest>()).first)
+            let json = try #require(request.executionPolicySnapshotJSON)
+            var older = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+            older["pluginAccounts"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode([PluginAccountRecord(account)]))
+            let legacyJSON = try #require(String(data: JSONSerialization.data(withJSONObject: older), encoding: .utf8))
+            try #require(legacyJSON.contains("legacy-account-update-token"))
+            request.executionPolicySnapshotJSON = legacyJSON
+            try env.context.save()
+            let mirror = env.disk.root.appendingPathComponent("older-request-export.json")
+            try WorkspaceConfigManager.exportToFile(workspace: env.workspace, modelContext: env.context, url: mirror)
+            #expect(try !String(contentsOf: mirror, encoding: .utf8).contains("legacy-account-update-token"))
+            #expect(request.executionPolicySnapshotJSON == legacyJSON)
+        }
+    }
+
     private func withLegacySetting(_ body: (PluginAddCommitTests.Fixture, PluginPackage, Connector, AgentTask, AgentTaskLaunchSnapshot) throws -> Void) throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
             let env = try PluginAddCommitTests.Fixture(installed: false)
