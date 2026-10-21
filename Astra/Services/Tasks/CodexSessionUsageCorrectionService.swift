@@ -98,32 +98,70 @@ enum CodexSessionUsageCorrectionService {
         )
     }
 
-    @discardableResult
-    static func correct(modelContext: ModelContext) async -> Outcome {
-        let descriptor = codexSessionRuns
-        let tasks: [AgentTask]
-        do {
-            var seen = Set<UUID>()
-            tasks = try modelContext.fetch(descriptor).compactMap(\.task).filter { seen.insert($0.id).inserted }
-        } catch {
-            log(stage: "fetch_failed", outcome: Outcome(), error: error)
-            return Outcome()
-        }
+    /// Runs are read in bounded pages, with a yield between tasks and between pages, so a
+    /// store with many Codex runs never materializes them all on the main actor at once.
+    nonisolated static let batchSize = 200
 
+    @discardableResult
+    static func correct(
+        modelContext: ModelContext,
+        batchSize: Int = CodexSessionUsageCorrectionService.batchSize
+    ) async -> Outcome {
+        // Keyset paging on `startedAt`: an offset would skip or repeat rows when the context
+        // holds unsaved changes, which a fetch merges in ahead of the stored rows. Runs added
+        // during the pass start after the cursor.
+        let codex: String? = AgentRuntimeID.codexCLI.rawValue
+        var cursor: Date?
+        var strictlyAfterCursor = false
+        var seenAtCursor = Set<UUID>()
+        var visited = Set<UUID>()
         var outcome = Outcome()
-        for task in tasks {
-            let result: TaskResult
+        while true {
+            var descriptor = codexSessionRuns
+            if let start = cursor {
+                descriptor.predicate = strictlyAfterCursor
+                    ? #Predicate<TaskRun> { $0.runtimeID == codex && $0.providerSessionId != nil && $0.startedAt > start }
+                    : #Predicate<TaskRun> { $0.runtimeID == codex && $0.providerSessionId != nil && $0.startedAt >= start }
+            }
+            descriptor.sortBy = [SortDescriptor(\TaskRun.startedAt)]
+            descriptor.fetchLimit = batchSize
+            let page: [TaskRun]
             do {
-                result = try correct(task: task, modelContext: modelContext)
+                page = try modelContext.fetch(descriptor)
             } catch {
-                log(stage: "task_failed", outcome: outcome, error: error)
+                log(stage: "fetch_failed", outcome: outcome, error: error)
                 return outcome
             }
-            outcome.sessionsSkipped += result.sessionsSkipped
-            outcome.sessionsDeferred += result.sessionsDeferred
-            if result.runsCorrected > 0 {
-                outcome.tasksCorrected += 1
-                outcome.runsCorrected += result.runsCorrected
+            let fresh = page.filter { $0.startedAt != cursor || !seenAtCursor.contains($0.id) }
+            guard !fresh.isEmpty else {
+                // A full page of runs sharing the cursor's start time: step past it.
+                guard page.count == batchSize, !strictlyAfterCursor else { break }
+                strictlyAfterCursor = true
+                continue
+            }
+            strictlyAfterCursor = false
+            if let last = fresh.last?.startedAt {
+                if last != cursor { seenAtCursor = [] }
+                cursor = last
+                seenAtCursor.formUnion(fresh.filter { $0.startedAt == last }.map(\.id))
+            }
+            // A task is corrected whole, from whichever of its runs a page reaches first.
+            let tasks = fresh.compactMap(\.task).filter { visited.insert($0.id).inserted }
+            for task in tasks {
+                let result: TaskResult
+                do {
+                    result = try correct(task: task, modelContext: modelContext)
+                } catch {
+                    log(stage: "task_failed", outcome: outcome, error: error)
+                    return outcome
+                }
+                outcome.sessionsSkipped += result.sessionsSkipped
+                outcome.sessionsDeferred += result.sessionsDeferred
+                if result.runsCorrected > 0 {
+                    outcome.tasksCorrected += 1
+                    outcome.runsCorrected += result.runsCorrected
+                }
+                await Task.yield()
             }
             await Task.yield()
         }

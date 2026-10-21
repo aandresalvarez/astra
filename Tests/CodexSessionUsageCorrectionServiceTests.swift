@@ -169,6 +169,30 @@ struct CodexSessionUsageCorrectionServiceTests {
         #expect(fixture.task.tokensUsed == 2_680_000 + 16_925)
     }
 
+    @Test("Paging past the batch size reaches every task once")
+    func pagingReachesEveryTask() async throws {
+        let fixture = try makeFixture()
+        defer { withExtendedLifetime(fixture.container) {} }
+        let other = AgentTask(title: "Second", goal: "Count once", runtime: .codexCLI)
+        fixture.context.insert(other)
+        let second = Fixture(container: fixture.container, context: fixture.context, task: other)
+        // Each task's two runs land on different pages of size 1, interleaved with the other task's.
+        let firstRuns = [(100, 1), (300, 3)].enumerated().map { index, usage in
+            fixture.legacyRun("thread-1", at: Double(index) * 120, input: usage.0, output: usage.1)
+        }
+        let secondRuns = [(1_000, 10), (1_600, 16)].enumerated().map { index, usage in
+            second.legacyRun("thread-2", at: 60 + Double(index) * 120, input: usage.0, output: usage.1)
+        }
+
+        let outcome = await Service.correct(modelContext: fixture.context, batchSize: 1)
+
+        #expect(outcome == .init(tasksCorrected: 2, runsCorrected: 2, sessionsSkipped: 0, completed: true))
+        #expect(firstRuns.map(\.inputTokens) == [100, 200])
+        #expect(secondRuns.map(\.inputTokens) == [1_000, 600])
+        #expect(fixture.correctionEvents.count == 1)
+        #expect(second.correctionEvents.count == 1)
+    }
+
     @Test("A session recorded entirely by the fixed recorder is left untouched")
     func fixedSessionIsUntouched() async throws {
         let fixture = try makeFixture()
