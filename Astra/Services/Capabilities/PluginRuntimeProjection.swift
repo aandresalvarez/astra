@@ -292,6 +292,16 @@ struct PluginRuntimeProjection {
         }
     }
 
+    /// Presentation uses the same override lookup as runtime. A deleted
+    /// authored row returns ownership to the package in a live workspace;
+    /// a detached scope without its replacement remains withheld.
+    static func packageSkillOwnsSettings(_ skill: PluginSkill, activation: PluginActivation) -> Bool {
+        let component = CapabilityResourceOrigin.componentID(for: skill)
+        guard activation.overriddenComponentIDs.contains(component) else { return true }
+        guard let workspace = activation.workspace else { return false }
+        return overridingSkill(for: component, of: activation, in: workspace) == nil && overrideRowIsGone(in: workspace)
+    }
+
     /// True for a skill this projection built rather than a stored row.
     static func isProjected(_ skill: Skill) -> Bool {
         skill.modelContext == nil && skill.originSourceKind == projectedSourceKind

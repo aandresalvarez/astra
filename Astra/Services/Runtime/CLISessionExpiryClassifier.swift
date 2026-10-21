@@ -484,7 +484,7 @@ enum CLISessionExpiryClassifier {
     /// secret: carried into Sign in and the check (as
     /// `RepairAction.credentialStoreSelectors` carries the launch's).
     private static let storeSelectorNames: [String: Set<String>] = [
-        "gcloud": ["CLOUDSDK_CONFIG"], "gh": ["GH_CONFIG_DIR", "XDG_CONFIG_HOME"]
+        "gcloud": ["CLOUDSDK_CONFIG"], "gh": ["GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME"]
     ]
 
     /// Variables that hold or pick a credential ASTRA can't carry: a token,

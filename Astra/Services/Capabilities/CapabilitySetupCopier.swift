@@ -83,6 +83,24 @@ struct CapabilitySetupCopier {
         let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
         if let activation, !activation.isEnabled { return inputs }
 
+        if let activation {
+            for skill in package.skills where PluginRuntimeProjection.packageSkillOwnsSettings(skill, activation: activation) {
+                let component = CapabilityResourceOrigin.componentID(for: skill)
+                let configuration = activation.configuration(forComponent: component)
+                for key in skill.environmentKeys {
+                    let scoped = PluginSetupInputs.key(key, component: component)
+                    let field = PluginActivation.settingKey(componentID: component, key: key)
+                    if activation.secretSettingKeys.contains(field) {
+                        let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: component)
+                        if case .value(let value) = secretStore.read(key: key, entityID: KeychainSecretStore.skillEntityID(for: namespace)),
+                           !value.isEmpty { inputs.credentialInputs[scoped] = value }
+                    } else if !Skill.isSecretEnvironmentKey(key), let value = configuration[key] {
+                        inputs.configInputs[scoped] = value
+                    }
+                }
+            }
+        }
+
         for declaredConnector in package.connectors {
             let pluginConnector = PluginConnectorFieldTrust.asStored(declaredConnector, in: package)
             let componentID = pluginConnector.setupComponentID

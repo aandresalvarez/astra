@@ -2959,7 +2959,10 @@ public enum WorkspaceConfigManager {
         for connectorSnapshot in snapshot.connectorSnapshots ?? [] {
             guard let id = connectorSnapshot.id, connectorsByID[id] == nil else { continue }
             guard let connector = makeConnector(from: connectorSnapshot, workspace: workspace) else { continue }
-            if freshIDs { connector.id = ConnectorCredentialIdentity.isolatedImportID() }
+            if freshIDs {
+                connector.id = ConnectorCredentialIdentity.isolatedImportID()
+                connector.credentialNamespaceID = nil
+            }
             modelContext.insert(connector)
             connectorsByID[connector.id.uuidString] = connector
             connectorsByID[id] = connector

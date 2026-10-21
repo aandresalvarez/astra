@@ -29,7 +29,7 @@ struct PluginSettingDeletionFailureTests {
         #expect(saves == 1)
         #expect(RefusingSettingDeletion.deletes.withLock { $0 } == 0)
         #expect(PluginActivationRecord(activation) == before)
-        #expect(PluginOperations.setting("PROJECT", of: package.skills[0], in: activation) == "previous")
+        #expect(try PluginOperations.setting("PROJECT", of: package.skills[0], in: activation) == "previous")
     }
 }
 

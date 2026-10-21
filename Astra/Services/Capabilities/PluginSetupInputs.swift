@@ -24,9 +24,9 @@ enum PluginSetupInputs {
 
     /// `inputs` as one component reads them: the shared values, with its own
     /// over them. Another component's own values are left out.
-    static func view(_ inputs: [String: String], component componentID: String) -> [String: String] {
+    static func view(_ inputs: [String: String], component componentID: String, includingShared: Bool = true) -> [String: String] {
         let prefix = componentID + separator
-        var view = inputs.filter { !$0.key.contains(separator) }
+        var view = includingShared ? inputs.filter { !$0.key.contains(separator) } : [:]
         for (key, value) in inputs where key.hasPrefix(prefix) {
             view[String(key.dropFirst(prefix.count))] = value
         }

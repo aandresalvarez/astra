@@ -99,15 +99,15 @@ struct PluginOperationsReviewTests {
                 // The old namespace was released and settled; both values
                 // moved with the rename.
                 #expect(activation.recordedVersion == "1.0.0")
-                #expect(PluginOperations.setting("API_TOKEN", of: v2.skills[0], in: activation) == "kept")
-                #expect(PluginOperations.setting("LEGACY_TOKEN", of: v2.skills[0], in: activation) == "legacy")
+                #expect(try PluginOperations.setting("API_TOKEN", of: v2.skills[0], in: activation) == "kept")
+                #expect(try PluginOperations.setting("LEGACY_TOKEN", of: v2.skills[0], in: activation) == "legacy")
                 #expect(activation.secretSettingKeys.contains("skill:summary-agent#LEGACY_TOKEN"))
 
                 try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [v2], mode: .release, approvalRecords: PluginOperationsTests.approvals([v2]))
                 #expect(activation.recordedVersion == "2.0.0")
                 #expect(activation.secretSettingKeys == ["skill:summary-agent#API_TOKEN"])
-                #expect(PluginOperations.setting("LEGACY_TOKEN", of: v2.skills[0], in: activation).isEmpty)
-                #expect(PluginOperations.setting("API_TOKEN", of: v2.skills[0], in: activation) == "kept")
+                #expect(try PluginOperations.setting("LEGACY_TOKEN", of: v2.skills[0], in: activation).isEmpty)
+                #expect(try PluginOperations.setting("API_TOKEN", of: v2.skills[0], in: activation) == "kept")
             }
         }
     }
