@@ -3,6 +3,7 @@ import Foundation
 import SwiftData
 import ASTRAModels
 import ASTRAPersistence
+import HostControlToolSupport
 @testable import ASTRA
 
 @Suite("Remote workspace prompt guidance")
@@ -31,9 +32,9 @@ struct RemoteWorkspacePromptGuidanceTests {
         #expect(prompt.contains("Identity file: ~/.ssh/google_compute_engine"))
         #expect(prompt.contains("prefer the alias over the raw hostname"))
         assertLongRunningCommandContract(in: prompt)
-        #expect(prompt.contains("ASTRA host control can check SSH reachability for this alias"))
-        #expect(prompt.contains("Remote command execution requires a reviewed workspace capability"))
-        #expect(!prompt.contains("ssh deid-jsn-workbench '<command>'"))
+        // The base prompt is built before the render exists: no claim about
+        // how to reach the server, only a pointer to the run line.
+        assertNoRouteClaim(in: prompt)
         #expect(!prompt.contains("cd /home/jupyter/users/alvaro1_stanford_edu/project && <command>"))
     }
 
@@ -64,10 +65,87 @@ struct RemoteWorkspacePromptGuidanceTests {
         #expect(prompt.contains("ssh dev-box"))
         #expect(prompt.contains("ssh staging-box"))
         assertLongRunningCommandContract(in: prompt)
-        #expect(prompt.contains("ASTRA host control can check SSH reachability for these aliases"))
-        #expect(prompt.contains("Remote command execution requires a reviewed workspace capability"))
-        #expect(!prompt.contains("ssh <alias> '<command>'"))
+        assertNoRouteClaim(in: prompt)
         #expect(!prompt.contains("via Bash with ssh"))
+    }
+
+    @Test("A native-shell route tells the run to use ssh in its shell, and nothing about host control")
+    func nativeShellRoutePrompt() throws {
+        let prompt = try launchPrompt(suffix: "native", route: .nativeShell)
+
+        #expect(prompt.contains("Run remote commands with `ssh deid-jsn-workbench '<command>'` in your shell."))
+        #expect(prompt.contains("`astra-host-control ssh` is not this run's route"))
+        // Never advertise a tool the run was not offered.
+        #expect(!prompt.contains("ASTRA host control can check SSH reachability"))
+        #expect(!prompt.contains("Remote command execution requires a reviewed workspace capability"))
+        assertLongRunningCommandContract(in: prompt)
+    }
+
+    @Test("A reachability-only route keeps the host-control wording")
+    func brokerReachabilityRoutePrompt() throws {
+        let prompt = try launchPrompt(suffix: "broker", route: .brokerReachabilityOnly)
+
+        #expect(prompt.contains("ASTRA host control can check SSH reachability for this connection"))
+        #expect(prompt.contains("Remote command execution requires a reviewed workspace capability"))
+        #expect(!prompt.contains("ssh deid-jsn-workbench '<command>'"))
+    }
+
+    @Test("An unavailable route says why and offers no route", arguments: HostControlSSHRoute.UnavailableReason.allCases)
+    func unavailableRoutePrompt(reason: HostControlSSHRoute.UnavailableReason) throws {
+        let prompt = try launchPrompt(suffix: "unavailable-\(reason.rawValue)", route: .unavailable(reason))
+
+        #expect(prompt.contains("SSH route for this run (resolved by ASTRA"))
+        #expect(prompt.contains("This run cannot reach the remote server: "))
+        #expect(!prompt.contains("ssh deid-jsn-workbench '<command>'"))
+        #expect(!prompt.contains("ASTRA host control can check SSH reachability"))
+    }
+
+    @Test("The run line is authoritative over earlier task notes")
+    func runGuidanceOverridesStaleNotes() {
+        let route = RemoteWorkspaceSSHRoute(targets: ["deid-jsn-workbench"], route: .nativeShell)
+        let stale = "Current state: SSH is disabled for this task; do not retry."
+        let prompt = RemoteWorkspaceSSHRoute.appendingRunGuidance(to: stale, route: route)
+
+        #expect(prompt.hasPrefix(stale))
+        #expect(prompt.hasSuffix(route.runGuidance))
+        #expect(route.runGuidance.contains("SSH route for this run (resolved by ASTRA at launch; it overrides any earlier note in current_state.json"))
+        #expect(route.runGuidance.contains("native shell. \(route.instruction)"))
+        #expect(RemoteWorkspaceSSHRoute.appendingRunGuidance(to: stale, route: nil) == stale)
+    }
+
+    /// What a launch hands the provider: the built prompt plus the run line
+    /// the worker appends once the render exists.
+    private func launchPrompt(suffix: String, route: HostControlSSHRoute) throws -> String {
+        let root = try saveSingleConnection(suffix)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let base = try buildPrompt(workspaceName: "JSL", root: root, goal: "Check the VM")
+        assertNoRouteClaim(in: base)
+        return RemoteWorkspaceSSHRoute.appendingRunGuidance(
+            to: base,
+            route: RemoteWorkspaceSSHRoute(targets: ["deid-jsn-workbench"], route: route)
+        )
+    }
+
+    private func saveSingleConnection(_ suffix: String) throws -> URL {
+        let root = try makeRoot(suffix)
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "deid-jsn-workbench",
+                host: "deid-as-service-jsn",
+                user: "alvaro1_stanford_edu",
+                remotePath: "/home/jupyter/project",
+                configAlias: "deid-jsn-workbench"
+            )
+        ], workspacePath: root.path)
+        return root
+    }
+
+    private func assertNoRouteClaim(in prompt: String) {
+        #expect(prompt.contains(RemoteWorkspacePromptGuidance.routeReference))
+        #expect(!prompt.contains("ASTRA host control can check SSH reachability"))
+        #expect(!prompt.contains("Remote command execution requires a reviewed workspace capability"))
+        #expect(!prompt.contains("'<command>'"))
+        #expect(!prompt.contains("SSH route for this run (resolved by ASTRA"))
     }
 
     private func makeRoot(_ suffix: String) throws -> URL {

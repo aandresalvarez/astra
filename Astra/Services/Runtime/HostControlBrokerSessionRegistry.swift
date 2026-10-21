@@ -16,7 +16,8 @@ protocol HostControlBrokerSessionManaging: AnyObject {
         runtime: AgentRuntimeID?,
         capabilityScope: TaskCapabilityPromptScope,
         requiredTools: [String],
-        currentDirectory: String
+        currentDirectory: String,
+        sshRoute: RemoteWorkspaceSSHRoute?
     ) -> Bool
 
     func registerProviderProcess(taskID: UUID, runID: UUID?, processID: Int32)
@@ -41,7 +42,8 @@ final class HostControlBrokerSessionManager: HostControlBrokerSessionManaging {
         runtime: AgentRuntimeID?,
         capabilityScope: TaskCapabilityPromptScope,
         requiredTools: [String],
-        currentDirectory: String
+        currentDirectory: String,
+        sshRoute: RemoteWorkspaceSSHRoute?
     ) -> Bool {
         HostControlBrokerSessionRegistry.shared.prepare(
             task: task,
@@ -50,6 +52,7 @@ final class HostControlBrokerSessionManager: HostControlBrokerSessionManaging {
             capabilityScope: capabilityScope,
             requiredTools: requiredTools,
             currentDirectory: currentDirectory,
+            sshRoute: sshRoute,
             expectedHelperPath: expectedHelperPath
         )
     }
@@ -132,6 +135,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         capabilityScope: TaskCapabilityPromptScope,
         requiredTools: [String],
         currentDirectory: String,
+        sshRoute: RemoteWorkspaceSSHRoute? = nil,
         expectedHelperPath: String = HostControlBrokerReadiness.helperPath
     ) -> Bool {
         guard !requiredTools.isEmpty else { return false }
@@ -158,7 +162,8 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
                 hostControlTools: requiredTools,
                 requiresDockerWorkspaceShell: false,
                 requiresBrowserControl: false
-            )
+            ),
+            sshRoute: sshRoute
         )
         var environment = ProcessInfo.processInfo.environment
         environment.merge(connectorEnvironment) { _, brokerValue in brokerValue }

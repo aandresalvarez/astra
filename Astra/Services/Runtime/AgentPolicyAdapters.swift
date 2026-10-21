@@ -1317,7 +1317,8 @@ enum AgentPolicyManifestService {
                 storedEnforcement: sandboxResolution.storedEnforcement.rawValue,
                 effectiveEnforcement: sandboxSettings.enforcement.rawValue,
                 effectiveReadScope: sandboxSettings.readScope.rawValue,
-                resolutionReason: sandboxResolution.reason?.rawValue
+                resolutionReason: sandboxResolution.reason?.rawValue,
+                shellNetworkAllowed: !(sandboxSettings.shouldWrap(runtime: runtime) && !sandboxSettings.allowNetwork)
             )
         )
         return manifest
@@ -1431,11 +1432,12 @@ enum AgentPolicyManifestService {
         let permissionPolicy = PermissionPolicy(providerMode: render.permissionMode)
         let usesHostControlCLIRelay = !hostControlTools.isEmpty
             && runtimeCapabilityProfile.usesHostControlCLIRelay
-        let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
+        let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.withdrawsNativeShell(
             environment: executionEnvironment,
             permissionPolicy: permissionPolicy,
-            requiredTools: requiredHostControlTools
-        ) && !usesHostControlCLIRelay
+            requiredTools: requiredHostControlTools,
+            usesHostControlCLIRelay: usesHostControlCLIRelay
+        )
         guard usesDockerWorkspaceExecutor || !hostControlTools.isEmpty else {
             return render
         }

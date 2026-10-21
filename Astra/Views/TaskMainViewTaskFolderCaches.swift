@@ -5,8 +5,9 @@ import ASTRAPersistence
 
 /// Caches of what is in the task folder, kept off `TaskMainView.body`.
 ///
-/// `body` reads `messageText`, so it re-runs on every keystroke, and both of
-/// these used to touch the folder from it: the diagnostics key named the task
+/// `body` re-runs often (it ran on every keystroke until the composer text
+/// moved to `TaskComposerDraft`), and both of these used to touch the folder
+/// from it: the diagnostics key named the task
 /// folder, which is a `stat` to resolve (and counted `task.artifacts`, a
 /// relationship fault), and every run bubble classified its changed paths
 /// with symlink walks. Same shape as `recomputeHeaderFileItems`: a key of

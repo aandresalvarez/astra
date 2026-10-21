@@ -254,4 +254,166 @@ struct RuntimeEligibilityPreviewScopeTests {
         #expect(merged.candidates.count == 1)
         #expect(merged.taskID == first.task.id)
     }
+
+    /// The full pass now scores one runtime at a time and gives the main run
+    /// loop a turn in between, because scoring all six back to back held the
+    /// main actor for 0.5–0.9 s while the user typed. Splitting it must not
+    /// change a single verdict, including the launch block's fallback
+    /// suggestion, which is computed from every candidate.
+    @Test(
+        "Scoring runtimes one at a time reaches the same verdicts",
+        arguments: [RuntimeReadinessState.ready, .blocked]
+    )
+    func incrementalPassMatchesBackToBackPass(selectedReadiness: RuntimeReadinessState) async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let request = request(for: environment.task, selectedReadiness: selectedReadiness)
+
+        let backToBack = try #require(await request.evaluate())
+        var yields = 0
+        let incremental = try #require(await request.evaluate(betweenRuntimes: {
+            yields += 1
+            return await RuntimeEligibilityPreviewRequest.yieldToMainRunLoop()
+        }))
+
+        #expect(yields == AgentRuntimeAdapterRegistry.runtimeIDs.count - 1)
+        #expect(Set(incremental.candidates.keys) == Set(backToBack.candidates.keys))
+        for (runtime, candidate) in backToBack.candidates {
+            #expect(incremental.candidates[runtime]?.isEligible == candidate.isEligible, "\(runtime) verdict changed")
+            #expect(incremental.candidates[runtime]?.contractDigest == candidate.contractDigest, "\(runtime) contract changed")
+        }
+        #expect(incremental.launchBlock == backToBack.launchBlock)
+    }
+
+    /// A keystroke supersedes the preview. The pass must stop at the next
+    /// runtime boundary instead of scoring the rest for text nobody will send.
+    @Test("A superseded incremental pass stops at the next runtime")
+    func supersededIncrementalPassStops() async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let request = request(for: environment.task)
+
+        var yields = 0
+        let snapshot = await request.evaluate(betweenRuntimes: {
+            yields += 1
+            return yields < 2
+        })
+
+        #expect(snapshot == nil)
+        #expect(yields == 2, "the pass kept scoring after it was told to stop")
+    }
+
+    @Test("Yielding to the run loop reports a cancelled preview")
+    func yieldReportsCancellation() async {
+        let task = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await RuntimeEligibilityPreviewRequest.yieldToMainRunLoop()
+        }
+        #expect(await task.value == false)
+        #expect(await RuntimeEligibilityPreviewRequest.yieldToMainRunLoop())
+    }
+
+    /// A yield lets other main-actor work run, including an edit to state the
+    /// pass reads. Verdicts scored before the edit must not be mixed with
+    /// ones scored after it, so the pass starts again and agrees with a
+    /// fresh evaluation of the edited state.
+    @Test("An edit during a yield restarts the pass against the new state")
+    func editDuringYieldRestartsPass() async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let workspace = try #require(environment.task.workspace)
+        let request = request(for: environment.task)
+
+        var yields = 0
+        let snapshot = try #require(await request.evaluate(betweenRuntimes: {
+            yields += 1
+            if yields == 1 {
+                workspace.enabledCapabilityIDs.append(PluginCatalog.builtInPackages[0].id)
+            }
+            return true
+        }))
+        let fresh = try #require(await request.evaluate())
+
+        #expect(yields > AgentRuntimeAdapterRegistry.runtimeIDs.count - 1, "the edit did not restart the pass")
+        #expect(snapshot.candidates.count == fresh.candidates.count)
+        for (runtime, candidate) in fresh.candidates {
+            #expect(snapshot.candidates[runtime]?.contractDigest == candidate.contractDigest, "\(runtime) scored against stale state")
+        }
+        #expect(snapshot.launchBlock == fresh.launchBlock)
+    }
+
+    @Test("State that keeps changing still yields a complete verdict, in one stretch")
+    func continuousEditsFallBackToOneStretch() async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let workspace = try #require(environment.task.workspace)
+        let request = request(for: environment.task)
+
+        var yields = 0
+        let snapshot = try #require(await request.evaluate(betweenRuntimes: {
+            yields += 1
+            workspace.enabledCapabilityIDs.append("astra-edit-\(yields)")
+            return true
+        }))
+
+        // Each attempt is cut short at its first yield; after three, the rest
+        // is scored without yielding.
+        #expect(yields == 3)
+        #expect(snapshot.candidates.count == AgentRuntimeAdapterRegistry.runtimeIDs.count)
+    }
+
+    /// The new-task composer scores a detached projection, which no other
+    /// code edits. Its full pass must run to the end without restarting.
+    @Test("A new-task composer's incremental pass does not restart itself")
+    func newTaskIncrementalPassDoesNotRestart() async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let workspace = try #require(environment.task.workspace)
+        let request = RuntimeEligibilityPreviewRequest.newTask(
+            draftTask: nil,
+            workspace: workspace,
+            selectedSkills: [],
+            attachedFiles: [],
+            acceptedTurn: "Summarize this folder",
+            requestedRuntime: .claudeCode,
+            runtimeExplicitlySelected: false,
+            selectedPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            skipPermissions: false,
+            defaultModel: "test-model",
+            defaultBudget: 1_000,
+            providerSettings: .headlessScenario,
+            readinessStates: Dictionary(
+                uniqueKeysWithValues: AgentRuntimeAdapterRegistry.runtimeIDs.map { ($0, RuntimeReadinessState.ready) }
+            )
+        )
+
+        var yields = 0
+        let snapshot = try #require(await request.evaluate(betweenRuntimes: {
+            yields += 1
+            return true
+        }))
+
+        #expect(yields == AgentRuntimeAdapterRegistry.runtimeIDs.count - 1, "the pass restarted on its own reads")
+        #expect(snapshot.candidates.count == AgentRuntimeAdapterRegistry.runtimeIDs.count)
+    }
 }

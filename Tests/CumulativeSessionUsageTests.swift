@@ -5,10 +5,10 @@ import ASTRACore
 import ASTRAModels
 @testable import ASTRA
 
-/// Antigravity and Copilot report the whole provider session's usage on a resumed
-/// launch (measured: a 5,180-output-token first turn followed by a one-word resume
-/// reported 5,198, 2 turns, cumulative duration). Recording that as the run's usage
-/// would count the earlier turns twice, so a resumed run records only the difference.
+/// Antigravity, Copilot and Codex report the whole provider session's usage on a
+/// resumed launch (measured: a 5,180-output-token first turn followed by a one-word
+/// resume reported 5,198, 2 turns, cumulative duration). Recording that as the run's
+/// usage would count the earlier turns twice, so a resumed run records only the difference.
 @Suite("Cumulative session usage")
 @MainActor
 struct CumulativeSessionUsageTests {
@@ -84,12 +84,80 @@ struct CumulativeSessionUsageTests {
         #expect(task.tokensUsed == 600 + 350)
     }
 
-    @Test("Only Antigravity and Copilot declare cumulative session usage")
+    @Test("Only Antigravity, Copilot and Codex declare cumulative session usage")
     func descriptorFlags() {
+        let cumulative: Set<AgentRuntimeID> = [.copilotCLI, .antigravityCLI, .codexCLI]
         for runtime in [AgentRuntimeID.claudeCode, .codexCLI, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI] {
             let flag = AgentRuntimeAdapterRegistry.adapter(for: runtime).descriptor.reportsCumulativeSessionUsage
-            #expect(flag == (runtime == .copilotCLI || runtime == .antigravityCLI), "\(runtime.rawValue)")
+            #expect(flag == cumulative.contains(runtime), "\(runtime.rawValue)")
         }
+    }
+
+    /// One run per report, each resuming `session`; the first run of the task records in `.initial` mode.
+    private func runs(
+        _ runtime: AgentRuntimeID, reporting reports: [(session: String, input: Int, output: Int)],
+        to task: AgentTask, context: ModelContext
+    ) -> [TaskRun] {
+        reports.map { report in
+            let run = TaskRun(task: task)
+            run.providerSessionId = report.session
+            context.insert(run)
+            let mode: AgentRuntimeRecordingMode = task.runs.count == 1 ? .initial : .followUp
+            record(runtime, input: report.input, output: report.output, to: task, run: run, context: context, mode: mode)
+            return run
+        }
+    }
+
+    /// Prod task E0F780F8 (codex-cli 0.163): six runs of one resumed session reported running totals,
+    /// and ASTRA stored each as that run's usage — 20.9M input summed against 7.9M real. Run CC106755
+    /// lasted 21 s and was recorded as 2.80M input / 17,334 output, +409 output over the run before it.
+    @Test("A resumed Codex session's runs sum to its final total, each run recording only its own turn")
+    func codexResumedSessionRecordsPerTurnUsage() throws {
+        let (context, container) = try makeContext()
+        defer { withExtendedLifetime(container) {} }
+        let task = AgentTask(title: "Usage", goal: "Count once", runtime: .codexCLI)
+        context.insert(task)
+        let session = runs(.codexCLI, reporting: [
+            ("01a15ac1", 482_000, 1_566), ("01a15ac1", 543_000, 1_851), ("01a15ac1", 2_680_000, 16_925),
+            ("01a15ac1", 2_800_000, 17_334), ("01a15ac1", 6_510_000, 47_077), ("01a15ac1", 7_900_000, 49_691)
+        ], to: task, context: context)
+
+        #expect(session.map(\.inputTokens) == [482_000, 61_000, 2_137_000, 120_000, 3_710_000, 1_390_000])
+        #expect(session.map(\.outputTokens) == [1_566, 285, 15_074, 409, 29_743, 2_614])
+        #expect(session.reduce(0) { $0 + $1.inputTokens } == 7_900_000)
+        #expect(task.tokensUsed == 7_900_000 + 49_691)
+        #expect(task.events.filter { $0.type == ProviderSessionUsageEpoch.resetEventType }.isEmpty)
+
+        // A new Codex session starts its own totals: its first run has no baseline and counts in full.
+        let fresh = runs(.codexCLI, reporting: [("01a15b02", 300_000, 900), ("01a15b02", 340_000, 1_000)],
+                         to: task, context: context)
+        #expect(fresh.map(\.inputTokens) == [300_000, 40_000])
+        #expect(fresh.map(\.outputTokens) == [900, 100])
+    }
+
+    /// Before Codex declared cumulative usage, each of its resumed runs stored the raw session total.
+    /// The first report after that is below those runs' sum, which reads as a counter restart: it counts
+    /// in full once and starts a new epoch, so the runs after it are measured from it alone.
+    @Test("A Codex session recorded before delta accounting is measured from its next report on")
+    func codexSessionRecordedBeforeDeltaAccountingStartsAnEpoch() throws {
+        let (context, container) = try makeContext()
+        defer { withExtendedLifetime(container) {} }
+        let task = AgentTask(title: "Usage", goal: "Count once", runtime: .codexCLI)
+        context.insert(task)
+        for (input, output) in [(482_000, 1_566), (543_000, 1_851)] {
+            let legacy = TaskRun(task: task)
+            legacy.providerSessionId = "01a15ac1"
+            legacy.inputTokens = input
+            legacy.outputTokens = output
+            legacy.tokensUsed = input + output
+            context.insert(legacy)
+        }
+        let next = runs(.codexCLI, reporting: [("01a15ac1", 600_000, 2_000), ("01a15ac1", 650_000, 2_100)],
+                        to: task, context: context)
+
+        #expect(next.map(\.inputTokens) == [600_000, 50_000])
+        #expect(next.map(\.outputTokens) == [2_000, 100])
+        #expect(task.events.filter { $0.type == ProviderSessionUsageEpoch.resetEventType }.map(\.run?.id) == [next[0].id])
     }
 
     @Test("The monitor's token ceiling is raised by what the session's cumulative stream re-reports")

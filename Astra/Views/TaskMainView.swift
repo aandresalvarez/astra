@@ -198,10 +198,13 @@ struct TaskMainView: View {
     @Environment(\.modelContext) var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.taskChatUnobscuredWidth) private var taskChatUnobscuredWidth
-    @State var messageText = ""
+    /// Typed text, slash selection and eligibility verdict. Not `@State`
+    /// values: a keystroke must not re-run this `body`, which builds the
+    /// non-lazy transcript. Read it in `body` only through a
+    /// `TaskComposerTextReader`; see `TaskComposerDraft`.
+    @State var composerDraft = TaskComposerDraft()
     // Read by `runtimeEligibilityPreviewRequest` in RuntimeEligibilityPreviewModifier.swift.
     @State var attachedFiles: [String] = []
-    @State private var slashSelectedIndex = 0
     @State private var isDragOver = false
     @State private var showDiffsSheet = false
     @State private var showContextPreview = false
@@ -287,7 +290,6 @@ struct TaskMainView: View {
     @State var taskSkipPermissions = false
     @State private var capabilitySnapshot = ComposerCapabilitySnapshot.empty
     @State var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
-    @State private var runtimeEligibilityPreviewState = RuntimeEligibilityPreviewState.idle
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
     var onForkTask: ((AgentTask) -> Void)?
@@ -467,17 +469,8 @@ struct TaskMainView: View {
                 .frame(minWidth: 700, minHeight: 500)
         }
         .sheet(isPresented: $showContextPreview) {
-            let request = contextPreviewRequest
-            if let manifest = contextPreviewManifest(for: request) {
-                PromptContextPreviewSheet(
-                    manifest: manifest,
-                    orientationDirectory: TaskWorkspaceAccess(task: task).codeWorkingDirectory
-                )
-                    .frame(minWidth: 700, minHeight: 600)
-            } else {
-                PromptContextPreviewUnavailableSheet(
-                    reason: request.unavailableReason ?? "No provider prompt is pending."
-                )
+            TaskComposerTextReader(draft: composerDraft) { text in
+                contextPreviewSheet(for: contextPreviewRequest(messageText: text))
             }
         }
         .sheet(isPresented: $showScheduleEditor) {
@@ -554,10 +547,6 @@ struct TaskMainView: View {
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
-        .runtimeEligibilityPreview(
-            runtimeEligibilityPreviewRequest,
-            state: $runtimeEligibilityPreviewState
-        )
         .task(id: task.id) {
             await initializeDisplayedTaskState()
         }
@@ -1284,13 +1273,28 @@ struct TaskMainView: View {
         summaryContent(decisionDockVisible: decisionDockVisible)
     }
 
-    private var contextPreviewRequest: PromptContextPreviewRequest {
+    private func contextPreviewRequest(messageText: String) -> PromptContextPreviewRequest {
         PromptContextPreviewPresentation.request(
             taskStatus: task.status,
             hasProviderSession: task.hasProviderSession,
             messageText: messageText,
             attachedFiles: attachedFiles
         )
+    }
+
+    @ViewBuilder
+    private func contextPreviewSheet(for request: PromptContextPreviewRequest) -> some View {
+        if let manifest = contextPreviewManifest(for: request) {
+            PromptContextPreviewSheet(
+                manifest: manifest,
+                orientationDirectory: TaskWorkspaceAccess(task: task).codeWorkingDirectory
+            )
+                .frame(minWidth: 700, minHeight: 600)
+        } else {
+            PromptContextPreviewUnavailableSheet(
+                reason: request.unavailableReason ?? "No provider prompt is pending."
+            )
+        }
     }
 
     private func contextPreviewManifest(for request: PromptContextPreviewRequest) -> PromptAssemblyManifest? {
@@ -3642,16 +3646,19 @@ struct TaskMainView: View {
 
     // MARK: - Composer
 
+    // These read the live draft. Call them from actions, or from inside a
+    // `TaskComposerTextReader`, never directly from `body`.
+
     private var hasInput: Bool {
-        TaskComposerCoordinator.hasInput(messageText: messageText, attachedFiles: attachedFiles)
+        TaskComposerCoordinator.hasInput(messageText: composerDraft.text, attachedFiles: attachedFiles)
     }
 
     private var showSlashMenu: Bool {
-        TaskComposerCoordinator.shouldShowSlashMenu(messageText: messageText)
+        TaskComposerCoordinator.shouldShowSlashMenu(messageText: composerDraft.text)
     }
 
     private var visibleSlashOptions: [TaskComposerSlashOption] {
-        TaskComposerCoordinator.visibleSlashOptions(messageText: messageText)
+        TaskComposerCoordinator.visibleSlashOptions(messageText: composerDraft.text)
     }
 
     /// Icon / color / title / subtitle metadata for a slash option id.
@@ -3671,14 +3678,14 @@ struct TaskMainView: View {
     private func selectSlashOption() {
         let opts = visibleSlashOptions
         guard !opts.isEmpty else { return }
-        let idx = min(slashSelectedIndex, opts.count - 1)
+        let idx = min(composerDraft.slashSelectedIndex, opts.count - 1)
         selectSlashOption(opts[idx])
     }
 
     /// Commands that take no argument execute immediately on selection.
     /// Commands that take args just fill the composer so the user can type.
     private func selectSlashOption(_ opt: TaskComposerSlashOption) {
-        messageText = opt.command
+        composerDraft.text = opt.command
         if opt.executesImmediately {
             sendMessage()
         }
@@ -3968,7 +3975,7 @@ struct TaskMainView: View {
             let opts = visibleSlashOptions
             VStack(spacing: 0) {
                 ForEach(Array(opts.enumerated()), id: \.element.id) { index, opt in
-                    let isSelected = index == min(slashSelectedIndex, opts.count - 1)
+                    let isSelected = index == min(composerDraft.slashSelectedIndex, opts.count - 1)
                     let meta = Self.slashOptionMeta(opt.id)
                     Button {
                         selectSlashOption(opt)
@@ -4042,6 +4049,101 @@ struct TaskMainView: View {
         decisionDockPresentation: TaskDecisionDockPresentation?
     ) -> some View {
         let composerShape = RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
+        // Read here, in `body`, and captured by the readers below: a change to
+        // any of them re-runs this view, which hands the readers new values.
+        let composerAttachments = attachedFiles
+        let composerFocus = $isComposerFocused
+        let placeholder = composerPlaceholder
+        let taskIsRunning = task.status == .running
+        let eligibilityPreviewRequest = runtimeEligibilityPreviewRequestBuilder()
+        let toolbar = ComposerToolbar(
+            model: task.model,
+            reasoningEffort: task.reasoningEffort,
+            runtimeID: task.runtimeID ?? AgentRuntimeID.claudeCode.rawValue,
+            budget: task.tokenBudget,
+            skills: task.skills,
+            availableSkills: availableSkills,
+            workspace: task.workspace,
+            runtimeReadinessStates: runtimeReadinessStates,
+            taskStatus: task.status,
+            taskStatusOverride: composerTaskStatusOverride,
+            showsTaskStatusPill: decisionDockPresentation == nil,
+            isRunning: task.status == .running || isPlanning,
+            // Set per keystroke by `composing(...)` in the reader below.
+            hasInput: false,
+            onAttachFile: { attachFile() },
+            onPasteClipboard: { smartPaste() },
+            onSend: { sendMessage() },
+            onStop: (decisionDockPresentation != nil || onCancelTask == nil) ? nil : { onCancelTask?(task) },
+            onModelChange: { task.model = $0 },
+            onReasoningEffortChange: { task.reasoningEffort = $0 },
+            onRuntimeChange: { runtime, requestedModel in
+                TaskComposerCoordinator.applyRuntimeSwitch(
+                    to: runtime,
+                    requestedModel: requestedModel,
+                    task: task,
+                    cache: runtimeModelCache,
+                    source: "task_composer"
+                )
+            },
+            sensitiveDataSwitchGuard: TaskComposerCoordinator.sensitiveDataSwitchGuard(for: task),
+            onBudgetChange: { task.tokenBudget = $0 },
+            onRemoveSkill: { skill in
+                task.skills.removeAll { $0.id == skill.id }
+                TaskCapabilitySnapshotter.capture(for: task)
+                task.updatedAt = Date()
+                AppLogger.breadcrumb(action: "task_skill_removed", category: "UI", taskID: task.id, fields: [
+                    "source": "task_composer",
+                    "skill_id": skill.id.uuidString,
+                    "skill_name": skill.name,
+                    "runtime": task.runtimeID ?? "none",
+                    "workspace_id": task.workspace?.id.uuidString ?? "none"
+                ])
+            },
+            onToggleSkill: { skill, enabled in
+                if enabled {
+                    if !task.skills.contains(where: { $0.id == skill.id }) {
+                        task.skills.append(skill)
+                    }
+                } else {
+                    task.skills.removeAll { $0.id == skill.id }
+                }
+                TaskCapabilitySnapshotter.capture(for: task)
+                task.updatedAt = Date()
+                let traceID = AuditTrace.make("task-skill-toggle")
+                AppLogger.breadcrumb(action: enabled ? "task_skill_enabled" : "task_skill_disabled", category: "UI", taskID: task.id, traceID: traceID, fields: [
+                    "source": "task_composer",
+                    "skill_id": skill.id.uuidString,
+                    "skill_name": skill.name,
+                    "runtime": task.runtimeID ?? "none",
+                    "workspace_id": task.workspace?.id.uuidString ?? "none"
+                ])
+                logTaskCapabilityContext(source: "task_skill_toggle", traceID: traceID, extraFields: [
+                    "skill_id": skill.id.uuidString,
+                    "skill_name": skill.name,
+                    "skill_enabled": String(enabled)
+                ])
+            },
+            onManageSkills: onManageSkills,
+            skipPermissions: $taskSkipPermissions,
+            policyLevelRaw: $taskPolicyLevelRaw,
+            useAgentTeam: .constant(false),
+            teamSize: .constant(3),
+            isPlanMode: $isPlanMode,
+            planModeHelp: "Turn on Goal Mode to refine the task goal before resuming",
+            onPolicyLevelChange: { level in
+                TaskPolicyStore.recordSelection(
+                    level: level,
+                    task: task,
+                    modelContext: modelContext,
+                    source: "task_composer"
+                )
+                task.updatedAt = Date()
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            },
+            showSecurityGate: true,
+            sshConnections: sshConnections
+        )
 
         return VStack(spacing: 0) {
             VStack(spacing: 0) {
@@ -4066,141 +4168,69 @@ struct TaskMainView: View {
                     }
                 }
 
-                TextField(composerPlaceholder, text: $messageText, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(Stanford.chatBody())
-                    .lineLimit(2...10)
-                    .padding(.horizontal, TaskComposerPresentation.inputHorizontalPadding)
-                    .padding(.top, attachedFiles.isEmpty ? TaskComposerPresentation.inputTopPadding : TaskComposerPresentation.inputTopPaddingWithAttachments)
-                    .padding(.bottom, TaskComposerPresentation.inputBottomPadding)
-                    .focused($isComposerFocused)
-                    .onSubmit {
-                        if showSlashMenu && !visibleSlashOptions.isEmpty {
-                            selectSlashOption()
-                        } else {
-                            sendMessage()
+                // Everything that reads the typed text sits in a reader, so a
+                // keystroke re-runs the field and the toolbar, not this view's
+                // `body` and its transcript. See `TaskComposerDraft`.
+                TaskComposerTextReader(draft: composerDraft) { text in
+                    TextField(placeholder, text: Bindable(composerDraft).text, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(Stanford.chatBody())
+                        .lineLimit(2...10)
+                        .padding(.horizontal, TaskComposerPresentation.inputHorizontalPadding)
+                        .padding(.top, composerAttachments.isEmpty ? TaskComposerPresentation.inputTopPadding : TaskComposerPresentation.inputTopPaddingWithAttachments)
+                        .padding(.bottom, TaskComposerPresentation.inputBottomPadding)
+                        .focused(composerFocus)
+                        .onSubmit {
+                            if showSlashMenu && !visibleSlashOptions.isEmpty {
+                                selectSlashOption()
+                            } else {
+                                sendMessage()
+                            }
                         }
-                    }
-                    .onKeyPress(.tab) {
-                        if showSlashMenu && !visibleSlashOptions.isEmpty { selectSlashOption(); return .handled }
-                        return .ignored
-                    }
-                    .onKeyPress(.upArrow) {
-                        if showSlashMenu {
-                            slashSelectedIndex = max(0, slashSelectedIndex - 1)
-                            return .handled
+                        .onKeyPress(.tab) {
+                            if showSlashMenu && !visibleSlashOptions.isEmpty { selectSlashOption(); return .handled }
+                            return .ignored
                         }
-                        return .ignored
-                    }
-                    .onKeyPress(.downArrow) {
-                        if showSlashMenu {
-                            slashSelectedIndex = min(visibleSlashOptions.count - 1, slashSelectedIndex + 1)
-                            return .handled
+                        .onKeyPress(.upArrow) {
+                            if showSlashMenu {
+                                composerDraft.slashSelectedIndex = max(0, composerDraft.slashSelectedIndex - 1)
+                                return .handled
+                            }
+                            return .ignored
                         }
-                        return .ignored
-                    }
-                    // The probe was only ever armed from `ChatPanelView`, so
-                    // typing into an open task — the composer this is — logged
-                    // nothing at all. That silence is why the per-keystroke
-                    // artifact walk went unmeasured for so long.
-                    .onChange(of: messageText) {
-                        slashSelectedIndex = 0
-                        ComposerTypingStallProbe.shared.noteTyping()
-                    }
-                    .disabled(task.status == .running)
+                        .onKeyPress(.downArrow) {
+                            if showSlashMenu {
+                                composerDraft.slashSelectedIndex = min(visibleSlashOptions.count - 1, composerDraft.slashSelectedIndex + 1)
+                                return .handled
+                            }
+                            return .ignored
+                        }
+                        // The probe was only ever armed from `ChatPanelView`, so
+                        // typing into an open task — the composer this is — logged
+                        // nothing at all. That silence is why the per-keystroke
+                        // artifact walk went unmeasured for so long.
+                        .onChange(of: text) {
+                            composerDraft.noteTextChanged()
+                            ComposerTypingStallProbe.shared.noteTyping()
+                        }
+                        .disabled(taskIsRunning)
+                }
 
                 Color.clear
                     .frame(height: 2)
 
-                ComposerToolbar(
-                    model: task.model,
-                    reasoningEffort: task.reasoningEffort,
-                    runtimeID: task.runtimeID ?? AgentRuntimeID.claudeCode.rawValue,
-                    budget: task.tokenBudget,
-                    skills: task.skills,
-                    availableSkills: availableSkills,
-                    workspace: task.workspace,
-                    runtimeReadinessStates: runtimeReadinessStates,
-                    runtimeEligibilityPreviewState: runtimeEligibilityPreviewState,
-                    runtimeEligibilityPreviewSignature: runtimeEligibilityPreviewRequest.signature,
-                    taskStatus: task.status,
-                    taskStatusOverride: composerTaskStatusOverride,
-                    showsTaskStatusPill: decisionDockPresentation == nil,
-                    isRunning: task.status == .running || isPlanning,
-                    hasInput: hasInput,
-                    onAttachFile: { attachFile() },
-                    onPasteClipboard: { smartPaste() },
-                    onSend: { sendMessage() },
-                    onStop: (decisionDockPresentation != nil || onCancelTask == nil) ? nil : { onCancelTask?(task) },
-                    onModelChange: { task.model = $0 },
-                    onReasoningEffortChange: { task.reasoningEffort = $0 },
-                    onRuntimeChange: { runtime, requestedModel in
-                        TaskComposerCoordinator.applyRuntimeSwitch(
-                            to: runtime,
-                            requestedModel: requestedModel,
-                            task: task,
-                            cache: runtimeModelCache,
-                            source: "task_composer"
-                        )
-                    },
-                    sensitiveDataSwitchGuard: TaskComposerCoordinator.sensitiveDataSwitchGuard(for: task),
-                    onBudgetChange: { task.tokenBudget = $0 },
-                    onRemoveSkill: { skill in
-                        task.skills.removeAll { $0.id == skill.id }
-                        TaskCapabilitySnapshotter.capture(for: task)
-                        task.updatedAt = Date()
-                        AppLogger.breadcrumb(action: "task_skill_removed", category: "UI", taskID: task.id, fields: [
-                            "source": "task_composer",
-                            "skill_id": skill.id.uuidString,
-                            "skill_name": skill.name,
-                            "runtime": task.runtimeID ?? "none",
-                            "workspace_id": task.workspace?.id.uuidString ?? "none"
-                        ])
-                    },
-                    onToggleSkill: { skill, enabled in
-                        if enabled {
-                            if !task.skills.contains(where: { $0.id == skill.id }) {
-                                task.skills.append(skill)
-                            }
-                        } else {
-                            task.skills.removeAll { $0.id == skill.id }
-                        }
-                        TaskCapabilitySnapshotter.capture(for: task)
-                        task.updatedAt = Date()
-                        let traceID = AuditTrace.make("task-skill-toggle")
-                        AppLogger.breadcrumb(action: enabled ? "task_skill_enabled" : "task_skill_disabled", category: "UI", taskID: task.id, traceID: traceID, fields: [
-                            "source": "task_composer",
-                            "skill_id": skill.id.uuidString,
-                            "skill_name": skill.name,
-                            "runtime": task.runtimeID ?? "none",
-                            "workspace_id": task.workspace?.id.uuidString ?? "none"
-                        ])
-                        logTaskCapabilityContext(source: "task_skill_toggle", traceID: traceID, extraFields: [
-                            "skill_id": skill.id.uuidString,
-                            "skill_name": skill.name,
-                            "skill_enabled": String(enabled)
-                        ])
-                    },
-                    onManageSkills: onManageSkills,
-                    skipPermissions: $taskSkipPermissions,
-                    policyLevelRaw: $taskPolicyLevelRaw,
-                    useAgentTeam: .constant(false),
-                    teamSize: .constant(3),
-                    isPlanMode: $isPlanMode,
-                    planModeHelp: "Turn on Goal Mode to refine the task goal before resuming",
-                    onPolicyLevelChange: { level in
-                        TaskPolicyStore.recordSelection(
-                            level: level,
-                            task: task,
-                            modelContext: modelContext,
-                            source: "task_composer"
-                        )
-                        task.updatedAt = Date()
-                        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-                    },
-                    showSecurityGate: true,
-                    sshConnections: sshConnections
-                )
+                TaskComposerTextReader(draft: composerDraft) { text in
+                    let previewRequest = eligibilityPreviewRequest(text)
+                    toolbar.composing(
+                        hasInput: TaskComposerCoordinator.hasInput(messageText: text, attachedFiles: composerAttachments),
+                        previewState: composerDraft.eligibilityPreviewState,
+                        previewSignature: previewRequest.signature
+                    )
+                    .runtimeEligibilityPreview(
+                        previewRequest,
+                        state: Bindable(composerDraft).eligibilityPreviewState
+                    )
+                }
             }
             .background(composerFill)
             .clipShape(composerShape)
@@ -4209,7 +4239,9 @@ struct TaskMainView: View {
                     .stroke(composerStrokeColor, lineWidth: composerStrokeWidth)
             )
             .overlay(alignment: .topLeading) {
-                slashCommandMenuOverlay
+                TaskComposerTextReader(draft: composerDraft) { _ in
+                    slashCommandMenuOverlay
+                }
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 11)
@@ -4267,7 +4299,7 @@ struct TaskMainView: View {
                event.modifierFlags.contains(.shift),
                Self.isReturnKey(event),
                task.status != .running {
-                messageText.append("\n")
+                composerDraft.text.append("\n")
                 return nil
             }
             if isComposerFocused,
@@ -4293,7 +4325,7 @@ struct TaskMainView: View {
     private func pursueSuggestedNextStep(_ suggestion: String) {
         let trimmed = suggestion.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        messageText = trimmed
+        composerDraft.text = trimmed
         isComposerFocused = true
     }
 
@@ -4629,7 +4661,7 @@ struct TaskMainView: View {
 
     private func sendMessage() {
         let sendAction = TaskComposerCoordinator.sendAction(
-            messageText: messageText,
+            messageText: composerDraft.text,
             attachedFiles: attachedFiles,
             hasWorkspace: task.workspace != nil
         )
@@ -4654,14 +4686,14 @@ struct TaskMainView: View {
                 let confirmEvent = TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: "💾 Memory saved: \"\(memoryText)\"")
                 modelContext.insert(confirmEvent)
             }
-            messageText = ""
+            composerDraft.text = ""
             return
         case .recap:
-            messageText = ""
+            composerDraft.text = ""
             generateRecapAgentically()
             return
         case .routine(let instructions):
-            messageText = ""
+            composerDraft.text = ""
             if let instructions {
                 createScheduleAgentically(instruction: instructions)
             } else {
@@ -4669,22 +4701,22 @@ struct TaskMainView: View {
             }
             return
         case .mcpInstall(let request):
-            recordMCPInstallCommand(messageText, assistantMessage: "I found an MCP install target. Review it before ASTRA saves or enables anything.")
+            recordMCPInstallCommand(composerDraft.text, assistantMessage: "I found an MCP install target. Review it before ASTRA saves or enables anything.")
             onStartMCPInstallReview?(request)
             return
         case .mcpInstallFailure(let message):
-            recordMCPInstallCommand(messageText, assistantMessage: message)
+            recordMCPInstallCommand(composerDraft.text, assistantMessage: message)
             return
         case .message:
             // Recomposed once the send is certain, naming durable copies of pastes and image drops.
             let attachments = TaskInputMaterializer.durableAttachmentPaths(attachedFiles, for: task)
-            sendConversationMessage(TaskComposerCoordinator.composedMessage(messageText: messageText, attachedFiles: attachments), attachmentPaths: attachments)
+            sendConversationMessage(TaskComposerCoordinator.composedMessage(messageText: composerDraft.text, attachedFiles: attachments), attachmentPaths: attachments)
         }
     }
 
     private func recordMCPInstallCommand(_ input: String, assistantMessage: String) {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        messageText = ""
+        composerDraft.text = ""
         if !trimmed.isEmpty {
             TaskEventInsertionService.insert(TaskEvent(
                 task: task,
@@ -4708,7 +4740,7 @@ struct TaskMainView: View {
             hasInput: hasInput,
             runtime: runtime,
             readinessStates: runtimeReadinessStates,
-            previewState: runtimeEligibilityPreviewState,
+            previewState: composerDraft.eligibilityPreviewState,
             signature: runtimeEligibilityPreviewRequest.signature
         )
     }
@@ -4735,7 +4767,7 @@ struct TaskMainView: View {
         }
         // Attachment paths are embedded in `msg` and recorded beside it, but the
         // composer state must outlive a failed durable submission: clear alongside
-        // `messageText` in each success branch, never up front, so a retry
+        // `composerDraft.text` in each success branch, never up front, so a retry
         // from the retained composer rebuilds the message with its files.
         let traceID = AuditTrace.make(isPlanMode ? "task-plan-chat" : "task-chat")
         AppLogger.breadcrumb(action: isPlanMode ? "task_plan_chat_sent" : "task_chat_sent", category: "UI", taskID: task.id, traceID: traceID, fields: [
@@ -4747,7 +4779,7 @@ struct TaskMainView: View {
             "message_length": String(msg.count)
         ])
         if isPlanMode {
-            (messageText, attachedFiles) = ("", [])
+            (composerDraft.text, attachedFiles) = ("", [])
             sendPlanningMessage(msg, attachmentPaths: attachmentPaths, traceID: traceID)
             return
         }
@@ -4756,7 +4788,7 @@ struct TaskMainView: View {
                 AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: ["operation": "move_queued_task_to_draft", "result": "rejected_or_persist_failed"], level: .error)
                 return
             }
-            messageText = ""
+            composerDraft.text = ""
             attachedFiles = []
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
@@ -4784,7 +4816,7 @@ struct TaskMainView: View {
                 ], level: .error)
                 return
             }
-            messageText = ""
+            composerDraft.text = ""
             attachedFiles = []
             if task.isDone { task.isDone = false } // reopen: sidebar review/unread predicates gate on !isDone
             if task.status != .running {
@@ -4811,7 +4843,7 @@ struct TaskMainView: View {
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             TaskEventInsertionService.insert(event, attachmentPaths: attachmentPaths, into: modelContext)
-            messageText = ""
+            composerDraft.text = ""
             attachedFiles = []
         }
     }

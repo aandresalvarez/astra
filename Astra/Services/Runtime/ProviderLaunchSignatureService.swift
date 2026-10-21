@@ -36,6 +36,11 @@ struct ProviderLaunchSignaturePayload: Codable, Equatable {
     /// filesystem reachability contract is unchanged. Optional preserves
     /// decoding of signatures recorded before this field existed.
     let readOnlyResourceContractDigest: String?
+    /// The run's SSH route and the connections it names. A native session that
+    /// was told one route must not be resumed into another, or into none.
+    /// Left out of the value when absent, so workspaces without SSH keep the
+    /// signatures they already recorded.
+    var remoteSSHRoute: String? = nil
 
     var signatureValue: String {
         [
@@ -66,7 +71,7 @@ struct ProviderLaunchSignaturePayload: Codable, Equatable {
             "prompt=\(promptSchemaVersion)",
             "environment=\(executionEnvironmentFingerprint ?? WorkspaceExecutionEnvironment.host.signatureFingerprint)",
             "readOnlyResources=\(readOnlyResourceContractDigest ?? "none")"
-        ].joined(separator: "\u{1f}")
+        ].joined(separator: "\u{1f}") + (remoteSSHRoute.map { "\u{1f}ssh=\($0)" } ?? "")
     }
 }
 
@@ -141,7 +146,8 @@ enum ProviderLaunchSignatureService {
             executionEnvironmentFingerprint: DockerExecutionPlanner.resolveEnvironment(for: task).signatureFingerprint,
             readOnlyResourceContractDigest: readOnlyResourceContract.isRequired
                 ? readOnlyResourceContract.digest
-                : nil
+                : nil,
+            remoteSSHRoute: launchResourcePlan.remoteSSHRoute?.signatureComponent
         )
     }
 

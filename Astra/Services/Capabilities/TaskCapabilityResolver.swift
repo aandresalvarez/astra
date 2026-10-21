@@ -110,6 +110,19 @@ struct TaskCapabilityResolver {
     private let additionalCredentialGrants: [PermissionGrant]
     private let runtime: AgentRuntimeID?
     private let secretStore: SecretStore
+    /// One resolution asks for the enabled packages and the global catalog
+    /// dozens of times (every skill, connector and tool pass re-derives them).
+    /// Each ask was a catalog lookup plus SwiftData fetches on the main actor,
+    /// so the answers are kept for this resolver's life, which is a single
+    /// resolution at every call site.
+    private let memo = Memo()
+
+    private final class Memo {
+        var enabledCapabilityPackages: [PluginPackage]?
+        var globalSkills: [Skill]?
+        var globalConnectors: [Connector]?
+        var globalLocalTools: [LocalTool]?
+    }
 
     init(
         task: AgentTask,
@@ -298,7 +311,10 @@ struct TaskCapabilityResolver {
     }
 
     private func enabledCapabilityPackages() -> [PluginPackage] {
-        CapabilityRuntimeResourceMatcher.enabledPackages(for: task.workspace)
+        if let cached = memo.enabledCapabilityPackages { return cached }
+        let packages = CapabilityRuntimeResourceMatcher.enabledPackages(for: task.workspace)
+        memo.enabledCapabilityPackages = packages
+        return packages
     }
 
     private func workspaceSkills() -> [Skill] {
@@ -321,6 +337,13 @@ struct TaskCapabilityResolver {
     }
 
     private func globalSkills() -> [Skill] {
+        if let cached = memo.globalSkills { return cached }
+        let resolved = fetchGlobalSkills()
+        memo.globalSkills = resolved
+        return resolved
+    }
+
+    private func fetchGlobalSkills() -> [Skill] {
         guard let ctx = globalCatalogContext else {
             return task.workspace?.skills.filter { $0.isGlobal } ?? []
         }
@@ -338,6 +361,13 @@ struct TaskCapabilityResolver {
     }
 
     private func globalConnectors() -> [Connector] {
+        if let cached = memo.globalConnectors { return cached }
+        let resolved = fetchGlobalConnectors()
+        memo.globalConnectors = resolved
+        return resolved
+    }
+
+    private func fetchGlobalConnectors() -> [Connector] {
         guard let ctx = globalCatalogContext else {
             return task.workspace?.connectors.filter { $0.isGlobal } ?? []
         }
@@ -355,6 +385,13 @@ struct TaskCapabilityResolver {
     }
 
     private func globalLocalTools() -> [LocalTool] {
+        if let cached = memo.globalLocalTools { return cached }
+        let resolved = fetchGlobalLocalTools()
+        memo.globalLocalTools = resolved
+        return resolved
+    }
+
+    private func fetchGlobalLocalTools() -> [LocalTool] {
         guard let ctx = globalCatalogContext else {
             return task.workspace?.localTools.filter { $0.isGlobal } ?? []
         }

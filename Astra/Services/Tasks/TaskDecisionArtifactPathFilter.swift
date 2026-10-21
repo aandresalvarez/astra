@@ -8,8 +8,9 @@ import ASTRAPersistence
 /// **Why this is not a computed property any more.** It used to be
 /// `TaskMainView.taskDecisionArtifactPaths`, one of ~25 arguments to
 /// `taskDecisionDockPresentation`, which `body` computes unconditionally.
-/// `messageText` is `@State` on the same view, so *every keystroke in the
-/// composer* re-entered it, and per artifact it cost:
+/// `messageText` was then `@State` on the same view (it now lives in
+/// `TaskComposerDraft`), so *every keystroke in the composer* re-entered it,
+/// and per artifact it cost:
 ///
 /// - a `stat`, because `Artifact.isStale` is `!fileExists` recomputed on read,
 /// - a `TaskWorkspaceAccess` rebuild, itself another `fileExists`,
