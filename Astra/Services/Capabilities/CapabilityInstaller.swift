@@ -217,6 +217,7 @@ struct CapabilityInstaller {
         guard workspace.modelContext === modelContext, !workspace.isDeleted else {
             throw InstallationError.persistenceFailed(packageID: package.id)
         }
+        try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
         let isNewActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) == nil
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         // The library holds one definition for every workspace: each other
@@ -226,6 +227,9 @@ struct CapabilityInstaller {
             other.id != workspace.id
                 && WorkspaceCapabilityActivation.pendingOverridePluginIDs(of: other).contains(package.id)
                 && WorkspaceCapabilityActivation.activation(for: package.id, in: other) != nil
+        }
+        for other in pendingElsewhere {
+            try PluginActivationAdmission.requireCurrent(in: other, modelContext: modelContext)
         }
         let pendingSnapshots = pendingElsewhere.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         var stagedGeneration: PluginCredentialGenerationTransaction?
@@ -340,7 +344,6 @@ struct CapabilityInstaller {
                 }
             }
 
-            let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
             // A skill setting an account carries as a plain setting, unless a
             // connector of this plugin stores that key as a credential.
             let movedSettings = Set(package.connectors.flatMap { PluginConnectorFieldTrust.settingsStoredAsCredentials(of: $0, in: package) })
@@ -348,6 +351,15 @@ struct CapabilityInstaller {
 
             for pluginSkill in package.skills {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
+                // Reuse setup may supply this skill's explicit activation
+                // values independently of each account's settings.
+                var skillConfigInputs = PluginSetupInputs.view(configInputs, component: componentID,
+                    includingShared: package.connectors.isEmpty)
+                let skillCredentialInputs = PluginSetupInputs.view(credentialInputs, component: componentID,
+                    includingShared: package.connectors.isEmpty)
+                for key in pluginSkill.environmentKeys where Skill.isSecretEnvironmentKey(key) {
+                    if let value = skillCredentialInputs[key] { skillConfigInputs[key] = value }
+                }
                 let projectedID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
                 try saveSkillSettings(
                     pluginSkill,
@@ -373,9 +385,16 @@ struct CapabilityInstaller {
                 // The account's structure, entered as declared fields: its
                 // endpoint (validated) and its name, never a setting or secret.
                 let structure = try AccountStructure(pluginConnector, inputs: ownConfigInputs)
+                let explicitConfigKeys = Set(ownConfigInputs.keys.filter {
+                    configInputs[PluginSetupInputs.key($0, component: componentID)] != nil
+                })
+                let explicitEndpoint = baseURLOverrides[componentID] != nil || pluginConnector.accountBaseURLField.map {
+                    explicitConfigKeys.contains($0.key)
+                } == true
                 let edits = AccountSetupEdits(
                     pluginConnector, bound: bound, configInputs: ownConfigInputs,
-                    baseURLOverride: PluginSetupInputs.baseURL(in: baseURLOverrides, for: pluginConnector) ?? structure.baseURL
+                    baseURLOverride: PluginSetupInputs.baseURL(in: baseURLOverrides, for: pluginConnector) ?? structure.baseURL,
+                    explicitConfigKeys: explicitConfigKeys, explicitEndpoint: explicitEndpoint
                 )
                 let fields = StoredConnectorFields(
                     pluginConnector, in: package,
@@ -951,11 +970,11 @@ struct CapabilityInstaller {
     }
 
     /// The setup inputs that change a component's bound account. A setup
-    /// sheet submits every field it shows, prefilled, so a value equal to
-    /// what the account has, or to the definition's default where the
-    /// account has its own, is no edit; a setting the inputs don't name, or
-    /// leave empty, keeps the account's value (`accountConfig`). Without a
-    /// bound account every input is the new account's.
+    /// sheet's component-scoped fields start from the bound account. A
+    /// different value is an edit, including an explicit reset to a default.
+    /// Legacy shared/onboarding inputs still submit untouched definition
+    /// defaults, so those preserve a bound account's own value. Missing or
+    /// empty fields keep the account's value (`accountConfig`).
     struct AccountSetupEdits {
         /// The settings and URL the person changed.
         let config: [String: String]
@@ -963,7 +982,8 @@ struct CapabilityInstaller {
         /// The account's settings with the changes applied.
         let accountConfig: [String: String]
 
-        init(_ pluginConnector: PluginConnector, bound: Connector?, configInputs: [String: String], baseURLOverride: String?) {
+        init(_ pluginConnector: PluginConnector, bound: Connector?, configInputs: [String: String], baseURLOverride: String?,
+             explicitConfigKeys: Set<String> = [], explicitEndpoint: Bool = false) {
             guard let bound else {
                 config = configInputs
                 baseURL = baseURLOverride
@@ -976,11 +996,12 @@ struct CapabilityInstaller {
             config = configInputs.filter { key, value in
                 let value = trimmed(value)
                 let existing = trimmed(current[key])
-                return !value.isEmpty && value != existing && !(value == defaultURL && !existing.isEmpty)
+                return !value.isEmpty && value != existing
+                    && !(value == defaultURL && !existing.isEmpty && !explicitConfigKeys.contains(key))
             }
             let url = trimmed(baseURLOverride)
             let boundURL = trimmed(bound.baseURL)
-            baseURL = url.isEmpty || url == boundURL || (url == defaultURL && !boundURL.isEmpty) ? nil : url
+            baseURL = url.isEmpty || url == boundURL || (url == defaultURL && !boundURL.isEmpty && !explicitEndpoint) ? nil : url
             accountConfig = current.merging(config) { _, edited in edited }
         }
     }

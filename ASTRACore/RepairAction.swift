@@ -97,12 +97,11 @@ public struct RepairAction: Codable, Sendable, Equatable {
     /// shell syntax: `gcloud auth login` yes, `curl … | sh` no. The same rule
     /// as a declared local tool (`LocalToolSecurityPolicy`). And it may only
     /// sign in (`TerminalRepairPolicy`): `gcloud projects delete victim
-    /// --quiet` is a plain call to the CLI too, and one click would run it. With
-    /// `allowsStoreSelectors`, ASTRA's own sign-in may lead with the
-    /// credential-store selectors `targetingCredentialStore` adds; a
-    /// plugin's declared command never does.
+    /// --quiet` is a plain call to the CLI too, and one click would run it.
+    /// Selector-prefixed historical commands also fail this final check:
+    /// a task-selected directory cannot become a credential destination.
     public static func isSafeTerminalCommand(
-        _ command: String, binary: String?, allowsInstaller: Bool, allowsStoreSelectors: Bool = false
+        _ command: String, binary: String?, allowsInstaller: Bool
     ) -> Bool {
         // Terminal runs the command exactly as written, so a newline (or any
         // other control character) would start a second command that the
@@ -110,7 +109,6 @@ public struct RepairAction: Codable, Sendable, Equatable {
         guard !command.unicodeScalars.contains(where: {
             CharacterSet.newlines.contains($0) || CharacterSet.controlCharacters.contains($0)
         }) else { return false }
-        guard let command = allowsStoreSelectors ? droppingSelectorPrefix(command) : command else { return false }
         let words = command.split(whereSeparator: \.isWhitespace).map(String.init)
         guard let executable = words.first else { return false }
         guard LocalToolSecurityPolicy.unsafeInvocationReason(
@@ -133,48 +131,88 @@ public struct RepairAction: Codable, Sendable, Equatable {
         return TerminalRepairPolicy.isInstall(cli: (binary as NSString).lastPathComponent, arguments: arguments)
     }
 
-    /// Variables that pick which credential store a CLI signs in to and
-    /// reads, and hold no secret: a sign-in may carry them into Terminal.
-    public static let credentialStoreSelectors = ["CLOUDSDK_CONFIG", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "GH_HOST"]
+    /// Non-secret selectors retained for the stopped run's read-only check.
+    /// They never authorize writing a login into a task-selected directory.
+    public static let credentialStoreSelectors = ["CLOUDSDK_CONFIG", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "GH_HOST", "HOME"]
 
-    /// This repair with its Terminal command run against the credential
-    /// store `environment` selects (the stopped run's), as
-    /// `env CLOUDSDK_CONFIG='/path' gcloud auth login`: signing in to the
-    /// default store would leave the one the resumed run reads still broken.
-    /// Only `credentialStoreSelectors` are carried, never a token. An
-    /// apostrophe (`/Users/O'Connor/.config/gh`) is written `'\''`: closed,
-    /// escaped, reopened. Unchanged without a command or a selector, or when
-    /// a value holds a control character, which no quoting makes one word.
+    /// Task-selected directories are not trusted credential destinations.
+    /// Preserve their read-only verification context, but never put them in
+    /// a Terminal command that writes a fresh login. A non-default GitHub
+    /// host needs manual setup too; github.com needs no selector forwarding.
     public func targetingCredentialStore(_ environment: [String: String]?) -> RepairAction {
-        let selectors = Self.credentialStoreSelectors.compactMap { name in
-            environment?[name].flatMap { $0.isEmpty ? nil : (name, $0) }
+        guard strategy == .terminal, command != nil else { return self }
+        if verb == "Install", let executable = command?.split(whereSeparator: \.isWhitespace).first,
+           Self.installers.contains(String(executable)) { return enforcingTerminalPolicy() }
+        let cli = ((checkBinary ?? "") as NSString).lastPathComponent
+        let directories: [String]
+        switch cli {
+        case "gcloud": directories = ["CLOUDSDK_CONFIG"]
+        case "gh": directories = ["GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME"]
+        default: directories = ["XDG_CONFIG_HOME"]
         }
-        guard let command, !selectors.isEmpty,
-              selectors.allSatisfy({ !$0.1.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) })
-        else { return self }
-        var targeted = self
-        targeted.command = "env " + selectors.map {
-            "\($0.0)='\($0.1.replacingOccurrences(of: "'", with: #"'\''"#))' "
-        }.joined() + command
-        return targeted
+        let selected = checking(in: environment).checkEnvironment
+        let hasDirectory = directories.contains { selected?[$0]?.isEmpty == false }
+        let host = cli == "gh" ? (selected?["GH_HOST"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") : ""
+        if hasDirectory || (!host.isEmpty && host.lowercased() != "github.com") {
+            return requiringManualCredentialSetup()
+        }
+        return enforcingTerminalPolicy()
     }
 
-    /// `command` without a leading `env NAME='value' …` that sets only
-    /// `credentialStoreSelectors`, each single-quoted so the shell takes it
-    /// literally, an apostrophe as `'\''` (`targetingCredentialStore`);
-    /// `command` itself without one; nil when the prefix sets anything else
-    /// or is malformed.
-    static func droppingSelectorPrefix(_ command: String) -> String? {
-        guard command.hasPrefix("env ") else { return command }
-        var rest = command.dropFirst("env ".count)
-        var selectors = 0
-        while let assignment = rest.range(of: #"^[A-Z_]+='[^']*'(\\''[^']*')* "#, options: .regularExpression) {
-            let name = rest[assignment].prefix { $0 != "=" }
-            guard credentialStoreSelectors.contains(String(name)) else { return nil }
-            rest = rest[assignment.upperBound...]
-            selectors += 1
+    /// Applied to newly generated and decoded repairs alike. A rejected
+    /// command becomes an actionable check, not a Sign in button that does
+    /// nothing or copies an unsafe command to the clipboard.
+    public func enforcingTerminalPolicy() -> RepairAction {
+        guard strategy == .terminal, let command else { return self }
+        guard Self.isSafeTerminalCommand(command, binary: checkBinary, allowsInstaller: verb == "Install")
+        else { return requiringManualCredentialSetup() }
+        if isGitHubSignIn(command), let arguments = checkArguments {
+            for (index, argument) in arguments.enumerated() {
+                let host: String?
+                if argument == "--hostname" || argument == "-h" {
+                    host = arguments.indices.contains(index + 1) ? arguments[index + 1] : ""
+                } else if argument.hasPrefix("--hostname=") {
+                    host = String(argument.dropFirst("--hostname=".count))
+                } else { host = nil }
+                if let host, host.lowercased() != "github.com" { return requiringManualCredentialSetup() }
+            }
         }
-        return selectors > 0 ? String(rest) : nil
+        return self
+    }
+
+    /// The final command is admitted against stored and current selectors.
+    /// Pin GitHub's default explicitly so Terminal's ambient GH_HOST cannot
+    /// silently change the login destination.
+    public var executionCommand: String? {
+        let admitted = targetingCredentialStore(checkEnvironment)
+        guard admitted.strategy == .terminal, let command = admitted.command else { return nil }
+        let words = command.split(whereSeparator: \.isWhitespace)
+        if admitted.isGitHubSignIn(command), !words.contains(where: {
+            $0 == "--hostname" || $0 == "-h" || $0.hasPrefix("--hostname=")
+        }) { return command + " --hostname github.com" }
+        return command
+    }
+
+    private func isGitHubSignIn(_ command: String) -> Bool {
+        let executable = command.split(whereSeparator: \.isWhitespace).first.map(String.init)
+        return executable == checkBinary && ((checkBinary ?? "") as NSString).lastPathComponent == "gh"
+    }
+
+    private func requiringManualCredentialSetup() -> RepairAction {
+        var manual = self
+        manual.command = nil
+        manual.verb = "Check"
+        manual.title = "Set up \(componentName)"
+        manual.detail = "Sign in manually using a trusted account and credential location, then check again."
+        return manual
+    }
+
+    private static func guidance(_ hint: String) -> String {
+        let plain = hint.unicodeScalars.prefix(2_048).map { scalar -> String in
+            if scalar.properties.generalCategory == .format { return "" }
+            return CharacterSet.controlCharacters.contains(scalar) ? " " : String(scalar)
+        }.joined()
+        return String(plain.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(600))
     }
 
     /// The repair a component's setup contract offers: its `repair` step,
@@ -196,7 +234,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
                 if step.command == nil, verb != "Install", let binary = check?.binary {
                     return RepairAction(
                         strategy: .terminal, componentName: component.name, title: component.name, verb: "Check",
-                        detail: step.hint ?? "Fix \(component.name), then ASTRA checks again.",
+                        detail: step.hint.map(Self.guidance) ?? "Fix \(component.name), then ASTRA checks again.",
                         checkBinary: binary, checkArguments: check?.arguments, checkExpect: check?.expect
                     )
                 }
@@ -209,7 +247,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
                     guard let hint = step.hint, let binary = check?.binary else { continue }
                     return RepairAction(
                         strategy: .terminal, componentName: component.name, title: component.name, verb: "Check",
-                        detail: hint, checkBinary: binary, checkArguments: check?.arguments, checkExpect: check?.expect
+                        detail: Self.guidance(hint), checkBinary: binary, checkArguments: check?.arguments, checkExpect: check?.expect
                     )
                 }
                 return RepairAction(
@@ -218,14 +256,21 @@ public struct RepairAction: Codable, Sendable, Equatable {
                     detail: "Run `\(command)`, then ASTRA checks again.",
                     command: command, checkBinary: check?.binary, checkArguments: check?.arguments,
                     checkExpect: check?.expect
-                )
+                ).enforcingTerminalPolicy()
             case .url:
+                if needsInstall, step.url == nil, let hint = step.hint, let binary = check?.binary {
+                    return RepairAction(
+                        strategy: .terminal, componentName: component.name, title: component.name, verb: "Check",
+                        detail: Self.guidance(hint), checkBinary: binary,
+                        checkArguments: check?.arguments, checkExpect: check?.expect
+                    )
+                }
                 // Only a web page: a package's install link must not open a
                 // file, a share or another app's scheme.
                 guard let url = step.url, isSafeRepairURL(url) else { continue }
                 return RepairAction(
                     strategy: .url, componentName: component.name, title: component.name, verb: verb,
-                    detail: step.hint ?? "Open the page, then come back to ASTRA.",
+                    detail: step.hint.map(Self.guidance) ?? "Open the page, then come back to ASTRA.",
                     url: url, checkBinary: check?.binary, checkArguments: check?.arguments,
                     checkExpect: check?.expect
                 )

@@ -1067,6 +1067,12 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
                 }
             }
         }
+        // Matching row identities keep their links, but a rename may have
+        // changed their age. That age also controls default-account election.
+        let bindingDates = Dictionary(bindings.map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
+        for binding in activation.bindings where !binding.isDeleted {
+            if let date = bindingDates[binding.id], binding.createdAt != date { binding.createdAt = date }
+        }
         if activation.revision != revision { activation.revision = revision }
         if activation.updatedAt != updatedAt { activation.updatedAt = updatedAt }
     }

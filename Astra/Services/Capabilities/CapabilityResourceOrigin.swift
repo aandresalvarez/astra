@@ -150,12 +150,16 @@ enum CapabilityResourceOrigin {
     @MainActor
     @discardableResult
     static func releaseProvenance(of account: Connector) -> Bool {
-        KeychainService.synchronizeConnectorCredentialNamespaces(connector: account)
-        let stranded = account.credentialKeys.contains { key in
-            KeychainService.load(key: key, connectorID: account.id) == nil
-                && KeychainService.load(key: key, connector: account) != nil
+        // A published private generation is independent of provenance. Never
+        // backfill its values into historical shared aliases or the row ID.
+        if account.credentialNamespaceID == nil {
+            KeychainService.synchronizeConnectorCredentialNamespaces(connector: account)
+            let stranded = account.credentialKeys.contains { key in
+                KeychainService.load(key: key, connectorID: account.id) == nil
+                    && KeychainService.load(key: key, connector: account) != nil
+            }
+            guard !stranded else { return false }
         }
-        guard !stranded else { return false }
         account.originPackageID = nil
         account.originPackageVersion = nil
         account.originComponentID = nil

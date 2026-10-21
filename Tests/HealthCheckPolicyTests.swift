@@ -175,18 +175,23 @@ struct HealthCheckPolicyTests {
         for family in CLISessionExpiryClassifier.families where family.offersSignIn {
             let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com"), family.onHost("github.com"), family.onEveryHost()] : []
             for candidate in [family] + hosted + ([family] + hosted).map({ $0.at("/opt/homebrew/bin/\(family.checkBinary)") }) {
-                let repair = candidate.repair.targetingCredentialStore(["CLOUDSDK_CONFIG": "/Users/o'connor/.config/gcloud", "GH_HOST": "github.example.com"])
-                #expect(RepairAction.isSafeTerminalCommand(
-                    repair.command ?? "", binary: repair.checkBinary, allowsInstaller: false, allowsStoreSelectors: true
-                ), "\(repair.command ?? "")")
+                let original = candidate.repair
+                if let command = original.command {
+                    #expect(RepairAction.isSafeTerminalCommand(command, binary: original.checkBinary, allowsInstaller: false))
+                } else { #expect(original.verb == "Check") }
+                let selected = original.targetingCredentialStore(["CLOUDSDK_CONFIG": "/Users/o'connor/.config/gcloud", "GH_HOST": "github.example.com"])
+                #expect(selected.command == nil)
+                #expect(selected.verb == "Check")
             }
         }
-        // A launch host retargets ASTRA's own sign-in; it still passes.
+        // A source-selected enterprise host keeps its exact check, but its
+        // sign-in requires manual setup rather than a trusted one-click flow.
         var launch = CLISessionExpiryClassifier.gitHub.repair
         launch.checkEnvironment = ["GH_HOST": "github.example.com"]
         let retargeted = CLISessionExpiryClassifier.checkingLaunchHost(launch)
-        #expect(retargeted.command == "gh auth login --hostname github.example.com")
-        #expect(RepairAction.isSafeTerminalCommand(retargeted.command ?? "", binary: "gh", allowsInstaller: false))
+        #expect(retargeted.command == nil)
+        #expect(retargeted.verb == "Check")
+        #expect(retargeted.checkArguments == ["auth", "status", "--active", "--hostname", "github.example.com"])
         // Provider sign-ins that are sign-in commands pass too. `copilot`,
         // `agy` and `claude /login` are not RepairActions: the provider
         // runner launches them itself (`RuntimeAuthSessionRunner`).
@@ -195,7 +200,13 @@ struct HealthCheckPolicyTests {
                RuntimeRemediationCatalog.remediation(for: .claudeCode, claudeProvider: .vertex).auth.terminalCommand]
         for command in providerSignIns where !["copilot", "agy", "claude /login"].contains(command) {
             let words = command.split(separator: " ").map(String.init)
-            #expect(TerminalRepairPolicy.isSignIn(cli: words[0], arguments: Array(words.dropFirst())), "\(command)")
+            if command.hasPrefix("gcloud auth application-default login") {
+                // Provider Details owns its explicit ADC setup flow; source
+                // repairs cannot replace ADC in one click.
+                #expect(!TerminalRepairPolicy.isSignIn(cli: words[0], arguments: Array(words.dropFirst())))
+            } else {
+                #expect(TerminalRepairPolicy.isSignIn(cli: words[0], arguments: Array(words.dropFirst())), "\(command)")
+            }
         }
     }
 

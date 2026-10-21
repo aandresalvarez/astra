@@ -11,7 +11,120 @@ import ASTRAModels
 @Suite("Plugins surface")
 @MainActor
 struct PluginsSurfaceTests {
+    @Test("Account-owned environment fields are edited on the account, never as ineffective skill overrides")
+    func accountOwnedSettingsStayOnAccounts() throws {
+        let candidate = PluginOperationsTests.package(version: "1.0.0")
+        let skill = try #require(candidate.skills.first)
+        let activation = PluginActivation(pluginID: candidate.id)
+        #expect(!skill.environmentKeys.isEmpty)
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation, package: candidate).isEmpty)
+        var standalone = candidate
+        standalone.connectors = []
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation, package: standalone) == skill.environmentKeys)
+    }
+
+    @Test("A legacy enabled row cannot offer Remove before migration finishes")
+    func removeUsesEffectiveEnablement() throws {
+        let candidate = package("legacy", name: "Legacy")
+        let display = try #require(PluginsSurfacePresentation.makeState([
+            input(candidate, isEnabled: true)
+        ], query: "").allRows.first)
+        var row = PluginRow(package: candidate, activation: nil, display: display)
+        #expect(!PluginsSurfacePresentation.showsRemove(row))
+        var missing = display
+        missing.isMissing = true
+        row = PluginRow(package: candidate, activation: nil, display: missing)
+        #expect(PluginsSurfacePresentation.showsRemove(row) == missing.isRemovable)
+    }
+
+    @Test("An unreadable secret draft has no saveable empty replacement, while other fields remain available")
+    func unreadableSecretCannotBecomeAnEmptyDraft() throws {
+        var candidate = package("draft-read", name: "Draft read")
+        candidate.skills[0].environmentKeys = ["PROJECT", "API_TOKEN"]
+        let activation = PluginActivation(pluginID: candidate.id)
+        let component = CapabilityResourceOrigin.componentID(for: candidate.skills[0])
+        let snapshot = PluginSettingDrafts.load(package: candidate, activation: activation) { key, _, _ in
+            if key == "API_TOKEN" { throw PluginOperations.OperationError.secretReadFailed(key: key) }
+            return "visible-project"
+        }
+        let secret = PluginActivation.settingKey(componentID: component, key: "API_TOKEN")
+        let project = PluginActivation.settingKey(componentID: component, key: "PROJECT")
+        #expect(snapshot.values[secret] == nil)
+        #expect(snapshot.failures[secret] != nil)
+        #expect(snapshot.values[project] == "visible-project")
+        #expect(snapshot.failures[project] == nil)
+    }
+
+    @Test("A same-version default change invalidates unchanged setting drafts")
+    func definitionDefaultsInvalidateDrafts() {
+        var candidate = package("draft-default", name: "Draft default")
+        candidate.skills[0].environmentKeys = ["PROJECT"]
+        candidate.skills[0].environmentValues = ["before"]
+        let activation = PluginActivation(pluginID: candidate.id)
+        let before = PluginSettingDrafts.source(package: candidate, activation: activation)
+        let version = candidate.version
+        candidate.skills[0].environmentValues = ["after"]
+        #expect(candidate.version == version)
+        #expect(PluginSettingDrafts.source(package: candidate, activation: activation) != before)
+    }
+
+    @Test("Only the skill currently used by an activation exposes its package settings")
+    func overriddenSkillSettingsStayHidden() throws {
+        let candidate = package("settings", name: "Settings")
+        var skill = try #require(candidate.skills.first)
+        skill.environmentKeys = ["PROJECT", "API_TOKEN"]
+        let activation = PluginActivation(pluginID: candidate.id)
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: nil).isEmpty)
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation) == skill.environmentKeys)
+        activation.overriddenComponentIDs = [CapabilityResourceOrigin.componentID(for: skill)]
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation).isEmpty)
+        activation.overriddenComponentIDs = []
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation) == skill.environmentKeys)
+    }
+
+    @Test("A deleted authored override returns settings to the package, matching runtime")
+    func deletedOverrideReturnsPackageSettings() throws {
+        let env = try PluginOperationsTests.Environment()
+        let candidate = PluginOperationsTests.package(version: "1.0.0")
+        try env.install(candidate)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: candidate.id, in: env.workspace))
+        let skill = try #require(candidate.skills.first)
+        let authored = Skill(name: "My replacement", allowedTools: ["Read"])
+        authored.workspace = env.workspace
+        env.context.insert(authored)
+        WorkspaceCapabilityActivation.setOverridden(true, componentID: CapabilityResourceOrigin.componentID(for: skill), rowID: authored.id, on: activation)
+        try env.context.save()
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation).isEmpty)
+        env.context.delete(authored)
+        try env.context.save()
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation) == skill.environmentKeys)
+    }
+
+    @Test("Delete confirmation names the workspace alias of a colliding shared account")
+    func accountConfirmationUsesWorkspaceAlias() throws {
+        let env = try PluginOperationsTests.Environment()
+        let candidate = PluginOperationsTests.package(version: "1.0.0")
+        try env.install(candidate)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: candidate.id, in: env.workspace))
+        let component = CapabilityResourceOrigin.componentID(for: candidate.connectors[0])
+        let first = try #require(activation.accounts(forComponent: component).first)
+        let second = Connector(name: first.name, serviceType: first.serviceType, baseURL: first.baseURL, authMethod: first.authMethod)
+        second.isGlobal = true
+        env.context.insert(second)
+        WorkspaceCapabilityActivation.bind(second, toComponent: component, of: activation, alias: "Tracker 2")
+        let copy = PluginsSurfacePresentation.confirmationCopy(.deleteAccount(packageID: candidate.id, accountID: second.id),
+            account: second, packageName: candidate.name, in: env.workspace, workspaces: [env.workspace.name])
+        #expect(copy.message.hasPrefix("Delete the account Tracker 2 and its saved keys?"))
+        #expect(copy.verb == "Delete")
+    }
+
     private static var retained: [ModelContainer] = []
+    @Test("A prerequisite without a completed health check remains pending")
+    func uncheckedPrerequisitesArePending() {
+        var candidate = package("unchecked", name: "Unchecked")
+        candidate.prerequisites = [CLIPrerequisite(binary: "fixture-server", livenessArgs: [], displayName: "Fixture", purpose: "Fixture", installHint: "Install it")]
+        #expect(PluginsSurfacePresentation.pendingSetupChecks(for: candidate, statuses: [:]) == 1)
+    }
 
     @Test("Added plugins with work left need action, the rest are ready, the others are available to add")
     func groupsByWhatIsLeft() {
@@ -173,6 +286,8 @@ struct PluginsSurfaceTests {
             .copy(name: "Jira 2", workspaces: ["Ops", "Research"])
         #expect(delete.verb == "Delete")
         #expect(delete.message.contains("saved keys") && delete.message.contains("Ops, Research"))
+        #expect(delete.message.contains("Tasks already accepted may keep access until they finish or are cancelled"))
+        #expect(delete.message.contains("revoke the credentials with the provider"))
     }
 
     @Test("A plugin that still runs an earlier definition offers Update and needs action")
@@ -239,6 +354,12 @@ struct PluginsSurfaceTests {
         let rows = CapabilityCatalogInventory.configuredPackages(catalogPackages: [], capabilities: capabilities, workspace: workspace)
         let ownRow = try #require(rows.first { $0.id == "skill.\(own.id.uuidString.lowercased())" })
         let sharedRow = try #require(rows.first { $0.id == "skill.\(shared.id.uuidString.lowercased())" })
+        let setup = PluginRow(package: sharedRow, activation: nil,
+            display: PluginsSurfaceRow(id: sharedRow.id, name: sharedRow.name, icon: sharedRow.icon,
+                subtitle: "", pendingSteps: 1, isEnabled: true, isRemovable: false, verb: nil))
+        let attached = CapabilityPackageState(package: sharedRow, workspace: workspace, capabilities: capabilities)
+        #expect(attached.linkedConnectors.map(\.id).contains(sharedNotes.id))
+        #expect(PluginsSurfacePresentation.expandedSetupComponents(for: setup).contains { $0.component.kind == .connector })
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-plugins-standalone-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }

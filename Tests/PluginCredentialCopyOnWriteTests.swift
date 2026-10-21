@@ -9,6 +9,18 @@ import ASTRAModels
 @Suite("Plugin credential edits preserve the saved generation", .serialized)
 @MainActor
 struct PluginCredentialCopyOnWriteTests {
+    @Test("An unavailable secret read is an error rather than an empty editable setting")
+    func unavailableSettingReadIsNotEmpty() throws {
+        let activation = PluginActivation(pluginID: "read-status")
+        var skill = PluginOperationsTests.package(version: "1.0.0").skills[0]
+        skill.environmentKeys = ["PROJECT", "API_TOKEN"]
+        skill.environmentValues = ["default-project", ""]
+        #expect(throws: PluginOperations.OperationError.secretReadFailed(key: "API_TOKEN")) {
+            try PluginOperations.setting("API_TOKEN", of: skill, in: activation, secrets: UnreadableGenerationSecret.self)
+        }
+        #expect(try PluginOperations.setting("PROJECT", of: skill, in: activation, secrets: UnreadableGenerationSecret.self) == "default-project")
+    }
+
     @Test("An edit preserves a queued request's accepted generation", arguments: [false, true], ["replacement-secret", ""])
     func queuedRequestKeepsItsCredentialValue(legacy: Bool, replacement: String) throws {
         let previous = SkillSecretSeam.required

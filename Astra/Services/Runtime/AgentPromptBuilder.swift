@@ -13,6 +13,7 @@ enum PromptContextSectionKind: String, Sendable, CaseIterable {
     case browser
     case memories
     case supportingContext
+    case workspaceOrientation
 
     var displayName: String {
         switch self {
@@ -25,6 +26,7 @@ enum PromptContextSectionKind: String, Sendable, CaseIterable {
         case .browser: "browser"
         case .memories: "memories"
         case .supportingContext: "supporting context"
+        case .workspaceOrientation: "workspace orientation"
         }
     }
 }
@@ -39,6 +41,7 @@ struct PromptContextBudgetProfile: Sendable, Equatable {
     var browserTokens: Int = 18_000
     var memoriesTokens: Int = 2_000
     var supportingContextTokens: Int = 4_000
+    var workspaceOrientationTokens: Int = 2_000
 
     static let standard = PromptContextBudgetProfile()
     // Runtimes without provider-native session resume rely entirely on the
@@ -56,6 +59,7 @@ struct PromptContextBudgetProfile: Sendable, Equatable {
         case .browser: browserTokens
         case .memories: memoriesTokens
         case .supportingContext: supportingContextTokens
+        case .workspaceOrientation: workspaceOrientationTokens
         }
     }
 }

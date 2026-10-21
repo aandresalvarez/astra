@@ -35,18 +35,41 @@ struct PendingTaskCredentialReferences {
         // back, cannot authorize deleting credentials.
         let saved = ModelContext(modelContext.container)
         let descriptor = FetchDescriptor<TaskTurnRequest>(predicate: #Predicate {
-            $0.stateRawValue != "completed" && $0.stateRawValue != "failed" && $0.stateRawValue != "cancelled"
+            $0.stateRawValue != "completed" && $0.stateRawValue != "cancelled"
         })
         guard let requests = try? saved.fetch(descriptor) else { return nil }
         var result = Self()
         for request in requests {
-            guard let state = TaskTurnRequestState(rawValue: request.stateRawValue), !state.isTerminal else { return nil }
+            guard let state = TaskTurnRequestState(rawValue: request.stateRawValue) else { return nil }
+            if state.isTerminal {
+                guard let held = try? retainsPermissionContext(request, in: saved) else { return nil }
+                if !held { continue }
+            }
             // Requests before policy snapshots use live rows, already covered
             // by normal ownership. A present but unreadable policy is unsafe.
             guard let json = request.executionPolicySnapshotJSON else { continue }
             guard result.includePolicyJSON(json, in: saved) else { return nil }
         }
         return result
+    }
+
+    /// A failed provider run may still own an accepted context: approving its
+    /// blocked permission creates a new request from this exact snapshot.
+    /// Read the saved approval and current-turn policy, not transient UI state.
+    private static func retainsPermissionContext(_ request: TaskTurnRequest, in context: ModelContext) throws -> Bool {
+        guard request.state == .failed, let runID = request.runID else { return false }
+        let taskID = request.taskID
+        var descriptor = FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
+        descriptor.fetchLimit = 1
+        guard let task = try context.fetch(descriptor).first, task.status == .pendingUser,
+              let run = task.runs.first(where: { $0.id == runID }), run.typedStopReason == .permissionApprovalRequired
+        else { return false }
+        for payload in TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task) {
+            guard let binding = TaskPermissionContinuation.binding(payload: payload, task: task, modelContext: context),
+                  binding.runID == runID else { continue }
+            if try TaskPermissionContinuation.isCurrent(binding, task: task, modelContext: context) { return true }
+        }
+        return false
     }
 
     mutating func includePolicyJSON(_ json: String, in context: ModelContext) -> Bool {

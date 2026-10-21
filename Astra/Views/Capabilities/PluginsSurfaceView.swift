@@ -29,7 +29,8 @@ struct PluginsSurfaceView: View {
     @State private var query = ""
     @State private var expanded: Set<String> = []
     @State private var approvalRecords: [CapabilityApprovalRecord] = []
-    @State private var statuses: [String: HealthStatus] = [:]
+    @State private var prerequisiteScan = PrerequisiteScanSnapshot()
+    private var statuses: [String: HealthStatus] { prerequisiteScan.statuses }
     @State private var errorMessage: String?
     @State private var confirming: PluginsSurfaceConfirmation?
     @StateObject private var repairs = PluginRepairCoordinator()
@@ -40,9 +41,6 @@ struct PluginsSurfaceView: View {
     @State private var showMCPPaste = false
     @State private var pastedMCPTarget = ""
     @State private var mcpInstallRequest: MCPInstallChatRequest?
-    /// Only the latest health scan may publish; an older one finishing last
-    /// would bring back failures a repair already fixed.
-    @State private var statusGeneration = 0
     @State private var approvalGeneration = 0
 
     private var capabilities: WorkspaceCapabilities {
@@ -159,7 +157,7 @@ struct PluginsSurfaceView: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.statusError)
             }
-            PluginStateRecoverySection(onChanged: onCatalogChanged, onError: { errorMessage = $0 })
+            PluginStateRecoverySection(onChanged: { errorMessage = nil; onCatalogChanged() }, onError: { errorMessage = $0 })
             let model = surface
             let current = model.state
             ScrollViewReader { proxy in
@@ -401,7 +399,7 @@ struct PluginsSurfaceView: View {
                     onTurnOff: { disable(pluginRow.package) },
                     onSetApproval: { setApproval($0, for: pluginRow.package) },
                     onUpdate: { update(pluginRow) },
-                    onChanged: { onCatalogChanged() },
+                    onChanged: { errorMessage = nil; onCatalogChanged() },
                     onError: { errorMessage = $0 }
                 )
                 .padding(.leading, 38)
@@ -542,8 +540,7 @@ struct PluginsSurfaceView: View {
                 && CapabilityPackageState(package: $0, workspace: workspace, capabilities: capabilities).isEnabled
         }
         let directory = workspace.resolvedWorkingPath
-        statusGeneration += 1
-        let generation = statusGeneration
+        let generation = prerequisiteScan.begin()
         Task { @MainActor in
             let cache = PreflightCache()
             var next: [String: HealthStatus] = [:]
@@ -553,8 +550,7 @@ struct PluginsSurfaceView: View {
                 )
                 next.merge(packageStatuses) { _, new in new }
             }
-            guard generation == statusGeneration else { return }
-            statuses = next
+            prerequisiteScan.complete(next, generation: generation)
         }
     }
 
@@ -724,7 +720,8 @@ struct PluginsSurfaceView: View {
         let reach: [String]? = account.map { account in
             (try? PluginOperations.workspacesUsing(account))?.map(\.name)
         } ?? []
-        let copy = confirmation.copy(name: account?.name ?? row.package.name, workspaces: reach ?? [])
+        let copy = PluginsSurfacePresentation.confirmationCopy(confirmation, account: account,
+            packageName: row.package.name, in: workspace, workspaces: reach ?? [])
         return PluginsSurfaceConfirmationRow(
             message: reach == nil ? PluginOperations.OperationError.storeUnreadable.localizedDescription : copy.message,
             verb: reach == nil ? nil : copy.verb,

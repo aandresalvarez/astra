@@ -12,7 +12,7 @@ import Foundation
 /// Component payloads are the existing package types unchanged, so converting
 /// to and from `PluginPackage` is lossless and everything below the package
 /// (library, installer, resolver, runtime) keeps working: a manifest projects
-/// into today's rows through `PluginManifestConverter.package(from:)`.
+/// into today's rows through `PluginManifestConverter.checkedPackage(from:)`.
 public struct PluginManifest: Codable, Sendable, Equatable {
     /// Marks the file as a Plugins 2.0 manifest rather than a package.
     public var manifestVersion: Int
@@ -305,8 +305,10 @@ public enum PluginManifestConverter {
         }
         components += package.mcpServers.map {
             PluginComponent(
-                kind: .mcp, id: $0.id, name: $0.displayName,
-                setup: PluginComponentSetup(check: PluginSetupStep(kind: .processStarts)), mcp: $0
+                // A server definition carries no process-start probe. Real
+                // availability checks are represented by prerequisites below;
+                // checkedPackage rejects an uncarried processStarts promise.
+                kind: .mcp, id: $0.id, name: $0.displayName, mcp: $0
             )
         }
         components += package.templates.map {
@@ -582,14 +584,14 @@ public enum PluginManifestConverter {
         }
     }
 
-    /// `components` alone marks a manifest: a package would ignore them, so
+    /// Either `components` or `manifestVersion` marks a manifest: a package would ignore them, so
     /// a document carrying them and legacy package fields but no
     /// `manifestVersion` must fail manifest decoding (the version is
     /// required) rather than import without its components' setup steps
     /// and `worksOn` restrictions.
     public static func isManifest(_ data: Data) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
-        return object["components"] != nil
+        return object["components"] != nil || object["manifestVersion"] != nil
     }
 
     /// Where a plugin works. On a runtime without MCP delivery, a plugin with

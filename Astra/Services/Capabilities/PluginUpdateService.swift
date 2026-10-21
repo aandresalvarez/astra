@@ -283,7 +283,17 @@ enum PluginUpdateService {
         let approvalRecords = approvalRecords ?? CapabilityApprovalStore().records()
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let activations = try modelContext.fetch(FetchDescriptor<PluginActivation>())
-        let credentialPreparation = PluginUpdateSkillCredentials(modelContext: modelContext, persistence: secrets ?? SkillSecretSeam.required)
+        var admittedWorkspaces = Set<UUID>()
+        for activation in activations where packagesByID[activation.pluginID] != nil {
+            guard let workspace = activation.workspace, admittedWorkspaces.insert(workspace.id).inserted else { continue }
+            try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
+        }
+        let persistence = secrets ?? SkillSecretSeam.required
+        if mode == .release {
+            try preflightPendingSecretCleanup(activations: activations, packagesByID: packagesByID,
+                modelContext: modelContext, persistence: persistence, approvalRecords: approvalRecords)
+        }
+        let credentialPreparation = PluginUpdateSkillCredentials(modelContext: modelContext, persistence: persistence)
         let accountPreparation = PluginUpdateAccountCredentials(modelContext: modelContext)
         var total = Reconciliation()
         var changedWorkspaces: [Workspace] = []
@@ -363,8 +373,10 @@ enum PluginUpdateService {
             accountPreparation.completed()
         } catch {
             guard !PluginOperationProblem.preventsRollback(error) else { throw error }
-            modelContext.rollback()
-            restore()
+            if modelContext.hasChanges {
+                modelContext.rollback()
+                restore()
+            }
             // A copy the Keychain can't take back is reported ahead of the
             // failure: the successor would keep a value Update reads as its own.
             let legacyCopies = total.copied.filter { $0.account != nil || !credentialPreparation.owns($0.skillID) }
@@ -380,6 +392,29 @@ enum PluginUpdateService {
             throw error
         }
         return changed
+    }
+
+    /// Cleanup debt is an admission prerequisite, not a partially applied
+    /// Update. A refusal must leave the context and its relationship graph
+    /// untouched, before credential staging or rollback snapshots are prepared.
+    private static func preflightPendingSecretCleanup(
+        activations: [PluginActivation], packagesByID: [String: PluginPackage],
+        modelContext: ModelContext, persistence: any SkillSecretPersisting.Type,
+        approvalRecords: [CapabilityApprovalRecord]
+    ) throws {
+        for activation in activations where !activation.isDeleted {
+            guard let workspace = activation.workspace,
+                  let package = packagesByID[activation.pluginID],
+                  !awaitsReview(package, in: workspace, records: approvalRecords),
+                  needsReconcile(activation, to: package) || !PluginTemplateSync.isInSync(package, in: workspace)
+            else { continue }
+            let unsettled = PluginSecretCleanupOutbox.settleRedeclared(
+                unrecordedSecrets(of: activation, in: package), modelContext: modelContext
+            ) { persistence.deleteSecret(key: $0.key, skillID: $0.skillID) }
+            guard unsettled.isEmpty else {
+                throw UpdateError.secretCleanupPending(key: Set(unsettled.map(\.key)).sorted().joined(separator: ", "))
+            }
+        }
     }
 
     /// What reconciling may change in `workspaces`, as a closure that puts
@@ -401,20 +436,31 @@ enum PluginUpdateService {
             }
             for account in WorkspaceCapabilityActivation.activations(of: workspace)
                 .flatMap(\.bindings).compactMap(\.account) where !account.isDeleted {
-                let saved = (account.credentialKeys, account.credentialValues, account.configKeys, account.configValues,
-                             account.connectorDescription, account.icon, account.notes, account.originPackageVersion,
-                             account.originComponentID, account.credentialNamespaceID)
+                let saved = (
+                    credentialKeys: account.credentialKeys,
+                    credentialValues: account.credentialValues,
+                    configKeys: account.configKeys,
+                    configValues: account.configValues,
+                    connectorDescription: account.connectorDescription,
+                    icon: account.icon,
+                    notes: account.notes,
+                    originPackageVersion: account.originPackageVersion,
+                    originComponentID: account.originComponentID,
+                    credentialNamespaceID: account.credentialNamespaceID,
+                    updatedAt: account.updatedAt
+                )
                 restorers.append {
-                    if account.credentialKeys != saved.0 { account.credentialKeys = saved.0 }
-                    if account.credentialValues != saved.1 { account.credentialValues = saved.1 }
-                    if account.configKeys != saved.2 { account.configKeys = saved.2 }
-                    if account.configValues != saved.3 { account.configValues = saved.3 }
-                    if account.connectorDescription != saved.4 { account.connectorDescription = saved.4 }
-                    if account.icon != saved.5 { account.icon = saved.5 }
-                    if account.notes != saved.6 { account.notes = saved.6 }
-                    if account.originPackageVersion != saved.7 { account.originPackageVersion = saved.7 }
-                    if account.originComponentID != saved.8 { account.originComponentID = saved.8 }
-                    if account.credentialNamespaceID != saved.9 { account.credentialNamespaceID = saved.9 }
+                    if account.credentialKeys != saved.credentialKeys { account.credentialKeys = saved.credentialKeys }
+                    if account.credentialValues != saved.credentialValues { account.credentialValues = saved.credentialValues }
+                    if account.configKeys != saved.configKeys { account.configKeys = saved.configKeys }
+                    if account.configValues != saved.configValues { account.configValues = saved.configValues }
+                    if account.connectorDescription != saved.connectorDescription { account.connectorDescription = saved.connectorDescription }
+                    if account.icon != saved.icon { account.icon = saved.icon }
+                    if account.notes != saved.notes { account.notes = saved.notes }
+                    if account.originPackageVersion != saved.originPackageVersion { account.originPackageVersion = saved.originPackageVersion }
+                    if account.originComponentID != saved.originComponentID { account.originComponentID = saved.originComponentID }
+                    if account.credentialNamespaceID != saved.credentialNamespaceID { account.credentialNamespaceID = saved.credentialNamespaceID }
+                    if account.updatedAt != saved.updatedAt { account.updatedAt = saved.updatedAt }
                 }
             }
         }

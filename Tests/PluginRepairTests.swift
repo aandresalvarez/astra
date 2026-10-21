@@ -8,6 +8,19 @@ import ASTRACore
 @Suite("Plugin repair")
 @MainActor
 struct PluginRepairTests {
+    @Test("A hint-only missing executable offers manual guidance and a recheck")
+    func hintOnlyInstallRemainsActionable() throws {
+        let component = PluginComponent(kind: .setup, id: "missing", name: "Fixture server", setup: .init(
+            check: .init(kind: .exec, binary: "fixture-server", arguments: ["--version"]),
+            install: .init(kind: .url, hint: "Install the fixture server with your package manager.")
+        ))
+        let repair = try #require(RepairAction.from(component, needsInstall: true))
+        #expect(repair.command == nil && repair.url == nil)
+        #expect(repair.verb == "Check")
+        #expect(repair.detail.contains("Install the fixture server"))
+        #expect(repair.checkBinary == "fixture-server")
+    }
+
     @Test("Two passing checks in a row verify the repair, once")
     func twoPassesVerify() async {
         let checks = CheckScript([false, true, false, true, true])
@@ -204,6 +217,9 @@ struct PluginRepairTests {
             ("gh api -X DELETE /repos/x", "gh"), ("gh auth login extra", "gh"), ("gh auth logout", "gh"),
             ("gcloud --account projects delete x", "gcloud"), ("gh -- auth login", "gh"), ("copilot", "copilot"),
             ("stanford-graph-mail delete-mailbox", "stanford-graph-mail"), ("aws s3 rm s3://bucket --recursive", "aws"),
+            // An untrusted repair cannot replace shared ADC without distinct consent.
+            ("gcloud auth application-default login", "gcloud"),
+            ("gcloud auth application-default login --project=my-project --no-launch-browser", "gcloud"),
             // An unknown CLI has no sign-in at all: these words mean what it likes.
             ("touch auth", "touch"), ("touch login", "touch"), ("sh sso", "sh"), ("stanford-graph-mail login", "stanford-graph-mail"),
             ("/tmp/x/touch auth", "/tmp/x/touch"), ("codex auth", "codex")
@@ -214,18 +230,18 @@ struct PluginRepairTests {
         // An install step's package manager only installs.
         #expect(!RepairAction.isSafeTerminalCommand("brew uninstall gh", binary: "gh", allowsInstaller: true))
         for (command, binary) in [
-            ("gh auth login", "gh"), ("gh auth refresh --hostname github.example.com", "gh"),
-            ("gh auth login --hostname github.example.com --web", "gh"), ("gcloud auth login", "gcloud"),
-            ("gcloud auth application-default login", "gcloud"), ("/opt/sdk/bin/gcloud auth login --account=me@x.org", "/opt/sdk/bin/gcloud"),
+            ("gh auth login", "gh"), ("gh auth refresh --hostname github.com", "gh"),
+            ("gh auth login --hostname github.com --web", "gh"), ("gcloud auth login", "gcloud"),
+            ("/opt/sdk/bin/gcloud auth login --account=me@x.org", "/opt/sdk/bin/gcloud"),
             ("az login --tenant contoso", "az"), ("aws sso login --profile dev", "aws"), ("aws configure sso", "aws"),
             ("codex login", "codex"), ("opencode auth login", "opencode"), ("cursor-agent login", "cursor-agent")
         ] {
             #expect(RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
         }
         #expect(RepairAction.isSafeTerminalCommand("brew install --cask docker", binary: "docker", allowsInstaller: true))
-        // ASTRA's own sign-ins pass, Enterprise host included.
+        // Default provider sign-ins pass; untrusted hosts are check-only.
         for family in CLISessionExpiryClassifier.families {
-            let hosted = family.checkBinary == "gh" ? [family.onHost("github.example.com")] : []
+            let hosted = family.checkBinary == "gh" ? [family.onHost("github.com")] : []
             for candidate in [family] + hosted where candidate.offersSignIn {
                 #expect(RepairAction.isSafeTerminalCommand(candidate.signInCommand, binary: candidate.checkBinary, allowsInstaller: false))
             }
@@ -311,9 +327,8 @@ struct PluginRepairTests {
             #expect(!RepairAction.isSafeTerminalCommand(command, binary: binary, allowsInstaller: false), "\(command)")
         }
         for command in [
-            "gh auth login --hostname github.example.com --git-protocol https --web", "gh auth login -h ghe.example.com:8443 -p ssh",
-            "gh auth login --git-protocol=ssh", "gcloud auth login --no-launch-browser --update-adc --account=me@x.org",
-            "gcloud auth application-default login --project=my-project --no-launch-browser",
+            "gh auth login --hostname github.com --git-protocol https --web", "gh auth login -h github.com -p ssh",
+            "gh auth login --git-protocol=ssh", "gcloud auth login --no-launch-browser --account=me@x.org",
             "gcloud auth login --configuration work --project my-project", "az login --tenant contoso.onmicrosoft.com --use-device-code",
             "aws sso login --sso-session corp --use-device-code", "aws configure sso --profile dev"
         ] {

@@ -14,6 +14,36 @@ struct PluginSourceResourceBoundsTests {
         #expect(!PluginSourceObjectBudget.admits("abc tree 1\ndef tree 1\n", maximumObjects: 1, maximumBytes: 30))
     }
 
+    @Test("Tree nesting and path growth are bounded before any recursive Git listing", arguments: [64, 65])
+    func treeDepthIsBounded(levels: Int) async throws {
+        try await checkTreeChain(levels: levels, name: "d", admitted: levels == 64)
+    }
+
+    @Test("Long tree names cannot grow an expanded path beyond its byte budget")
+    func expandedTreePathsAreBounded() async throws {
+        try await checkTreeChain(levels: 5, name: String(repeating: "x", count: 255), admitted: false)
+        try await checkTreeChain(levels: 5, name: String(repeating: "x", count: 250), admitted: true)
+    }
+
+    private func checkTreeChain(levels: Int, name: String, admitted: Bool) async throws {
+        let ids = (1...levels).map { String(format: "%040x", $0) }
+        let blob = String(repeating: "f", count: 40)
+        let metadata = ids.map { "\($0) tree 50\n" }.joined() + "\(blob) blob 1\n"
+        var calls: [String] = []
+        do {
+            try await PluginSourceTreeBudget.validate(metadata: metadata, maximumEntries: 10_000) { id in
+                calls.append(id)
+                let index = try #require(ids.firstIndex(of: id))
+                return index + 1 == ids.count ? "100644 blob \(blob)\tfile\0" : "040000 tree \(ids[index + 1])\t\(name)\0"
+            }
+            #expect(admitted)
+        } catch {
+            #expect(!admitted)
+            #expect(error as? PluginSourceFetchError == .tooLarge)
+        }
+        #expect(calls.count == levels)
+    }
+
     @Test("A missing resource helper never falls back to unrestricted Git")
     func missingHelperRefusesExecution() async {
         let runner = PluginSourceGitRunner(helper: { nil })

@@ -21,6 +21,7 @@ enum PluginOperations {
         case workspaceChanged
         case storeUnreadable
         case saveFailed
+        case pendingEdits
 
         var errorDescription: String? {
             switch self {
@@ -30,6 +31,7 @@ enum PluginOperations {
             case .workspaceChanged: "The workspace changed. Reopen its settings before retrying."
             case .storeUnreadable: "Couldn't read the workspaces that use this account."
             case .saveFailed: "Couldn't save the change."
+            case .pendingEdits: "Save or discard your pending edits before changing plugin settings or accounts."
             }
         }
     }
@@ -41,12 +43,17 @@ enum PluginOperations {
     static func setting(
         _ key: String,
         of skill: PluginSkill,
-        in activation: PluginActivation
-    ) -> String {
+        in activation: PluginActivation,
+        secrets: (any SkillSecretPersisting.Type)? = nil
+    ) throws -> String {
         let componentID = CapabilityResourceOrigin.componentID(for: skill)
         if Skill.isSecretEnvironmentKey(key) {
             let skillID = PluginRuntimeProjection.credentialID(of: activation, componentID: componentID)
-            return SkillSecretSeam.required.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore()) ?? ""
+            switch (secrets ?? SkillSecretSeam.required).readSecretValue(key: key, skillID: skillID, store: KeychainSecretStore()) {
+            case .value(let value): return value
+            case .missing: return ""
+            case .unavailable: throw OperationError.secretReadFailed(key: key)
+            }
         }
         if let value = activation.configuration(forComponent: componentID)[key] { return value }
         guard let index = skill.environmentKeys.firstIndex(of: key), index < skill.environmentValues.count else { return "" }
@@ -62,7 +69,9 @@ enum PluginOperations {
         persist: (Workspace, ModelContext) throws -> Void = persistAndExport,
         rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws {
+        guard !modelContext.hasChanges else { throw OperationError.pendingEdits }
         guard workspace.modelContext === modelContext, !workspace.isDeleted else { throw OperationError.workspaceChanged }
+        try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
         guard let activation = WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) else {
             throw OperationError.notAdded(pluginID: pluginID)
         }
@@ -117,6 +126,7 @@ enum PluginOperations {
         in workspace: Workspace,
         modelContext: ModelContext
     ) throws -> Connector {
+        guard !modelContext.hasChanges else { throw OperationError.pendingEdits }
         guard let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) else {
             throw OperationError.notAdded(pluginID: package.id)
         }
@@ -155,6 +165,7 @@ enum PluginOperations {
         in workspace: Workspace,
         modelContext: ModelContext
     ) throws {
+        guard !modelContext.hasChanges else { throw OperationError.pendingEdits }
         guard let activation = WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) else {
             throw OperationError.notAdded(pluginID: pluginID)
         }
@@ -201,6 +212,8 @@ enum PluginOperations {
     static func deleteAccount(
         _ account: Connector, modelContext: ModelContext, rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws {
+        guard !modelContext.hasChanges else { throw OperationError.pendingEdits }
+        guard account.modelContext === modelContext, !account.isDeleted else { throw OperationError.workspaceChanged }
         // Who lists the account must be known before anything is deleted: a
         // workspace missed here would keep a dangling ID.
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()) else {

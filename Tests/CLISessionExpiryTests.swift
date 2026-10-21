@@ -9,6 +9,16 @@ import ASTRAModels
 /// task view can offer, then Resume (Plugins 2.0 phase 2 exit criterion).
 @Suite("CLI session expiry")
 struct CLISessionExpiryTests {
+    @Test("An uncorrelated result cannot borrow a preceding shell command", arguments: ["", "unmatched-result"])
+    func uncorrelatedResultCannotStopForSessionExpiry(resultID: String) {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        _ = monitor.processEvent(.toolUse(name: "Bash", id: "shell", input: ["command": "gh api user"]), process: nil)
+        let stopped = monitor.processEvent(.toolResult(toolId: resultID,
+            content: "You are not logged into any GitHub hosts. To log in, run: gh auth login", isError: true), process: nil)
+        #expect(!stopped)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
     private let gcloudReauth = """
     ERROR: (gcloud.projects.list) There was a problem refreshing your current auth tokens: \
     Reauthentication failed. cannot prompt during non-interactive execution.
@@ -251,10 +261,18 @@ struct CLISessionExpiryTests {
             #expect(RepairAction.decode(from: repair.encoded())?.checkSelectors == [name: value])
             let checked = repair.checking(in: ["CLOUDSDK_CONFIG": "/launch/config", "PATH": "/usr/bin"])
             #expect(checked.checkEnvironment == [name: value, "PATH": "/usr/bin"])
-            #expect(checked.targetingCredentialStore(checked.checkEnvironment).command == "env CLOUDSDK_CONFIG='\(value)' gcloud auth login")
+            #expect(checked.targetingCredentialStore(checked.checkEnvironment).command == nil)
+            #expect(checked.targetingCredentialStore(checked.checkEnvironment).verb == "Check")
         }
         let gh = try #require(CLISessionExpiryClassifier.family(content: "HTTP 401: Bad credentials", command: "env GH_CONFIG_DIR=/tmp/gh gh api user"))
         #expect(gh.repair.checkSelectors == ["GH_CONFIG_DIR": "/tmp/gh"])
+        for command in ["HOME=/tmp/team gh api user", "env HOME=/tmp/team sh -c 'gh api user'", "export HOME=/tmp/team; gh api user"] {
+            let family = try #require(CLISessionExpiryClassifier.family(content: "HTTP 401: Bad credentials", command: command))
+            #expect(family.repair.checkSelectors == ["HOME": "/tmp/team"])
+            let checked = family.repair.checking(in: ["HOME": "/Users/original", "PATH": "/usr/bin"])
+            #expect(checked.checkEnvironment?["HOME"] == "/tmp/team")
+            #expect(checked.targetingCredentialStore(checked.checkEnvironment).command == nil)
+        }
         // Credentials ASTRA can't carry: no sign-in and no check of another store.
         for (command, output) in [
             ("GH_TOKEN=abc gh api user", "HTTP 401: Bad credentials"),
@@ -369,7 +387,7 @@ struct CLISessionExpiryTests {
         #expect(CLISessionExpiryClassifier.family(forStopMessage: stop?.message) == CLISessionExpiryClassifier.gitHub)
     }
 
-    @Test("A GitHub Enterprise failure signs in to and checks the host that failed")
+    @Test("A GitHub Enterprise failure keeps its host check and requires manual sign-in")
     func gitHubEnterpriseHostIsCarried() throws {
         let output = "HTTP 401: Bad credentials (https://github.example.com/api/v3/user)"
         for command in [
@@ -379,8 +397,9 @@ struct CLISessionExpiryTests {
             let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "missed: \(command)")
             let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
             #expect(family.repair.checkArguments == ["auth", "status", "--active", "--hostname", "github.example.com"], "\(command)")
-            #expect(family.repair.command == "gh auth login --hostname github.example.com")
-            #expect(RepairAction.isSafeTerminalCommand(try #require(family.repair.command), binary: "gh", allowsInstaller: false))
+            #expect(family.repair.command == nil)
+            #expect(family.repair.verb == "Check")
+            #expect(family.repair.checkBinary == "gh")
         }
         // github.com is checked there, named so that neither the launch nor
         // the checkout retargets it; a value that is not a host name leaves
@@ -396,7 +415,7 @@ struct CLISessionExpiryTests {
         #expect(CLISessionExpiryClassifier.checkingLaunchHost(projected).checkArguments?.last == "github.example.com")
     }
 
-    @Test("An Enterprise host picked by -R/--repo or GH_REPO is the one signed in to and checked")
+    @Test("An Enterprise repository selector keeps its host for verification after manual setup")
     func gitHubRepositorySelectorHostIsCarried() throws {
         let output = "HTTP 401: Bad credentials (https://github.example.com/api/v3/repos/team/app/pulls)"
         for command in [
@@ -407,7 +426,8 @@ struct CLISessionExpiryTests {
             let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command), "missed: \(command)")
             let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
             #expect(family.repair.checkArguments == ["auth", "status", "--active", "--hostname", "github.example.com"], "\(command)")
-            #expect(family.repair.command == "gh auth login --hostname github.example.com", "\(command)")
+            #expect(family.repair.command == nil, "\(command)")
+            #expect(family.repair.verb == "Check", "\(command)")
         }
         // github.com names github.com; OWNER/REPO (the default host) or a
         // value that is not HOST/OWNER/REPO leaves it unknown: every host.
@@ -438,7 +458,12 @@ struct CLISessionExpiryTests {
         ] {
             let family = try #require(CLISessionExpiryClassifier.family(content: output, command: command), "\(command)")
             #expect(family.repair.checkArguments?.last == host, "\(command)")
-            #expect(family.repair.command == "gh auth login --hostname \(host)", "\(command)")
+            if host == "github.com" {
+                #expect(family.repair.command == "gh auth login --hostname github.com", "\(command)")
+            } else {
+                #expect(family.repair.command == nil, "\(command)")
+                #expect(family.repair.verb == "Check", "\(command)")
+            }
         }
         var launch = CLISessionExpiryClassifier.gitHub.repair
         for (environment, host) in [
@@ -470,8 +495,9 @@ struct CLISessionExpiryTests {
         repair.checkWorkingDirectory = "/work/app"
         let enterprise = await CLISessionExpiryClassifier.checkingCheckoutHost(repair) { $0 == "/work/app" ? "GHE.example.com" : nil }
         #expect(enterprise.checkArguments == ["auth", "status", "--active", "--hostname", "ghe.example.com"])
-        #expect(enterprise.command == "gh auth login --hostname ghe.example.com")
-        #expect(enterprise.detail.contains("`gh auth login --hostname ghe.example.com`"))
+        #expect(enterprise.command == nil)
+        #expect(enterprise.verb == "Check")
+        #expect(enterprise.detail.contains("manually"))
         // Nothing read, github.com, or nothing to read from: unchanged.
         for host in [nil, "github.com"] as [String?] {
             #expect(await CLISessionExpiryClassifier.checkingCheckoutHost(repair) { _ in host } == repair)
@@ -535,7 +561,7 @@ struct CLISessionExpiryTests {
         #expect(await GitHubCheckoutHost.host(workingDirectory: root.appendingPathComponent("sub").path) == "ghe.example.com")
     }
 
-    @Test("The dock's Sign in signs in to the Enterprise host the run's checkout names")
+    @Test("The dock requires manual setup for the Enterprise host the run's checkout names")
     func dockSignInTargetsTheCheckoutHost() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("astra-dock-host-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -560,7 +586,8 @@ struct CLISessionExpiryTests {
         context.insert(run)
         let events = [snapshot(task, run, TaskEventTypes.System.runtimeRepairRequired, CLISessionExpiryClassifier.gitHub.repair.encoded())]
         let targeted = try #require(await TaskRunStopEvidence.signInRepair(events: events, runID: run.id, task: task))
-        #expect(targeted.command == "gh auth login --hostname ghe.example.com")
+        #expect(targeted.command == nil)
+        #expect(targeted.verb == "Check")
         #expect(targeted.checkArguments == ["auth", "status", "--active", "--hostname", "ghe.example.com"])
     }
 
@@ -614,7 +641,8 @@ struct CLISessionExpiryTests {
             "( export GH_HOST=github.example.com; gh api user )", "export GH_HOST=github.example.com; echo \"$(gh api user)\""
         ] {
             let family = try #require(CLISessionExpiryClassifier.family(content: output, command: command), "missed: \(command)")
-            #expect(family.repair.command == "gh auth login --hostname github.example.com", "\(command)")
+            #expect(family.repair.command == nil, "\(command)")
+            #expect(family.repair.verb == "Check", "\(command)")
             #expect(family.repair.checkArguments == ["auth", "status", "--active", "--hostname", "github.example.com"], "\(command)")
         }
         // Not past its subshell, not after `unset`, not before the export,
@@ -684,12 +712,14 @@ struct CLISessionExpiryTests {
             }
             let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
             let repair = family.repair
-            #expect(repair.command?.hasSuffix("gcloud auth application-default login") == true, "\(command)")
+            #expect(repair.command == nil, "\(command)")
+            #expect(repair.verb == "Check")
+            #expect(stop.repairContext?.offersAction == false)
             #expect(repair.checkArguments == ["auth", "application-default", "print-access-token", "--format=none"])
             // Its exit status is the answer: it prints nothing.
             #expect(repair.checkExpect == nil)
             #expect(HealthCheckPolicy.isReadOnly(binary: try #require(repair.checkBinary), arguments: try #require(repair.checkArguments)))
-            #expect(RepairAction.isSafeTerminalCommand(try #require(repair.command), binary: repair.checkBinary, allowsInstaller: false))
+            // ADC setup remains manual; only its original bounded check is retained.
         }
         // The CLI's own account, or a command that also makes other Google
         // Cloud calls, keeps the ordinary sign-in.
@@ -733,7 +763,9 @@ struct CLISessionExpiryTests {
         let hosted = try #require(CLISessionExpiryClassifier.family(forStopMessage: CLISessionExpiryClassifier.stop(
             content: output, command: "/opt/team/bin/gh api user --hostname github.example.com"
         )?.message))
-        #expect(hosted.repair.command == "/opt/team/bin/gh auth login --hostname github.example.com")
+        #expect(hosted.repair.command == nil)
+        #expect(hosted.repair.verb == "Check")
+        #expect(hosted.repair.checkBinary == "/opt/team/bin/gh")
         #expect(hosted.repair.checkArguments == ["auth", "status", "--active", "--hostname", "github.example.com"])
         // A check-only family names the path in the check its message describes.
         let token = try #require(CLISessionExpiryClassifier.family(
@@ -808,60 +840,50 @@ struct CLISessionExpiryTests {
         let events = [snapshot(task, run, TaskEventTypes.System.runtimeRepairRequired, repair.encoded())]
 
         let targeted = try #require(await TaskRunStopEvidence.signInRepair(events: events, runID: run.id, task: task))
-        #expect(targeted.command == "env CLOUDSDK_CONFIG='/tmp/task gcloud' gcloud auth login")
+        #expect(targeted.command == nil)
+        #expect(targeted.verb == "Check")
+        #expect(targeted.checkEnvironment?["CLOUDSDK_CONFIG"] == "/tmp/task gcloud")
         let launcher = RecordingTerminal()
         RepairActionRunner.run(targeted, terminal: launcher)
-        #expect(launcher.launched == ["env CLOUDSDK_CONFIG='/tmp/task gcloud' gcloud auth login"])
+        #expect(launcher.launched.isEmpty)
         #expect(!launcher.launched.joined().contains("ya29"))
-        // The dock's Sign in is the one that resolves it.
-        let view = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Astra/Views/TaskMainView.swift"), encoding: .utf8)
-        #expect(view.contains("RepairActionRunner.run(await TaskRunStopEvidence.signInRepair(events: sortedEvents, runID: latestRun?.id, task: task))"))
+        // The dock's actual action verifies the prepared manual repair.
+        var checked: RepairAction?
+        let guidance = await TaskRepairAction.perform(targeted, check: { repair in checked = repair; return false },
+            run: { _ in Issue.record("A manual repair cannot launch Terminal") })
+        #expect(checked?.checkEnvironment?["CLOUDSDK_CONFIG"] == "/tmp/task gcloud")
+        #expect(guidance?.title == "Setup needs attention")
 
-        // Only ASTRA's own sign-in may lead with selectors, and only selectors.
-        let command = try #require(targeted.command)
-        #expect(!RepairAction.isSafeTerminalCommand(command, binary: "gcloud", allowsInstaller: false))
+        // Neither source-defined nor old saved repairs may redirect a login
+        // into a task-selected credential directory.
         for unsafe in [
             "env CLOUDSDK_AUTH_ACCESS_TOKEN='x' gcloud auth login", "env CLOUDSDK_CONFIG='/x' rm -rf ~",
             "env CLOUDSDK_CONFIG=/x gcloud auth login", "env gcloud auth login"
         ] {
-            #expect(!RepairAction.isSafeTerminalCommand(unsafe, binary: "gcloud", allowsInstaller: false, allowsStoreSelectors: true), "\(unsafe)")
+            #expect(!RepairAction.isSafeTerminalCommand(unsafe, binary: "gcloud", allowsInstaller: false), "\(unsafe)")
         }
-        // No selector, or one that can't be quoted, leaves the command as is.
+        // A non-selector does not redirect a login. Even malformed selected
+        // directory values require manual setup.
         #expect(repair.targetingCredentialStore(["CLOUDSDK_AUTH_ACCESS_TOKEN": "x"]) == repair)
-        #expect(repair.targetingCredentialStore(["CLOUDSDK_CONFIG": "/a\nb"]) == repair)
+        #expect(repair.targetingCredentialStore(["CLOUDSDK_CONFIG": "/a\nb"]).command == nil)
         withExtendedLifetime(container) {}
     }
 
-    @Test("A credential-store path with an apostrophe is quoted, not dropped, and the shell reads it back exactly")
-    func signInQuotesApostrophesInStorePaths() throws {
+    @Test("A selected credential-store path with an apostrophe stays check-only")
+    func selectedStorePathCannotReachTerminal() {
         let store = "/Users/O'Connor/.config/gh"
-        let repair = CLISessionExpiryClassifier.gitHub.repair
-        let targeted = repair.targetingCredentialStore(["GH_CONFIG_DIR": store, "GH_HOST": "it's"])
-        let command = try #require(targeted.command)
-        #expect(command == #"env GH_CONFIG_DIR='/Users/O'\''Connor/.config/gh' GH_HOST='it'\''s' gh auth login"#)
-        #expect(RepairAction.isSafeTerminalCommand(command, binary: "gh", allowsInstaller: false, allowsStoreSelectors: true))
-        // A bare apostrophe that would end the value early is still refused.
+        let environment = ["GH_CONFIG_DIR": store, "GH_HOST": "github.example.com"]
+        let repair = CLISessionExpiryClassifier.gitHub.repair.checking(in: environment)
+            .targetingCredentialStore(environment)
+        #expect(repair.command == nil)
+        #expect(repair.verb == "Check")
+        #expect(repair.checkEnvironment == environment)
         #expect(!RepairAction.isSafeTerminalCommand(
-            "env GH_CONFIG_DIR='/a'b' gh auth login", binary: "gh", allowsInstaller: false, allowsStoreSelectors: true
+            "env GH_CONFIG_DIR='/a'b' gh auth login", binary: "gh", allowsInstaller: false
         ))
-        // The shell takes the quoted prefix as exactly the stored path.
-        let probe = try #require(RepairAction(
-            strategy: .terminal, componentName: "probe", title: "probe", verb: "Sign in", detail: "",
-            command: "printenv GH_CONFIG_DIR"
-        ).targetingCredentialStore(["GH_CONFIG_DIR": store]).command)
-        let shell = Process()
-        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-        shell.arguments = ["-c", probe]
-        let output = Pipe()
-        shell.standardOutput = output
-        try shell.run()
-        shell.waitUntilExit()
-        let printed = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        #expect(printed == store + "\n")
     }
 
-    @Test("Sign in signs in to the Enterprise host the launch's GH_REPO or GH_HOST selects, the host Resume checks")
+    @Test("A launch-selected Enterprise host needs manual sign-in and keeps its exact Resume check")
     @MainActor
     func signInTargetsLaunchSelectedHost() async throws {
         let container = try ModelContainer(
@@ -873,9 +895,9 @@ struct CLISessionExpiryTests {
         let workspace = Workspace(name: "Enterprise", primaryPath: NSTemporaryDirectory())
         context.insert(workspace)
         let repair = CLISessionExpiryClassifier.gitHub.repair
-        for (key, value, expected) in [
-            ("GH_REPO", "github.example.com/team/app", "gh auth login --hostname github.example.com"),
-            ("GH_HOST", "github.example.com", "env GH_HOST='github.example.com' gh auth login --hostname github.example.com")
+        for (key, value) in [
+            ("GH_REPO", "github.example.com/team/app"),
+            ("GH_HOST", "github.example.com")
         ] {
             let task = AgentTask(title: "PRs", goal: "List GitHub Enterprise pull requests", workspace: workspace, runtime: .claudeCode)
             task.skillSnapshots = [SkillSnapshotConfig(
@@ -891,14 +913,13 @@ struct CLISessionExpiryTests {
             let events = [snapshot(task, run, TaskEventTypes.System.runtimeRepairRequired, repair.encoded())]
 
             let targeted = try #require(await TaskRunStopEvidence.signInRepair(events: events, runID: run.id, task: task))
-            #expect(targeted.command == expected, "\(key)")
-            #expect(targeted.detail.contains("`gh auth login --hostname github.example.com`"), "\(key)")
+            #expect(targeted.command == nil, "\(key)")
+            #expect(targeted.verb == "Check", "\(key)")
+            #expect(targeted.detail.contains("manually"), "\(key)")
             #expect(targeted.checkArguments == ["auth", "status", "--active", "--hostname", "github.example.com"], "\(key)")
-            let command = try #require(targeted.command)
-            #expect(RepairAction.isSafeTerminalCommand(command, binary: "gh", allowsInstaller: false, allowsStoreSelectors: true))
             let launcher = RecordingTerminal()
             RepairActionRunner.run(targeted, terminal: launcher)
-            #expect(launcher.launched == [expected], "\(key)")
+            #expect(launcher.launched.isEmpty, "\(key)")
         }
         // A github.com repository keeps the default sign-in.
         var projected = repair
@@ -1071,7 +1092,9 @@ struct CLISessionExpiryTests {
             let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
             #expect(family == CLISessionExpiryClassifier.gitHub.onEveryHost(), "\(command)")
             #expect(family.repair.checkArguments == ["auth", "status", "--active"])
-            #expect(family.repair.command == "gh auth login")
+            #expect(family.repair.command == nil)
+            #expect(family.repair.verb == "Check")
+            #expect(stop.repairContext?.offersAction == false)
             #expect(stop.message.contains("`gh auth status --active`"))
             // Neither the launch nor the checkout narrows it to one host.
             var repair = family.repair
@@ -1162,13 +1185,15 @@ struct CLISessionExpiryTests {
         let repair = CLISessionExpiryClassifier.googleCloud.repair
         let launcher = RecordingTerminal()
         var copied: [String] = []
-        RepairActionRunner.run(repair, terminal: launcher, copy: { copied.append($0) })
-        #expect(launcher.launched == ["gcloud auth login"])
+        RepairActionRunner.run(repair, terminal: launcher, resolveExecutable: { "/opt/homebrew/bin/" + $0 },
+            isInstalled: { _ in true }, copy: { copied.append($0) })
+        #expect(launcher.launched == ["/opt/homebrew/bin/gcloud auth login"])
         #expect(copied.isEmpty)
 
         let refusing = RecordingTerminal(refuses: true)
-        RepairActionRunner.run(repair, terminal: refusing, copy: { copied.append($0) })
-        #expect(copied == ["gcloud auth login"])
+        RepairActionRunner.run(repair, terminal: refusing, resolveExecutable: { "/opt/homebrew/bin/" + $0 },
+            isInstalled: { _ in true }, copy: { copied.append($0) })
+        #expect(copied == ["/opt/homebrew/bin/gcloud auth login"])
         #expect(refusing.openedTerminal)
     }
 

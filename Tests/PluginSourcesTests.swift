@@ -334,6 +334,27 @@ struct PluginSourcesTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.store.cloneDirectory(for: source).path))
     }
 
+    @Test("T11: deeply nested small trees are refused before recursive listing and keep the last good checkout")
+    func deepTreesAreRefusedBeforeRecursiveListing() async throws {
+        guard let git = Self.git() else { Issue.record("Git is required for source validation"); return }
+        let fixture = try Fixture()
+        let repository = try fixture.bareRepository(with: [
+            Array(repeating: "d", count: 65).joined(separator: "/") + "/leaf": Data("tiny".utf8)
+        ])
+        let observer = SourceGitObservationRunner()
+        var fetcher = PluginSourceFetcher(runner: observer, gitPath: { git })
+        fetcher.allowedProtocols = ["file"]
+        let source = PluginSource(id: "deep-tree-budget", kind: .git, location: repository.absoluteString,
+            displayName: "Deep tree budget", addedAt: Date())
+        let old = try Self.packageJSON(id: "kept", version: "1.0.0")
+        let clone = fixture.store.cloneDirectory(for: source)
+        try fixture.write(["capability.json": old], in: clone)
+        await #expect(throws: PluginSourceFetchError.tooLarge) { try await fetcher.fetch(source, store: fixture.store) }
+        #expect(observer.calls.contains { $0.contains("ls-tree") && $0.contains("-z") })
+        #expect(!observer.calls.contains { $0.contains("-r") || $0.contains("checkout") })
+        #expect(try Data(contentsOf: clone.appendingPathComponent("capability.json")) == old)
+    }
+
     @Test("T11: final delta-expanded blob sizes are checked before traversal")
     func deltaExpandedSizesAreCheckedBeforeTraversal() async throws {
         guard let git = Self.git() else { Issue.record("Git is required for source validation"); return }
@@ -445,6 +466,21 @@ struct PluginSourcesTests {
         #expect(byName["link"]?.canAdd == false)
         #expect(byName["ok"]?.canAdd == true)
         #expect(throws: PluginSourceReadError.self) { try PluginSourcePluginReader.normalized("a/../../b") }
+    }
+
+    @Test("T4: hard-linked source files cannot expose bytes from outside the selected folder")
+    func hardLinkedFilesAreRefused() throws {
+        let fixture = try Fixture()
+        let outside = fixture.root.appendingPathComponent("outside-secret")
+        let folder = fixture.root.appendingPathComponent("selected", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("outside bytes".utf8).write(to: outside)
+        let linked = folder.appendingPathComponent("capability.json")
+        try FileManager.default.linkItem(at: outside, to: linked)
+        #expect(BrokeredPluginDirectory(root: folder, kind: .folder).read("capability.json", limit: 1024) == .refused)
+        try FileManager.default.removeItem(at: linked)
+        try Data("selected bytes".utf8).write(to: linked)
+        #expect(BrokeredPluginDirectory(root: folder, kind: .folder).read("capability.json", limit: 1024) == .data(Data("selected bytes".utf8)))
     }
 
     @Test("T4: a directory or file swapped for a symlink after the check never yields bytes from outside the source")
@@ -984,6 +1020,7 @@ struct PluginSourcesTests {
             return (machine, try importFile(on: machine))
         }
         func addInstalled(_ package: PluginPackage, on machine: Fixture, to workspace: Workspace) throws -> PluginActivation {
+            try #require(!machine.context.hasChanges, "Add must start after the imported workspace was saved")
             _ = try CapabilityCatalogActionService(library: machine.library, sourceStore: machine.store).add(
                 package, workspace: workspace, modelContext: machine.context, policyContext: policy(workspace),
                 approvalStore: CapabilityApprovalStore(directory: machine.root.appendingPathComponent("approvals")), traceID: "test"
@@ -1061,12 +1098,17 @@ struct PluginSourcesTests {
         var fileE = config
         fileE.id = nil
         let workspaceE = WorkspaceConfigManager.importWorkspaceResult(from: fileE, modelContext: e.context, capabilityTrust: .validate(verifierE)).workspace
+        // This models the next launch after import, not an unsaved editor
+        // transaction. Migration must not commit an import on its caller's behalf.
+        try e.context.save()
         let activationE = try #require(WorkspaceCapabilityActivation.activation(for: installedE.id, in: workspaceE))
         #expect(!activationE.isEnabled && !restored(activationE, in: workspaceE))
+        try #require(!e.context.hasChanges, "Migration must start after the imported workspace was saved")
         try PluginActivationMigration.migrate(modelContext: e.context, packages: e.library.installedPackages(), sourceStore: e.store)
         #expect(!restored(activationE, in: workspaceE))
         try e.store.recordProvenance(pluginID: installedE.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(installedE))
         #expect(PluginActivationMigration.needsMigration(modelContext: e.context, packages: e.library.installedPackages()))
+        try #require(!e.context.hasChanges, "Migration must start after the imported workspace was saved")
         try PluginActivationMigration.migrate(modelContext: e.context, packages: e.library.installedPackages(), sourceStore: e.store)
         #expect(restored(activationE, in: workspaceE))
         #expect(!activationE.isEnabled)

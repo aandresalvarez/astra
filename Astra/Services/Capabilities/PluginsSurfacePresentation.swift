@@ -66,6 +66,34 @@ struct PluginsSurfaceState: Equatable {
 }
 
 enum PluginsSurfacePresentation {
+    /// The settings that affect the skill this activation actually runs.
+    /// An authored replacement owns its own settings instead.
+    static func settingKeys(of skill: PluginSkill, in activation: PluginActivation?, package: PluginPackage? = nil) -> [String] {
+        guard let activation, PluginRuntimeProjection.packageSkillOwnsSettings(skill, activation: activation) else { return [] }
+        // The installer places these fields on each connector account and
+        // runtime account values take precedence over skill environment values.
+        guard package?.connectors.isEmpty != false else { return [] }
+        return skill.environmentKeys
+    }
+
+    static func showsRemove(_ row: PluginRow) -> Bool {
+        row.display.isRemovable && (!row.display.isEnabled || row.display.isMissing)
+    }
+
+    static func expandedSetupComponents(for row: PluginRow) -> [(component: PluginComponent, position: Int?)] {
+        let manifest = PluginManifestConverter.manifest(from: row.package)
+        return manifest.components.enumerated()
+            .filter { $0.element.kind != .skill && (row.activation == nil || $0.element.kind != .connector) }
+            .map { ($0.element, PluginManifestConverter.prerequisitePosition(ofComponentAt: $0.offset, in: manifest)) }
+    }
+
+    static func confirmationCopy(
+        _ confirmation: PluginsSurfaceConfirmation, account: Connector?,
+        packageName: String, in workspace: Workspace, workspaces: [String]
+    ) -> (message: String, verb: String) {
+        confirmation.copy(name: account.map { accountTitle($0, in: workspace) } ?? packageName, workspaces: workspaces)
+    }
+
     struct Input {
         var package: PluginPackage
         var isEnabled: Bool
@@ -264,9 +292,9 @@ enum PluginsSurfacePresentation {
 
     /// The setup checks an added plugin's prerequisites failed, a pending step
     /// each. A check the read-only policy refused (`notChecked`) is pending
-    /// too: it never passed. It just offers no repair.
+    /// too: it never passed. A missing result remains pending while scanning.
     static func pendingSetupChecks(for package: PluginPackage, statuses: [String: HealthStatus]) -> Int {
-        package.prerequisites.filter { statuses[$0.id].map { !$0.isUsable } ?? false }.count
+        package.prerequisites.filter { statuses[$0.id].map { !$0.isUsable } ?? true }.count
     }
 
     /// The required accounts an added plugin has no working sign-in for: a
@@ -357,7 +385,7 @@ enum PluginsSurfacePresentation {
 enum PluginsSurfaceConfirmation: Equatable {
     /// Removing it from ASTRA turns it off in every workspace.
     case remove(packageID: String)
-    /// Deleting an account removes it, and its saved keys, everywhere.
+    /// Deleting an account removes it everywhere; accepted tasks may retain access.
     case deleteAccount(packageID: String, accountID: UUID)
 
     var packageID: String {
@@ -384,6 +412,6 @@ enum PluginsSurfaceConfirmation: Equatable {
         let reach = workspaces.isEmpty
             ? ""
             : " \(workspaces.count == 1 ? "It is used in" : "It is used in \(workspaces.count) workspaces:") \(workspaces.joined(separator: ", "))."
-        return ("Delete the account \(name) and its saved keys?\(reach)", "Delete")
+        return ("Delete the account \(name) and its saved keys?\(reach) Tasks already accepted may keep access until they finish or are cancelled. To revoke access, revoke the credentials with the provider.", "Delete")
     }
 }

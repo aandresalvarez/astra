@@ -636,7 +636,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 sawGoogleDocsVisiblePageRead = true
             }
             // A shell tool's command only (another tool's `command` input ran nothing); a failed one counts, a successful one when a later command masked the CLI's status (`gcloud … | cat`).
-            if let context = toolContext(for: toolID), CLISessionExpiryClassifier.isShellTool(context.name), let expiry = CLISessionExpiryClassifier.stop(content: content, command: context.summary, failed: isError) { return recordRuntimeStop(reason: expiry.reason, message: expiry.message, process: process, source: "tool_session_expired", repairContext: expiry.repairContext) }
+            if !toolID.isEmpty, let context = toolUseContextsByID[toolID], CLISessionExpiryClassifier.isShellTool(context.name), let expiry = CLISessionExpiryClassifier.stop(content: content, command: context.summary, failed: isError) { return recordRuntimeStop(reason: expiry.reason, message: expiry.message, process: process, source: "tool_session_expired", repairContext: expiry.repairContext) }
             if let stop = Self.browserTerminalStop(content: content, isKnownBrowserTool: isKnownBrowserTool) {
                 if stop.reason == "google_docs_controlled_browser_required",
                    sawGoogleDocsVisiblePageRead,

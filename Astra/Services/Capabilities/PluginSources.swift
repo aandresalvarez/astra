@@ -575,6 +575,19 @@ struct PluginSourceFetcher {
         guard metadata.exitCode == 0 else { throw PluginSourceFetchError.cloneFailed(Self.detail(metadata)) }
         guard PluginSourceObjectBudget.admits(metadata.stdout, maximumObjects: maxPackObjects,
             maximumBytes: maxCheckoutBytes) else { throw PluginSourceFetchError.tooLarge }
+        // Nonrecursive object inspection bounds depth and path growth before
+        // Git traverses the graph. The complete inspection has one deadline.
+        let inspectionDeadline = Date().addingTimeInterval(timeout)
+        try await PluginSourceTreeBudget.validate(metadata: metadata.stdout, maximumEntries: maxCheckoutFiles) { object in
+            let remaining = inspectionDeadline.timeIntervalSinceNow
+            guard remaining > 0 else { throw PluginSourceFetchError.tooLarge }
+            let listing = await runner.run(path: git,
+                args: Self.hardening(allowedProtocols: allowedProtocols) + ["-C", staging.path, "ls-tree", "-z", object],
+                timeout: remaining, environment: environment)
+            try Self.validateResult(listing)
+            guard listing.exitCode == 0 else { throw PluginSourceFetchError.cloneFailed(Self.detail(listing)) }
+            return listing.stdout
+        }
         // 2. Measure what a checkout would write, from the tree, first.
         let tree = await runner.run(
             path: git,
@@ -852,7 +865,7 @@ struct BrokeredPluginDirectory: PluginDirectoryReading {
         guard descriptor >= 0 else { return parent.failure(opening: name, errno: errno) }
         defer { close(descriptor) }
         var info = stat()
-        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return .refused }
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { return .refused }
         guard Int(info.st_size) <= limit else { return .tooLarge }
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)

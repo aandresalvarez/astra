@@ -32,6 +32,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
     /// What each draft was loaded as, so a reload keeps the ones the person
     /// is still editing.
     @State private var loadedDrafts: [String: String] = [:]
+    @State private var readFailures: [String: String] = [:]
 
     private var actions: CapabilityCatalogActionService { CapabilityCatalogActionService() }
 
@@ -41,7 +42,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
                 skillSection(skill)
             }
             ForEach(Array(row.package.connectors.enumerated()), id: \.offset) { _, connector in
-                accountSection(connector)
+                if row.activation != nil { accountSection(connector) }
             }
             ForEach(Array(otherComponents.enumerated()), id: \.offset) { _, entry in
                 setupRow(entry.component, entry.position)
@@ -56,17 +57,11 @@ struct PluginRowDetailsView<SetupRow: View>: View {
     }
 
     private var draftSource: String {
-        let keys = row.package.skills.map { skill in
-            CapabilityResourceOrigin.componentID(for: skill) + ":" + skill.environmentKeys.joined(separator: ",")
-        }
-        return "\(row.activation?.revision ?? -1)|\(row.package.version)|" + keys.joined(separator: ";")
+        PluginSettingDrafts.source(package: row.package, activation: row.activation)
     }
 
     private var otherComponents: [(component: PluginComponent, position: Int?)] {
-        let manifest = PluginManifestConverter.manifest(from: row.package)
-        return manifest.components.enumerated()
-            .filter { $0.element.kind != .skill && $0.element.kind != .connector }
-            .map { ($0.element, PluginManifestConverter.prerequisitePosition(ofComponentAt: $0.offset, in: manifest)) }
+        PluginsSurfacePresentation.expandedSetupComponents(for: row)
     }
 
     // MARK: - Skill settings
@@ -75,10 +70,8 @@ struct PluginRowDetailsView<SetupRow: View>: View {
     private func skillSection(_ skill: PluginSkill) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             componentHeader(skill.name, kind: "Skill")
-            if row.activation != nil {
-                ForEach(skill.environmentKeys, id: \.self) { key in
-                    settingField(key, of: skill)
-                }
+            ForEach(PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation, package: row.package), id: \.self) { key in
+                settingField(key, of: skill)
             }
         }
     }
@@ -100,8 +93,13 @@ struct PluginRowDetailsView<SetupRow: View>: View {
                 }
             }
             .controlSize(.small)
+            if let failure = readFailures[draftKey] {
+                Text("Credential unavailable").font(.caption).foregroundStyle(.secondary).help(failure)
+                Button("Retry", action: loadDrafts).controlSize(.small)
+            }
             Button("Save") { save(key, of: skill, value: drafts[draftKey] ?? "") }
                 .controlSize(.small)
+                .disabled(readFailures[draftKey] != nil)
         }
     }
 
@@ -201,7 +199,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
             // is off here.
             // A plugin the library no longer has runs nowhere: it is offered
             // even while its activation is on.
-            if row.display.isRemovable, row.activation?.isEnabled != true || row.display.isMissing {
+            if PluginsSurfacePresentation.showsRemove(row) {
                 Button("Remove", role: .destructive) { onConfirm(.remove(packageID: row.package.id)) }
                     .controlSize(.small)
             }
@@ -219,18 +217,15 @@ struct PluginRowDetailsView<SetupRow: View>: View {
     // MARK: - Actions
 
     private func loadDrafts() {
-        guard let activation = row.activation else { return }
-        var fresh: [String: String] = [:]
-        for skill in row.package.skills {
-            let componentID = CapabilityResourceOrigin.componentID(for: skill)
-            for key in skill.environmentKeys {
-                fresh[PluginActivation.settingKey(componentID: componentID, key: key)] = PluginOperations.setting(key, of: skill, in: activation)
-            }
+        let snapshot = PluginSettingDrafts.load(package: row.package, activation: row.activation) { key, skill, activation in
+            try PluginOperations.setting(key, of: skill, in: activation)
         }
+        let fresh = snapshot.values
+        readFailures = snapshot.failures
         // A field whose draft differs from what it was loaded as has an
         // unsaved edit: saving another setting must not discard it.
         var next = fresh
-        for (key, value) in drafts where loadedDrafts[key] != value && fresh[key] != nil {
+        for (key, value) in drafts where loadedDrafts[key] != value && (fresh[key] != nil || readFailures[key] != nil) {
             next[key] = value
         }
         loadedDrafts = fresh
@@ -238,6 +233,9 @@ struct PluginRowDetailsView<SetupRow: View>: View {
     }
 
     private func save(_ key: String, of skill: PluginSkill, value: String) {
+        let field = PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: key)
+        guard readFailures[field] == nil,
+              PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation, package: row.package).contains(key) else { return }
         do {
             try actions.setSetting(key, to: value, of: skill, package: row.package, workspace: workspace, modelContext: modelContext)
             onChanged()

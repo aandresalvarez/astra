@@ -2,32 +2,63 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRACore
-import ASTRAModels
+@testable import ASTRAModels
 @testable import ASTRAPersistence
 @testable import ASTRA
 
 @MainActor
 @Suite("Plugin Update admission", .serialized)
 struct PluginUpdateAdmissionTests {
+    @Test("Update rollback restores account modification and binding ordering timestamps")
+    func rollbackIncludesAccountModificationTime() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try ConnectorCredentialEditorTests.Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable()
+            let before = PluginAccountRecord(account)
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: env.package.id, in: env.disk.workspace))
+            let binding = try #require(activation.bindings.first)
+            let beforeActivation = PluginActivationRecord(activation)
+            let restore = PluginUpdateService.captureState(of: [env.disk.workspace])
+            account.updatedAt = account.updatedAt.addingTimeInterval(60)
+            account.notes = "Rejected update notes"
+            binding.createdAt = binding.createdAt.addingTimeInterval(60)
+            restore()
+            #expect(PluginAccountRecord(account) == before)
+            #expect(PluginActivationRecord(activation) == beforeActivation)
+        }
+    }
+
     @Test("Restoring equal saved bindings in a different order retains their persistent identities")
     func bindingOrderDoesNotRecreateSavedRows() throws {
         let env = try PluginOperationsTests.Environment()
         let package = PluginRenameAndMissingTests.twoOfEach()
         try env.install(package)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
-        let ordered = activation.bindings.sorted {
-            $0.createdAt == $1.createdAt ? $0.id.uuidString < $1.id.uuidString : $0.createdAt < $1.createdAt
-        }
-        try #require(ordered.count == 2)
-        activation.bindings = Array(ordered.reversed())
-        try env.context.save()
-        let snapshot = WorkspaceCapabilityActivation.snapshot(env.workspace)
+        try #require(activation.bindings.count == 2)
+        let captured = WorkspaceCapabilityActivation.snapshot(env.workspace)
+        let record = try #require(captured.activations.first)
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(record))
+        var object = try #require(json as? [String: Any])
+        let bindings = try #require(object["bindings"] as? [[String: Any]])
+        let byID = Dictionary(uniqueKeysWithValues: bindings.compactMap { binding -> (String, [String: Any])? in
+            guard let id = binding["id"] as? String else { return nil }
+            return (id, binding)
+        })
+        // SwiftData may reorder an unordered relationship during save. Force
+        // the equivalent saved record's order opposite the actual backing
+        // array, without dirtying or depending on the model's physical order.
+        object["bindings"] = activation.bindings.reversed().compactMap { byID[$0.id.uuidString] }
+        let reversed = try JSONDecoder().decode(PluginActivationRecord.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        let snapshot = WorkspaceCapabilityActivation.Snapshot(state: captured.state, activations: [reversed],
+            retired: captured.retired, pendingLegacy: captured.pendingLegacy, updatedAt: captured.updatedAt)
         try #require(activation.bindings.map(\.id) != snapshot.activations.first?.bindings.map(\.id))
         let originalBindings = Set(activation.bindings.map(\.persistentModelID))
         WorkspaceCapabilityActivation.restore(snapshot, to: env.workspace)
         #expect(!env.context.hasChanges)
         #expect(Set(activation.bindings.map(\.persistentModelID)) == originalBindings)
-        #expect(WorkspaceCapabilityActivation.snapshot(env.workspace) == snapshot)
+        #expect(WorkspaceCapabilityActivation.snapshot(env.workspace) == captured)
     }
 
     @Test("A failed private Update restores a clean context so a real retry can succeed")
@@ -45,7 +76,7 @@ struct PluginUpdateAdmissionTests {
                 persist: { _ in throw NSError(domain: "synthetic.update.retry", code: 1) })
         }
         #expect(PluginActivationRecord(activation) == accepted)
-        #expect(!env.context.hasChanges)
+        #expect(!env.context.hasChanges, "Pending models after rollback: \(env.context.changedModelsArray.map { String(reflecting: type(of: $0)) })")
         #expect(try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [updated], mode: .release) == 1)
         #expect(activation.recordedVersion == "2.0.0")
     }
