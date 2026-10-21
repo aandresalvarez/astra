@@ -232,15 +232,16 @@ struct WorkspaceConfigCapabilityImportTrustTests {
         withExtendedLifetime(container) {}
     }
 
-    @Test("A skill restored from a task snapshot is what the snapshot names afterwards")
+    @Test("Every imported task snapshot names its rekeyed or previously restored live skill", arguments: [false, true])
     @MainActor
-    func restoredSnapshotNamesTheRestoredRow() throws {
+    func restoredSnapshotNamesTheRestoredRow(declared: Bool) throws {
         let container = try makeContainer()
         let context = container.mainContext
         var config = minimalConfig()
         let snapshotID = UUID().uuidString
         let now = Date()
-        config.tasks = [Manager.TaskConfig(
+        if declared { config.skills = [skillConfig(id: snapshotID, name: "Declared Agent", isGlobal: false)] }
+        let firstTask = Manager.TaskConfig(
             title: "Old task", goal: "Export", status: "completed", inputs: [], constraints: [],
             acceptanceCriteria: [], tokenBudget: 1000, tokensUsed: 0, model: "m", costUSD: 0, maxTurns: 5,
             createdAt: now, updatedAt: now, runs: [], events: [],
@@ -251,14 +252,22 @@ struct WorkspaceConfigCapabilityImportTrustTests {
                 environmentValues: [], isGlobal: false, connectorIDs: [], localToolIDs: [],
                 connectorSnapshots: [], localToolSnapshots: [], createdAt: now, updatedAt: now
             )]
-        )]
+        )
+        var secondTask = firstTask
+        secondTask.title = "Second imported task"
+        config.tasks = [firstTask, secondTask]
 
         let workspace = Manager.importWorkspaceResult(from: config, modelContext: context, capabilityTrust: .validate(verifier)).workspace
-        let task = try #require(workspace.tasks.first)
-        let restored = try #require(task.skills.first)
-        #expect(restored.id.uuidString != snapshotID)
-        #expect(task.skillSnapshots.map(\.id) == [restored.id.uuidString])
-        #expect(task.skillSnapshots.map(\.name) == [restored.name])
+        #expect(workspace.tasks.count == 2)
+        #expect(workspace.skills.count == 1)
+        for task in workspace.tasks {
+            let restored = try #require(task.skills.first)
+            #expect(restored.id.uuidString != snapshotID)
+            #expect(task.skillSnapshots.map(\.id) == [restored.id.uuidString])
+            #expect(task.skillSnapshots.map(\.name) == [restored.name])
+            let scope = TaskCapabilityResolver(task: task, secretStore: MockSecretStore()).resolvedScope(.fullInventory)
+            #expect(scope.resolver.effectiveSnapshots.count == 1)
+        }
         withExtendedLifetime(container) {}
     }
 
