@@ -19,10 +19,14 @@ import ASTRAPersistence
 /// stored it: per-run shares, reset markers only where the counters really went down.
 /// Records already in that state are left alone, which makes the pass idempotent and
 /// safe to re-run after each update. A session with a run whose report cannot be read
-/// back is skipped and logged rather than guessed at.
+/// back is skipped and logged rather than guessed at; one with a run in progress is
+/// left for the next launch.
 @MainActor
 enum CodexSessionUsageCorrectionService {
     static let correctedEventType = "astra.provider_session_usage_corrected"
+    /// A reset marker the replay found spurious keeps its evidence under this type, which
+    /// `ProviderSessionUsageEpoch` does not read as an epoch start.
+    static let supersededResetEventType = "astra.provider_session_usage_reset.superseded"
 
     /// A provider usage report: the input and output tokens a `task.stats` event recorded.
     struct Report: Equatable, Sendable {
@@ -54,32 +58,49 @@ enum CodexSessionUsageCorrectionService {
     struct Outcome: Equatable {
         var tasksCorrected = 0
         var runsCorrected = 0
+        /// Sessions that can never be corrected: a run's report is gone.
         var sessionsSkipped = 0
+        /// Sessions with a run in progress, corrected on a later pass.
+        var sessionsDeferred = 0
+        /// False when the pass failed or deferred a session, so the gate stays open.
         var completed = false
     }
 
-    /// Build-gated like the other startup repairs: re-running after an update, or on a
-    /// store imported since, finds already-corrected sessions unchanged.
+    /// Gated on the build and on how many Codex session runs the store holds, so it
+    /// re-runs after an update and after runs arrive by any route (a workspace import,
+    /// a store recovery, new turns). Each re-run finds corrected sessions unchanged.
     @discardableResult
     static func correctIfNeeded(
         modelContext: ModelContext,
         currentBuild: String,
         defaults: UserDefaults = .standard
     ) async -> Bool {
-        guard defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) != currentBuild else {
+        let count: Int
+        do {
+            count = try modelContext.fetchCount(codexSessionRuns)
+        } catch {
+            log(stage: "count_failed", outcome: Outcome(), error: error)
+            return false
+        }
+        let watermark = "\(currentBuild):\(count)"
+        guard defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) != watermark else {
             return false
         }
         guard await correct(modelContext: modelContext).completed else { return false }
-        defaults.set(currentBuild, forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild)
+        defaults.set(watermark, forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild)
         return true
+    }
+
+    private static var codexSessionRuns: FetchDescriptor<TaskRun> {
+        let codex: String? = AgentRuntimeID.codexCLI.rawValue
+        return FetchDescriptor<TaskRun>(
+            predicate: #Predicate<TaskRun> { $0.runtimeID == codex && $0.providerSessionId != nil }
+        )
     }
 
     @discardableResult
     static func correct(modelContext: ModelContext) async -> Outcome {
-        let codex: String? = AgentRuntimeID.codexCLI.rawValue
-        let descriptor = FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { $0.runtimeID == codex && $0.providerSessionId != nil }
-        )
+        let descriptor = codexSessionRuns
         let tasks: [AgentTask]
         do {
             var seen = Set<UUID>()
@@ -99,14 +120,15 @@ enum CodexSessionUsageCorrectionService {
                 return outcome
             }
             outcome.sessionsSkipped += result.sessionsSkipped
+            outcome.sessionsDeferred += result.sessionsDeferred
             if result.runsCorrected > 0 {
                 outcome.tasksCorrected += 1
                 outcome.runsCorrected += result.runsCorrected
             }
             await Task.yield()
         }
-        outcome.completed = true
-        if outcome.tasksCorrected > 0 || outcome.sessionsSkipped > 0 {
+        outcome.completed = outcome.sessionsDeferred == 0
+        if outcome.tasksCorrected > 0 || outcome.sessionsSkipped > 0 || outcome.sessionsDeferred > 0 {
             log(stage: "completed", outcome: outcome, error: nil)
         }
         return outcome
@@ -150,6 +172,29 @@ enum CodexSessionUsageCorrectionService {
     private struct TaskResult {
         var runsCorrected = 0
         var sessionsSkipped = 0
+        var sessionsDeferred = 0
+    }
+
+    /// What a task's correction changed, so a failed save can put it back without rolling
+    /// back the whole context (which would discard unrelated unsaved work).
+    private struct Journal {
+        var taskTokensUsed: Int
+        var taskUpdatedAt: Date
+        var runs: [(run: TaskRun, input: Int, output: Int, total: Int)] = []
+        var retypedMarkers: [TaskEvent] = []
+        var insertedEvents: [TaskEvent] = []
+
+        func revert(task: AgentTask, modelContext: ModelContext) {
+            for entry in runs {
+                entry.run.inputTokens = entry.input
+                entry.run.outputTokens = entry.output
+                entry.run.tokensUsed = entry.total
+            }
+            retypedMarkers.forEach { $0.type = ProviderSessionUsageEpoch.resetEventType }
+            insertedEvents.forEach(modelContext.delete)
+            task.tokensUsed = taskTokensUsed
+            task.updatedAt = taskUpdatedAt
+        }
     }
 
     private struct SessionChange: Encodable {
@@ -202,10 +247,11 @@ enum CodexSessionUsageCorrectionService {
 
         var result = TaskResult()
         var changes: [SessionChange] = []
+        var journal = Journal(taskTokensUsed: task.tokensUsed, taskUpdatedAt: task.updatedAt)
         for (session, runs) in sessions.sorted(by: { $0.key < $1.key }) {
             let prefix = String(session.prefix(8))
             guard !runs.contains(where: { $0.status == .running }) else {
-                result.sessionsSkipped += 1
+                result.sessionsDeferred += 1
                 logSkip(task: task, sessionPrefix: prefix, reason: "run_in_progress", runID: nil)
                 continue
             }
@@ -238,6 +284,7 @@ enum CodexSessionUsageCorrectionService {
                 change.outputAfter += entry.share.output
                 let total = entry.share.input + entry.share.output
                 if run.inputTokens != entry.share.input || run.outputTokens != entry.share.output || run.tokensUsed != total {
+                    journal.runs.append((run, run.inputTokens, run.outputTokens, run.tokensUsed))
                     task.tokensUsed = max(0, task.tokensUsed + total - run.tokensUsed)
                     run.inputTokens = entry.share.input
                     run.outputTokens = entry.share.output
@@ -246,12 +293,15 @@ enum CodexSessionUsageCorrectionService {
                 }
                 let markers = resetMarkers[entry.id] ?? []
                 if entry.isReset, markers.isEmpty {
-                    insertResetMarker(for: run, report: reports[entry.id], task: task, modelContext: modelContext)
+                    journal.insertedEvents.append(
+                        insertResetMarker(for: run, report: reports[entry.id], task: task, modelContext: modelContext)
+                    )
                     change.resetMarkersAdded += 1
                 } else if !entry.isReset, !markers.isEmpty {
                     // Left by a report measured against inflated legacy runs, it would start the
                     // session's next epoch at this run and count the runs before it twice.
-                    markers.forEach(modelContext.delete)
+                    markers.forEach { $0.type = supersededResetEventType }
+                    journal.retypedMarkers += markers
                     change.resetMarkersRemoved += markers.count
                 }
             }
@@ -260,9 +310,34 @@ enum CodexSessionUsageCorrectionService {
             }
             result.runsCorrected += change.runsCorrected
             changes.append(change)
+        }
+        guard !changes.isEmpty else { return result }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let payload = (try? encoder.encode(changes)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        let corrected = TaskEvent(task: task, type: correctedEventType, payload: payload)
+        modelContext.insert(corrected)
+        journal.insertedEvents.append(corrected)
+        // A history repair is not activity: inserting events stamps the task as just updated,
+        // which would float every corrected task to the top of recency-ordered lists.
+        task.updatedAt = journal.taskUpdatedAt
+        do {
+            // Run usage mirrors into the workspace JSON, so the corrected values are exported too.
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "codex_session_usage_correction"]
+            )
+        } catch {
+            journal.revert(task: task, modelContext: modelContext)
+            throw error
+        }
+        for change in changes {
             AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
                 "source": "codex_session_usage_correction",
-                "session_id_prefix": prefix,
+                "session_id_prefix": change.sessionIDPrefix,
                 "runs_corrected": String(change.runsCorrected),
                 "input_before": String(change.inputBefore),
                 "input_after": String(change.inputAfter),
@@ -272,23 +347,12 @@ enum CodexSessionUsageCorrectionService {
                 "reset_markers_removed": String(change.resetMarkersRemoved)
             ])
         }
-        guard !changes.isEmpty else { return result }
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        let payload = (try? encoder.encode(changes)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        modelContext.insert(TaskEvent(task: task, type: correctedEventType, payload: payload))
-        // Run usage mirrors into the workspace JSON, so the corrected values are exported too.
-        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
-            workspace: task.workspace,
-            modelContext: modelContext,
-            taskID: task.id,
-            auditFields: ["operation": "codex_session_usage_correction"]
-        )
         return result
     }
 
-    private static func insertResetMarker(for run: TaskRun, report: Report?, task: AgentTask, modelContext: ModelContext) {
+    private static func insertResetMarker(
+        for run: TaskRun, report: Report?, task: AgentTask, modelContext: ModelContext
+    ) -> TaskEvent {
         let payload: [String: String] = [
             "session_id_prefix": String((run.providerSessionId ?? "").prefix(8)),
             "reported_input": String(report?.input ?? run.inputTokens),
@@ -301,6 +365,7 @@ enum CodexSessionUsageCorrectionService {
         let marker = TaskEvent(task: task, type: ProviderSessionUsageEpoch.resetEventType, payload: json, run: run)
         marker.timestamp = run.completedAt ?? run.startedAt
         modelContext.insert(marker)
+        return marker
     }
 
     private static func logSkip(task: AgentTask, sessionPrefix: String, reason: String, runID: UUID?) {
@@ -319,7 +384,8 @@ enum CodexSessionUsageCorrectionService {
             "stage": stage,
             "tasks_corrected": String(outcome.tasksCorrected),
             "runs_corrected": String(outcome.runsCorrected),
-            "sessions_skipped": String(outcome.sessionsSkipped)
+            "sessions_skipped": String(outcome.sessionsSkipped),
+            "sessions_deferred": String(outcome.sessionsDeferred)
         ]
         if let error {
             fields["error_type"] = String(describing: type(of: error))

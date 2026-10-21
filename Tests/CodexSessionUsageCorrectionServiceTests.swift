@@ -62,6 +62,10 @@ struct CodexSessionUsageCorrectionServiceTests {
             task.events.filter { $0.type == ProviderSessionUsageEpoch.resetEventType }
         }
 
+        var supersededMarkers: [TaskEvent] {
+            task.events.filter { $0.type == Service.supersededResetEventType }
+        }
+
         var correctionEvents: [TaskEvent] {
             task.events.filter { $0.type == Service.correctedEventType }
         }
@@ -91,6 +95,8 @@ struct CodexSessionUsageCorrectionServiceTests {
             fixture.legacyRun("01a15ac1", at: Double(index) * 60, input: usage.0, output: usage.1)
         }
         #expect(fixture.task.tokensUsed == 20_915_000 + 134_444)
+        let lastActivity = Date(timeIntervalSince1970: 1_800_000_500)
+        fixture.task.updatedAt = lastActivity
 
         let outcome = await Service.correct(modelContext: fixture.context)
 
@@ -104,6 +110,8 @@ struct CodexSessionUsageCorrectionServiceTests {
         #expect(event.payload.contains("\"input_before\":20915000"))
         #expect(event.payload.contains("\"input_after\":7900000"))
         #expect(event.payload.contains("\"session_id_prefix\":\"01a15ac1\""))
+        // A history repair is not activity, so the task keeps its place in recency order.
+        #expect(fixture.task.updatedAt == lastActivity)
 
         // Idempotent: a second pass finds the session already in its corrected state.
         let second = await Service.correct(modelContext: fixture.context)
@@ -132,6 +140,8 @@ struct CodexSessionUsageCorrectionServiceTests {
         #expect((legacy + [transition]).map(\.inputTokens) == [22_903, 22_929, 24_733, 24_733])
         #expect((legacy + [transition]).map(\.outputTokens) == [5, 6, 6, 6])
         #expect(fixture.resetMarkers.isEmpty)
+        // Kept as evidence under a type the epoch accounting does not read.
+        #expect(fixture.supersededMarkers.map(\.run?.id) == [transition.id])
         #expect(fixture.task.tokensUsed == 95_298 + 23)
 
         let next = fixture.recordedRun("thread-1", at: 240, input: 120_000, output: 30)
@@ -240,10 +250,18 @@ struct CodexSessionUsageCorrectionServiceTests {
         let running = fixture.legacyRun("thread-1", at: 60, input: 2_000, output: 20)
         running.status = .running
 
-        let outcome = await Service.correct(modelContext: fixture.context)
+        let defaults = InMemoryDefaults()
+        let ran = await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "42", defaults: defaults)
 
-        #expect(outcome.sessionsSkipped == 1)
+        // Deferred, not skipped: the gate stays open so the next launch corrects it.
+        #expect(!ran)
+        #expect(defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) == nil)
         #expect(running.inputTokens == 2_000)
+
+        running.status = .completed
+        let retried = await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "42", defaults: defaults)
+        #expect(retried)
+        #expect(running.inputTokens == 1_000)
     }
 
     @Test("Other runtimes' sessions are not touched")
@@ -276,7 +294,7 @@ struct CodexSessionUsageCorrectionServiceTests {
         let defaults = InMemoryDefaults()
         fixture.legacyRun("thread-1", at: 0, input: 1_000, output: 10)
         let second = fixture.legacyRun("thread-1", at: 60, input: 2_500, output: 25)
-        defaults.set("42", forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild)
+        defaults.set("42:2", forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild)
 
         let skipped = await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "42", defaults: defaults)
         #expect(!skipped)
@@ -285,6 +303,25 @@ struct CodexSessionUsageCorrectionServiceTests {
         let ran = await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "43", defaults: defaults)
         #expect(ran)
         #expect(second.inputTokens == 1_500)
-        #expect(defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) == "43")
+        #expect(defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) == "43:2")
+    }
+
+    /// A workspace imported after the startup pass brings legacy runs in on the same build.
+    @Test("Runs arriving on the same build re-open the gate")
+    func importedRunsReopenTheGate() async throws {
+        let fixture = try makeFixture()
+        defer { withExtendedLifetime(fixture.container) {} }
+        let defaults = InMemoryDefaults()
+        fixture.legacyRun("thread-1", at: 0, input: 1_000, output: 10)
+        let first = await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "42", defaults: defaults)
+        #expect(first)
+
+        fixture.legacyRun("thread-2", at: 60, input: 500, output: 5)
+        let imported = fixture.legacyRun("thread-2", at: 120, input: 900, output: 9)
+        let rerun = await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "42", defaults: defaults)
+
+        #expect(rerun)
+        #expect(imported.inputTokens == 400)
+        #expect(defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) == "42:3")
     }
 }
