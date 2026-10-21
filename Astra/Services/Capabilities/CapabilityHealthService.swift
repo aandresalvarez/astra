@@ -42,7 +42,11 @@ enum CapabilityHealthService {
         statuses: [String: HealthStatus]
     ) -> [CapabilityHealthIssue] {
         package.prerequisites.compactMap { prerequisite in
-            guard let status = statuses[prerequisite.id] else { return nil }
+            guard let status = statuses[prerequisite.id] else {
+                return CapabilityHealthIssue(packageID: package.id, packageName: package.name,
+                    kind: .notChecked, resourceName: prerequisite.displayName,
+                    message: "\(prerequisite.displayName): Checking prerequisite…")
+            }
             return issue(for: prerequisite, status: status, package: package)
         }
     }
