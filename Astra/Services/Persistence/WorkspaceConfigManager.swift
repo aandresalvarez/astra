@@ -1280,7 +1280,7 @@ public enum WorkspaceConfigManager {
                 continue
             }
             if reused == nil { sanitizeCreated(connector, trust: capabilityTrust, report: &trustReport) }
-            if reused == nil, freshIDs, !retainedConnectorIDs.contains(cc.id ?? "") { connector.id = UUID() }
+            if reused == nil, freshIDs, !retainedConnectorIDs.contains(cc.id ?? "") { connector.id = ConnectorCredentialIdentity.isolatedImportID() }
             connector.workspace = (connector.isGlobal ? nil : workspace)
             if connector.isGlobal { activation.enableGlobalConnector(connector.id.uuidString) }
             if connector.modelContext == nil {
@@ -2965,7 +2965,7 @@ public enum WorkspaceConfigManager {
         for connectorSnapshot in snapshot.connectorSnapshots ?? [] {
             guard let id = connectorSnapshot.id, connectorsByID[id] == nil else { continue }
             guard let connector = makeConnector(from: connectorSnapshot, workspace: workspace) else { continue }
-            if freshIDs { connector.id = UUID() }
+            if freshIDs { connector.id = ConnectorCredentialIdentity.isolatedImportID() }
             modelContext.insert(connector)
             connectorsByID[connector.id.uuidString] = connector
             connectorsByID[id] = connector
