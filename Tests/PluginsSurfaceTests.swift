@@ -119,6 +119,8 @@ struct PluginsSurfaceTests {
             .copy(name: "Jira 2", workspaces: ["Ops", "Research"])
         #expect(delete.verb == "Delete")
         #expect(delete.message.contains("saved keys") && delete.message.contains("Ops, Research"))
+        #expect(delete.message.contains("Tasks already accepted may keep access until they finish or are cancelled"))
+        #expect(delete.message.contains("revoke the credentials with the provider"))
     }
 
     @Test("A plugin that still runs an earlier definition offers Update and needs action")

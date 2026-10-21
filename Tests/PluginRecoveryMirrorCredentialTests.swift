@@ -106,6 +106,36 @@ struct PluginRecoveryMirrorCredentialTests {
         #expect(cleaned == [cleanup.connectorID])
     }
 
+    @Test("A permission-paused request kept only in a recovery mirror retains its accepted credentials", arguments: [false, true])
+    func mirroredPermissionPauseOwnsCredentials(includeAccount: Bool) throws {
+        let env = try Fixture()
+        defer { env.removeFiles() }
+        let previous = WorkspaceRecoveryTrust.loadedMirrors
+        defer { WorkspaceRecoveryTrust.recordLoadedMirrors(previous) }
+        let (mirror, namespace, cleanup) = try env.makeRequestCopy(includeAccount: includeAccount, permissionPaused: true)
+        WorkspaceRecoveryTrust.recordLoadedMirrors([mirror.path])
+        try env.record(namespace, whole: true)
+        MirrorDeletes.reset()
+        env.resume()
+        #expect(MirrorDeletes.deleted.isEmpty)
+        #expect(try env.outbox.pending() == [namespace])
+        var cleaned: [UUID] = []
+        let perform: ([ConnectorKeychainCleanup], ConnectorCredentialCleanup.Ownership) -> Bool = { records, _ in
+            cleaned += records.map(\.connectorID); return true
+        }
+        if let cleanup {
+            #expect(!ConnectorCredentialCleanup.run([cleanup], modelContext: env.context, retained: [], perform: perform))
+            #expect(cleaned.isEmpty)
+        }
+        try FileManager.default.removeItem(at: mirror)
+        env.resume()
+        #expect(MirrorDeletes.deleted == ["\(namespace)"])
+        if let cleanup {
+            #expect(ConnectorCredentialCleanup.run([cleanup], modelContext: env.context, retained: [], perform: perform))
+            #expect(cleaned == [cleanup.connectorID])
+        }
+    }
+
     @Test("An unsaved folder edit cannot hide the stored mirror from cleanup")
     func savedPathStillCounts() throws {
         let env = try Fixture()
@@ -172,7 +202,7 @@ struct PluginRecoveryMirrorCredentialTests {
         /// A real exported mirror with an active immutable request, after
         /// its live activation/account have been removed. The newer store
         /// then forgets that request, leaving only the additional copy.
-        func makeRequestCopy(includeAccount: Bool) throws -> (URL, UUID, ConnectorKeychainCleanup?) {
+        func makeRequestCopy(includeAccount: Bool, permissionPaused: Bool = false) throws -> (URL, UUID, ConnectorKeychainCleanup?) {
             let activation = PluginActivation(pluginID: "mirror-plugin")
             context.insert(activation)
             activation.workspace = workspace
@@ -193,6 +223,25 @@ struct PluginRecoveryMirrorCredentialTests {
             context.insert(message)
             let request = TaskTurnRequest(task: task, messageEventID: message.id, sequence: 1, pluginDefinitions: [])
             context.insert(request)
+            if permissionPaused {
+                let run = TaskRun(task: task)
+                context.insert(run)
+                run.status = .failed
+                run.typedStopReason = .permissionApprovalRequired
+                request.runID = run.id
+                request.state = .failed
+                request.terminalAt = Date()
+                task.status = .pendingUser
+                let binding = TaskPermissionContinuation.capture(task: task, run: run, modelContext: context)
+                let accountID = account?.id ?? UUID()
+                let label = "connector:\(accountID.uuidString):API_TOKEN"
+                let approval = PermissionBroker.approvalPayload(providerID: task.resolvedRuntimeID,
+                    request: .connectorCredentials(connectorID: accountID, displayName: "Account", labels: [label]),
+                    reason: "Blocked pending approval", grants: [.credential(label: label)], requestID: "mirror-permission")
+                let payload = try #require(approval.encodedString())
+                TaskRuntimePermissionOpenRequestStore.recordOpenRequest(
+                    payload: TaskPermissionContinuation.attach(payload, continuation: binding), task: task)
+            }
             try context.save()
             let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:agent")
             let cleanup = account?.keychainCleanup

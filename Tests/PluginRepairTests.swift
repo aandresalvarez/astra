@@ -204,6 +204,9 @@ struct PluginRepairTests {
             ("gh api -X DELETE /repos/x", "gh"), ("gh auth login extra", "gh"), ("gh auth logout", "gh"),
             ("gcloud --account projects delete x", "gcloud"), ("gh -- auth login", "gh"), ("copilot", "copilot"),
             ("stanford-graph-mail delete-mailbox", "stanford-graph-mail"), ("aws s3 rm s3://bucket --recursive", "aws"),
+            // An untrusted repair cannot replace shared ADC without distinct consent.
+            ("gcloud auth application-default login", "gcloud"),
+            ("gcloud auth application-default login --project=my-project --no-launch-browser", "gcloud"),
             // An unknown CLI has no sign-in at all: these words mean what it likes.
             ("touch auth", "touch"), ("touch login", "touch"), ("sh sso", "sh"), ("stanford-graph-mail login", "stanford-graph-mail"),
             ("/tmp/x/touch auth", "/tmp/x/touch"), ("codex auth", "codex")
@@ -216,7 +219,7 @@ struct PluginRepairTests {
         for (command, binary) in [
             ("gh auth login", "gh"), ("gh auth refresh --hostname github.com", "gh"),
             ("gh auth login --hostname github.com --web", "gh"), ("gcloud auth login", "gcloud"),
-            ("gcloud auth application-default login", "gcloud"), ("/opt/sdk/bin/gcloud auth login --account=me@x.org", "/opt/sdk/bin/gcloud"),
+            ("/opt/sdk/bin/gcloud auth login --account=me@x.org", "/opt/sdk/bin/gcloud"),
             ("az login --tenant contoso", "az"), ("aws sso login --profile dev", "aws"), ("aws configure sso", "aws"),
             ("codex login", "codex"), ("opencode auth login", "opencode"), ("cursor-agent login", "cursor-agent")
         ] {
@@ -313,7 +316,6 @@ struct PluginRepairTests {
         for command in [
             "gh auth login --hostname github.com --git-protocol https --web", "gh auth login -h github.com -p ssh",
             "gh auth login --git-protocol=ssh", "gcloud auth login --no-launch-browser --account=me@x.org",
-            "gcloud auth application-default login --project=my-project --no-launch-browser",
             "gcloud auth login --configuration work --project my-project", "az login --tenant contoso.onmicrosoft.com --use-device-code",
             "aws sso login --sso-session corp --use-device-code", "aws configure sso --profile dev"
         ] {

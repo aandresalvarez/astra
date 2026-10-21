@@ -695,12 +695,14 @@ struct CLISessionExpiryTests {
             }
             let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message), "lost: \(command)")
             let repair = family.repair
-            #expect(repair.command?.hasSuffix("gcloud auth application-default login") == true, "\(command)")
+            #expect(repair.command == nil, "\(command)")
+            #expect(repair.verb == "Check")
+            #expect(stop.repairContext?.offersAction == false)
             #expect(repair.checkArguments == ["auth", "application-default", "print-access-token", "--format=none"])
             // Its exit status is the answer: it prints nothing.
             #expect(repair.checkExpect == nil)
             #expect(HealthCheckPolicy.isReadOnly(binary: try #require(repair.checkBinary), arguments: try #require(repair.checkArguments)))
-            #expect(RepairAction.isSafeTerminalCommand(try #require(repair.command), binary: repair.checkBinary, allowsInstaller: false))
+            // ADC setup remains manual; only its original bounded check is retained.
         }
         // The CLI's own account, or a command that also makes other Google
         // Cloud calls, keeps the ordinary sign-in.

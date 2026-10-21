@@ -200,7 +200,13 @@ struct HealthCheckPolicyTests {
                RuntimeRemediationCatalog.remediation(for: .claudeCode, claudeProvider: .vertex).auth.terminalCommand]
         for command in providerSignIns where !["copilot", "agy", "claude /login"].contains(command) {
             let words = command.split(separator: " ").map(String.init)
-            #expect(TerminalRepairPolicy.isSignIn(cli: words[0], arguments: Array(words.dropFirst())), "\(command)")
+            if command.hasPrefix("gcloud auth application-default login") {
+                // Provider Details owns its explicit ADC setup flow; source
+                // repairs cannot replace ADC in one click.
+                #expect(!TerminalRepairPolicy.isSignIn(cli: words[0], arguments: Array(words.dropFirst())))
+            } else {
+                #expect(TerminalRepairPolicy.isSignIn(cli: words[0], arguments: Array(words.dropFirst())), "\(command)")
+            }
         }
     }
 

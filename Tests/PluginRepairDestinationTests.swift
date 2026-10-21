@@ -9,7 +9,8 @@ import ASTRACore
 struct PluginRepairDestinationTests {
     @Test("Source sign-in cannot select an untrusted GitHub host or overwrite ADC", arguments: [
         "gh auth login --hostname attacker.example --web", "gh auth refresh -h github.example.com",
-        "gcloud auth login --update-adc"
+        "gcloud auth login --update-adc", "gcloud auth application-default login",
+        "gcloud auth application-default login --no-launch-browser"
     ])
     func sourceCannotSelectSensitiveDestination(command: String) throws {
         let binary = String(command.prefix { $0 != " " })

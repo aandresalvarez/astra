@@ -243,7 +243,7 @@ enum PluginsSurfacePresentation {
 enum PluginsSurfaceConfirmation: Equatable {
     /// Removing it from ASTRA turns it off in every workspace.
     case remove(packageID: String)
-    /// Deleting an account removes it, and its saved keys, everywhere.
+    /// Deleting an account removes it everywhere; accepted tasks may retain access.
     case deleteAccount(packageID: String, accountID: UUID)
 
     var packageID: String {
@@ -265,7 +265,7 @@ enum PluginsSurfaceConfirmation: Equatable {
             let reach = workspaces.isEmpty
                 ? ""
                 : " \(workspaces.count == 1 ? "It is used in" : "It is used in \(workspaces.count) workspaces:") \(workspaces.joined(separator: ", "))."
-            return ("Delete the account \(name) and its saved keys?\(reach)", "Delete")
+            return ("Delete the account \(name) and its saved keys?\(reach) Tasks already accepted may keep access until they finish or are cancelled. To revoke access, revoke the credentials with the provider.", "Delete")
         }
     }
 }

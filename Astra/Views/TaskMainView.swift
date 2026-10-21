@@ -470,7 +470,10 @@ struct TaskMainView: View {
         .sheet(isPresented: $showContextPreview) {
             let request = contextPreviewRequest
             if let manifest = contextPreviewManifest(for: request) {
-                PromptContextPreviewSheet(manifest: manifest)
+                PromptContextPreviewSheet(
+                    manifest: manifest,
+                    orientationDirectory: TaskWorkspaceAccess(task: task).codeWorkingDirectory
+                )
                     .frame(minWidth: 700, minHeight: 600)
             } else {
                 PromptContextPreviewUnavailableSheet(

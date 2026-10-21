@@ -66,7 +66,17 @@ struct PluginCredentialMirrorReferences {
             }
             for task in listed.tasks ?? [] {
                 guard result.requests.includeSkillSnapshots(task.skillSnapshots ?? []) else { return nil }
-                for request in task.turnRequests ?? [] where !request.state.isTerminal {
+                let requests = task.turnRequests ?? []
+                let latestSequence = requests.map(\.sequence).max()
+                let status = task.status.flatMap(TaskStatus.init(rawValue:))
+                // Before importing a recoverable copy there is no saved
+                // request to query. Its latest failed turn can still own a
+                // permission continuation while the task awaits the person.
+                // Older/unknown task status is unproved, so retain it too.
+                let mayResume = task.isDone != true && (status == nil || status == .pendingUser)
+                for request in requests {
+                    let permissionCandidate = mayResume && request.state == .failed && request.sequence == latestSequence
+                    guard !request.state.isTerminal || permissionCandidate else { continue }
                     if let json = request.executionPolicySnapshotJSON,
                        !result.requests.includePolicyJSON(json, in: saved) { return nil }
                 }
@@ -91,6 +101,8 @@ struct PluginCredentialMirrorReferences {
             let environmentKeys: [String]?
         }
         struct Task: Decodable {
+            let status: String?
+            let isDone: Bool?
             let skillSnapshots: [SkillSnapshotConfig]?
             let turnRequests: [TaskTurnRequestSnapshot]?
         }

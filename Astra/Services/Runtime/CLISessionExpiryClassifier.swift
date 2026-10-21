@@ -175,8 +175,8 @@ enum CLISessionExpiryClassifier {
     /// Application Default Credentials are a separate sign-in from the CLI's
     /// own account: `gcloud auth application-default login` writes them, and
     /// a healthy `gcloud auth login` says nothing about them. So a failed
-    /// `gcloud auth application-default print-access-token` signs in to and
-    /// checks ADC. The check is that same command with `--format=none`: it
+    /// `gcloud auth application-default print-access-token` keeps ADC setup
+    /// manual and retains its separate check. The check is that same command with `--format=none`: it
     /// refreshes the credential and exits non-zero when it cannot, and
     /// prints nothing, so no token reaches ASTRA. Its exit status alone is
     /// the result (no semantic test): the command returns a credentials
@@ -188,6 +188,7 @@ enum CLISessionExpiryClassifier {
         checkBinary: "gcloud",
         checkArguments: ["auth", "application-default", "print-access-token", "--format=none"],
         patterns: googleCloud.patterns + ["please run:\n\n  $ gcloud auth application-default login"],
+        offersSignIn: false,
         readsApplicationDefault: true
     )
 
@@ -709,7 +710,7 @@ enum CLISessionExpiryClassifier {
     /// sets it becomes the check-only guidance about that file: the sign-in
     /// would write a file that run never reads.
     static func checkingCredentialFile(_ repair: RepairAction) -> RepairAction {
-        guard repair.checkArguments == googleCloudApplicationDefault.checkArguments, repair.command != nil,
+        guard repair.checkArguments == googleCloudApplicationDefault.checkArguments,
               let file = repair.checkEnvironment?["GOOGLE_APPLICATION_CREDENTIALS"], !file.isEmpty,
               let binary = repair.checkBinary
         else { return repair }
