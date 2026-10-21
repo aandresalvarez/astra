@@ -288,7 +288,12 @@ enum PluginUpdateService {
             guard let workspace = activation.workspace, admittedWorkspaces.insert(workspace.id).inserted else { continue }
             try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
         }
-        let credentialPreparation = PluginUpdateSkillCredentials(modelContext: modelContext, persistence: secrets ?? SkillSecretSeam.required)
+        let persistence = secrets ?? SkillSecretSeam.required
+        if mode == .release {
+            try preflightPendingSecretCleanup(activations: activations, packagesByID: packagesByID,
+                modelContext: modelContext, persistence: persistence, approvalRecords: approvalRecords)
+        }
+        let credentialPreparation = PluginUpdateSkillCredentials(modelContext: modelContext, persistence: persistence)
         let accountPreparation = PluginUpdateAccountCredentials(modelContext: modelContext)
         var total = Reconciliation()
         var changedWorkspaces: [Workspace] = []
@@ -368,8 +373,10 @@ enum PluginUpdateService {
             accountPreparation.completed()
         } catch {
             guard !PluginOperationProblem.preventsRollback(error) else { throw error }
-            modelContext.rollback()
-            restore()
+            if modelContext.hasChanges {
+                modelContext.rollback()
+                restore()
+            }
             // A copy the Keychain can't take back is reported ahead of the
             // failure: the successor would keep a value Update reads as its own.
             let legacyCopies = total.copied.filter { $0.account != nil || !credentialPreparation.owns($0.skillID) }
@@ -385,6 +392,29 @@ enum PluginUpdateService {
             throw error
         }
         return changed
+    }
+
+    /// Cleanup debt is an admission prerequisite, not a partially applied
+    /// Update. A refusal must leave the context and its relationship graph
+    /// untouched, before credential staging or rollback snapshots are prepared.
+    private static func preflightPendingSecretCleanup(
+        activations: [PluginActivation], packagesByID: [String: PluginPackage],
+        modelContext: ModelContext, persistence: any SkillSecretPersisting.Type,
+        approvalRecords: [CapabilityApprovalRecord]
+    ) throws {
+        for activation in activations where !activation.isDeleted {
+            guard let workspace = activation.workspace,
+                  let package = packagesByID[activation.pluginID],
+                  !awaitsReview(package, in: workspace, records: approvalRecords),
+                  needsReconcile(activation, to: package) || !PluginTemplateSync.isInSync(package, in: workspace)
+            else { continue }
+            let unsettled = PluginSecretCleanupOutbox.settleRedeclared(
+                unrecordedSecrets(of: activation, in: package), modelContext: modelContext
+            ) { persistence.deleteSecret(key: $0.key, skillID: $0.skillID) }
+            guard unsettled.isEmpty else {
+                throw UpdateError.secretCleanupPending(key: Set(unsettled.map(\.key)).sorted().joined(separator: ", "))
+            }
+        }
     }
 
     /// What reconciling may change in `workspaces`, as a closure that puts
