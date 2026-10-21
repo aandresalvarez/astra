@@ -88,13 +88,14 @@ enum CapabilityHealthService {
                 message: "\(prerequisite.displayName): authorization required. \(detail). Open Manage Capabilities and choose Repair access."
             )
         case .unresponsive(let detail):
-            let hint = prerequisite.authHint ?? prerequisite.installHint
+            // The probe itself failed to run, so the fix is the install, not a
+            // login: signing in cannot repair a `--version` that does not answer.
             return CapabilityHealthIssue(
                 packageID: package.id,
                 packageName: package.name,
                 kind: .unresponsive,
                 resourceName: prerequisite.displayName,
-                message: "\(prerequisite.displayName): did not respond. \(detail). \(hint)"
+                message: "\(prerequisite.displayName): did not respond. \(detail). \(prerequisite.installHint)"
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             )
         }

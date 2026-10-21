@@ -42,6 +42,37 @@ struct CapabilityHealthServiceTests {
         #expect(issues.first?.message.contains("Run `example-cli auth login`.") == true)
     }
 
+    @Test("a probe that fails to run points at the install, not the login")
+    func unresponsivePrerequisiteUsesInstallHintNotAuthHint() {
+        let prerequisite = CommonCLIPrerequisites.gcloud
+        let package = PluginPackage(
+            id: "gcloud-workflow",
+            name: "Google Cloud",
+            icon: "cloud",
+            description: "Google Cloud workflow",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            prerequisites: [prerequisite],
+            governance: .builtInApproved()
+        )
+
+        let issues = CapabilityHealthService.prerequisiteIssues(
+            for: package,
+            statuses: [prerequisite.id: .unresponsive(detail: "exit 1: ERROR: python not found")]
+        )
+
+        #expect(issues.map(\.kind) == [.unresponsive])
+        #expect(issues.first?.message ==
+            "Google Cloud CLI: did not respond. exit 1: ERROR: python not found. Install via Homebrew: `brew install --cask google-cloud-sdk`")
+        #expect(issues.first?.message.contains("gcloud auth login") == false)
+    }
+
     @Test("healthy prerequisites do not create health issues")
     func healthyPrerequisitesDoNotCreateHealthIssues() {
         let prerequisite = CommonCLIPrerequisites.githubAuth

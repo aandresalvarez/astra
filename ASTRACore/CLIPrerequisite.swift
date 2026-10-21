@@ -57,6 +57,13 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
     /// `nil` = no specific fix beyond install.
     public var authHint: String?
 
+    /// Probe budget for a CLI with a slow cold start. When set, the liveness
+    /// probe may run this long, and a probe that still gets no answer leaves
+    /// the prerequisite usable but unverified instead of failing it: silence
+    /// from a slow CLI is not evidence that it is broken or signed out.
+    /// `nil` keeps the checker's short default, where no answer is a failure.
+    public var slowStartTimeout: TimeInterval?
+
     public init(
         binary: String,
         livenessArgs: [String] = ["--version"],
@@ -66,7 +73,8 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
         purpose: String,
         installURL: URL? = nil,
         installHint: String = "",
-        authHint: String? = nil
+        authHint: String? = nil,
+        slowStartTimeout: TimeInterval? = nil
     ) {
         self.binary = binary
         self.livenessArgs = livenessArgs
@@ -77,6 +85,7 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
         self.installURL = installURL
         self.installHint = installHint
         self.authHint = authHint
+        self.slowStartTimeout = slowStartTimeout
     }
 }
 
@@ -170,6 +179,11 @@ public enum CommonCLIPrerequisites {
         authHint: "Run `gh auth login`."
     )
 
+    /// gcloud starts a Python runtime, so its first call after a while can
+    /// take 10 s or more even when it is installed and signed in (a cold
+    /// `gcloud --version` measured 12 s; warm calls take about 1 s).
+    public static let gcloudSlowStartTimeout: TimeInterval = 20
+
     public static let gcloud = CLIPrerequisite(
         binary: "gcloud",
         livenessArgs: ["--version"],
@@ -178,7 +192,8 @@ public enum CommonCLIPrerequisites {
         purpose: "Invokes GCP APIs for the Google Cloud skill.",
         installURL: URL(string: "https://cloud.google.com/sdk/docs/install"),
         installHint: "Install via Homebrew: `brew install --cask google-cloud-sdk`",
-        authHint: "Run `gcloud auth login` to sign in."
+        authHint: "Run `gcloud auth login` to sign in.",
+        slowStartTimeout: gcloudSlowStartTimeout
     )
 
     /// Second spec for the auth state — separate entry so the catalog
@@ -192,7 +207,8 @@ public enum CommonCLIPrerequisites {
         purpose: "At least one active account is required for API calls.",
         installURL: nil,
         installHint: "",
-        authHint: "Run `gcloud auth login` to sign in."
+        authHint: "Run `gcloud auth login` to sign in.",
+        slowStartTimeout: gcloudSlowStartTimeout
     )
 
     public static let docker = CLIPrerequisite(

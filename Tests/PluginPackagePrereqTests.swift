@@ -122,6 +122,20 @@ struct PluginPackagePrereqTests {
         #expect(gcp?.prerequisites.last?.semantic == .stdoutNonEmpty)
     }
 
+    /// The app launches from the bundled JSON, not the in-code fallback, so the
+    /// slow-start budget only reaches a launch if the JSON carries it too.
+    @Test("Bundled and fallback Google Cloud prereqs both carry the slow-start budget")
+    func builtInGCloudPrereqsCarrySlowStartBudget() throws {
+        let expected = [CommonCLIPrerequisites.gcloud, CommonCLIPrerequisites.gcloudAuth]
+        #expect(expected.allSatisfy {
+            $0.slowStartTimeout == CommonCLIPrerequisites.gcloudSlowStartTimeout
+        })
+        let bundled = try #require(ApprovedCapabilityBundle.packages().first { $0.id == "gcloud-workflow" })
+        let fallback = try #require(PluginCatalog.fallbackBuiltInPackages.first { $0.id == "gcloud-workflow" })
+        #expect(bundled.prerequisites == expected)
+        #expect(fallback.prerequisites == expected)
+    }
+
     @Test("Built-in Google Drive browser package exposes adapter only")
     func builtInGoogleDriveBrowserHasAdapter() {
         let drive = PluginCatalog.builtInPackages.first { $0.id == "google-drive-browser" }

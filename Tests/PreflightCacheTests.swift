@@ -135,6 +135,31 @@ struct PreflightCacheTests {
         }
         #expect(detail.contains("not logged in"))
     }
+
+    /// The cache turns an auth probe that fails into "needs login". A
+    /// slow-start auth probe that only got no answer must not take that path:
+    /// it blocked launches right after the user had run `gcloud auth login`.
+    @Test("slow-start auth probe with no answer stays usable, not unauthenticated")
+    func slowStartAuthTimeoutIsNotClassifiedAsUnauthenticated() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/usr/bin/env which gcloud",
+            result: RunResult(outcome: .exited(code: 0), stdout: "/opt/homebrew/bin/gcloud\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/homebrew/bin/gcloud auth list --format=value(account)",
+            result: RunResult(outcome: .timedOut, stdout: "", stderr: "")
+        )
+        let cache = PreflightCache(checker: EnvironmentHealthChecker(runner: runner))
+
+        let status = await cache.status(for: CommonCLIPrerequisites.gcloudAuth)
+
+        guard case .unverified = status else {
+            Issue.record("Expected unverified, got \(status)")
+            return
+        }
+        #expect(status.isUsable)
+    }
 }
 
 // MARK: - Clock stub
