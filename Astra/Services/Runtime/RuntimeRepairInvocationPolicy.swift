@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 /// Admission for executable authentication repair, not a shell interpreter.
 /// The legacy classifier may explain compound failures, but only a bounded
@@ -20,6 +21,7 @@ enum RuntimeRepairInvocationPolicy {
         var words = segment.words
         guard dropAssignments(&words) else { return false }
         if let executable = words.first, (executable as NSString).lastPathComponent == "env" {
+            guard TrustedExecutablePath.isTrustedDeclaration(executable) else { return false }
             words.removeFirst()
             while let option = words.first, option.hasPrefix("-") {
                 words.removeFirst()
@@ -38,7 +40,8 @@ enum RuntimeRepairInvocationPolicy {
             }
             guard dropAssignments(&words) else { return false }
         }
-        guard let executable = words.first else { return false }
+        guard let executable = words.first,
+              TrustedExecutablePath.isTrustedDeclaration(executable) else { return false }
         return commands.contains((executable as NSString).lastPathComponent)
     }
 

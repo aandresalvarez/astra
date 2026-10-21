@@ -334,6 +334,9 @@ struct PluginsSurfaceView: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .tint(Stanford.lagunita)
+                    if let message = repairs.statusText(for: repair, owner: "\(package.id)/\(component.id)") {
+                        Text(message).font(Stanford.caption(11)).foregroundStyle(.secondary)
+                    }
                 }
             } else if let connector, packageState?.inactiveSharedConnectors.contains(where: { $0.id == connector.id }) == true {
                 // A shared account that is off here: turning it on is the step.

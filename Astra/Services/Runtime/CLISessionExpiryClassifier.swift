@@ -587,8 +587,9 @@ enum CLISessionExpiryClassifier {
     /// `candidate` when it is an installed path (`TrustedExecutablePath`):
     /// the path comes from the agent's own command, and Resume runs it and
     /// Sign in opens it in Terminal, so one the agent could have just
-    /// written (`/tmp/x/gh`) is not carried; such a call is checked and
-    /// repaired by name on PATH.
+    /// written (`/tmp/x/gh`) is not carried. Invocation admission keeps
+    /// that explicit untrusted call in manual review instead of repairing
+    /// a different executable by name on PATH.
     private static func exactExecutable(_ candidate: String) -> String? {
         TrustedExecutablePath.installedPath(candidate)
     }

@@ -47,6 +47,17 @@ struct RuntimeRepairInvocationTests {
         #expect(stop.repairContext?.repair.checkArguments?.last == "github.com")
     }
 
+    @Test("An explicit untrusted executable never repairs a different CLI on ASTRA's PATH", arguments: [
+        "/tmp/plugin/gh api user", "./gh api user", "env /tmp/plugin/gh api user",
+        "/tmp/wrapper/env gh api user", "/usr/local/../tmp/gh api user"
+    ])
+    func untrustedExecutableIsManual(command: String) throws {
+        let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command))
+        #expect(stop.repairContext?.offersAction == false)
+        #expect(stop.repairContext?.repair.command == nil)
+        #expect(stop.repairContext?.repair.checkBinary == nil)
+    }
+
     @Test("Complex shell diagnostics offer manual review without an inferred executable check")
     func compoundInvocationIsManual() throws {
         let stop = try #require(CLISessionExpiryClassifier.stop(content: output,
