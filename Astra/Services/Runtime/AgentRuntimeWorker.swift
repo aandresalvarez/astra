@@ -859,7 +859,7 @@ final class AgentRuntimeWorker {
         }
         let launchExecutionPolicy = executionPolicy.applyingProviderRender(manifest.providerRender)
         let startTime = Date()
-        guard let publicationBeforeGitStatus = TaskGitPublicationWorkspaceBaselineService.capture(
+        guard let publicationBeforeGitStatus = await TaskGitPublicationWorkspaceBaselineService.capture(
             task: task,
             run: run,
             workspacePath: executionPath,
@@ -870,11 +870,14 @@ final class AgentRuntimeWorker {
         let beforeGitStatus = runtimeAdapter.recordsInferredFileChanges
             ? publicationBeforeGitStatus
             : nil
-        let beforeDirtyFingerprints = beforeGitStatus.map {
-            AgentFileChangeDetector.fileFingerprints(
-                for: AgentFileChangeDetector.absolutePaths(fromGitStatus: $0, workspacePath: executionPath),
-                workspacePath: executionPath
-            )
+        var beforeDirtyFingerprints: [String: AgentFileChangeDetector.FileFingerprint]?
+        if let beforeGitStatus {
+            beforeDirtyFingerprints = await BlockingWork.run {
+                AgentFileChangeDetector.fileFingerprints(
+                    for: AgentFileChangeDetector.absolutePaths(fromGitStatus: beforeGitStatus, workspacePath: executionPath),
+                    workspacePath: executionPath
+                )
+            }
         }
         let taskFolderBeforeRun = await TaskFolderRunSnapshot.capture(for: task)
         await TaskFolderRunSnapshot.persistBaseline(taskFolderBeforeRun, task: task, run: run)
@@ -1108,7 +1111,7 @@ final class AgentRuntimeWorker {
         let streamSnapshot = streamTelemetry?.snapshot()
 
         if let beforeGitStatus, let beforeDirtyFingerprints {
-            AgentFileChangeDetector.appendInferredFileChanges(
+            await AgentFileChangeDetector.appendInferredFileChanges(
                 to: run,
                 task: task,
                 modelContext: modelContext,

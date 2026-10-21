@@ -11,22 +11,27 @@ enum AgentFileChangeDetector {
         let checksum: UInt64?
     }
 
-    static func gitStatusSnapshot(workspacePath: String) -> Set<String> {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", "-C", workspacePath, "status", "--porcelain"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return []
+    /// `git status --porcelain`, waited on by a dispatch worker: on a large
+    /// checkout it takes seconds, which the main actor used to spend frozen
+    /// right after a send.
+    static func gitStatusSnapshot(workspacePath: String) async -> Set<String> {
+        await BlockingWork.run {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["git", "-C", workspacePath, "status", "--porcelain"]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                return []
+            }
+            guard process.terminationStatus == 0 else { return [] }
+            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            return Set(output.split(separator: "\n").map(String.init))
         }
-        guard process.terminationStatus == 0 else { return [] }
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return Set(output.split(separator: "\n").map(String.init))
     }
 
     static func publicationWorkspaceBaseline(
@@ -41,6 +46,9 @@ enum AgentFileChangeDetector {
         return TaskGitPublicationWorkspaceBaseline(runID: runID, dirtyPaths: paths)
     }
 
+    /// Off the main actor: `git status`, fingerprints and the fallback scan
+    /// all block on a child process or the filesystem, and the run's changed
+    /// paths are the only thing the main actor needs from them.
     @MainActor
     static func appendInferredFileChanges(
         to run: TaskRun,
@@ -50,10 +58,29 @@ enum AgentFileChangeDetector {
         beforeGitStatus: Set<String>,
         beforeDirtyFingerprints: [String: FileFingerprint],
         runStart: Date
-    ) {
+    ) async {
+        let afterGitStatus = await gitStatusSnapshot(workspacePath: workspacePath)
+        let paths = await BlockingWork.run {
+            inferredChangedPaths(
+                workspacePath: workspacePath,
+                beforeGitStatus: beforeGitStatus,
+                afterGitStatus: afterGitStatus,
+                beforeDirtyFingerprints: beforeDirtyFingerprints,
+                runStart: runStart
+            )
+        }
+        recordInferredFileChanges(paths, to: run, task: task, modelContext: modelContext, workspacePath: workspacePath)
+    }
+
+    static func inferredChangedPaths(
+        workspacePath: String,
+        beforeGitStatus: Set<String>,
+        afterGitStatus: Set<String>,
+        beforeDirtyFingerprints: [String: FileFingerprint],
+        runStart: Date
+    ) -> Set<String> {
         var paths = Set<String>()
         let hostFileAccess = HostFileAccessBroker()
-        let afterGitStatus = gitStatusSnapshot(workspacePath: workspacePath)
         if !afterGitStatus.isEmpty || !beforeGitStatus.isEmpty {
             for line in afterGitStatus.subtracting(beforeGitStatus) {
                 if let path = absolutePath(fromGitStatusLine: line, workspacePath: workspacePath) {
@@ -88,7 +115,17 @@ enum AgentFileChangeDetector {
                 hostFileAccess: hostFileAccess
             ))
         }
+        return paths
+    }
 
+    @MainActor
+    private static func recordInferredFileChanges(
+        _ paths: Set<String>,
+        to run: TaskRun,
+        task: AgentTask,
+        modelContext: ModelContext,
+        workspacePath: String
+    ) {
         let userPaths = paths.filter { !isIgnoredRuntimePath($0, workspacePath: workspacePath) }
         let existing = Set(run.fileChanges.map(\.path))
         // Publication ownership is derived from these durable run changes.

@@ -13,10 +13,12 @@ enum TaskGitPublicationWorkspaceBaselineService {
         run: TaskRun,
         workspacePath: String,
         modelContext: ModelContext
-    ) -> Set<String>? {
+    ) async -> Set<String>? {
         // Every provider can emit structured file changes, so this boundary is
         // deliberately independent of runtime-specific inference support.
-        let gitStatus = AgentFileChangeDetector.gitStatusSnapshot(workspacePath: workspacePath)
+        // `git status` waits on a child process: seconds on a large checkout,
+        // which used to be seconds of frozen UI right after a send.
+        let gitStatus = await AgentFileChangeDetector.gitStatusSnapshot(workspacePath: workspacePath)
         guard let baseline = AgentFileChangeDetector.publicationWorkspaceBaseline(
             runID: run.id,
             workspacePath: workspacePath,

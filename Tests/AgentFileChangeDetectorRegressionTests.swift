@@ -8,7 +8,7 @@ import ASTRAModels
 @MainActor
 struct AgentFileChangeDetectorRegressionTests {
     @Test("Pre-run dirty paths become a durable publication exclusion baseline")
-    func preRunDirtyPathsBecomePublicationBaseline() throws {
+    func preRunDirtyPathsBecomePublicationBaseline() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-file-baseline-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -21,7 +21,7 @@ struct AgentFileChangeDetectorRegressionTests {
         let baseline = try #require(AgentFileChangeDetector.publicationWorkspaceBaseline(
             runID: runID,
             workspacePath: root.path,
-            beforeGitStatus: AgentFileChangeDetector.gitStatusSnapshot(workspacePath: root.path)
+            beforeGitStatus: await AgentFileChangeDetector.gitStatusSnapshot(workspacePath: root.path)
         ))
 
         #expect(baseline.runID == runID)
@@ -29,7 +29,7 @@ struct AgentFileChangeDetectorRegressionTests {
     }
 
     @Test("Git-backed runs retain every changed path beyond the old summary cap")
-    func gitChangeOwnershipIsNotCapped() throws {
+    func gitChangeOwnershipIsNotCapped() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-file-ownership-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -55,7 +55,7 @@ struct AgentFileChangeDetectorRegressionTests {
             return url.path
         })
 
-        AgentFileChangeDetector.appendInferredFileChanges(
+        await AgentFileChangeDetector.appendInferredFileChanges(
             to: run,
             task: task,
             modelContext: context,
