@@ -49,6 +49,10 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// the prompt and the restricted-mode Write bootstrap read it so the
     /// provider is not told or authorized to rewrite a delivered file.
     var followsUpDeliveredRequest = false
+    /// The SSH route the launch resolved once (`RemoteWorkspaceSSHRoute`).
+    /// Process local: the prompt, the broker environment, and the run
+    /// resource manifest all read it from here instead of deciding again.
+    var remoteSSHRoute: RemoteWorkspaceSSHRoute?
 
     static let `default` = AgentRuntimeExecutionPolicy()
 
@@ -98,6 +102,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         // Write bootstrap; dropping it here re-granted Write.
         rendered.copilotCapabilityResolution = copilotCapabilityResolution
         rendered.followsUpDeliveredRequest = followsUpDeliveredRequest
+        rendered.remoteSSHRoute = remoteSSHRoute
         return rendered
     }
 
@@ -110,6 +115,12 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     func withRuntimeCapabilityProfile(_ profile: AgentRuntimeCapabilityProfile?) -> AgentRuntimeExecutionPolicy {
         var copy = self
         copy.runtimeCapabilityProfile = profile
+        return copy
+    }
+
+    func withRemoteSSHRoute(_ route: RemoteWorkspaceSSHRoute?) -> AgentRuntimeExecutionPolicy {
+        var copy = self
+        copy.remoteSSHRoute = route
         return copy
     }
 
