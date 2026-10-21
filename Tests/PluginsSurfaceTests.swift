@@ -11,6 +11,24 @@ import ASTRAModels
 @Suite("Plugins surface")
 @MainActor
 struct PluginsSurfaceTests {
+    @Test("Account binding actions wait for the installed definition to be accepted")
+    func accountActionsWaitForUpdate() throws {
+        let env = try PluginOperationsTests.Environment()
+        let package = PluginOperationsTests.package(version: "1.0.0")
+        try env.install(package)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
+        let display = PluginsSurfaceRow(id: package.id, name: package.name, icon: package.icon, subtitle: "Ready", pendingSteps: 0,
+            isEnabled: true, isRemovable: true, verb: nil)
+        #expect(PluginRow(package: package, activation: activation, display: display).canChangeAccountBindings)
+        var changed = package
+        changed.connectors[0].id = "renamed"
+        changed.connectors[0].replaces = [CapabilityResourceOrigin.componentID(for: package.connectors[0])]
+        #expect(!PluginRow(package: changed, activation: activation, display: display).canChangeAccountBindings)
+        #expect(!PluginRow(package: package, activation: nil, display: display).canChangeAccountBindings)
+        WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
+        #expect(!PluginRow(package: package, activation: activation, display: display).canChangeAccountBindings)
+    }
+
     @Test("Account-owned environment fields are edited on the account, never as ineffective skill overrides")
     func accountOwnedSettingsStayOnAccounts() throws {
         let candidate = PluginOperationsTests.package(version: "1.0.0")

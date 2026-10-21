@@ -376,6 +376,7 @@ enum PluginUpdateService {
             if modelContext.hasChanges {
                 modelContext.rollback()
                 restore()
+                PluginSavedStateRollback.finish(in: modelContext)
             }
             // A copy the Keychain can't take back is reported ahead of the
             // failure: the successor would keep a value Update reads as its own.

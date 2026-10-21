@@ -316,8 +316,14 @@ extension WorkspaceConfigManager {
                 // The workspace's own mirror may name a shared row it did not
                 // export (an override for a plugin that is off): it is still
                 // in this store under the same ID.
-                let row = skillsByID[fileRowID]?.id ?? toolsByID[fileRowID]?.id
-                    ?? (declared == nil ? UUID(uuidString: fileRowID) : nil)
+                let row: UUID?
+                if declared == nil {
+                    row = skillsByID[fileRowID]?.id ?? toolsByID[fileRowID]?.id ?? UUID(uuidString: fileRowID)
+                } else if componentID.hasPrefix("skill:"), let skill = skillsByID[fileRowID] {
+                    row = skill.id
+                } else if componentID.hasPrefix("tool:"), let tool = toolsByID[fileRowID] {
+                    row = tool.id
+                } else { continue }
                 WorkspaceCapabilityActivation.setOverridden(true, componentID: componentID, rowID: row, on: activation)
             }
             for account in ref.accounts ?? [] where allowed(account.componentID) {

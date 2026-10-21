@@ -401,7 +401,7 @@ struct CapabilityCatalogActionService {
         workspace: Workspace,
         modelContext: ModelContext
     ) throws {
-        try PluginOperations.makeDefault(account, componentID: componentID, pluginID: package.id, in: workspace, modelContext: modelContext)
+        try PluginOperations.makeDefault(account, componentID: componentID, package: package, in: workspace, modelContext: modelContext)
     }
 
     /// Deletes an account in every workspace, with its credentials.

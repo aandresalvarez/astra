@@ -297,11 +297,14 @@ struct CapabilityInstaller {
                 stagedGeneration = prepared
                 WorkspaceCapabilityActivation.setCredentialNamespaceSeed(prepared.generation, on: activation)
             }
-            for retained in retainedAccounts
-            where componentIDs.contains(retained.componentID) && activation.accounts(forComponent: retained.componentID).isEmpty {
-                CapabilityResourceOrigin.stamp(retained.account, package: package, componentID: retained.componentID)
+            let retainedRenames = PluginUpdateService.renames(in: package)
+            for retained in retainedAccounts {
+                let componentID = retainedRenames[retained.componentID] ?? retained.componentID
+                guard componentIDs.contains(componentID),
+                      !activation.accounts(forComponent: componentID).contains(where: { $0.id == retained.account.id }) else { continue }
+                CapabilityResourceOrigin.stamp(retained.account, package: package, componentID: componentID)
                 WorkspaceCapabilityActivation.bind(
-                    retained.account, toComponent: retained.componentID, of: activation, isDefault: retained.isDefault
+                    retained.account, toComponent: componentID, of: activation, isDefault: retained.isDefault
                 )
             }
             for (other, _) in pendingSnapshots {
@@ -346,8 +349,7 @@ struct CapabilityInstaller {
 
             // A skill setting an account carries as a plain setting, unless a
             // connector of this plugin stores that key as a credential.
-            let movedSettings = Set(package.connectors.flatMap { PluginConnectorFieldTrust.settingsStoredAsCredentials(of: $0, in: package) })
-            let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys).filter { !movedSettings.contains($0) }
+            let packageEnvironmentKeys = PluginAccountFieldLayout.environmentKeys(in: package)
 
             for pluginSkill in package.skills {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
@@ -401,10 +403,8 @@ struct CapabilityInstaller {
                     credentialInputs: PluginSetupInputs.view(credentialInputs, component: componentID),
                     configInputs: ownConfigInputs
                 )
-                let configKeys = connectorConfigKeys(
-                    hints: fields.connector.configHints,
-                    extraConfigKeys: packageEnvironmentKeys,
-                    configInputs: edits.config
+                let configKeys = PluginAccountFieldLayout.configurationKeys(
+                    hints: fields.connector.configHints, environmentKeys: packageEnvironmentKeys
                 )
                 let boundURL = bound.map(\.baseURL).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
                 let baseURL = edits.baseURL ?? boundURL ?? pluginConnector.baseURL
@@ -868,12 +868,11 @@ struct CapabilityInstaller {
         where !retainedKeys.contains(key) { retainedKeys.append(key) }
         connector.credentialKeys = retainedKeys
         connector.credentialValues = Array(repeating: "", count: connector.credentialKeys.count)
-        connector.configKeys = connectorConfigKeys(
-            hints: pluginConnector.configHints,
-            extraConfigKeys: extraConfigKeys,
-            configInputs: configInputs
+        connector.configKeys = PluginAccountFieldLayout.configurationKeys(
+            hints: pluginConnector.configHints, environmentKeys: extraConfigKeys
         )
-        connector.configValues = connector.configKeys.map { configInputs[$0] ?? "" }
+        let defaults = PluginAccountFieldLayout.defaults(in: package)
+        connector.configValues = connector.configKeys.map { configInputs[$0] ?? defaults[$0] ?? "" }
         for (key, value) in unsettled {
             if let index = connector.credentialKeys.firstIndex(where: { ConnectorCredentialKey.same($0, key) }) {
                 connector.credentialKeys.remove(at: index)
@@ -933,18 +932,6 @@ struct CapabilityInstaller {
                 throw InstallationError.credentialSaveFailed(packageID: packageID, key: hint.key)
             }
         }
-    }
-
-    private func connectorConfigKeys(
-        hints: [PluginConnector.ConfigHint],
-        extraConfigKeys: [String],
-        configInputs: [String: String]
-    ) -> [String] {
-        var keys = hints.filter { !$0.isAccountStructure }.map(\.key)
-        for key in extraConfigKeys where configInputs[key] != nil && !keys.contains(key) {
-            keys.append(key)
-        }
-        return keys
     }
 
     /// The fields a connector declares as its account's structure

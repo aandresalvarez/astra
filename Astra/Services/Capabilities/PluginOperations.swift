@@ -22,9 +22,11 @@ enum PluginOperations {
         case storeUnreadable
         case saveFailed
         case pendingEdits
+        case updateRequired
 
         var errorDescription: String? {
             switch self {
+            case .updateRequired: "Update the plugin before changing its accounts."
             case .notAdded: "Add the plugin to this workspace first."
             case .secretReadFailed(let key): "Couldn't read \(key) from the Keychain. Check credential-storage access before retrying."
             case .secretSaveFailed(let key): "Couldn't save \(key) to the Keychain."
@@ -127,8 +129,12 @@ enum PluginOperations {
         modelContext: ModelContext
     ) throws -> Connector {
         guard !modelContext.hasChanges else { throw OperationError.pendingEdits }
+        try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
         guard let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) else {
             throw OperationError.notAdded(pluginID: package.id)
+        }
+        guard package.connectors.contains(connector), !PluginRuntimeProjection.awaitsUpdate(activation, to: package) else {
+            throw OperationError.updateRequired
         }
         let componentID = CapabilityResourceOrigin.componentID(for: connector)
         let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
@@ -146,8 +152,10 @@ enum PluginOperations {
         let stored = PluginConnectorFieldTrust.asStored(connector, in: package)
         account.credentialKeys = stored.credentialHints.map(\.key)
         account.credentialValues = Array(repeating: "", count: account.credentialKeys.count)
-        account.configKeys = stored.configHints.map(\.key)
-        account.configValues = Array(repeating: "", count: account.configKeys.count)
+        account.configKeys = PluginAccountFieldLayout.configurationKeys(hints: stored.configHints,
+            environmentKeys: PluginAccountFieldLayout.environmentKeys(in: package))
+        let defaults = PluginAccountFieldLayout.defaults(in: package)
+        account.configValues = account.configKeys.map { defaults[$0] ?? "" }
         CapabilityResourceOrigin.stamp(account, package: package, componentID: componentID)
         modelContext.insert(account)
         account.workspace = workspace
@@ -161,18 +169,24 @@ enum PluginOperations {
     static func makeDefault(
         _ account: Connector,
         componentID: String,
-        pluginID: String,
+        package: PluginPackage,
         in workspace: Workspace,
         modelContext: ModelContext
     ) throws {
         guard !modelContext.hasChanges else { throw OperationError.pendingEdits }
-        guard let activation = WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) else {
-            throw OperationError.notAdded(pluginID: pluginID)
+        try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
+        guard let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) else {
+            throw OperationError.notAdded(pluginID: package.id)
+        }
+        guard !PluginRuntimeProjection.awaitsUpdate(activation, to: package) else { throw OperationError.updateRequired }
+        guard account.modelContext === modelContext, !account.isDeleted,
+              activation.bindings.contains(where: { !$0.isDeleted && $0.account?.id == account.id && $0.componentID == componentID }) else {
+            throw OperationError.workspaceChanged
         }
         let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: true)
         workspace.updatedAt = Date()
-        try save(workspace, modelContext: modelContext, restoring: snapshot, accounts: [account], pluginIDs: [pluginID], kind: .accountChange)
+        try save(workspace, modelContext: modelContext, restoring: snapshot, accounts: [account], pluginIDs: [package.id], kind: .accountChange)
     }
 
     /// Every workspace deleting `account` reaches, for the delete
@@ -247,6 +261,7 @@ enum PluginOperations {
         guard saved else {
             modelContext.rollback()
             snapshots.forEach { WorkspaceCapabilityActivation.restore($1, to: $0) }
+            PluginSavedStateRollback.finish(in: modelContext)
             throw OperationError.saveFailed
         }
     }
@@ -296,6 +311,7 @@ enum PluginOperations {
         case .notCommitted:
             modelContext.rollback()
             WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
+            PluginSavedStateRollback.finish(in: modelContext)
             throw OperationError.saveFailed
         }
     }
