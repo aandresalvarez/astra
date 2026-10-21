@@ -587,6 +587,16 @@ enum CapabilityPackageValidator {
                     "\(name) declares more than one field stored as \(storage).", component: name
                 ))
             }
+            // Endpoint and alias use the same setup-input dictionary. Each
+            // account value needs its own exact key, regardless of storage.
+            for key in PluginAccountFieldLayout.duplicateStructureKeys(in: connector.configHints) {
+                let name = displayName(connector.name, fallback: connector.serviceType)
+                issues.append(issue(
+                    .blocker, .invalidComponentIdentity, "Duplicate account field key",
+                    "\(name) declares \(key) for more than one account field; endpoint and name need separate keys.",
+                    component: name
+                ))
+            }
             // Credentials are stored under their canonical key: two that
             // differ only in case would be one Keychain item.
             let stored = connector.credentialHints.map(\.key)
