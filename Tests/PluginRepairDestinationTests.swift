@@ -30,7 +30,7 @@ struct PluginRepairDestinationTests {
     }
 
     @Test("A run-selected credential directory becomes manual setup without changing its read-only check", arguments: [
-        "CLOUDSDK_CONFIG", "GH_CONFIG_DIR", "XDG_CONFIG_HOME"
+        "CLOUDSDK_CONFIG", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME"
     ])
     func selectedDirectoryCannotReceiveLogin(key: String) {
         let environment = [key: "/tmp/workspace/credentials"]

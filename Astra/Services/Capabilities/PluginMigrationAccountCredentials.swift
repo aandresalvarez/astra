@@ -9,11 +9,13 @@ import ASTRAModels
 @MainActor
 final class PluginMigrationAccountCredentials {
     private let modelContext: ModelContext
+    private var originals: [UUID: PluginMigrationAccountSnapshot] = [:]
     private var prepared: [UUID: ConnectorCredentialGenerationTransaction] = [:]
 
     init(modelContext: ModelContext) { self.modelContext = modelContext }
 
     func prepare(_ account: Connector) throws {
+        if originals[account.id] == nil { originals[account.id] = PluginMigrationAccountSnapshot(account) }
         guard account.credentialNamespaceID == nil, !account.credentialKeys.isEmpty,
               prepared[account.id] == nil else { return }
         let transaction = try ConnectorCredentialGenerationTransaction.prepare(account: account, isNew: false,
@@ -24,5 +26,10 @@ final class PluginMigrationAccountCredentials {
     }
 
     func completed() { prepared.values.forEach { $0.completed() } }
-    func discard() { prepared.values.forEach { $0.discard() } }
+    func discard() {
+        // SwiftData rollback may leave changed scalar fields on an existing
+        // object. Restore provenance before deleting unpublished generations.
+        originals.values.forEach { $0.restore() }
+        prepared.values.forEach { $0.discard() }
+    }
 }

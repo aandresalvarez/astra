@@ -8,6 +8,19 @@ import ASTRACore
 @Suite("Plugin repair")
 @MainActor
 struct PluginRepairTests {
+    @Test("A hint-only missing executable offers manual guidance and a recheck")
+    func hintOnlyInstallRemainsActionable() throws {
+        let component = PluginComponent(kind: .setup, id: "missing", name: "Fixture server", setup: .init(
+            check: .init(kind: .exec, binary: "fixture-server", arguments: ["--version"]),
+            install: .init(kind: .url, hint: "Install the fixture server with your package manager.")
+        ))
+        let repair = try #require(RepairAction.from(component, needsInstall: true))
+        #expect(repair.command == nil && repair.url == nil)
+        #expect(repair.verb == "Check")
+        #expect(repair.detail.contains("Install the fixture server"))
+        #expect(repair.checkBinary == "fixture-server")
+    }
+
     @Test("Two passing checks in a row verify the repair, once")
     func twoPassesVerify() async {
         let checks = CheckScript([false, true, false, true, true])

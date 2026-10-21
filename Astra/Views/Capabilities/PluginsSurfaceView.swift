@@ -147,7 +147,7 @@ struct PluginsSurfaceView: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.statusError)
             }
-            PluginStateRecoverySection(onChanged: onCatalogChanged, onError: { errorMessage = $0 })
+            PluginStateRecoverySection(onChanged: { errorMessage = nil; onCatalogChanged() }, onError: { errorMessage = $0 })
             let model = surface
             let current = model.state
             ScrollViewReader { proxy in
@@ -300,7 +300,7 @@ struct PluginsSurfaceView: View {
                     onConfirm: { confirming = $0 },
                     onTurnOff: { disable(pluginRow.package) },
                     onUpdate: { update(pluginRow) },
-                    onChanged: { onCatalogChanged() },
+                    onChanged: { errorMessage = nil; onCatalogChanged() },
                     onError: { errorMessage = $0 }
                 )
                 .padding(.leading, 38)
@@ -558,7 +558,8 @@ struct PluginsSurfaceView: View {
         let reach: [String]? = account.map { account in
             (try? PluginOperations.workspacesUsing(account))?.map(\.name)
         } ?? []
-        let copy = confirmation.copy(name: account?.name ?? row.package.name, workspaces: reach ?? [])
+        let copy = PluginsSurfacePresentation.confirmationCopy(confirmation, account: account,
+            packageName: row.package.name, in: workspace, workspaces: reach ?? [])
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(reach == nil ? PluginOperations.OperationError.storeUnreadable.localizedDescription : copy.message)
                 .font(Stanford.caption(12))
