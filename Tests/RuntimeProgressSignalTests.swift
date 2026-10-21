@@ -108,6 +108,23 @@ struct RuntimeProgressClassificationTests {
         }
     }
 
+    @Test("A Codex patch landing counts as progress, with or without parsed paths")
+    func codexFileChangeIsActionableProgress() {
+        // The shapes codex-cli streams: paths under `changes[]`, a path on the
+        // item itself, and an item whose paths the parser cannot read.
+        let lines = [
+            #"{"type":"item.started","item":{"id":"item_6","type":"file_change","changes":[{"path":"/workspace/answer.md","kind":"add"}],"status":"in_progress"}}"#,
+            #"{"type":"item.completed","item":{"id":"item_6","type":"file_change","changes":[{"path":"/workspace/answer.md","kind":"add"}],"status":"completed"}}"#,
+            #"{"type":"item.completed","item":{"type":"file_change","path":"answer.md","kind":"modified"}}"#,
+            #"{"type":"item.completed","item":{"id":"item_7","type":"file_change","status":"completed"}}"#
+        ]
+        for line in lines {
+            let kinds = CodexCLIRuntime.parseEvents(line: line, parsesJSONLines: true)
+                .map(AgentRuntimeWorker.ProcessMonitor.progressKind(for:))
+            #expect(kinds.contains(.actionableProgress), "\(line) is a patch the model composed in silence")
+        }
+    }
+
     @Test("Genuinely contentless frames stay liveness")
     func contentlessFramesStayLiveness() {
         // The widening must not swallow the distinction it is built on: a frame
@@ -416,6 +433,29 @@ struct WatchdogEscalationTests {
 
         #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
         #expect(process.didTerminate == false)
+    }
+
+    /// Run 5642 (task E0F780F8): Codex went quiet for about two minutes per
+    /// `apply_patch` while the model composed it, so every patch opened a
+    /// breach, and the patch landing did not close it. The second patch's
+    /// silence stopped a run that had been writing files the whole time.
+    @Test("A Codex patch landing between breaches restores the extension budget")
+    func codexFileChangeRestoresExtensionBudget() {
+        let monitor = makeMonitor()
+        let process = ProgressSignalMockProcess()
+
+        _ = monitor.processEvent(.text(text: "I'll write the report."), process: process)
+        _ = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+        let patchLanded = #"{"type":"item.completed","item":{"id":"item_6","type":"file_change","changes":[{"path":"/workspace/report.md","kind":"add"}],"status":"completed"}}"#
+        for event in CodexCLIRuntime.parseEvents(line: patchLanded, parsesJSONLines: true) {
+            _ = monitor.processEvent(event, process: process)
+        }
+
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == false)
+        #expect(process.didTerminate == false)
+        // Still a watchdog: real silence after the patch is a stall.
+        #expect(monitor.evaluateWatchdogTimeoutForTesting(process: process) == true)
+        #expect(monitor.runtimeStopReason == "provider_semantic_progress_stalled")
     }
 
     @Test("An extension outranks the generic idle backstop while it is live")
