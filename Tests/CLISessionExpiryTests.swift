@@ -247,6 +247,36 @@ struct CLISessionExpiryTests {
         #expect(monitor.runtimeStopReason == nil)
     }
 
+    @Test("Every command-local HOME selector stays on the failed cloud store")
+    func cloudCommandLocalHome() throws {
+        for cli in ["gcloud projects list", "bq ls", "gsutil ls"] {
+            for (command, checksStore) in [("HOME=/tmp/team \(cli)", true), ("env HOME=/tmp/team \(cli)", true),
+                ("env HOME=/tmp/team sh -c '\(cli)'", false), ("export HOME=/tmp/team; \(cli)", false)] {
+                let family = try #require(CLISessionExpiryClassifier.family(content: gcloudReauth, command: command), "\(command)")
+                #expect(family.repair.checkSelectors == ["HOME": "/tmp/team"], "\(command)")
+                let context = try #require(CLISessionExpiryClassifier.stop(content: gcloudReauth, command: command)?.repairContext)
+                let restored = try #require(RuntimeRepairContext.decode(from: context.encoded()))
+                let action = restored.repair.checking(in: ["HOME": "/ambient", "PATH": "/usr/bin"])
+                if checksStore {
+                    #expect(action.checkBinary == "gcloud", "\(command)")
+                    #expect(action.checkEnvironment?["HOME"] == "/tmp/team", "\(command)")
+                } else {
+                    // Compound shell contexts remain deliberately manual:
+                    // no ambient check runs, even if the legacy family can explain it.
+                    #expect(action.checkBinary == nil, "\(command)")
+                    #expect(!restored.offersAction, "\(command)")
+                }
+                #expect(action.targetingCredentialStore(action.checkEnvironment).command == nil, "\(command)")
+            }
+        }
+        for command in ["HOME=relative gcloud projects list", "env -u HOME gcloud projects list", "HOME=/a gcloud projects list && HOME=/b gcloud projects list"] {
+            let stop = try #require(CLISessionExpiryClassifier.stop(content: gcloudReauth, command: command))
+            let action = try #require(stop.repairContext).repair
+            #expect(action.command == nil, "\(command)")
+            #expect(action.checkBinary == nil, "\(command)")
+        }
+    }
+
     @Test("A credential store the failed call selected itself is carried; credentials it set itself are not checked")
     func commandLocalSelectors() throws {
         let gcloudExpired = "ERROR: (gcloud.projects.list) Reauthentication required."
