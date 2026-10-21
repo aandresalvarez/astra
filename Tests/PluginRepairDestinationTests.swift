@@ -115,8 +115,18 @@ struct PluginRepairDestinationTests {
     @Test("Default GitHub repair pins github.com independently of Terminal's environment")
     func defaultGitHubHostIsExplicitAtExecution() {
         let terminal = TerminalSpy()
-        RepairActionRunner.run(CLISessionExpiryClassifier.gitHub.repair, terminal: terminal)
-        #expect(terminal.launched == ["gh auth login --hostname github.com"])
+        RepairActionRunner.run(CLISessionExpiryClassifier.gitHub.repair, terminal: terminal,
+            resolveExecutable: { "/opt/homebrew/bin/" + $0 }, isInstalled: { _ in true })
+        #expect(terminal.launched == ["/opt/homebrew/bin/gh auth login --hostname github.com"])
+    }
+
+    @Test("A resolved or changed untrusted executable cannot reach Terminal or its copy fallback", arguments: ["/tmp/gh", "/opt/homebrew/bin/gh"])
+    func terminalRejectsUntrustedResolution(path: String) {
+        let terminal = TerminalSpy()
+        RepairActionRunner.run(CLISessionExpiryClassifier.gitHub.repair, terminal: terminal,
+            resolveExecutable: { _ in path }, isInstalled: { _ in false },
+            copy: { _ in Issue.record("An untrusted executable cannot be copied") })
+        #expect(terminal.launched.isEmpty)
     }
 
     @Test("An Enterprise verification cannot offer a default-host automatic login")

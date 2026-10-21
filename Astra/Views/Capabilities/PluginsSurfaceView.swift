@@ -28,13 +28,13 @@ struct PluginsSurfaceView: View {
     @State private var query = ""
     @State private var expanded: Set<String> = []
     @State private var approvalRecords: [CapabilityApprovalRecord] = []
-    @State private var statuses: [String: HealthStatus] = [:]
+    @State private var prerequisiteScan = PrerequisiteScanSnapshot()
+    private var statuses: [String: HealthStatus] { prerequisiteScan.statuses }
     @State private var errorMessage: String?
     @State private var confirming: PluginsSurfaceConfirmation?
     @StateObject private var repairs = PluginRepairCoordinator()
     /// Only the latest health scan may publish; an older one finishing last
     /// would bring back failures a repair already fixed.
-    @State private var statusGeneration = 0
     /// A plugin whose setup connects an account goes through its install
     /// flow, which does that.
     @State private var accountSetupPackage: PluginPackage?
@@ -445,8 +445,7 @@ struct PluginsSurfaceView: View {
                 && CapabilityPackageState(package: $0, workspace: workspace, capabilities: capabilities).isEnabled
         }
         let directory = workspace.resolvedWorkingPath
-        statusGeneration += 1
-        let generation = statusGeneration
+        let generation = prerequisiteScan.begin()
         Task { @MainActor in
             let cache = PreflightCache()
             var next: [String: HealthStatus] = [:]
@@ -456,8 +455,7 @@ struct PluginsSurfaceView: View {
                 )
                 next.merge(packageStatuses) { _, new in new }
             }
-            guard generation == statusGeneration else { return }
-            statuses = next
+            prerequisiteScan.complete(next, generation: generation)
         }
     }
 

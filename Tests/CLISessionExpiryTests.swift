@@ -266,6 +266,13 @@ struct CLISessionExpiryTests {
         }
         let gh = try #require(CLISessionExpiryClassifier.family(content: "HTTP 401: Bad credentials", command: "env GH_CONFIG_DIR=/tmp/gh gh api user"))
         #expect(gh.repair.checkSelectors == ["GH_CONFIG_DIR": "/tmp/gh"])
+        for command in ["HOME=/tmp/team gh api user", "env HOME=/tmp/team sh -c 'gh api user'", "export HOME=/tmp/team; gh api user"] {
+            let family = try #require(CLISessionExpiryClassifier.family(content: "HTTP 401: Bad credentials", command: command))
+            #expect(family.repair.checkSelectors == ["HOME": "/tmp/team"])
+            let checked = family.repair.checking(in: ["HOME": "/Users/original", "PATH": "/usr/bin"])
+            #expect(checked.checkEnvironment?["HOME"] == "/tmp/team")
+            #expect(checked.targetingCredentialStore(checked.checkEnvironment).command == nil)
+        }
         // Credentials ASTRA can't carry: no sign-in and no check of another store.
         for (command, output) in [
             ("GH_TOKEN=abc gh api user", "HTTP 401: Bad credentials"),
@@ -1178,13 +1185,15 @@ struct CLISessionExpiryTests {
         let repair = CLISessionExpiryClassifier.googleCloud.repair
         let launcher = RecordingTerminal()
         var copied: [String] = []
-        RepairActionRunner.run(repair, terminal: launcher, copy: { copied.append($0) })
-        #expect(launcher.launched == ["gcloud auth login"])
+        RepairActionRunner.run(repair, terminal: launcher, resolveExecutable: { "/opt/homebrew/bin/" + $0 },
+            isInstalled: { _ in true }, copy: { copied.append($0) })
+        #expect(launcher.launched == ["/opt/homebrew/bin/gcloud auth login"])
         #expect(copied.isEmpty)
 
         let refusing = RecordingTerminal(refuses: true)
-        RepairActionRunner.run(repair, terminal: refusing, copy: { copied.append($0) })
-        #expect(copied == ["gcloud auth login"])
+        RepairActionRunner.run(repair, terminal: refusing, resolveExecutable: { "/opt/homebrew/bin/" + $0 },
+            isInstalled: { _ in true }, copy: { copied.append($0) })
+        #expect(copied == ["/opt/homebrew/bin/gcloud auth login"])
         #expect(refusing.openedTerminal)
     }
 
