@@ -32,17 +32,19 @@ public enum TerminalRepairPolicy {
         "--account": .plain, "--project": .plain, "--configuration": .plain
     ]
 
+    // A source cannot choose an authentication server or turn an ordinary
+    // login into a global ADC overwrite. ADC replacement and enterprise sign-in stay manual
+    // until ASTRA has a separately trusted account endpoint.
     static let signIns: [String: [SignIn]] = [
         "gh": [
             SignIn(
                 positionals: ["auth", "login"], booleanFlags: ["--web", "-w"],
-                valueFlags: ["--hostname": .host, "-h": .host, "--git-protocol": .oneOf(["https", "ssh"]), "-p": .oneOf(["https", "ssh"])]
+                valueFlags: ["--hostname": .oneOf(["github.com"]), "-h": .oneOf(["github.com"]), "--git-protocol": .oneOf(["https", "ssh"]), "-p": .oneOf(["https", "ssh"])]
             ),
-            SignIn(positionals: ["auth", "refresh"], valueFlags: ["--hostname": .host, "-h": .host])
+            SignIn(positionals: ["auth", "refresh"], valueFlags: ["--hostname": .oneOf(["github.com"]), "-h": .oneOf(["github.com"])])
         ],
         "gcloud": [
-            SignIn(positionals: ["auth", "login"], booleanFlags: ["--no-launch-browser", "--update-adc"], valueFlags: gcloudSignInFlags),
-            SignIn(positionals: ["auth", "application-default", "login"], booleanFlags: ["--no-launch-browser"], valueFlags: gcloudSignInFlags)
+            SignIn(positionals: ["auth", "login"], booleanFlags: ["--no-launch-browser"], valueFlags: gcloudSignInFlags),
         ],
         "az": [SignIn(positionals: ["login"], booleanFlags: ["--use-device-code"], valueFlags: ["--tenant": .plain, "-t": .plain])],
         "aws": [

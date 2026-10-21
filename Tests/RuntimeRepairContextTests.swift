@@ -81,6 +81,53 @@ struct RuntimeRepairContextTests {
     }
 
     @MainActor
+    @Test("The dock reads a saved manual repair from the same typed owner as Resume", arguments: [false, true])
+    func manualTypedStopRemainsVisible(futureVersion: Bool) async throws {
+        let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let context = container.mainContext
+        let task = AgentTask(title: "Manual auth", goal: "Read the selected host")
+        task.status = .running
+        context.insert(task)
+        let run = TaskRun(task: task)
+        context.insert(run)
+        let repair = CLISessionExpiryClassifier.gitHub.onHost("github.example.com").repair
+        let captured = RuntimeRepairContext(providerBinary: "gh", message: "Localized manual setup",
+            repair: repair, offersAction: false)
+        let result = AgentProcessResult(exitCode: 1, runtimeStopReason: "capability_session_expired",
+            runtimeRepairContext: captured)
+        try #require(RuntimeStopOutcome.apply(result, task: task, run: run, modelContext: context, phase: .run))
+        try #require(!task.events.contains { $0.type == TaskEventTypes.System.runtimeRepairRequired.rawValue })
+        if futureVersion {
+            let event = try #require(task.events.first { $0.type == TaskEventTypes.System.runtimeRepairContext.rawValue })
+            var json = try #require(JSONSerialization.jsonObject(with: Data(event.payload.utf8)) as? [String: Any])
+            json["version"] = 2
+            event.payload = try #require(String(data: JSONSerialization.data(withJSONObject: json), encoding: .utf8))
+            context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeRepairRequired,
+                payload: CLISessionExpiryClassifier.googleCloud.repair.encoded(), run: run))
+        }
+        try context.save()
+        let saved = ModelContext(container)
+        let snapshots = try saved.fetch(FetchDescriptor<TaskEvent>()).sorted { $0.timestamp < $1.timestamp }
+            .map(TaskEventSnapshot.init(event:))
+        let visible = TaskRunStopEvidence.repair(events: snapshots, runID: run.id)
+        #expect(visible != nil)
+        #expect(visible?.command == nil)
+        #expect(visible?.verb == (futureVersion ? "Review" : "Check"))
+        var checked: RepairAction?
+        let guidance = await TaskRepairAction.perform(visible, check: { checked = $0; return false },
+            run: { _ in Issue.record("The dock cannot execute a legacy action over a typed manual stop") })
+        #expect(guidance != nil)
+        if futureVersion {
+            #expect(visible?.checkBinary == nil)
+            #expect(checked == nil)
+        } else {
+            #expect(checked?.checkArguments == ["auth", "status", "--active", "--hostname", "github.example.com"])
+        }
+        #expect(task.status == .failed)
+    }
+
+    @MainActor
     @Test("A result without captured evidence offers manual review rather than a repair parsed from prose")
     func missingContextIsManual() throws {
         let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,

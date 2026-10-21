@@ -41,8 +41,8 @@ enum CLISessionExpiryClassifier {
         /// Application Default Credentials (`readsOnlyApplicationDefault`).
         var readsApplicationDefault = false
         /// Credential-store selectors the failed call set on itself
-        /// (`CLOUDSDK_CONFIG=/team gcloud …`): Sign in and the check use that
-        /// store, not the launch's (`RepairAction.checkSelectors`).
+        /// (`CLOUDSDK_CONFIG=/team gcloud …`): only the read-only check uses
+        /// that store. Login needs manual setup (`RepairAction.checkSelectors`).
         var storeSelectors: [String: String] = [:]
         /// Credential variables the failed call set on itself that ASTRA
         /// can't carry (`GH_TOKEN=… gh …`, another account): nothing signs in
@@ -98,7 +98,7 @@ enum CLISessionExpiryClassifier {
                     ? SemanticCheck.stdoutNonEmpty.rawValue : nil
             )
             repair.checkSelectors = storeSelectors.isEmpty ? nil : storeSelectors
-            return repair
+            return repair.targetingCredentialStore(storeSelectors)
         }
 
         /// The same family signing in to and checking a GitHub Enterprise
@@ -115,9 +115,10 @@ enum CLISessionExpiryClassifier {
         /// (`gh auth status --active`): the command's `gh` calls named
         /// different hosts, or ran outside the run's checkout, so which host
         /// failed is unknown, and checking any one of them could pass while
-        /// the failing one is still signed out. Sign in asks for the host.
+        /// the failing one is still signed out. Sign-in stays manual.
         func onEveryHost() -> Family {
             var family = self
+            family.offersSignIn = false
             family.checkArguments = ["auth", "status", "--active"]
             family.namesCheck = true
             if family.customStopMessage == nil {
@@ -174,8 +175,8 @@ enum CLISessionExpiryClassifier {
     /// Application Default Credentials are a separate sign-in from the CLI's
     /// own account: `gcloud auth application-default login` writes them, and
     /// a healthy `gcloud auth login` says nothing about them. So a failed
-    /// `gcloud auth application-default print-access-token` signs in to and
-    /// checks ADC. The check is that same command with `--format=none`: it
+    /// `gcloud auth application-default print-access-token` keeps ADC setup
+    /// manual and retains its separate check. The check is that same command with `--format=none`: it
     /// refreshes the credential and exits non-zero when it cannot, and
     /// prints nothing, so no token reaches ASTRA. Its exit status alone is
     /// the result (no semantic test): the command returns a credentials
@@ -187,6 +188,7 @@ enum CLISessionExpiryClassifier {
         checkBinary: "gcloud",
         checkArguments: ["auth", "application-default", "print-access-token", "--format=none"],
         patterns: googleCloud.patterns + ["please run:\n\n  $ gcloud auth application-default login"],
+        offersSignIn: false,
         readsApplicationDefault: true
     )
 
@@ -279,7 +281,7 @@ enum CLISessionExpiryClassifier {
         return Stop(
             reason: TaskRunStopReason.capabilitySessionExpired.rawValue, message: family.stopMessage,
             repairContext: RuntimeRepairContext(providerBinary: family.checkBinary, message: family.stopMessage,
-                                               repair: family.repair, offersAction: family.offersSignIn)
+                                               repair: family.repair, offersAction: family.repair.command != nil)
         )
     }
 
@@ -708,7 +710,7 @@ enum CLISessionExpiryClassifier {
     /// sets it becomes the check-only guidance about that file: the sign-in
     /// would write a file that run never reads.
     static func checkingCredentialFile(_ repair: RepairAction) -> RepairAction {
-        guard repair.checkArguments == googleCloudApplicationDefault.checkArguments, repair.command != nil,
+        guard repair.checkArguments == googleCloudApplicationDefault.checkArguments,
               let file = repair.checkEnvironment?["GOOGLE_APPLICATION_CREDENTIALS"], !file.isEmpty,
               let binary = repair.checkBinary
         else { return repair }
@@ -758,7 +760,7 @@ enum CLISessionExpiryClassifier {
             hosted.command = retargeted
             hosted.detail = repair.detail.replacingOccurrences(of: "`\(command)`", with: "`\(retargeted)`")
         }
-        return hosted
+        return hosted.enforcingTerminalPolicy()
     }
 
     /// `candidate` lowercased when it is a plain host name (with an optional

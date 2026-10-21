@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import os
 import ASTRAModels
 @testable import ASTRAPersistence
 @testable import ASTRA
@@ -1052,37 +1053,24 @@ struct PluginActivationMigrationTests {
         }
     }
 
-    @Test("A failed migration that cannot take back a copied secret says so")
-    func failedSecretRollbackIsReported() throws {
-        guard AstraSecureKeychainTestSupport.isAvailable else { return }
-        let keychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
-        let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
-        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
-        defer {
-            AstraSecureKeychainTestSupport.cleanup(keychainPath: keychainPath, bootstrapService: bootstrap, services: [])
-        }
-        try AstraSecureKeychainStore.$keychainPathOverride.withValue(keychainPath) {
-            try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
-                let fixture = try Fixture(gcloudSkillSecret: "s3cret")
-                #expect(SkillSecretSeam.required.saveSecretValue(
-                    "s3cret", key: "GCP_API_TOKEN", skillID: fixture.gcloudSkillID, skillName: "GCloud", allowUserInteraction: false
-                ))
-                try FileManager.default.createDirectory(
-                    at: fixture.storeDirectory.appendingPathComponent("PluginSecretCleanup.json", isDirectory: true),
-                    withIntermediateDirectories: true
-                )
-                // The copy lands; taking it back (a delete, as nothing was
-                // there before) does not.
-                #expect(throws: PluginActivationMigration.MigrationError.credentialRestoreFailed(keys: ["GCP_API_TOKEN"])) {
-                    try PluginActivationMigration.migrate(
-                        modelContext: fixture.context,
-                        packages: fixture.packagesDeclaringSecret,
-                        secrets: UndeletableSkillSecrets.self
-                    )
-                }
-                // The store side is still put back.
-                #expect(WorkspaceCapabilityActivation.activations(of: try fixture.workspace(fixture.aID)).isEmpty)
+    @Test("An unwritable cleanup journal prevents every skill credential copy")
+    func unwritableJournalStopsSecretCopy() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let fixture = try Fixture(gcloudSkillSecret: "s3cret")
+            #expect(SkillSecretSeam.required.saveSecretValue("s3cret", key: "GCP_API_TOKEN",
+                skillID: fixture.gcloudSkillID, skillName: "GCloud", allowUserInteraction: false))
+            try FileManager.default.createDirectory(
+                at: fixture.storeDirectory.appendingPathComponent("PluginSecretCleanup.json", isDirectory: true),
+                withIntermediateDirectories: true)
+            UndeletableSkillSecrets.reset()
+            #expect(throws: PluginActivationMigration.MigrationError.cleanupUnrecordable) {
+                try PluginActivationMigration.migrate(modelContext: fixture.context,
+                    packages: fixture.packagesDeclaringSecret, secrets: UndeletableSkillSecrets.self)
             }
+            #expect(UndeletableSkillSecrets.savedNamespaces.isEmpty)
+            #expect(SkillSecretSeam.required.loadSecretValue(key: "GCP_API_TOKEN", skillID: fixture.gcloudSkillID,
+                store: KeychainSecretStore()) == "s3cret")
+            #expect(WorkspaceCapabilityActivation.activations(of: try fixture.workspace(fixture.aID)).isEmpty)
         }
     }
 
@@ -1635,12 +1623,16 @@ struct PluginActivationMigrationTests {
 
 /// The real skill-secret persistence, except that a delete never lands.
 private enum UndeletableSkillSecrets: SkillSecretPersisting {
+    private static let writes = OSAllocatedUnfairLock<[UUID]>(initialState: [])
+    static var savedNamespaces: [UUID] { writes.withLock { $0 } }
+    static func reset() { writes.withLock { $0 = [] } }
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? {
         SkillSecretSeam.required.loadSecretValue(key: key, skillID: skillID, store: store)
     }
 
     static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool {
-        SkillSecretSeam.required.saveSecretValue(
+        writes.withLock { $0.append(skillID) }
+        return SkillSecretSeam.required.saveSecretValue(
             value, key: key, skillID: skillID, skillName: skillName, allowUserInteraction: allowUserInteraction
         )
     }

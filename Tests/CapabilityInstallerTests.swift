@@ -133,7 +133,7 @@ struct CapabilityInstallerTests {
         #expect(activation.configKeys.isEmpty)
     }
 
-    @Test("Add again with the sheet's untouched fields keeps a bound account's URL and settings; an edit still applies")
+    @Test("Add again with untouched setup fields keeps a bound account URL and settings; an edit still applies")
     func addAgainKeepsBoundAccountSetup() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
@@ -170,18 +170,18 @@ struct CapabilityInstallerTests {
         #expect(kept.baseURL == "https://clinic.atlassian.net")
         #expect(kept.config["JIRA_PROJECTS"] == "CLIN")
         #expect(kept.config["JIRA_BASE_URL"] == "https://clinic.atlassian.net")
-        // As R3's sheet submits them, keyed by component, untouched: the same.
+        // A component-keyed submission with the bound URL unchanged: the same.
         try installer.enable(
             jira, in: workspace, modelContext: context,
             configInputs: [PluginSetupInputs.key("JIRA_PROJECTS", component: component): ""],
-            baseURLOverrides: [component: spec.baseURL]
+            baseURLOverrides: [component: "https://clinic.atlassian.net"]
         )
         #expect(kept.baseURL == "https://clinic.atlassian.net" && kept.config["JIRA_PROJECTS"] == "CLIN")
-        // A settings edit with the URL left at its default keeps the URL.
+        // A settings edit with the bound URL left untouched keeps the URL.
         try installer.enable(
             jira, in: workspace, modelContext: context,
             configInputs: [PluginSetupInputs.key("JIRA_PROJECTS", component: component): "CLIN, OPS"],
-            baseURLOverrides: [component: spec.baseURL]
+            baseURLOverrides: [component: "https://clinic.atlassian.net"]
         )
         let editedSettings = try #require(activation.accounts(forComponent: component).first)
         #expect(editedSettings.baseURL == "https://clinic.atlassian.net" && editedSettings.config["JIRA_PROJECTS"] == "CLIN, OPS")

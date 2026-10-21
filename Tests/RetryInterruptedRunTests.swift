@@ -563,7 +563,8 @@ struct RetryInterruptedRunTests {
             }
             try #require(checked.count == 2, "retry: \(useRetry)")
             #expect(checked[0].checkArguments == ["auth", "status", "--active", "--hostname", "ghe.example.com"], "retry: \(useRetry)")
-            #expect(checked[0].command == "gh auth login --hostname ghe.example.com")
+            #expect(checked[0].command == nil)
+            #expect(checked[0].verb == "Check")
             #expect(checked[1].command == nil, "retry: \(useRetry)")
             #expect(checked[1].detail.contains("`/tmp/team-adc.json`"))
         }

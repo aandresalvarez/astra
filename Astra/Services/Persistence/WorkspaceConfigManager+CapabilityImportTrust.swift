@@ -277,9 +277,9 @@ extension WorkspaceConfigManager {
         template.originSourceKind = nil
     }
 
-    /// A snapshot the import restored as a row (with a fresh ID and a
-    /// "(Restored)" name) now names that row, so the resolver does not count
-    /// the old snapshot as a second, detached skill.
+    /// Every known snapshot names its live imported row, whether it was
+    /// declared in the file or restored for this or an earlier task. The
+    /// resolver can then distinguish that row from detached history.
     static func remapSnapshots(of task: AgentTask, to restored: [String: Skill]) {
         guard !restored.isEmpty else { return }
         task.skillSnapshots = task.skillSnapshots.map { snapshot in

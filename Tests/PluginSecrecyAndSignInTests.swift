@@ -101,6 +101,7 @@ struct PluginSecrecyAndSignInTests {
         // until the person enters the setting, which clears it.
         let projectKey = PluginActivation.settingKey(componentID: "skill:report-agent", key: "PROJECT")
         WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: projectKey, on: activation)
+        try env.context.save()
         RenameSecrets.reset(holding: UUID())
         try PluginOperations.setSetting(
             "PROJECT", to: "alpha", of: v2.skills[0], pluginID: v2.id, in: env.workspace, modelContext: env.context,
