@@ -61,7 +61,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
     }
 
     private var otherComponents: [(component: PluginComponent, position: Int?)] {
-        PluginsSurfacePresentation.expandedSetupComponents(for: row)
+        PluginsSurfacePresentation.expandedSetupComponents(for: row, in: workspace)
     }
 
     // MARK: - Skill settings

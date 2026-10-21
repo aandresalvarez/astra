@@ -591,7 +591,9 @@ struct CapabilityRailPackageSnapshotState {
             for: package,
             activeLinkedConnectors: activeLinkedConnectors,
             boundAccountIDs: index.activations[package.id]?.accountIDsByComponent
-        ) + activeLinkedConnectors.flatMap(readinessMessages(for:))
+        ) + activeLinkedConnectors.flatMap {
+            readinessMessages(for: $0, package: package, boundAccountIDs: index.activations[package.id]?.accountIDsByComponent)
+        }
 
         return messages.isEmpty
             ? .ready
@@ -622,7 +624,7 @@ struct CapabilityRailPackageSnapshotState {
             : index.workspaceToolIDs.contains(tool.id)
     }
 
-    private static func readinessMessages(for connector: Connector) -> [String] {
+    private static func readinessMessages(for connector: Connector, package: PluginPackage, boundAccountIDs: [String: Set<UUID>]?) -> [String] {
         guard connector.authMethod != "none" else { return [] }
         let name = connector.name.isEmpty ? "Connector" : connector.name
         if connector.isStanfordOutlookMail {
@@ -636,10 +638,10 @@ struct CapabilityRailPackageSnapshotState {
             return messages
         }
 
-        if connector.credentialKeys.isEmpty {
-            return ["\(name): no credentials configured"]
-        }
-        let missingKeys = connector.missingCredentialKeys()
+        let required = PluginRuntimeProjection.requiredCredentialKeys(of: connector, package: package, boundAccountIDs: boundAccountIDs)
+        if required.isEmpty { return ["\(name): no credentials configured"] }
+        let requiredKeys = Set(required)
+        let missingKeys = connector.missingCredentialKeys().filter { requiredKeys.contains($0) }
         if !missingKeys.isEmpty {
             return ["\(name): missing Keychain value: \(missingKeys.joined(separator: ", "))"]
         }

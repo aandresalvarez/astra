@@ -14,7 +14,7 @@ struct TaskRepairActionTests {
         let repair = prepared ? original.targetingCredentialStore(environment) : original
         var checked: [RepairAction] = []
         let guidance = await TaskRepairAction.perform(repair, check: { checked.append($0); return passed },
-            run: { _ in Issue.record("Manual setup cannot launch an external action") })
+            run: { _ in Issue.record("Manual setup cannot launch an external action"); return .refused })
         #expect(checked.count == 1)
         #expect(checked.first?.checkEnvironment == environment)
         #expect(guidance?.title == (passed ? "Setup check passed" : "Setup needs attention"))
@@ -26,7 +26,7 @@ struct TaskRepairActionTests {
         let repair = CLISessionExpiryClassifier.googleCloud.repair
         var launched: [RepairAction] = []
         let guidance = await TaskRepairAction.perform(repair,
-            check: { _ in Issue.record("An external sign-in has not finished yet"); return true }, run: { launched.append($0) })
+            check: { _ in Issue.record("An external sign-in has not finished yet"); return true }, run: { launched.append($0); return .launched })
         #expect(launched == [repair])
         #expect(guidance == nil)
     }
@@ -40,9 +40,18 @@ struct TaskRepairActionTests {
             checked = true
             #expect(candidate.command == nil)
             return false
-        }, run: { _ in Issue.record("A rejected command cannot reach Terminal") })
+        }, run: { _ in Issue.record("A rejected command cannot reach Terminal"); return .refused })
         #expect(checked)
         #expect(guidance?.title == "Setup needs attention")
+    }
+
+    @Test("Launch-time refusal gives visible manual guidance")
+    func refusedLaunchIsVisible() async {
+        let guidance = await TaskRepairAction.perform(CLISessionExpiryClassifier.gitHub.repair,
+            run: { repair in RepairActionRunner.run(repair, resolveExecutable: { _ in "/missing/gh" },
+                isInstalled: { _ in false }, copy: { _ in Issue.record("A refused executable cannot be copied") }) })
+        #expect(guidance?.title == "Manual setup required")
+        #expect(guidance?.detail.contains("executable") == true)
     }
 
     @Test("A cancelled presentation cannot display a late check result for another run")

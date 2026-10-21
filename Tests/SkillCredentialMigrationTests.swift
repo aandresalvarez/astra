@@ -166,6 +166,26 @@ struct SkillCredentialMigrationTests {
         }
     }
 
+    @Test("An unrelated deferred account does not prevent authored skill migration")
+    func startupContinuesPastDeferredAccount() throws {
+        try withSkill { env, skill in
+            let malformed = Connector(name: "Deferred legacy account")
+            malformed.credentialKeys = []
+            malformed.credentialValues = ["unmatched-legacy-value"]
+            malformed.workspace = env.workspace
+            env.context.insert(malformed)
+            try env.context.save()
+            StartupCredentialMigrationService.migrate(modelContext: env.context)
+            let saved = ModelContext(env.context.container)
+            let migrated = try #require(try saved.fetch(FetchDescriptor<Skill>()).first)
+            #expect(migrated.credentialNamespaceID != nil)
+            #expect(migrated.environmentValues == ["", "west"])
+            #expect(migrated.environmentVariables["API_TOKEN"] == "legacy-startup-synthetic-token")
+            #expect(malformed.credentialValues == ["unmatched-legacy-value"])
+            #expect(!env.context.hasChanges)
+        }
+    }
+
     private func withSkill(keys: [String] = ["API_TOKEN", "REGION"],
                            values: [String] = ["legacy-startup-synthetic-token", "west"],
                            _ body: (PluginAddCommitTests.Fixture, Skill) throws -> Void) throws {

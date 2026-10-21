@@ -31,7 +31,7 @@ struct PluginRound23ReviewTests {
 
         #expect(throws: PluginOperations.OperationError.saveFailed) {
             try PluginOperations.setSetting(
-                "PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context,
+                "PROJECT", to: "alpha", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context,
                 secrets: HeldSecrets.self, persist: { _, _ in throw CocoaError(.fileWriteUnknown) }
             )
         }
@@ -44,7 +44,7 @@ struct PluginRound23ReviewTests {
         HeldSecrets.refusesWrites = true
         #expect(throws: PluginOperations.OperationError.saveFailed) {
             try PluginOperations.setSetting(
-                "PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context,
+                "PROJECT", to: "alpha", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context,
                 secrets: HeldSecrets.self, persist: { _, _ in throw CocoaError(.fileWriteUnknown) }
             )
         }
@@ -54,7 +54,7 @@ struct PluginRound23ReviewTests {
         // remain available until their cleanup pass proves no references remain.
         HeldSecrets.refusesWrites = false
         HeldSecrets.set("old-secret", key: "PROJECT", skillID: skillID)
-        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context, secrets: HeldSecrets.self)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context, secrets: HeldSecrets.self)
         #expect(!activation.secretSettingKeys.contains(projectKey))
         #expect(HeldSecrets.value(key: "PROJECT", skillID: skillID) == "old-secret")
         #expect(activation.configuration(forComponent: "skill:report-agent")["PROJECT"] == "alpha")

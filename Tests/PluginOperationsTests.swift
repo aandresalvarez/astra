@@ -22,7 +22,7 @@ struct PluginOperationsTests {
         do {
             switch operation {
             case "setting":
-                try PluginOperations.setSetting("PROJECT", to: "changed", of: package.skills[0], pluginID: package.id,
+                try PluginOperations.setSetting("PROJECT", to: "changed", of: package.skills[0], package: package,
                     in: env.workspace, modelContext: env.context)
             case "delete": try PluginOperations.deleteAccount(account, modelContext: env.context)
             case "add": _ = try PluginOperations.addAccount(for: package.connectors[0], of: package,
@@ -51,7 +51,7 @@ struct PluginOperationsTests {
         candidate.skills[0].environmentValues += [""]
         try env.install(candidate)
         try PluginOperations.setSetting("PROJECT", to: "current-skill-project", of: candidate.skills[0],
-            pluginID: candidate.id, in: env.workspace, modelContext: env.context)
+            package: candidate, in: env.workspace, modelContext: env.context)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: candidate.id, in: env.workspace))
         let skill = candidate.skills[0]
         let component = CapabilityResourceOrigin.componentID(for: skill)
@@ -86,7 +86,7 @@ struct PluginOperationsTests {
         try env.install(v1)
         let workspace = env.workspace
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
-        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: workspace, modelContext: env.context)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], package: v1, in: workspace, modelContext: env.context)
         let account = try #require(workspace.connectors.first)
         let oldSkillID = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
         let schedule = TaskSchedule(name: "Weekly", goal: "Report", workspace: workspace)
@@ -124,7 +124,7 @@ struct PluginOperationsTests {
         let workspace = env.workspace
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
         let account = try #require(workspace.connectors.first)
-        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: workspace, modelContext: env.context)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], package: v1, in: workspace, modelContext: env.context)
 
         var v2 = Self.package(version: "2.0.0")
         v2.connectors = []
@@ -206,7 +206,7 @@ struct PluginOperationsTests {
         env.context.insert(other)
         try env.installer.install(package, into: other, modelContext: env.context, announceCatalogMutation: false)
 
-        try PluginOperations.setSetting("PROJECT", to: "alpha", of: package.skills[0], pluginID: package.id, in: env.workspace, modelContext: env.context)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: package.skills[0], package: package, in: env.workspace, modelContext: env.context)
         let here = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
         let there = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: other))
         #expect(try PluginOperations.setting("PROJECT", of: package.skills[0], in: here) == "alpha")
@@ -326,7 +326,7 @@ struct PluginOperationsTests {
         let v1 = Self.package(version: "1.0.0")
         try env.install(v1)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
-        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context)
 
         var v2 = Self.package(version: "2.0.0")
         v2.skills[0].id = "summary-agent"
@@ -356,7 +356,7 @@ struct PluginOperationsTests {
         v1.skills[0].environmentValues = ["default-project", ""]
         try env.install(v1)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
-        try PluginOperations.setSetting("REGION", to: "us", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        try PluginOperations.setSetting("REGION", to: "us", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context)
 
         let v2 = Self.package(version: "2.0.0")
         try env.importUpdate(v2, mode: .automatic)
@@ -378,7 +378,7 @@ struct PluginOperationsTests {
         v1.skills[0].environmentValues = ["default-project", ""]
         try env.install(v1)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
-        try PluginOperations.setSetting("REGION", to: "us", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        try PluginOperations.setSetting("REGION", to: "us", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context)
         #expect(activation.configuration(forComponent: "skill:report-agent") == ["REGION": "us"])
 
         try env.install(Self.package(version: "2.0.0"))
@@ -433,8 +433,8 @@ struct PluginOperationsTests {
                 }
                 try env.install(v1)
                 let workspace = env.workspace
-                try PluginOperations.setSetting("API_TOKEN", to: "old", of: v1.skills[0], pluginID: v1.id, in: workspace, modelContext: env.context)
-                try PluginOperations.setSetting("API_TOKEN", to: "mine", of: v1.skills[1], pluginID: v1.id, in: workspace, modelContext: env.context)
+                try PluginOperations.setSetting("API_TOKEN", to: "old", of: v1.skills[0], package: v1, in: workspace, modelContext: env.context)
+                try PluginOperations.setSetting("API_TOKEN", to: "mine", of: v1.skills[1], package: v1, in: workspace, modelContext: env.context)
                 let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
 
                 var v2 = v1
@@ -470,7 +470,7 @@ struct PluginOperationsTests {
                 v1.skills[0].environmentKeys = ["PROJECT", "API_TOKEN"]
                 v1.skills[0].environmentValues = ["default-project", ""]
                 try env.install(v1)
-                try PluginOperations.setSetting("API_TOKEN", to: "s3cret", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+                try PluginOperations.setSetting("API_TOKEN", to: "s3cret", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context)
                 let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
                 let namespace = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
                 let persistence = SkillSecretSeam.required
@@ -552,7 +552,7 @@ struct PluginOperationsTests {
         let env = try Environment()
         let v1 = Self.package(version: "1.0.0")
         try env.install(v1)
-        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
         var v2 = Self.package(version: "2.0.0")
         v2.skills[0].id = "summary-agent"
@@ -642,7 +642,7 @@ struct PluginOperationsTests {
         let env = try Environment()
         let v1 = Self.package(version: "1.0.0")
         try env.install(v1)
-        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
         try env.importUpdate(chained)
         #expect(activation.configuration(forComponent: "skill:c-agent") == ["PROJECT": "alpha"])
@@ -656,7 +656,7 @@ struct PluginOperationsTests {
         ab.skills.append(b)
         try twoLive.install(ab)
         for skill in ab.skills {
-            try PluginOperations.setSetting("PROJECT", to: skill.name, of: skill, pluginID: ab.id, in: twoLive.workspace, modelContext: twoLive.context)
+            try PluginOperations.setSetting("PROJECT", to: skill.name, of: skill, package: ab, in: twoLive.workspace, modelContext: twoLive.context)
         }
         let twoActivation = try #require(WorkspaceCapabilityActivation.activation(for: ab.id, in: twoLive.workspace))
         #expect(throws: PluginUpdateService.UpdateError.ambiguousRename(component: "skill:c-agent")) {

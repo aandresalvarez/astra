@@ -35,7 +35,7 @@ struct PluginStaleCredentialOwnerTests {
             let originalGeneration = staleActivation.credentialNamespaceSeed
             try #require(try PluginOperations.setting("SECOND_TOKEN", of: package.skills[0], in: staleActivation) == "older-second-token")
             try PluginOperations.setSetting("SECOND_TOKEN", to: "newest-second-token", of: package.skills[0],
-                pluginID: package.id, in: env.workspace, modelContext: env.context)
+                package: package, in: env.workspace, modelContext: env.context)
             let savedBefore = ModelContext(env.context.container)
             let before = try #require(try savedBefore.fetch(FetchDescriptor<PluginActivation>()).first)
             let latestGeneration = before.credentialNamespaceSeed
@@ -47,7 +47,7 @@ struct PluginStaleCredentialOwnerTests {
                 switch operation {
                 case "setting":
                     try PluginOperations.setSetting("API_TOKEN", to: "replacement-first-token", of: package.skills[0],
-                        pluginID: package.id, in: staleWorkspace, modelContext: stale)
+                        package: package, in: staleWorkspace, modelContext: stale)
                 case "add":
                     _ = try env.installer.enable(package, in: staleWorkspace, modelContext: stale,
                         configInputs: ["API_TOKEN": "replacement-first-token"])

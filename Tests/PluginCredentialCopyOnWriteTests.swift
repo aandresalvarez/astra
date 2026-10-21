@@ -53,7 +53,7 @@ struct PluginCredentialCopyOnWriteTests {
         try env.context.save()
         let submitted = try #require(request.executionPolicySnapshot?.pluginActivations)
         try PluginOperations.setSetting("API_TOKEN", to: replacement, of: env.package.skills[0],
-            pluginID: env.package.id, in: env.workspace, modelContext: env.context, secrets: GenerationSecrets.self)
+            package: env.package, in: env.workspace, modelContext: env.context, secrets: GenerationSecrets.self)
         let current = try #require(PluginRuntimeProjection.project(workspace: env.workspace, packages: [env.package]).skills.first)
         #expect(current.id == original.id)
         #expect(current.secretNamespaceID != original.secretNamespaceID)
@@ -277,7 +277,7 @@ struct PluginCredentialCopyOnWriteTests {
         var valueBeforeCommit: String?
         #expect(throws: PluginOperations.OperationError.saveFailed) {
             try PluginOperations.setSetting("API_TOKEN", to: "", of: env.package.skills[0],
-                pluginID: env.package.id, in: env.workspace, modelContext: env.context, secrets: GenerationSecrets.self,
+                package: env.package, in: env.workspace, modelContext: env.context, secrets: GenerationSecrets.self,
                 persist: { _, context in
                     let saved = try #require(try ModelContext(context.container).fetch(FetchDescriptor<PluginActivation>()).first)
                     recordedBeforeCommit = saved.secretSettingKeys.contains("\(env.component)#API_TOKEN")
@@ -304,7 +304,7 @@ struct PluginCredentialCopyOnWriteTests {
         _ = try env.installer.enable(package, in: env.workspace, modelContext: env.context,
             configInputs: ["API_TOKEN": "original", "SECOND_TOKEN": "retained"])
         let original = try #require(PluginRuntimeProjection.project(workspace: env.workspace, packages: [package]).skills.first)
-        try PluginOperations.setSetting("API_TOKEN", to: "updated", of: package.skills[0], pluginID: package.id,
+        try PluginOperations.setSetting("API_TOKEN", to: "updated", of: package.skills[0], package: package,
             in: env.workspace, modelContext: env.context, secrets: GenerationSecrets.self)
         let current = try #require(PluginRuntimeProjection.project(workspace: env.workspace, packages: [package]).skills.first)
         #expect(current.environmentVariables["API_TOKEN"] == "updated")
@@ -335,7 +335,7 @@ struct PluginCredentialCopyOnWriteTests {
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
         let before = PluginActivationRecord(activation)
         #expect(throws: PluginOperations.OperationError.secretReadFailed(key: "SECOND_TOKEN")) {
-            try PluginOperations.setSetting("API_TOKEN", to: "unpublished", of: package.skills[0], pluginID: package.id,
+            try PluginOperations.setSetting("API_TOKEN", to: "unpublished", of: package.skills[0], package: package,
                 in: env.workspace, modelContext: env.context, secrets: UnreadableGenerationSecret.self)
         }
         #expect(PluginActivationRecord(activation) == before)
@@ -354,7 +354,7 @@ struct PluginCredentialCopyOnWriteTests {
         var operationID: UUID?
         do {
             try PluginOperations.setSetting("API_TOKEN", to: "saved-new-value", of: env.package.skills[0],
-                pluginID: env.package.id, in: env.workspace, modelContext: env.context, secrets: GenerationSecrets.self,
+                package: env.package, in: env.workspace, modelContext: env.context, secrets: GenerationSecrets.self,
                 rewriteMirror: { _ in false })
             Issue.record("The saved cutover must report its mirror debt")
         } catch let problem as PluginOperationProblem { operationID = problem.operationID }
@@ -384,7 +384,7 @@ struct PluginCredentialCopyOnWriteTests {
         let original = try env.enable("saved-before-edit")
         #expect(throws: PluginOperations.OperationError.saveFailed) {
             try PluginOperations.setSetting("API_TOKEN", to: "orphaned-edit", of: env.package.skills[0],
-                pluginID: env.package.id, in: env.workspace, modelContext: env.context, secrets: RefusingGenerationCleanup.self,
+                package: env.package, in: env.workspace, modelContext: env.context, secrets: RefusingGenerationCleanup.self,
                 persist: { _, _ in throw CocoaError(.fileWriteUnknown) })
         }
         let orphan = try #require(GenerationSecrets.namespace(holding: "orphaned-edit"))
@@ -411,7 +411,7 @@ struct PluginCredentialCopyOnWriteTests {
         try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)
         #expect(throws: (any Error).self) {
             try PluginOperations.setSetting("API_TOKEN", to: "must-not-write", of: env.package.skills[0],
-                pluginID: env.package.id, in: env.workspace, modelContext: env.context, secrets: GenerationSecrets.self)
+                package: env.package, in: env.workspace, modelContext: env.context, secrets: GenerationSecrets.self)
         }
         #expect(GenerationSecrets.namespace(holding: "must-not-write") == nil)
         #expect(GenerationSecrets.value(in: original.secretNamespaceID) == "journal-protected")
@@ -431,7 +431,7 @@ struct PluginCredentialCopyOnWriteTests {
         let receiptCount = try other.fetchCount(FetchDescriptor<PluginOperationReceipt>())
         #expect(throws: (any Error).self) {
             try PluginOperations.setSetting("API_TOKEN", to: "wrong-context-write", of: env.package.skills[0],
-                pluginID: env.package.id, in: env.workspace, modelContext: other, secrets: GenerationSecrets.self)
+                package: env.package, in: env.workspace, modelContext: other, secrets: GenerationSecrets.self)
         }
         #expect(PluginActivationRecord(activation) == before)
         #expect(GenerationSecrets.namespace(holding: "wrong-context-write") == nil)

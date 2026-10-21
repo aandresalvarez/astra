@@ -116,7 +116,7 @@ struct RuntimeRepairContextTests {
         #expect(visible?.verb == (futureVersion ? "Review" : "Check"))
         var checked: RepairAction?
         let guidance = await TaskRepairAction.perform(visible, check: { checked = $0; return false },
-            run: { _ in Issue.record("The dock cannot execute a legacy action over a typed manual stop") })
+            run: { _ in Issue.record("The dock cannot execute a legacy action over a typed manual stop"); return .refused })
         #expect(guidance != nil)
         if futureVersion {
             #expect(visible?.checkBinary == nil)

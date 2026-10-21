@@ -76,7 +76,7 @@ struct PluginSecretSettingWriterTests {
             RecordingSecrets.journalAtWrite = (try? PluginSecretCleanupOutbox(for: store.context)?.entries()) ?? []
         }
         try PluginOperations.setSetting(
-            "API_TOKEN", to: "token", of: package.skills[0], pluginID: package.id, in: store.workspace,
+            "API_TOKEN", to: "token", of: package.skills[0], package: package, in: store.workspace,
             modelContext: store.context, secrets: RecordingSecrets.self
         )
         #expect(RecordingSecrets.markerAtWrite.isEmpty)
@@ -98,7 +98,7 @@ struct PluginSecretSettingWriterTests {
         RecordingSecrets.refusesWrites = true
         #expect(throws: PluginOperations.OperationError.secretSaveFailed(key: "API_TOKEN")) {
             try PluginOperations.setSetting(
-                "API_TOKEN", to: "token", of: package.skills[0], pluginID: package.id, in: store.workspace,
+                "API_TOKEN", to: "token", of: package.skills[0], package: package, in: store.workspace,
                 modelContext: store.context, secrets: RecordingSecrets.self
             )
         }
@@ -116,7 +116,7 @@ struct PluginSecretSettingWriterTests {
         RecordingSecrets.onSave = { log.append("keychain") }
         for value in ["first", "second"] {
             try PluginOperations.setSetting(
-                "API_TOKEN", to: value, of: package.skills[0], pluginID: package.id, in: env.workspace,
+                "API_TOKEN", to: value, of: package.skills[0], package: package, in: env.workspace,
                 modelContext: env.context, secrets: RecordingSecrets.self, rewriteMirror: { _ in log.append("mirror"); return true }
             )
         }
@@ -125,7 +125,7 @@ struct PluginSecretSettingWriterTests {
         RecordingSecrets.reset()
         #expect(throws: PluginOperationProblem.self) {
             try PluginOperations.setSetting(
-                "API_TOKEN", to: "third", of: package.skills[0], pluginID: package.id, in: env.workspace,
+                "API_TOKEN", to: "third", of: package.skills[0], package: package, in: env.workspace,
                 modelContext: env.context, secrets: RecordingSecrets.self, rewriteMirror: { _ in false }
             )
         }
@@ -142,7 +142,7 @@ struct PluginSecretSettingWriterTests {
         RecordingSecrets.reset()
         #expect(throws: PluginOperations.OperationError.saveFailed) {
             try PluginOperations.setSetting(
-                "API_TOKEN", to: "token", of: package.skills[0], pluginID: package.id, in: env.workspace, modelContext: env.context,
+                "API_TOKEN", to: "token", of: package.skills[0], package: package, in: env.workspace, modelContext: env.context,
                 secrets: RecordingSecrets.self, persist: { _, _ in throw CocoaError(.fileWriteUnknown) }
             )
         }
@@ -209,7 +209,7 @@ struct PluginSecretSettingWriterTests {
         let v1 = Self.secretPackage()
         try env.install(v1)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
-        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context)
         WorkspaceCapabilityActivation.setSecretRecorded(
             true, forKey: PluginActivation.settingKey(componentID: "skill:report-agent", key: "API_TOKEN"), on: activation
         )

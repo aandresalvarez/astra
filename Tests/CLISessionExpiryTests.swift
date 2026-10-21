@@ -839,6 +839,11 @@ struct CLISessionExpiryTests {
         let repair = CLISessionExpiryClassifier.googleCloud.repair
         let events = [snapshot(task, run, TaskEventTypes.System.runtimeRepairRequired, repair.encoded())]
 
+        let visible = try #require(TaskRunStopEvidence.presentationRepair(events: events, runID: run.id, task: task))
+        #expect(visible.command == nil)
+        #expect(visible.verb == "Check")
+        #expect(visible.checkEnvironment?["CLOUDSDK_CONFIG"] == "/tmp/task gcloud")
+
         let targeted = try #require(await TaskRunStopEvidence.signInRepair(events: events, runID: run.id, task: task))
         #expect(targeted.command == nil)
         #expect(targeted.verb == "Check")
@@ -850,7 +855,7 @@ struct CLISessionExpiryTests {
         // The dock's actual action verifies the prepared manual repair.
         var checked: RepairAction?
         let guidance = await TaskRepairAction.perform(targeted, check: { repair in checked = repair; return false },
-            run: { _ in Issue.record("A manual repair cannot launch Terminal") })
+            run: { _ in Issue.record("A manual repair cannot launch Terminal"); return .refused })
         #expect(checked?.checkEnvironment?["CLOUDSDK_CONFIG"] == "/tmp/task gcloud")
         #expect(guidance?.title == "Setup needs attention")
 
