@@ -254,4 +254,70 @@ struct RuntimeEligibilityPreviewScopeTests {
         #expect(merged.candidates.count == 1)
         #expect(merged.taskID == first.task.id)
     }
+
+    /// The full pass now scores one runtime at a time and gives the main run
+    /// loop a turn in between, because scoring all six back to back held the
+    /// main actor for 0.5–0.9 s while the user typed. Splitting it must not
+    /// change a single verdict, including the launch block's fallback
+    /// suggestion, which is computed from every candidate.
+    @Test(
+        "Scoring runtimes one at a time reaches the same verdicts",
+        arguments: [RuntimeReadinessState.ready, .blocked]
+    )
+    func incrementalPassMatchesBackToBackPass(selectedReadiness: RuntimeReadinessState) async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let request = request(for: environment.task, selectedReadiness: selectedReadiness)
+
+        let backToBack = try #require(await request.evaluate())
+        var yields = 0
+        let incremental = try #require(await request.evaluate(betweenRuntimes: {
+            yields += 1
+            return await RuntimeEligibilityPreviewRequest.yieldToMainRunLoop()
+        }))
+
+        #expect(yields == AgentRuntimeAdapterRegistry.runtimeIDs.count - 1)
+        #expect(Set(incremental.candidates.keys) == Set(backToBack.candidates.keys))
+        for (runtime, candidate) in backToBack.candidates {
+            #expect(incremental.candidates[runtime]?.isEligible == candidate.isEligible, "\(runtime) verdict changed")
+            #expect(incremental.candidates[runtime]?.contractDigest == candidate.contractDigest, "\(runtime) contract changed")
+        }
+        #expect(incremental.launchBlock == backToBack.launchBlock)
+    }
+
+    /// A keystroke supersedes the preview. The pass must stop at the next
+    /// runtime boundary instead of scoring the rest for text nobody will send.
+    @Test("A superseded incremental pass stops at the next runtime")
+    func supersededIncrementalPassStops() async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let request = request(for: environment.task)
+
+        var yields = 0
+        let snapshot = await request.evaluate(betweenRuntimes: {
+            yields += 1
+            return yields < 2
+        })
+
+        #expect(snapshot == nil)
+        #expect(yields == 2, "the pass kept scoring after it was told to stop")
+    }
+
+    @Test("Yielding to the run loop reports a cancelled preview")
+    func yieldReportsCancellation() async {
+        let task = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await RuntimeEligibilityPreviewRequest.yieldToMainRunLoop()
+        }
+        #expect(await task.value == false)
+        #expect(await RuntimeEligibilityPreviewRequest.yieldToMainRunLoop())
+    }
 }

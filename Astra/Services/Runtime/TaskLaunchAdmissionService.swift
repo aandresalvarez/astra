@@ -97,7 +97,7 @@ enum TaskLaunchAdmissionService {
         candidateRuntimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs,
         secretStore: SecretStore = AdmissionMetadataSecretStore(),
         profile: RuntimeProfileProvider? = nil,
-        isRuntimeUsable: RuntimeUsabilityProvider = { _, settings in
+        isRuntimeUsable: @escaping RuntimeUsabilityProvider = { _, settings in
             !settings.executablePath.isEmpty
                 && FileManager.default.isExecutableFile(atPath: settings.executablePath)
         },
@@ -105,14 +105,106 @@ enum TaskLaunchAdmissionService {
             HostControlBrokerReadiness.isAvailable()
         }
     ) -> TaskRuntimeEligibilitySnapshot {
-        let runtimes = uniqueRuntimes([requestedRuntime] + candidateRuntimes)
-        let environment = DockerExecutionPlanner.resolveEnvironment(for: task)
-        let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
-        let contextText = intent.activationText
-        let hostControlBrokerAvailable = isHostControlBrokerAvailable()
+        let pass = AdmissionPass(
+            task: task,
+            intent: intent,
+            requestedRuntime: requestedRuntime,
+            runtimeConfiguration: runtimeConfiguration,
+            executionPolicy: executionPolicy,
+            fallbackPermissionPolicy: fallbackPermissionPolicy,
+            defaultPolicyLevelRaw: defaultPolicyLevelRaw,
+            phase: phase,
+            candidateRuntimes: candidateRuntimes,
+            secretStore: secretStore,
+            profile: profile,
+            isRuntimeUsable: isRuntimeUsable,
+            isHostControlBrokerAvailable: isHostControlBrokerAvailable
+        )
         var candidates: [AgentRuntimeID: TaskRuntimeAdmissionCandidate] = [:]
+        for runtime in pass.runtimes {
+            candidates[runtime] = pass.candidate(for: runtime)
+        }
+        return pass.snapshot(candidates: candidates)
+    }
 
-        for runtime in runtimes {
+    /// One admission evaluation, split so it can be scored a runtime at a
+    /// time. Each runtime costs roughly the same (about 85 ms on a large
+    /// task, 2026-10-21 prod log), so scoring all six in one go held the main
+    /// actor for half a second or more. `evaluate` scores them back to back;
+    /// `evaluateIncrementally` hands the main actor back between them.
+    @MainActor
+    struct AdmissionPass {
+        let task: AgentTask
+        let intent: TaskTurnIntentSnapshot
+        let requestedRuntime: AgentRuntimeID
+        let runtimeConfiguration: AgentRuntimeConfiguration
+        let executionPolicy: AgentRuntimeExecutionPolicy
+        let fallbackPermissionPolicy: PermissionPolicy
+        let defaultPolicyLevelRaw: String
+        let phase: RunPhase
+        let secretStore: SecretStore
+        let profile: RuntimeProfileProvider?
+        let isRuntimeUsable: RuntimeUsabilityProvider
+        /// The requested runtime first, then the other candidates.
+        let runtimes: [AgentRuntimeID]
+        let environment: WorkspaceExecutionEnvironment
+        let workspacePath: String
+        let contextText: String
+        let hostControlBrokerAvailable: Bool
+
+        init(
+            task: AgentTask,
+            intent: TaskTurnIntentSnapshot,
+            requestedRuntime: AgentRuntimeID,
+            runtimeConfiguration: AgentRuntimeConfiguration,
+            executionPolicy: AgentRuntimeExecutionPolicy,
+            fallbackPermissionPolicy: PermissionPolicy,
+            defaultPolicyLevelRaw: String,
+            phase: RunPhase,
+            candidateRuntimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs,
+            secretStore: SecretStore = AdmissionMetadataSecretStore(),
+            profile: RuntimeProfileProvider? = nil,
+            isRuntimeUsable: @escaping RuntimeUsabilityProvider = { _, settings in
+                !settings.executablePath.isEmpty
+                    && FileManager.default.isExecutableFile(atPath: settings.executablePath)
+            },
+            isHostControlBrokerAvailable: HostControlBrokerAvailabilityProvider = {
+                HostControlBrokerReadiness.isAvailable()
+            }
+        ) {
+            self.task = task
+            self.intent = intent
+            self.requestedRuntime = requestedRuntime
+            self.runtimeConfiguration = runtimeConfiguration
+            self.executionPolicy = executionPolicy
+            self.fallbackPermissionPolicy = fallbackPermissionPolicy
+            self.defaultPolicyLevelRaw = defaultPolicyLevelRaw
+            self.phase = phase
+            self.secretStore = secretStore
+            self.profile = profile
+            self.isRuntimeUsable = isRuntimeUsable
+            self.runtimes = TaskLaunchAdmissionService.uniqueRuntimes([requestedRuntime] + candidateRuntimes)
+            self.environment = DockerExecutionPlanner.resolveEnvironment(for: task)
+            self.workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+            self.contextText = intent.activationText
+            self.hostControlBrokerAvailable = isHostControlBrokerAvailable()
+        }
+
+        /// Scores every runtime, calling `betweenRuntimes` after each one but
+        /// the last. Returns nil, leaving the rest unscored, as soon as it
+        /// answers false.
+        func evaluateIncrementally(
+            betweenRuntimes: @MainActor () async -> Bool
+        ) async -> TaskRuntimeEligibilitySnapshot? {
+            var candidates: [AgentRuntimeID: TaskRuntimeAdmissionCandidate] = [:]
+            for (index, runtime) in runtimes.enumerated() {
+                if index > 0, await !betweenRuntimes() { return nil }
+                candidates[runtime] = candidate(for: runtime)
+            }
+            return snapshot(candidates: candidates)
+        }
+
+        func candidate(for runtime: AgentRuntimeID) -> TaskRuntimeAdmissionCandidate {
             let adapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
             let settings = adapter.launchSettings(configuration: runtimeConfiguration)
             let runtimeProfile = profile?(runtime, settings)
@@ -138,7 +230,7 @@ enum TaskLaunchAdmissionService {
                 TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: runtime)
                     + executionGrants
             )
-            let effectivePermissionPolicy = candidatePermissionPolicy(
+            let effectivePermissionPolicy = TaskLaunchAdmissionService.candidatePermissionPolicy(
                 task: task,
                 runtime: runtime,
                 fallbackPermissionPolicy: fallbackPermissionPolicy,
@@ -208,7 +300,7 @@ enum TaskLaunchAdmissionService {
                 discoveryIncompatibilities = [.policyBlocked(reason: reason)]
             } else { discoveryIncompatibilities = [] }
             let contract = LaunchResourceContract(plan: resourcePlan)
-            candidates[runtime] = TaskRuntimeAdmissionCandidate(
+            return TaskRuntimeAdmissionCandidate(
                 runtime: runtime,
                 capabilityResolutionSnapshot: capabilitySnapshot,
                 launchResourcePlan: resourcePlan,
@@ -219,7 +311,7 @@ enum TaskLaunchAdmissionService {
                     + policyIncompatibilities,
                 policyDiagnostics: manifest.providerRender.diagnostics,
                 runtimeEvidence: runtimeProfile.observedEvidence,
-                contractDigest: contractDigest(
+                contractDigest: TaskLaunchAdmissionService.contractDigest(
                     intent: intent,
                     snapshot: capabilitySnapshot,
                     contract: contract
@@ -227,31 +319,35 @@ enum TaskLaunchAdmissionService {
             )
         }
 
-        let requestedCandidate = candidates[requestedRuntime]!
-        let fallback = orderedFallbackRuntimes(
-            requestedRuntime: requestedRuntime,
-            defaultRuntime: runtimeConfiguration.defaultRuntimeID,
-            candidates: runtimes
-        ).first { candidates[$0]?.isEligible == true }
-        let launchBlock: TaskRuntimeCompatibilityLaunchBlock?
-        if requestedCandidate.isEligible {
-            launchBlock = nil
-        } else {
-            launchBlock = makeLaunchBlock(
-                runtime: requestedRuntime,
-                candidate: requestedCandidate,
-                suggestedRuntime: fallback
+        func snapshot(
+            candidates: [AgentRuntimeID: TaskRuntimeAdmissionCandidate]
+        ) -> TaskRuntimeEligibilitySnapshot {
+            let requestedCandidate = candidates[requestedRuntime]!
+            let fallback = TaskLaunchAdmissionService.orderedFallbackRuntimes(
+                requestedRuntime: requestedRuntime,
+                defaultRuntime: runtimeConfiguration.defaultRuntimeID,
+                candidates: runtimes
+            ).first { candidates[$0]?.isEligible == true }
+            let launchBlock: TaskRuntimeCompatibilityLaunchBlock?
+            if requestedCandidate.isEligible {
+                launchBlock = nil
+            } else {
+                launchBlock = TaskLaunchAdmissionService.makeLaunchBlock(
+                    runtime: requestedRuntime,
+                    candidate: requestedCandidate,
+                    suggestedRuntime: fallback
+                )
+            }
+
+            return TaskRuntimeEligibilitySnapshot(
+                taskID: task.id,
+                intent: intent,
+                requestedRuntime: requestedRuntime,
+                selectedRuntime: requestedRuntime,
+                candidates: candidates,
+                launchBlock: launchBlock
             )
         }
-
-        return TaskRuntimeEligibilitySnapshot(
-            taskID: task.id,
-            intent: intent,
-            requestedRuntime: requestedRuntime,
-            selectedRuntime: requestedRuntime,
-            candidates: candidates,
-            launchBlock: launchBlock
-        )
     }
 
     private static func candidatePermissionPolicy(

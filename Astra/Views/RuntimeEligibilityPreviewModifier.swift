@@ -126,13 +126,28 @@ struct RuntimeEligibilityPreviewRequest {
     static let unanchoredComposerPreviewID = UUID(
         uuidString: "8F1D4C2E-0000-4000-A000-000000000001"
     )!
-    private let evaluation: @MainActor ([AgentRuntimeID]?) async -> TaskRuntimeEligibilitySnapshot?
+    typealias BetweenRuntimes = @MainActor () async -> Bool
+    private let evaluation: @MainActor ([AgentRuntimeID]?, BetweenRuntimes?) async -> TaskRuntimeEligibilitySnapshot?
 
     /// `candidateRuntimes: nil` scores every registered runtime.
+    /// `betweenRuntimes` runs after each scored runtime but the last; answering
+    /// false abandons the evaluation (nil). `yieldToMainRunLoop` is the one
+    /// the composer uses.
     func evaluate(
-        candidateRuntimes: [AgentRuntimeID]? = nil
+        candidateRuntimes: [AgentRuntimeID]? = nil,
+        betweenRuntimes: BetweenRuntimes? = nil
     ) async -> TaskRuntimeEligibilitySnapshot? {
-        await evaluation(candidateRuntimes)
+        await evaluation(candidateRuntimes, betweenRuntimes)
+    }
+
+    /// Lets the main run loop take a turn, so keystrokes and layout queued
+    /// behind an admission pass are handled before the next runtime is
+    /// scored. A timer, not `Task.yield()`: a yield re-enqueues on the main
+    /// queue and can resume before the run loop sees any input. Answers
+    /// false once the preview has been superseded.
+    static func yieldToMainRunLoop() async -> Bool {
+        try? await Task.sleep(for: .milliseconds(1))
+        return !Task.isCancelled
     }
 
     static func existingTask(
@@ -170,7 +185,7 @@ struct RuntimeEligibilityPreviewRequest {
             taskID: task.id,
             acceptedTurnCharacterCount: acceptedTurn.count,
             selectedRuntime: task.resolvedRuntimeID
-        ) { candidateRuntimes in
+        ) { candidateRuntimes, betweenRuntimes in
             let intent = TaskTurnIntentResolver.preview(for: task, acceptedTurn: acceptedTurn)
             return await evaluate(
                 task: task,
@@ -180,7 +195,8 @@ struct RuntimeEligibilityPreviewRequest {
                 skipPermissions: skipPermissions,
                 providerSettings: providerSettings,
                 readinessStates: readinessStates,
-                candidateRuntimes: candidateRuntimes
+                candidateRuntimes: candidateRuntimes,
+                betweenRuntimes: betweenRuntimes
             )
         }
     }
@@ -224,7 +240,7 @@ struct RuntimeEligibilityPreviewRequest {
             taskID: draftTask?.id,
             acceptedTurnCharacterCount: acceptedTurn.count,
             selectedRuntime: requestedRuntime
-        ) { candidateRuntimes in
+        ) { candidateRuntimes, betweenRuntimes in
             let goal = acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines)
             // Preview the task the composer will actually submit, never the managed
             // draft: `quickRun` deletes the draft and enqueues a fresh task carrying the
@@ -280,7 +296,8 @@ struct RuntimeEligibilityPreviewRequest {
                 skipPermissions: skipPermissions,
                 providerSettings: providerSettings,
                 readinessStates: readinessStates,
-                candidateRuntimes: candidateRuntimes
+                candidateRuntimes: candidateRuntimes,
+                betweenRuntimes: betweenRuntimes
             )
         }
     }
@@ -293,7 +310,8 @@ struct RuntimeEligibilityPreviewRequest {
         skipPermissions: Bool,
         providerSettings: ProviderSettingsSnapshot,
         readinessStates: [AgentRuntimeID: RuntimeReadinessState],
-        candidateRuntimes: [AgentRuntimeID]?
+        candidateRuntimes: [AgentRuntimeID]?,
+        betweenRuntimes: BetweenRuntimes?
     ) async -> TaskRuntimeEligibilitySnapshot? {
         guard !Task.isCancelled else { return nil }
         var executionPolicy = AgentRuntimeExecutionPolicy.default.withTurnIntentSnapshot(intent)
@@ -314,7 +332,7 @@ struct RuntimeEligibilityPreviewRequest {
             }
         }
         guard !Task.isCancelled else { return nil }
-        return TaskLaunchAdmissionService.evaluate(
+        let pass = TaskLaunchAdmissionService.AdmissionPass(
             task: task,
             intent: intent,
             requestedRuntime: requestedRuntime,
@@ -332,6 +350,7 @@ struct RuntimeEligibilityPreviewRequest {
                     && (runtime != .copilotCLI || copilotExecutableAvailable != false)
             }
         )
+        return await pass.evaluateIncrementally(betweenRuntimes: betweenRuntimes ?? { true })
     }
 
     private static func readinessSignature(
@@ -416,12 +435,30 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
                 guard !Task.isCancelled else { return }
             }
 
+            // Every runtime costs about as much as the selected one, so scoring
+            // them back to back held the main actor for 0.5–0.9 s, often just
+            // as typing resumed (2026-10-21 prod log). Score one at a time and
+            // let the run loop in between: a keystroke then waits for at most
+            // one runtime, and cancels the rest.
             let fullStartedAt = DispatchTime.now().uptimeNanoseconds
+            let slices = MainActorSliceMeter()
             let full = await CapabilityResolutionInputs.$pinned.withValue(inputs) {
-                await request.evaluate()
+                await request.evaluate(betweenRuntimes: {
+                    slices.endSlice()
+                    let proceed = await RuntimeEligibilityPreviewRequest.yieldToMainRunLoop()
+                    slices.beginSlice()
+                    return proceed
+                })
             }
+            slices.endSlice()
             guard !Task.isCancelled else { return }
-            logEvaluation(scope: "full", start: fullStartedAt, snapshot: full, inputsMilliseconds: inputsMilliseconds)
+            logEvaluation(
+                scope: "full",
+                start: fullStartedAt,
+                snapshot: full,
+                inputsMilliseconds: inputsMilliseconds,
+                longestSliceMilliseconds: slices.longestMilliseconds
+            )
             state = .evaluated(signature: request.signature, snapshot: full)
         }
     }
@@ -430,22 +467,44 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
         scope: String,
         start: UInt64,
         snapshot: TaskRuntimeEligibilitySnapshot?,
-        inputsMilliseconds: Double
+        inputsMilliseconds: Double,
+        longestSliceMilliseconds: Double? = nil
     ) {
+        var fields = [
+            "accepted_turn_chars": PerformanceTelemetryFields.count(request.acceptedTurnCharacterCount),
+            "candidate_count": PerformanceTelemetryFields.count(snapshot?.candidates.count ?? 0),
+            // Off the main actor; kept out of the logged duration.
+            "inputs_load_ms": String(format: "%.1f", inputsMilliseconds),
+            "scope": scope,
+            "result": snapshot == nil ? "unavailable" : "resolved"
+        ]
+        // The full pass yields between runtimes, so its duration is wall
+        // clock; this is the longest the main actor was held in one go.
+        if let longestSliceMilliseconds {
+            fields["longest_main_actor_slice_ms"] = String(format: "%.1f", longestSliceMilliseconds)
+        }
         PerformanceTelemetry.logIfNeeded(
             "runtime_eligibility_preview",
             start: start,
             thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
-            fields: [
-                "accepted_turn_chars": PerformanceTelemetryFields.count(request.acceptedTurnCharacterCount),
-                "candidate_count": PerformanceTelemetryFields.count(snapshot?.candidates.count ?? 0),
-                // Off the main actor; kept out of the logged duration.
-                "inputs_load_ms": String(format: "%.1f", inputsMilliseconds),
-                "scope": scope,
-                "result": snapshot == nil ? "unavailable" : "resolved"
-            ],
+            fields: fields,
             taskID: request.taskID
         )
+    }
+}
+
+/// Times the stretches an incremental admission pass holds the main actor.
+@MainActor
+final class MainActorSliceMeter {
+    private var sliceStart = DispatchTime.now().uptimeNanoseconds
+    private(set) var longestMilliseconds: Double = 0
+
+    func beginSlice() {
+        sliceStart = DispatchTime.now().uptimeNanoseconds
+    }
+
+    func endSlice() {
+        longestMilliseconds = max(longestMilliseconds, PerformanceTelemetry.elapsedMilliseconds(since: sliceStart))
     }
 }
 
