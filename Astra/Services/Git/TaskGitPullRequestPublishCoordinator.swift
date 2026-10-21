@@ -263,7 +263,7 @@ final class TaskGitPullRequestPublishCoordinator {
             )
         } catch {
             task.events.removeAll { $0.id == event.id }
-            modelContext.delete(event)
+            TaskEventIndex.delete(event, from: modelContext)
             task.updatedAt = previousUpdatedAt
             throw error
         }

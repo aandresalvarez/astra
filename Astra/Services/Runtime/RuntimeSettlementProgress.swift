@@ -62,7 +62,7 @@ enum RuntimeSettlementProgress {
             .compactMap { $0.run?.id })
         var changed = false
         for event in captures where event.run.map({ settled.contains($0.id) }) == true {
-            modelContext.delete(event)
+            TaskEventIndex.delete(event, from: modelContext)
             changed = true
         }
         return changed

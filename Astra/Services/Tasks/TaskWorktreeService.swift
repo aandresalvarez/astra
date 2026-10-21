@@ -737,7 +737,7 @@ enum TaskWorktreeService {
             undoAdoption = {
                 if let draft = adoptingDraft, let copiedBinding {
                     draft.events.removeAll { $0 === copiedBinding }
-                    modelContext.delete(copiedBinding)
+                    TaskEventIndex.delete(copiedBinding, from: modelContext)
                 }
                 // A reserved prior checkout must be cleared only after
                 // rollback. Clearing it first lets macOS 26 discard the
@@ -749,6 +749,7 @@ enum TaskWorktreeService {
                     restorePreviousDraft()
                 }
                 modelContext.rollback()
+                TaskEventIndex.shared.markAllStale()
                 restorePreviousDraft()
             }
         }
@@ -1218,6 +1219,7 @@ enum TaskWorktreeService {
         let saved = persist(workspace, modelContext)
         guard saved else {
             modelContext.rollback()
+            TaskEventIndex.shared.markAllStale()
             for record in added { try? cleanupStore.remove(record) }
             for discard in discards {
                 AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: discard.taskID, fields: [

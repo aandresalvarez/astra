@@ -106,7 +106,7 @@ enum NewTaskWorktreeComposerFlow {
         } catch {
             for event in draft.events where event.hasType(TaskEventTypes.Task.worktreeRequested)
                 && !previousEvents.contains(event.id) {
-                modelContext.delete(event)
+                TaskEventIndex.delete(event, from: modelContext)
             }
             draft.updatedAt = previousUpdatedAt
             AppLogger.audit(.taskFailed, category: "Persistence", taskID: draft.id, fields: [

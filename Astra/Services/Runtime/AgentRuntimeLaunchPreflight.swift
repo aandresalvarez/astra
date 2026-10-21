@@ -454,7 +454,7 @@ enum AgentRuntimeLaunchPreflight {
         guard persist(task, modelContext) else {
             task.runtimePermissionGrantsJSON = grantsBefore
             for event in task.events where !eventsBefore.contains(event.id) {
-                modelContext.delete(event)
+                TaskEventIndex.delete(event, from: modelContext)
             }
             AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
                 "source": "connector_credential_egress",

@@ -119,8 +119,20 @@ enum ConnectorMutationRequirementResolver {
     /// already sent if the send was claimed — rather than letting it vanish.
     @MainActor
     static func pendingMutations(task: AgentTask) -> [TaskStagedConnectorMutation] {
-        pendingMutations(events: task.events.map { TaskOutcomeEventRecord(event: $0) })
+        pendingMutations(events: TaskEventIndex.records(for: task, ofTypes: resolutionEventTypes).map {
+            TaskOutcomeEventRecord(id: $0.id, runID: $0.runID, type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
+        })
     }
+
+    /// Every type `pendingMutations(events:)` reads.
+    static let resolutionEventTypes: Set<String> = [
+        ConnectorMutationEventTypes.staged,
+        ConnectorMutationEventTypes.receipt,
+        ConnectorMutationEventTypes.failed,
+        ConnectorMutationEventTypes.indeterminate,
+        ConnectorMutationEventTypes.declined,
+        ConnectorMutationEventTypes.quarantined
+    ]
 
     /// The same rule over only the rows that can matter. Fetching by type keeps
     /// the answer exact across every run the task ever had — unlike a
@@ -208,8 +220,7 @@ enum ConnectorMutationRequirementResolver {
     static func recordedStagedPaths(task: AgentTask) -> Set<String> {
         let decoder = TaskEventPayloadCodec.makeDecoder()
         return Set(
-            task.events
-                .filter { $0.type == ConnectorMutationEventTypes.staged }
+            TaskEventIndex.records(for: task, ofTypes: [ConnectorMutationEventTypes.staged])
                 .compactMap { event -> String? in
                     guard let data = event.payload.data(using: .utf8),
                           let staged = try? decoder.decode(TaskStagedConnectorMutation.self, from: data) else {

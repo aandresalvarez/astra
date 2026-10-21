@@ -57,14 +57,20 @@ enum TaskDeliverableExpectation {
     }
 
     static func followsUpDeliveredRequest(_ run: TaskRun, in task: AgentTask) -> Bool {
-        let relevantTypes = deliveryHistoryEventTypes
-        return followsUpDeliveredRequest(
-            runID: run.id,
-            startedAt: run.startedAt,
-            events: task.events.lazy
-                .filter { relevantTypes.contains($0.type) }
-                .map { HistoryEvent(type: $0.type, runID: $0.run?.id, timestamp: $0.timestamp, payload: $0.payload) },
-            runs: task.runs.lazy.map { HistoryRun(id: $0.id, startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason) }
+        followsUpDeliveredRequest(runID: run.id, startedAt: run.startedAt, in: task)
+    }
+
+    /// From the task's delivery-history records and runs: `TaskEventIndex`
+    /// for a prepared task, so the answer costs the task's turns, never its
+    /// event log.
+    static func followsUpDeliveredRequest(runID: UUID, startedAt: Date, in task: AgentTask) -> Bool {
+        followsUpDeliveredRequest(
+            runID: runID,
+            startedAt: startedAt,
+            events: TaskEventIndex.records(for: task, ofTypes: deliveryHistoryEventTypes).lazy
+                .map { HistoryEvent(type: $0.type, runID: $0.runID, timestamp: $0.timestamp, payload: $0.payload) },
+            runs: TaskEventIndex.runs(for: task).lazy
+                .map { HistoryRun(id: $0.id, startedAt: $0.startedAt, status: $0.runStatus, stopReason: $0.stopReason) }
         )
     }
 

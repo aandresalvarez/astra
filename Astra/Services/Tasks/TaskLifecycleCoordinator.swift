@@ -1378,7 +1378,7 @@ struct ExecutionMutationSnapshot {
         task.runtimePermissionOpenRequestsJSON = runtimePermissionOpenRequestsJSON
         task.runtimePermissionGrantsJSON = runtimePermissionGrantsJSON
         for event in task.events where !eventIDs.contains(event.id) {
-            modelContext.delete(event)
+            TaskEventIndex.delete(event, from: modelContext)
         }
     }
 }

@@ -109,10 +109,13 @@ extension TaskContextStateManager {
     }
 
     public static func firstConversationRequestValue(for task: AgentTask) -> String? {
-        firstConversationEventValue(for: task)?
+        TaskEventIndex.records(for: task, ofTypes: conversationRequestEventTypes)
+            .first?
             .payload
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    static let conversationRequestEventTypes: Set<String> = ["user.message", TaskPlanConversationEventTypes.userMessage]
 
     public static func firstConversationEventValue(for task: AgentTask) -> TaskEvent? {
         task.events
@@ -150,17 +153,17 @@ private struct ObjectiveOverride: Equatable {
 
 private func latestObjectiveOverride(for task: AgentTask) -> ObjectiveOverride? {
     let pendingTurnMessageIDs = TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
-    let userMessages = task.events
-        .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
-        .filter { !pendingTurnMessageIDs.contains($0.id) }
-        .sorted { $0.timestamp < $1.timestamp }
+    let userMessages = TaskEventIndex.records(
+        for: task,
+        ofTypes: TaskContextStateManager.conversationRequestEventTypes
+    ).filter { !pendingTurnMessageIDs.contains($0.id) }
     guard userMessages.count > 1 else { return nil }
 
     for event in userMessages.dropFirst().reversed() {
         guard let objective = objectiveOverrideCandidate(from: event.payload) else { continue }
         return ObjectiveOverride(
             objective: objective,
-            source: activeEventSource(event, summary: "User objective override")
+            source: activeSourcePointer(kind: "event", id: event.id.uuidString, summary: "User objective override")
         )
     }
     return nil
@@ -263,10 +266,6 @@ private func activeSourcePointer(
         path: path,
         summary: activeBoundedInline(summary, maxCharacters: 220)
     )
-}
-
-private func activeEventSource(_ event: TaskEvent, summary: String) -> TaskContextState.SourcePointer {
-    activeSourcePointer(kind: "event", id: event.id.uuidString, summary: summary)
 }
 
 private let explicitObjectiveMarkers: [String] = [

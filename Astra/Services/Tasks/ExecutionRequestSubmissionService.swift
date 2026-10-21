@@ -329,7 +329,7 @@ enum ExecutionRequestSubmissionService {
                 task.goal = previousGoal
                 task.runtimeExplicitlySelected = previousRuntimeExplicitlySelected
                 for event in task.events where !previousEventIDs.contains(event.id) && !event.isDeleted {
-                    modelContext.delete(event)
+                    TaskEventIndex.delete(event, from: modelContext)
                 }
             }
         )
@@ -352,7 +352,7 @@ enum ExecutionRequestSubmissionService {
         }
     }
 
-    static func decodeSourcePayload(_ event: TaskEvent) -> TaskExecutionSourcePayloadV1? {
+    static func decodeSourcePayload(_ event: some TaskEventValue) -> TaskExecutionSourcePayloadV1? {
         guard [
             TaskEventTypes.ExecutionRequest.initial,
             TaskEventTypes.ExecutionRequest.retry,
@@ -504,8 +504,8 @@ enum ExecutionRequestSubmissionService {
             }
         } catch {
             modelContext.delete(request)
-            modelContext.delete(event)
-            if let attachmentsEvent { modelContext.delete(attachmentsEvent) }
+            TaskEventIndex.delete(event, from: modelContext)
+            if let attachmentsEvent { TaskEventIndex.delete(attachmentsEvent, from: modelContext) }
             rollback()
             return .failure(.persistenceFailed(String(describing: type(of: error))))
         }

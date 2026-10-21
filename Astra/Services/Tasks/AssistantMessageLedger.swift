@@ -237,7 +237,7 @@ enum AssistantMessageRecording {
             }
         }
         for row in rows.dropFirst(pieces.count) {
-            modelContext.delete(row)
+            TaskEventIndex.delete(row, from: modelContext)
             changedInPlace = true
         }
         let kept = Array(rows.prefix(pieces.count))
@@ -275,7 +275,7 @@ enum AssistantMessageRecording {
             }
         }
         for row in rows.dropFirst(pieces.count) {
-            modelContext.delete(row)
+            TaskEventIndex.delete(row, from: modelContext)
         }
         let kept = Array(rows.prefix(pieces.count))
         ledger.update(index) { $0.rows = kept }

@@ -170,7 +170,7 @@ public enum TaskObjectiveAssessmentEventStore {
             // A failed insert must not remain visible as an in-memory source
             // event, otherwise the next retry would incorrectly deduplicate
             // against state that never reached durable storage.
-            modelContext.delete(event)
+            TaskEventIndex.delete(event, from: modelContext)
             task.updatedAt = previousUpdatedAt
             return .persistenceFailed
         }
