@@ -9,9 +9,10 @@ import ASTRAPersistence
 @MainActor
 enum ConnectorCredentialEditor {
     enum Failure: Error, LocalizedError {
-        case changedAccount, invalidKey, saveFailed, unreadableChanges, otherChangePending, restartRequired
+        case changedAccount, invalidKey, saveFailed, unreadableChanges, otherChangePending, restartRequired, pendingEdits
         var errorDescription: String? {
             switch self {
+            case .pendingEdits: "Save or discard pending edits before changing credentials."
             case .changedAccount: "This account changed. Reopen it before editing credentials."
             case .invalidKey: "Choose a credential key before saving."
             case .saveFailed: "The credential change could not be saved. Its previous value was kept."
@@ -61,6 +62,7 @@ enum ConnectorCredentialEditor {
         guard !key.isEmpty else { throw Failure.invalidKey }
         let scope = try workspaceScope(of: account, modelContext: modelContext)
         try requireReady(scope, modelContext: modelContext)
+        guard !modelContext.hasChanges else { throw Failure.pendingEdits }
         let previous = Snapshot(account)
         // A promoted legacy setting may have a newer vault value without a
         // credential marker. Preserve only keys the installed owner declares

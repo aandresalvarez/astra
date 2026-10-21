@@ -7,6 +7,16 @@ import ASTRACore
 /// library, installer and runtime keep working unchanged underneath it.
 @Suite("Plugin manifest")
 struct PluginManifestTests {
+    @Test("A version-marked incomplete manifest cannot fall back to legacy decoding", arguments: [1, 999])
+    func incompleteVersionMarkedManifestFailsClosed(version: Int) throws {
+        var hybrid = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(builtIn("gcloud-workflow"))) as? [String: Any])
+        hybrid["manifestVersion"] = version
+        hybrid["worksOn"] = ["claude_code": "unsupported"]
+        let data = try JSONSerialization.data(withJSONObject: hybrid)
+        #expect(PluginManifestConverter.isManifest(data))
+        #expect(throws: (any Error).self) { try PluginManifestConverter.decodePackage(from: data) }
+    }
+
     @Test("An MCP process-start check that the package cannot carry is rejected")
     func processStartCheckIsNotSilentlyAccepted() throws {
         var package = try builtIn("google-workspace")

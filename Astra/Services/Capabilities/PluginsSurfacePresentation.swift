@@ -191,9 +191,9 @@ enum PluginsSurfacePresentation {
 
     /// The setup checks an added plugin's prerequisites failed, a pending step
     /// each. A check the read-only policy refused (`notChecked`) is pending
-    /// too: it never passed. It just offers no repair.
+    /// too: it never passed. A missing result remains pending while scanning.
     static func pendingSetupChecks(for package: PluginPackage, statuses: [String: HealthStatus]) -> Int {
-        package.prerequisites.filter { statuses[$0.id].map { !$0.isUsable } ?? false }.count
+        package.prerequisites.filter { statuses[$0.id].map { !$0.isUsable } ?? true }.count
     }
 
     /// The required accounts an added plugin has no working sign-in for: a

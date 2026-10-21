@@ -145,8 +145,10 @@ struct PluginRuntimeProjection {
                 if let primarySkill {
                     for account in accounts { owners[account.id, default: []].insert(primarySkill.id) }
                 }
+                let usableAccountIDs = Set(accounts.map(\.id))
                 projectedBindings += activation.bindings.filter { binding in
-                    !binding.isDeleted && binding.componentID == componentID && binding.account.map { !$0.isDeleted } == true
+                    !binding.isDeleted && binding.componentID == componentID
+                        && binding.account.map { usableAccountIDs.contains($0.id) } == true
                 }
                 for account in accounts {
                     if connectorMode == .runtimeCopies { bindingOwners[account.id, default: []].append((spec, package)) }
@@ -427,22 +429,24 @@ struct PluginRuntimeProjection {
         creator: (String) -> PluginPackage?
     ) {
         guard let originID = account.originPackageID, !originID.isEmpty, let first = bindings.first else { return }
-        var found: (spec: PluginConnector, package: PluginPackage)?
-        for binding in bindings where found == nil {
-            found = creatorDeclaration(of: account, originID: originID, binding: binding.spec, in: binding.package, creator: creator)
+        let declarations = bindings.compactMap { binding in
+            creatorDeclaration(of: account, originID: originID, binding: binding.spec, in: binding.package, creator: creator)
         }
-        guard let declaration = found else {
+        guard !declarations.isEmpty else {
             let shared = bindings.dropFirst().reduce(storedConfigKeys(of: first.spec, in: first.package, on: copy)) {
                 $0.intersection(storedConfigKeys(of: $1.spec, in: $1.package, on: copy))
             }
             retain(credentials: [], config: shared, on: copy)
             return
         }
-        retain(
-            credentials: Set(PluginConnectorFieldTrust.asStored(declaration.spec, in: declaration.package).credentialHints.map(\.key)),
-            config: storedConfigKeys(of: declaration.spec, in: declaration.package, on: copy),
-            on: copy
-        )
+        let credentials = Set(declarations.flatMap {
+            PluginConnectorFieldTrust.asStored($0.spec, in: $0.package).credentialHints.map(\.key)
+        })
+        let canonicalSecrets = Set(credentials.map(ConnectorCredentialKey.canonical))
+        let config = declarations.reduce(into: Set<String>()) {
+            $0.formUnion(storedConfigKeys(of: $1.spec, in: $1.package, on: copy))
+        }.filter { !canonicalSecrets.contains(ConnectorCredentialKey.canonical($0)) }
+        retain(credentials: credentials, config: Set(config), on: copy)
     }
 
     /// The connector declaration that created `account`: `binding` when the

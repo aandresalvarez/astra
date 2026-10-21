@@ -496,14 +496,14 @@ struct RetryInterruptedRunTests {
         task.skillSnapshots = [SkillSnapshotConfig(
             id: UUID().uuidString, name: "GitHub Agent", icon: "key", description: "GitHub pull requests",
             allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
-            environmentKeys: ["PATH", "GH_TOKEN", "CLOUDSDK_CONFIG"], environmentValues: ["", "", ""], isGlobal: false,
+            environmentKeys: ["PATH", "GH_TOKEN", "CLOUDSDK_CONFIG", "HOME"], environmentValues: ["", "", "", "/tmp/task-selected-home"], isGlobal: false,
             connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
             createdAt: Date(), updatedAt: Date()
         )]
         env.context.insert(workspace)
         env.context.insert(task)
         try env.context.save()
-        #expect(TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gh") == ["PATH": "", "GH_TOKEN": ""])
+        #expect(TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gh") == ["PATH": "", "GH_TOKEN": "", "HOME": "/tmp/task-selected-home"])
         #expect(TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "/opt/sdk/bin/gcloud")?["CLOUDSDK_CONFIG"] == "")
         // The resumed shell searches no directory, so it finds no `git`; nor
         // does the check, though ASTRA's own PATH has one.
