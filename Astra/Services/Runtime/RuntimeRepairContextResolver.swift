@@ -6,6 +6,7 @@ enum RuntimeRepairContextResolver {
     static func resolve(_ context: RuntimeRepairContext, environment: [String: String]?) -> RuntimeRepairContext {
         let checked = context.repair.checking(in: environment)
         var repair = CLISessionExpiryClassifier.checkingCredentialFile(checked)
+            .targetingCredentialStore(checked.checkEnvironment)
         // Environment credentials are process-local, never part of the durable
         // context. The resumed run supplies its projected environment again.
         repair.checkEnvironment = nil
