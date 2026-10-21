@@ -1285,7 +1285,10 @@ struct TaskMainView: View {
     @ViewBuilder
     private func contextPreviewSheet(for request: PromptContextPreviewRequest) -> some View {
         if let manifest = contextPreviewManifest(for: request) {
-            PromptContextPreviewSheet(manifest: manifest)
+            PromptContextPreviewSheet(
+                manifest: manifest,
+                orientationDirectory: TaskWorkspaceAccess(task: task).codeWorkingDirectory
+            )
                 .frame(minWidth: 700, minHeight: 600)
         } else {
             PromptContextPreviewUnavailableSheet(
