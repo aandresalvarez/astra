@@ -303,7 +303,6 @@ struct CapabilityInstaller {
                 }
             }
 
-            let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
             // A skill setting an account carries as a plain setting, unless a
             // connector of this plugin stores that key as a credential.
             let movedSettings = Set(package.connectors.flatMap { PluginConnectorFieldTrust.settingsStoredAsCredentials(of: $0, in: package) })
@@ -311,6 +310,15 @@ struct CapabilityInstaller {
 
             for pluginSkill in package.skills {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
+                // Reuse setup may supply this skill's explicit activation
+                // values independently of each account's settings.
+                var skillConfigInputs = PluginSetupInputs.view(configInputs, component: componentID,
+                    includingShared: package.connectors.isEmpty)
+                let skillCredentialInputs = PluginSetupInputs.view(credentialInputs, component: componentID,
+                    includingShared: package.connectors.isEmpty)
+                for key in pluginSkill.environmentKeys where Skill.isSecretEnvironmentKey(key) {
+                    if let value = skillCredentialInputs[key] { skillConfigInputs[key] = value }
+                }
                 let projectedID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
                 try saveSkillSettings(
                     pluginSkill,

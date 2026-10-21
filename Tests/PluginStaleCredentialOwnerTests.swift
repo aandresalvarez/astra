@@ -33,7 +33,7 @@ struct PluginStaleCredentialOwnerTests {
             let staleWorkspace = try #require(try stale.fetch(FetchDescriptor<Workspace>()).first)
             let staleActivation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: staleWorkspace))
             let originalGeneration = staleActivation.credentialNamespaceSeed
-            try #require(PluginOperations.setting("SECOND_TOKEN", of: package.skills[0], in: staleActivation) == "older-second-token")
+            try #require(try PluginOperations.setting("SECOND_TOKEN", of: package.skills[0], in: staleActivation) == "older-second-token")
             try PluginOperations.setSetting("SECOND_TOKEN", to: "newest-second-token", of: package.skills[0],
                 pluginID: package.id, in: env.workspace, modelContext: env.context)
             let savedBefore = ModelContext(env.context.container)
@@ -70,11 +70,11 @@ struct PluginStaleCredentialOwnerTests {
             if operation == "update" {
                 var renamed = package.skills[0]
                 renamed.id = "renamed-agent"
-                #expect(PluginOperations.setting("SECOND_TOKEN", of: renamed, in: after) == "newest-second-token")
+                #expect(try PluginOperations.setting("SECOND_TOKEN", of: renamed, in: after) == "newest-second-token")
                 #expect(after.recordedVersion == "2.0.0")
             } else {
                 #expect(after.credentialNamespaceSeed == latestGeneration)
-                #expect(PluginOperations.setting("SECOND_TOKEN", of: package.skills[0], in: after) == "newest-second-token")
+                #expect(try PluginOperations.setting("SECOND_TOKEN", of: package.skills[0], in: after) == "newest-second-token")
                 #expect(try savedAfter.fetchCount(FetchDescriptor<PluginOperationReceipt>()) == count)
             }
         }

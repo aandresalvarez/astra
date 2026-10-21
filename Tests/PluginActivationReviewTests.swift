@@ -147,9 +147,21 @@ struct PluginActivationReviewTests {
         v2.skills[0].environmentValues.append("")
         try library.install(v2, sourceMetadata: .builtIn())
         let packages = library.installedPackages()
+        let account = try #require(workspace.connectors.first)
+        let accountVersion = account.originPackageVersion
+        var checkedBeforeMutation = false
+        SecretsRefusingDeletes.beforeDelete = { key, skillID in
+            guard key == "API_TOKEN", skillID == namespace else { return }
+            checkedBeforeMutation = true
+            #expect(!context.hasChanges, "Secret cleanup admission must precede domain mutation")
+            #expect(account.originPackageVersion == accountVersion)
+        }
+        defer { SecretsRefusingDeletes.beforeDelete = nil }
         #expect(throws: PluginUpdateService.UpdateError.secretCleanupPending(key: "API_TOKEN")) {
             try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .release, secrets: SecretsRefusingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
         }
+        SecretsRefusingDeletes.beforeDelete = nil
+        #expect(checkedBeforeMutation)
         #expect(activation.recordedVersion == "1.0.0")
         #expect(!context.hasChanges)
         try PluginUpdateService.reconcileAll(modelContext: context, packages: packages, mode: .automatic, secrets: SecretsRefusingDeletes.self, approvalRecords: PluginOperationsTests.approvals(packages))
@@ -624,9 +636,13 @@ struct PluginActivationReviewTests {
 
 /// Skill secrets with no values whose deletes all fail.
 private enum SecretsRefusingDeletes: SkillSecretPersisting {
+    nonisolated(unsafe) static var beforeDelete: ((String, UUID) -> Void)?
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? { nil }
     static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool { true }
-    static func deleteSecret(key: String, skillID: UUID) -> Bool { false }
+    static func deleteSecret(key: String, skillID: UUID) -> Bool {
+        beforeDelete?(key, skillID)
+        return false
+    }
     static func secretExists(key: String, skillID: UUID) -> Bool { false }
     static func deleteAllSecrets(skillID: UUID) {}
     static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool { false }

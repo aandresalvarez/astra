@@ -231,7 +231,7 @@ enum PluginActivationMigration {
                 let pluginID = trimmed(connector.originPackageID)
                 return connectors.contains { other in
                     !other.isGlobal && other.workspace?.id == workspace.id && trimmed(other.originPackageID) == pluginID
-                        && connectorComponentID(other, package: packagesByID[pluginID]) == componentID
+                        && connectorComponentIDs(other, package: packagesByID[pluginID]).contains(componentID)
                 }
             }
 
@@ -247,22 +247,22 @@ enum PluginActivationMigration {
                     CapabilityResourceOrigin.releaseProvenance(of: connector)
                     continue
                 }
-                let componentID = connectorComponentID(connector, package: packagesByID[pluginID])
-                let bindTo = targets(pluginID: pluginID, owner: connector.isGlobal ? nil : connector.workspace)
-                    .filter { !replacedShared(connector, componentID: componentID, in: $0.0) }
-                    // Listed there on its own, it stays the workspace's
-                    // shared row: bound, the off activation would hide it.
+                let componentIDs = connectorComponentIDs(connector, package: packagesByID[pluginID])
+                let using = targets(pluginID: pluginID, owner: connector.isGlobal ? nil : connector.workspace)
                     .filter { !usesOnItsOwn($0.0, pluginID, \.globalConnectorIDs, connector.id) }
-                guard !bindTo.isEmpty else {
+                // A legacy unstamped account served every matching declaration.
+                // Preserve that graph rather than choosing only its first match.
+                let bindings = componentIDs.flatMap { componentID in
+                    using.filter { !replacedShared(connector, componentID: componentID, in: $0.0) }
+                        .map { ($0.0, $0.1, componentID) }
+                }
+                guard !bindings.isEmpty else {
                     CapabilityResourceOrigin.releaseProvenance(of: connector)
                     continue
                 }
-                // An account of a skill kept for a workspace without the
-                // plugin stays that skill's; it is also an account of the
-                // activations that bind it.
                 if !(connector.skill.map { independentSkillIDs.contains($0.id) } ?? false) { connector.skill = nil }
-                for (workspace, activation) in bindTo
-                where !activation.bindings.contains(where: { $0.account?.id == connector.id }) {
+                for (workspace, activation, componentID) in bindings
+                where !activation.bindings.contains(where: { $0.account?.id == connector.id && $0.componentID == componentID }) {
                     PluginV20AccountChoices.bind(connector, componentID: componentID, to: activation, in: workspace)
                     let id = connector.id.uuidString
                     if workspace.enabledGlobalConnectorIDs.contains(id) {
@@ -531,7 +531,7 @@ enum PluginActivationMigration {
     /// it, as skill and tool stamps do: the activation is seeded from the
     /// current definition, so a binding under the old identity is never
     /// reconciled and the account would serve nothing.
-    private static func connectorComponentID(_ connector: Connector, package: PluginPackage?) -> String {
+    private static func connectorComponentIDs(_ connector: Connector, package: PluginPackage?) -> [String] {
         let stamped = trimmed(connector.originComponentID)
         if !stamped.isEmpty {
             let successor = package?.connectors.first {
@@ -539,19 +539,15 @@ enum PluginActivationMigration {
             }
             guard let successor,
                   package?.connectors.contains(where: { CapabilityResourceOrigin.componentID(for: $0) == stamped }) != true
-            else { return stamped }
-            return CapabilityResourceOrigin.componentID(for: successor)
+            else { return [stamped] }
+            return [CapabilityResourceOrigin.componentID(for: successor)]
         }
-        if let spec = package?.connectors.first(where: {
-            CapabilityRuntimeResourceMatcher.normalizedName($0.name) == CapabilityRuntimeResourceMatcher.normalizedName(connector.name)
-        }) ?? package?.connectors.first(where: {
-            CapabilityRuntimeResourceMatcher.normalizedServiceType($0.serviceType)
-                == CapabilityRuntimeResourceMatcher.normalizedServiceType(connector.serviceType)
-        }) {
-            return CapabilityResourceOrigin.componentID(for: spec)
-        }
+        let matching = package?.connectors.filter {
+            CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector)
+        }.map { CapabilityResourceOrigin.componentID(for: $0) } ?? []
+        if !matching.isEmpty { return matching }
         let service = CapabilityRuntimeResourceMatcher.normalizedServiceType(connector.serviceType)
-        return "connector:\(service):\(CapabilityRuntimeResourceMatcher.normalizedName(connector.name))"
+        return ["connector:\(service):\(CapabilityRuntimeResourceMatcher.normalizedName(connector.name))"]
     }
 
     /// A stamped row is the component its stamp names: the spec's own ID,
