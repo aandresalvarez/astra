@@ -149,8 +149,9 @@ public struct RepairAction: Codable, Sendable, Equatable {
         case "gh": directories = ["GH_CONFIG_DIR", "XDG_CONFIG_HOME"]
         default: directories = ["XDG_CONFIG_HOME"]
         }
-        let hasDirectory = directories.contains { environment?[$0]?.isEmpty == false }
-        let host = cli == "gh" ? (environment?["GH_HOST"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") : ""
+        let selected = checking(in: environment).checkEnvironment
+        let hasDirectory = directories.contains { selected?[$0]?.isEmpty == false }
+        let host = cli == "gh" ? (selected?["GH_HOST"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") : ""
         if hasDirectory || (!host.isEmpty && host.lowercased() != "github.com") {
             return requiringManualCredentialSetup()
         }
@@ -161,10 +162,39 @@ public struct RepairAction: Codable, Sendable, Equatable {
     /// command becomes an actionable check, not a Sign in button that does
     /// nothing or copies an unsafe command to the clipboard.
     public func enforcingTerminalPolicy() -> RepairAction {
-        guard strategy == .terminal, let command,
-              !Self.isSafeTerminalCommand(command, binary: checkBinary, allowsInstaller: verb == "Install")
-        else { return self }
-        return requiringManualCredentialSetup()
+        guard strategy == .terminal, let command else { return self }
+        guard Self.isSafeTerminalCommand(command, binary: checkBinary, allowsInstaller: verb == "Install")
+        else { return requiringManualCredentialSetup() }
+        if isGitHubSignIn(command), let arguments = checkArguments {
+            for (index, argument) in arguments.enumerated() {
+                let host: String?
+                if argument == "--hostname" || argument == "-h" {
+                    host = arguments.indices.contains(index + 1) ? arguments[index + 1] : ""
+                } else if argument.hasPrefix("--hostname=") {
+                    host = String(argument.dropFirst("--hostname=".count))
+                } else { host = nil }
+                if let host, host.lowercased() != "github.com" { return requiringManualCredentialSetup() }
+            }
+        }
+        return self
+    }
+
+    /// The final command is admitted against stored and current selectors.
+    /// Pin GitHub's default explicitly so Terminal's ambient GH_HOST cannot
+    /// silently change the login destination.
+    public var executionCommand: String? {
+        let admitted = targetingCredentialStore(checkEnvironment)
+        guard admitted.strategy == .terminal, let command = admitted.command else { return nil }
+        let words = command.split(whereSeparator: \.isWhitespace)
+        if admitted.isGitHubSignIn(command), !words.contains(where: {
+            $0 == "--hostname" || $0 == "-h" || $0.hasPrefix("--hostname=")
+        }) { return command + " --hostname github.com" }
+        return command
+    }
+
+    private func isGitHubSignIn(_ command: String) -> Bool {
+        let executable = command.split(whereSeparator: \.isWhitespace).first.map(String.init)
+        return executable == checkBinary && ((checkBinary ?? "") as NSString).lastPathComponent == "gh"
     }
 
     private func requiringManualCredentialSetup() -> RepairAction {
@@ -225,7 +255,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
                     detail: "Run `\(command)`, then ASTRA checks again.",
                     command: command, checkBinary: check?.binary, checkArguments: check?.arguments,
                     checkExpect: check?.expect
-                )
+                ).enforcingTerminalPolicy()
             case .url:
                 // Only a web page: a package's install link must not open a
                 // file, a share or another app's scheme.

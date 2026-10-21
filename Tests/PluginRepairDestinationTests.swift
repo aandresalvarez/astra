@@ -98,6 +98,25 @@ struct PluginRepairDestinationTests {
         #expect(install.targetingCredentialStore(["GH_CONFIG_DIR": "/tmp/gh"]).command == "brew install gh")
     }
 
+    @Test("Default GitHub repair pins github.com independently of Terminal's environment")
+    func defaultGitHubHostIsExplicitAtExecution() {
+        let terminal = TerminalSpy()
+        RepairActionRunner.run(CLISessionExpiryClassifier.gitHub.repair, terminal: terminal)
+        #expect(terminal.launched == ["gh auth login --hostname github.com"])
+    }
+
+    @Test("An Enterprise verification cannot offer a default-host automatic login")
+    func repairAndVerificationMustNameTheSameTrustedHost() throws {
+        let component = PluginComponent(kind: .setup, id: "enterprise", name: "Enterprise", setup: .init(
+            check: .init(kind: .exec, binary: "gh", arguments: ["auth", "status", "--hostname", "github.example.com"]),
+            repair: .init(kind: .terminal, command: "gh auth login", hint: "Sign in.")
+        ))
+        let repair = try #require(RepairAction.from(component))
+        #expect(repair.command == nil)
+        #expect(repair.verb == "Check")
+        #expect(repair.checkArguments?.last == "github.example.com")
+    }
+
     @Test("Source repair hints remain bounded plain guidance")
     func untrustedHintIsBoundedAndDoesNotHideControls() throws {
         let hint = "\u{202E}Manual setup\u{0000}\n" + String(repeating: "x", count: 10_000)

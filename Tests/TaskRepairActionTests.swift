@@ -7,11 +7,11 @@ import ASTRAModels
 @MainActor
 @Suite("Task repair actions")
 struct TaskRepairActionTests {
-    @Test("Check verifies the manual context and reports its result without launching or resuming", arguments: [false, true])
-    func manualCheckHasAVisibleResult(passed: Bool) async {
+    @Test("Check verifies the manual context and reports its result without launching or resuming", arguments: [false, true], [false, true])
+    func manualCheckHasAVisibleResult(passed: Bool, prepared: Bool) async {
         let environment = ["CLOUDSDK_CONFIG": "/tmp/task-config"]
-        let repair = CLISessionExpiryClassifier.googleCloud.repair.checking(in: environment)
-            .targetingCredentialStore(environment)
+        let original = CLISessionExpiryClassifier.googleCloud.repair.checking(in: environment)
+        let repair = prepared ? original.targetingCredentialStore(environment) : original
         var checked: [RepairAction] = []
         let guidance = await TaskRepairAction.perform(repair, check: { checked.append($0); return passed },
             run: { _ in Issue.record("Manual setup cannot launch an external action") })

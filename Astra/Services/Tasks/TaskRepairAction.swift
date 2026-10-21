@@ -19,7 +19,7 @@ enum TaskRepairAction {
         guard let candidate else {
             return Guidance(title: "Setup unavailable", detail: "Reopen the task to refresh its setup instructions.")
         }
-        let repair = candidate.enforcingTerminalPolicy()
+        let repair = candidate.targetingCredentialStore(candidate.checkEnvironment)
         switch repair.strategy {
         case .terminal where repair.command != nil:
             run(repair)
