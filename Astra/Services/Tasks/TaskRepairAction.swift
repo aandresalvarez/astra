@@ -13,7 +13,7 @@ enum TaskRepairAction {
     static func perform(
         _ candidate: RepairAction?,
         check: @MainActor (RepairAction) async -> Bool = { await PluginRepairCoordinator.liveCheck($0) },
-        run: @MainActor (RepairAction) -> Void = { RepairActionRunner.run($0) }
+        run: @MainActor (RepairAction) -> RepairActionRunner.Outcome = { RepairActionRunner.run($0) }
     ) async -> Guidance? {
         guard !Task.isCancelled else { return nil }
         guard let candidate else {
@@ -22,10 +22,12 @@ enum TaskRepairAction {
         let repair = candidate.targetingCredentialStore(candidate.checkEnvironment)
         switch repair.strategy {
         case .terminal where repair.command != nil:
-            run(repair)
+            guard run(repair) != .refused else {
+                return Guidance(title: "Manual setup required", detail: "The repair executable is missing or no longer trusted. Restore a trusted installation or sign in manually, then check again.")
+            }
             return nil
         case .url:
-            if let url = repair.url, RepairAction.isSafeRepairURL(url) { run(repair); return nil }
+            if let url = repair.url, RepairAction.isSafeRepairURL(url), run(repair) != .refused { return nil }
             return Guidance(title: "Manual setup required", detail: "Open the provider's trusted setup page, then return to this task.")
         case .terminal:
             guard repair.checkBinary != nil else {

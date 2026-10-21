@@ -23,7 +23,7 @@ struct PluginSettingDeletionFailureTests {
         RefusingSettingDeletion.deletes.withLock { $0 = 0 }
         #expect(throws: PluginOperations.OperationError.saveFailed) {
             try PluginOperations.setSetting("PROJECT", to: "replacement", of: package.skills[0],
-                pluginID: package.id, in: env.workspace, modelContext: env.context,
+                package: package, in: env.workspace, modelContext: env.context,
                 secrets: RefusingSettingDeletion.self, persist: { _, _ in saves += 1 })
         }
         #expect(saves == 1)

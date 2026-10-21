@@ -327,10 +327,10 @@ struct CapabilityPackageState {
             return messages
         }
 
-        if connector.credentialKeys.isEmpty {
-            return ["\(name): no credentials configured"]
-        }
-        let missingKeys = connector.missingCredentialKeys(store: secretStore)
+        let required = PluginRuntimeProjection.requiredCredentialKeys(of: connector, package: package, boundAccountIDs: boundAccountIDs)
+        if required.isEmpty { return ["\(name): no credentials configured"] }
+        let requiredKeys = Set(required)
+        let missingKeys = connector.missingCredentialKeys(store: secretStore).filter { requiredKeys.contains($0) }
         if !missingKeys.isEmpty {
             return ["\(name): missing Keychain value: \(missingKeys.joined(separator: ", "))"]
         }

@@ -35,11 +35,11 @@ public enum StartupCredentialMigrationService {
             // Historical vault values were already accepted. Moving their
             // storage service does not admit raw model values or change owners.
             for account in connectors { KeychainService.migrateConnectorFromLoginKeychain(connector: account) }
-            guard migrateAccounts(connectors, mirroredBy: workspaces, modelContext: modelContext, permit: permit) else {
-                AstraSecureKeychainStore.logPendingKeychainFailure(scope: "startup")
-                return
-            }
-            migrateSkillSecrets(skills: skills, modelContext: modelContext, permit: permit)
+            let accountsComplete = migrateAccounts(connectors, mirroredBy: workspaces, modelContext: modelContext, permit: permit)
+            // Each skill has its own durable transaction. An unrelated account
+            // with legacy debt must not retain every skill's plaintext too.
+            let skillsComplete = migrateSkillSecrets(skills: skills, modelContext: modelContext, permit: permit)
+            if !accountsComplete || !skillsComplete { audit("migration_deferred") }
             AstraSecureKeychainStore.logPendingKeychainFailure(scope: "startup")
         } catch { audit("fetch_failed", error: error) }
     }

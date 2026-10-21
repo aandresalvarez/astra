@@ -98,7 +98,7 @@ struct PluginTemplateIDsAndMirrorsTests {
         let componentID = CapabilityResourceOrigin.componentID(for: package.connectors[0])
 
         // A setting.
-        try PluginOperations.setSetting("PROJECT", to: "mirrored-project", of: package.skills[0], pluginID: package.id, in: env.workspace, modelContext: env.context)
+        try PluginOperations.setSetting("PROJECT", to: "mirrored-project", of: package.skills[0], package: package, in: env.workspace, modelContext: env.context)
         #expect(try mirror(env.workspace).contains("mirrored-project"))
         // Add account, then Make default.
         let second = try PluginOperations.addAccount(for: package.connectors[0], of: package, in: env.workspace, modelContext: env.context)

@@ -11,6 +11,34 @@ import ASTRAModels
 @Suite("Plugins surface")
 @MainActor
 struct PluginsSurfaceTests {
+    @Test("A successor skill cannot expose editable settings before Update")
+    func renamedSkillSettingsWaitForUpdate() throws {
+        let env = try PluginOperationsTests.Environment()
+        var initial = PluginOperationsTests.package(version: "1.0.0")
+        initial.connectors = []
+        try env.install(initial)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: initial.id, in: env.workspace))
+        var next = initial
+        next.skills[0].id = "successor"
+        next.skills[0].replaces = [CapabilityResourceOrigin.componentID(for: initial.skills[0])]
+        #expect(PluginsSurfacePresentation.settingKeys(of: next.skills[0], in: activation, package: next).isEmpty)
+    }
+
+    @Test("An inactive bound shared account keeps its Turn on setup row")
+    func inactiveSharedBindingKeepsSetupRow() throws {
+        let env = try PluginOperationsTests.Environment()
+        let package = PluginOperationsTests.package(version: "1.0.0")
+        try env.install(package)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
+        let account = try #require(activation.bindings.first?.account)
+        account.isGlobal = true
+        let row = PluginRow(package: package, activation: activation, display: .init(id: package.id, name: package.name,
+            icon: package.icon, subtitle: "Action needed", pendingSteps: 1, isEnabled: true, isRemovable: true, verb: nil))
+        #expect(PluginsSurfacePresentation.expandedSetupComponents(for: row, in: env.workspace).contains { $0.component.kind == .connector })
+        WorkspaceCapabilityActivation.mutate(env.workspace) { $0.enableGlobalConnector(account.id.uuidString) }
+        #expect(!PluginsSurfacePresentation.expandedSetupComponents(for: row, in: env.workspace).contains { $0.component.kind == .connector })
+    }
+
     @Test("Account binding actions wait for the installed definition to be accepted")
     func accountActionsWaitForUpdate() throws {
         let env = try PluginOperationsTests.Environment()

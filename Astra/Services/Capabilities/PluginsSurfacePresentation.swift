@@ -75,6 +75,7 @@ enum PluginsSurfacePresentation {
     /// An authored replacement owns its own settings instead.
     static func settingKeys(of skill: PluginSkill, in activation: PluginActivation?, package: PluginPackage? = nil) -> [String] {
         guard let activation, PluginRuntimeProjection.packageSkillOwnsSettings(skill, activation: activation) else { return [] }
+        if let package, PluginRuntimeProjection.awaitsUpdate(activation, to: package) { return [] }
         // The installer places these fields on each connector account and
         // runtime account values take precedence over skill environment values.
         guard package?.connectors.isEmpty != false else { return [] }
@@ -85,10 +86,17 @@ enum PluginsSurfacePresentation {
         row.display.isRemovable && (!row.display.isEnabled || row.display.isMissing)
     }
 
-    static func expandedSetupComponents(for row: PluginRow) -> [(component: PluginComponent, position: Int?)] {
+    static func expandedSetupComponents(for row: PluginRow, in workspace: Workspace? = nil) -> [(component: PluginComponent, position: Int?)] {
         let manifest = PluginManifestConverter.manifest(from: row.package)
         return manifest.components.enumerated()
-            .filter { $0.element.kind != .skill && (row.activation == nil || $0.element.kind != .connector) }
+            .filter { entry in
+                guard entry.element.kind != .skill else { return false }
+                guard entry.element.kind == .connector, let activation = row.activation else { return true }
+                guard let workspace, let connector = entry.element.connector else { return false }
+                return activation.accounts(forComponent: CapabilityResourceOrigin.componentID(for: connector)).contains {
+                    $0.isGlobal && !WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs.contains($0.id.uuidString)
+                }
+            }
             .map { ($0.element, PluginManifestConverter.prerequisitePosition(ofComponentAt: $0.offset, in: manifest)) }
     }
 

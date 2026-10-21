@@ -379,7 +379,7 @@ struct CapabilityCatalogActionService {
         workspace: Workspace,
         modelContext: ModelContext
     ) throws {
-        try PluginOperations.setSetting(key, to: value, of: skill, pluginID: package.id, in: workspace, modelContext: modelContext)
+        try PluginOperations.setSetting(key, to: value, of: skill, package: package, in: workspace, modelContext: modelContext)
     }
 
     /// A new account for a connector component, bound in this workspace.
