@@ -480,13 +480,6 @@ enum CLISessionExpiryClassifier {
         return selectors
     }
 
-    /// Variables that pick the store a CLI's sign-in lives in and hold no
-    /// secret: carried into Sign in and the check (as
-    /// `RepairAction.credentialStoreSelectors` carries the launch's).
-    private static let storeSelectorNames: [String: Set<String>] = [
-        "gcloud": ["CLOUDSDK_CONFIG"], "gh": ["GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME"]
-    ]
-
     /// Variables that hold or pick a credential ASTRA can't carry: a token,
     /// a credential file, or another account or configuration.
     private static let credentialNames: [String: Set<String>] = [
@@ -515,7 +508,7 @@ enum CLISessionExpiryClassifier {
     /// the call didn't use.
     static func commandLocalCredentials(of family: Family, in command: String) -> (selectors: [String: String], own: [String]) {
         let cli = (family.checkBinary as NSString).lastPathComponent
-        let selectorNames = storeSelectorNames[cli] ?? []
+        let selectorNames = RepairAction.credentialStoreDirectorySelectors(for: cli)
         let watched = selectorNames.union(credentialNames[cli] ?? [])
         var own: Set<String> = []
         var exported: [(name: String, value: String?, scope: [Int])] = []
