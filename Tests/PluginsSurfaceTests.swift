@@ -101,6 +101,23 @@ struct PluginsSurfaceTests {
         #expect(snapshot.failures[project] == nil)
     }
 
+    @Test("Switching workspaces invalidates drafts even when activations have the same revision")
+    func activationIdentityInvalidatesDrafts() {
+        var candidate = package("draft-workspaces", name: "Workspace drafts")
+        candidate.skills[0].environmentKeys = ["PROJECT", "API_TOKEN"]
+        let first = PluginActivation(pluginID: candidate.id)
+        let second = PluginActivation(pluginID: candidate.id)
+        #expect(first.id != second.id)
+        #expect(first.revision == second.revision)
+        let oldSource = PluginSettingDrafts.source(package: candidate, activation: first)
+        let newSource = PluginSettingDrafts.source(package: candidate, activation: second)
+        #expect(oldSource != newSource)
+        let firstDrafts = PluginSettingDrafts.load(package: candidate, activation: first) { _, _, _ in "first-workspace" }
+        let secondDrafts = PluginSettingDrafts.load(package: candidate, activation: second) { _, _, _ in "second-workspace" }
+        #expect(Set(firstDrafts.values.values) == ["first-workspace"])
+        #expect(Set(secondDrafts.values.values) == ["second-workspace"])
+    }
+
     @Test("A same-version default change invalidates unchanged setting drafts")
     func definitionDefaultsInvalidateDrafts() {
         var candidate = package("draft-default", name: "Draft default")

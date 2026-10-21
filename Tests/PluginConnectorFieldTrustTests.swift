@@ -110,7 +110,7 @@ struct PluginConnectorFieldTrustTests {
         let componentID = CapabilityResourceOrigin.componentID(for: package.connectors[0])
         WorkspaceCapabilityActivation.bind(legacy, toComponent: componentID, of: activation)
         var copied: [PluginUpdateService.CopiedSecret] = []
-        PluginUpdateService.syncOwnedAccounts(of: activation, to: package, copied: &copied)
+        try PluginUpdateService.syncOwnedAccounts(of: activation, to: package, copied: &copied)
         #expect(account.credentialKeys == ["TRACKER_TOKEN", "TRACKER_PROJECT"])
         #expect(legacy.credentialKeys == ["TRACKER_TOKEN"])
         #expect(legacy.configValues == ["ENG-1"])

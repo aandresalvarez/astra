@@ -42,7 +42,8 @@ enum PluginAccountCredentialCutoverPlan {
                 let renamesLegacy = account.credentialNamespaceID == nil
                     && account.originComponentID.map { predecessors.contains($0) && $0 != component } == true
                 let hasLegacyValues = account.credentialValues.contains { !$0.isEmpty }
-                guard !promoted.isEmpty || addsKey || renamesLegacy || hasLegacyValues else { continue }
+                let restoresLegacyEndpoint = PluginAccountStructureReconciliation.requiresCredentialCutover(for: account, declaration: spec)
+                guard !promoted.isEmpty || addsKey || renamesLegacy || hasLegacyValues || restoresLegacyEndpoint else { continue }
                 let keeping = Set(account.credentialKeys.map(ConnectorCredentialKey.canonical)).union(promoted)
                 let declaredFormats = formats(of: spec)
                 if let index = result.firstIndex(where: { $0.account.id == account.id }) {
