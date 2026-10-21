@@ -25,11 +25,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
     let onError: (String) -> Void
 
     @Environment(\.modelContext) private var modelContext
-    @State private var drafts: [String: String] = [:]
-    /// What each draft was loaded as, so a reload keeps the ones the person
-    /// is still editing.
-    @State private var loadedDrafts: [String: String] = [:]
-    @State private var readFailures: [String: String] = [:]
+    @State private var settingDrafts = PluginSettingDrafts()
 
     private var actions: CapabilityCatalogActionService { CapabilityCatalogActionService() }
 
@@ -74,7 +70,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
 
     private func settingField(_ key: String, of skill: PluginSkill) -> some View {
         let draftKey = PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: key)
-        let binding = Binding(get: { drafts[draftKey] ?? "" }, set: { drafts[draftKey] = $0 })
+        let binding = Binding(get: { settingDrafts.values[draftKey] ?? "" }, set: { settingDrafts.values[draftKey] = $0 })
         return HStack(spacing: 8) {
             Text(key)
                 .font(.system(size: 11, design: .monospaced))
@@ -89,13 +85,13 @@ struct PluginRowDetailsView<SetupRow: View>: View {
                 }
             }
             .controlSize(.small)
-            if let failure = readFailures[draftKey] {
+            if let failure = settingDrafts.failures[draftKey] {
                 Text("Credential unavailable").font(.caption).foregroundStyle(.secondary).help(failure)
                 Button("Retry", action: loadDrafts).controlSize(.small)
             }
-            Button("Save") { save(key, of: skill, value: drafts[draftKey] ?? "") }
+            Button("Save") { save(key, of: skill, value: settingDrafts.values[draftKey] ?? "") }
                 .controlSize(.small)
-                .disabled(readFailures[draftKey] != nil)
+                .disabled(!settingDrafts.belongs(to: row.activation) || settingDrafts.failures[draftKey] != nil)
         }
     }
 
@@ -198,21 +194,13 @@ struct PluginRowDetailsView<SetupRow: View>: View {
         let snapshot = PluginSettingDrafts.load(package: row.package, activation: row.activation) { key, skill, activation in
             try PluginOperations.setting(key, of: skill, in: activation)
         }
-        let fresh = snapshot.values
-        readFailures = snapshot.failures
-        // A field whose draft differs from what it was loaded as has an
-        // unsaved edit: saving another setting must not discard it.
-        var next = fresh
-        for (key, value) in drafts where loadedDrafts[key] != value && (fresh[key] != nil || readFailures[key] != nil) {
-            next[key] = value
-        }
-        loadedDrafts = fresh
-        drafts = next
+        settingDrafts = settingDrafts.reloading(from: snapshot)
     }
 
     private func save(_ key: String, of skill: PluginSkill, value: String) {
         let field = PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: key)
-        guard readFailures[field] == nil,
+        guard settingDrafts.belongs(to: row.activation),
+              settingDrafts.failures[field] == nil,
               PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation, package: row.package).contains(key) else { return }
         do {
             try actions.setSetting(key, to: value, of: skill, package: row.package, workspace: workspace, modelContext: modelContext)

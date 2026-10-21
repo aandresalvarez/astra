@@ -118,6 +118,39 @@ struct PluginsSurfaceTests {
         #expect(Set(secondDrafts.values.values) == ["second-workspace"])
     }
 
+    @Test("Unsaved edits survive a refresh only within the same activation")
+    func unsavedDraftsStayWithTheirActivation() throws {
+        var candidate = package("draft-owner", name: "Owned drafts")
+        candidate.skills[0].environmentKeys = ["PROJECT", "API_TOKEN"]
+        let first = PluginActivation(pluginID: candidate.id)
+        let second = PluginActivation(pluginID: candidate.id)
+        let component = CapabilityResourceOrigin.componentID(for: candidate.skills[0])
+        let field = PluginActivation.settingKey(componentID: component, key: "PROJECT")
+        let token = PluginActivation.settingKey(componentID: component, key: "API_TOKEN")
+        var edited = PluginSettingDrafts.load(package: candidate, activation: first) { _, _, _ in "first-saved" }
+        #expect(edited.belongs(to: first))
+        #expect(!edited.belongs(to: second))
+        #expect(!edited.belongs(to: nil))
+        edited.values[field] = "first-unsaved"
+        edited.values[token] = "first-secret-unsaved"
+        let refreshed = PluginSettingDrafts.load(package: candidate, activation: first) { _, _, _ in "first-refreshed" }
+        #expect(edited.reloading(from: refreshed).values[field] == "first-unsaved")
+        let switched = PluginSettingDrafts.load(package: candidate, activation: second) { _, _, _ in "second-saved" }
+        let rebound = edited.reloading(from: switched)
+        #expect(rebound.belongs(to: second))
+        #expect(!rebound.belongs(to: first))
+        #expect(rebound.values[field] == "second-saved")
+        #expect(rebound.values[token] == "second-saved")
+        let unavailable = PluginSettingDrafts.load(package: candidate, activation: second) { _, _, _ in
+            throw PluginOperations.OperationError.secretReadFailed(key: "API_TOKEN")
+        }
+        let failedRebound = edited.reloading(from: unavailable)
+        #expect(failedRebound.values[field] == nil)
+        #expect(failedRebound.values[token] == nil)
+        #expect(failedRebound.failures[token] != nil)
+        #expect(edited.reloading(from: PluginSettingDrafts.load(package: candidate, activation: nil) { _, _, _ in "" }).values.isEmpty)
+    }
+
     @Test("A same-version default change invalidates unchanged setting drafts")
     func definitionDefaultsInvalidateDrafts() {
         var candidate = package("draft-default", name: "Draft default")
