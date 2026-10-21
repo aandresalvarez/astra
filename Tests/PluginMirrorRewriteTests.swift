@@ -6,8 +6,8 @@ import Testing
 @testable import ASTRA
 import ASTRACore
 
-/// An Update or a Remove that clears Keychain data or provenance rewrites
-/// every mirror it changed, synchronously, before that cleanup settles; a
+/// An Update or a Remove rewrites the recovery mirrors its account graph
+/// reaches, synchronously, before cleanup settles; a
 /// definition awaiting its review is reconciled but not accepted. Fixtures
 /// are `PluginOperationsTests`'s.
 @Suite("Plugin mirror rewrites and review")
@@ -57,8 +57,8 @@ struct PluginMirrorRewriteTests {
         #expect(Set(rewritten) == [env.workspace.id, other.id])
     }
 
-    @Test("A Remove journals and rewrites every workspace carrying an account whose provenance it releases")
-    func removeJournalsEveryMirrorOfAReleasedAccount() throws {
+    @Test("A Remove recovers every shared-account mirror while preserving its creator policy")
+    func removeJournalsEveryMirrorOfARetainedAccount() throws {
         let env = try Fixtures.Environment()
         let (other, account) = try Self.sharedAccount(in: env)
         let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
@@ -70,6 +70,7 @@ struct PluginMirrorRewriteTests {
         env.workspace.primaryPath = folder.path
         let mirrorURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
         try FileManager.default.createDirectory(at: mirrorURL, withIntermediateDirectories: true)
+        try env.context.save()
 
         var operationID: UUID?
         do {
@@ -77,12 +78,24 @@ struct PluginMirrorRewriteTests {
                 Fixtures.package(version: "1.0.0"), modelContext: env.context, removeJournal: journal)
             Issue.record("A failed mirror must leave explicit recovery debt")
         } catch let problem as PluginOperationProblem { operationID = problem.operationID }
-        #expect(account.originPackageID == nil)
+        #expect(account.originPackageID == "ops.report")
+        #expect(account.originComponentID == CapabilityResourceOrigin.componentID(for: Fixtures.package(version: "1.0.0").connectors[0]))
         let id = try #require(operationID)
         let receipt = try #require(try PluginOperationCommit.read(id, container: env.container))
         #expect(Set(receipt.workspaceIDs) == [env.workspace.id, other.id])
         #expect(receipt.completedAt == nil)
         #expect(try journal.intents().isEmpty)
+        try FileManager.default.removeItem(at: mirrorURL)
+        let recovery = PluginFileOperationRecovery(journal: .init(library: env.library, approvals: CapabilityApprovalStore()))
+            .resumePending(modelContext: env.context)
+        #expect(recovery.completed == 1 && recovery.deferred == 0)
+        #expect(try PluginOperationCommit.read(id, container: env.container)?.completedAt != nil)
+        #expect(env.library.installedPackage(id: "ops.report") == nil)
+        let otherConfig = try WorkspaceConfigManager.loadConfig(from:
+            URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: other.primaryPath)))
+        let mirrored = try #require(otherConfig.connectors?.first { $0.id == account.id.uuidString })
+        #expect(mirrored.originPackageID == "ops.report")
+        #expect(mirrored.originComponentID == account.originComponentID)
 
     }
 
