@@ -41,6 +41,21 @@ public struct SSHConnection: Codable, Identifiable, Hashable, Sendable {
     public var sshTarget: String {
         "\(user)@\(host)"
     }
+
+    /// Everything `ssh` needs before the remote command: the config alias
+    /// (which carries ProxyCommand and the rest), or the port, identity, and
+    /// `user@host` an alias-less connection depends on. The connection test
+    /// and the agent's instructions both use it, so a connection that tests
+    /// green is never described to the agent without its port or key.
+    public func sshDestinationArguments(expandingTilde: Bool) -> [String] {
+        if !configAlias.isEmpty { return [configAlias] }
+        var args: [String] = []
+        if port != 22 { args += ["-p", "\(port)"] }
+        if !keyPath.isEmpty {
+            args += ["-i", expandingTilde ? (keyPath as NSString).expandingTildeInPath : keyPath]
+        }
+        return args + [sshTarget]
+    }
 }
 
 /// Manages SSH connections stored as a JSON file in the workspace folder.
@@ -344,18 +359,9 @@ public enum SSHConnectionManager {
 
             var args = ["-o", "ConnectTimeout=30", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"]
 
-            if !connection.configAlias.isEmpty {
-                // Use the SSH config alias so ProxyCommand and other config directives are applied
-                args += [connection.configAlias, "echo", "ok"]
-            } else {
-                if connection.port != 22 {
-                    args += ["-p", "\(connection.port)"]
-                }
-                if !connection.keyPath.isEmpty {
-                    args += ["-i", (connection.keyPath as NSString).expandingTildeInPath]
-                }
-                args += [connection.sshTarget, "echo", "ok"]
-            }
+            // The config alias when there is one, so ProxyCommand and other
+            // config directives are applied.
+            args += connection.sshDestinationArguments(expandingTilde: true) + ["echo", "ok"]
             process.arguments = args
 
             let stdoutPipe = Pipe()

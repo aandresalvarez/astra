@@ -23,6 +23,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         defaultModels: CodexCLIRuntime.availableModelNames(),
         supportsAstraRunProtocol: true,
         supportsNativeContinuation: true,
+        reportsCumulativeSessionUsage: true,
         supportsMCPServers: true,
         supportsReasoningEffort: true
     )
@@ -300,7 +301,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             contextText: context.contextText,
             taskEnvironment: taskEnv,
             workspaceAccess: context.launchResourcePlan?.workspaceAccess ?? .exclusive,
-            runtimeRequirements: context.runtimeRequirements
+            runtimeRequirements: context.runtimeRequirements,
+            sshRoute: context.executionPolicy.remoteSSHRoute
         )
         let launchTaskEnv = taskEnv
             .merging(mcpProjection.workspaceExecutorEnvironment) { current, _ in current }

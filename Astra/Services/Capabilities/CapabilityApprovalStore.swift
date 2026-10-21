@@ -133,6 +133,9 @@ struct CapabilityApprovalStore {
     }
 
     func records() -> [CapabilityApprovalRecord] {
+        if let pinned = CapabilityResolutionInputs.pinnedApprovalRecords(for: directory) {
+            return pinned
+        }
         let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
         let accessIntent = HostFileAccessIntent.astraManagedStorage(root: directory)
         guard let files = try? hostFileAccess.contentsOfDirectory(

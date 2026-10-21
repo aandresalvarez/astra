@@ -21,7 +21,10 @@ enum CapabilityRuntimeResourceMatcher {
     }
 
     static func packageDefinitions(library: CapabilityLibrary = CapabilityLibrary()) -> [PluginPackage] {
-        uniquePackages(cachedInstalledPackages(library: library) + PluginCatalog.builtInPackages)
+        if let pinned = CapabilityResolutionInputs.pinnedPackageDefinitions(for: library) {
+            return pinned
+        }
+        return uniquePackages(cachedInstalledPackages(library: library) + PluginCatalog.builtInPackages)
     }
 
     static func packageDefinitionsFingerprint(library: CapabilityLibrary = CapabilityLibrary()) -> String {

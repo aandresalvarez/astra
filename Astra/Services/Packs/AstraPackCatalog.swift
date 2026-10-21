@@ -45,6 +45,12 @@ struct AstraPackCatalog {
     }
 
     func load() -> AstraPackCatalogSnapshot {
+        if let pinned = CapabilityResolutionInputs.pinnedPackCatalog(
+            builtInDirectory: builtInDirectory,
+            localStorageRoot: localStorageRoot
+        ) {
+            return pinned
+        }
         let builtInSources = AstraPackSource.readJSONFiles(
             in: builtInDirectory,
             kind: .builtIn,

@@ -770,7 +770,8 @@ final class AgentRuntimeProcessRunner {
             runtime: adapter.id,
             capabilityScope: launchContext.capabilityResolutionSnapshot.providerLaunch,
             requiredTools: effectiveRequirements.offeredHostControlTools,
-            currentDirectory: workspacePath
+            currentDirectory: workspacePath,
+            sshRoute: executionPolicy.remoteSSHRoute
         )
         if requiresHostControlBroker, !brokerPrepared {
             let message = "ASTRA could not establish the run-scoped host-control broker."
@@ -1527,13 +1528,10 @@ final class AgentRuntimeProcessRunner {
         realSSHPath: String = "/usr/bin/ssh",
         hostKnownHostsPath: String = "\(NSHomeDirectory())/.ssh/known_hosts"
     ) -> String? {
-        guard hasWorkspaceSSHConnections(for: task),
-              fileManager.isExecutableFile(atPath: realSSHPath),
-              realSSHPath.rangeOfCharacter(from: .newlines) == nil else {
+        guard canInjectSSHShim(for: task, fileManager: fileManager, realSSHPath: realSSHPath) else {
             return nil
         }
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
-        guard !taskFolder.isEmpty else { return nil }
 
         let shimDirectory = (taskFolder as NSString).appendingPathComponent(".runtime-bin")
         let stateDirectory = (taskFolder as NSString).appendingPathComponent(".runtime-ssh")
@@ -1581,6 +1579,20 @@ final class AgentRuntimeProcessRunner {
             ], level: .warning)
             return nil
         }
+    }
+
+    /// The shim's preconditions without writing it, so the launch can resolve
+    /// the run's SSH route before the process (and the shim) exist.
+    @MainActor
+    static func canInjectSSHShim(
+        for task: AgentTask,
+        fileManager: FileManager = .default,
+        realSSHPath: String = "/usr/bin/ssh"
+    ) -> Bool {
+        hasWorkspaceSSHConnections(for: task)
+            && fileManager.isExecutableFile(atPath: realSSHPath)
+            && realSSHPath.rangeOfCharacter(from: .newlines) == nil
+            && !TaskWorkspaceAccess(task: task).taskFolder.isEmpty
     }
 
     private static func shellSingleQuoted(_ value: String) -> String {
