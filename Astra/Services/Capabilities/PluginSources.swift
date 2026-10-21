@@ -525,7 +525,7 @@ enum PluginSourceFetchError: Error, Equatable, LocalizedError {
 /// the previous clone only once complete (T12). ASTRA only reads files from
 /// the checkout.
 struct PluginSourceFetcher {
-    var runner: any BinaryRunner = ProcessBinaryRunner()
+    var runner: any BinaryRunner = PluginSourceGitRunner()
     var gitPath: () -> String = { RuntimePathResolver.detectExecutablePath(named: "git") }
     var timeout: TimeInterval = 300
     /// The only transports git may use. Tests add `file` for a local bare
@@ -559,12 +559,22 @@ struct PluginSourceFetcher {
             git, Self.cloneArguments(location: source.location, into: staging.path, allowedProtocols: allowedProtocols),
             watching: staging, environment: environment, fileManager: fileManager
         )
-        if result.timedOut { throw PluginSourceFetchError.timedOut }
+        try Self.validateResult(result)
+        guard Self.size(of: staging) <= maxDownloadBytes else { throw PluginSourceFetchError.tooLarge }
         guard result.exitCode == 0, fileManager.fileExists(atPath: staging.path) else {
             throw PluginSourceFetchError.cloneFailed(Self.detail(result))
         }
         // The watcher may not have seen a pack indexed between two polls.
         guard Self.packObjectCount(in: staging) <= maxPackObjects else { throw PluginSourceFetchError.tooLarge }
+        // Query final expanded object sizes before any recursive tree walk.
+        let metadata = await runner.run(path: git,
+            args: Self.hardening(allowedProtocols: allowedProtocols) + ["-C", staging.path,
+                "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+            timeout: timeout, environment: environment)
+        try Self.validateResult(metadata)
+        guard metadata.exitCode == 0 else { throw PluginSourceFetchError.cloneFailed(Self.detail(metadata)) }
+        guard PluginSourceObjectBudget.admits(metadata.stdout, maximumObjects: maxPackObjects,
+            maximumBytes: maxCheckoutBytes) else { throw PluginSourceFetchError.tooLarge }
         // 2. Measure what a checkout would write, from the tree, first.
         let tree = await runner.run(
             path: git,
@@ -572,6 +582,7 @@ struct PluginSourceFetcher {
             timeout: timeout,
             environment: environment
         )
+        try Self.validateResult(tree)
         guard tree.exitCode == 0 else { throw PluginSourceFetchError.cloneFailed(Self.detail(tree)) }
         let sizes = Self.blobSizes(tree.stdout)
         guard sizes.count <= maxCheckoutFiles, sizes.reduce(0, +) <= maxCheckoutBytes else {
@@ -586,6 +597,7 @@ struct PluginSourceFetcher {
             timeout: timeout,
             environment: environment
         )
+        try Self.validateResult(checkout)
         guard checkout.exitCode == 0 else { throw PluginSourceFetchError.cloneFailed(Self.detail(checkout)) }
 
         let target = store.cloneDirectory(for: source)
@@ -666,6 +678,12 @@ struct PluginSourceFetcher {
         }
     }
 
+    private static func validateResult(_ result: RunResult) throws {
+        if result.stdoutTruncated || result.stderrTruncated { throw PluginSourceFetchError.tooLarge }
+        if result.cancelled { throw CancellationError() }
+        if result.timedOut { throw PluginSourceFetchError.timedOut }
+    }
+
     private static func detail(_ result: RunResult) -> String {
         let text = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? "git exited \(result.exitCode ?? -1)" : String(text.prefix(300))
@@ -681,10 +699,10 @@ struct PluginSourceFetcher {
          // read even with no global config; an `ident` there would inflate
          // the checkout too.
          "-c", "core.attributesFile=/dev/null",
-         // Objects over 1 MB are streamed, not inflated in memory: a tiny
-         // pack of one huge zero blob otherwise costs its full size in RAM
-         // before the tree can be measured (T11).
-         "-c", "core.bigFileThreshold=1m"]
+         // Blob streaming alone cannot bound trees or delta expansion. The
+         // private fetch helper enforces child limits before Git starts.
+         "-c", "core.bigFileThreshold=1m", "-c", "pack.threads=1",
+         "-c", "pack.windowMemory=8m", "-c", "core.deltaBaseCacheLimit=8m"]
             + allowedProtocols.flatMap { ["-c", "protocol.\($0).allow=always"] }
             + [
                 "-c", "filter.lfs.smudge=",

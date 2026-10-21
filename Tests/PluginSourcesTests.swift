@@ -314,6 +314,56 @@ struct PluginSourcesTests {
         #expect(leftovers.allSatisfy { !$0.hasPrefix(".") })
     }
 
+    @Test("T11: a highly compressed large tree is refused before recursive inspection")
+    func expandedTreeIsRejectedBeforeTraversal() async throws {
+        guard let git = Self.git() else { Issue.record("Git is required for source validation"); return }
+        let fixture = try Fixture()
+        let files = Dictionary(uniqueKeysWithValues: (0..<2_000).map {
+            (String(format: "%04d", $0) + String(repeating: "x", count: 64), Data())
+        })
+        let repository = try fixture.bareRepository(with: files)
+        let observer = SourceGitObservationRunner()
+        var fetcher = PluginSourceFetcher(runner: observer, gitPath: { git })
+        fetcher.allowedProtocols = ["file"]
+        fetcher.maxCheckoutBytes = 64 * 1024
+        let source = PluginSource(id: "large-tree", kind: .git, location: repository.absoluteString,
+            displayName: "Large tree", addedAt: Date())
+        await #expect(throws: PluginSourceFetchError.tooLarge) { try await fetcher.fetch(source, store: fixture.store) }
+        #expect(observer.calls.contains { $0.contains("cat-file") })
+        #expect(!observer.calls.contains { $0.contains("ls-tree") || $0.contains("checkout") })
+        #expect(!FileManager.default.fileExists(atPath: fixture.store.cloneDirectory(for: source).path))
+    }
+
+    @Test("T11: final delta-expanded blob sizes are checked before traversal")
+    func deltaExpandedSizesAreCheckedBeforeTraversal() async throws {
+        guard let git = Self.git() else { Issue.record("Git is required for source validation"); return }
+        let fixture = try Fixture()
+        var second = Data(repeating: 65, count: 100_000)
+        second[second.count - 1] = 66
+        let repository = try fixture.bareRepository(with: ["first.bin": Data(repeating: 65, count: 100_000), "second.bin": second])
+        let runner = PluginSourceGitRunner()
+        let packed = await runner.run(path: git, args: ["-C", repository.path, "repack", "-adf", "--window=50", "--depth=50"],
+            timeout: 120, environment: ["PATH": "/usr/bin:/bin"])
+        #expect(packed.exitCode == 0, "\(packed.stderr)")
+        let packs = repository.appendingPathComponent("objects/pack")
+        let index = try #require(try FileManager.default.contentsOfDirectory(at: packs, includingPropertiesForKeys: nil)
+            .first { $0.pathExtension == "idx" })
+        let verified = await runner.run(path: git, args: ["verify-pack", "-v", index.path], timeout: 120,
+            environment: ["PATH": "/usr/bin:/bin"])
+        #expect(verified.exitCode == 0)
+        #expect(verified.stdout.split(separator: "\n").contains { $0.split(separator: " ").count == 7 },
+            "The fixture must really contain a delta")
+        let observer = SourceGitObservationRunner()
+        var fetcher = PluginSourceFetcher(runner: observer, gitPath: { git })
+        fetcher.allowedProtocols = ["file"]
+        fetcher.maxCheckoutBytes = 180_000
+        let source = PluginSource(id: "delta-budget", kind: .git, location: repository.absoluteString,
+            displayName: "Delta budget", addedAt: Date())
+        await #expect(throws: PluginSourceFetchError.tooLarge) { try await fetcher.fetch(source, store: fixture.store) }
+        #expect(observer.calls.contains { $0.contains("cat-file") })
+        #expect(!observer.calls.contains { $0.contains("ls-tree") || $0.contains("checkout") })
+    }
+
     @Test("T11: a pack's object count is read from its header, finished or still being indexed")
     func packObjectCountReadsHeaders() throws {
         let fixture = try Fixture()
@@ -1799,7 +1849,7 @@ private struct EnvironmentOverridingRunner: BinaryRunner {
     func run(path: String, args: [String], timeout: TimeInterval, environment: [String: String]?) async -> RunResult {
         var environment = environment ?? [:]
         environment["HOME"] = home
-        return await ProcessBinaryRunner().run(path: path, args: args, timeout: timeout, environment: environment)
+        return await PluginSourceGitRunner().run(path: path, args: args, timeout: timeout, environment: environment)
     }
 }
 
@@ -1820,5 +1870,15 @@ private final class BlockingRunner: BinaryRunner, @unchecked Sendable {
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
         return RunResult(outcome: .cancelled, stdout: "", stderr: "", elapsedTime: 0)
+    }
+}
+
+private final class SourceGitObservationRunner: BinaryRunner, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [[String]] = []
+    var calls: [[String]] { lock.withLock { recorded } }
+    func run(path: String, args: [String], timeout: TimeInterval, environment: [String: String]?) async -> RunResult {
+        lock.withLock { recorded.append(args) }
+        return await PluginSourceGitRunner().run(path: path, args: args, timeout: timeout, environment: environment)
     }
 }
