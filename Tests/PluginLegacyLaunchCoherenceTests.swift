@@ -15,7 +15,7 @@ struct PluginLegacyLaunchCoherenceTests {
         let v1 = PluginOperationsTests.package(version: "1.0.0")
         try env.install(v1)
         try PluginOperations.setSetting("PROJECT", to: "submitted-project", of: v1.skills[0],
-            pluginID: v1.id, in: env.workspace, modelContext: env.context)
+            package: v1, in: env.workspace, modelContext: env.context)
         let old = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
         let record = PluginActivationRecord(old)
         let account = try #require(old.bindings.first?.account)

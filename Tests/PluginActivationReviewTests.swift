@@ -364,7 +364,7 @@ struct PluginActivationReviewTests {
         try env.install(package)
         #expect(throws: PluginOperations.OperationError.saveFailed) {
             try PluginOperations.setSetting(
-                "API_TOKEN", to: "", of: package.skills[0], pluginID: package.id, in: env.workspace, modelContext: env.context,
+                "API_TOKEN", to: "", of: package.skills[0], package: package, in: env.workspace, modelContext: env.context,
                 secrets: UnrestorableSecrets.self, persist: { _, _ in throw CocoaError(.fileWriteUnknown) }
             )
         }

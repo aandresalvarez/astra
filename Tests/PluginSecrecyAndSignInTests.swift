@@ -104,7 +104,7 @@ struct PluginSecrecyAndSignInTests {
         try env.context.save()
         RenameSecrets.reset(holding: UUID())
         try PluginOperations.setSetting(
-            "PROJECT", to: "alpha", of: v2.skills[0], pluginID: v2.id, in: env.workspace, modelContext: env.context,
+            "PROJECT", to: "alpha", of: v2.skills[0], package: v2, in: env.workspace, modelContext: env.context,
             secrets: RenameSecrets.self
         )
         #expect(RenameSecrets.deleted.isEmpty)

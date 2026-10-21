@@ -14,6 +14,26 @@ import ASTRACore
 struct PluginOperationsReviewTests {
     typealias Fixtures = PluginOperationsTests
 
+    @Test("Settings cannot create successor ownership before Update", arguments: [false, true])
+    func successorSettingWaitsForUpdate(secret: Bool) throws {
+        let env = try Fixtures.Environment()
+        var initial = Fixtures.package(version: "1.0.0")
+        initial.connectors = []
+        initial.skills[0].environmentKeys = [secret ? "API_TOKEN" : "PROJECT"]
+        initial.skills[0].environmentValues = [""]
+        try env.install(initial)
+        let before = WorkspaceCapabilityActivation.snapshot(env.workspace)
+        var next = initial
+        next.skills[0].id = "successor"
+        next.skills[0].replaces = [CapabilityResourceOrigin.componentID(for: initial.skills[0])]
+        #expect(throws: PluginOperations.OperationError.updateRequired) {
+            try PluginOperations.setSetting(next.skills[0].environmentKeys[0], to: "new-setting-value", of: next.skills[0],
+                package: next, in: env.workspace, modelContext: env.context)
+        }
+        #expect(WorkspaceCapabilityActivation.snapshot(env.workspace) == before)
+        #expect(!env.context.hasChanges)
+    }
+
     @Test("A delete confirmation whose workspaces can't be read offers no scope")
     func deleteScopeFailsClosed() throws {
         let env = try Fixtures.Environment()
@@ -86,7 +106,7 @@ struct PluginOperationsReviewTests {
                 v1.skills[0].environmentValues = ["default-project", "", ""]
                 try env.install(v1)
                 for (key, value) in [("API_TOKEN", "kept"), ("LEGACY_TOKEN", "legacy")] {
-                    try PluginOperations.setSetting(key, to: value, of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+                    try PluginOperations.setSetting(key, to: value, of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context)
                 }
                 let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
 
@@ -146,7 +166,7 @@ struct PluginOperationsReviewTests {
         let env = try Fixtures.Environment()
         let v1 = Fixtures.package(version: "1.0.0")
         try env.install(v1)
-        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
         let account = try #require(activation.bindings.first?.account)
 
