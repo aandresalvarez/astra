@@ -108,8 +108,9 @@ public enum TaskObjectiveAssessmentEventStore {
     }
 
     private static func latestProjectionResult(for task: AgentTask) -> ProjectionResult {
-        guard let event = task.events
-            .filter({ $0.type == TaskEventTypes.Objective.assessmentChanged.rawValue })
+        // Read on every context-state derive, so it reads only its own rows.
+        guard let event = TaskEventTypeLookup
+            .events(ofType: TaskEventTypes.Objective.assessmentChanged.rawValue, task: task)
             .max(by: eventPrecedes) else {
             return .noEvents
         }
