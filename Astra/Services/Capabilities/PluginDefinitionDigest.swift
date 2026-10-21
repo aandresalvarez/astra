@@ -41,6 +41,7 @@ enum PluginDefinitionDigest {
     private struct Content: Encodable, Equatable, Sendable {
         let id: String
         let version: String
+        let minAppVersion: String?
         let skills: [PluginSkill]
         let connectors: [PluginConnector]
         let localTools: [PluginLocalTool]
@@ -56,6 +57,7 @@ enum PluginDefinitionDigest {
         init(_ package: PluginPackage) {
             id = package.id
             version = package.version
+            minAppVersion = package.minAppVersion
             skills = package.skills
             connectors = package.connectors
             localTools = package.localTools

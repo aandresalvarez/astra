@@ -130,6 +130,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
                     if !isDefault {
                         Button("Make default") { makeDefault(account, componentID: componentID) }
                             .controlSize(.small)
+                            .disabled(!row.canChangeAccountBindings)
                     }
                     Button("Edit") { onEditAccount(account.id) }
                         .controlSize(.small)
@@ -146,6 +147,11 @@ struct PluginRowDetailsView<SetupRow: View>: View {
                     .controlSize(.small)
                     .tint(Stanford.lagunita)
                     .padding(.leading, 12)
+                    .disabled(!row.canChangeAccountBindings)
+                if !row.canChangeAccountBindings {
+                    Text("Update the plugin before changing its accounts.")
+                        .font(.caption).foregroundStyle(.secondary).padding(.leading, 12)
+                }
             }
         }
     }

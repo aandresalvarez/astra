@@ -18,7 +18,7 @@ enum RuntimeRepairInvocationPolicy {
               segment.scope.isEmpty, segment.enclosingCommands.isEmpty,
               ["", ";", "\n"].contains(segment.separator), segment.words.count <= 256 else { return false }
         var words = segment.words
-        dropAssignments(&words)
+        guard dropAssignments(&words) else { return false }
         if let executable = words.first, (executable as NSString).lastPathComponent == "env" {
             words.removeFirst()
             while let option = words.first, option.hasPrefix("-") {
@@ -26,25 +26,30 @@ enum RuntimeRepairInvocationPolicy {
                 if option == "--" { break }
                 if ["-i", "--ignore-environment", "-"].contains(option) { continue }
                 if ["-u", "--unset"].contains(option) {
-                    guard !words.isEmpty else { return false }
+                    guard let variable = words.first, variable != "PATH" else { return false }
                     words.removeFirst()
                     continue
                 }
+                if option == "--unset=PATH" || option == "-uPATH" { return false }
                 if option.hasPrefix("--unset=") || (option.hasPrefix("-u") && option.count > 2) { continue }
                 // cwd changes, split-string interpretation, and future env
                 // options are outside this supported invocation grammar.
                 return false
             }
-            dropAssignments(&words)
+            guard dropAssignments(&words) else { return false }
         }
         guard let executable = words.first else { return false }
         return commands.contains((executable as NSString).lastPathComponent)
     }
 
-    private static func dropAssignments(_ words: inout [String]) {
+    private static func dropAssignments(_ words: inout [String]) -> Bool {
         while let first = words.first,
               first.range(of: #"^[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression) != nil {
+            // The repair resolver uses ASTRA's trusted executable search.
+            // A command-local PATH cannot be reproduced by that resolver.
+            if first.hasPrefix("PATH=") { return false }
             words.removeFirst()
         }
+        return true
     }
 }

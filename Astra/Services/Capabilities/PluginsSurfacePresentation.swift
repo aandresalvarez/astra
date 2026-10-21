@@ -38,6 +38,11 @@ struct PluginRow: Identifiable {
     let display: PluginsSurfaceRow
 
     var id: String { package.id }
+
+    var canChangeAccountBindings: Bool {
+        guard let activation, activation.isEnabled else { return false }
+        return !PluginRuntimeProjection.awaitsUpdate(activation, to: package)
+    }
 }
 
 struct PluginsSurfaceState: Equatable {
