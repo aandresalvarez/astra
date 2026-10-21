@@ -83,7 +83,8 @@ struct PluginConnectorFieldTrustTests {
             for: package.connectors[0], of: package, in: env.workspace, modelContext: env.context
         )
         #expect(account.credentialKeys == ["TRACKER_TOKEN", "TRACKER_PROJECT"])
-        #expect(account.configKeys.isEmpty)
+        #expect(!account.configKeys.contains("TRACKER_PROJECT"))
+        #expect(account.configKeys == ["PROJECT"])
         // Its value reaches the run from the secret store, through the
         // runtime copy's declared keys.
         let store = MockSecretStore()
