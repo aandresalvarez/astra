@@ -547,6 +547,15 @@ enum PluginUpdateService {
             result.marked = WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
             return result
         }
+        // Same-version replacement is an unaccepted definition. Check before
+        // renames, credential staging or account synchronization can move state.
+        let changedInPlace = activation.recordedVersion == package.version
+            && PluginDefinitionDigest.matches(activation.recordedDigest, package) == false
+        if mode == .automatic, changedInPlace {
+            result.withheld = ["definition"]
+            result.marked = WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
+            return result
+        }
         let current = componentIDs(of: package)
         let currentSet = Set(current)
         let stateIDs = Set(activation.configKeys.compactMap(PluginActivation.componentID(ofSettingKey:)))
@@ -668,8 +677,6 @@ enum PluginUpdateService {
         }
         // A definition replaced under the version the activation accepted
         // (other content, same version) is the person's to take: Update.
-        let changedInPlace = activation.recordedVersion == package.version
-            && PluginDefinitionDigest.matches(activation.recordedDigest, package) == false
         if mode == .automatic, !dropped.isEmpty || !staleKeys.isEmpty || !templatesInSync || !secretsSettled || changedInPlace {
             result.withheld = dropped + staleKeys.map(\.settingKey) + (templatesInSync ? [] : ["templates"])
                 + (secretsSettled ? [] : ["secrets"]) + (changedInPlace ? ["definition"] : [])

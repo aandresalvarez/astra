@@ -327,6 +327,40 @@ struct ConnectorCredentialEditorTests {
     }
 
     @MainActor
+    @Test("Credential rotation rejects a clean stale account before staging", arguments: ["config", "markers", "provenance", "timestamp"])
+    func staleAccountCannotOverwriteSavedFields(field: String) throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable()
+            let prior = account.credentialNamespaceID
+            let other = ModelContext(env.disk.context.container)
+            other.autosaveEnabled = false
+            let id = account.id
+            let fresh = try #require(try other.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.id == id })).first)
+            switch field {
+            case "config": fresh.configKeys = ["REGION"]; fresh.configValues = ["saved-region"]
+            case "markers": fresh.credentialKeys.append("SECOND_TOKEN"); fresh.credentialValues.append("")
+            case "provenance": fresh.originComponentID = "connector:changed"
+            default: fresh.updatedAt = fresh.updatedAt.addingTimeInterval(60)
+            }
+            try other.save()
+            #expect(!env.disk.context.hasChanges)
+            #expect(throws: ConnectorCredentialGenerationTransaction.Failure.self) {
+                _ = try ConnectorCredentialEditor.save("replacement-token", forKey: "API_TOKEN", on: account,
+                    modelContext: env.disk.context)
+            }
+            let saved = try #require(try ModelContext(env.disk.context.container).fetch(FetchDescriptor<Connector>()).first)
+            #expect(saved.credentialNamespaceID == prior)
+            #expect(saved.configValues == fresh.configValues)
+            #expect(saved.credentialKeys == fresh.credentialKeys)
+            #expect(saved.originComponentID == fresh.originComponentID)
+            #expect(saved.updatedAt == fresh.updatedAt)
+            #expect(!env.disk.context.hasChanges)
+        }
+    }
+
+    @MainActor
     struct Fixture {
         let disk: PluginAddCommitTests.Fixture
         let package: PluginPackage

@@ -3505,7 +3505,7 @@ struct TaskMainView: View {
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
             launchBlock: TaskRunStopEvidence.launchBlock(events: sortedEvents, runID: latestRun?.id),
-            repair: TaskRunStopEvidence.repair(events: sortedEvents, runID: latestRun?.id),
+            repair: TaskRunStopEvidence.presentationRepair(events: sortedEvents, runID: latestRun?.id, task: task),
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails
         ))

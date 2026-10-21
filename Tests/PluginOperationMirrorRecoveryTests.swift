@@ -39,7 +39,7 @@ struct PluginOperationMirrorRecoveryTests {
         var reportedFailure = false
         do {
             try PluginOperations.setSetting("PROJECT", to: "saved-change", of: package.skills[0],
-                pluginID: package.id, in: env.workspace, modelContext: env.context)
+                package: package, in: env.workspace, modelContext: env.context)
         } catch { reportedFailure = true }
         #expect(reportedFailure)
         #expect(changes.withLock { $0 } == [env.workspace.id])
@@ -73,7 +73,7 @@ struct PluginOperationMirrorRecoveryTests {
         var pendingID: UUID?
         do {
             try PluginOperations.setSetting("PROJECT", to: "recovered-setting", of: package.skills[0],
-                pluginID: package.id, in: workspace, modelContext: context)
+                package: package, in: workspace, modelContext: context)
             Issue.record("A failed recovery copy was reported as complete")
         } catch let problem as PluginOperationProblem {
             if case .savedRecoveryPending(let id) = problem { pendingID = id }
@@ -114,7 +114,7 @@ struct PluginOperationMirrorRecoveryTests {
             }
         defer { NotificationCenter.default.removeObserver(observation) }
         try PluginOperations.setSetting("API_TOKEN", to: "test-only", of: package.skills[0],
-            pluginID: package.id, in: env.workspace, modelContext: env.context, secrets: PublishingSecrets.self)
+            package: package, in: env.workspace, modelContext: env.context, secrets: PublishingSecrets.self)
         #expect(notifications.withLock { $0 } == [true])
     }
 

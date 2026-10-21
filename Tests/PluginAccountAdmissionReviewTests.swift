@@ -11,6 +11,51 @@ import ASTRAModels
 struct PluginAccountAdmissionReviewTests {
     typealias Fixtures = PluginOperationsTests
 
+    @Test("Same-version replacement cannot move component state before acceptance")
+    func sameVersionRenameWaitsForUpdate() throws {
+        let env = try Fixtures.Environment()
+        let initial = Fixtures.package(version: "1.0.0")
+        try env.install(initial)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: initial.id, in: env.workspace))
+        let old = CapabilityResourceOrigin.componentID(for: initial.skills[0])
+        WorkspaceCapabilityActivation.setConfigValue("saved-project", forKey: PluginActivation.settingKey(componentID: old, key: "PROJECT"), on: activation)
+        try env.context.save()
+        let before = PluginActivationRecord(activation)
+        var changed = initial
+        changed.skills[0].id = "renamed-agent"
+        changed.skills[0].replaces = [old]
+        try env.importUpdate(changed, mode: .automatic)
+        #expect(activation.awaitingUpdate)
+        #expect(activation.knownComponentIDs == before.knownComponentIDs)
+        #expect(activation.configKeys == before.configKeys)
+        #expect(activation.configValues == before.configValues)
+        #expect(activation.secretSettingKeys == before.secretSettingKeys)
+        #expect(activation.bindings.map(\.componentID).sorted() == before.bindings.map(\.componentID).sorted())
+        try env.importUpdate(initial, mode: .automatic)
+        #expect(activation.configuration(forComponent: old)["PROJECT"] == "saved-project")
+    }
+
+    @Test("Readiness requires the current declaration, keeping retired markers only as history")
+    func retiredCredentialDoesNotBlockReadiness() throws {
+        let env = try Fixtures.Environment()
+        var initial = Fixtures.package(version: "1.0.0")
+        initial.connectors[0].credentialHints.append(.init(key: "RETIRED_TOKEN", hint: "Old token"))
+        try env.install(initial)
+        let account = try #require(env.workspace.connectors.first)
+        let store = MockSecretStore()
+        store.save(key: "TRACKER_TOKEN", value: "configured-current-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: account.credentialNamespaceID ?? account.id), label: nil)
+        var next = initial
+        next.version = "2.0.0"
+        next.connectors[0].credentialHints.removeAll { $0.key == "RETIRED_TOKEN" }
+        try env.importUpdate(next)
+        #expect(account.credentialKeys.contains("RETIRED_TOKEN"))
+        let state = CapabilityPackageState(package: next, workspace: env.workspace,
+            capabilities: WorkspaceCapabilities(workspace: env.workspace, packageDefinitions: [next]), secretStore: store)
+        #expect(state.readiness.level == .ready)
+        #expect(state.attentionMessages(for: account).isEmpty)
+    }
+
     @Test("Every account carries package settings without duplicating account structure")
     func additionalAccountFieldLayout() throws {
         let env = try Fixtures.Environment()

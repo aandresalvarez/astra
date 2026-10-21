@@ -26,7 +26,7 @@ enum PluginOperations {
 
         var errorDescription: String? {
             switch self {
-            case .updateRequired: "Update the plugin before changing its accounts."
+            case .updateRequired: "Update the plugin before changing its settings or accounts."
             case .notAdded: "Add the plugin to this workspace first."
             case .secretReadFailed(let key): "Couldn't read \(key) from the Keychain. Check credential-storage access before retrying."
             case .secretSaveFailed(let key): "Couldn't save \(key) to the Keychain."
@@ -65,7 +65,7 @@ enum PluginOperations {
     /// Publishes settings with a complete credential generation. Old values
     /// are never overwritten or cleared before the matching domain receipt.
     static func setSetting(
-        _ key: String, to value: String, of skill: PluginSkill, pluginID: String,
+        _ key: String, to value: String, of skill: PluginSkill, package: PluginPackage,
         in workspace: Workspace, modelContext: ModelContext,
         secrets: (any SkillSecretPersisting.Type)? = nil,
         persist: (Workspace, ModelContext) throws -> Void = persistAndExport,
@@ -74,8 +74,12 @@ enum PluginOperations {
         guard !modelContext.hasChanges else { throw OperationError.pendingEdits }
         guard workspace.modelContext === modelContext, !workspace.isDeleted else { throw OperationError.workspaceChanged }
         try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
+        let pluginID = package.id
         guard let activation = WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) else {
             throw OperationError.notAdded(pluginID: pluginID)
+        }
+        guard package.skills.contains(skill), !PluginRuntimeProjection.awaitsUpdate(activation, to: package) else {
+            throw OperationError.updateRequired
         }
         let componentID = CapabilityResourceOrigin.componentID(for: skill)
         let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)

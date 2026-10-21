@@ -117,7 +117,7 @@ struct PluginStagedApprovalRecoveryTests {
         original.skills.append(second)
         try env.install(original)
         for skill in original.skills {
-            try PluginOperations.setSetting("PROJECT", to: skill.name, of: skill, pluginID: original.id,
+            try PluginOperations.setSetting("PROJECT", to: skill.name, of: skill, package: original,
                 in: env.workspace, modelContext: env.context)
         }
         let approvals = CapabilityApprovalStore(directory: env.root.appendingPathComponent("Approvals"))

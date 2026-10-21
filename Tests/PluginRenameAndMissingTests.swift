@@ -38,7 +38,7 @@ struct PluginRenameAndMissingTests {
         let v1 = Self.twoOfEach()
         try env.install(v1)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
-        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], package: v1, in: env.workspace, modelContext: env.context)
         let secretKey = PluginActivation.settingKey(componentID: "skill:report-agent", key: "API_TOKEN")
         WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: secretKey, on: activation)
         let x = CapabilityResourceOrigin.componentID(for: v1.connectors[0])

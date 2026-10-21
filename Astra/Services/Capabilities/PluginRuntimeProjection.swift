@@ -477,6 +477,28 @@ struct PluginRuntimeProjection {
         return found.map { ($0, creatorPackage) }
     }
 
+    /// Current credential requirements for status surfaces. Retired markers
+    /// remain on the durable account, but runtime and readiness ignore them.
+    static func requiredCredentialKeys(
+        of account: Connector, package: PluginPackage, boundAccountIDs: [String: Set<UUID>]?
+    ) -> [String] {
+        guard let origin = account.originPackageID, !origin.isEmpty else { return account.credentialKeys }
+        let bindings = package.connectors.filter { spec in
+            if let boundAccountIDs {
+                return boundAccountIDs[CapabilityResourceOrigin.componentID(for: spec)]?.contains(account.id) == true
+            }
+            return CapabilityRuntimeResourceMatcher.connectorMatches(spec, connector: account)
+        }
+        let declarations = bindings.compactMap { spec in
+            creatorDeclaration(of: account, originID: origin, binding: spec, in: package,
+                creator: { id in CapabilityRuntimeResourceMatcher.packageDefinitions().first { $0.id == id } })
+        }
+        let declared = Set(declarations.flatMap {
+            PluginConnectorFieldTrust.asStored($0.spec, in: $0.package).credentialHints.map { ConnectorCredentialKey.canonical($0.key) }
+        })
+        return account.credentialKeys.filter { declared.contains(ConnectorCredentialKey.canonical($0)) }
+    }
+
     /// The setting keys an account of `spec` may carry plain into a run: the
     /// settings its stored projection keeps plain
     /// (`PluginConnectorFieldTrust.asStored`), its plugin's skill settings

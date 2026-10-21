@@ -155,6 +155,16 @@ struct PluginRepairDestinationTests {
         #expect(repair.detail.hasPrefix("Manual setup "))
     }
 
+    @Test("A projected HOME selects gcloud's credential directory")
+    func cloudHomeCannotReceiveAutomaticLogin() {
+        let environment = ["HOME": "/tmp/task-home"]
+        let repair = CLISessionExpiryClassifier.googleCloud.repair.checking(in: environment)
+            .targetingCredentialStore(environment)
+        #expect(repair.command == nil)
+        #expect(repair.verb == "Check")
+        #expect(repair.checkEnvironment == environment)
+    }
+
     private final class TerminalSpy: TerminalCommandLaunching {
         private let commands = OSAllocatedUnfairLock(initialState: [String]())
         var launched: [String] { commands.withLock { $0 } }

@@ -146,7 +146,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
         let cli = ((checkBinary ?? "") as NSString).lastPathComponent
         let directories: [String]
         switch cli {
-        case "gcloud": directories = ["CLOUDSDK_CONFIG"]
+        case "gcloud": directories = ["CLOUDSDK_CONFIG", "HOME"]
         case "gh": directories = ["GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME"]
         default: directories = ["XDG_CONFIG_HOME"]
         }
