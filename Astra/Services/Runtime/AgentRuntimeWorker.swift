@@ -493,6 +493,14 @@ final class AgentRuntimeWorker {
         ) else {
             return
         }
+        if selectedRuntime == .antigravityCLI {
+            // agy updates itself in place; ask again before its command is built.
+            await AntigravityCLIRuntime.warmStructuredOutputSupportBeforeLaunch(
+                executablePath: launchSettings.executablePath,
+                providerHomeDirectory: launchSettings.homeDirectory,
+                taskID: task.id
+            )
+        }
 
         let capabilityPreflightCache = PreflightCache(checker: environmentHealthChecker)
         let capabilityWorkingDirectory = TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory
@@ -1735,7 +1743,8 @@ final class AgentRuntimeWorker {
             .providerSemanticProgressStalled,
             .providerActiveToolStalled,
             .providerWorkspaceJobStalled,
-            .providerRunWallClockExceeded
+            .providerRunWallClockExceeded,
+            .providerTurnTimeLimitReached
         ].contains(stopReason)
     }
 
