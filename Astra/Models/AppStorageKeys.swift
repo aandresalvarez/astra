@@ -26,11 +26,11 @@ public enum AppStorageKeys {
     // is build-gated rather than one-shot so a store that gains a leak from an
     // older build still gets cleaned on the next update.
     public static let completedPersistedCredentialPurgeBuild = "astra.startup.completedPersistedCredentialPurgeBuild.v1"
-    // "<build>:<Codex session run count>" at which the Codex session usage
-    // correction last completed. Runs recorded before Codex declared cumulative
-    // usage stored the thread's running total; the correction derives each run's
-    // share from its raw usage report, so re-running it after an update or after
-    // runs arrive (an import, a recovery) is a no-op on records already corrected.
+    // Build number for which the Codex session usage correction last completed.
+    // Runs recorded before Codex declared cumulative usage stored the thread's
+    // running total; the correction derives each run's share from its raw usage
+    // report, so re-running it is a no-op on records already corrected. A
+    // workspace import that brings Codex session runs clears it.
     public static let completedCodexSessionUsageCorrectionBuild = "astra.startup.completedCodexSessionUsageCorrectionBuild.v1"
     public static let hasSeenNewTaskNudge = "astra.hasSeenNewTaskNudge.v1"
     // Legacy key retained so older preferences remain readable. The guided

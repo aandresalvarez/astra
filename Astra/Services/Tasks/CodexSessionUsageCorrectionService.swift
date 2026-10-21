@@ -66,28 +66,21 @@ enum CodexSessionUsageCorrectionService {
         var completed = false
     }
 
-    /// Gated on the build and on how many Codex session runs the store holds, so it
-    /// re-runs after an update and after runs arrive by any route (a workspace import,
-    /// a store recovery, new turns). Each re-run finds corrected sessions unchanged.
+    /// Build-gated like the other startup repairs. Importing a workspace that brings Codex
+    /// session runs clears the gate (`WorkspaceConfigManager`), since an older export can
+    /// hold running totals; new turns record their own share and need no re-run. Each
+    /// re-run finds corrected sessions unchanged.
     @discardableResult
     static func correctIfNeeded(
         modelContext: ModelContext,
         currentBuild: String,
         defaults: UserDefaults = .standard
     ) async -> Bool {
-        let count: Int
-        do {
-            count = try modelContext.fetchCount(codexSessionRuns)
-        } catch {
-            log(stage: "count_failed", outcome: Outcome(), error: error)
-            return false
-        }
-        let watermark = "\(currentBuild):\(count)"
-        guard defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) != watermark else {
+        guard defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) != currentBuild else {
             return false
         }
         guard await correct(modelContext: modelContext).completed else { return false }
-        defaults.set(watermark, forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild)
+        defaults.set(currentBuild, forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild)
         return true
     }
 
@@ -132,18 +125,28 @@ enum CodexSessionUsageCorrectionService {
                 log(stage: "fetch_failed", outcome: outcome, error: error)
                 return outcome
             }
-            let fresh = page.filter { $0.startedAt != cursor || !seenAtCursor.contains($0.id) }
-            guard !fresh.isEmpty else {
-                // A full page of runs sharing the cursor's start time: step past it.
-                guard page.count == batchSize, !strictlyAfterCursor else { break }
+            var fresh = page.filter { $0.startedAt != cursor || !seenAtCursor.contains($0.id) }
+            if fresh.isEmpty {
+                guard page.count == batchSize, let start = cursor else { break }
+                // More than a page of runs share the cursor's start time, so `>=` keeps returning
+                // the same page. Read that one group whole, then continue after it.
+                let group = FetchDescriptor<TaskRun>(predicate: #Predicate<TaskRun> {
+                    $0.runtimeID == codex && $0.providerSessionId != nil && $0.startedAt == start
+                })
+                do {
+                    fresh = try modelContext.fetch(group).filter { !seenAtCursor.contains($0.id) }
+                } catch {
+                    log(stage: "fetch_failed", outcome: outcome, error: error)
+                    return outcome
+                }
                 strictlyAfterCursor = true
-                continue
-            }
-            strictlyAfterCursor = false
-            if let last = fresh.last?.startedAt {
-                if last != cursor { seenAtCursor = [] }
-                cursor = last
-                seenAtCursor.formUnion(fresh.filter { $0.startedAt == last }.map(\.id))
+            } else {
+                strictlyAfterCursor = false
+                if let last = fresh.last?.startedAt {
+                    if last != cursor { seenAtCursor = [] }
+                    cursor = last
+                    seenAtCursor.formUnion(fresh.filter { $0.startedAt == last }.map(\.id))
+                }
             }
             // A task is corrected whole, from whichever of its runs a page reaches first.
             let tasks = fresh.compactMap(\.task).filter { visited.insert($0.id).inserted }

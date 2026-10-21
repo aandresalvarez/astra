@@ -3,6 +3,7 @@ import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 
 /// Before Codex declared cumulative session usage, each resumed run stored the thread's running
@@ -318,7 +319,7 @@ struct CodexSessionUsageCorrectionServiceTests {
         let defaults = InMemoryDefaults()
         fixture.legacyRun("thread-1", at: 0, input: 1_000, output: 10)
         let second = fixture.legacyRun("thread-1", at: 60, input: 2_500, output: 25)
-        defaults.set("42:2", forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild)
+        defaults.set("42", forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild)
 
         let skipped = await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "42", defaults: defaults)
         #expect(!skipped)
@@ -327,25 +328,61 @@ struct CodexSessionUsageCorrectionServiceTests {
         let ran = await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "43", defaults: defaults)
         #expect(ran)
         #expect(second.inputTokens == 1_500)
-        #expect(defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) == "43:2")
+        #expect(defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) == "43")
     }
 
-    /// A workspace imported after the startup pass brings legacy runs in on the same build.
-    @Test("Runs arriving on the same build re-open the gate")
-    func importedRunsReopenTheGate() async throws {
+    /// A workspace imported after the startup pass, or replaced by an older export, brings
+    /// legacy runs in on the same build.
+    @Test("Importing a workspace with Codex session runs re-opens the gate")
+    func importedCodexRunsReopenTheGate() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-codex-usage-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let key = AppStorageKeys.completedCodexSessionUsageCorrectionBuild
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+
+        let source = try makeFixture()
+        defer { withExtendedLifetime(source.container) {} }
+        let workspace = Workspace(name: "Codex", primaryPath: root.path)
+        source.context.insert(workspace)
+        source.task.workspace = workspace
+        source.legacyRun("thread-1", at: 0, input: 1_000, output: 10)
+        source.legacyRun("thread-1", at: 60, input: 2_500, output: 25)
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: source.context))
+
+        UserDefaults.standard.set("42", forKey: key)
+        let destination = try makeFixture()
+        defer { withExtendedLifetime(destination.container) {} }
+        _ = WorkspaceConfigManager.importWorkspace(from: config, modelContext: destination.context)
+
+        #expect(UserDefaults.standard.string(forKey: key) == nil)
+    }
+
+    @Test("A start time shared by more than a page of runs is read whole")
+    func tiedStartTimesBeyondAPage() async throws {
         let fixture = try makeFixture()
         defer { withExtendedLifetime(fixture.container) {} }
-        let defaults = InMemoryDefaults()
-        fixture.legacyRun("thread-1", at: 0, input: 1_000, output: 10)
-        let first = await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "42", defaults: defaults)
-        #expect(first)
+        func task(_ title: String) -> Fixture {
+            let task = AgentTask(title: title, goal: "Count once", runtime: .codexCLI)
+            fixture.context.insert(task)
+            return Fixture(container: fixture.container, context: fixture.context, task: task)
+        }
+        let (a, b, c) = (task("A"), task("B"), task("C"))
+        // Four runs start at the same instant; C is reachable only through that group.
+        a.legacyRun("thread-a", at: 0, input: 100, output: 1)
+        let aSecond = a.legacyRun("thread-a", at: 10, input: 300, output: 3)
+        b.legacyRun("thread-b", at: 0, input: 200, output: 2)
+        let bSecond = b.legacyRun("thread-b", at: 10, input: 500, output: 5)
+        c.legacyRun("thread-c", at: 0, input: 400, output: 4)
+        let unreported = c.makeRun("thread-c", at: 0)
+        unreported.inputTokens = 900
+        unreported.tokensUsed = 900
+        unreported.status = .completed
 
-        fixture.legacyRun("thread-2", at: 60, input: 500, output: 5)
-        let imported = fixture.legacyRun("thread-2", at: 120, input: 900, output: 9)
-        let rerun = await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "42", defaults: defaults)
+        let outcome = await Service.correct(modelContext: fixture.context, batchSize: 2)
 
-        #expect(rerun)
-        #expect(imported.inputTokens == 400)
-        #expect(defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) == "42:3")
+        #expect(outcome == .init(tasksCorrected: 2, runsCorrected: 2, sessionsSkipped: 1, completed: true))
+        #expect(aSecond.inputTokens == 200)
+        #expect(bSecond.inputTokens == 300)
     }
 }
