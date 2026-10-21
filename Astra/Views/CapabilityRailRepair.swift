@@ -10,7 +10,9 @@ enum CapabilityRailRepair {
         prerequisiteStatuses: [String: HealthStatus]
     ) -> CapabilityReadiness {
         guard stateReadiness.level != .inactive else { return stateReadiness }
-        let prerequisiteMessages = CapabilityHealthService.readinessMessages(
+        let pending = package.prerequisites.filter { prerequisiteStatuses[$0.id] == nil }
+            .map { "\($0.displayName): Checking prerequisite…" }
+        let prerequisiteMessages = pending + CapabilityHealthService.readinessMessages(
             for: package,
             statuses: prerequisiteStatuses
         )
