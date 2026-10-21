@@ -67,6 +67,47 @@ struct RuntimeRepairInvocationTests {
         #expect(stop.repairContext?.repair.checkBinary == nil)
     }
 
+    @Test("Unsupported conditional bodies cannot attribute another command's diagnostic to a CLI", arguments: [
+        "case no in yes) gh api user;; esac; cat incident.txt",
+        "case no in yes) gh api user;; *) cat incident.txt;; esac",
+        "if true; then case no in yes) gh api user;; esac; fi; cat incident.txt",
+        "bash -c 'case no in yes) gh api user;; esac; cat incident.txt'",
+        "for item in; do gh api user; done; cat incident.txt",
+        "select item in; do gh api user; done; cat incident.txt"
+    ])
+    func unknownConditionalCannotPause(command: String) {
+        #expect(!RuntimeRepairInvocationPolicy.admitsDiagnostics(command: command, content: output))
+        #expect(CLISessionExpiryClassifier.stop(content: output, command: command, failed: false) == nil)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        _ = monitor.processEvent(.toolUse(name: "Bash", id: "conditional", input: ["command": command]), process: nil)
+        #expect(!monitor.processEvent(.toolResult(toolId: "conditional", content: output, isError: false), process: nil))
+        #expect(monitor.runtimeRepairContext == nil)
+    }
+
+    @Test("A real skipped case arm succeeds and its printed incident must not pause the run")
+    func skippedCaseExecutesNoCLI() throws {
+        let command = "case no in yes) gh api user;; esac; printf '%s' '\(output)'"
+        let result = try PermissionRepairCommandClient.run("/bin/sh", ["-c", command])
+        #expect(result.exitCode == 0)
+        let stdout = try #require(result.stdout)
+        #expect(stdout == output)
+        #expect(CLISessionExpiryClassifier.stop(content: stdout, command: command, failed: false) == nil)
+    }
+
+    @Test("An untracked loop body cannot index an absent compound while checking failure propagation")
+    func untrackedLoopBodyDoesNotCrash() {
+        #expect(!CLISessionExpiryClassifier.failureReaches(from: "gh",
+            in: "for item in; do gh api user; done; cat incident.txt"))
+    }
+
+    @Test("Control-flow words in CLI arguments do not disable a supported direct repair", arguments: [
+        "gh api --field mode=case", "gh api /repos/team/case", "gh api --field mode=for"
+    ])
+    func literalControlWordsRemainArguments(command: String) throws {
+        let stop = try #require(CLISessionExpiryClassifier.stop(content: output, command: command))
+        #expect(stop.repairContext?.offersAction == true)
+    }
+
     @Test("Oversized command or diagnostic does not enter the shell classifier")
     func boundedInput() {
         #expect(CLISessionExpiryClassifier.stop(content: output, command: String(repeating: " ", count: 9_000) + "gh api user") == nil)

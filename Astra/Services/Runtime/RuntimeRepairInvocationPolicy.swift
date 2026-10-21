@@ -10,7 +10,16 @@ enum RuntimeRepairInvocationPolicy {
         // A definition is not evidence that its body ran. Without typed
         // execution provenance, do not pause on text printed by another tool.
         let definition = #"(?:\bfunction\s+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\))\s*\{"#
-        return command.range(of: definition, options: .regularExpression) == nil
+        guard command.range(of: definition, options: .regularExpression) == nil else { return false }
+        // The gate model covers if/while/until, not pattern matching,
+        // iterator loops or asynchronous compound commands. Their bodies
+        // are not evidence of execution, even if a later command succeeds.
+        let unsupported: Set<String> = ["case", "for", "select", "foreach", "repeat", "coproc"]
+        return !CLISessionExpiryClassifier.segments(command).contains { segment in
+            var words = segment.words
+            CLISessionExpiryClassifier.stripWrappers(&words)
+            return words.first.map(unsupported.contains) == true
+        }
     }
 
     static func permitsAutomaticRepair(command: String, commands: [String]) -> Bool {
