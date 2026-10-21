@@ -141,7 +141,8 @@ public struct RepairAction: Codable, Sendable, Equatable {
     /// host needs manual setup too; github.com needs no selector forwarding.
     public func targetingCredentialStore(_ environment: [String: String]?) -> RepairAction {
         guard strategy == .terminal, command != nil else { return self }
-        if verb == "Install" { return enforcingTerminalPolicy() }
+        if verb == "Install", let executable = command?.split(whereSeparator: \.isWhitespace).first,
+           Self.installers.contains(String(executable)) { return enforcingTerminalPolicy() }
         let cli = ((checkBinary ?? "") as NSString).lastPathComponent
         let directories: [String]
         switch cli {

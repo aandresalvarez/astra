@@ -42,6 +42,19 @@ struct PluginRepairDestinationTests {
         #expect(repair.checkEnvironment == environment)
     }
 
+    @Test("An Install label cannot bypass credential destination checks", arguments: ["gh", "gcloud"])
+    func installLabelCannotBypassCredentialDestination(binary: String) {
+        let key = binary == "gh" ? "GH_CONFIG_DIR" : "CLOUDSDK_CONFIG"
+        let repair = RepairAction(strategy: .terminal, componentName: "Provider", title: "Install", verb: "Install",
+            detail: "", command: "\(binary) auth login", checkBinary: binary)
+            .checking(in: [key: "/tmp/workspace/credentials"])
+        #expect(repair.targetingCredentialStore(repair.checkEnvironment).command == nil)
+        #expect(repair.executionCommand == nil)
+        let terminal = TerminalSpy()
+        RepairActionRunner.run(repair, terminal: terminal)
+        #expect(terminal.launched.isEmpty)
+    }
+
     @Test("Stored selector-prefixed commands cannot bypass destination admission")
     func legacyPrefixCannotLaunchOrCopy() {
         let terminal = TerminalSpy()

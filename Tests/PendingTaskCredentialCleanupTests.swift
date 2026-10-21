@@ -89,6 +89,50 @@ struct PendingTaskCredentialCleanupTests {
         #expect(cleaned == [cleanup.connectorID])
     }
 
+    @Test("A permission-paused terminal request retains its frozen credentials until the approval is superseded")
+    func permissionContinuationStillOwnsCredentials() throws {
+        let fixture = try Fixture(onDisk: true)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let task = try #require(try fixture.context.fetch(FetchDescriptor<AgentTask>()).first { $0.id == fixture.request.taskID })
+        let run = TaskRun(task: task)
+        fixture.context.insert(run)
+        run.status = .failed
+        run.typedStopReason = .permissionApprovalRequired
+        fixture.request.runID = run.id
+        fixture.request.state = .failed
+        fixture.request.terminalAt = Date()
+        task.status = .pendingUser
+        let binding = TaskPermissionContinuation.capture(task: task, run: run, modelContext: fixture.context)
+        let label = "connector:\(fixture.account.id.uuidString):API_TOKEN"
+        let payload = try #require(PermissionBroker.approvalPayload(providerID: task.resolvedRuntimeID,
+            request: .connectorCredentials(connectorID: fixture.account.id, displayName: "Account", labels: [label]),
+            reason: "Blocked pending approval", grants: [.credential(label: label)], requestID: "permission-hold").encodedString())
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(
+            payload: TaskPermissionContinuation.attach(payload, continuation: binding), task: task)
+        let cleanup = fixture.account.keychainCleanup
+        fixture.context.delete(fixture.activation)
+        fixture.context.delete(fixture.account)
+        try fixture.context.save()
+        let reopened = ModelContext(fixture.container)
+        let references = try #require(PendingTaskCredentialReferences.capture(modelContext: reopened))
+        #expect(references.holdsSkill(fixture.namespace, key: "API_TOKEN"))
+        #expect(references.holdsAccount(cleanup))
+        let savedTask = try #require(try reopened.fetch(FetchDescriptor<AgentTask>()).first)
+        let submission = ExecutionRequestSubmissionService.submitPermissionResume(message: "Continue",
+            executionPolicy: .default, for: savedTask, into: reopened, continuation: binding)
+        guard case .success(let submitted) = submission else { Issue.record("The same accepted context must remain resumable"); return }
+        let transferred = try #require(PendingTaskCredentialReferences.capture(modelContext: reopened))
+        #expect(transferred.holdsSkill(fixture.namespace, key: "API_TOKEN"))
+        #expect(transferred.holdsAccount(cleanup))
+        let continuation = try #require(try TaskTurnRequestRepository.request(id: submitted.requestID, in: reopened))
+        continuation.state = .cancelled
+        continuation.terminalAt = Date()
+        try reopened.save()
+        let released = try #require(PendingTaskCredentialReferences.capture(modelContext: reopened))
+        #expect(!released.holdsSkill(fixture.namespace, key: "API_TOKEN"))
+        #expect(!released.holdsAccount(cleanup))
+    }
+
     @Test("An unknown request state or policy version holds cleanup closed", arguments: ["state", "version"])
     func unknownEvidenceIsConservative(kind: String) throws {
         let fixture = try Fixture(onDisk: false)
