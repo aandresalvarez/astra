@@ -228,6 +228,11 @@ public enum CodexStreamEventParser {
         }
     }
 
+    /// `turn.completed.usage` is the thread's running total, not the turn's own
+    /// usage: `codex exec` reports `total_token_usage`, and `exec resume`
+    /// restores it from the rollout (codex-cli 0.163: three one-word turns of
+    /// one thread reported 5, 11 and 17 output tokens). The recorder reduces a
+    /// resumed run's report to its own share (`reportsCumulativeSessionUsage`).
     private static func usageEvent(from object: [String: Any]) -> AgentEvent? {
         let usage = object["usage"] as? [String: Any] ?? object
         // Codex's input_tokens already include cached_input_tokens (its own

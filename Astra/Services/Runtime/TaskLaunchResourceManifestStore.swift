@@ -41,7 +41,8 @@ enum TaskLaunchResourceManifestStore {
                 "diagnostic_count": String(plan.diagnostics.count),
                 "provider_placement": plan.providerPlacement,
                 "workspace_command_placement": plan.workspaceCommandPlacement,
-                "shell_route": plan.shellRoute
+                "shell_route": plan.shellRoute,
+                "ssh_route": plan.remoteSSHRoute?.route.wireValue ?? "none"
             ], level: .debug, fieldMaxLength: 240)
             return latestURL.path
         } catch {

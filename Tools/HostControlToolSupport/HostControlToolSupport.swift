@@ -10,6 +10,8 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
     public var bigQueryExecutable: String
     public var sshExecutable: String
     public var allowedSSHAliases: [String]
+    public var sshRoute: HostControlSSHRoute?
+    public var sshRouteTargets: [String]
     public var allowedTools: Set<String>
     public var currentDirectory: String
     /// Where a brokered tool writes output it must not return inline.
@@ -32,6 +34,8 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
         bigQueryExecutable: String = "bq",
         sshExecutable: String = "ssh",
         allowedSSHAliases: [String] = [],
+        sshRoute: HostControlSSHRoute? = nil,
+        sshRouteTargets: [String] = [],
         allowedTools: Set<String> = knownToolNames,
         currentDirectory: String = "",
         taskFolder: String = "",
@@ -46,6 +50,8 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
         self.bigQueryExecutable = Self.clean(bigQueryExecutable) ?? "bq"
         self.sshExecutable = Self.clean(sshExecutable) ?? "ssh"
         self.allowedSSHAliases = Self.deduplicated(allowedSSHAliases.compactMap(Self.clean))
+        self.sshRoute = sshRoute
+        self.sshRouteTargets = Self.deduplicated(sshRouteTargets.compactMap(Self.clean))
         let normalizedTools = Set(allowedTools.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
             .intersection(Self.knownToolNames)
         self.allowedTools = normalizedTools
@@ -65,6 +71,8 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
             bigQueryExecutable: clean(env["ASTRA_HOST_CONTROL_BQ_EXECUTABLE"]) ?? "bq",
             sshExecutable: clean(env["ASTRA_HOST_CONTROL_SSH_EXECUTABLE"]) ?? "ssh",
             allowedSSHAliases: splitList(env["ASTRA_HOST_CONTROL_ALLOWED_SSH_ALIASES"]),
+            sshRoute: HostControlSSHRoute(wireValue: env[HostControlSSHRoute.environmentKey]),
+            sshRouteTargets: (env[HostControlSSHRoute.targetsEnvironmentKey] ?? "").split(separator: "\n").map(String.init),
             allowedTools: allowedToolSet(env["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"]),
             currentDirectory: clean(env["ASTRA_HOST_CONTROL_CURRENT_DIRECTORY"]) ?? "",
             taskFolder: clean(env["ASTRA_HOST_CONTROL_TASK_FOLDER"]) ?? "",
@@ -890,7 +898,8 @@ public final class HostControlMCPServer {
     private func handleToolCall(_ call: MCPToolCall) -> MCPServerReply {
         let normalizedToolName = normalizedToolName(call.name)
         guard toolIsAllowed(normalizedToolName) else {
-            return .error(code: -32602, message: "\(normalizedToolName) is not enabled for this task")
+            return .error(code: -32602, message: HostControlSSHRoute.toolNotEnabledMessage(
+                tool: normalizedToolName, route: configuration.sshRoute, targets: configuration.sshRouteTargets))
         }
         let arguments = call.arguments
         switch normalizedToolName {
