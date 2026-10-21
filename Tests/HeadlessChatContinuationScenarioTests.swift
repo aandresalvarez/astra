@@ -542,7 +542,12 @@ extension HeadlessChatScenarioTests {
             printf '%s\\n' "$@" > '\(argsFile.path)'
             printf '%s\\n' '{"type":"thread.started","thread_id":"codex-thread-1"}'
             printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Codex answer"}}'
-            printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":7}}'
+            # Codex reports the thread's running total, which a resume restores.
+            if [ "$2" = "resume" ]; then
+              printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":9,"output_tokens":10}}'
+            else
+              printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":7}}'
+            fi
             exit 0
             """
         )
@@ -571,8 +576,9 @@ extension HeadlessChatScenarioTests {
         #expect(task.runs.count == 2)
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
         #expect(runs[0].tokensUsed == 12)
-        #expect(runs[1].tokensUsed == 12)
-        #expect(task.tokensUsed == 24)
+        // The resumed run records what its own turn added to the thread total: 9/10 - 5/7.
+        #expect(runs[1].tokensUsed == 7)
+        #expect(task.tokensUsed == 19)
         #expect(task.status == .completed)
     }
 

@@ -23,6 +23,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         defaultModels: CodexCLIRuntime.availableModelNames(),
         supportsAstraRunProtocol: true,
         supportsNativeContinuation: true,
+        reportsCumulativeSessionUsage: true,
         supportsMCPServers: true,
         supportsReasoningEffort: true
     )
