@@ -123,6 +123,7 @@ struct PluginOperationsReviewTests {
         for key in ["TRACKER_TOKEN", "LEGACY_TOKEN"] {
             #expect(account.saveCredential(key: key, value: "\(key)-value", store: store))
         }
+        try env.context.save()
         func projectedCredentials(_ package: PluginPackage) -> [String] {
             let projection = PluginRuntimeProjection.project(workspace: env.workspace, packages: [package], connectorMode: .runtimeCopies)
             return ConnectorRuntimeProjection(connectors: projection.connectors, secretStore: store, credentialExposurePolicy: .allowAllCredentials)

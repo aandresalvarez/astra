@@ -149,6 +149,8 @@ extension WorkspaceConfigManager {
         awaitedSource: (_ pluginID: String) -> String? = { _ in nil }
     ) -> [InstalledPluginRef] {
         var refs = WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
+            let configuration = PluginLaunchConfiguration.activation(activation)
+            let settings = Dictionary(zip(configuration.keys, configuration.values), uniquingKeysWith: { _, last in last })
             let accounts = activation.bindings
                 .filter { !$0.isDeleted }
                 .sorted { $0.createdAt < $1.createdAt }
@@ -164,7 +166,7 @@ extension WorkspaceConfigManager {
             return InstalledPluginRef(
                 id: activation.pluginID,
                 version: activation.recordedVersion.isEmpty ? "0.0.0" : activation.recordedVersion,
-                settings: activation.configuration.isEmpty ? nil : activation.configuration,
+                settings: settings.isEmpty ? nil : settings,
                 overriddenComponentIDs: activation.overriddenComponentIDs.isEmpty ? nil : activation.overriddenComponentIDs,
                 overridingRowIDs: activation.overridingRowIDs.isEmpty ? nil : activation.overridingRowIDs,
                 accounts: accounts.isEmpty ? nil : accounts,

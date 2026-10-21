@@ -190,6 +190,35 @@ struct PluginCredentialCopyOnWriteTests {
         #expect(try env.outbox.entries().isEmpty)
     }
 
+    @Test("Add's private rename destination does not depend on deleting its own preparation")
+    func addingRenamedPrivateGenerationDoesNotNeedCleanup() throws {
+        let previous = SkillSecretSeam.required
+        SkillSecretSeam.register(GenerationSecrets.self)
+        defer { SkillSecretSeam.register(previous) }
+        let env = try PluginCredentialGenerationTests.Fixture()
+        defer { env.disk.disk.removeFiles() }
+        let old = try env.enable("accepted-add-rename-token")
+        var updated = env.package
+        updated.version = "2.0.0"
+        updated.skills[0].id = "private-add-rename"
+        updated.skills[0].replaces = [env.component]
+        let installer = CapabilityInstaller(library: env.installer.library, appVersion: SemanticVersion(1, 0, 0),
+            skillSecrets: RefusingGenerationCleanup.self)
+        try installer.enable(updated, in: env.workspace, modelContext: env.context)
+        let current = try #require(PluginRuntimeProjection.project(workspace: env.workspace, packages: [updated]).skills.first)
+        #expect(current.environmentVariables["API_TOKEN"] == "accepted-add-rename-token")
+        #expect(current.secretNamespaceID != old.secretNamespaceID)
+        #expect(GenerationSecrets.value(in: old.secretNamespaceID) == "accepted-add-rename-token")
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: updated.id, in: env.workspace))
+        let retiredPrivateCopy = PluginRuntimeProjection.credentialID(of: activation, componentID: env.component)
+        try #require(GenerationSecrets.value(in: retiredPrivateCopy) == "accepted-add-rename-token")
+        #expect(try env.outbox.pending().contains(retiredPrivateCopy))
+        PluginSecretCleanupOutbox.resumePending(modelContext: ModelContext(env.context.container),
+            outbox: env.outbox, secrets: GenerationSecrets.self)
+        #expect(GenerationSecrets.value(in: retiredPrivateCopy) == nil)
+        #expect(current.environmentVariables["API_TOKEN"] == "accepted-add-rename-token")
+    }
+
     @Test("A failed Update retains cleanup for a renamed credential when compensation is refused")
     func failedUpdateRetainsRefusedCopyCleanup() throws {
         let previous = SkillSecretSeam.required

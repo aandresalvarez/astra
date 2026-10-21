@@ -798,6 +798,7 @@ struct PluginSourcesTests {
         let workspace = Workspace(name: "Bound", primaryPath: fixture.root.appendingPathComponent("ws").path)
         try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
+        try fixture.context.save()
         let service = CapabilityCatalogActionService(library: fixture.library, sourceStore: fixture.store)
         try service.importReviewed(offered, workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
         let installed = try #require(fixture.library.installedPackage(id: "source-bound-plugin"))
@@ -885,6 +886,7 @@ struct PluginSourcesTests {
         let workspaceA = Workspace(name: "Waits", primaryPath: a.root.appendingPathComponent("ws").path)
         try FileManager.default.createDirectory(atPath: workspaceA.primaryPath, withIntermediateDirectories: true)
         a.context.insert(workspaceA)
+        try a.context.save()
         let serviceA = CapabilityCatalogActionService(library: a.library, sourceStore: a.store)
         try serviceA.importReviewed(try #require(coordinatorA.listings.first?.plugins.first), workspace: workspaceA, modelContext: a.context, coordinator: coordinatorA)
         let installedA = try #require(a.library.installedPackage(id: "waiting-plugin"))
@@ -923,6 +925,7 @@ struct PluginSourcesTests {
             ).workspace
             workspace.primaryPath = machine.root.appendingPathComponent("Workspace-\(workspace.id)").path
             try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
+            try machine.context.save()
             return workspace
         }
         /// A Mac the file is imported on before anything is installed.
@@ -1467,6 +1470,7 @@ struct PluginSourcesTests {
         let plugin = try #require(coordinator.listings.first?.plugins.first)
         let workspace = Workspace(name: "Sources", primaryPath: "/tmp/plugin-sources")
         fixture.context.insert(workspace)
+        try fixture.context.save()
 
         let service = CapabilityCatalogActionService(library: fixture.library)
         try service.importReviewed(plugin, workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
@@ -1498,6 +1502,7 @@ struct PluginSourcesTests {
 
         let workspace = Workspace(name: "Git", primaryPath: "/tmp/plugin-sources-git")
         fixture.context.insert(workspace)
+        try fixture.context.save()
         try CapabilityCatalogActionService(library: fixture.library)
             .importReviewed(first, workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
         let installed = try #require(fixture.library.installedPackage(id: "git-plugin"))

@@ -88,7 +88,7 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
         self.turnIntentSnapshot = turnIntentSnapshot
         pluginActivations = task.workspace.map {
-            WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.init)
+            WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.forLaunch)
         }
         self.accountInventory = accountInventory
         self.pluginDefinitions = pluginDefinitions

@@ -211,6 +211,7 @@ struct PluginOperationsTests {
     @Test("Import through the action service: a valid file is installed, a blocked one refused")
     func importThroughActionService() throws {
         let env = try Environment()
+        try env.context.save()
         let package = Self.package(version: "1.0.0")
         let data = try JSONEncoder().encode(package)
         let report = CapabilityPackageValidator.validate(data: data, installedPackages: [], checkPrerequisites: false)
@@ -445,6 +446,7 @@ struct PluginOperationsTests {
         let weekly = try #require(env.workspace.templates.first { $0.name == "Weekly" })
         let daily = try #require(env.workspace.templates.first { $0.name == "Daily" })
         weekly.mainGoal = "Write it my way"
+        try env.context.save()
 
         var v2 = Self.package(version: "2.0.0")
         v2.templates = [Self.template("Weekly", goal: "Write it better"), Self.template("Daily", goal: "Note it well")]
@@ -510,19 +512,21 @@ struct PluginOperationsTests {
 
     @Test("Update adds the credential keys a kept connector now declares to the accounts the plugin created")
     func ownedAccountsFollowTheDefinition() throws {
-        let env = try Environment()
-        let v1 = Self.package(version: "1.0.0")
-        try env.install(v1)
-        let account = try #require(env.workspace.connectors.first)
-        account.baseURL = "https://mine.example.com"
-        try env.context.save()
-        var v2 = Self.package(version: "2.0.0")
-        v2.connectors[0].credentialHints.append(.init(key: "TRACKER_SECRET", hint: "Secret"))
-        v2.connectors[0].description = "Tracker v2"
-        try env.importUpdate(v2)
-        #expect(account.credentialKeys.contains("TRACKER_SECRET"))
-        #expect(account.connectorDescription == "Tracker v2")
-        #expect(account.baseURL == "https://mine.example.com")
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Environment()
+            let v1 = Self.package(version: "1.0.0")
+            try env.install(v1)
+            let account = try #require(env.workspace.connectors.first)
+            account.baseURL = "https://mine.example.com"
+            try env.context.save()
+            var v2 = Self.package(version: "2.0.0")
+            v2.connectors[0].credentialHints.append(.init(key: "TRACKER_SECRET", hint: "Secret"))
+            v2.connectors[0].description = "Tracker v2"
+            try env.importUpdate(v2)
+            #expect(account.credentialKeys.contains("TRACKER_SECRET"))
+            #expect(account.connectorDescription == "Tracker v2")
+            #expect(account.baseURL == "https://mine.example.com")
+        }
     }
 
     @Test("The delete confirmation names every workspace the deletion reaches")

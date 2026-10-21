@@ -36,6 +36,7 @@ struct PluginSourcesLibraryTests {
         let workspace = Workspace(name: "Raced", primaryPath: fixture.root.appendingPathComponent("ws").path)
         try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
+        try fixture.context.save()
         let service = CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
 
         // While A's library write is under way, B's Add of the same ID (in
@@ -118,6 +119,7 @@ struct PluginSourcesLibraryTests {
         let workspace = Workspace(name: "Library", primaryPath: fixture.root.appendingPathComponent("ws").path)
         try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
+        try fixture.context.save()
         let service = CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
 
         // While A's library write is under way, B (another plugin ID, the
@@ -184,6 +186,7 @@ struct PluginSourcesLibraryTests {
         let workspace = Workspace(name: "Recovered", primaryPath: fixture.root.appendingPathComponent("ws").path)
         try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         fixture.context.insert(workspace)
+        try fixture.context.save()
         let service = CapabilityCatalogActionService(library: fixture.library, sourceStore: fixture.store)
         try service.importReviewed(try #require(coordinator.listings.first?.plugins.first), workspace: workspace, modelContext: fixture.context, coordinator: coordinator)
         let installed = try #require(fixture.library.installedPackage(id: definition.id))
@@ -302,6 +305,7 @@ struct PluginSourcesLibraryTests {
         // Not installed: named by its ID, waiting for its source.
         hold("held-plugin", digest: "d1", source: identity)
         hold("zz-other", digest: "d2", source: nil)
+        try fixture.context.save()
         var rows = service.heldImports(in: workspace, coordinator: coordinator)
         #expect(rows.map(\.pluginID) == ["held-plugin", "zz-other"])
         #expect(rows[0].name == "held-plugin" && !rows[0].canAdd)
@@ -327,6 +331,7 @@ struct PluginSourcesLibraryTests {
         #expect(!rows[0].canAdd)
         #expect(rows[0].subtitle.contains("copy from a local file") && rows[0].subtitle.contains("installed is from \(source.displayName)"))
 
+        try fixture.context.save()
         // Discard drops it and saves; a failed save puts it back.
         #expect(throws: PluginOperations.OperationError.saveFailed) {
             try PluginOperations.discardPendingImport(pluginID: "held-plugin", in: workspace, modelContext: fixture.context) { _, _ in

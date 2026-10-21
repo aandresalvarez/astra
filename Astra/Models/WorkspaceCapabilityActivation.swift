@@ -605,7 +605,7 @@ public enum WorkspaceCapabilityActivation {
         }
         setRetired(snapshot.retired, on: workspace)
         restorePendingLegacy(snapshot.pendingLegacy, to: workspace)
-        workspace.updatedAt = snapshot.updatedAt
+        if workspace.updatedAt != snapshot.updatedAt { workspace.updatedAt = snapshot.updatedAt }
     }
 
     /// Copies every activation of `source` onto `target`, a never-inserted
@@ -969,14 +969,23 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
     }
 
     public init(_ activation: PluginActivation) {
+        self.init(activation, configuration: (activation.configKeys, activation.configValues))
+    }
+
+    /// A queued request carries credential references, never legacy plaintext.
+    public static func forLaunch(_ activation: PluginActivation) -> Self {
+        Self(activation, configuration: PluginLaunchConfiguration.activation(activation))
+    }
+
+    private init(_ activation: PluginActivation, configuration: (keys: [String], values: [String])) {
         id = activation.id
         workspaceID = activation.launchWorkspaceID ?? activation.workspace?.id
         pluginID = activation.pluginID
         isEnabled = activation.isEnabled
         recordedVersion = activation.recordedVersion
         recordedDigest = activation.recordedDigest
-        configKeys = activation.configKeys
-        configValues = activation.configValues
+        configKeys = configuration.keys
+        configValues = configuration.values
         overriddenComponentIDs = activation.overriddenComponentIDs
         overridingRowIDs = activation.overridingRowIDs
         secretSettingKeys = activation.secretSettingKeys
@@ -1029,7 +1038,9 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
         if activation.credentialNamespaceSeed != credentialNamespaceSeed { activation.credentialNamespaceSeed = credentialNamespaceSeed }
         if activation.createdAt != createdAt { activation.createdAt = createdAt }
         let current = activation.bindings.filter { !$0.isDeleted }
-        if current.map(Self.bindingKey) != bindings.map(Self.bindingKey) {
+        // SwiftData's to-many order is not binding identity. A no-op restore
+        // must retain the existing rows instead of recreating equal links.
+        if current.map(Self.bindingKey).sorted() != bindings.map(Self.bindingKey).sorted() {
             let accountsByID = Dictionary(
                 current.compactMap { binding in binding.account.map { ($0.id, $0) } },
                 uniquingKeysWith: { first, _ in first }
@@ -1105,6 +1116,14 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
     public let updatedAt: Date
 
     public init(_ account: Connector) {
+        self.init(account, configuration: (account.configKeys, account.configValues))
+    }
+
+    public static func forLaunch(_ account: Connector) -> Self {
+        Self(account, configuration: PluginLaunchConfiguration.account(account))
+    }
+
+    private init(_ account: Connector, configuration: (keys: [String], values: [String])) {
         id = account.id
         credentialNamespaceID = account.credentialNamespaceID
         name = account.name
@@ -1114,8 +1133,8 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
         baseURL = account.baseURL
         authMethod = account.authMethod
         credentialKeys = account.credentialKeys
-        configKeys = account.configKeys
-        configValues = account.configValues
+        configKeys = configuration.keys
+        configValues = configuration.values
         isGlobal = account.isGlobal
         testHTTPMethod = account.testHTTPMethod
         notes = account.notes
@@ -1137,7 +1156,7 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
             .filter { !$0.isDeleted }
             .compactMap(\.account)
             .filter { !$0.isDeleted && seen.insert($0.id).inserted }
-            .map(PluginAccountRecord.init)
+            .map(PluginAccountRecord.forLaunch)
     }
 
     /// Writes these contents onto `account`, a launch copy (never a stored

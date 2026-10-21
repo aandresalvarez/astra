@@ -61,6 +61,7 @@ struct PluginActivationReviewTests {
         WorkspaceCapabilityActivation.bind(
             account, toComponent: CapabilityResourceOrigin.componentID(for: other.connectors[0]), of: otherActivation
         )
+        try env.context.save()
         try env.importUpdate(Fixtures.package(version: "2.0.0"))
         WorkspaceCapabilityActivation.mutate(env.workspace) { $0.capabilityIDs.removeAll { $0 == v1.id } }
 
@@ -434,6 +435,7 @@ struct PluginActivationReviewTests {
         let predecessor = CapabilityResourceOrigin.componentID(for: v2.connectors[0])
         v2.connectors[0].id = "issues"
         v2.connectors[0].replaces = [predecessor]
+        try env.context.save()
         try env.importUpdate(v2)
         #expect(account.originComponentID == CapabilityResourceOrigin.componentID(for: v2.connectors[0]))
         WorkspaceCapabilityActivation.mutate(env.workspace) { $0.capabilityIDs.removeAll { $0 == v1.id } }
@@ -484,6 +486,7 @@ struct PluginActivationReviewTests {
         // This plugin's settings are credentials now (only a bundled plugin's
         // stay plain); an account from before that holds the value as one.
         account.setConfigValue("TRACKER_REGION", value: "eu-old")
+        try env.context.save()
         try env.importUpdate(Fixtures.package(version: "2.0.0"))
 
         let copy = try #require(PluginRuntimeProjection.project(

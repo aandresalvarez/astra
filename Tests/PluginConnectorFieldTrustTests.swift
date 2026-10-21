@@ -369,8 +369,7 @@ struct PluginConnectorFieldTrustTests {
     /// find a value of the Update's there and refuse to move it.
     @Test("A failed Update takes back a connector setting it moved into the Keychain")
     func failedUpdateTakesBackAMovedConnectorSetting() throws {
-        let store = MockSecretStore()
-        do {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-moved-setting-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: root) }
@@ -415,20 +414,21 @@ struct PluginConnectorFieldTrustTests {
             #expect(throws: PluginUpdateService.UpdateError.secretCleanupPending(key: "API_TOKEN")) {
                 try PluginUpdateService.reconcileAll(
                     modelContext: context, packages: library.installedPackages(), mode: .release, secrets: RefusingSkillDeletes.self,
-                    connectorStore: store, approvalRecords: PluginOperationsTests.approvals(library.installedPackages())
+                    approvalRecords: PluginOperationsTests.approvals(library.installedPackages())
                 )
             }
             #expect(legacy.configKeys == ["TRACKER_PROJECT"] && legacy.configValues == ["ENG-1"])
-            #expect(Self.held("TRACKER_PROJECT", of: legacy, in: store) == nil)
+            #expect(legacy.currentCredentialValue(forKey: "TRACKER_PROJECT") == nil)
 
             // The person changes the setting; the next Update moves it.
             legacy.configValues = ["ENG-2"]
+            try context.save()
             try PluginUpdateService.reconcileAll(
                 modelContext: context, packages: library.installedPackages(), mode: .release, secrets: AcceptingSkillDeletes.self,
-                connectorStore: store, approvalRecords: PluginOperationsTests.approvals(library.installedPackages())
+                approvalRecords: PluginOperationsTests.approvals(library.installedPackages())
             )
             #expect(legacy.configKeys.isEmpty && legacy.credentialKeys.contains("TRACKER_PROJECT"))
-            #expect(Self.held("TRACKER_PROJECT", of: legacy, in: store) == "ENG-2")
+            #expect(legacy.currentCredentialValue(forKey: "TRACKER_PROJECT") == "ENG-2")
         }
     }
 }
