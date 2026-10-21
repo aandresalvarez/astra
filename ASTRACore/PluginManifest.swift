@@ -484,14 +484,14 @@ public enum PluginManifestConverter {
         }
     }
 
-    /// `components` alone marks a manifest: a package would ignore them, so
+    /// Either `components` or `manifestVersion` marks a manifest: a package would ignore them, so
     /// a document carrying them and legacy package fields but no
     /// `manifestVersion` must fail manifest decoding (the version is
     /// required) rather than import without its components' setup steps
     /// and `worksOn` restrictions.
     public static func isManifest(_ data: Data) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
-        return object["components"] != nil
+        return object["components"] != nil || object["manifestVersion"] != nil
     }
 
     public static func defaultWorksOn(hasMCP: Bool) -> [String: PluginRuntimeSupport] {

@@ -417,7 +417,7 @@ final class TaskLifecycleCoordinator {
 
     private static let gitHubCheckVariables: Set<String> = [
         "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "GH_REPO", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-        "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "PATH"
+        "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME", "PATH"
     ]
 
     /// The variables the resumed run gives the checked CLI, so a repair check
@@ -425,7 +425,7 @@ final class TaskLifecycleCoordinator {
     /// (which override any sign-in), the GitHub Enterprise host and
     /// tokens (`GH_REPO`'s host, else `GH_HOST`, picks the host), the
     /// configuration directory its stored login lives in (`GH_CONFIG_DIR`,
-    /// else `XDG_CONFIG_HOME`) and the `PATH` that finds the binary, for
+    /// else `XDG_CONFIG_HOME`, else `HOME`) and the `PATH` that finds the binary, for
     /// `gcloud` the whole stripped launch environment, where
     /// `CLOUDSDK_CONFIG`, `CLOUDSDK_CORE_ACCOUNT` or
     /// `GOOGLE_APPLICATION_CREDENTIALS` pick the account it uses. Built from

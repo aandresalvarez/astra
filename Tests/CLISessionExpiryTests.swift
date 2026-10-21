@@ -9,6 +9,16 @@ import ASTRAModels
 /// task view can offer, then Resume (Plugins 2.0 phase 2 exit criterion).
 @Suite("CLI session expiry")
 struct CLISessionExpiryTests {
+    @Test("An uncorrelated result cannot borrow a preceding shell command", arguments: ["", "unmatched-result"])
+    func uncorrelatedResultCannotStopForSessionExpiry(resultID: String) {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        _ = monitor.processEvent(.toolUse(name: "Bash", id: "shell", input: ["command": "gh api user"]), process: nil)
+        let stopped = monitor.processEvent(.toolResult(toolId: resultID,
+            content: "You are not logged into any GitHub hosts. To log in, run: gh auth login", isError: true), process: nil)
+        #expect(!stopped)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
     private let gcloudReauth = """
     ERROR: (gcloud.projects.list) There was a problem refreshing your current auth tokens: \
     Reauthentication failed. cannot prompt during non-interactive execution.

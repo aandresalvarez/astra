@@ -11,6 +11,13 @@ import ASTRAModels
 @Suite("Plugins surface")
 @MainActor
 struct PluginsSurfaceTests {
+    @Test("A prerequisite without a completed health check remains pending")
+    func uncheckedPrerequisitesArePending() {
+        var candidate = package("unchecked", name: "Unchecked")
+        candidate.prerequisites = [CLIPrerequisite(binary: "fixture-server", livenessArgs: [], displayName: "Fixture", purpose: "Fixture", installHint: "Install it")]
+        #expect(PluginsSurfacePresentation.pendingSetupChecks(for: candidate, statuses: [:]) == 1)
+    }
+
     @Test("Added plugins with work left need action, the rest are ready, the others are available to add")
     func groupsByWhatIsLeft() {
         let state = PluginsSurfacePresentation.makeState([
