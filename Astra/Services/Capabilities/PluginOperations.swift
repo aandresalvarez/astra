@@ -63,6 +63,7 @@ enum PluginOperations {
         rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws {
         guard workspace.modelContext === modelContext, !workspace.isDeleted else { throw OperationError.workspaceChanged }
+        try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
         guard let activation = WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) else {
             throw OperationError.notAdded(pluginID: pluginID)
         }

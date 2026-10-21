@@ -145,6 +145,9 @@ enum PluginActivationMigration {
         guard !modelContext.hasChanges else { throw MigrationError.pendingEdits }
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
+        for workspace in workspaces {
+            try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
+        }
         let connectors = try modelContext.fetch(FetchDescriptor<Connector>())
         let skills = try modelContext.fetch(FetchDescriptor<Skill>())
         let tools = try modelContext.fetch(FetchDescriptor<LocalTool>())

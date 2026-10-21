@@ -283,6 +283,11 @@ enum PluginUpdateService {
         let approvalRecords = approvalRecords ?? CapabilityApprovalStore().records()
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let activations = try modelContext.fetch(FetchDescriptor<PluginActivation>())
+        var admittedWorkspaces = Set<UUID>()
+        for activation in activations where packagesByID[activation.pluginID] != nil {
+            guard let workspace = activation.workspace, admittedWorkspaces.insert(workspace.id).inserted else { continue }
+            try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
+        }
         let credentialPreparation = PluginUpdateSkillCredentials(modelContext: modelContext, persistence: secrets ?? SkillSecretSeam.required)
         let accountPreparation = PluginUpdateAccountCredentials(modelContext: modelContext)
         var total = Reconciliation()

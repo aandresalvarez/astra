@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRACore
-import ASTRAModels
+@testable import ASTRAModels
 @testable import ASTRAPersistence
 @testable import ASTRA
 
@@ -15,19 +15,30 @@ struct PluginUpdateAdmissionTests {
         let package = PluginRenameAndMissingTests.twoOfEach()
         try env.install(package)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
-        let ordered = activation.bindings.sorted {
-            $0.createdAt == $1.createdAt ? $0.id.uuidString < $1.id.uuidString : $0.createdAt < $1.createdAt
-        }
-        try #require(ordered.count == 2)
-        activation.bindings = Array(ordered.reversed())
-        try env.context.save()
-        let snapshot = WorkspaceCapabilityActivation.snapshot(env.workspace)
+        try #require(activation.bindings.count == 2)
+        let captured = WorkspaceCapabilityActivation.snapshot(env.workspace)
+        let record = try #require(captured.activations.first)
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(record))
+        var object = try #require(json as? [String: Any])
+        let bindings = try #require(object["bindings"] as? [[String: Any]])
+        let byID = Dictionary(uniqueKeysWithValues: bindings.compactMap { binding -> (String, [String: Any])? in
+            guard let id = binding["id"] as? String else { return nil }
+            return (id, binding)
+        })
+        // SwiftData may reorder an unordered relationship during save. Force
+        // the equivalent saved record's order opposite the actual backing
+        // array, without dirtying or depending on the model's physical order.
+        object["bindings"] = activation.bindings.reversed().compactMap { byID[$0.id.uuidString] }
+        let reversed = try JSONDecoder().decode(PluginActivationRecord.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        let snapshot = WorkspaceCapabilityActivation.Snapshot(state: captured.state, activations: [reversed],
+            retired: captured.retired, pendingLegacy: captured.pendingLegacy, updatedAt: captured.updatedAt)
         try #require(activation.bindings.map(\.id) != snapshot.activations.first?.bindings.map(\.id))
         let originalBindings = Set(activation.bindings.map(\.persistentModelID))
         WorkspaceCapabilityActivation.restore(snapshot, to: env.workspace)
         #expect(!env.context.hasChanges)
         #expect(Set(activation.bindings.map(\.persistentModelID)) == originalBindings)
-        #expect(WorkspaceCapabilityActivation.snapshot(env.workspace) == snapshot)
+        #expect(WorkspaceCapabilityActivation.snapshot(env.workspace) == captured)
     }
 
     @Test("A failed private Update restores a clean context so a real retry can succeed")

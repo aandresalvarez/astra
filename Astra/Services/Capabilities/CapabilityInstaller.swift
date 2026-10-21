@@ -185,6 +185,7 @@ struct CapabilityInstaller {
         guard workspace.modelContext === modelContext, !workspace.isDeleted else {
             throw InstallationError.persistenceFailed(packageID: package.id)
         }
+        try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
         let isNewActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) == nil
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         // The library holds one definition for every workspace: each other
@@ -194,6 +195,9 @@ struct CapabilityInstaller {
             other.id != workspace.id
                 && WorkspaceCapabilityActivation.pendingOverridePluginIDs(of: other).contains(package.id)
                 && WorkspaceCapabilityActivation.activation(for: package.id, in: other) != nil
+        }
+        for other in pendingElsewhere {
+            try PluginActivationAdmission.requireCurrent(in: other, modelContext: modelContext)
         }
         let pendingSnapshots = pendingElsewhere.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         var stagedGeneration: PluginCredentialGenerationTransaction?
