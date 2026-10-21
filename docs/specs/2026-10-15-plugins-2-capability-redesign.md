@@ -86,16 +86,31 @@ For this first release, the owner chose provider-side immediate revocation
 including permission-paused continuations and recoverable copies, may retain
 that access until they finish or are cancelled. The deletion confirmation must
 say so and direct immediate revocation to the provider. ASTRA introduces no
-local Revoke action in R1–R5. Provider revocation invalidates the credential for
-existing copies too; retaining a namespace cannot restore provider authorization.
+local Revoke action in R1–R5. The provider determines when revocation takes
+effect; retaining a namespace cannot restore authorization the provider has
+revoked.
 
 A future local Revoke action requires its own recorded operation: identify and
 cancel/block affected requests, wait for running-resource release, and make the
 revocation survive recovery of an older copy. Retry must not silently reactivate
 revoked context. That feature is outside the first-release acceptance criteria.
 
-Validated imports receive fresh credential identity. Reusing/coalescing a shared
-account requires an explicit choice identifying the existing account; a matching
+Validated imports receive fresh credential identity. An explicit workspace
+Replace may retain an existing local identity only from an owner snapshot taken
+before deletion: the row must belong to that workspace, have a unique ID, and
+match its recorded execution configuration. A skill also requires unchanged
+connector/tool dependencies. Changed endpoints, credentials, commands, foreign
+owners or namespaces do not inherit access. Preserve the actual optional local
+credential namespace, including a legacy nil value, rather than accepting an
+address supplied only by the selected file. A failed replacement leaves the
+original access usable. Before V21, new selected-file connector IDs carry ASTRA's
+explicit isolated-import identity format (tagged UUIDv8); lookup uses only that
+UUID namespace, including after export and recovery. This keeps frozen V20
+unchanged while preventing a new row from borrowing a legacy endpoint alias.
+Verified legacy owners keep their original IDs and access. V21's explicit
+credential namespace takes precedence over this compatibility format.
+
+Reusing/coalescing a shared account requires an explicit choice identifying the existing account; a matching
 name, service or URL is not consent to its credentials.
 
 ### Repair and source boundaries
@@ -127,7 +142,7 @@ definition and admission facts inside that same boundary before saving.
 
 ### Required evidence
 
-Verify original V20 and V19 migration/reopening; queued and revoked requests;
+Verify original V20 and V19 migration/reopening; queued requests and provider-rejected credentials;
 shared accounts in two workspaces; failed saves, Keychain writes and mirrors;
 Add → Update → Remove → re-add; zero-cleanup and zero-activation operations;
 restart at each prepared/file/domain/mirror boundary; failed rollback; wrong or
