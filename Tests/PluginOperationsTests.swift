@@ -11,6 +11,74 @@ import ASTRACore
 @Suite("Plugin operations")
 @MainActor
 struct PluginOperationsTests {
+    @Test("Plugin mutations never save or discard another workflow's pending edit", arguments: ["setting", "delete", "add", "default"])
+    func mutationsPreservePendingEdits(operation: String) throws {
+        let env = try Environment()
+        let package = Self.package(version: "1.0.0")
+        try env.install(package)
+        let account = try #require(env.workspace.connectors.first)
+        let oldName = env.workspace.name
+        env.workspace.name = "Unsaved editor work"
+        do {
+            switch operation {
+            case "setting":
+                try PluginOperations.setSetting("PROJECT", to: "changed", of: package.skills[0], pluginID: package.id,
+                    in: env.workspace, modelContext: env.context)
+            case "delete": try PluginOperations.deleteAccount(account, modelContext: env.context)
+            case "add": _ = try PluginOperations.addAccount(for: package.connectors[0], of: package,
+                in: env.workspace, modelContext: env.context)
+            default: try PluginOperations.makeDefault(account, componentID: CapabilityResourceOrigin.componentID(for: package.connectors[0]),
+                pluginID: package.id, in: env.workspace, modelContext: env.context)
+            }
+            Issue.record("The operation accepted unrelated pending edits")
+        } catch { #expect(error as? PluginOperations.OperationError == .pendingEdits) }
+        let hasPendingEdits = env.context.hasChanges
+        #expect(hasPendingEdits)
+        #expect(env.workspace.name == "Unsaved editor work")
+        let observer = ModelContext(env.container)
+        #expect(try observer.fetch(FetchDescriptor<Workspace>()).first?.name == oldName)
+        #expect(try observer.fetch(FetchDescriptor<Connector>()).contains { $0.id == account.id })
+    }
+
+    @Test("Reuse setup copies current activation settings and its private credential namespace without mixing account fields")
+    func setupCopyUsesActivationOwners() throws {
+        let previous = SkillSecretSeam.required
+        SkillSecretSeam.register(GenerationSecrets.self)
+        defer { SkillSecretSeam.register(previous) }
+        let env = try Environment()
+        var candidate = Self.package(version: "1.0.0")
+        candidate.skills[0].environmentKeys += ["API_TOKEN"]
+        candidate.skills[0].environmentValues += [""]
+        try env.install(candidate)
+        try PluginOperations.setSetting("PROJECT", to: "current-skill-project", of: candidate.skills[0],
+            pluginID: candidate.id, in: env.workspace, modelContext: env.context)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: candidate.id, in: env.workspace))
+        let skill = candidate.skills[0]
+        let component = CapabilityResourceOrigin.componentID(for: skill)
+        let field = PluginActivation.settingKey(componentID: component, key: "API_TOKEN")
+        WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: field, on: activation)
+        try env.context.save()
+        let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: component)
+        let store = MockSecretStore()
+        store.save(key: "API_TOKEN", value: "private-activation-token", entityID: KeychainSecretStore.skillEntityID(for: namespace), label: nil)
+        let copied = CapabilitySetupCopier(secretStore: store).installationInputs(for: candidate, from: env.workspace)
+        #expect(copied.configInputs[PluginSetupInputs.key("PROJECT", component: component)] == "current-skill-project")
+        #expect(copied.credentialInputs[PluginSetupInputs.key("API_TOKEN", component: component)] == "private-activation-token")
+        #expect(copied.configInputs["PROJECT"] == nil)
+        #expect(copied.configInputs[PluginSetupInputs.key("API_TOKEN", component: component)] == nil)
+        let target = Workspace(name: "Reused setup", primaryPath: env.root.appendingPathComponent("copied-target").path)
+        try FileManager.default.createDirectory(atPath: target.primaryPath, withIntermediateDirectories: true)
+        env.context.insert(target)
+        try env.context.save()
+        try env.installer.install(candidate, into: target, modelContext: env.context,
+            credentialInputs: copied.credentialInputs, configInputs: copied.configInputs, baseURLOverrides: copied.baseURLOverrides)
+        let added = try #require(WorkspaceCapabilityActivation.activation(for: candidate.id, in: target))
+        #expect(added.configuration(forComponent: component)["PROJECT"] == "current-skill-project")
+        #expect(added.secretSettingKeys.contains(field))
+        #expect(GenerationSecrets.loadSecretValue(key: "API_TOKEN", skillID: PluginRuntimeProjection.credentialID(of: added, componentID: component), store: store) == "private-activation-token")
+        #expect(target.connectors.allSatisfy { !$0.configValues.contains("current-skill-project") })
+    }
+
     @Test("Renaming a component across an Update keeps its settings, accounts and schedule")
     func renameAcrossUpdateKeepsState() throws {
         let env = try Environment()
@@ -141,8 +209,8 @@ struct PluginOperationsTests {
         try PluginOperations.setSetting("PROJECT", to: "alpha", of: package.skills[0], pluginID: package.id, in: env.workspace, modelContext: env.context)
         let here = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
         let there = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: other))
-        #expect(PluginOperations.setting("PROJECT", of: package.skills[0], in: here) == "alpha")
-        #expect(PluginOperations.setting("PROJECT", of: package.skills[0], in: there) == "default-project")
+        #expect(try PluginOperations.setting("PROJECT", of: package.skills[0], in: here) == "alpha")
+        #expect(try PluginOperations.setting("PROJECT", of: package.skills[0], in: there) == "default-project")
     }
 
     @Test("A Remove receipt completes only once every affected mirror is rewritten")
@@ -330,7 +398,7 @@ struct PluginOperationsTests {
                 v2.skills.removeFirst()
                 v2.skills[0].replaces = ["report-agent"]
                 try env.importUpdate(v2)
-                #expect(PluginOperations.setting("API_TOKEN", of: v2.skills[0], in: activation) == "mine")
+                #expect(try PluginOperations.setting("API_TOKEN", of: v2.skills[0], in: activation) == "mine")
 
                 // `undo` restores what a copy overwrote, or clears what it added.
                 let persistence = SkillSecretSeam.required

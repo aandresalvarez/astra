@@ -52,9 +52,23 @@ struct PluginsSurfaceState: Equatable {
 enum PluginsSurfacePresentation {
     /// The settings that affect the skill this activation actually runs.
     /// An authored replacement owns its own settings instead.
-    static func settingKeys(of skill: PluginSkill, in activation: PluginActivation?) -> [String] {
+    static func settingKeys(of skill: PluginSkill, in activation: PluginActivation?, package: PluginPackage? = nil) -> [String] {
         guard let activation, PluginRuntimeProjection.packageSkillOwnsSettings(skill, activation: activation) else { return [] }
+        // The installer places these fields on each connector account and
+        // runtime account values take precedence over skill environment values.
+        guard package?.connectors.isEmpty != false else { return [] }
         return skill.environmentKeys
+    }
+
+    static func showsRemove(_ row: PluginRow) -> Bool {
+        row.display.isRemovable && (!row.display.isEnabled || row.display.isMissing)
+    }
+
+    static func expandedSetupComponents(for row: PluginRow) -> [(component: PluginComponent, position: Int?)] {
+        let manifest = PluginManifestConverter.manifest(from: row.package)
+        return manifest.components.enumerated()
+            .filter { $0.element.kind != .skill && (row.activation == nil || $0.element.kind != .connector) }
+            .map { ($0.element, PluginManifestConverter.prerequisitePosition(ofComponentAt: $0.offset, in: manifest)) }
     }
 
     static func confirmationCopy(

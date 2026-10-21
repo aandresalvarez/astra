@@ -10,6 +10,8 @@ enum RepairActionRunner {
     static func run(
         _ repair: RepairAction?,
         terminal: TerminalCommandLaunching = TerminalAppLauncher(),
+        resolveExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
+        isInstalled: (String) -> Bool = { TrustedExecutablePath.isInstalled($0) && FileManager.default.isExecutableFile(atPath: $0) },
         openURL: (URL) -> Void = { NSWorkspace.shared.open($0) },
         copy: (String) -> Void = { command in
             NSPasteboard.general.clearContents()
@@ -20,7 +22,14 @@ enum RepairActionRunner {
         switch repair.strategy {
         case .terminal:
             // Checked again here: a repair can also arrive from a stored event.
-            guard let command = repair.executionCommand else { return }
+            guard let admitted = repair.executionCommand,
+                  let executable = admitted.split(whereSeparator: \.isWhitespace).first.map(String.init) else { return }
+            let resolved = executable.contains("/") ? executable : resolveExecutable(executable)
+            // Terminal's interactive aliases, functions and PATH must not
+            // replace the executable ASTRA admitted. Revalidate immediately
+            // before launch, including symlink destinations and executability.
+            guard TrustedExecutablePath.installedPath(resolved) != nil, isInstalled(resolved) else { return }
+            let command = ([resolved] + admitted.split(whereSeparator: \.isWhitespace).dropFirst().map(String.init)).joined(separator: " ")
             do {
                 try terminal.launchInTerminal(command: command)
             } catch {

@@ -574,6 +574,29 @@ struct PluginActivationMigrationTests {
         #expect(activation.overriddenComponentIDs.isEmpty)
     }
 
+    @Test("Unstamped legacy accounts retain every connector declaration they matched")
+    func unstampedAccountPreservesAllMatches() throws {
+        let fixture = try Fixture()
+        var jira = fixture.jira
+        jira.connectors[0].id = "first-jira"
+        var second = jira.connectors[0]
+        second.id = "second-jira"
+        second.name = "Other Jira component"
+        jira.connectors.append(second)
+        for account in try fixture.context.fetch(FetchDescriptor<Connector>()) where account.originPackageID == jira.id {
+            account.originComponentID = nil
+        }
+        try fixture.context.save()
+        try PluginActivationMigration.migrate(modelContext: fixture.context,
+            packages: fixture.packages.map { $0.id == jira.id ? jira : $0 })
+        let workspace = try fixture.workspace(fixture.aID)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+        for component in jira.connectors {
+            #expect(Set(activation.accounts(forComponent: CapabilityResourceOrigin.componentID(for: component)).map(\.id))
+                == [fixture.jiraAccount1ID, fixture.jiraAccount2ID])
+        }
+    }
+
     @Test("A V19 account stamped with the identity a stable ID replaced is bound to the renamed component")
     func stampedPredecessorAccountMigrates() throws {
         let fixture = try Fixture()
