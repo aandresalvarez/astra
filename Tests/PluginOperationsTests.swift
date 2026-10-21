@@ -402,6 +402,7 @@ struct PluginOperationsTests {
         let weekly = try #require(env.workspace.templates.first { $0.name == "Weekly" })
         let daily = try #require(env.workspace.templates.first { $0.name == "Daily" })
         weekly.mainGoal = "Write it my way"
+        try env.context.save()
 
         var v2 = Self.package(version: "2.0.0")
         v2.templates = [Self.template("Weekly", goal: "Write it better"), Self.template("Daily", goal: "Note it well")]

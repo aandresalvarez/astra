@@ -605,7 +605,7 @@ public enum WorkspaceCapabilityActivation {
         }
         setRetired(snapshot.retired, on: workspace)
         restorePendingLegacy(snapshot.pendingLegacy, to: workspace)
-        workspace.updatedAt = snapshot.updatedAt
+        if workspace.updatedAt != snapshot.updatedAt { workspace.updatedAt = snapshot.updatedAt }
     }
 
     /// Copies every activation of `source` onto `target`, a never-inserted
@@ -1038,7 +1038,9 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
         if activation.credentialNamespaceSeed != credentialNamespaceSeed { activation.credentialNamespaceSeed = credentialNamespaceSeed }
         if activation.createdAt != createdAt { activation.createdAt = createdAt }
         let current = activation.bindings.filter { !$0.isDeleted }
-        if current.map(Self.bindingKey) != bindings.map(Self.bindingKey) {
+        // SwiftData's to-many order is not binding identity. A no-op restore
+        // must retain the existing rows instead of recreating equal links.
+        if current.map(Self.bindingKey).sorted() != bindings.map(Self.bindingKey).sorted() {
             let accountsByID = Dictionary(
                 current.compactMap { binding in binding.account.map { ($0.id, $0) } },
                 uniquingKeysWith: { first, _ in first }
