@@ -26,7 +26,8 @@ struct CodexMCPLaunchProjection {
         // actually attaches reuses that single derivation instead of
         // independently re-deriving it. See
         // Tests/HostControlRequirementDerivationConsistencyTests.swift.
-        runtimeRequirements: TaskRuntimeRequirementSet? = nil
+        runtimeRequirements: TaskRuntimeRequirementSet? = nil,
+        sshRoute: RemoteWorkspaceSSHRoute? = nil
     ) -> CodexMCPLaunchProjection {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
         var browserServerProjected = false
@@ -50,7 +51,8 @@ struct CodexMCPLaunchProjection {
             runID: runID,
             taskEnvironment: taskEnvironment,
             contextText: contextText,
-            precomputedRuntimeRequirements: runtimeRequirements
+            precomputedRuntimeRequirements: runtimeRequirements,
+            sshRoute: sshRoute
         )
         if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
             task: task,

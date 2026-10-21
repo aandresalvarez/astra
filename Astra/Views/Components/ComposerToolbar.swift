@@ -92,7 +92,7 @@ struct ComposerToolbar: View {
     /// visible; showing the pill too duplicates (and can contradict) it.
     var showsTaskStatusPill: Bool = true
     let isRunning: Bool
-    let hasInput: Bool
+    var hasInput: Bool
     let onAttachFile: () -> Void
     let onPasteClipboard: () -> Void
     let onSend: () -> Void
