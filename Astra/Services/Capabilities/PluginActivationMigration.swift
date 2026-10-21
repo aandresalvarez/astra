@@ -9,7 +9,7 @@ import ASTRAPersistence
 /// Runs once the V21 store is open, before anything resolves capabilities,
 /// and again on any later launch that still finds legacy state, so an
 /// interrupted run finishes. It is idempotent: a store with no legacy
-/// enablement arrays and no plugin-origin skill or tool rows is left alone.
+/// enablement arrays and no pending plugin-origin rows is left alone.
 ///
 /// - Each workspace gets one activation per plugin in its legacy installed or
 ///   enabled lists, on when it was enabled, accepting the definition it
@@ -19,7 +19,7 @@ import ASTRAPersistence
 ///   to every activation of its plugin. Credentials stored only under the
 ///   stable namespace are copied into the row's own.
 /// - An unedited plugin skill's settings move to each activation that used
-///   it (secret ones into the Keychain under the projected skill's ID), the
+///   it (secret ones into a private activation generation), the
 ///   templates and schedules that named it are pointed at the projected ID,
 ///   and the row is deleted. An edited one stays as an authored skill the
 ///   activation names as its component's override, on only while the
@@ -103,7 +103,8 @@ enum PluginActivationMigration {
         if workspaces.contains(where: { !$0.legacyEnabledCapabilityIDs.isEmpty || !$0.legacyInstalledPluginIDs.isEmpty }) {
             return true
         }
-        let withComponents = Set((packages ?? currentDefinitions())
+        let definitions = packages ?? currentDefinitions()
+        let withComponents = Set(definitions
             .filter { !PluginRuntimeProjection.componentIDs(of: $0).isEmpty }
             .map(\.id))
         let activations = (try? modelContext.fetch(FetchDescriptor<PluginActivation>())) ?? []
@@ -121,7 +122,16 @@ enum PluginActivationMigration {
         let skills = (try? modelContext.fetch(FetchDescriptor<Skill>())) ?? []
         if skills.contains(where: isPluginOrigin) { return true }
         let tools = (try? modelContext.fetch(FetchDescriptor<LocalTool>())) ?? []
-        return tools.contains(where: isPluginOrigin)
+        if tools.contains(where: isPluginOrigin) { return true }
+        let connectors = (try? modelContext.fetch(FetchDescriptor<Connector>())) ?? []
+        let definitionIDs = Set(definitions.map(\.id))
+        return connectors.contains { account in
+            isPluginOrigin(account) && (
+                account.accountBindings.filter { !$0.isDeleted }.isEmpty
+                || !definitionIDs.contains(trimmed(account.originPackageID))
+                || (account.credentialNamespaceID == nil && !account.credentialKeys.isEmpty)
+            )
+        }
     }
 
     @discardableResult
@@ -146,6 +156,7 @@ enum PluginActivationMigration {
         var report = Report()
         var releasedSkillIDs: [UUID] = []
         let credentials = PluginMigrationSkillCredentials(modelContext: modelContext, persistence: secrets)
+        let accountCredentials = PluginMigrationAccountCredentials(modelContext: modelContext)
         // rollback() doesn't restore array-backed state (legacy and global
         // memberships, activation records): a failed run puts it back.
         let restoreState = PluginUpdateService.captureState(of: workspaces)
@@ -205,7 +216,7 @@ enum PluginActivationMigration {
             // Shared plugin skills a workspace turned on without the plugin
             // are kept as authored rows there, with their tools and accounts.
             let independentSkillIDs = Set(skills.filter { skill in
-                guard isPluginOrigin(skill), skill.isGlobal, !skill.isSystemBuiltIn else { return false }
+                guard isPluginOrigin(skill), skill.isGlobal else { return false }
                 return workspaces.contains { usesOnItsOwn($0, trimmed(skill.originPackageID), \.globalSkillIDs, skill.id) }
             }.map(\.id))
             // A workspace that gave a component its own account (scoped
@@ -225,6 +236,7 @@ enum PluginActivationMigration {
             // oldest account when it has no recorded service default.
             for connector in connectors.sorted(by: { $0.createdAt < $1.createdAt }) where isPluginOrigin(connector) {
                 let pluginID = trimmed(connector.originPackageID)
+                try accountCredentials.prepare(connector)
                 // Without its definition (a custom plugin's file missing or
                 // unreadable) nothing could project a bound account back into
                 // scope: it stays the person's, as authored, as skills do.
@@ -238,8 +250,10 @@ enum PluginActivationMigration {
                     // Listed there on its own, it stays the workspace's
                     // shared row: bound, the off activation would hide it.
                     .filter { !usesOnItsOwn($0.0, pluginID, \.globalConnectorIDs, connector.id) }
-                guard !bindTo.isEmpty else { continue }
-                KeychainService.synchronizeConnectorCredentialNamespaces(connector: connector)
+                guard !bindTo.isEmpty else {
+                    CapabilityResourceOrigin.releaseProvenance(of: connector)
+                    continue
+                }
                 // An account of a skill kept for a workspace without the
                 // plugin stays that skill's; it is also an account of the
                 // activations that bind it.
@@ -255,7 +269,7 @@ enum PluginActivationMigration {
                 }
             }
 
-            for skill in skills where isPluginOrigin(skill) && !skill.isSystemBuiltIn {
+            for skill in skills where isPluginOrigin(skill) {
                 let pluginID = trimmed(skill.originPackageID)
                 let package = packagesByID[pluginID]
                 let spec = package?.skills.first { matches($0, skill: skill) }
@@ -395,11 +409,13 @@ enum PluginActivationMigration {
                 throw PluginOperationProblem.savedRecoveryPending(receipt.id)
             }
             credentials.completed(in: workspaces)
+            accountCredentials.completed()
         } catch {
             guard !PluginOperationProblem.preventsRollback(error) else { throw error }
             modelContext.rollback()
             restoreState()
             credentials.discard()
+            accountCredentials.discard()
             throw error
         }
         return report
