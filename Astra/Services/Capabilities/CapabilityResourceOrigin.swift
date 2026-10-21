@@ -147,9 +147,19 @@ enum CapabilityResourceOrigin {
     /// stamp also names a shared Keychain namespace, so credentials only
     /// there are first copied into the row's own (which loads first); one the
     /// copy can't reach keeps the stamp rather than be stranded (false).
+    /// Another plugin's surviving binding also retains the creator policy.
     @MainActor
     @discardableResult
     static func releaseProvenance(of account: Connector) -> Bool {
+        // A surviving binding still depends on its creator's field policy.
+        // Clearing this stamp would turn it into an unrestricted authored
+        // account, including when the creator definition has been removed.
+        if let creator = account.originPackageID, !creator.isEmpty,
+           account.accountBindings.contains(where: { binding in
+               guard !binding.isDeleted, let activation = binding.activation,
+                     !activation.isDeleted else { return false }
+               return activation.pluginID != creator
+           }) { return false }
         // A published private generation is independent of provenance. Never
         // backfill its values into historical shared aliases or the row ID.
         if account.credentialNamespaceID == nil {

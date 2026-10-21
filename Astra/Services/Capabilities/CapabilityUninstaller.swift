@@ -261,9 +261,9 @@ struct CapabilityUninstaller {
                 }
             }
 
-            // The accounts stay with their credentials, but no longer as this
-            // plugin's: a later install of the same file has no activation yet,
-            // and a stamped account would make the plugin look on.
+            // Accounts keep their credentials. Release their creator only
+            // when no surviving foreign binding needs its field policy;
+            // activation state alone controls whether this plugin is on.
             for account in stampedAccounts {
                 releaseProvenance(of: account, packageID: package.id)
             }
@@ -332,7 +332,7 @@ struct CapabilityUninstaller {
         AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
             "source": "package_uninstall",
             "package_id": packageID,
-            "result": "account_provenance_kept_credentials_not_copied"
+            "result": "account_provenance_retained"
         ], level: .warning)
     }
 
