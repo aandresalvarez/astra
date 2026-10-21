@@ -76,11 +76,15 @@ enum CodexSessionUsageCorrectionService {
         currentBuild: String,
         defaults: UserDefaults = .standard
     ) async -> Bool {
-        guard defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) != currentBuild else {
-            return false
-        }
-        guard await correct(modelContext: modelContext).completed else { return false }
-        defaults.set(currentBuild, forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild)
+        let key = AppStorageKeys.completedCodexSessionUsageCorrectionBuild
+        guard defaults.string(forKey: key) != currentBuild else { return false }
+        // The pass yields, and an import in the meantime clears the gate. Completion is recorded
+        // only over this pass's own pending mark, so that clearing is never overwritten.
+        let pending = "\(currentBuild):pending"
+        defaults.set(pending, forKey: key)
+        guard await correct(modelContext: modelContext).completed,
+              defaults.string(forKey: key) == pending else { return false }
+        defaults.set(currentBuild, forKey: key)
         return true
     }
 

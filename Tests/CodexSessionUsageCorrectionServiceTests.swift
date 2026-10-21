@@ -280,7 +280,7 @@ struct CodexSessionUsageCorrectionServiceTests {
 
         // Deferred, not skipped: the gate stays open so the next launch corrects it.
         #expect(!ran)
-        #expect(defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) == nil)
+        #expect(defaults.string(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild) != "42")
         #expect(running.inputTokens == 2_000)
 
         running.status = .completed
@@ -356,6 +356,35 @@ struct CodexSessionUsageCorrectionServiceTests {
         _ = WorkspaceConfigManager.importWorkspace(from: config, modelContext: destination.context)
 
         #expect(UserDefaults.standard.string(forKey: key) == nil)
+    }
+
+    @Test("An import while the pass runs keeps the gate open")
+    func importDuringThePassKeepsTheGateOpen() async throws {
+        let fixture = try makeFixture()
+        defer { withExtendedLifetime(fixture.container) {} }
+        // Enough tasks that the pass yields many times before it finishes.
+        for index in 0..<20 {
+            let task = AgentTask(title: "T\(index)", goal: "Count once", runtime: .codexCLI)
+            fixture.context.insert(task)
+            let other = Fixture(container: fixture.container, context: fixture.context, task: task)
+            other.legacyRun("thread-\(index)", at: Double(index), input: 100, output: 1)
+            other.legacyRun("thread-\(index)", at: Double(index) + 100, input: 300, output: 3)
+        }
+        let defaults = InMemoryDefaults()
+        let key = AppStorageKeys.completedCodexSessionUsageCorrectionBuild
+        let pass = Task { await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "42", defaults: defaults) }
+        var polls = 0
+        while defaults.string(forKey: key) != "42:pending", polls < 1_000 {
+            await Task.yield()
+            polls += 1
+        }
+        #expect(defaults.string(forKey: key) == "42:pending")
+        defaults.removeObject(forKey: key) // what WorkspaceConfigManager does on import
+
+        let recorded = await pass.value
+
+        #expect(!recorded)
+        #expect(defaults.string(forKey: key) == nil)
     }
 
     @Test("A start time shared by more than a page of runs is read whole")
