@@ -145,6 +145,16 @@ public struct RepairAction: Codable, Sendable, Equatable {
         }
     }
 
+    /// Explicit Google principal, configuration and credential overrides
+    /// survive an ambient login. Keep capture and repair admission on one
+    /// list; their values belong only to the run's read-only check.
+    public static func credentialOverrideSelectors(for binary: String) -> Set<String> {
+        guard (binary as NSString).lastPathComponent == "gcloud" else { return [] }
+        return ["CLOUDSDK_CORE_ACCOUNT", "CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_AUTH_ACCESS_TOKEN",
+                "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
+                "CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT"]
+    }
+
     /// Task-selected directories are not trusted credential destinations.
     /// Preserve their read-only verification context, but never put them in
     /// a Terminal command that writes a fresh login. A non-default GitHub
@@ -157,6 +167,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
         let directories = Self.credentialStoreDirectorySelectors(for: cli)
         let selected = checking(in: environment).checkEnvironment
         let hasDirectory = directories.contains { selected?[$0]?.isEmpty == false }
+        let hasCredentialOverride = Self.credentialOverrideSelectors(for: cli).contains { selected?[$0]?.isEmpty == false }
         let host = cli == "gh" ? (selected?["GH_HOST"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") : ""
         // A bare command is resolved again by Terminal in ASTRA's ambient
         // environment. If the stopped run selected a different PATH, that
@@ -164,7 +175,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
         // An explicit installed path is already pinned by terminal policy.
         let hasSelectedExecutable = !(checkBinary ?? "").contains("/")
             && selected?["PATH"].map { $0 != ProcessInfo.processInfo.environment["PATH"] } == true
-        if hasDirectory || hasSelectedExecutable || (!host.isEmpty && host.lowercased() != "github.com") {
+        if hasDirectory || hasCredentialOverride || hasSelectedExecutable || (!host.isEmpty && host.lowercased() != "github.com") {
             return requiringManualCredentialSetup()
         }
         return enforcingTerminalPolicy()
@@ -214,7 +225,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
         manual.command = nil
         manual.verb = "Check"
         manual.title = "Set up \(componentName)"
-        manual.detail = "Sign in manually using a trusted account and credential location, then check again."
+        manual.detail = "Set up the credentials selected for this task manually, then check again."
         return manual
     }
 
