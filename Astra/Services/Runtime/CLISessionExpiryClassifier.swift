@@ -41,8 +41,8 @@ enum CLISessionExpiryClassifier {
         /// Application Default Credentials (`readsOnlyApplicationDefault`).
         var readsApplicationDefault = false
         /// Credential-store selectors the failed call set on itself
-        /// (`CLOUDSDK_CONFIG=/team gcloud …`): Sign in and the check use that
-        /// store, not the launch's (`RepairAction.checkSelectors`).
+        /// (`CLOUDSDK_CONFIG=/team gcloud …`): only the read-only check uses
+        /// that store. Login needs manual setup (`RepairAction.checkSelectors`).
         var storeSelectors: [String: String] = [:]
         /// Credential variables the failed call set on itself that ASTRA
         /// can't carry (`GH_TOKEN=… gh …`, another account): nothing signs in
@@ -98,7 +98,7 @@ enum CLISessionExpiryClassifier {
                     ? SemanticCheck.stdoutNonEmpty.rawValue : nil
             )
             repair.checkSelectors = storeSelectors.isEmpty ? nil : storeSelectors
-            return repair
+            return repair.targetingCredentialStore(storeSelectors)
         }
 
         /// The same family signing in to and checking a GitHub Enterprise
@@ -115,9 +115,10 @@ enum CLISessionExpiryClassifier {
         /// (`gh auth status --active`): the command's `gh` calls named
         /// different hosts, or ran outside the run's checkout, so which host
         /// failed is unknown, and checking any one of them could pass while
-        /// the failing one is still signed out. Sign in asks for the host.
+        /// the failing one is still signed out. Sign-in stays manual.
         func onEveryHost() -> Family {
             var family = self
+            family.offersSignIn = false
             family.checkArguments = ["auth", "status", "--active"]
             family.namesCheck = true
             if family.customStopMessage == nil {
@@ -279,7 +280,7 @@ enum CLISessionExpiryClassifier {
         return Stop(
             reason: TaskRunStopReason.capabilitySessionExpired.rawValue, message: family.stopMessage,
             repairContext: RuntimeRepairContext(providerBinary: family.checkBinary, message: family.stopMessage,
-                                               repair: family.repair, offersAction: family.offersSignIn)
+                                               repair: family.repair, offersAction: family.repair.command != nil)
         )
     }
 
@@ -758,7 +759,7 @@ enum CLISessionExpiryClassifier {
             hosted.command = retargeted
             hosted.detail = repair.detail.replacingOccurrences(of: "`\(command)`", with: "`\(retargeted)`")
         }
-        return hosted
+        return hosted.enforcingTerminalPolicy()
     }
 
     /// `candidate` lowercased when it is a plain host name (with an optional

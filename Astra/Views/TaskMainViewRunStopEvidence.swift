@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import ASTRACore
 import ASTRAModels
@@ -14,20 +13,20 @@ enum TaskRunStopEvidence {
 
     /// The repair the run stopped for (a plugin sign-in expired mid-task).
     static func repair(events: [TaskEventSnapshot], runID: UUID?) -> RepairAction? {
-        latestPayload(events: events, runID: runID, type: TaskEventTypes.System.runtimeRepairRequired)
+        // The typed event owns both automatic and manual setup. A manual
+        // repair deliberately has no legacy executable-action event.
+        if let captured = latestPayload(events: events, runID: runID, type: TaskEventTypes.System.runtimeRepairContext) {
+            return RuntimeRepairContext.decode(from: captured)?.repair
+                ?? RuntimeRepairContext.manualReview(message: "The saved repair context could not be read.").repair
+        }
+        return latestPayload(events: events, runID: runID, type: TaskEventTypes.System.runtimeRepairRequired)
             .flatMap(RepairAction.decode(from:))
     }
 
-    /// The repair Sign in runs: the run's, its sign-in aimed at the
-    /// credential store the resumed task reads (`CLOUDSDK_CONFIG`,
-    /// `GH_CONFIG_DIR`…), the store Resume's check reads too. Resolved on
-    /// the click, not in `body`: it walks the task's launch scope. A GitHub
-    /// Enterprise host the launch selects (`GH_REPO`'s, else `GH_HOST`), or
-    /// else the run's checkout's remotes name, is the one signed in to, the
-    /// host Resume's check retargets to (`checkingLaunchHost`,
-    /// `checkingCheckoutHost`). With the run's own
-    /// `GOOGLE_APPLICATION_CREDENTIALS`, an ADC sign-in runs nothing
-    /// (`checkingCredentialFile`).
+    /// Resolves the stopped run's exact verification context on click,
+    /// outside the render path. Task-selected directories and Enterprise
+    /// hosts require manual setup; their read-only checks keep their target.
+    /// An explicit ADC file is verified without replacing that file.
     @MainActor
     static func signInRepair(events: [TaskEventSnapshot], runID: UUID?, task: AgentTask) async -> RepairAction? {
         guard var repair = repair(events: events, runID: runID) else { return nil }
@@ -40,45 +39,5 @@ enum TaskRunStopEvidence {
     private static func latestPayload(events: [TaskEventSnapshot], runID: UUID?, type: TaskEventType) -> String? {
         guard let runID else { return nil }
         return events.last { $0.runID == runID && $0.type == type.rawValue }?.payload
-    }
-}
-
-/// Runs a `RepairAction` from the decision dock: a command goes to Terminal
-/// (or is copied, with Terminal opened, when scripting is not allowed), a page
-/// opens in the browser. Resume relaunches through the worker's pre-launch
-/// checks, which re-test the component before the provider starts.
-@MainActor
-enum RepairActionRunner {
-    static func run(
-        _ repair: RepairAction?,
-        terminal: TerminalCommandLaunching = TerminalAppLauncher(),
-        openURL: (URL) -> Void = { NSWorkspace.shared.open($0) },
-        copy: (String) -> Void = { command in
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(command, forType: .string)
-        }
-    ) {
-        guard let repair else { return }
-        switch repair.strategy {
-        case .terminal:
-            // Checked again here: a repair can also arrive from a stored event.
-            guard let command = repair.command,
-                  RepairAction.isSafeTerminalCommand(
-                      command, binary: repair.checkBinary, allowsInstaller: repair.verb == "Install", allowsStoreSelectors: true
-                  )
-            else { return }
-            do {
-                try terminal.launchInTerminal(command: command)
-            } catch {
-                copy(command)
-                terminal.openTerminalApp()
-            }
-        case .url:
-            // Checked again for the same reason: a stored event's URL never
-            // passed package validation.
-            if let url = repair.url, RepairAction.isSafeRepairURL(url) { openURL(url) }
-        case .deviceCode, .credentialForm:
-            break
-        }
     }
 }
