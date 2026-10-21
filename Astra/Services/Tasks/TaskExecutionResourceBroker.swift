@@ -86,14 +86,32 @@ enum TaskExecutionResourceBroker {
             .path
     }
 
+    /// Names the holder so the user knows which task to stop: its title (when
+    /// `holderTitle` knows it) and short id, plus both paths when the two
+    /// claims overlap only because one folder contains the other.
     static func blockerSummary(
         requested: [TaskResourceLockClaim],
-        active: [TaskResourceLockClaim]
+        active: [TaskResourceLockClaim],
+        holderTitle: (UUID) -> String? = { _ in nil }
     ) -> String {
         guard let conflict = firstConflict(requested: requested, active: active) else {
             return "resource lock unavailable"
         }
-        return "Waiting for \(displayName(conflict.requested)) held by another active task."
+        let holder = conflict.holder
+        let summary = "Waiting for \(displayName(conflict.requested)) held by \(holderLabel(holder.taskID, title: holderTitle(holder.taskID)))"
+        let held = canonicalKey(kind: holder.resourceKind, key: holder.resourceKey)
+        let wanted = canonicalKey(kind: conflict.requested.resourceKind, key: conflict.requested.resourceKey)
+        guard isFilesystemKind(holder.resourceKind), held != wanted else { return summary + "." }
+        let relation = isPath(held, ancestorOf: wanted) ? "contains" : "is inside"
+        return summary + ": it holds \(held), which \(relation) \(wanted)."
+    }
+
+    static func holderLabel(_ taskID: UUID, title: String?) -> String {
+        let shortID = String(taskID.uuidString.prefix(8))
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return "task \(shortID)" }
+        let name = trimmed.count > 60 ? String(trimmed.prefix(59)) + "…" : trimmed
+        return "task \u{201C}\(name)\u{201D} (\(shortID))"
     }
 
     static func displayName(_ claim: TaskResourceLockClaim) -> String {

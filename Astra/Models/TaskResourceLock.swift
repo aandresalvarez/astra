@@ -72,7 +72,8 @@ public struct TaskResourceLockClaim: Sendable, Equatable, Hashable {
         accessMode: TaskResourceAccessMode,
         runMode: String,
         resourceKind: TaskExecutionResourceKind = .workspace,
-        requestID: UUID? = nil
+        requestID: UUID? = nil,
+        leaseID: UUID? = nil
     ) {
         self.taskID = taskID
         self.resourceKey = resourceKey
@@ -80,6 +81,7 @@ public struct TaskResourceLockClaim: Sendable, Equatable, Hashable {
         self.runMode = runMode
         self.resourceKind = resourceKind
         self.requestID = requestID
+        self.leaseID = leaseID
     }
 
     public var taskID: UUID
@@ -88,4 +90,14 @@ public struct TaskResourceLockClaim: Sendable, Equatable, Hashable {
     public var runMode: String
     public var resourceKind: TaskExecutionResourceKind
     public var requestID: UUID?
+    /// The one acquisition this claim belongs to. Two admissions of the same
+    /// task can request identical claims; the lease id keeps a late release
+    /// from the first from freeing the second's hold.
+    public var leaseID: UUID?
+
+    public func leased(_ leaseID: UUID) -> TaskResourceLockClaim {
+        var claim = self
+        claim.leaseID = leaseID
+        return claim
+    }
 }

@@ -97,6 +97,10 @@ final class AgentRuntimeProcessRunner {
     typealias DockerRuntimeProvider = @Sendable () -> DockerRuntimeResolution?
 
     private var currentProcess: AgentRuntimeProcessControl?
+    /// Held while a provider that shares launch state (Antigravity's settings
+    /// file) runs; cancel bounds how long a wedged run can keep it.
+    private var sharedStateLease: AgentRuntimeSharedStateLease?
+    private let wedgedCancellationGrace: Duration
     let homeAccessCancellation = RuntimeHomeAccessCancellationGate()
     private let sandboxSettingsProvider: SandboxSettingsProvider
     private let gitCredentialContextProvider: GitCredentialContextProvider
@@ -118,8 +122,10 @@ final class AgentRuntimeProcessRunner {
         dockerRuntimeProvider: @escaping DockerRuntimeProvider = {
             DockerRuntimeResolver.resolve()
         },
-        hostControlBrokerSessionManager: any HostControlBrokerSessionManaging = HostControlBrokerSessionManager()
+        hostControlBrokerSessionManager: any HostControlBrokerSessionManaging = HostControlBrokerSessionManager(),
+        wedgedCancellationGrace: Duration = TaskWedgedWorkerLeaseReclaimer.defaultGrace
     ) {
+        self.wedgedCancellationGrace = wedgedCancellationGrace
         self.sandboxSettingsProvider = sandboxSettingsProvider
         self.gitCredentialContextProvider = gitCredentialContextProvider
         self.dockerRuntimeProvider = dockerRuntimeProvider
@@ -130,6 +136,26 @@ final class AgentRuntimeProcessRunner {
         homeAccessCancellation.invalidate()
         currentProcess?.terminate()
         currentProcess = nil
+        if let sharedStateLease {
+            Self.releaseSharedStateIfWedged(sharedStateLease, after: wedgedCancellationGrace)
+        }
+    }
+
+    /// A cancelled run normally returns and releases its own lease. If it has
+    /// not after `grace` (its stdout never reached EOF), free the key so the
+    /// next Antigravity run is not queued behind it until relaunch. The lease
+    /// release is idempotent, so the run's own release when it finally returns
+    /// cannot free the key for the run that holds it by then.
+    static func releaseSharedStateIfWedged(_ lease: AgentRuntimeSharedStateLease, after grace: Duration) {
+        Task {
+            try? await Task.sleep(for: grace)
+            guard await AgentRuntimeSharedStateGate.shared.release(lease) else { return }
+            AppLogger.audit(.resourceLockReleased, category: "Worker", fields: [
+                "resource_kind": "provider_shared_state",
+                "resource_key": lease.key.rawValue,
+                "reason": TaskWedgedWorkerLeaseReclaimer.releaseReason
+            ], level: .warning)
+        }
     }
 
     func isHostControlBrokerAvailable() -> Bool {
@@ -797,8 +823,9 @@ final class AgentRuntimeProcessRunner {
         )
         let remainingTurns = Self.remainingTurns(maxTurns: task.maxTurns, alreadyUsed: executionPolicy.providerTurnsAlreadyUsed)
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
+            let sharedStateLease: AgentRuntimeSharedStateLease
             do {
-                try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
+                sharedStateLease = try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
             } catch is CancellationError {
                 return AgentProcessResult(
                     exitCode: -1,
@@ -809,12 +836,14 @@ final class AgentRuntimeProcessRunner {
             } catch {
                 return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
             }
+            self.sharedStateLease = sharedStateLease
+            defer { if self.sharedStateLease == sharedStateLease { self.sharedStateLease = nil } }
             let plan: AgentRuntimeProcessLaunchPlan
             switch await guardedSandboxedPlan(adapter: adapter, context: launchContext) {
             case .plan(let resolvedPlan):
                 plan = resolvedPlan
             case .blocked(let blockedResult):
-                await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
+                await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)
                 return blockedResult
             }
             let result = await runProcess(
@@ -833,7 +862,7 @@ final class AgentRuntimeProcessRunner {
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
-            await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
+            await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)
             return result
         }
 

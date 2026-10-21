@@ -1,4 +1,6 @@
 import Foundation
+import SwiftData
+import ASTRACore
 import ASTRAModels
 
 extension TaskQueue {
@@ -92,5 +94,64 @@ extension TaskQueue {
                 runMode: "probe"
             )
         ])
+    }
+
+    @MainActor
+    @discardableResult
+    func acquireResourceLockIfAvailable(
+        task: AgentTask,
+        resourceKey: String? = nil,
+        accessMode: TaskResourceAccessMode,
+        runMode: String,
+        modelContext: ModelContext? = nil
+    ) -> TaskResourceLockClaim? {
+        let claim = TaskResourceLockClaim(
+            taskID: task.id,
+            resourceKey: resourceKey ?? self.resourceKey(for: task),
+            accessMode: accessMode,
+            runMode: runMode
+        )
+        return acquireResourceLocksIfAvailable([claim], task: task, modelContext: modelContext)?.first
+    }
+
+    @MainActor
+    func releaseResourceLock(
+        _ claim: TaskResourceLockClaim,
+        task: AgentTask,
+        modelContext: ModelContext? = nil
+    ) {
+        releaseResourceLocks([claim], task: task, modelContext: modelContext)
+    }
+
+    /// The "Waiting for resource" text, naming the holding task from the store.
+    @MainActor
+    func resourceBlockerSummary(_ claims: [TaskResourceLockClaim], modelContext: ModelContext) -> String {
+        TaskExecutionResourceBroker.blockerSummary(requested: claims, active: activeResourceLocks) { holderID in
+            try? modelContext.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == holderID })).first?.title
+        }
+    }
+
+    @MainActor
+    func recordResourceLockEvent(
+        type: String,
+        auditEvent: AuditEvent,
+        task: AgentTask,
+        claim: TaskResourceLockClaim,
+        status: String,
+        reason: String? = nil,
+        modelContext: ModelContext?,
+        autoExport: Bool = true
+    ) {
+        TaskResourceLockEventRecorder.record(
+            type: type,
+            auditEvent: auditEvent,
+            task: task,
+            claim: claim,
+            status: status,
+            reason: reason,
+            modelContext: modelContext,
+            activeClaims: activeResourceLocks,
+            autoExport: autoExport
+        )
     }
 }
