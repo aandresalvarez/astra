@@ -135,6 +135,16 @@ public struct RepairAction: Codable, Sendable, Equatable {
     /// They never authorize writing a login into a task-selected directory.
     public static let credentialStoreSelectors = ["CLOUDSDK_CONFIG", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "GH_HOST", "HOME"]
 
+    /// One policy for detecting command-local selectors and admitting repair
+    /// destinations, so capture and execution cannot disagree about a store.
+    public static func credentialStoreDirectorySelectors(for binary: String) -> Set<String> {
+        switch (binary as NSString).lastPathComponent {
+        case "gcloud": ["CLOUDSDK_CONFIG", "HOME"]
+        case "gh": ["GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME"]
+        default: ["XDG_CONFIG_HOME"]
+        }
+    }
+
     /// Task-selected directories are not trusted credential destinations.
     /// Preserve their read-only verification context, but never put them in
     /// a Terminal command that writes a fresh login. A non-default GitHub
@@ -144,12 +154,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
         if verb == "Install", let executable = command?.split(whereSeparator: \.isWhitespace).first,
            Self.installers.contains(String(executable)) { return enforcingTerminalPolicy() }
         let cli = ((checkBinary ?? "") as NSString).lastPathComponent
-        let directories: [String]
-        switch cli {
-        case "gcloud": directories = ["CLOUDSDK_CONFIG", "HOME"]
-        case "gh": directories = ["GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME"]
-        default: directories = ["XDG_CONFIG_HOME"]
-        }
+        let directories = Self.credentialStoreDirectorySelectors(for: cli)
         let selected = checking(in: environment).checkEnvironment
         let hasDirectory = directories.contains { selected?[$0]?.isEmpty == false }
         let host = cli == "gh" ? (selected?["GH_HOST"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") : ""
