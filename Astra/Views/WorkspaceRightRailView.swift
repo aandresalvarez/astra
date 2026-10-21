@@ -911,6 +911,7 @@ struct WorkspaceRightRailView: View {
 
     private func capabilityRow(_ item: RailCapabilityItem) -> some View {
         let isHighlighted = item.readiness.level == .needsAttention
+        let repairPhase = item.repair.flatMap { repairs.phase(for: $0, owner: item.id) }
 
         return CapabilityRailRow(
             icon: WorkspaceContextIconography.capabilityIcon(name: item.name, fallback: item.icon),
@@ -926,6 +927,7 @@ struct WorkspaceRightRailView: View {
             repairVerb: item.repair?.verb,
             repairGuidance: CapabilityRailRow.repairGuidance(for: item.repair),
             repairStatus: item.repair.flatMap { repairs.statusText(for: $0, owner: item.id) },
+            repairIsChecking: repairPhase == .waiting,
             onRepair: { if let repair = item.repair { repairs.start(repair, owner: item.id) { refreshCapabilityPrerequisiteStatuses() } } },
             contextualRepair: contextualRepair(for: item),
             onOpen: { openCapabilityConfiguration(item) }
