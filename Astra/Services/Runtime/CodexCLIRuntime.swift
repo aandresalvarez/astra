@@ -166,6 +166,20 @@ enum CodexCLIRuntime {
 
     private static let bypassApprovalsAndSandboxArgument = "--dangerously-bypass-approvals-and-sandbox"
 
+    /// Whether a Codex shell launched with these permission arguments (the
+    /// render's `cliArgumentsSummary`, built by `codexPermissionArguments`)
+    /// can open an outbound connection. `workspace-write` and `read-only`
+    /// deny `connect(2)`, since `network_access` defaults off and ASTRA never
+    /// widens it, and `approval_policy="never"` leaves no escalation. The ways
+    /// out are bypassing the sandbox, or the approval reviewer granting an
+    /// escalated run, which is how task E0F780F8's `ssh` calls connected.
+    static func shellReachesNetwork(permissionArguments: [String]) -> Bool {
+        permissionArguments.contains(bypassApprovalsAndSandboxArgument)
+            || permissionArguments.contains(
+                "approvals_reviewer=\"\(CodexRequirementsPolicy.automaticApprovalReviewer)\""
+            )
+    }
+
     static func resolvedModelName(_ model: String) -> String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty || trimmed.lowercased() == "default" {

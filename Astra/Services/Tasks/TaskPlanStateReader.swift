@@ -11,7 +11,9 @@ struct TaskPlanStateReadInput {
 /// conversation history never needs to fault into memory to render plan UI.
 @MainActor
 enum TaskPlanStateReader {
-    static func read(taskID: UUID, modelContext: ModelContext) throws -> TaskPlanStateReadInput {
+    /// Nonisolated because `TaskPlanService.reconstruct(for:)` is: it runs on
+    /// the caller's context exactly as the relationship read it replaces did.
+    nonisolated static func read(taskID: UUID, modelContext: ModelContext) throws -> TaskPlanStateReadInput {
         let created = TaskPlanEventTypes.created
         let updated = TaskPlanEventTypes.updated
         let approved = TaskPlanEventTypes.approved

@@ -696,7 +696,7 @@ final class AgentRuntimeWorker {
             repositoryStatus: githubRepositoryStatus
         )
         var prompt = runEnvironment.appendingReadOnlyInputGuidance(to: readinessPrompt)
-        let launchResourcePlan = TaskLaunchResourceResolver.resolve(
+        var launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: executionTask,
             runID: run.id,
             runtime: selectedRuntime,
@@ -762,6 +762,17 @@ final class AgentRuntimeWorker {
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
             return
         }
+        // Resolved once, from the manifest this run launches with: the guard's
+        // answer for the `ssh` command and the sandbox the process gets. The run
+        // line, the broker refusal, the resource manifest and the signature read it.
+        executionPolicy = executionPolicy.withRemoteSSHRoute(RemoteWorkspaceSSHRoute.resolve(
+            task: executionTask, manifest: manifest, requirements: appliedRuntime.requirements,
+            environment: runEnvironment.runSnapshot, runtimeCapabilityProfile: runtimeCapabilityProfile,
+            hostControlHelperAvailable: processRunner.isHostControlBrokerAvailable()))
+        if let sshRoute = executionPolicy.remoteSSHRoute {
+            launchResourcePlan.remoteSSHRoute = sshRoute
+            TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
+        }
         let launchSignature = ProviderLaunchSignatureService.make(
             for: task,
             manifest: manifest,
@@ -797,14 +808,15 @@ final class AgentRuntimeWorker {
             ? TaskHistoryRetrievalGuidance.prompt : ""
         // Said with the level the broker binding uses, so what the agent is
         // told a proposal does and what the broker does with it agree.
+        let sshRoute = executionPolicy.remoteSSHRoute
         let autoSendGuidance = { (text: String) in
-            HostControlPlanePromptGuidance.appendingAutoSendGuidance(
+            RemoteWorkspaceSSHRoute.appendingRunGuidance(to: HostControlPlanePromptGuidance.appendingAutoSendGuidance(
                 to: text,
                 policyLevel: manifest.policyLevel,
                 usesHostControlCLIRelay: runtimeCapabilityProfile.usesHostControlCLIRelay,
                 offersGitHubHostTool: runtimeCapabilityProfile.canDeliverHostControlPlane
                     && appliedRuntime.requirements.offeredHostControlTools.contains("github")
-            )
+            ), route: sshRoute)
         }
         prompt = autoSendGuidance(prompt)
         // Appended after the resource resolver read the prompt, so README text

@@ -110,12 +110,16 @@ struct TaskCapabilityResolver {
     private let additionalCredentialGrants: [PermissionGrant]
     private let runtime: AgentRuntimeID?
     private let secretStore: SecretStore
-    /// One projection per resolver, so every inventory read in a resolution
-    /// shares the same projected skills and the connectors wired to them.
-    private let projectionCache = ProjectionCache()
+    /// Derived values live for one resolution. In particular every inventory
+    /// read shares the same projected skills and their attached account copies.
+    private let memo = Memo()
 
-    private final class ProjectionCache {
-        var value: PluginRuntimeProjection?
+    private final class Memo {
+        var projection: PluginRuntimeProjection?
+        var enabledCapabilityPackages: [PluginPackage]?
+        var globalSkills: [Skill]?
+        var globalConnectors: [Connector]?
+        var globalLocalTools: [LocalTool]?
     }
 
     init(
@@ -298,13 +302,13 @@ struct TaskCapabilityResolver {
     /// activations, plus copies of their bound accounts wired to each
     /// plugin's first skill.
     private var pluginProjection: PluginRuntimeProjection {
-        if let cached = projectionCache.value { return cached }
+        if let cached = memo.projection { return cached }
         let projection = PluginRuntimeProjection.project(
             workspace: task.workspace,
             packages: enabledCapabilityPackages(),
             connectorMode: .runtimeCopies
         )
-        projectionCache.value = projection
+        memo.projection = projection
         return projection
     }
 
@@ -334,7 +338,10 @@ struct TaskCapabilityResolver {
     }
 
     private func enabledCapabilityPackages() -> [PluginPackage] {
-        CapabilityRuntimeResourceMatcher.enabledPackages(for: task.workspace)
+        if let cached = memo.enabledCapabilityPackages { return cached }
+        let packages = CapabilityRuntimeResourceMatcher.enabledPackages(for: task.workspace)
+        memo.enabledCapabilityPackages = packages
+        return packages
     }
 
     private func workspaceSkills() -> [Skill] {
@@ -357,6 +364,13 @@ struct TaskCapabilityResolver {
     }
 
     private func globalSkills() -> [Skill] {
+        if let cached = memo.globalSkills { return cached }
+        let resolved = fetchGlobalSkills()
+        memo.globalSkills = resolved
+        return resolved
+    }
+
+    private func fetchGlobalSkills() -> [Skill] {
         guard let ctx = globalCatalogContext else {
             return task.workspace?.skills.filter { $0.isGlobal } ?? []
         }
@@ -374,6 +388,13 @@ struct TaskCapabilityResolver {
     }
 
     private func globalConnectors() -> [Connector] {
+        if let cached = memo.globalConnectors { return cached }
+        let resolved = fetchGlobalConnectors()
+        memo.globalConnectors = resolved
+        return resolved
+    }
+
+    private func fetchGlobalConnectors() -> [Connector] {
         guard let ctx = globalCatalogContext else {
             return task.workspace?.connectors.filter { $0.isGlobal } ?? []
         }
@@ -391,6 +412,13 @@ struct TaskCapabilityResolver {
     }
 
     private func globalLocalTools() -> [LocalTool] {
+        if let cached = memo.globalLocalTools { return cached }
+        let resolved = fetchGlobalLocalTools()
+        memo.globalLocalTools = resolved
+        return resolved
+    }
+
+    private func fetchGlobalLocalTools() -> [LocalTool] {
         guard let ctx = globalCatalogContext else {
             return task.workspace?.localTools.filter { $0.isGlobal } ?? []
         }

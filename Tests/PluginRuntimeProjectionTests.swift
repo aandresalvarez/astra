@@ -12,6 +12,38 @@ import HostControlToolSupport
 @Suite("Plugin runtime projection")
 @MainActor
 struct PluginRuntimeProjectionTests {
+    @Test("One resolution shares projected identities; a fresh resolver observes the next activation state")
+    func resolverMemoPreservesProjectionAndRefreshBoundary() throws {
+        let context = try makeContext()
+        let package = try builtIn("jira-workflow")
+        let workspace = Workspace(name: "Resolver projection", primaryPath: "/tmp/projection-resolver-memo")
+        context.insert(workspace)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(package.id) }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        let spec = try #require(package.connectors.first)
+        let account = Connector(name: "Resolver account", serviceType: spec.serviceType, baseURL: spec.baseURL, authMethod: spec.authMethod)
+        account.workspace = workspace
+        context.insert(account)
+        CapabilityResourceOrigin.stamp(account, package: package, componentID: CapabilityResourceOrigin.componentID(for: spec))
+        WorkspaceCapabilityActivation.bind(account, toComponent: CapabilityResourceOrigin.componentID(for: spec), of: activation)
+        let task = AgentTask(title: "Resolve", goal: "Resolve plugin inventory", workspace: workspace, runtime: .claudeCode)
+        context.insert(task)
+        try context.save()
+        let resolver = TaskCapabilityResolver(task: task, secretStore: MockSecretStore())
+        let first = resolver.resourceInventory
+        let second = resolver.resourceInventory
+        let skill = try #require(first.behaviorSkills.first { $0.originPackageID == package.id })
+        let sameSkill = try #require(second.behaviorSkills.first { $0.id == skill.id })
+        #expect(skill === sameSkill)
+        let projectedAccount = try #require(first.connectors.first { $0.id == account.id })
+        #expect(second.connectors.contains { $0 === projectedAccount })
+        #expect(skill.connectors.contains { $0 === projectedAccount })
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.removeAll { $0 == package.id } }
+        try context.save()
+        let next = TaskCapabilityResolver(task: task, secretStore: MockSecretStore()).resourceInventory
+        #expect(!next.behaviorSkills.contains { $0.originPackageID == package.id })
+    }
+
     @Test("A withdrawn default account cannot prevent election among usable accounts")
     func withdrawnDefaultElectsUsableAccount() throws {
         let context = try makeContext()
