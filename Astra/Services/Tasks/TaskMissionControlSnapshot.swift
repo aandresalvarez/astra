@@ -5,8 +5,9 @@ import ASTRAPersistence
 /// The decision dock's mission-control summary, and the task folder it was
 /// read from.
 ///
-/// **Why it is cached, and built in two halves.** `TaskMainView.body` reads
-/// `messageText`, so it re-runs on every keystroke in the composer, and it used
+/// **Why it is cached, and built in two halves.** `TaskMainView.body` read
+/// `messageText` (now in `TaskComposerDraft`), so it re-ran on every keystroke
+/// in the composer, and it used
 /// to build this snapshot two or three times per pass: once for the dock's
 /// `mission:` argument, once for the verification request the dock's cached
 /// verification is compared against, and once more for the `.task(id:)` keyed

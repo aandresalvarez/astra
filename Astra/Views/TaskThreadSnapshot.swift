@@ -1804,8 +1804,9 @@ struct TaskThreadSnapshotCache {
 /// Change hint for "the files this task produced may have moved."
 ///
 /// Built inside `TaskThreadChangeObserver.body`, which SwiftUI re-evaluates
-/// whenever `TaskMainView.body` does — and `messageText` is `@State` on that
-/// view, so that means once per keystroke in the composer.
+/// whenever `TaskMainView.body` does — and while `messageText` was `@State`
+/// on that view (it now lives in `TaskComposerDraft`), that meant once per
+/// keystroke in the composer.
 ///
 /// It used to carry `task.artifacts.map { "\(path)#\(version)#\(isStale)" }
 /// .sorted()`. Every field of that is expensive at scale and all three
