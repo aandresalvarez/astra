@@ -90,7 +90,11 @@ struct PluginCredentialGenerationTransaction {
 
     /// The committed activation owns the new namespaces. Old cleanup stays
     /// durable for the existing recovery pass; no all-workspace scan on edit.
-    func completed() { outbox?.forgetNamespaces(namespaces) }
+    func completed(keeping publishedNamespaces: Set<UUID>) {
+        // A rename may retire a staged predecessor before publication. If
+        // its deletion failed, it still needs its own durable cleanup intent.
+        outbox?.forgetNamespaces(namespaces.intersection(publishedNamespaces))
+    }
 
     /// Called only after a proved noncommit, or before domain mutation. These
     /// fresh namespaces were never published; failed deletes keep their intent.

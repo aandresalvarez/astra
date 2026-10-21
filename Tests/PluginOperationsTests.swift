@@ -510,19 +510,21 @@ struct PluginOperationsTests {
 
     @Test("Update adds the credential keys a kept connector now declares to the accounts the plugin created")
     func ownedAccountsFollowTheDefinition() throws {
-        let env = try Environment()
-        let v1 = Self.package(version: "1.0.0")
-        try env.install(v1)
-        let account = try #require(env.workspace.connectors.first)
-        account.baseURL = "https://mine.example.com"
-        try env.context.save()
-        var v2 = Self.package(version: "2.0.0")
-        v2.connectors[0].credentialHints.append(.init(key: "TRACKER_SECRET", hint: "Secret"))
-        v2.connectors[0].description = "Tracker v2"
-        try env.importUpdate(v2)
-        #expect(account.credentialKeys.contains("TRACKER_SECRET"))
-        #expect(account.connectorDescription == "Tracker v2")
-        #expect(account.baseURL == "https://mine.example.com")
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Environment()
+            let v1 = Self.package(version: "1.0.0")
+            try env.install(v1)
+            let account = try #require(env.workspace.connectors.first)
+            account.baseURL = "https://mine.example.com"
+            try env.context.save()
+            var v2 = Self.package(version: "2.0.0")
+            v2.connectors[0].credentialHints.append(.init(key: "TRACKER_SECRET", hint: "Secret"))
+            v2.connectors[0].description = "Tracker v2"
+            try env.importUpdate(v2)
+            #expect(account.credentialKeys.contains("TRACKER_SECRET"))
+            #expect(account.connectorDescription == "Tracker v2")
+            #expect(account.baseURL == "https://mine.example.com")
+        }
     }
 
     @Test("The delete confirmation names every workspace the deletion reaches")
