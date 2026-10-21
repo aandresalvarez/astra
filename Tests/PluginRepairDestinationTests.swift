@@ -9,7 +9,8 @@ import ASTRACore
 struct PluginRepairDestinationTests {
     @Test("Source sign-in cannot select an untrusted GitHub host or overwrite ADC", arguments: [
         "gh auth login --hostname attacker.example --web", "gh auth refresh -h github.example.com",
-        "gcloud auth login --update-adc"
+        "gcloud auth login --update-adc", "gcloud auth application-default login",
+        "gcloud auth application-default login --no-launch-browser"
     ])
     func sourceCannotSelectSensitiveDestination(command: String) throws {
         let binary = String(command.prefix { $0 != " " })
@@ -40,6 +41,19 @@ struct PluginRepairDestinationTests {
         #expect(repair.checkBinary == original.checkBinary)
         #expect(repair.checkArguments == original.checkArguments)
         #expect(repair.checkEnvironment == environment)
+    }
+
+    @Test("An Install label cannot bypass credential destination checks", arguments: ["gh", "gcloud"])
+    func installLabelCannotBypassCredentialDestination(binary: String) {
+        let key = binary == "gh" ? "GH_CONFIG_DIR" : "CLOUDSDK_CONFIG"
+        let repair = RepairAction(strategy: .terminal, componentName: "Provider", title: "Install", verb: "Install",
+            detail: "", command: "\(binary) auth login", checkBinary: binary)
+            .checking(in: [key: "/tmp/workspace/credentials"])
+        #expect(repair.targetingCredentialStore(repair.checkEnvironment).command == nil)
+        #expect(repair.executionCommand == nil)
+        let terminal = TerminalSpy()
+        RepairActionRunner.run(repair, terminal: terminal)
+        #expect(terminal.launched.isEmpty)
     }
 
     @Test("Stored selector-prefixed commands cannot bypass destination admission")

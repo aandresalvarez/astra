@@ -33,7 +33,7 @@ public enum TerminalRepairPolicy {
     ]
 
     // A source cannot choose an authentication server or turn an ordinary
-    // login into a global ADC overwrite. Enterprise sign-in stays manual
+    // login into a global ADC overwrite. ADC replacement and enterprise sign-in stay manual
     // until ASTRA has a separately trusted account endpoint.
     static let signIns: [String: [SignIn]] = [
         "gh": [
@@ -45,7 +45,6 @@ public enum TerminalRepairPolicy {
         ],
         "gcloud": [
             SignIn(positionals: ["auth", "login"], booleanFlags: ["--no-launch-browser"], valueFlags: gcloudSignInFlags),
-            SignIn(positionals: ["auth", "application-default", "login"], booleanFlags: ["--no-launch-browser"], valueFlags: gcloudSignInFlags)
         ],
         "az": [SignIn(positionals: ["login"], booleanFlags: ["--use-device-code"], valueFlags: ["--tenant": .plain, "-t": .plain])],
         "aws": [
