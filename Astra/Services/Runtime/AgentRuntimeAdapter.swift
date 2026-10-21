@@ -1306,7 +1306,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             contextText: context.contextText,
             capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
-            precomputedRuntimeRequirements: context.runtimeRequirements
+            precomputedRuntimeRequirements: context.runtimeRequirements,
+            sshRoute: context.executionPolicy.remoteSSHRoute
         )
         if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
             task: context.task,
@@ -1957,7 +1958,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             capabilities: capabilities,
             workspaceAccess: context.launchResourcePlan?.workspaceAccess ?? .exclusive,
-            runtimeRequirements: context.runtimeRequirements
+            runtimeRequirements: context.runtimeRequirements,
+            sshRoute: context.executionPolicy.remoteSSHRoute
         )
         let hostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: mcpProjection.hostControlEnvironment)
         // The attached list above includes offered routes. Shell denial follows

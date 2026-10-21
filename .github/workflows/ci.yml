@@ -15,9 +15,9 @@ jobs:
   focused-swift-tests:
     name: Focused Swift tests
     runs-on: macos-26
-    # Typical green run is ~10 minutes; a hang must fail fast instead of
-    # holding a macOS runner (10x billing) for the 6-hour default cap.
-    timeout-minutes: 30
+    # Cold builds plus the expanded protection suites can exceed 30 minutes.
+    # Keep the same bounded 45-minute ceiling as the full-suite job.
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v5

@@ -20,6 +20,15 @@ public protocol TaskGeneratedFileQuerying: Sendable {
     static func files(in folder: String, fileManager: FileManager) -> [String]
     static func shelfDestination(for path: String) -> TaskGeneratedFileShelfDestination?
     static func shouldDisplayTaskFolderFile(relativePath: String) -> Bool
+    /// `files(in:fileManager:)` that polls `isCancelled` per entry and gives
+    /// up with nil. Opt-in, so no other caller ever sees a partial list.
+    static func files(in folder: String, fileManager: FileManager, isCancelled: () -> Bool) -> [String]?
+}
+
+extension TaskGeneratedFileQuerying {
+    public static func files(in folder: String, fileManager: FileManager, isCancelled: () -> Bool) -> [String]? {
+        isCancelled() ? nil : files(in: folder, fileManager: fileManager)
+    }
 }
 
 public enum TaskGeneratedFileQuerySeam {

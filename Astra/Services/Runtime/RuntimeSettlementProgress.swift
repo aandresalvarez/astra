@@ -15,7 +15,7 @@ enum RuntimeSettlementProgress {
     }
 
     static func event(_ type: TaskEventType, task: AgentTask, run: TaskRun) -> TaskEvent? {
-        task.events.first { !$0.isDeleted && $0.run?.id == run.id && $0.type == type.rawValue }
+        TaskEventTypeLookup.first(ofType: type.rawValue, task: task, run: run)
     }
 
     static func prepared(task: AgentTask, run: TaskRun) throws -> Prepared? {
@@ -45,18 +45,25 @@ enum RuntimeSettlementProgress {
 
     @discardableResult
     static func pruneSettledCaptures(task: AgentTask, modelContext: ModelContext) -> Bool {
-        var changed = false
-        let settled = Set(task.events.filter {
-            guard !$0.isDeleted, $0.type == TaskEventTypes.System.runtimeTurnSettled.rawValue,
-                  let verdict = try? JSONDecoder().decode(RuntimeTurnSettlementService.Verdict.self, from: Data($0.payload.utf8)) else { return false }
-            return verdict.version == 1
-        }.compactMap { $0.run?.id })
-        for event in task.events where !event.isDeleted && event.run.map({ settled.contains($0.id) }) == true {
-            if [TaskEventTypes.System.runtimeResultCaptured, TaskEventTypes.System.runtimeSettlementStarted,
-                TaskEventTypes.System.runtimeOutcomePrepared].contains(where: { $0.rawValue == event.type }) {
-                modelContext.delete(event)
-                changed = true
+        // The staged captures first: once pruned there are none, so the common
+        // call reads three empty result sets and decodes no verdict at all.
+        let captures = [TaskEventTypes.System.runtimeResultCaptured, TaskEventTypes.System.runtimeSettlementStarted,
+                        TaskEventTypes.System.runtimeOutcomePrepared]
+            .flatMap { TaskEventTypeLookup.events(ofType: $0.rawValue, task: task) }
+        let capturedRunIDs = Set(captures.compactMap { $0.run?.id })
+        guard !capturedRunIDs.isEmpty else { return false }
+        let settled = Set(TaskEventTypeLookup.events(ofType: TaskEventTypes.System.runtimeTurnSettled.rawValue, task: task)
+            .filter {
+                guard let runID = $0.run?.id, capturedRunIDs.contains(runID),
+                      let verdict = try? JSONDecoder().decode(RuntimeTurnSettlementService.Verdict.self, from: Data($0.payload.utf8))
+                else { return false }
+                return verdict.version == 1
             }
+            .compactMap { $0.run?.id })
+        var changed = false
+        for event in captures where event.run.map({ settled.contains($0.id) }) == true {
+            modelContext.delete(event)
+            changed = true
         }
         return changed
     }
