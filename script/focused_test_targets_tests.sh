@@ -34,6 +34,12 @@ assert_targets "HostControlToolSupportTests" \
   "Tools/AstraHostControlTool/main.swift" \
   "Tests/HostControlToolSupportTests.swift"
 
+assert_targets $'RemoteWorkspaceJobTests\nRemoteWorkspaceJobShimTests\nRemoteWorkspaceSSHRouteTests\nRemoteWorkspacePromptGuidanceTests' \
+  "Tools/WorkspaceToolSupport/RemoteWorkspaceJobManager.swift" \
+  "Tools/AstraWorkspaceJobTool/main.swift" \
+  "Astra/Services/Runtime/RemoteWorkspaceJobShim.swift" \
+  "Tests/RemoteWorkspaceJobTests.swift"
+
 assert_targets $'MCPGatewaySupportTests\nMCPServerKitTests\nMailToolSupportTests' \
   "Package.swift"
 
