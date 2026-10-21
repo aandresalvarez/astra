@@ -183,6 +183,7 @@ struct CapabilityRailRow: View {
     /// Desktop…"), what to fix, shown before its check starts.
     var repairGuidance: (text: String, isCommand: Bool)? = nil
     var repairStatus: String? = nil
+    var repairIsChecking = false
     var onRepair: (() -> Void)? = nil
     /// A repair with its own control (GitHub repository access), shown in
     /// place of the verb.
@@ -191,17 +192,23 @@ struct CapabilityRailRow: View {
 
     @State private var isConfirmingCommand = false
 
+    var canStartRepair: Bool {
+        guard repairVerb != nil, onRepair != nil, !repairIsChecking else { return false }
+        if let _ = contextualRepair { return false }
+        return true
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 rowButton
                 if let contextualRepair {
                     contextualRepair
-                } else if let repairStatus {
+                } else if repairIsChecking, let repairStatus {
                     Text(repairStatus)
                         .font(Stanford.caption(11))
                         .foregroundStyle(.secondary)
-                } else if let repairVerb, let onRepair {
+                } else if canStartRepair, let repairVerb, let onRepair {
                     Button(repairVerb) {
                         if repairGuidance == nil { onRepair() } else { isConfirmingCommand.toggle() }
                     }
@@ -211,7 +218,15 @@ struct CapabilityRailRow: View {
                     .accessibilityIdentifier("CapabilityRailRepairButton")
                 }
             }
-            if isConfirmingCommand, repairStatus == nil, let repairGuidance, let onRepair {
+            if !repairIsChecking, let repairStatus {
+                Text(repairStatus)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, CapabilityRailLayout.leadingIconFrame + CapabilityRailLayout.leadingIconSpacing)
+                    .accessibilityIdentifier("CapabilityRailRepairFailure")
+            }
+            if isConfirmingCommand, canStartRepair, let repairGuidance, let onRepair {
                 HStack(spacing: 6) {
                     Text(repairGuidance.text)
                         .font(repairGuidance.isCommand ? .system(size: 11, design: .monospaced) : Stanford.caption(11))

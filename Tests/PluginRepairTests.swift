@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 import ASTRACore
 @testable import ASTRA
@@ -36,6 +37,7 @@ struct PluginRepairTests {
         let repair = CLISessionExpiryClassifier.googleCloud.repair
         coordinator.start(repair, owner: "gcloud-workflow") { verified += 1 }
         #expect(coordinator.phase(for: repair, owner: "gcloud-workflow") == .waiting)
+        #expect(!railRow(repair, coordinator: coordinator, owner: "gcloud-workflow").canStartRepair)
         await waitUntil { coordinator.phase(for: repair, owner: "gcloud-workflow") == .verified }
         #expect(runs == ["gcloud auth login"])
         #expect(verified == 1)
@@ -57,6 +59,18 @@ struct PluginRepairTests {
         #expect(coordinator.phase(for: repair, owner: "refused") != .waiting)
         #expect(coordinator.phase(for: repair, owner: "refused") == .refused)
         #expect(coordinator.statusText(for: repair, owner: "refused")?.contains("Couldn't start repair") == true)
+        let row = railRow(repair, coordinator: coordinator, owner: "refused")
+        #expect(row.canStartRepair)
+        #expect(row.repairStatus != nil)
+        #expect(!row.repairIsChecking)
+    }
+
+    private func railRow(_ repair: RepairAction, coordinator: PluginRepairCoordinator, owner: String) -> CapabilityRailRow {
+        CapabilityRailRow(icon: "terminal", title: repair.componentName, subtitle: "CLI setup", color: .gray,
+            readiness: .init(level: .needsAttention, messages: []), statusLabel: nil, statusColor: .gray,
+            isEnabled: true, repairVerb: repair.verb, repairStatus: coordinator.statusText(for: repair, owner: owner),
+            repairIsChecking: coordinator.phase(for: repair, owner: owner) == .waiting,
+            onRepair: {}, onOpen: {})
     }
 
     @Test("A guidance-only Check still verifies when there is no command or URL to launch")
