@@ -15,6 +15,7 @@ import ASTRACore
 final class PluginRepairCoordinator: ObservableObject {
     enum Phase: Equatable {
         case waiting
+        case refused
         case verified
         case timedOut
     }
@@ -22,7 +23,7 @@ final class PluginRepairCoordinator: ObservableObject {
     @Published private(set) var phases: [String: Phase] = [:]
 
     private let check: @Sendable (RepairAction) async -> Bool
-    private let run: @MainActor (RepairAction) -> Void
+    private let run: @MainActor (RepairAction) -> RepairActionRunner.Outcome
     private let sleep: @Sendable (TimeInterval) async -> Void
     private let interval: TimeInterval
     private let maxAttempts: Int
@@ -31,7 +32,7 @@ final class PluginRepairCoordinator: ObservableObject {
 
     init(
         check: @escaping @Sendable (RepairAction) async -> Bool = { await PluginRepairCoordinator.liveCheck($0) },
-        run: @escaping @MainActor (RepairAction) -> Void = { RepairActionRunner.run($0) },
+        run: @escaping @MainActor (RepairAction) -> RepairActionRunner.Outcome = { RepairActionRunner.run($0) },
         sleep: @escaping @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(for: .seconds($0)) },
         interval: TimeInterval = 5,
         maxWait: TimeInterval = 300,
@@ -68,12 +69,26 @@ final class PluginRepairCoordinator: ObservableObject {
         phases[Self.key(repair, owner: owner)]
     }
 
+    func statusText(for repair: RepairAction, owner: String) -> String? {
+        switch phase(for: repair, owner: owner) {
+        case .waiting: "Checking…"
+        case .refused: "Couldn't start repair. Check the CLI installation or repair link, then try again."
+        default: nil
+        }
+    }
+
     /// Runs `repair` and, when it has a check, polls until it passes.
     /// `onVerified` runs once, on the main actor, after the check passes.
     func start(_ repair: RepairAction, owner: String, onVerified: @escaping @MainActor () -> Void = {}) {
         let key = Self.key(repair, owner: owner)
         polls[key]?.cancel()
-        run(repair)
+        polls[key] = nil
+        let outcome = run(repair)
+        if outcome == .refused, repair.command != nil || repair.url != nil {
+            phases[key] = .refused
+            return
+        }
+        // A guidance-only Check intentionally has nothing to launch.
         guard repair.checkBinary != nil else {
             phases[key] = nil
             return
