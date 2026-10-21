@@ -158,7 +158,13 @@ public struct RepairAction: Codable, Sendable, Equatable {
         let selected = checking(in: environment).checkEnvironment
         let hasDirectory = directories.contains { selected?[$0]?.isEmpty == false }
         let host = cli == "gh" ? (selected?["GH_HOST"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") : ""
-        if hasDirectory || (!host.isEmpty && host.lowercased() != "github.com") {
+        // A bare command is resolved again by Terminal in ASTRA's ambient
+        // environment. If the stopped run selected a different PATH, that
+        // login could reach a different installation than its read-only check.
+        // An explicit installed path is already pinned by terminal policy.
+        let hasSelectedExecutable = !(checkBinary ?? "").contains("/")
+            && selected?["PATH"].map { $0 != ProcessInfo.processInfo.environment["PATH"] } == true
+        if hasDirectory || hasSelectedExecutable || (!host.isEmpty && host.lowercased() != "github.com") {
             return requiringManualCredentialSetup()
         }
         return enforcingTerminalPolicy()

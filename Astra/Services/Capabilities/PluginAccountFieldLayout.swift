@@ -6,6 +6,13 @@ import ASTRAModels
 /// Structure has its own owner on Connector; secret skill settings remain on
 /// the activation. Neither is duplicated in plain account configuration.
 enum PluginAccountFieldLayout {
+    /// Structure fields share one setup dictionary, so their keys must
+    /// distinguish endpoint and alias before catalog or mutation admission.
+    static func duplicateStructureKeys(in hints: [PluginConnector.ConfigHint]) -> [String] {
+        Dictionary(grouping: hints.filter(\.isAccountStructure), by: \.key)
+            .filter { $0.value.count > 1 }.keys.sorted()
+    }
+
     static func configurationKeys(hints: [PluginConnector.ConfigHint], environmentKeys: [String]) -> [String] {
         let structure = Set(hints.filter(\.isAccountStructure).map(\.key))
         var keys = hints.filter { !$0.isAccountStructure }.map(\.key)

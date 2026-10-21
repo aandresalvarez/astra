@@ -127,6 +127,32 @@ struct PluginAccountStructureTests {
         #expect(copied.isEmpty)
     }
 
+    @Test("Endpoint and alias must have independent input keys before an account is added")
+    func duplicateStructureInputIsRefused() throws {
+        var package = Self.multiTenant()
+        package.connectors[0].configHints[1].key = "TRACKER_SITE"
+        let result = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+        #expect(result.issues.contains { $0.severity == .blocker && $0.title == "Duplicate account field key" })
+        let env = try Fixtures.Environment()
+        #expect(throws: CapabilityInstaller.InstallationError.self) {
+            try env.installer.install(package, into: env.workspace, modelContext: env.context,
+                configInputs: [PluginSetupInputs.key("TRACKER_SITE", component: package.connectors[0].setupComponentID): "https://team.example.com"],
+                announceCatalogMutation: false)
+        }
+        #expect(env.workspace.connectors.isEmpty)
+        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) == nil)
+    }
+
+    @Test("Different structure keys remain valid and case-sensitive like setup inputs")
+    func distinctStructureInputsRemainValid() {
+        for alias in ["TRACKER_ACCOUNT_NAME", "tracker_site"] {
+            var package = Self.multiTenant()
+            package.connectors[0].configHints[1].key = alias
+            #expect(!CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+                .issues.contains { $0.title == "Duplicate account field key" })
+        }
+    }
+
     @Test("An endpoint that isn't HTTPS, or carries a password, is refused with the reason")
     func badEndpointIsRefused() throws {
         let package = Self.multiTenant()
