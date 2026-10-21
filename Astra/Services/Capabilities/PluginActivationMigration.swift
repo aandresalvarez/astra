@@ -35,11 +35,9 @@ import ASTRAPersistence
 /// - Deleted rows' secret namespaces go through `PluginSecretCleanupOutbox`,
 ///   recorded before the save.
 ///
-/// Every change is one save. A secret that cannot be copied aborts the whole
-/// migration before the save, so nothing is deleted with its settings
-/// stranded; the next launch tries again. On any failure the secrets already
-/// copied are put back as they were, so no namespace is left holding a value
-/// nothing owns.
+/// Every change shares a durable operation receipt. Secret copies are private
+/// until publication; only proved noncommit permits rollback. Saved or uncertain
+/// outcomes retain their namespace and mirror recovery instead of undoing them.
 @MainActor
 enum PluginActivationMigration {
     struct Report: Equatable {
@@ -53,11 +51,8 @@ enum PluginActivationMigration {
 
     enum MigrationError: Error, Equatable {
         case secretCopyFailed(skill: String, key: String)
-        case cleanupUnrecordable
-        /// The migration failed and could not put back a secret it had
-        /// overwritten or copied (keys sorted), so a projected namespace may
-        /// hold a value nothing owns, or have lost the one it had.
-        case credentialRestoreFailed(keys: [String])
+        case secretReadFailed(skill: String, key: String)
+        case cleanupUnrecordable, pendingEdits, saveFailed
     }
 
     /// The definitions this build ships, plus the library's own plugins.
@@ -133,8 +128,11 @@ enum PluginActivationMigration {
     static func migrate(
         modelContext: ModelContext,
         packages: [PluginPackage],
-        secrets: any SkillSecretPersisting.Type = SkillSecretSeam.required
+        secrets: any SkillSecretPersisting.Type = SkillSecretSeam.required,
+        persist: ((ModelContext) throws -> Void)? = nil,
+        rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws -> Report {
+        guard !modelContext.hasChanges else { throw MigrationError.pendingEdits }
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
         let connectors = try modelContext.fetch(FetchDescriptor<Connector>())
@@ -147,13 +145,10 @@ enum PluginActivationMigration {
         for tool in tools { SwiftDataDeletionPreparation.prepare(tool) }
         var report = Report()
         var releasedSkillIDs: [UUID] = []
-        var copiedSecrets: [CopiedSecret] = []
+        let credentials = PluginMigrationSkillCredentials(modelContext: modelContext, persistence: secrets)
         // rollback() doesn't restore array-backed state (legacy and global
         // memberships, activation records): a failed run puts it back.
-        let workspaceSnapshots = workspaces.map { workspace in
-            (workspace, WorkspaceCapabilityActivation.snapshot(workspace),
-             workspace.legacyEnabledCapabilityIDs, workspace.legacyInstalledPluginIDs, workspace.legacyInstalledPluginVersions)
-        }
+        let restoreState = PluginUpdateService.captureState(of: workspaces)
 
         do {
             for workspace in workspaces {
@@ -265,7 +260,7 @@ enum PluginActivationMigration {
                 let package = packagesByID[pluginID]
                 let spec = package?.skills.first { matches($0, skill: skill) }
                 let using = targets(pluginID: pluginID, owner: skill.isGlobal ? nil : skill.workspace)
-                guard package != nil, let spec, !using.isEmpty else {
+                guard let package, let spec, !using.isEmpty else {
                     if package == nil { recordPending(skill.id, componentID: pendingComponentID(of: skill), for: using) }
                     clearOrigin(skill)
                     report.skillsKeptAsAuthored += 1
@@ -293,15 +288,9 @@ enum PluginActivationMigration {
                 }
                 for (workspace, activation) in using {
                     let projectedID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
-                    try moveSettings(
-                        of: skill,
-                        spec: spec,
-                        componentID: componentID,
-                        to: activation,
-                        projectedID: PluginRuntimeProjection.credentialID(of: activation, componentID: componentID),
-                        secrets: secrets,
-                        copied: &copiedSecrets
-                    )
+                    try credentials.copy(from: skill, to: activation, in: workspace,
+                        package: package, componentID: componentID)
+                    moveNonSecretSettings(of: skill, spec: spec, componentID: componentID, to: activation)
                     // Where the row stays on by itself, what names it keeps it.
                     if !usesOnItsOwn(workspace, pluginID, \.globalSkillIDs, skill.id) {
                         retarget(skillID: skill.id, to: projectedID, in: workspace)
@@ -319,7 +308,7 @@ enum PluginActivationMigration {
                     report.skillsKeptAsAuthored += 1
                     continue
                 }
-                releasedSkillIDs.append(skill.id)
+                releasedSkillIDs.append(skill.secretNamespaceID)
                 for connector in skill.connectors { connector.skill = nil }
                 for tool in skill.localTools { tool.skill = nil }
                 modelContext.delete(skill)
@@ -376,77 +365,44 @@ enum PluginActivationMigration {
                 report.toolsProjected += 1
             }
 
-            // The deleted rows' secret namespaces are recorded before the
-            // save: once it lands, nothing in the store names them.
+            releasedSkillIDs += credentials.released
+            guard report != Report() || modelContext.hasChanges || !releasedSkillIDs.isEmpty else { return report }
             var saveError: Error?
-            let saved = PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, modelContext: modelContext, save: {
-                do {
-                    try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: nil, modelContext: modelContext)
+            var committed: PluginOperationCommit.Outcome?
+            var recoveryComplete = false
+            let saved = PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, modelContext: modelContext,
+                secrets: secrets, producerLease: credentials.producerLease, save: {
+                    let outcome = PluginOperationCommit.save(kind: .configure, pluginIDs: packages.map(\.id),
+                        workspaceIDs: workspaces.map(\.id), modelContext: modelContext,
+                        persist: persist ?? { context in
+                            guard WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: context) else {
+                                throw MigrationError.saveFailed
+                            }
+                        })
+                    committed = outcome
+                    if case .notCommitted(let error) = outcome { saveError = error; return false }
                     return true
-                } catch {
-                    saveError = error
-                    return false
-                }
-            }, beforeSettling: {
-                // Every mirror is rewritten before the cleanup settles: a V19
-                // one still names the deleted rows, and a recovery from it
-                // would bring them back without their secrets. One that can't
-                // be written keeps the cleanup pending (`resumePending`).
-                workspaces.reduce(true) { written, workspace in
-                    WorkspaceConfigManager.exportMirrorNow(workspace: workspace, modelContext: modelContext) && written
-                }
-            })
+                }, beforeSettling: {
+                    guard case .committed(let receipt, let reportedFailure) = committed, !reportedFailure else { return false }
+                    let export: ((Workspace, ModelContext) -> Bool)? = rewriteMirror.map { write in { workspace, _ in write(workspace) } }
+                    recoveryComplete = PluginOperationRecovery.resumePending(modelContext: modelContext,
+                        only: receipt.id, export: export).completed == 1
+                    return recoveryComplete
+                })
             guard saved else { throw saveError ?? MigrationError.cleanupUnrecordable }
+            if case .indeterminate(let id, _) = committed { throw PluginOperationProblem.commitUncertain(id) }
+            if !recoveryComplete, case .committed(let receipt, _) = committed {
+                throw PluginOperationProblem.savedRecoveryPending(receipt.id)
+            }
+            credentials.completed(in: workspaces)
         } catch {
+            guard !PluginOperationProblem.preventsRollback(error) else { throw error }
             modelContext.rollback()
-            for (workspace, snapshot, enabled, installed, versions) in workspaceSnapshots {
-                WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
-                workspace.legacyEnabledCapabilityIDs = enabled
-                workspace.legacyInstalledPluginIDs = installed
-                workspace.legacyInstalledPluginVersions = versions
-            }
-            let unrestored = restore(copiedSecrets, secrets: secrets)
-            // Reported ahead of the failure that caused it, as the installer
-            // does: retrying cannot bring back a value the rollback lost.
-            if !unrestored.isEmpty {
-                AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                    "migration": "plugin_activations_v21",
-                    "result": "secret_restore_failed",
-                    "unrestored_secret_count": String(unrestored.count)
-                ], level: .error)
-                throw MigrationError.credentialRestoreFailed(keys: Array(Set(unrestored)).sorted())
-            }
+            restoreState()
+            credentials.discard()
             throw error
         }
         return report
-    }
-
-    /// A secret written into a projected namespace, and what was there.
-    private struct CopiedSecret {
-        let key: String
-        let skillID: UUID
-        let previousValue: String?
-    }
-
-    /// Puts back what each copy overwrote; the keys it could not.
-    private static func restore(_ copied: [CopiedSecret], secrets persistence: any SkillSecretPersisting.Type) -> [String] {
-        var unrestored: [String] = []
-        for secret in copied.reversed() {
-            let restored: Bool
-            if let previous = secret.previousValue {
-                restored = persistence.saveSecretValue(
-                    previous,
-                    key: secret.key,
-                    skillID: secret.skillID,
-                    skillName: "",
-                    allowUserInteraction: false
-                )
-            } else {
-                restored = persistence.deleteSecret(key: secret.key, skillID: secret.skillID)
-            }
-            if !restored { unrestored.append(secret.key) }
-        }
-        return unrestored
     }
 
     // MARK: - Steps
@@ -487,50 +443,16 @@ enum PluginActivationMigration {
 
     /// Settings that differ from the plugin's defaults move to the
     /// activation, an emptied one included (the person cleared a default);
-    /// secret ones are copied into the projected skill's Keychain namespace.
-    private static func moveSettings(
-        of skill: Skill,
-        spec: PluginSkill,
-        componentID: String,
-        to activation: PluginActivation,
-        projectedID: UUID,
-        secrets persistence: any SkillSecretPersisting.Type,
-        copied: inout [CopiedSecret]
-    ) throws {
-        // A build that kept skill secrets in the login keychain (or the row)
-        // is migrated by a later launch pass that only sees surviving rows:
-        // this row is about to go, so its secrets move to the dedicated
-        // keychain first.
-        if skill.environmentKeys.contains(where: Skill.isSecretEnvironmentKey) {
-            skill.migrateSecretsToKeychain()
-            KeychainService.migrateSkillFromLoginKeychain(skillID: skill.secretNamespaceID)
-        }
-        for (index, key) in skill.environmentKeys.enumerated() {
-            let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)
-            if Skill.isSecretEnvironmentKey(key) {
-                let stored = persistence.loadSecretValue(key: key, skillID: skill.secretNamespaceID, store: KeychainSecretStore())
-                let legacy = index < skill.environmentValues.count ? skill.environmentValues[index] : ""
-                let value = stored ?? legacy
-                guard !value.isEmpty else { continue }
-                let previous = persistence.loadSecretValue(key: key, skillID: projectedID, store: KeychainSecretStore())
-                guard persistence.saveSecretValue(
-                    value,
-                    key: key,
-                    skillID: projectedID,
-                    skillName: skill.name,
-                    allowUserInteraction: false
-                ) else {
-                    throw MigrationError.secretCopyFailed(skill: skill.name, key: key)
-                }
-                copied.append(CopiedSecret(key: key, skillID: projectedID, previousValue: previous))
-                WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: settingKey, on: activation)
-                continue
-            }
+    /// Credential copies are handled by the private-generation participant.
+    private static func moveNonSecretSettings(of skill: Skill, spec: PluginSkill,
+                                              componentID: String, to activation: PluginActivation) {
+        for (index, key) in skill.environmentKeys.enumerated() where !Skill.isSecretEnvironmentKey(key) {
             let value = index < skill.environmentValues.count ? skill.environmentValues[index] : ""
             let specIndex = spec.environmentKeys.firstIndex(of: key)
             let defaultValue = specIndex.flatMap { $0 < spec.environmentValues.count ? spec.environmentValues[$0] : nil } ?? ""
             guard value != defaultValue else { continue }
-            WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
+            WorkspaceCapabilityActivation.setConfigValue(value,
+                forKey: PluginActivation.settingKey(componentID: componentID, key: key), on: activation)
         }
     }
 
