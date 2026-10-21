@@ -72,14 +72,27 @@ acceptance metadata with frozen settings. Preserve the workspace ID in new
 snapshots; an old snapshot without provable identity must not borrow the task's
 current workspace after it moves.
 
-Central credential liveness includes nonterminal requests and every recoverable
-mirror. Temporary ownership keeps cleanup **owed** until released; it must not
+Central credential liveness includes nonterminal requests, a failed request
+whose saved permission approval can still resume its frozen context, and every
+recoverable mirror. Permission approval transfers that temporary ownership to
+the new durable request. A superseding turn or cancellation releases it. Temporary ownership keeps cleanup **owed** until released; it must not
 settle the cleanup record as though a permanent live owner had replaced it.
 Apply the rule to namespaces, individual keys, account deletion, Update, Remove,
 re-add and workspace deletion. Unknown states, versions or unreadable ownership
-records fail closed. Explicit revocation is a separate recorded action: identify
-affected requests, cancel/block their revoked context, and await running-resource
-release before irreversible cleanup. Retry cannot silently reactivate it.
+records fail closed.
+
+For this first release, the owner chose provider-side immediate revocation
+(2026-10-20). **Delete account is not Revoke access**: already accepted tasks,
+including permission-paused continuations and recoverable copies, may retain
+that access until they finish or are cancelled. The deletion confirmation must
+say so and direct immediate revocation to the provider. ASTRA introduces no
+local Revoke action in R1–R5. Provider revocation invalidates the credential for
+existing copies too; retaining a namespace cannot restore provider authorization.
+
+A future local Revoke action requires its own recorded operation: identify and
+cancel/block affected requests, wait for running-resource release, and make the
+revocation survive recovery of an older copy. Retry must not silently reactivate
+revoked context. That feature is outside the first-release acceptance criteria.
 
 Validated imports receive fresh credential identity. Reusing/coalescing a shared
 account requires an explicit choice identifying the existing account; a matching
@@ -99,8 +112,12 @@ directory selected by a plugin is not trusted merely because its syntax is valid
 Require destination-specific consent for a new enterprise login host, and a
 separate confirmation before replacing/updating Application Default Credentials.
 Only ASTRA-selected protected credential directories may reach a sign-in action;
-otherwise refuse the action or provide check-free manual guidance. The rule also
-covers inherited launch environment and historical repair records.
+otherwise refuse the sign-in action. A supported, explicit CLI context may offer
+a user-initiated bounded Check with its original verification context; ambiguous
+shell evidence provides guidance without an inferred probe. A manual Check must
+show its result and never resume the task automatically. The rule also covers
+inherited launch environment and historical repair records. Final execution
+checks the actual command even when its presentation verb says Install.
 
 Use the source threat model for complete input, clone and resource budgets.
 Serialize library-wide validation and mutation, including workspace Add versus

@@ -17,8 +17,10 @@ them. Source review is separate from model/operations validation.
   needs a distinct confirmation, rather than piggybacking on ordinary CLI login.
 - Never forward plugin-selected `CLOUDSDK_CONFIG`, `GH_CONFIG_DIR` or equivalent
   paths into trusted sign-in actions. Only destinations ASTRA selected and proved
-  protected from plugin access are eligible; absent that proof, use manual,
-  check-free guidance. Include inherited environment and old repair records.
+  protected from plugin access are eligible; absent that proof, use manual
+  setup. A supported, explicit CLI context can retain its bounded verification
+  command behind a user-initiated Check; an ambiguous shell context has guidance
+  without an inferred probe. Include inherited environment and old repair records.
 - Account coalescing on import is an explicit credential-access choice, not a
   name/service/URL matching heuristic.
 - All file-library writes and workspace activation/removal share cross-process
@@ -37,6 +39,33 @@ uncompressed tree, metadata/listing output beyond the budget, a credential-store
 path inside the workspace, an unapproved login host, an ADC overwrite request,
 shared-account import without consent, and Add racing Remove. Refuse unsupported
 budget enforcement rather than silently use an unbounded subprocess fallback.
+
+## Concrete fetch and repair boundaries (2026-10-20)
+
+- Final repair execution re-admits saved selectors and the actual command. An
+  Install label does not exempt a login command from credential destination
+  policy; only an admitted package-manager installation gets that exemption.
+  Automatic GitHub authentication explicitly names `github.com` in the command
+  passed to Terminal. A different verification host remains manual.
+- Git runs through the private `Contents/Helpers/astra-plugin-fetch` executable,
+  never the shared agent-writable tools directory. The helper sets hard child
+  limits before exec: virtual address space at its measured baseline plus
+  512 MiB, 120 CPU seconds, and 64 MiB per output file. It tests address-limit
+  enforcement with a reserve-only mapping and refuses the fetch if unavailable.
+  This bounds additional virtual mappings; it is not a 512 MiB total RSS claim.
+- `GIT_ALLOC_LIMIT=67108864` additionally caps each Git allocation, not aggregate
+  memory. Single-threaded pack work and bounded delta caches complement the OS
+  limits. The ordinary wall-clock timeout and process-group cancellation remain.
+- The parent captures at most 8 MiB per output stream and stops the process group
+  on overflow, rather than continuing to drain unlimited output until timeout.
+  After download, `cat-file --batch-all-objects --batch-check` measures final
+  expanded object sizes, including delta results, before recursive traversal.
+  Aggregate expanded bytes and object count are bounded; checkout blob bytes
+  and file count are checked separately before writing the worktree.
+- Fetch completion, metadata, traversal and checkout all reject cancellation,
+  timeout or truncated output. Failed preparation preserves the previous clone.
+  Required fixtures include a compressed oversized tree, a real delta pack,
+  a missing helper and an output writer that would otherwise remain alive.
 
 ## What a source is
 
