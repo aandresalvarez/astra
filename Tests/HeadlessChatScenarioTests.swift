@@ -89,13 +89,17 @@ final class HeadlessChatHarness {
     let container: ModelContainer
     let context: ModelContext
 
-    init() throws {
+    /// `persistentStore` backs the container with a file under `rootURL`, for
+    /// measurements that must pay real SQLite saves and faults.
+    init(persistentStore: Bool = false) throws {
         rootURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-headless-chat-\(UUID().uuidString)", isDirectory: true)
         workspaceURL = rootURL.appendingPathComponent("workspace", isDirectory: true)
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
 
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let config = persistentStore
+            ? ModelConfiguration(url: rootURL.appendingPathComponent("headless.store"))
+            : ModelConfiguration(isStoredInMemoryOnly: true)
         container = try ModelContainer(
             for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,
