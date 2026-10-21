@@ -483,11 +483,7 @@ enum CLISessionExpiryClassifier {
     /// Variables that hold or pick a credential ASTRA can't carry: a token,
     /// a credential file, or another account or configuration.
     private static let credentialNames: [String: Set<String>] = [
-        "gcloud": [
-            "CLOUDSDK_CORE_ACCOUNT", "CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_AUTH_ACCESS_TOKEN",
-            "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
-            "CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT", "GOOGLE_APPLICATION_CREDENTIALS"
-        ],
+        "gcloud": RepairAction.credentialOverrideSelectors(for: "gcloud").union(["GOOGLE_APPLICATION_CREDENTIALS"]),
         "gh": ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]
     ]
 
