@@ -43,6 +43,53 @@ struct PluginAccountCredentialGenerationTests {
         }
     }
 
+    @Test("Migrating legacy endpoint and name keeps current and queued credential generations")
+    func legacyStructureMigrationKeepsCredentials() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable("legacy-structure-token")
+            account.credentialNamespaceID = nil
+            account.name = ""
+            account.baseURL = ""
+            #expect(account.restorePreviouslyStoredCredential(key: "API_TOKEN", value: "legacy-structure-token"))
+            // Historical stores can hold only the endpoint alias. A modern
+            // UUID backfill would hide loss when that endpoint changes.
+            let store = KeychainSecretStore()
+            #expect(store.delete(key: "API_TOKEN", entityID: KeychainSecretStore.connectorEntityID(for: account.id)))
+            try #require(account.currentCredentialValue(forKey: "API_TOKEN") == "legacy-structure-token")
+            account.configKeys += ["ENDPOINT", "ACCOUNT_NAME"]
+            account.configValues += ["https://restored.example.com", "Restored account"]
+            try env.disk.context.save()
+            let task = AgentTask(title: "Queued legacy account", goal: "Use the accepted account", workspace: env.disk.workspace)
+            env.disk.context.insert(task)
+            let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, pluginDefinitions: [env.package])
+            env.disk.context.insert(request)
+            try env.disk.context.save()
+            let frozen = try #require(request.executionPolicySnapshot?.pluginAccounts?.first)
+            var updated = env.package
+            updated.version = "2.0.0"
+            updated.connectors[0].configHints = [
+                .init(key: "ENDPOINT", hint: "Endpoint", isList: false, storage: PluginConnector.ConfigHint.accountBaseURL),
+                .init(key: "ACCOUNT_NAME", hint: "Name", isList: false, storage: PluginConnector.ConfigHint.accountAlias)
+            ]
+            _ = try PluginUpdateService.reconcileAll(modelContext: env.disk.context, packages: [updated], mode: .release,
+                approvalRecords: PluginOperationsTests.approvals([updated]))
+            #expect(account.baseURL == "https://restored.example.com")
+            #expect(account.name == "Restored account")
+            #expect(account.currentCredentialValue(forKey: "API_TOKEN") == "legacy-structure-token")
+            let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.disk.context))
+            _ = journal.resumePending(modelContext: env.disk.context)
+            #expect(frozen.makeAccount().currentCredentialValue(forKey: "API_TOKEN") == "legacy-structure-token")
+            request.state = .completed
+            request.terminalAt = Date()
+            try env.disk.context.save()
+            _ = journal.resumePending(modelContext: env.disk.context)
+            #expect(frozen.makeAccount().currentCredentialValue(forKey: "API_TOKEN") == nil)
+            #expect(account.currentCredentialValue(forKey: "API_TOKEN") == "legacy-structure-token")
+        }
+    }
+
     @Test("Before a failed Add save, the saved account still reads its prior credential")
     func failedAddNeverOverwritesTheSavedAccount() throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {

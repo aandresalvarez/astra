@@ -7,6 +7,19 @@ import ASTRAModels
 /// validated legacy value. No endpoint or alias remains as plain configuration.
 @MainActor
 enum PluginAccountStructureReconciliation {
+    /// Endpoint aliases are part of a legacy credential address. Stage that
+    /// address into a private generation before restoring a missing endpoint;
+    /// accepted requests keep the old address until they release it.
+    static func requiresCredentialCutover(for account: Connector, declaration: PluginConnector) -> Bool {
+        guard account.credentialNamespaceID == nil, !account.credentialKeys.isEmpty,
+              account.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let field = declaration.accountBaseURLField else { return false }
+        return account.configKeys.enumerated().contains { index, key in
+            key == field.key && index < account.configValues.count
+                && !account.configValues[index].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
     static func apply(to account: Connector, declaration: PluginConnector) throws -> Bool {
         var inputs: [String: String] = [:]
         let fields = [
