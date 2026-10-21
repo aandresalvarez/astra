@@ -40,6 +40,72 @@ struct PluginRemovalOwnershipTests {
         #expect(RemovalSecrets.deleted == [skillID])
     }
 
+    @Test("Removal retains a creator only for surviving foreign bindings, including after reopen", arguments: [false, true], [false, true])
+    func survivingBindingKeepsCreatorProvenance(otherWorkspace: Bool, boundConsumer: Bool) throws {
+        let env = try PluginRemovalCommitTests.Fixture(activated: true)
+        defer { env.disk.removeFiles() }
+        var consumer = env.package
+        consumer.id = "shared.account.consumer"
+        consumer.name = "Shared account consumer"
+        consumer.connectors[0].configHints = []
+        try env.library.install(consumer, sourceMetadata: .localLibrary())
+        let target: Workspace
+        if otherWorkspace {
+            let folder = env.disk.root.appendingPathComponent("Consumer")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            target = Workspace(name: "Consumer", primaryPath: folder.path)
+            env.context.insert(target)
+        } else { target = env.workspace }
+        WorkspaceCapabilityActivation.mutate(target) { $0.enableCapability(consumer.id) }
+        WorkspaceCapabilityActivation.recordAccepted(pluginID: consumer.id, version: consumer.version,
+            digest: PluginDefinitionDigest.content(of: consumer), in: target)
+        let surviving = try #require(WorkspaceCapabilityActivation.activation(for: consumer.id, in: target))
+        WorkspaceCapabilityActivation.setKnownComponents(PluginRuntimeProjection.componentIDs(of: consumer), on: surviving)
+        let creator = try #require(WorkspaceCapabilityActivation.activation(for: env.package.id, in: env.workspace))
+        let component = CapabilityResourceOrigin.componentID(for: env.package.connectors[0])
+        let account = Connector(name: "Shared account", serviceType: env.package.connectors[0].serviceType,
+            baseURL: env.package.connectors[0].baseURL, authMethod: env.package.connectors[0].authMethod)
+        account.isGlobal = true
+        account.credentialNamespaceID = UUID()
+        account.credentialKeys = ["TRACKER_TOKEN", "CREATOR_ONLY_TOKEN"]
+        account.credentialValues = ["", ""]
+        account.configKeys = ["CREATOR_ONLY_SETTING"]
+        account.configValues = ["creator value"]
+        CapabilityResourceOrigin.stamp(account, package: env.package, componentID: component)
+        env.context.insert(account)
+        WorkspaceCapabilityActivation.bind(account, toComponent: component, of: creator)
+        if boundConsumer {
+            WorkspaceCapabilityActivation.bind(account, toComponent: CapabilityResourceOrigin.componentID(for: consumer.connectors[0]), of: surviving)
+        }
+        let targetID = target.id, accountID = account.id
+        try env.context.save()
+        _ = try CapabilityUninstaller(library: env.library).remove(env.package, modelContext: env.context)
+        let expectedOrigin: String? = boundConsumer ? env.package.id : nil
+        let expectedComponent: String? = boundConsumer ? component : nil
+        #expect(account.originPackageID == expectedOrigin)
+        #expect(account.originComponentID == expectedComponent)
+        #expect(surviving.bindings.contains { $0.account?.id == accountID } == boundConsumer)
+        #expect(WorkspaceCapabilityActivation.activation(for: env.package.id, in: env.workspace) == nil)
+        #expect(!WorkspaceCapabilityActivation.enabledPluginIDs(of: env.workspace).contains(env.package.id))
+        #expect(env.library.installedPackage(id: env.package.id) == nil)
+        let reopened = try env.disk.reopen()
+        let context = reopened.mainContext
+        let savedTarget = try #require(try context.fetch(FetchDescriptor<Workspace>()).first { $0.id == targetID })
+        let savedAccount = try #require(try context.fetch(FetchDescriptor<Connector>()).first { $0.id == accountID })
+        #expect(savedAccount.originPackageID == expectedOrigin)
+        let runtime = PluginRuntimeProjection.project(workspace: savedTarget, packages: [consumer],
+            connectorMode: .runtimeCopies, definitions: [consumer])
+        if boundConsumer {
+            let copy = try #require(runtime.connectors.first { $0.id == accountID })
+            #expect(copy.credentialKeys.isEmpty)
+            #expect(copy.configKeys.isEmpty)
+        } else {
+            #expect(!runtime.connectors.contains { $0.id == accountID })
+        }
+        #expect(savedAccount.credentialKeys.contains("CREATOR_ONLY_TOKEN"))
+        #expect(savedAccount.configKeys.contains("CREATOR_ONLY_SETTING"))
+    }
+
     @Test("A failed removal of fetched legacy rows preserves task, account and tool relationships")
     func failedRemovalRestoresFetchedGraph() throws {
         let env = try PluginRemovalCommitTests.Fixture()
