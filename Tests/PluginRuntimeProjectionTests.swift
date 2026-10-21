@@ -12,6 +12,66 @@ import HostControlToolSupport
 @Suite("Plugin runtime projection")
 @MainActor
 struct PluginRuntimeProjectionTests {
+    @Test("A withdrawn default account cannot prevent election among usable accounts")
+    func withdrawnDefaultElectsUsableAccount() throws {
+        let context = try makeContext()
+        let jira = try builtIn("jira-workflow")
+        let workspace = Workspace(name: "Withdrawn default", primaryPath: "/tmp/projection-withdrawn-default")
+        context.insert(workspace)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(jira.id) }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+        let component = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        var accounts: [Connector] = []
+        for i in 0..<3 {
+            let row = Connector(name: "Account \(i)", serviceType: "jira", baseURL: "https://site\(i).atlassian.net", authMethod: i == 0 ? "withdrawn-auth" : jira.connectors[0].authMethod)
+            row.workspace = workspace
+            context.insert(row)
+            CapabilityResourceOrigin.stamp(row, package: jira, componentID: component)
+            WorkspaceCapabilityActivation.bind(row, toComponent: component, of: activation, isDefault: i == 0)
+            let binding = try #require(activation.bindings.first { $0.account?.id == row.id })
+            binding.createdAt = Date(timeIntervalSince1970: Double(1000 + i))
+            accounts.append(row)
+        }
+        try context.save()
+        let projection = PluginRuntimeProjection.project(workspace: workspace, packages: [jira], connectorMode: .runtimeCopies, definitions: [jira])
+        #expect(Set(projection.connectors.map(\.id)) == Set(accounts.dropFirst().map(\.id)))
+        #expect(projection.defaultAccountIDs.contains(accounts[1].id))
+        #expect(!projection.defaultAccountIDs.contains(accounts[0].id))
+    }
+
+    @Test("A shared creator account retains every bound component's declared fields")
+    func sharedCreatorAccountRetainsAllDeclarations() throws {
+        let context = try makeContext()
+        var package = try builtIn("jira-workflow")
+        var second = package.connectors[0]
+        package.connectors[0].id = "first"
+        package.connectors[0].credentialHints = [.init(key: "FIRST_TOKEN", hint: "First")]
+        package.connectors[0].configHints = []
+        second.credentialHints = [.init(key: "SECOND_TOKEN", hint: "Second")]
+        // This original bundled component owns the trusted plain setting;
+        // the first binding alone cannot declare it.
+        second.configHints = [.init(key: "JIRA_PROJECTS", hint: "Projects", isList: false)]
+        package.connectors.append(second)
+        let workspace = Workspace(name: "Shared fields", primaryPath: "/tmp/projection-shared-fields")
+        context.insert(workspace)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(package.id) }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        let account = Connector(name: "Shared", serviceType: "jira", baseURL: package.connectors[0].baseURL, authMethod: package.connectors[0].authMethod)
+        account.workspace = workspace
+        context.insert(account)
+        CapabilityResourceOrigin.stamp(account, package: package, componentID: "first")
+        account.credentialKeys = ["FIRST_TOKEN", "SECOND_TOKEN", "STALE_TOKEN"]
+        account.credentialValues = ["", "", ""]
+        account.configKeys = ["JIRA_PROJECTS", "STALE_SETTING"]
+        account.configValues = ["CLIN", "stale"]
+        for spec in package.connectors { WorkspaceCapabilityActivation.bind(account, toComponent: CapabilityResourceOrigin.componentID(for: spec), of: activation) }
+        try context.save()
+        let projection = PluginRuntimeProjection.project(workspace: workspace, packages: [package], connectorMode: .runtimeCopies, definitions: [package])
+        let copy = try #require(projection.connectors.first { $0.id == account.id })
+        #expect(Set(copy.credentialKeys) == ["FIRST_TOKEN", "SECOND_TOKEN"])
+        #expect(Set(copy.configKeys) == ["JIRA_PROJECTS"])
+    }
+
     private static var retained: [ModelContainer] = []
 
     @Test("Projected IDs survive Remove and Add, and differ between workspaces")

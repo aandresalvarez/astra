@@ -51,6 +51,20 @@ struct PluginsSurfaceState: Equatable {
 }
 
 enum PluginsSurfacePresentation {
+    /// The settings that affect the skill this activation actually runs.
+    /// An authored replacement owns its own settings instead.
+    static func settingKeys(of skill: PluginSkill, in activation: PluginActivation?) -> [String] {
+        guard let activation, PluginRuntimeProjection.packageSkillOwnsSettings(skill, activation: activation) else { return [] }
+        return skill.environmentKeys
+    }
+
+    static func confirmationCopy(
+        _ confirmation: PluginsSurfaceConfirmation, account: Connector?,
+        packageName: String, in workspace: Workspace, workspaces: [String]
+    ) -> (message: String, verb: String) {
+        confirmation.copy(name: account.map { accountTitle($0, in: workspace) } ?? packageName, workspaces: workspaces)
+    }
+
     struct Input {
         var package: PluginPackage
         var isEnabled: Bool
@@ -204,9 +218,9 @@ enum PluginsSurfacePresentation {
 
     /// The setup checks an added plugin's prerequisites failed, a pending step
     /// each. A check the read-only policy refused (`notChecked`) is pending
-    /// too: it never passed. It just offers no repair.
+    /// too: it never passed. A missing result remains pending while scanning.
     static func pendingSetupChecks(for package: PluginPackage, statuses: [String: HealthStatus]) -> Int {
-        package.prerequisites.filter { statuses[$0.id].map { !$0.isUsable } ?? false }.count
+        package.prerequisites.filter { statuses[$0.id].map { !$0.isUsable } ?? true }.count
     }
 
     /// The required accounts an added plugin has no working sign-in for: a

@@ -9,6 +9,28 @@ import ASTRAModels
 @MainActor
 @Suite("Account credential editor commits", .serialized)
 struct ConnectorCredentialEditorTests {
+    @Test("Credential edits reject pending account or unrelated model edits without saving or rolling them back", arguments: [false, true])
+    func pendingEditsRemainOwnedByCaller(unrelated: Bool) throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable()
+            let namespace = account.credentialNamespaceID
+            if unrelated { env.disk.workspace.name = "Unsaved workspace" }
+            else { account.name = "Unsaved account" }
+            var saveCalled = false
+            #expect(throws: ConnectorCredentialEditor.Failure.self) {
+                try ConnectorCredentialEditor.save("replacement", forKey: "API_TOKEN", on: account,
+                    modelContext: env.disk.context, persist: { _ in saveCalled = true })
+            }
+            #expect(!saveCalled)
+            #expect(env.disk.context.hasChanges)
+            #expect(account.credentialNamespaceID == namespace)
+            #expect(account.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
+            #expect(unrelated ? env.disk.workspace.name == "Unsaved workspace" : account.name == "Unsaved account")
+        }
+    }
+
     @Test("Replacing or removing a credential keeps the value accepted by a queued request", arguments: [false, true])
     func queuedAccountKeepsAcceptedCredential(removing: Bool) throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {

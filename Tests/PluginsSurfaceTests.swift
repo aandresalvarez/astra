@@ -11,7 +11,63 @@ import ASTRAModels
 @Suite("Plugins surface")
 @MainActor
 struct PluginsSurfaceTests {
+    @Test("Only the skill currently used by an activation exposes its package settings")
+    func overriddenSkillSettingsStayHidden() throws {
+        let candidate = package("settings", name: "Settings")
+        var skill = try #require(candidate.skills.first)
+        skill.environmentKeys = ["PROJECT", "API_TOKEN"]
+        let activation = PluginActivation(pluginID: candidate.id)
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: nil).isEmpty)
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation) == skill.environmentKeys)
+        activation.overriddenComponentIDs = [CapabilityResourceOrigin.componentID(for: skill)]
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation).isEmpty)
+        activation.overriddenComponentIDs = []
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation) == skill.environmentKeys)
+    }
+
+    @Test("A deleted authored override returns settings to the package, matching runtime")
+    func deletedOverrideReturnsPackageSettings() throws {
+        let env = try PluginOperationsTests.Environment()
+        let candidate = PluginOperationsTests.package(version: "1.0.0")
+        try env.install(candidate)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: candidate.id, in: env.workspace))
+        let skill = try #require(candidate.skills.first)
+        let authored = Skill(name: "My replacement", allowedTools: ["Read"])
+        authored.workspace = env.workspace
+        env.context.insert(authored)
+        WorkspaceCapabilityActivation.setOverridden(true, componentID: CapabilityResourceOrigin.componentID(for: skill), rowID: authored.id, on: activation)
+        try env.context.save()
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation).isEmpty)
+        env.context.delete(authored)
+        try env.context.save()
+        #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation) == skill.environmentKeys)
+    }
+
+    @Test("Delete confirmation names the workspace alias of a colliding shared account")
+    func accountConfirmationUsesWorkspaceAlias() throws {
+        let env = try PluginOperationsTests.Environment()
+        let candidate = PluginOperationsTests.package(version: "1.0.0")
+        try env.install(candidate)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: candidate.id, in: env.workspace))
+        let component = CapabilityResourceOrigin.componentID(for: candidate.connectors[0])
+        let first = try #require(activation.accounts(forComponent: component).first)
+        let second = Connector(name: first.name, serviceType: first.serviceType, baseURL: first.baseURL, authMethod: first.authMethod)
+        second.isGlobal = true
+        env.context.insert(second)
+        WorkspaceCapabilityActivation.bind(second, toComponent: component, of: activation, alias: "Tracker 2")
+        let copy = PluginsSurfacePresentation.confirmationCopy(.deleteAccount(packageID: candidate.id, accountID: second.id),
+            account: second, packageName: candidate.name, in: env.workspace, workspaces: [env.workspace.name])
+        #expect(copy.message.hasPrefix("Delete the account Tracker 2 and its saved keys?"))
+        #expect(copy.verb == "Delete")
+    }
+
     private static var retained: [ModelContainer] = []
+    @Test("A prerequisite without a completed health check remains pending")
+    func uncheckedPrerequisitesArePending() {
+        var candidate = package("unchecked", name: "Unchecked")
+        candidate.prerequisites = [CLIPrerequisite(binary: "fixture-server", livenessArgs: [], displayName: "Fixture", purpose: "Fixture", installHint: "Install it")]
+        #expect(PluginsSurfacePresentation.pendingSetupChecks(for: candidate, statuses: [:]) == 1)
+    }
 
     @Test("Added plugins with work left need action, the rest are ready, the others are available to add")
     func groupsByWhatIsLeft() {

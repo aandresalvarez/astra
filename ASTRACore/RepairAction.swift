@@ -133,7 +133,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
 
     /// Non-secret selectors retained for the stopped run's read-only check.
     /// They never authorize writing a login into a task-selected directory.
-    public static let credentialStoreSelectors = ["CLOUDSDK_CONFIG", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "GH_HOST"]
+    public static let credentialStoreSelectors = ["CLOUDSDK_CONFIG", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "GH_HOST", "HOME"]
 
     /// Task-selected directories are not trusted credential destinations.
     /// Preserve their read-only verification context, but never put them in
@@ -147,7 +147,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
         let directories: [String]
         switch cli {
         case "gcloud": directories = ["CLOUDSDK_CONFIG"]
-        case "gh": directories = ["GH_CONFIG_DIR", "XDG_CONFIG_HOME"]
+        case "gh": directories = ["GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME"]
         default: directories = ["XDG_CONFIG_HOME"]
         }
         let selected = checking(in: environment).checkEnvironment
@@ -258,6 +258,13 @@ public struct RepairAction: Codable, Sendable, Equatable {
                     checkExpect: check?.expect
                 ).enforcingTerminalPolicy()
             case .url:
+                if needsInstall, step.url == nil, let hint = step.hint, let binary = check?.binary {
+                    return RepairAction(
+                        strategy: .terminal, componentName: component.name, title: component.name, verb: "Check",
+                        detail: Self.guidance(hint), checkBinary: binary,
+                        checkArguments: check?.arguments, checkExpect: check?.expect
+                    )
+                }
                 // Only a web page: a package's install link must not open a
                 // file, a share or another app's scheme.
                 guard let url = step.url, isSafeRepairURL(url) else { continue }

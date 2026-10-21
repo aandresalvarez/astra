@@ -75,10 +75,8 @@ struct PluginRowDetailsView<SetupRow: View>: View {
     private func skillSection(_ skill: PluginSkill) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             componentHeader(skill.name, kind: "Skill")
-            if row.activation != nil {
-                ForEach(skill.environmentKeys, id: \.self) { key in
-                    settingField(key, of: skill)
-                }
+            ForEach(PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation), id: \.self) { key in
+                settingField(key, of: skill)
             }
         }
     }
@@ -223,7 +221,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
         var fresh: [String: String] = [:]
         for skill in row.package.skills {
             let componentID = CapabilityResourceOrigin.componentID(for: skill)
-            for key in skill.environmentKeys {
+            for key in PluginsSurfacePresentation.settingKeys(of: skill, in: activation) {
                 fresh[PluginActivation.settingKey(componentID: componentID, key: key)] = PluginOperations.setting(key, of: skill, in: activation)
             }
         }
@@ -238,6 +236,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
     }
 
     private func save(_ key: String, of skill: PluginSkill, value: String) {
+        guard PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation).contains(key) else { return }
         do {
             try actions.setSetting(key, to: value, of: skill, package: row.package, workspace: workspace, modelContext: modelContext)
             onChanged()

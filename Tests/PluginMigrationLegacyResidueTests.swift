@@ -99,6 +99,9 @@ struct PluginMigrationLegacyResidueTests {
             }
             #expect(KeychainService.load(key: "TOKEN", connectorID: account.id) == nil)
             #expect(account.originPackageID == package.id)
+            #expect(account.originPackageVersion == package.version)
+            #expect(account.originComponentID == CapabilityResourceOrigin.componentID(for: package.connectors[0]))
+            #expect(account.credentialNamespaceID == nil)
             #expect(account.currentCredentialValue(forKey: "TOKEN") == "accepted-legacy-alias")
         }
     }
