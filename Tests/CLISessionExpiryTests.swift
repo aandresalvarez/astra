@@ -897,9 +897,10 @@ struct CLISessionExpiryTests {
         ] {
             #expect(!RepairAction.isSafeTerminalCommand(unsafe, binary: "gcloud", allowsInstaller: false), "\(unsafe)")
         }
-        // A non-selector does not redirect a login. Even malformed selected
-        // directory values require manual setup.
-        #expect(repair.targetingCredentialStore(["CLOUDSDK_AUTH_ACCESS_TOKEN": "x"]) == repair)
+        // An access token overrides an ambient login; unrelated variables do
+        // not. Even malformed selected directory values require manual setup.
+        #expect(repair.targetingCredentialStore(["CLOUDSDK_AUTH_ACCESS_TOKEN": "x"]).command == nil)
+        #expect(repair.targetingCredentialStore(["UNRELATED": "x"]) == repair)
         #expect(repair.targetingCredentialStore(["CLOUDSDK_CONFIG": "/a\nb"]).command == nil)
         withExtendedLifetime(container) {}
     }
