@@ -2899,6 +2899,9 @@ public enum WorkspaceConfigManager {
         toolsByID: inout [String: LocalTool],
         toolsByName: inout [String: LocalTool]
     ) {
+        // The shared import map includes declared skills and rows restored
+        // for earlier tasks, including the fast path below.
+        defer { remapSnapshots(of: task, to: skillsByID) }
         let snapshotsByID = Dictionary(
             snapshots.compactMap { snapshot -> (String, SkillSnapshotConfig)? in
                 guard let id = snapshot.id else { return nil }
@@ -2908,8 +2911,6 @@ public enum WorkspaceConfigManager {
         )
 
         if let skillIDs, !skillIDs.isEmpty {
-            var restoredSnapshotIDs: [String: Skill] = [:]
-            defer { remapSnapshots(of: task, to: restoredSnapshotIDs) }
             for id in skillIDs {
                 if let skill = skillsByID[id] {
                     appendUnique(skill, to: &task.skills)
@@ -2929,7 +2930,6 @@ public enum WorkspaceConfigManager {
                     )
                     skillsByID[restored.id.uuidString] = restored
                     skillsByID[id] = restored
-                    restoredSnapshotIDs[id] = restored
                     if skillsByName[restored.name] == nil {
                         skillsByName[restored.name] = restored
                     }
