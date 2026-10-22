@@ -442,11 +442,19 @@ struct PluginRuntimeProjection {
         bindings: [(spec: PluginConnector, package: PluginPackage)],
         creator: (String) -> PluginPackage?
     ) {
-        guard let originID = account.originPackageID, !originID.isEmpty, let first = bindings.first else { return }
-        let declarations = bindings.compactMap { binding in
+        guard let originID = account.originPackageID, !originID.isEmpty else { return }
+        var declarations = bindings.compactMap { binding in
             creatorDeclaration(of: account, originID: originID, binding: binding.spec, in: binding.package, creator: creator)
         }
+        if bindings.isEmpty, let package = creator(originID),
+           let declaration = stampedDeclaration(of: account, in: package) {
+            declarations = [declaration]
+        }
         guard !declarations.isEmpty else {
+            guard let first = bindings.first else {
+                retain(credentials: [], config: [], on: copy)
+                return
+            }
             let shared = bindings.dropFirst().reduce(storedConfigKeys(of: first.spec, in: first.package, on: copy)) {
                 $0.intersection(storedConfigKeys(of: $1.spec, in: $1.package, on: copy))
             }
@@ -474,11 +482,17 @@ struct PluginRuntimeProjection {
         creator: (String) -> PluginPackage?
     ) -> (spec: PluginConnector, package: PluginPackage)? {
         if originID == package.id { return (spec, package) }
-        guard let creatorPackage = creator(originID), let stamp = account.originComponentID else { return nil }
-        let connectors = creatorPackage.connectors
-        let found = connectors.first { CapabilityResourceOrigin.componentID(for: $0) == stamp }
-            ?? connectors.first { CapabilityResourceOrigin.replacedComponentIDs(for: $0).contains(stamp) }
-        return found.map { ($0, creatorPackage) }
+        guard let creatorPackage = creator(originID) else { return nil }
+        return stampedDeclaration(of: account, in: creatorPackage)
+    }
+
+    private static func stampedDeclaration(
+        of account: Connector, in package: PluginPackage
+    ) -> (spec: PluginConnector, package: PluginPackage)? {
+        guard let stamp = account.originComponentID else { return nil }
+        let found = package.connectors.first { CapabilityResourceOrigin.componentID(for: $0) == stamp }
+            ?? package.connectors.first { CapabilityResourceOrigin.replacedComponentIDs(for: $0).contains(stamp) }
+        return found.map { ($0, package) }
     }
 
     /// Current credential requirements for status surfaces. Retired markers
