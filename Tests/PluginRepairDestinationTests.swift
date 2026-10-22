@@ -34,8 +34,11 @@ struct PluginRepairDestinationTests {
                 verb: "Sign in", detail: "", command: command, checkBinary: "gcloud", checkArguments: arguments)
             #expect((saved.executionCommand != nil) == automatic)
             let terminal = TerminalSpy()
-            RepairActionRunner.run(saved, terminal: terminal, copy: { _ in })
-            #expect(!terminal.launched.isEmpty == automatic)
+            RepairActionRunner.run(saved, terminal: terminal,
+                resolveExecutable: { "/opt/homebrew/bin/" + $0 },
+                isInstalled: { $0 == "/opt/homebrew/bin/gcloud" },
+                copy: { _ in Issue.record("A refused context cannot fall back to a copied login") })
+            #expect(terminal.launched == (automatic ? ["/opt/homebrew/bin/" + command] : []))
         }
         let missingCheck = RepairAction(strategy: .terminal, componentName: "Saved", title: "Sign in",
             verb: "Sign in", detail: "", command: "gcloud auth login \(flag) work", checkBinary: "gcloud")
