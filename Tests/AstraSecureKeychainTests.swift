@@ -195,8 +195,12 @@ struct AstraSecureKeychainTests {
             in: source
         )
 
+        // Legacy background reads select NO explicitly; the common overload
+        // applies that policy while explicit foreground authorization may opt in.
+        #expect(secretBody.contains("bootstrapService:bootstrapService status:outStatus allowUserInteraction:NO"))
+        #expect(secretBody.contains("setKeychainUserInteractionAllowed:allowUserInteraction savingPrevious:"))
+        #expect(existsBody.contains("disableKeychainUserInteractionSavingPrevious"))
         for body in [secretBody, existsBody] {
-            #expect(body.contains("disableKeychainUserInteractionSavingPrevious"))
             #expect(body.contains("restoreKeychainUserInteraction"))
             #expect(!body.contains("SecItemCopyMatching"))
         }
