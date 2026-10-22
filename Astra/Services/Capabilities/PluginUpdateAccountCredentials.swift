@@ -31,7 +31,7 @@ final class PluginUpdateAccountCredentials {
         let transaction = try ConnectorCredentialGenerationTransaction.prepare(account: account, isNew: false,
             keeping: candidate.keeping, replacing: [], modelContext: modelContext, declaredFormats: candidate.formats,
             migratingSettings: candidate.migratingSettings, lease: lease)
-        account.credentialNamespaceID = transaction.namespaceID
+        transaction.apply(to: account)
         account.credentialValues = Array(repeating: "", count: account.credentialKeys.count)
         let settings = transaction.retainedSettings(of: account)
         account.configKeys = settings.keys

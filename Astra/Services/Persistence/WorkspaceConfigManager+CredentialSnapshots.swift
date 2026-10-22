@@ -35,6 +35,9 @@ extension WorkspaceConfigManager {
                 copied.connectorSnapshots = copied.connectorSnapshots?.map { account in
                     var isolated = account
                     isolated.credentialNamespaceID = UUID()
+                    if isolated.serviceType == OutlookCredentialIdentity.serviceType {
+                        isolated.outlookCredentialFormat = OutlookCredentialIdentity.generationFormat
+                    }
                     return isolated
                 }
             }

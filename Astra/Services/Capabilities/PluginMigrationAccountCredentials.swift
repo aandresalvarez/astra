@@ -22,7 +22,7 @@ final class PluginMigrationAccountCredentials {
             keeping: Set(account.credentialKeys.map(ConnectorCredentialKey.canonical)), replacing: [],
             modelContext: modelContext, legacyHandling: .preservePending, lease: prepared.values.first?.lease)
         prepared[account.id] = transaction
-        account.credentialNamespaceID = transaction.namespaceID
+        transaction.apply(to: account)
     }
 
     func completed() { prepared.values.forEach { $0.completed() } }

@@ -35,6 +35,7 @@ enum AstraSecureKeychainTestSupport {
             }
             try? FileManager.default.removeItem(atPath: keychainPath)
         }
+        try? FileManager.default.removeItem(atPath: keychainPath + ".oauth-locks")
         // Idempotent login-keychain delete; safe even if setup failed before the
         // dedicated file was created.
         deleteLoginItems(service: bootstrapService)
@@ -60,6 +61,17 @@ enum AstraSecureKeychainTestSupport {
         defer { cleanup(keychainPath: path, bootstrapService: bootstrap, services: []) }
         return try AstraSecureKeychainStore.$keychainPathOverride.withValue(path) {
             try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) { try body() }
+        }
+    }
+
+    @MainActor
+    static func withPrivateVault<T>(_ body: () async throws -> T) async rethrows -> T {
+        let path = tempKeychainPath()
+        let bootstrap = "astra-private-vault-test-" + UUID().uuidString
+        installTestBootstrapPassword(service: bootstrap)
+        defer { cleanup(keychainPath: path, bootstrapService: bootstrap, services: []) }
+        return try await AstraSecureKeychainStore.$keychainPathOverride.withValue(path) {
+            try await AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) { try await body() }
         }
     }
 

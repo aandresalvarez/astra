@@ -201,7 +201,9 @@ struct ConnectorEditorView: View {
                             .frame(width: 200)
                             .disabled(!WorkspaceCapabilityActivation.canChangeService(of: connector))
                             .help(WorkspaceCapabilityActivation.canChangeService(of: connector)
-                                ? "" : "A plugin uses this account for this service, so its type can't change.")
+                                ? "" : connector.isStanfordOutlookMail
+                                    ? "Outlook sign-in keeps this account's type fixed. Create another account for a different service."
+                                    : "A plugin uses this account for this service, so its type can't change.")
 
                             Picker("Auth", selection: $connector.authMethod) {
                                 ForEach(Self.authMethods(for: connector.serviceType), id: \.self) { a in
@@ -274,7 +276,7 @@ struct ConnectorEditorView: View {
                             isTesting ||
                             connector.baseURL.isEmpty ||
                             (connector.isStanfordOutlookMail
-                                ? !connector.hasOutlookRefreshToken
+                                ? !connector.hasOutlookAuthorization
                                 : (connector.authMethod != "none" && connector.credentialKeys.isEmpty))
                         )
                         .buttonStyle(.borderedProminent)
@@ -780,11 +782,11 @@ struct ConnectorEditorView: View {
 
                 HStack(spacing: 8) {
                     Label(
-                        connector.hasOutlookRefreshToken ? "Signed in" : "Not signed in",
-                        systemImage: connector.hasOutlookRefreshToken ? "checkmark.shield.fill" : "person.crop.circle.badge.exclamationmark"
+                        connector.hasOutlookAuthorization ? "Signed in" : "Not signed in",
+                        systemImage: connector.hasOutlookAuthorization ? "checkmark.shield.fill" : "person.crop.circle.badge.exclamationmark"
                     )
                     .font(Stanford.caption(12))
-                    .foregroundStyle(connector.hasOutlookRefreshToken ? Stanford.paloAltoGreen : Stanford.poppy)
+                    .foregroundStyle(connector.hasOutlookAuthorization ? Stanford.paloAltoGreen : Stanford.poppy)
 
                     if !connector.outlookDisplayName.isEmpty {
                         Text(connector.outlookDisplayName)
@@ -839,7 +841,7 @@ struct ConnectorEditorView: View {
                                 Text("Waiting for Sign-In")
                             }
                         } else {
-                            Label(connector.hasOutlookRefreshToken ? "Reconnect" : "Connect", systemImage: "person.crop.circle.badge.checkmark")
+                            Label(connector.hasOutlookAuthorization ? "Reconnect" : "Connect", systemImage: "person.crop.circle.badge.checkmark")
                         }
                     }
                     .disabled(isOAuthSigningIn || connector.outlookClientID.isEmpty)
@@ -851,7 +853,7 @@ struct ConnectorEditorView: View {
                     } label: {
                         Label("Test", systemImage: "bolt.horizontal.circle")
                     }
-                    .disabled(!connector.hasOutlookRefreshToken || isTesting)
+                    .disabled(!connector.hasOutlookAuthorization || isTesting)
 
                     Button {
                         if isOAuthSigningIn {
@@ -862,7 +864,7 @@ struct ConnectorEditorView: View {
                     } label: {
                         Label(isOAuthSigningIn ? "Cancel" : "Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
                     }
-                    .disabled(!connector.hasOutlookRefreshToken && !isOAuthSigningIn)
+                    .disabled(!connector.hasOutlookAuthorization && !isOAuthSigningIn)
 
                     Spacer()
 
@@ -896,70 +898,52 @@ struct ConnectorEditorView: View {
     private func startOutlookSignIn() {
         connector.applyStanfordOutlookDefaults(defaultTenant: false)
         cancelOutlookSignIn()
+        guard saveSharingChange() else {
+            oauthStatus = "Save this account's settings before signing in."
+            testResult = (false, oauthStatus)
+            return
+        }
+        let signIn: OutlookSignInSession
+        do { signIn = try OutlookSignInSession(account: connector) }
+        catch { oauthStatus = error.localizedDescription; testResult = (false, oauthStatus); return }
         let generation = UUID()
         oauthSignInGeneration = generation
         oauthDeviceCode = nil
         oauthStatus = "Requesting Microsoft sign-in code..."
         isOAuthSigningIn = true
         testResult = nil
-
         oauthSignInTask = Task {
             do {
-                let auth = StanfordOutlookMailAuthService()
-                let deviceCode = try await auth.startDeviceAuthorization(connector: connector)
-                await MainActor.run {
-                    guard oauthSignInGeneration == generation else { return }
-                    oauthDeviceCode = deviceCode
-                    oauthStatus = "A browser has opened. Complete Microsoft/Stanford sign-in, including Duo, then ASTRA will finish automatically."
-                    if let url = URL(string: deviceCode.verificationUri) {
-                        NSWorkspace.shared.open(url)
-                    }
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(deviceCode.userCode, forType: .string)
-                }
-                let token = try await auth.pollForToken(connector: connector, deviceCode: deviceCode)
+                let deviceCode = try await signIn.start()
                 try Task.checkCancellation()
-                let savedToken = await MainActor.run {
-                    guard oauthSignInGeneration == generation else { return false }
-                    return auth.saveTokenResponse(token, connector: connector, allowUserInteraction: true)
-                }
-                guard savedToken else {
-                    await MainActor.run {
-                        guard oauthSignInGeneration == generation else { return }
-                        oauthStatus = "Microsoft sign-in completed, but ASTRA could not save the OAuth tokens to Keychain. Allow ASTRA to access its Keychain item, then sign in again."
-                        testResult = (false, oauthStatus)
-                        isOAuthSigningIn = false
-                        oauthSignInTask = nil
-                    }
-                    return
-                }
-                let me = try await StanfordOutlookMailGraphService().testConnection(connector: connector)
-                await MainActor.run {
-                    guard oauthSignInGeneration == generation else { return }
-                    let identity = me.mail ?? me.userPrincipalName ?? connector.outlookEmail
-                    oauthStatus = identity.isEmpty ? "Connected to Microsoft Graph." : "Connected as \(identity)."
-                    testResult = (true, oauthStatus)
-                    oauthDeviceCode = nil
-                    isOAuthSigningIn = false
-                    oauthSignInTask = nil
-                    saveSharingChange()
-                }
+                guard oauthSignInGeneration == generation else { throw CancellationError() }
+                oauthDeviceCode = deviceCode
+                oauthStatus = "A browser has opened. Complete Microsoft/Stanford sign-in, including Duo, then ASTRA will finish automatically."
+                if let url = URL(string: deviceCode.verificationUri), url.scheme == "https" { NSWorkspace.shared.open(url) }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(deviceCode.userCode, forType: .string)
+                let verified = try await signIn.finish(deviceCode: deviceCode)
+                try Task.checkCancellation()
+                guard oauthSignInGeneration == generation else { throw CancellationError() }
+                try signIn.publish(verified, on: connector, modelContext: modelContext, allowUserInteraction: true)
+                let identity = verified.identity.mail ?? verified.identity.userPrincipalName ?? ""
+                oauthStatus = identity.isEmpty ? "Connected to Microsoft Graph." : "Connected as \(identity)."
+                testResult = (true, oauthStatus)
+                oauthDeviceCode = nil
+                isOAuthSigningIn = false
+                oauthSignInTask = nil
             } catch is CancellationError {
-                await MainActor.run {
-                    guard oauthSignInGeneration == generation else { return }
-                    oauthDeviceCode = nil
-                    oauthStatus = "Sign-in cancelled."
-                    isOAuthSigningIn = false
-                    oauthSignInTask = nil
-                }
+                guard oauthSignInGeneration == generation else { return }
+                oauthDeviceCode = nil
+                oauthStatus = "Sign-in cancelled."
+                isOAuthSigningIn = false
+                oauthSignInTask = nil
             } catch {
-                await MainActor.run {
-                    guard oauthSignInGeneration == generation else { return }
-                    oauthStatus = error.localizedDescription
-                    testResult = (false, error.localizedDescription)
-                    isOAuthSigningIn = false
-                    oauthSignInTask = nil
-                }
+                guard oauthSignInGeneration == generation else { return }
+                oauthStatus = error.localizedDescription
+                testResult = (false, oauthStatus)
+                isOAuthSigningIn = false
+                oauthSignInTask = nil
             }
         }
     }
@@ -1005,11 +989,13 @@ struct ConnectorEditorView: View {
 
     private func signOutOutlook() {
         cancelOutlookSignIn()
-        connector.clearOutlookOAuthState()
-        oauthDeviceCode = nil
-        oauthStatus = "Signed out and removed stored OAuth tokens for this account."
-        testResult = nil
-        saveSharingChange()
+        guard saveSharingChange() else { return }
+        do {
+            try OutlookAuthorizationEditor.signOut(connector, modelContext: modelContext)
+            oauthDeviceCode = nil
+            oauthStatus = "Signed out in ASTRA. Tasks already accepted keep their authorization."
+            testResult = nil
+        } catch { showCredentialOperationError(error) }
     }
 
     private func duplicateOutlookAccount() {
@@ -1025,6 +1011,8 @@ struct ConnectorEditorView: View {
         copy.workspace = workspace
         copy.skill = connector.skill
         copy.applyStanfordOutlookDefaults()
+        copy.credentialNamespaceID = UUID()
+        copy.outlookCredentialFormat = OutlookCredentialIdentity.generationFormat
         copy.setConfigValue(StanfordOutlookMail.tenantDomainKey, value: connector.outlookTenantDomain)
         modelContext.insert(copy)
         onDuplicate?(copy)
@@ -1232,13 +1220,15 @@ struct ConnectorEditorView: View {
         } catch { showCredentialOperationError(error) }
     }
 
-    private func saveSharingChange() {
+    @discardableResult
+    private func saveSharingChange() -> Bool {
         guard CapabilityPersistence.saveResourceMutation(
             workspace: workspace ?? connector.workspace,
             isGlobal: connector.isGlobal,
             modelContext: modelContext
-        ) else { return }
+        ) else { return false }
         PluginStateMirrors.exportAfterSave(workspace: workspace ?? connector.workspace, accounts: [connector], modelContext: modelContext)
+        return true
     }
 
     private func applyServiceDefaults(for type: String) {

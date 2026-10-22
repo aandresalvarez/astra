@@ -3,6 +3,7 @@ import Foundation
 public struct ConnectorSnapshotConfig: Codable, Equatable, Sendable {
     public var id: String?
     public var credentialNamespaceID: UUID?
+    public var outlookCredentialFormat: String?
     public var name: String
     public var serviceType: String
     public var icon: String
@@ -32,10 +33,12 @@ public struct ConnectorSnapshotConfig: Codable, Equatable, Sendable {
         notes: String,
         createdAt: Date?,
         updatedAt: Date?,
-        credentialNamespaceID: UUID? = nil
+        credentialNamespaceID: UUID? = nil,
+        outlookCredentialFormat: String? = nil
     ) {
         self.id = id
         self.credentialNamespaceID = credentialNamespaceID
+        self.outlookCredentialFormat = outlookCredentialFormat ?? OutlookCredentialIdentity.format(keys: configKeys, values: configValues)
         self.name = name
         self.serviceType = serviceType
         self.icon = icon

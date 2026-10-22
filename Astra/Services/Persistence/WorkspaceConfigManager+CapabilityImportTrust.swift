@@ -232,6 +232,7 @@ extension WorkspaceConfigManager {
         // A selected file cannot select local vault addresses, including
         // historical stable endpoint aliases it might otherwise inherit.
         connector.credentialNamespaceID = UUID()
+        if connector.isStanfordOutlookMail { connector.outlookCredentialFormat = OutlookCredentialIdentity.generationFormat }
         if connector.isGlobal {
             connector.isGlobal = false
             report.sharedRowsLocalized += 1

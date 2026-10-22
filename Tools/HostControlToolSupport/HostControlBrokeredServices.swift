@@ -25,7 +25,8 @@ public enum HostControlBrokeredServices {
     /// `HostControlToolServer.knownToolNames`.
     public static let toolNamesByServiceType: [String: String] = [
         "jira": "jira",
-        "redcap": "redcap"
+        "redcap": "redcap",
+        "stanford_outlook_mail": "mail"
     ]
 
     /// Every tool name that reads connector credentials in this process.

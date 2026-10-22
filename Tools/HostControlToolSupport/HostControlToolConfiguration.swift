@@ -1,7 +1,7 @@
 import Foundation
 
 public struct HostControlToolConfiguration: Equatable, Sendable {
-    public static let knownToolNames: Set<String> = ["github", "gcloud", "bq", "ssh", "jira", "redcap", "history"]
+    public static let knownToolNames: Set<String> = ["github", "gcloud", "bq", "ssh", "jira", "redcap", "history", "mail"]
 
     public var githubExecutable: String
     public var gcloudExecutable: String

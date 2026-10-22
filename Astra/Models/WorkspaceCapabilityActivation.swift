@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import SwiftData
+import ASTRACore
 
 /// The single owner of a workspace's capability enablement state.
 ///
@@ -378,7 +379,10 @@ public enum WorkspaceCapabilityActivation {
     /// services. Unbind it first (Delete account, Remove, or an Update that
     /// drops the component).
     public static func canChangeService(of account: Connector) -> Bool {
-        !account.accountBindings.contains { !$0.isDeleted && $0.activation != nil }
+        // OAuth grants keep their service identity through retirement and
+        // in-flight renewal. Converting one in place would bypass that owner.
+        account.serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != OutlookCredentialIdentity.serviceType
+            && !account.accountBindings.contains { !$0.isDeleted && $0.activation != nil }
     }
 
     /// Sets `account`'s service, refusing (false) while a plugin binds it
@@ -1107,6 +1111,7 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
 public struct PluginAccountRecord: Codable, Equatable, Sendable {
     public let id: UUID
     public let credentialNamespaceID: UUID?
+    public let outlookCredentialFormat: String?
     public let name: String
     public let serviceType: String
     public let icon: String
@@ -1138,6 +1143,7 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
     private init(_ account: Connector, configuration: (keys: [String], values: [String])) {
         id = account.id
         credentialNamespaceID = account.credentialNamespaceID
+        outlookCredentialFormat = account.outlookCredentialFormat
         name = account.name
         serviceType = account.serviceType
         icon = account.icon
@@ -1184,6 +1190,7 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
         account.credentialKeys = credentialKeys
         account.configKeys = configKeys
         account.configValues = configValues
+        if let outlookCredentialFormat { account.outlookCredentialFormat = outlookCredentialFormat }
         account.isGlobal = isGlobal
         account.testHTTPMethod = testHTTPMethod
         account.notes = notes

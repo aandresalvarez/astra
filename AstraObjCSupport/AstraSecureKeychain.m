@@ -929,6 +929,47 @@ recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
     }
 }
 
+/// OAuth renewal replaces a complete bundle without a delete/add gap. An ACL
+/// refusal leaves the previous value intact; it never triggers vault recovery.
++ (BOOL)replaceSecretAtomically:(NSString *)value
+                    forAccount:(NSString *)account
+                       service:(NSString *)service
+                         label:(nullable NSString *)label
+                  keychainPath:(NSString *)keychainPath
+              bootstrapService:(NSString *)bootstrapService
+          allowUserInteraction:(BOOL)allowUserInteraction {
+    @synchronized (self) {
+        Boolean previousInteraction = true;
+        [self setKeychainUserInteractionAllowed:allowUserInteraction savingPrevious:&previousInteraction];
+        @try {
+            SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath
+                                                   bootstrapService:bootstrapService
+                                              userInteractionAllowed:allowUserInteraction];
+            if (keychain == NULL) { return NO; }
+            NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
+            if (data == nil) { return NO; }
+            NSDictionary *query = @{
+                (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+                (__bridge id)kSecAttrService: service,
+                (__bridge id)kSecAttrAccount: account,
+                (__bridge id)kSecMatchSearchList: @[(__bridge id)keychain],
+            };
+            NSDictionary *changes = @{(__bridge id)kSecValueData: data};
+            OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)changes);
+            if (status == errSecItemNotFound) {
+                status = [self addSecretValue:data forAccount:account service:service label:label keychain:keychain];
+            }
+            if (status != errSecSuccess) {
+                [self noteKeychainWriteFailureWithStage:@"atomic-item-write" status:status];
+                return NO;
+            }
+            return YES;
+        } @finally {
+            [self restoreKeychainUserInteraction:previousInteraction];
+        }
+    }
+}
+
 + (nullable NSString *)secretForAccount:(NSString *)account
                                 service:(NSString *)service
                            keychainPath:(NSString *)keychainPath
@@ -944,12 +985,22 @@ recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
                            keychainPath:(NSString *)keychainPath
                        bootstrapService:(NSString *)bootstrapService
                                  status:(OSStatus *)outStatus {
+    return [self secretForAccount:account service:service keychainPath:keychainPath
+                bootstrapService:bootstrapService status:outStatus allowUserInteraction:NO];
+}
+
++ (nullable NSString *)secretForAccount:(NSString *)account
+                                service:(NSString *)service
+                           keychainPath:(NSString *)keychainPath
+                       bootstrapService:(NSString *)bootstrapService
+                                 status:(OSStatus *)outStatus
+                   allowUserInteraction:(BOOL)allowUserInteraction {
     @synchronized (self) {
     if (outStatus != NULL) { *outStatus = errSecNotAvailable; }
     Boolean previousInteraction = true;
-    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    [self setKeychainUserInteractionAllowed:allowUserInteraction savingPrevious:&previousInteraction];
     @try {
-    SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
+    SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService userInteractionAllowed:allowUserInteraction];
     if (keychain == NULL) { return nil; }
     OSStatus status = errSecSuccess;
     NSData *data = [self readSecretDataForAccount:account service:service keychain:keychain status:&status];

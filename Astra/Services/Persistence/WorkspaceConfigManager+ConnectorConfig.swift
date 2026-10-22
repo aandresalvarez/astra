@@ -1,11 +1,13 @@
 import Foundation
+import ASTRACore
 
 // The portable account record, shared by explicit exports and recovery mirrors.
 extension WorkspaceConfigManager {
     public struct ConnectorConfig: Codable, Sendable {
-        public init(id: String? = nil, name: String, serviceType: String, icon: String, description: String, baseURL: String, authMethod: String, credentialKeys: [String], configKeys: [String], configValues: [String], isGlobal: Bool? = nil, notes: String, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, accountAlias: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, credentialNamespaceID: UUID? = nil) {
+        public init(id: String? = nil, name: String, serviceType: String, icon: String, description: String, baseURL: String, authMethod: String, credentialKeys: [String], configKeys: [String], configValues: [String], isGlobal: Bool? = nil, notes: String, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, accountAlias: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, credentialNamespaceID: UUID? = nil, outlookCredentialFormat: String? = nil) {
             self.id = id
             self.credentialNamespaceID = credentialNamespaceID
+            self.outlookCredentialFormat = outlookCredentialFormat ?? OutlookCredentialIdentity.format(keys: configKeys, values: configValues)
             self.name = name
             self.serviceType = serviceType
             self.icon = icon
@@ -29,6 +31,7 @@ extension WorkspaceConfigManager {
 
         public var id: String?
         public var credentialNamespaceID: UUID?
+        public var outlookCredentialFormat: String?
         public var name: String
         public var serviceType: String
         public var icon: String

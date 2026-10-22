@@ -765,6 +765,9 @@ struct CapabilityInstaller {
             baseURL: baseURL,
             authMethod: pluginConnector.authMethod
         )
+        let previousOutlookFormat = connector.outlookCredentialFormat
+        let previousOutlookConfig = connector.isStanfordOutlookMail
+            ? StanfordOutlookMail.authorizationConfigurationKeys.map { ($0, connector.configValue($0)) } : []
         let isNew = connector.modelContext == nil
         if isNew { modelContext.insert(connector) }
         // A row from before its plugin's settings were credentials can hold
@@ -812,7 +815,6 @@ struct CapabilityInstaller {
                 modelContext: modelContext, declaredFormats: PluginAccountCredentialCutoverPlan.formats(of: pluginConnector),
                 lease: stagedCredentials.first?.lease)
             stagedCredentials.append(participant)
-            connector.credentialNamespaceID = participant.namespaceID
             prepared = participant
         } else { prepared = nil }
         connector.name = alias ?? pluginConnector.name
@@ -832,6 +834,11 @@ struct CapabilityInstaller {
         )
         let defaults = PluginAccountFieldLayout.defaults(in: package)
         connector.configValues = connector.configKeys.map { configInputs[$0] ?? defaults[$0] ?? "" }
+        // Provider-owned account identity is independent of plugin fields.
+        // Rebuilding the declared settings cannot erase an existing login.
+        for (key, value) in previousOutlookConfig where !connector.configKeys.contains(key) {
+            connector.setConfigValue(key, value: value)
+        }
         for (key, value) in unsettled {
             if let index = connector.credentialKeys.firstIndex(where: { ConnectorCredentialKey.same($0, key) }) {
                 connector.credentialKeys.remove(at: index)
@@ -854,6 +861,8 @@ struct CapabilityInstaller {
         if connector.isStanfordOutlookMail {
             connector.applyStanfordOutlookDefaults()
         }
+        if let prepared { prepared.apply(to: connector) }
+        else if connector.isStanfordOutlookMail { connector.outlookCredentialFormat = previousOutlookFormat }
         try saveConnectorCredentials(
             connector,
             hints: pluginConnector.credentialHints,
