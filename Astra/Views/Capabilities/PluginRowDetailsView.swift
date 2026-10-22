@@ -135,7 +135,10 @@ struct PluginRowDetailsView<SetupRow: View>: View {
                     Button("Edit") { onEditAccount(account.id) }
                         .controlSize(.small)
                     Button("Delete", role: .destructive) {
-                        onConfirm(.deleteAccount(packageID: row.package.id, accountID: account.id))
+                        do {
+                            let scope = try PluginAccountDeletionScope.capture(account)
+                            onConfirm(.deleteAccount(packageID: row.package.id, scope: scope))
+                        } catch { onError(error.localizedDescription) }
                     }
                     .controlSize(.small)
                 }

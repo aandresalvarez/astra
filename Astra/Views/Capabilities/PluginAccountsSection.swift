@@ -20,7 +20,7 @@ struct PluginAccountsSection: View {
 
     @Environment(\.modelContext) private var modelContext
     @State private var expanded: Set<UUID> = []
-    @State private var confirmingID: UUID?
+    @State private var confirmingScope: PluginAccountDeletionScope?
 
     var body: some View {
         if !accounts.isEmpty {
@@ -70,12 +70,15 @@ struct PluginAccountsSection: View {
                     Spacer()
                     Button("Edit") { onEditAccount(account.id) }
                         .controlSize(.small)
-                    Button("Delete account", role: .destructive) { confirmingID = account.id }
+                    Button("Delete account", role: .destructive) {
+                        do { confirmingScope = try PluginAccountDeletionScope.capture(account) }
+                        catch { onError(error.localizedDescription) }
+                    }
                         .controlSize(.small)
                 }
                 .padding(.leading, 38)
-                if confirmingID == account.id {
-                    confirmation(account)
+                if let scope = confirmingScope, scope.accountID == account.id {
+                    confirmation(account, scope: scope)
                         .padding(.leading, 38)
                 }
             }
@@ -83,26 +86,23 @@ struct PluginAccountsSection: View {
         .padding(.vertical, 6)
     }
 
-    private func confirmation(_ account: Connector) -> some View {
-        // An unreadable delete scope offers no Delete: the confirmation
-        // would not name every workspace the deletion reaches.
-        let reach = (try? PluginOperations.workspacesUsing(account))?.map(\.name)
-        let copy = PluginsSurfaceConfirmation.deleteAccountCopy(name: account.name, workspaces: reach ?? [])
+    private func confirmation(_ account: Connector, scope: PluginAccountDeletionScope) -> some View {
+        let copy = PluginsSurfaceConfirmation.deleteAccountCopy(name: account.name, scope: scope)
         return PluginsSurfaceConfirmationRow(
-            message: reach == nil ? PluginOperations.OperationError.storeUnreadable.localizedDescription : copy.message,
-            verb: reach == nil ? nil : copy.verb,
-            onCancel: { confirmingID = nil },
+            message: copy.message,
+            verb: copy.verb,
+            onCancel: { confirmingScope = nil },
             onConfirm: {
-                confirmingID = nil
-                delete(account)
+                confirmingScope = nil
+                delete(account, confirmedScope: scope)
             }
         )
     }
 
-    private func delete(_ account: Connector) {
+    private func delete(_ account: Connector, confirmedScope: PluginAccountDeletionScope) {
         let name = account.name
         do {
-            try CapabilityCatalogActionService().deleteAccount(account, modelContext: modelContext)
+            try CapabilityCatalogActionService().deleteAccount(account, confirmedScope: confirmedScope, modelContext: modelContext)
             expanded.remove(account.id)
             onChanged()
         } catch {

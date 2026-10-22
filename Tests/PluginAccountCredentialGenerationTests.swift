@@ -50,6 +50,7 @@ struct PluginAccountCredentialGenerationTests {
             account.isGlobal = true
             try env.disk.context.save()
             let accountID = account.id
+            let confirmedScope = try PluginAccountDeletionScope.capture(account)
             let originalNamespace = account.credentialNamespaceID
             let originalBindings = account.accountBindings.map(\.id)
             #expect(!originalBindings.isEmpty)
@@ -98,7 +99,19 @@ struct PluginAccountCredentialGenerationTests {
             #expect(fresh.credentialNamespaceID == currentNamespace)
             #expect(fresh.currentCredentialValue(forKey: "API_TOKEN") == currentToken)
             #expect(fresh.accountBindings.count == (change == "binding" ? 2 : 1))
-            try PluginOperations.deleteAccount(fresh, modelContext: reopened.mainContext, rewriteMirror: {
+            if change == "binding" {
+                #expect(throws: PluginOperations.OperationError.workspaceChanged) {
+                    try PluginOperations.deleteAccount(fresh, modelContext: reopened.mainContext,
+                        confirmedScope: confirmedScope, rewriteMirror: { mirrored.insert($0.id); return true })
+                }
+                #expect(mirrored.isEmpty)
+                #expect(!reopened.mainContext.hasChanges)
+                #expect(fresh.currentCredentialValue(forKey: "API_TOKEN") == currentToken)
+                let unchanged = ModelContext(reopened)
+                #expect(try unchanged.fetch(query).count == 1)
+            }
+            try PluginOperations.deleteAccount(fresh, modelContext: reopened.mainContext,
+                confirmedScope: try PluginAccountDeletionScope.capture(fresh), rewriteMirror: {
                 mirrored.insert($0.id)
                 return WorkspaceConfigManager.exportMirrorsNow([$0], modelContext: reopened.mainContext)
             })
