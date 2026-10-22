@@ -51,10 +51,11 @@ struct CapabilityUninstaller {
         persist: @MainActor (Workspace?, ModelContext) -> Bool = Self.persistRemoval,
         removeJournal: PluginRemoveJournal? = nil,
         skillSecrets: (any SkillSecretPersisting.Type)? = nil,
-        operation: PluginFileOperationContext? = nil
+        operation: PluginFileOperationContext? = nil,
+        confirmedScope: PluginRemovalScope? = nil
     ) throws -> RemovalResult {
         if let installed = library.installedPackages().first(where: { $0.id == pluginID }) {
-            return try remove(installed, modelContext: modelContext, persist: persist, removeJournal: removeJournal, skillSecrets: skillSecrets, operation: operation)
+            return try remove(installed, modelContext: modelContext, persist: persist, removeJournal: removeJournal, skillSecrets: skillSecrets, operation: operation, confirmedScope: confirmedScope)
         }
         guard !CapabilityLibrary.trustedBuiltInPackageIDs.contains(pluginID) else {
             throw CapabilityLibrary.RemovalError.builtInPackage(pluginID)
@@ -67,7 +68,7 @@ struct CapabilityUninstaller {
         )
         return try remove(
             missing, modelContext: modelContext, persist: persist, removeJournal: removeJournal,
-            skillSecrets: skillSecrets, definitionMissing: true, operation: operation
+            skillSecrets: skillSecrets, definitionMissing: true, operation: operation, confirmedScope: confirmedScope
         )
     }
 
@@ -82,10 +83,12 @@ struct CapabilityUninstaller {
         definitionMissing: Bool = false,
         secretCleanupOutbox: PluginSecretCleanupOutbox? = nil,
         exportMirror: (@MainActor (Workspace) -> Bool)? = nil,
-        operation: PluginFileOperationContext? = nil
+        operation: PluginFileOperationContext? = nil,
+        confirmedScope: PluginRemovalScope? = nil
     ) throws -> RemovalResult {
         guard !modelContext.hasChanges else { throw PluginOperations.OperationError.pendingEdits }
         try PluginRemovalTransaction.recover(library: library, modelContext: modelContext, operation: operation)
+        try PluginRemovalScope.requireCurrent(pluginID: requestedPackage.id, confirmedScope: confirmedScope, modelContext: modelContext)
         let installedPackages = library.installedPackages()
         guard var package = installedPackages.first(where: { $0.id == requestedPackage.id })
             ?? (definitionMissing ? requestedPackage : nil) else {

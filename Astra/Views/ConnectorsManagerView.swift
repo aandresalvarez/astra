@@ -841,7 +841,7 @@ struct ConnectorEditorView: View {
                                 Text("Waiting for Sign-In")
                             }
                         } else {
-                            Label(connector.hasOutlookAuthorization ? "Reconnect" : "Connect", systemImage: "person.crop.circle.badge.checkmark")
+                            Label(connector.hasStoredOutlookAuthorization ? "Reconnect" : "Connect", systemImage: "person.crop.circle.badge.checkmark")
                         }
                     }
                     .disabled(isOAuthSigningIn || connector.outlookClientID.isEmpty)
@@ -864,7 +864,7 @@ struct ConnectorEditorView: View {
                     } label: {
                         Label(isOAuthSigningIn ? "Cancel" : "Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
                     }
-                    .disabled(!connector.hasOutlookAuthorization && !isOAuthSigningIn)
+                    .disabled(!connector.hasStoredOutlookAuthorization && !isOAuthSigningIn)
 
                     Spacer()
 
