@@ -231,7 +231,8 @@ enum PluginOperations {
     /// cleanup outbox once the deletion is saved. The only operation that
     /// clears an account's credentials.
     static func deleteAccount(
-        _ account: Connector, modelContext: ModelContext, rewriteMirror: ((Workspace) -> Bool)? = nil
+        _ account: Connector, modelContext: ModelContext, confirmedScope: PluginAccountDeletionScope? = nil,
+        rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws {
         guard !modelContext.hasChanges else { throw OperationError.pendingEdits }
         guard account.modelContext === modelContext, !account.isDeleted else { throw OperationError.workspaceChanged }
@@ -243,7 +244,8 @@ enum PluginOperations {
         _ = try journal?.pending()
         // Who lists the account must be known before anything is deleted: a
         // workspace missed here would keep a dangling ID.
-        let workspaces = try PluginAccountDeletionAdmission.currentWorkspaces(for: account, modelContext: modelContext)
+        let workspaces = try PluginAccountDeletionAdmission.currentWorkspaces(
+            for: account, modelContext: modelContext, confirmedScope: confirmedScope)
         let id = account.id.uuidString
         let listing = workspaces.filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) }
         // Every workspace whose mirror names the account, the one the

@@ -716,19 +716,16 @@ struct PluginsSurfaceView: View {
 
     private func confirmationRow(_ confirmation: PluginsSurfaceConfirmation, row: PluginRow) -> some View {
         let account: Connector? = {
-            guard case .deleteAccount(_, let accountID) = confirmation else { return nil }
-            return row.activation?.bindings.compactMap(\.account).first { $0.id == accountID }
+            guard case .deleteAccount(_, let scope) = confirmation else { return nil }
+            return row.activation?.bindings.compactMap(\.account).first { $0.id == scope.accountID }
         }()
-        // An unreadable delete scope offers no Delete: the confirmation
-        // would not name every workspace the deletion reaches.
-        let reach: [String]? = account.map { account in
-            (try? PluginOperations.workspacesUsing(account))?.map(\.name)
-        } ?? []
+        // Account scope was captured at the first tap; a re-render must
+        // not silently expand what the person is about to confirm.
         let copy = PluginsSurfacePresentation.confirmationCopy(confirmation, account: account,
-            packageName: row.package.name, in: workspace, workspaces: reach ?? [])
+            packageName: row.package.name, in: workspace)
         return PluginsSurfaceConfirmationRow(
-            message: reach == nil ? PluginOperations.OperationError.storeUnreadable.localizedDescription : copy.message,
-            verb: reach == nil ? nil : copy.verb,
+            message: copy.message,
+            verb: copy.verb,
             onCancel: { confirming = nil },
             onConfirm: {
                 confirming = nil
@@ -736,16 +733,18 @@ struct PluginsSurfaceView: View {
                 case .remove(let source):
                     guard source.matches(row) else { return }
                     remove(row.package, missing: source.isMissing)
-                case .deleteAccount: if let account { deleteAccount(account) }
+                case .deleteAccount(_, let scope):
+                    if let account { deleteAccount(account, confirmedScope: scope) }
+                    else { errorMessage = PluginOperations.OperationError.workspaceChanged.localizedDescription }
                 }
             }
         )
     }
 
-    private func deleteAccount(_ account: Connector) {
+    private func deleteAccount(_ account: Connector, confirmedScope: PluginAccountDeletionScope) {
         errorMessage = nil
         do {
-            try CapabilityCatalogActionService().deleteAccount(account, modelContext: modelContext)
+            try CapabilityCatalogActionService().deleteAccount(account, confirmedScope: confirmedScope, modelContext: modelContext)
             onCatalogChanged()
         } catch {
             errorMessage = "Couldn't delete \(account.name): \(error.localizedDescription)"

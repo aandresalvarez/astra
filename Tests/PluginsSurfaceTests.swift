@@ -264,8 +264,8 @@ struct PluginsSurfaceTests {
         second.isGlobal = true
         env.context.insert(second)
         WorkspaceCapabilityActivation.bind(second, toComponent: component, of: activation, alias: "Tracker 2")
-        let copy = PluginsSurfacePresentation.confirmationCopy(.deleteAccount(packageID: candidate.id, accountID: second.id),
-            account: second, packageName: candidate.name, in: env.workspace, workspaces: [env.workspace.name])
+        let copy = PluginsSurfacePresentation.confirmationCopy(.deleteAccount(packageID: candidate.id, scope: try PluginAccountDeletionScope.capture(second)),
+            account: second, packageName: candidate.name, in: env.workspace)
         #expect(copy.message.hasPrefix("Delete the account Tracker 2 and its saved keys?"))
         #expect(copy.verb == "Delete")
     }
@@ -437,8 +437,11 @@ struct PluginsSurfaceTests {
         #expect(remove.verb == "Remove")
         #expect(remove.message.contains("every workspace"))
         #expect(remove.message.contains("saved keys stay"))
-        let delete = PluginsSurfaceConfirmation.deleteAccount(packageID: "jira", accountID: UUID())
-            .copy(name: "Jira 2", workspaces: ["Ops", "Research"])
+        let scope = PluginAccountDeletionScope(accountID: UUID(), workspaces: [
+            .init(id: UUID(), name: "Ops"), .init(id: UUID(), name: "Research")
+        ])
+        let delete = PluginsSurfaceConfirmation.deleteAccount(packageID: "jira", scope: scope)
+            .copy(name: "Jira 2")
         #expect(delete.verb == "Delete")
         #expect(delete.message.contains("saved keys") && delete.message.contains("Ops, Research"))
         #expect(delete.message.contains("Tasks already accepted may keep access until they finish or are cancelled"))

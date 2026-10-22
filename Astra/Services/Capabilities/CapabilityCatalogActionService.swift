@@ -405,8 +405,10 @@ struct CapabilityCatalogActionService {
     }
 
     /// Deletes an account in every workspace, with its credentials.
-    func deleteAccount(_ account: Connector, modelContext: ModelContext) throws {
-        try PluginOperations.deleteAccount(account, modelContext: modelContext)
+    func deleteAccount(
+        _ account: Connector, confirmedScope: PluginAccountDeletionScope, modelContext: ModelContext
+    ) throws {
+        try PluginOperations.deleteAccount(account, modelContext: modelContext, confirmedScope: confirmedScope)
         CapabilityCatalogPersistenceEvents.post(.global)
     }
 
