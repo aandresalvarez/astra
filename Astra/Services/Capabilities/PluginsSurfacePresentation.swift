@@ -275,6 +275,7 @@ enum PluginsSurfacePresentation {
     /// so the surface lists them on their own. A row attached to a skill
     /// belongs to that skill's row.
     static func unusedAccounts(
+        in workspace: Workspace,
         workspaceConnectors: [Connector],
         sharedConnectors: [Connector],
         listedPackages: [PluginPackage],
@@ -290,7 +291,8 @@ enum PluginsSurfacePresentation {
             .filter { account in
                 guard !account.isDeleted, account.skill == nil, seen.insert(account.id).inserted else { return false }
                 let shown = account.accountBindings.contains { binding in
-                    guard !binding.isDeleted, let activation = binding.activation, !activation.isDeleted else { return false }
+                    guard !binding.isDeleted, let activation = binding.activation, !activation.isDeleted,
+                          activation.workspace?.id == workspace.id else { return false }
                     return offered[activation.pluginID]?.contains(binding.componentID) == true
                 }
                 guard !shown else { return false }
