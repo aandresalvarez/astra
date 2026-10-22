@@ -84,6 +84,7 @@ struct CapabilityUninstaller {
         exportMirror: (@MainActor (Workspace) -> Bool)? = nil,
         operation: PluginFileOperationContext? = nil
     ) throws -> RemovalResult {
+        guard !modelContext.hasChanges else { throw PluginOperations.OperationError.pendingEdits }
         try PluginRemovalTransaction.recover(library: library, modelContext: modelContext, operation: operation)
         let installedPackages = library.installedPackages()
         guard var package = installedPackages.first(where: { $0.id == requestedPackage.id })

@@ -9,6 +9,114 @@ import ASTRAModels
 @MainActor
 @Suite("Plugin account edits preserve accepted credentials", .serialized)
 struct PluginAccountCredentialGenerationTests {
+    @Test("An active credential producer defers deletion without saving or cleaning the account")
+    func activeCredentialProducerDefersDeletion() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable("producer-owned-account-token")
+            let id = account.id
+            let namespace = account.credentialNamespaceID
+            let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.disk.context))
+            let lease = try journal.acquireLease()
+            defer { withExtendedLifetime(lease) {} }
+            var mirrored = false
+            do {
+                try PluginOperations.deleteAccount(account, modelContext: env.disk.context, rewriteMirror: { _ in
+                    mirrored = true; return true
+                })
+                Issue.record("Deletion proceeded while a credential producer could still publish")
+            } catch ConnectorCredentialGenerationJournal.Failure.busy {
+                // The caller can retry after the producer settles.
+            }
+            #expect(!mirrored)
+            #expect(!env.disk.context.hasChanges)
+            let saved = ModelContext(env.disk.context.container)
+            let query = FetchDescriptor<Connector>(predicate: #Predicate { $0.id == id })
+            let retained = try #require(saved.fetch(query).first)
+            #expect(retained.credentialNamespaceID == namespace)
+            #expect(retained.currentCredentialValue(forKey: "API_TOKEN") == "producer-owned-account-token")
+            let outbox = try #require(ConnectorCredentialCleanupStore(for: saved))
+            #expect(try #require(outbox.pending()).records.isEmpty)
+        }
+    }
+
+    @Test("Account deletion rejects newer credential or binding owners and succeeds only after reopening", arguments: ["credential", "binding"])
+    func deletionRequiresTheCompleteSavedAccount(change: String) throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let account = try env.enable("before-concurrent-edit-token")
+            account.isGlobal = true
+            try env.disk.context.save()
+            let accountID = account.id
+            let originalNamespace = account.credentialNamespaceID
+            let originalBindings = account.accountBindings.map(\.id)
+            #expect(!originalBindings.isEmpty)
+            let writerContainer = try env.disk.disk.reopen()
+            let writer = writerContainer.mainContext
+            let query = FetchDescriptor<Connector>(predicate: #Predicate { $0.id == accountID })
+            let latest = try #require(writer.fetch(query).first)
+            var expectedWorkspaces: Set<UUID> = [env.disk.workspace.id]
+            if change == "credential" {
+                _ = try ConnectorCredentialEditor.save("after-concurrent-edit-token", forKey: "API_TOKEN", on: latest,
+                    modelContext: writer, allowUserInteraction: false, rewriteMirror: { _ in true })
+                #expect(latest.credentialNamespaceID != originalNamespace)
+                #expect(account.credentialNamespaceID == originalNamespace)
+            } else {
+                let folder = env.disk.disk.root.appendingPathComponent("NewBindingWorkspace")
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let other = Workspace(name: "Newly shared", primaryPath: folder.path)
+                writer.insert(other)
+                WorkspaceCapabilityActivation.mutate(other) {
+                    $0.capabilityIDs.append(env.package.id)
+                    $0.globalConnectorIDs.append(accountID.uuidString)
+                }
+                WorkspaceCapabilityActivation.recordAccepted(pluginID: env.package.id, version: env.package.version,
+                    digest: PluginDefinitionDigest.content(of: env.package), in: other)
+                let activation = try #require(WorkspaceCapabilityActivation.activation(for: env.package.id, in: other))
+                WorkspaceCapabilityActivation.setKnownComponents(PluginRuntimeProjection.componentIDs(of: env.package), on: activation)
+                WorkspaceCapabilityActivation.bind(latest,
+                    toComponent: CapabilityResourceOrigin.componentID(for: env.package.connectors[0]), of: activation)
+                try writer.save()
+                expectedWorkspaces.insert(other.id)
+                #expect(account.accountBindings.map(\.id) == originalBindings)
+            }
+            let currentNamespace = try #require(latest.credentialNamespaceID)
+            let currentToken = change == "credential" ? "after-concurrent-edit-token" : "before-concurrent-edit-token"
+            var mirrored: Set<UUID> = []
+            do {
+                try PluginOperations.deleteAccount(account, modelContext: env.disk.context, rewriteMirror: {
+                    mirrored.insert($0.id); return true
+                })
+                Issue.record("A stale confirmation deleted a newer saved account graph")
+            } catch { #expect(error as? PluginOperations.OperationError == .workspaceChanged) }
+            #expect(mirrored.isEmpty)
+            #expect(!env.disk.context.hasChanges)
+            let reopened = try env.disk.disk.reopen()
+            let fresh = try #require(reopened.mainContext.fetch(query).first)
+            #expect(fresh.credentialNamespaceID == currentNamespace)
+            #expect(fresh.currentCredentialValue(forKey: "API_TOKEN") == currentToken)
+            #expect(fresh.accountBindings.count == (change == "binding" ? 2 : 1))
+            try PluginOperations.deleteAccount(fresh, modelContext: reopened.mainContext, rewriteMirror: {
+                mirrored.insert($0.id)
+                return WorkspaceConfigManager.exportMirrorsNow([$0], modelContext: reopened.mainContext)
+            })
+            #expect(mirrored == expectedWorkspaces)
+            #expect(try reopened.mainContext.fetch(query).isEmpty)
+            _ = ConnectorCredentialCleanup.resumePending(modelContext: reopened.mainContext)
+            let cleanupStore = try #require(ConnectorCredentialCleanupStore(for: reopened.mainContext))
+            let cleanupPending = try #require(cleanupStore.pending())
+            let recordedCurrent = cleanupPending.records.contains { $0.cleanup.credentialNamespaceID == currentNamespace }
+            let ownership = ConnectorCredentialCleanup.capturedOwnership(modelContext: reopened.mainContext)
+            let held = ownership?.namespaces.contains(KeychainSecretStore.connectorEntityID(for: currentNamespace))
+            let permitted = PluginOperationRecovery.permitsCredentialCleanup(modelContext: reopened.mainContext)
+            #expect(KeychainSecretStore().load(key: "API_TOKEN", entityID:
+                KeychainSecretStore.connectorEntityID(for: currentNamespace)) == nil,
+                "Cleanup permitted: \(permitted), recorded: \(recordedCurrent), retained by recovery: \(String(describing: held))")
+        }
+    }
+
     @Test("An added account cannot inherit a legacy account's shared credential alias")
     func addedAccountHasAnEmptyPrivateCredentialGeneration() throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
