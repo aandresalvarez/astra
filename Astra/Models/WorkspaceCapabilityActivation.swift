@@ -1047,52 +1047,48 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
         if activation.namespaceSeed != namespaceSeed { activation.namespaceSeed = namespaceSeed }
         if activation.credentialNamespaceSeed != credentialNamespaceSeed { activation.credentialNamespaceSeed = credentialNamespaceSeed }
         if activation.createdAt != createdAt { activation.createdAt = createdAt }
-        let current = activation.bindings.filter { !$0.isDeleted }
-        // SwiftData's to-many order is not binding identity. A no-op restore
-        // must retain the existing rows instead of recreating equal links.
-        if current.map(Self.bindingKey).sorted() != bindings.map(Self.bindingKey).sorted() {
-            let accountsByID = Dictionary(
-                current.compactMap { binding in binding.account.map { ($0.id, $0) } },
-                uniquingKeysWith: { first, _ in first }
-            )
-            for binding in current {
-                activation.bindings.removeAll { $0 === binding }
-                binding.modelContext?.delete(binding)
-            }
-            for record in bindings {
-                guard let accountID = record.accountID,
-                      let account = accountsByID[accountID] ?? Self.fetchConnector(accountID, near: activation) else { continue }
-                let binding = AccountBinding(
-                    id: record.id,
-                    componentID: record.componentID,
-                    isDefault: record.isDefault,
-                    createdAt: record.createdAt,
-                    alias: record.alias ?? ""
-                )
-                activation.modelContext?.insert(binding)
-                binding.account = account
-                binding.activation = activation
-                if !activation.bindings.contains(where: { $0 === binding }) {
-                    activation.bindings.append(binding)
-                }
-            }
-        }
-        // Matching row identities keep their links, but a rename may have
-        // changed their age. That age also controls default-account election.
-        let bindingDates = Dictionary(bindings.map { ($0.id, $0.createdAt) }, uniquingKeysWith: { first, _ in first })
-        for binding in activation.bindings where !binding.isDeleted {
-            if let date = bindingDates[binding.id], binding.createdAt != date { binding.createdAt = date }
-        }
+        restoreBindings(onto: activation)
         if activation.revision != revision { activation.revision = revision }
         if activation.updatedAt != updatedAt { activation.updatedAt = updatedAt }
     }
 
-    private static func bindingKey(_ binding: AccountBinding) -> String {
-        "\(binding.id)|\(binding.componentID)|\(binding.account?.id.uuidString ?? "")|\(binding.isDefault)|\(binding.alias)"
-    }
-
-    private static func bindingKey(_ binding: Binding) -> String {
-        "\(binding.id)|\(binding.componentID)|\(binding.accountID?.uuidString ?? "")|\(binding.isDefault)|\(binding.alias ?? "")"
+    /// Binding identity is its durable ID, not its mutable default, alias or
+    /// component. Restoring an attribute must not replace surviving rows:
+    /// another rollback would discard those replacements on older SwiftData.
+    private func restoreBindings(onto activation: PluginActivation) {
+        let current = activation.bindings.filter { !$0.isDeleted }
+        let wanted = Set(bindings.map(\.id))
+        let currentByID = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let accountsByID = Dictionary(current.compactMap { binding in binding.account.map { ($0.id, $0) } },
+                                      uniquingKeysWith: { first, _ in first })
+        for binding in current where !wanted.contains(binding.id) {
+            activation.bindings.removeAll { $0 === binding }
+            binding.modelContext?.delete(binding)
+        }
+        for record in bindings {
+            let account: Connector?
+            if let id = record.accountID {
+                guard let saved = accountsByID[id] ?? Self.fetchConnector(id, near: activation) else { continue }
+                account = saved
+            } else {
+                account = nil
+            }
+            let binding: AccountBinding
+            if let existing = currentByID[record.id] {
+                binding = existing
+            } else {
+                binding = AccountBinding(id: record.id, componentID: record.componentID,
+                    isDefault: record.isDefault, createdAt: record.createdAt, alias: record.alias ?? "")
+                activation.modelContext?.insert(binding)
+                binding.activation = activation
+                if !activation.bindings.contains(where: { $0 === binding }) { activation.bindings.append(binding) }
+            }
+            if binding.componentID != record.componentID { binding.componentID = record.componentID }
+            if binding.isDefault != record.isDefault { binding.isDefault = record.isDefault }
+            if binding.alias != (record.alias ?? "") { binding.alias = record.alias ?? "" }
+            if binding.createdAt != record.createdAt { binding.createdAt = record.createdAt }
+            if binding.account?.id != account?.id { binding.account = account }
+        }
     }
 
     private static func fetchConnector(_ id: UUID, near activation: PluginActivation) -> Connector? {
