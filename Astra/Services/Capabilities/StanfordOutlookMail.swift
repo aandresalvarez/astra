@@ -88,28 +88,41 @@ extension Connector {
         configValue(StanfordOutlookMail.displayNameKey)
     }
 
-    var hasOutlookAuthorization: Bool {
+    var hasOutlookAuthorization: Bool { outlookAuthorizationReadiness.canReadMail() }
+
+    /// Expired or incomplete credentials can still be explicitly cleared.
+    var hasStoredOutlookAuthorization: Bool { outlookAuthorizationReadiness.isStored }
+
+    var outlookAuthorizationReadiness: OutlookAuthorizationReadiness {
         guard hasConfiguredOutlookTenantDomain, !outlookClientID.isEmpty,
               let reference = OutlookCredentialIdentity.resolve(accountID: id, credentialNamespaceID: credentialNamespaceID,
-                format: outlookCredentialFormat) else { return false }
+                format: outlookCredentialFormat) else { return .unavailable }
         // Presentation only: atomic bundle reads need no refresh/cleanup lease.
         let service = KeychainSecretStore.connectorEntityID(for: reference.namespaceID)
         switch AstraSecureKeychainStore.read(service: service, account: OutlookOAuthBundle.storageKey) {
         case .value(let json):
             guard let data = json.data(using: .utf8), let bundle = try? JSONDecoder().decode(OutlookOAuthBundle.self, from: data),
                   bundle.matches(tenantDomain: outlookTenantDomain, clientID: outlookClientID,
-                    principalID: configValue(StanfordOutlookMail.accountIDKey)) else { return false }
-            return !bundle.accessToken.isEmpty || bundle.refreshToken?.isEmpty == false
+                    principalID: configValue(StanfordOutlookMail.accountIDKey)) else { return .unavailable }
+            return OutlookAuthorizationReadiness(isStored: true, canRefresh: bundle.refreshToken?.isEmpty == false,
+                accessTokenExpiresAt: bundle.expiresAt)
         case .missing:
-            guard case .legacy = reference else { return false }
-            if case .value(let token) = AstraSecureKeychainStore.read(service: service, account: StanfordOutlookMail.refreshTokenKey) {
-                return !token.isEmpty
+            guard case .legacy = reference else { return .unavailable }
+            var fields: [String?] = []
+            for key in OutlookCredentialIdentity.legacyTokenKeys {
+                switch AstraSecureKeychainStore.read(service: service, account: key) {
+                case .value(let value): fields.append(value)
+                case .missing: fields.append(nil)
+                case .unavailable: return .unavailable
+                }
             }
-            if case .value(let token) = AstraSecureKeychainStore.read(service: service, account: StanfordOutlookMail.accessTokenKey) {
-                return !token.isEmpty
+            let stored = fields[0]?.isEmpty == false || fields[1]?.isEmpty == false
+            guard fields[0]?.isEmpty == false, let expiry = fields[2].flatMap(TimeInterval.init), expiry.isFinite else {
+                return OutlookAuthorizationReadiness(isStored: stored, canRefresh: false, accessTokenExpiresAt: nil)
             }
-            return false
-        case .unavailable: return false
+            return OutlookAuthorizationReadiness(isStored: stored, canRefresh: fields[1]?.isEmpty == false,
+                accessTokenExpiresAt: Date(timeIntervalSince1970: expiry))
+        case .unavailable: return .unavailable
         }
     }
 
