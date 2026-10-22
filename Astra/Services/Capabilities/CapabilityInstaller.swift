@@ -946,7 +946,7 @@ struct CapabilityInstaller {
         init(_ pluginConnector: PluginConnector, inputs: [String: String]) throws {
             let duplicates = PluginAccountFieldLayout.duplicateStructureKeys(in: pluginConnector.configHints)
             guard duplicates.isEmpty else {
-                throw InstallationError.blocked(["\(pluginConnector.name) declares duplicate account field keys: \(duplicates.joined(separator: ", ")). Endpoint and name need separate keys."])
+                throw InstallationError.blocked(["\(pluginConnector.name) declares duplicate account field keys: \(duplicates.joined(separator: ", ")). Account structure and other setup fields need separate keys."])
             }
             func value(_ field: PluginConnector.ConfigHint?) -> String? {
                 let trimmed = field.flatMap { inputs[$0.key] }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
