@@ -81,7 +81,7 @@ struct PluginAccountStructureTests {
         #expect(!account.configKeys.contains("TRACKER_ACCOUNT_NAME"))
         #expect(account.baseURL == "https://configured.example.com")
         #expect(account.name == "Configured account")
-        #expect(account.configKeys == ["PROJECT"])
+        #expect(account.configKeys.isEmpty)
     }
 
     @Test("Update moves legacy structure values into empty account fields without dropping other settings")
@@ -93,15 +93,15 @@ struct PluginAccountStructureTests {
         let account = try #require(activation.accounts(forComponent: package.connectors[0].setupComponentID).first)
         account.name = ""
         account.baseURL = ""
-        account.configKeys += ["TRACKER_SITE", "TRACKER_ACCOUNT_NAME"]
-        account.configValues += ["https://saved.example.com", "Saved name"]
+        account.configKeys += ["TRACKER_SITE", "TRACKER_ACCOUNT_NAME", "LEGACY_FLAG"]
+        account.configValues += ["https://saved.example.com", "Saved name", "retained"]
         package.connectors[0].configHints = Self.multiTenant().connectors[0].configHints
         var copied: [PluginUpdateService.CopiedSecret] = []
         _ = try PluginUpdateService.syncOwnedAccounts(of: activation, to: package, store: MockSecretStore(), copied: &copied)
         #expect(account.baseURL == "https://saved.example.com")
         #expect(account.name == "Saved name")
-        #expect(account.configKeys == ["PROJECT"])
-        #expect(account.configValues == ["default-project"])
+        #expect(account.configKeys == ["LEGACY_FLAG"])
+        #expect(account.configValues == ["retained"])
     }
 
     @Test("Invalid legacy endpoint values are retained and refuse Update", arguments: [

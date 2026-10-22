@@ -80,11 +80,10 @@ enum PluginsSurfacePresentation {
         // Hide only fields the shared account layout actually stores. A
         // skill-only secret remains owned by this activation even when the
         // package also declares unrelated connector accounts.
-        let environmentKeys = PluginAccountFieldLayout.environmentKeys(in: package)
         let accountKeys = Set(package.connectors.flatMap { connector in
             let stored = PluginConnectorFieldTrust.asStored(connector, in: package)
             return stored.credentialHints.map(\.key)
-                + PluginAccountFieldLayout.configurationKeys(hints: stored.configHints, environmentKeys: environmentKeys)
+                + PluginAccountFieldLayout.configurationKeys(hints: stored.configHints)
                 + connector.configHints.filter(\.isAccountStructure).map(\.key)
         })
         return skill.environmentKeys.filter { !accountKeys.contains($0) }

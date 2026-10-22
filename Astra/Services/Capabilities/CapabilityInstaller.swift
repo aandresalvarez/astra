@@ -350,10 +350,6 @@ struct CapabilityInstaller {
                 }
             }
 
-            // A skill setting an account carries as a plain setting, unless a
-            // connector of this plugin stores that key as a credential.
-            let packageEnvironmentKeys = PluginAccountFieldLayout.environmentKeys(in: package)
-
             for pluginSkill in package.skills {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
                 // Reuse setup may supply this skill's explicit activation
@@ -407,7 +403,7 @@ struct CapabilityInstaller {
                     configInputs: ownConfigInputs
                 )
                 let configKeys = PluginAccountFieldLayout.configurationKeys(
-                    hints: fields.connector.configHints, environmentKeys: packageEnvironmentKeys
+                    hints: fields.connector.configHints
                 )
                 let boundURL = bound.map(\.baseURL).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
                 let baseURL = edits.baseURL ?? boundURL ?? pluginConnector.baseURL
@@ -443,7 +439,6 @@ struct CapabilityInstaller {
                         existing: bound.flatMap { $0.isGlobal ? nil : $0 },
                         modelContext: modelContext,
                         configInputs: edits.accountConfig,
-                        extraConfigKeys: packageEnvironmentKeys,
                         baseURL: baseURL,
                         alias: structure.alias,
                         allowCredentialUserInteraction: allowCredentialUserInteraction,
@@ -793,7 +788,6 @@ struct CapabilityInstaller {
         existing: Connector?,
         modelContext: ModelContext,
         configInputs: [String: String],
-        extraConfigKeys: [String],
         baseURL: String,
         alias: String? = nil,
         allowCredentialUserInteraction: Bool,
@@ -875,7 +869,7 @@ struct CapabilityInstaller {
         connector.credentialKeys = retainedKeys
         connector.credentialValues = Array(repeating: "", count: connector.credentialKeys.count)
         connector.configKeys = PluginAccountFieldLayout.configurationKeys(
-            hints: pluginConnector.configHints, environmentKeys: extraConfigKeys
+            hints: pluginConnector.configHints
         )
         let defaults = PluginAccountFieldLayout.defaults(in: package)
         connector.configValues = connector.configKeys.map { configInputs[$0] ?? defaults[$0] ?? "" }

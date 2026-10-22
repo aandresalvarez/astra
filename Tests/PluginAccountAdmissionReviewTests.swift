@@ -56,7 +56,7 @@ struct PluginAccountAdmissionReviewTests {
         #expect(state.attentionMessages(for: account).isEmpty)
     }
 
-    @Test("Every account carries package settings without duplicating account structure")
+    @Test("Additional accounts omit skill settings and account structure from configuration")
     func additionalAccountFieldLayout() throws {
         let env = try Fixtures.Environment()
         var package = Fixtures.package(version: "1.0.0")
@@ -67,10 +67,10 @@ struct PluginAccountAdmissionReviewTests {
         try env.install(package)
         let account = try PluginOperations.addAccount(for: package.connectors[0], of: package,
             in: env.workspace, modelContext: env.context)
-        #expect(account.configKeys.contains("PROJECT"))
+        #expect(!account.configKeys.contains("PROJECT"))
         #expect(!account.configKeys.contains("ENDPOINT"))
         #expect(!account.configKeys.contains("ALIAS"))
-        #expect(account.configValue("PROJECT") == "default-project")
+        #expect(account.configValue("PROJECT").isEmpty)
     }
 
     @Test("An unaccepted definition cannot change accounts before Update", arguments: ["add", "default"])
