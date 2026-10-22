@@ -9,6 +9,39 @@ import ASTRAModels
 @MainActor
 @Suite("Plugin account edits preserve accepted credentials", .serialized)
 struct PluginAccountCredentialGenerationTests {
+    @Test("An added account cannot inherit a legacy account's shared credential alias")
+    func addedAccountHasAnEmptyPrivateCredentialGeneration() throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let original = try env.enable("legacy-account-token")
+            original.credentialNamespaceID = nil
+            #expect(original.restorePreviouslyStoredCredential(key: "API_TOKEN", value: "legacy-account-token"))
+            let store = KeychainSecretStore()
+            #expect(store.delete(key: "API_TOKEN", entityID: KeychainSecretStore.connectorEntityID(for: original.id)))
+            #expect(original.currentCredentialValue(forKey: "API_TOKEN") == "legacy-account-token")
+            let task = AgentTask(title: "Accepted legacy account", goal: "Keep its credentials", workspace: env.disk.workspace)
+            env.disk.context.insert(task)
+            let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, pluginDefinitions: [env.package])
+            env.disk.context.insert(request)
+            try env.disk.context.save()
+            let frozen = try #require(request.executionPolicySnapshot?.pluginAccounts?.first)
+            let added = try PluginOperations.addAccount(for: env.package.connectors[0], of: env.package,
+                in: env.disk.workspace, modelContext: env.disk.context)
+            #expect(added.credentialNamespaceID != nil)
+            #expect(added.credentialNamespaceID != original.credentialNamespaceID)
+            #expect(added.currentCredentialValue(forKey: "API_TOKEN") == nil)
+            #expect(original.currentCredentialValue(forKey: "API_TOKEN") == "legacy-account-token")
+            #expect(frozen.makeAccount().currentCredentialValue(forKey: "API_TOKEN") == "legacy-account-token")
+            let reopened = try env.disk.disk.reopen()
+            let accounts = try reopened.mainContext.fetch(FetchDescriptor<Connector>())
+            let saved = try #require(accounts.first { $0.id == added.id })
+            #expect(saved.credentialNamespaceID == added.credentialNamespaceID)
+            #expect(saved.currentCredentialValue(forKey: "API_TOKEN") == nil)
+            #expect(accounts.first { $0.id == original.id }?.currentCredentialValue(forKey: "API_TOKEN") == "legacy-account-token")
+        }
+    }
+
     @Test("Repeated Add keeps the credential an accepted queued account used", arguments: [false, true])
     func queuedAccountKeepsItsAcceptedValue(legacy: Bool) throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
