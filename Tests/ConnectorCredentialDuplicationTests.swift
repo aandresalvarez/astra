@@ -74,8 +74,8 @@ struct ConnectorCredentialDuplicationTests {
         }
     }
 
-    @Test("An unproved duplication save keeps the original account enabled and reclaims only its copy")
-    func failedSaveKeepsSource() throws {
+    @Test("An unproved duplication save keeps the original account enabled and reclaims only its copy", arguments: [false, true])
+    func failedSaveKeepsSource(promotedSetting: Bool) throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
             let env = try ConnectorCredentialEditorTests.Fixture()
             defer { env.disk.disk.removeFiles() }
@@ -83,11 +83,16 @@ struct ConnectorCredentialDuplicationTests {
             source.isGlobal = true
             source.workspace = nil
             env.disk.workspace.enabledGlobalConnectorIDs = [source.id.uuidString]
+            if promotedSetting {
+                source.originPackageID = "imported.tracker"
+                source.configKeys = ["tracker_project"]
+                source.configValues = ["ENG-1"]
+            }
             try env.disk.context.save()
             var staged: Connector?
             #expect(throws: ConnectorCredentialEditor.Failure.self) {
                 _ = try ConnectorCredentialDuplication.duplicate(source, in: env.disk.workspace, modelContext: env.disk.context,
-                    persist: { context in
+                    settingResolver: PluginConnectorFieldTrustTests.StubCreator.self, persist: { context in
                         staged = try context.fetch(FetchDescriptor<Connector>()).first { $0.id != source.id }
                         #expect(try ModelContext(context.container).fetch(FetchDescriptor<Connector>()).count == 1)
                     })
@@ -100,7 +105,13 @@ struct ConnectorCredentialDuplicationTests {
             let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.disk.context))
             #expect(try journal.pending().isEmpty)
             #expect(!env.disk.context.hasChanges)
-            let retry = try ConnectorCredentialDuplication.duplicate(source, in: env.disk.workspace, modelContext: env.disk.context)
+            let retry = try ConnectorCredentialDuplication.duplicate(source, in: env.disk.workspace, modelContext: env.disk.context,
+                settingResolver: PluginConnectorFieldTrustTests.StubCreator.self)
+            if promotedSetting {
+                #expect(retry.currentCredentialValue(forKey: "TRACKER_PROJECT") == "ENG-1")
+                #expect(retry.configValue("tracker_project").isEmpty)
+                #expect(source.configValue("tracker_project") == "ENG-1")
+            }
             #expect(retry.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
             #expect(try ModelContext(env.disk.context.container).fetch(FetchDescriptor<Connector>()).count == 2)
         }
@@ -136,24 +147,51 @@ struct ConnectorCredentialDuplicationTests {
         }
     }
 
-    @Test("Duplicating preserves a newer promoted setting without borrowing another namespace")
-    func promotedSettingKeepsAcceptedValue() throws {
+    @Test("Duplicating migrates settled settings and preserves conflicting source fields", arguments: ["missing", "matching", "conflicting", "mixed"])
+    func promotedSettingKeepsAcceptedValue(vaultState: String) throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
             let env = try ConnectorCredentialEditorTests.Fixture()
             defer { env.disk.disk.removeFiles() }
             let source = try env.enable()
             source.originPackageID = "imported.tracker"
-            source.configKeys = ["tracker_project"]
-            source.configValues = ["ENG-1"]
-            #expect(source.restorePreviouslyStoredCredential(key: "TRACKER_PROJECT", value: "ENG-2"))
+            source.configKeys = ["tracker_project", "PUBLIC_FLAG"]
+            source.configValues = ["ENG-1", "unchanged"]
+            if vaultState == "mixed" {
+                source.configKeys.append("TRACKER_PROJECT")
+                source.configValues.append("ENG-2")
+            }
+            let accepted = vaultState == "conflicting" || vaultState == "mixed" ? "ENG-2" : "ENG-1"
+            if vaultState != "missing" {
+                #expect(source.restorePreviouslyStoredCredential(key: "TRACKER_PROJECT", value: accepted))
+            }
             try env.disk.context.save()
+            let namespace = source.credentialNamespaceID
+            let originalKeys = source.configKeys
+            let originalValues = source.configValues
             let copy = try ConnectorCredentialDuplication.duplicate(source, in: env.disk.workspace, modelContext: env.disk.context,
                 settingResolver: PluginConnectorFieldTrustTests.StubCreator.self)
-            #expect(copy.currentCredentialValue(forKey: "TRACKER_PROJECT") == "ENG-2")
-            #expect(copy.configValue("tracker_project") == "ENG-1")
+            #expect(copy.currentCredentialValue(forKey: "TRACKER_PROJECT") == accepted)
+            #expect(copy.configValue("tracker_project") == ((vaultState == "conflicting" || vaultState == "mixed") ? "ENG-1" : ""))
+            #expect(!copy.configKeys.contains("TRACKER_PROJECT"))
+            #expect(copy.configValue("PUBLIC_FLAG") == "unchanged")
+            #expect(copy.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
+            #expect(copy.credentialNamespaceID != namespace)
+            #expect(source.credentialNamespaceID == namespace)
+            #expect(source.configKeys == originalKeys && source.configValues == originalValues)
+            let saved = try #require(try ModelContext(env.disk.context.container).fetch(FetchDescriptor<Connector>()).first { $0.id == copy.id })
+            #expect(saved.credentialNamespaceID == copy.credentialNamespaceID)
+            #expect(saved.configKeys == copy.configKeys && saved.configValues == copy.configValues)
+            var creator = env.package
+            creator.id = "imported.tracker"
+            creator.connectors[0].configHints = [.init(key: "TRACKER_PROJECT", hint: "Project", isList: false)]
+            let runtime = PluginRuntimeProjection.project(workspace: env.disk.workspace, packages: [env.package],
+                connectorMode: .runtimeCopies, definitions: [creator])
+            let projected = try #require(runtime.connectors.first { $0.id == copy.id })
+            #expect(projected.currentCredentialValue(forKey: "TRACKER_PROJECT") == accepted)
+            #expect(projected.configValue("tracker_project").isEmpty)
+            #expect(!env.disk.context.hasChanges)
         }
     }
-
 
     @Test("A local duplicate keeps the shared original bound in other workspaces")
     func otherWorkspaceKeepsSharedAccount() throws {
@@ -181,19 +219,31 @@ struct ConnectorCredentialDuplicationTests {
         }
     }
 
-    @Test("Duplication refuses invalid raw credentials without changing the selected source")
-    func rawLegacyValueRequiresAdmission() throws {
+    @Test("Duplication refuses invalid raw credentials without changing the selected source", arguments: [false, true])
+    func rawLegacyValueRequiresAdmission(promotedSetting: Bool) throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
             let env = try ConnectorCredentialEditorTests.Fixture()
             defer { env.disk.disk.removeFiles() }
             let source = try env.enable()
-            source.credentialKeys.append("SECOND_TOKEN")
-            source.credentialValues.append("your-token-here")
-            try env.disk.context.save()
-            #expect(throws: ConnectorCredentialGenerationTransaction.Failure.self) {
-                _ = try ConnectorCredentialDuplication.duplicate(source, in: env.disk.workspace, modelContext: env.disk.context)
+            let key = promotedSetting ? "TRACKER_PROJECT" : "SECOND_TOKEN"
+            if promotedSetting {
+                source.originPackageID = "imported.tracker"
+                source.configKeys = ["tracker_project"]
+                source.configValues = ["your-token-here"]
+            } else {
+                source.credentialKeys.append(key)
+                source.credentialValues.append("your-token-here")
             }
-            #expect(source.credentialValues.contains("your-token-here"))
+            try env.disk.context.save()
+            do {
+                _ = try ConnectorCredentialDuplication.duplicate(source, in: env.disk.workspace, modelContext: env.disk.context,
+                    settingResolver: PluginConnectorFieldTrustTests.StubCreator.self)
+                Issue.record("Invalid legacy credential was duplicated")
+            } catch ConnectorCredentialGenerationTransaction.Failure.legacyCredentialRejected(let rejectedKey, _) {
+                #expect(rejectedKey == key)
+            } catch { Issue.record("Expected credential rejection, got \(error)") }
+            #expect((promotedSetting ? source.configValues : source.credentialValues).contains("your-token-here"))
+            #expect(!env.disk.context.hasChanges)
             #expect(source.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
             #expect(try ModelContext(env.disk.context.container).fetch(FetchDescriptor<Connector>()).count == 1)
             let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.disk.context))
