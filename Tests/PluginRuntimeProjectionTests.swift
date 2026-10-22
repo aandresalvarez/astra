@@ -71,8 +71,8 @@ struct PluginRuntimeProjectionTests {
         #expect(!projection.defaultAccountIDs.contains(accounts[0].id))
     }
 
-    @Test("A shared creator account retains every bound component's declared fields")
-    func sharedCreatorAccountRetainsAllDeclarations() throws {
+    @Test("A shared creator account retains all declarations even when an override emits it first", arguments: [false, true])
+    func sharedCreatorAccountRetainsAllDeclarations(attachedToOverride: Bool) throws {
         let context = try makeContext()
         var package = try builtIn("jira-workflow")
         var second = package.connectors[0]
@@ -96,12 +96,37 @@ struct PluginRuntimeProjectionTests {
         account.credentialValues = ["", "", ""]
         account.configKeys = ["JIRA_PROJECTS", "STALE_SETTING"]
         account.configValues = ["CLIN", "stale"]
+        var authored: Skill?
+        if attachedToOverride {
+            let row = Skill(name: "Authored Jira", allowedTools: ["Read"])
+            row.workspace = workspace
+            context.insert(row)
+            account.skill = row
+            WorkspaceCapabilityActivation.setOverridden(
+                true, componentID: CapabilityResourceOrigin.componentID(for: package.skills[0]),
+                rowID: row.id, on: activation
+            )
+            authored = row
+        }
         for spec in package.connectors { WorkspaceCapabilityActivation.bind(account, toComponent: CapabilityResourceOrigin.componentID(for: spec), of: activation) }
         try context.save()
         let projection = PluginRuntimeProjection.project(workspace: workspace, packages: [package], connectorMode: .runtimeCopies, definitions: [package])
         let copy = try #require(projection.connectors.first { $0.id == account.id })
         #expect(Set(copy.credentialKeys) == ["FIRST_TOKEN", "SECOND_TOKEN"])
         #expect(Set(copy.configKeys) == ["JIRA_PROJECTS"])
+        #expect(projection.connectors.filter { $0.id == account.id }.count == 1)
+        if let authored {
+            let skill = try #require(projection.skills.first { $0.id == authored.id })
+            #expect(skill.connectors.contains { $0 === copy })
+            #expect(copy.skill === skill)
+            #expect(projection.accountOwnerSkillIDs[account.id] == [skill.id])
+        }
+        // Runtime filtering must never remove saved configuration or markers.
+        #expect(account.credentialKeys == ["FIRST_TOKEN", "SECOND_TOKEN", "STALE_TOKEN"])
+        #expect(account.configKeys == ["JIRA_PROJECTS", "STALE_SETTING"])
+        let editable = PluginRuntimeProjection.project(workspace: workspace, packages: [package], definitions: [package])
+        #expect(editable.connectors.first { $0.id == account.id } === account)
+        #expect(!context.hasChanges)
     }
 
     private static var retained: [ModelContainer] = []
