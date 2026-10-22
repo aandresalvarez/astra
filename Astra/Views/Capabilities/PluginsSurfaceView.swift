@@ -218,6 +218,7 @@ struct PluginsSurfaceView: View {
             // window) reloads this surface's catalog snapshot; a workspace
             // change is observed through the model.
             if (notification.object as? CapabilityCatalogPersistenceChange)?.workspaceID == nil {
+                confirming = nil
                 catalog.loadApprovedCapabilities(announceLibraryMutations: false)
             }
             refreshStatuses()
@@ -732,7 +733,9 @@ struct PluginsSurfaceView: View {
             onConfirm: {
                 confirming = nil
                 switch confirmation {
-                case .remove: remove(row.package, missing: row.display.isMissing)
+                case .remove(let source):
+                    guard source.matches(row) else { return }
+                    remove(row.package, missing: source.isMissing)
                 case .deleteAccount: if let account { deleteAccount(account) }
                 }
             }

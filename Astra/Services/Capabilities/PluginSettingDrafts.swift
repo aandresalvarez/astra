@@ -26,8 +26,25 @@ struct PluginSettingDrafts {
         return next
     }
 
-    static func source(package: PluginPackage, activation: PluginActivation?) -> String {
-        "\(activation?.id.uuidString ?? "none")|\(activation?.revision ?? -1)|\(PluginDefinitionDigest.content(of: package))"
+    struct Source: Equatable {
+        let activationID: UUID?
+        let revision: Int
+        let definitionDigest: String
+        let fields: [String]
+    }
+
+    func canSave(_ field: String, in activation: PluginActivation?) -> Bool {
+        belongs(to: activation) && loadedValues[field] != nil && failures[field] == nil
+    }
+
+    static func source(package: PluginPackage, activation: PluginActivation?) -> Source {
+        let fields = package.skills.flatMap { skill in
+            PluginsSurfacePresentation.settingKeys(of: skill, in: activation, package: package).map {
+                PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: $0)
+            }
+        }
+        return Source(activationID: activation?.id, revision: activation?.revision ?? -1,
+            definitionDigest: PluginDefinitionDigest.content(of: package), fields: fields)
     }
 
     static func load(

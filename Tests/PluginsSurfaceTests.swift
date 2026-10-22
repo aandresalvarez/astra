@@ -119,6 +119,8 @@ struct PluginsSurfaceTests {
         #expect(snapshot.failures[secret] != nil)
         #expect(snapshot.values[project] == "visible-project")
         #expect(snapshot.failures[project] == nil)
+        #expect(!snapshot.canSave(secret, in: activation))
+        #expect(snapshot.canSave(project, in: activation))
     }
 
     @Test("Switching workspaces invalidates drafts even when activations have the same revision")
@@ -201,7 +203,8 @@ struct PluginsSurfaceTests {
     @Test("A deleted authored override returns settings to the package, matching runtime")
     func deletedOverrideReturnsPackageSettings() throws {
         let env = try PluginOperationsTests.Environment()
-        let candidate = PluginOperationsTests.package(version: "1.0.0")
+        var candidate = PluginOperationsTests.package(version: "1.0.0")
+        candidate.skills[0].environmentKeys = ["PROJECT", "API_TOKEN"]
         try env.install(candidate)
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: candidate.id, in: env.workspace))
         let skill = try #require(candidate.skills.first)
@@ -211,9 +214,42 @@ struct PluginsSurfaceTests {
         WorkspaceCapabilityActivation.setOverridden(true, componentID: CapabilityResourceOrigin.componentID(for: skill), rowID: authored.id, on: activation)
         try env.context.save()
         #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation).isEmpty)
+        let before = PluginSettingDrafts.source(package: candidate, activation: activation)
+        let revision = activation.revision
+        let hidden = PluginSettingDrafts.load(package: candidate, activation: activation) { _, _, _ in "saved-value" }
+        #expect(hidden.values.isEmpty)
+        let field = PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: "PROJECT")
+        #expect(!hidden.canSave(field, in: activation))
         env.context.delete(authored)
         try env.context.save()
         #expect(PluginsSurfacePresentation.settingKeys(of: skill, in: activation) == skill.environmentKeys)
+        #expect(activation.revision == revision)
+        #expect(PluginSettingDrafts.source(package: candidate, activation: activation) != before)
+        let fresh = hidden.reloading(from: PluginSettingDrafts.load(package: candidate, activation: activation) { _, _, _ in "saved-value" })
+        #expect(fresh.values[field] == "saved-value")
+        #expect(fresh.canSave(field, in: activation))
+    }
+
+    @Test("Removal consent expires when an absent plugin is imported or its definition or activation changes")
+    func removalConsentTracksDisplayedState() {
+        let candidate = package("consent", name: "Consent")
+        var display = PluginsSurfacePresentation.makeState([input(candidate, isEnabled: true)], query: "").allRows[0]
+        display.isMissing = true
+        let activation = PluginActivation(pluginID: candidate.id)
+        let absent = PluginRow(package: candidate, activation: activation, display: display)
+        let source = PluginRemovalSource(row: absent)
+        #expect(source.matches(absent))
+        display.isMissing = false
+        let installed = PluginRow(package: candidate, activation: activation, display: display)
+        #expect(!source.matches(installed))
+        let installedConsent = PluginRemovalSource(row: installed)
+        var updated = candidate
+        updated.skills[0].environmentValues = ["changed-without-version-bump"]
+        #expect(!installedConsent.matches(PluginRow(package: updated, activation: activation, display: display)))
+        activation.revision += 1
+        #expect(!installedConsent.matches(installed))
+        #expect(!installedConsent.matches(PluginRow(package: candidate,
+            activation: PluginActivation(pluginID: candidate.id), display: display)))
     }
 
     @Test("Delete confirmation names the workspace alias of a colliding shared account")
@@ -394,7 +430,10 @@ struct PluginsSurfaceTests {
 
     @Test("Removing and deleting an account ask first; removing keeps accounts")
     func destructiveActionsConfirm() {
-        let remove = PluginsSurfaceConfirmation.remove(packageID: "jira").copy(name: "Jira")
+        let candidate = package("jira", name: "Jira")
+        let display = PluginsSurfacePresentation.makeState([input(candidate, isEnabled: true)], query: "").allRows[0]
+        let row = PluginRow(package: candidate, activation: nil, display: display)
+        let remove = PluginsSurfaceConfirmation.remove(source: PluginRemovalSource(row: row)).copy(name: "Jira")
         #expect(remove.verb == "Remove")
         #expect(remove.message.contains("every workspace"))
         #expect(remove.message.contains("saved keys stay"))
