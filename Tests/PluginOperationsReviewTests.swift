@@ -206,6 +206,7 @@ struct PluginOperationsReviewTests {
 
         // An account Remove left stamped (its credentials couldn't move).
         let package = Fixtures.package(version: "1.0.0")
+        try env.context.save()
         try env.install(package)
         let kept = try #require(env.workspace.connectors.first { $0.originPackageID == package.id })
         try CapabilityUninstaller(library: env.library).remove(package, modelContext: env.context)
