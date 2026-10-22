@@ -9,6 +9,35 @@ import ASTRAModels
 @MainActor
 @Suite("Plugin Remove commit proof", .serialized)
 struct PluginRemovalCommitTests {
+    @Test("Remove refuses unrelated pending edits before recovery, save or rollback", arguments: [false, true])
+    func removePreservesUnrelatedPendingEdits(saveSucceeds: Bool) throws {
+        let env = try Fixture(activated: true)
+        defer { env.disk.removeFiles() }
+        let originalName = env.workspace.name
+        let original = WorkspaceCapabilityActivation.snapshot(env.workspace)
+        env.workspace.name = "Unrelated unsaved editor work"
+        var called = false
+        do {
+            _ = try CapabilityUninstaller(library: env.library).remove(env.package, modelContext: env.context,
+                persist: { _, context in
+                    called = true
+                    if saveSucceeds { try? context.save() }
+                    return saveSucceeds
+                })
+            Issue.record("Remove accepted another workflow's pending edit")
+        } catch { #expect(error as? PluginOperations.OperationError == .pendingEdits) }
+        #expect(!called)
+        let hasPendingEdits = env.context.hasChanges
+        #expect(hasPendingEdits)
+        #expect(env.workspace.name == "Unrelated unsaved editor work")
+        #expect(WorkspaceCapabilityActivation.snapshot(env.workspace) == original)
+        let fresh = ModelContext(env.disk.container)
+        #expect(try fresh.fetch(FetchDescriptor<Workspace>()).first?.name == originalName)
+        #expect(try fresh.fetch(FetchDescriptor<PluginOperationReceipt>()).isEmpty)
+        #expect(env.library.installedPackage(id: env.package.id) != nil)
+        #expect(try env.journal.pendingIDs().isEmpty)
+    }
+
     @Test("Remove without activations cannot delete files on an unpersisted success callback")
     func noActivationNeedsActualSave() throws {
         let env = try Fixture()
