@@ -6,6 +6,7 @@ import ASTRACore
 struct PluginSourceGitRunner: BinaryRunner {
     var helper: @Sendable () -> URL? = { bundledHelper() }
     var maximumOutputBytes = 8 * 1024 * 1024
+    var systemGitLookup: @Sendable (TimeInterval) async -> RunResult = { await PluginSourceGitExecutable.lookup(timeout: $0) }
 
     static var bundledHelperURL: URL {
         let root: URL
@@ -31,8 +32,24 @@ struct PluginSourceGitRunner: BinaryRunner {
         guard let helper = helper() else {
             return RunResult(outcome: .launchFailed("Plugin fetch resource helper is missing; rebuild ASTRA."), stdout: "", stderr: "")
         }
-        return await ProcessBinaryRunner().run(path: helper.path, args: [path] + args,
-            timeout: timeout, environment: environment, currentDirectory: nil,
+        guard !Task.isCancelled else { return .cancelled(stdout: "", stderr: "") }
+        guard timeout.isFinite, timeout > 0 else { return .timedOut(stdout: "", stderr: "") }
+        let started = ProcessInfo.processInfo.systemUptime
+        var executable = path
+        if path == "/usr/bin/git" {
+            let lookup = await systemGitLookup(min(10, timeout))
+            if Task.isCancelled { return .cancelled(stdout: "", stderr: "") }
+            if lookup.cancelled || lookup.timedOut { return lookup }
+            guard ProcessInfo.processInfo.systemUptime - started < timeout else { return .timedOut(stdout: "", stderr: "") }
+            guard let selected = PluginSourceGitExecutable.path(from: lookup) else {
+                return .launchFailed("Git from the selected developer tools could not be resolved; check the Xcode command-line tools installation.")
+            }
+            executable = selected
+        }
+        let remaining = timeout - (ProcessInfo.processInfo.systemUptime - started)
+        guard remaining > 0 else { return .timedOut(stdout: "", stderr: "") }
+        return await ProcessBinaryRunner().run(path: helper.path, args: [executable] + args,
+            timeout: remaining, environment: environment, currentDirectory: nil,
             maximumOutputBytes: maximumOutputBytes, terminateProcessGroup: true, stopOnOutputLimit: true)
     }
 }
