@@ -539,13 +539,11 @@ struct PluginActivationReviewTests {
         #expect(account.credentialKeys == ["TRACKER_TOKEN"])
     }
 
-    /// One runtime copy serves a run scoped to either binder, so with no
-    /// creator to read it keeps only the settings both declare: the skill
-    /// settings an account carries plain. A binder's own connector setting
-    /// is a credential of a third-party plugin, so a plain value the row
-    /// still holds for it reaches no run.
-    @Test("A shared account whose creator can't be found keeps only the settings every binder declares")
-    func sharedAccountWithUnresolvableCreatorKeepsCommonSettings() throws {
+    /// Skills own their settings even when several binders declare the same
+    /// key. An account with an unreadable creator cannot vouch for copies of
+    /// those values or a third-party connector's unpromoted credential.
+    @Test("A shared account with an unreadable creator cannot supply activation-owned skill settings")
+    func sharedAccountWithUnresolvableCreatorWithholdsSkillSettings() throws {
         let env = try Fixtures.Environment()
         try env.install(Fixtures.package(version: "1.0.0"))
         let account = try #require(env.workspace.connectors.first { $0.originPackageID == "ops.report" })
@@ -575,12 +573,13 @@ struct PluginActivationReviewTests {
             let copy = try #require(PluginRuntimeProjection.project(
                 workspace: env.workspace, packages: packages, connectorMode: .runtimeCopies, definitions: packages
             ).connectors.first { $0.id == account.id })
-            #expect(copy.configKeys.contains("SHARED"))
+            #expect(!copy.configKeys.contains("SHARED") && !copy.configValues.contains("shared-value"))
             #expect(!copy.configKeys.contains("ONLY_B") && !copy.configValues.contains("b-value"))
             #expect(!copy.configKeys.contains("TRACKER_REGION") && !copy.configValues.contains("plain-region"))
             #expect(copy.credentialKeys.isEmpty)
         }
         #expect(account.config["ONLY_B"] == "b-value" && account.config["TRACKER_REGION"] == "plain-region")
+        #expect(account.config["SHARED"] == "shared-value")
     }
 
     @Test("A queued launch keeps coherent frozen acceptance and rejects changed definitions when none were frozen")
