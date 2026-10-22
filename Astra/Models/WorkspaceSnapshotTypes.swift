@@ -18,7 +18,8 @@ extension ConnectorSnapshotConfig {
             notes: connector.notes,
             createdAt: connector.createdAt,
             updatedAt: connector.updatedAt,
-            credentialNamespaceID: connector.credentialNamespaceID
+            credentialNamespaceID: connector.credentialNamespaceID,
+            outlookCredentialFormat: connector.outlookCredentialFormat
         )
     }
 }

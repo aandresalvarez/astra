@@ -19,22 +19,20 @@ enum ConnectorCredentialCleanup {
         let outlookConnectorIDs: Set<UUID>
         let connectorIDs: Set<UUID>
         let currentNamespaces: [UUID: Set<String>]
+        let hasUnknownOAuthOwnership: Bool
 
         /// `retained` are connectors a pending workspace deletion still
         /// holds: their mirror may yet be recovered, so what they use stays.
         init(_ connectors: [Connector], retained: [ConnectorKeychainCleanup] = []) {
-            namespaces = Set(connectors.flatMap { KeychainSecretStore.connectorEntityIDs(for: $0) })
-                .union(retained.flatMap {
-                    KeychainSecretStore.connectorEntityIDs(
-                        id: $0.connectorID, serviceType: $0.serviceType, baseURL: $0.baseURL,
-                        originPackageID: $0.originPackageID, originComponentID: $0.originComponentID,
-                        credentialNamespaceID: $0.credentialNamespaceID
-                    )
-                })
+            let live = connectors.map(ConnectorSecretFacts.init(connector:))
+            let all = live + retained.map(\.secretFacts)
+            let owned = all.map(KeychainSecretStore.ownedConnectorEntityIDs(for:))
+            hasUnknownOAuthOwnership = owned.contains { $0 == nil }
+            namespaces = Set(owned.compactMap { $0 }.flatMap { $0 })
             outlookConnectorIDs = Set(connectors.filter(\.isStanfordOutlookMail).map(\.id))
                 .union(retained.filter(\.isStanfordOutlookMail).map(\.connectorID))
             connectorIDs = Set(connectors.map(\.id))
-            currentNamespaces = Dictionary(connectors.map { ($0.id, Set(KeychainSecretStore.connectorEntityIDs(for: $0))) },
+            currentNamespaces = Dictionary(live.map { ($0.id, Set(KeychainSecretStore.ownedConnectorEntityIDs(for: $0) ?? [])) },
                 uniquingKeysWith: { $0.union($1) })
         }
     }
@@ -46,17 +44,14 @@ enum ConnectorCredentialCleanup {
         guard let stored = try? saved.fetch(FetchDescriptor<Connector>()),
               let retained = retainedByPendingWorkspaceDeletions(modelContext: saved),
               let mirrored = connectorsInStoredMirrors(modelContext: saved, extraMirrors: extraMirrors) else { return nil }
-        return Ownership(stored, retained: retained + mirrored.owners)
+        let ownership = Ownership(stored, retained: retained + mirrored.owners)
+        return ownership.hasUnknownOAuthOwnership ? nil : ownership
     }
 
     /// The namespaces `connector` resolves to that nothing in `ownership`
     /// uses, which are the only ones its cleanup removes.
     static func unownedNamespaces(of connector: ConnectorKeychainCleanup, ownership: Ownership) -> Set<String> {
-        Set(KeychainSecretStore.connectorEntityIDs(
-            id: connector.connectorID, serviceType: connector.serviceType, baseURL: connector.baseURL,
-            originPackageID: connector.originPackageID, originComponentID: connector.originComponentID,
-            credentialNamespaceID: connector.credentialNamespaceID
-        )).subtracting(ownership.namespaces)
+        Set(KeychainSecretStore.ownedConnectorEntityIDs(for: connector.secretFacts) ?? []).subtracting(ownership.namespaces)
     }
 
     /// Runs each cleanup against `ownership`, attempting every one. True when
@@ -75,8 +70,10 @@ enum ConnectorCredentialCleanup {
             ])
         }
     ) -> Bool {
+        guard !ownership.hasUnknownOAuthOwnership else { return false }
         var cleared = true
         for cleanup in cleanups {
+            guard KeychainSecretStore.ownedConnectorEntityIDs(for: cleanup.secretFacts) != nil else { cleared = false; continue }
             let keepRegistryEntry = ownership.outlookConnectorIDs.contains(cleanup.connectorID)
             // Owed when a namespace has no live owner, or a mail-registry
             // entry no live Outlook connector claims.
@@ -123,6 +120,7 @@ enum ConnectorCredentialCleanup {
               let mirroredOwners = connectorsInStoredMirrors(modelContext: modelContext, extraMirrors: extraMirrors) else { return false }
         let ready = cleanups.filter { !references.holdsAccount($0) && !mirroredRequests.holdsAccount($0) }
         let ownership = Ownership(stored, retained: retained + mirroredOwners.owners)
+        guard !ownership.hasUnknownOAuthOwnership else { return false }
         let cleared = perform.map { $0(ready, ownership) } ?? run(ready, ownership: ownership)
         return ready.count == cleanups.count && cleared
     }
@@ -400,6 +398,9 @@ enum ConnectorCredentialCleanup {
                 let originPackageID: String?
                 let originComponentID: String?
                 let credentialNamespaceID: UUID?
+                let outlookCredentialFormat: String?
+                let configKeys: [String]?
+                let configValues: [String]?
             }
             let id: String?
             let connectors: [Entry]?
@@ -424,6 +425,8 @@ enum ConnectorCredentialCleanup {
                 connector.originPackageID = entry.originPackageID
                 connector.originComponentID = entry.originComponentID
                 connector.credentialNamespaceID = entry.credentialNamespaceID
+                connector.outlookCredentialFormat = entry.outlookCredentialFormat
+                    ?? OutlookCredentialIdentity.format(keys: entry.configKeys ?? [], values: entry.configValues ?? [])
                 if let id = entry.id.flatMap(UUID.init(uuidString:)) {
                     ids.insert(id)
                     connector.id = id

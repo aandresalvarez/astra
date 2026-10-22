@@ -87,18 +87,7 @@ enum ConnectorCredentialEditor {
         try requireReady(scope, modelContext: modelContext)
         guard !modelContext.hasChanges else { throw Failure.pendingEdits }
         let previous = Snapshot(account)
-        // A promoted legacy setting may have a newer vault value without a
-        // credential marker. Preserve only keys the installed owner declares
-        // secret, never arbitrary latent values of ordinary plain settings.
-        let declared = account.originPackageID.flatMap { origin in
-            settingResolver?.declaredSettingKeysStoredAsCredentials(originPackageID: origin,
-                originComponentID: account.originComponentID)
-        } ?? []
-        let declaredKeys = Set(declared.map(ConnectorCredentialKey.canonical))
-        let protected = account.configKeys.filter {
-            declaredKeys.contains(ConnectorCredentialKey.canonical($0)) && !account.configValue($0).isEmpty
-        }
-        let keeping = Set((account.credentialKeys + protected).map(ConnectorCredentialKey.canonical))
+        let keeping = keepingKeys(of: account, settingResolver: settingResolver)
             .subtracting(replacement == nil ? [key] : [])
         let isNew = modelContext.insertedModelsArray.contains { ($0 as? Connector) === account }
         let prepared = try ConnectorCredentialGenerationTransaction.prepare(account: account, isNew: isNew,
@@ -110,21 +99,8 @@ enum ConnectorCredentialEditor {
             // held. Other workspaces using a shared account need mirrors too.
             let affected = scope.union(try workspaceScope(of: account, modelContext: modelContext))
             try requireReady(affected, modelContext: modelContext)
-            account.credentialNamespaceID = prepared.namespaceID
-            var seen = Set<String>()
-            var keys: [String] = []
-            var values: [String] = []
-            for existing in account.credentialKeys {
-                let canonical = ConnectorCredentialKey.canonical(existing)
-                guard (replacement != nil || canonical != key), seen.insert(canonical).inserted else { continue }
-                if let pending = prepared.pendingLegacyFields[canonical] {
-                    // Preserve even conflicting legacy rows. An unrelated
-                    // edit cannot choose one, erase them, or admit them.
-                    keys += pending.map(\.key); values += pending.map(\.value)
-                } else { keys.append(canonical); values.append("") }
-            }
-            account.credentialKeys = keys
-            account.credentialValues = values
+            prepared.apply(to: account)
+            retainCredentialFields(on: account, prepared: prepared, removing: replacement == nil ? key : nil)
             // An explicit secret edit settles the same key's legacy plain
             // alias too. Keeping it would create a second mutable owner or
             // silently restore a removed credential during a later migration.
@@ -162,7 +138,36 @@ enum ConnectorCredentialEditor {
         }
     }
 
-    private static func workspaceScope(of account: Connector, modelContext: ModelContext) throws -> Set<UUID> {
+    /// Declared latent vault values remain owned when a different field or
+    /// the OAuth authorization changes. Arbitrary plain fields are not probed.
+    static func keepingKeys(of account: Connector, settingResolver: (any ConnectorSettingStorageResolving.Type)?) -> Set<String> {
+        let declared = account.originPackageID.flatMap { origin in
+            settingResolver?.declaredSettingKeysStoredAsCredentials(originPackageID: origin,
+                originComponentID: account.originComponentID)
+        } ?? []
+        let declaredKeys = Set(declared.map(ConnectorCredentialKey.canonical))
+        let protected = account.configKeys.filter {
+            declaredKeys.contains(ConnectorCredentialKey.canonical($0)) && !account.configValue($0).isEmpty
+        }
+        return Set((account.credentialKeys + protected).map(ConnectorCredentialKey.canonical))
+    }
+
+    static func retainCredentialFields(on account: Connector, prepared: ConnectorCredentialGenerationTransaction, removing: String? = nil) {
+        var seen = Set<String>()
+        var keys: [String] = [], values: [String] = []
+        for existing in account.credentialKeys {
+            let canonical = ConnectorCredentialKey.canonical(existing)
+            if let removing, canonical == removing { continue }
+            guard seen.insert(canonical).inserted else { continue }
+            if let pending = prepared.pendingLegacyFields[canonical] {
+                keys += pending.map(\.key); values += pending.map(\.value)
+            } else { keys.append(canonical); values.append("") }
+        }
+        account.credentialKeys = keys
+        account.credentialValues = values
+    }
+
+    static func workspaceScope(of account: Connector, modelContext: ModelContext) throws -> Set<UUID> {
         var ids = Set(try PluginStateMirrors.affectedWorkspaces(workspace: account.workspace,
             accounts: [account], modelContext: modelContext).map(\.id))
         let fresh = ModelContext(modelContext.container)
@@ -178,7 +183,7 @@ enum ConnectorCredentialEditor {
         return ids
     }
 
-    private static func requireReady(_ workspaceIDs: Set<UUID>, modelContext: ModelContext) throws {
+    static func requireReady(_ workspaceIDs: Set<UUID>, modelContext: ModelContext) throws {
         do {
             let files = PluginFileOperationJournal(library: CapabilityLibrary(), approvals: CapabilityApprovalStore())
             guard try files.pendingIDs().isEmpty else { throw Failure.otherChangePending }
@@ -194,7 +199,7 @@ enum ConnectorCredentialEditor {
         catch { throw Failure.unreadableChanges }
     }
 
-    private struct Snapshot {
+    struct Snapshot {
         let namespace: UUID?
         let keys: [String]
         let values: [String]

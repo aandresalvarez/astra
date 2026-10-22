@@ -1688,7 +1688,8 @@ public enum WorkspaceConfigManager {
             accountAlias: connector.accountAlias,
             createdAt: connector.createdAt,
             updatedAt: connector.updatedAt,
-            credentialNamespaceID: connector.credentialNamespaceID
+            credentialNamespaceID: connector.credentialNamespaceID,
+            outlookCredentialFormat: connector.outlookCredentialFormat
         )
     }
 
@@ -2082,6 +2083,7 @@ public enum WorkspaceConfigManager {
         connector.credentialValues = Array(repeating: "", count: config.credentialKeys.count)
         connector.configKeys = config.configKeys
         connector.configValues = config.configValues
+        if let format = config.outlookCredentialFormat { connector.outlookCredentialFormat = format }
         connector.isGlobal = config.isGlobal ?? false
         connector.notes = config.notes
         connector.originPackageID = config.originPackageID
@@ -2119,6 +2121,7 @@ public enum WorkspaceConfigManager {
         connector.credentialValues = Array(repeating: "", count: snapshot.credentialKeys.count)
         connector.configKeys = snapshot.configKeys
         connector.configValues = snapshot.configValues
+        if let format = snapshot.outlookCredentialFormat { connector.outlookCredentialFormat = format }
         connector.isGlobal = false
         connector.notes = snapshot.notes
         connector.createdAt = snapshot.createdAt ?? connector.createdAt
