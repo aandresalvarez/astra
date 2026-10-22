@@ -240,7 +240,8 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         })
         let brokeredConnectors = capabilityScope.reachableConnectors.filter {
-            HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
+            !$0.isStanfordOutlookMail
+                && HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
                 && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
                     .map(brokeredTools.contains) == true
         }

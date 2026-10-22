@@ -886,6 +886,10 @@ final class AgentRuntimeWorker {
             modelContext.insert(skillEvent)
         }
 
+        let mailAccess = StanfordOutlookMailRuntimeAccess.capture(for: task, in: capabilityScope,
+            runtime: selectedRuntime, additionalGrants: executionPolicy.permissionGrantsOverride ?? [])
+        HostControlBrokerSessionRegistry.shared.bindMailReader(mailAccess.makeReader(), taskID: task.id, runID: run.id)
+        defer { HostControlBrokerSessionRegistry.shared.unbindMailReader(taskID: task.id, runID: run.id) }
         HostControlBrokerSessionRegistry.shared.bindHistory(container: modelContext.container, taskID: task.id, runID: run.id)
         defer { HostControlBrokerSessionRegistry.shared.unbindHistory(taskID: task.id, runID: run.id) }
         // The run's own level, fixed here: a write the agent asks for is sent

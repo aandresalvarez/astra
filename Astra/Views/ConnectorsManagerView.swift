@@ -201,7 +201,9 @@ struct ConnectorEditorView: View {
                             .frame(width: 200)
                             .disabled(!WorkspaceCapabilityActivation.canChangeService(of: connector))
                             .help(WorkspaceCapabilityActivation.canChangeService(of: connector)
-                                ? "" : "A plugin uses this account for this service, so its type can't change.")
+                                ? "" : connector.isStanfordOutlookMail
+                                    ? "Outlook sign-in keeps this account's type fixed. Create another account for a different service."
+                                    : "A plugin uses this account for this service, so its type can't change.")
 
                             Picker("Auth", selection: $connector.authMethod) {
                                 ForEach(Self.authMethods(for: connector.serviceType), id: \.self) { a in

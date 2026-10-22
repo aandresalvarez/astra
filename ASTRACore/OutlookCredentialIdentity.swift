@@ -10,6 +10,11 @@ public enum OutlookCredentialIdentity {
     public static let legacyTokenKeys = ["ASTRA_MAIL_ACCESS_TOKEN", "ASTRA_MAIL_REFRESH_TOKEN", "ASTRA_MAIL_EXPIRES_AT"]
     public static var tokenKeys: [String] { legacyTokenKeys + [OutlookOAuthBundle.storageKey] }
 
+    /// OAuth slots are app-owned, never generic plugin credentials.
+    public static func isInternalKey(_ key: String) -> Bool {
+        Set(tokenKeys + [formatKey]).contains(key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased())
+    }
+
     public static func format(keys: [String], values: [String]) -> String? {
         guard let index = keys.firstIndex(of: formatKey), index < values.count, !values[index].isEmpty else { return nil }
         return values[index]
