@@ -64,13 +64,13 @@ struct PluginsSurfaceTests {
         candidate.skills[0].environmentValues = ["default-project", "", ""]
         let activation = PluginActivation(pluginID: candidate.id)
         #expect(PluginsSurfacePresentation.settingKeys(of: candidate.skills[0], in: activation,
-            package: candidate) == ["API_TOKEN"])
+            package: candidate) == ["PROJECT", "API_TOKEN"])
         var second = candidate.connectors[0]
         second.id = "another-api"
         second.credentialHints = [.init(key: "API_TOKEN", hint: "Account token")]
         candidate.connectors.append(second)
         #expect(PluginsSurfacePresentation.settingKeys(of: candidate.skills[0], in: activation,
-            package: candidate).isEmpty)
+            package: candidate) == ["PROJECT"])
         candidate.connectors = []
         #expect(PluginsSurfacePresentation.settingKeys(of: candidate.skills[0], in: activation,
             package: candidate) == candidate.skills[0].environmentKeys)
@@ -78,7 +78,8 @@ struct PluginsSurfaceTests {
 
     @Test("Account-owned environment fields are edited on the account, never as ineffective skill overrides")
     func accountOwnedSettingsStayOnAccounts() throws {
-        let candidate = PluginOperationsTests.package(version: "1.0.0")
+        var candidate = PluginOperationsTests.package(version: "1.0.0")
+        candidate.connectors[0].configHints = [.init(key: "PROJECT", hint: "Account project", isList: false)]
         let skill = try #require(candidate.skills.first)
         let activation = PluginActivation(pluginID: candidate.id)
         #expect(!skill.environmentKeys.isEmpty)

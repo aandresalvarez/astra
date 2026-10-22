@@ -205,7 +205,8 @@ struct CapabilityInstallerTests {
         )
         let edited = try #require(activation.accounts(forComponent: component).first)
         #expect(edited.baseURL == "https://ops.atlassian.net")
-        #expect(edited.config["JIRA_BASE_URL"] == "https://ops.atlassian.net")
+        #expect(edited.baseURL == "https://ops.atlassian.net")
+        #expect(!edited.configKeys.contains("JIRA_BASE_URL"))
         #expect(edited.config["JIRA_PROJECTS"] == "CLIN")
         withExtendedLifetime(container) {}
     }
@@ -321,7 +322,7 @@ struct CapabilityInstallerTests {
         #expect(template.originComponentKind == "template")
     }
 
-    @Test("install stores configured source env values on the connector")
+    @Test("Install keeps account settings and endpoint on their declared owners")
     func installStoresConfiguredSourceEnvValuesOnConnector() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
@@ -352,14 +353,12 @@ struct CapabilityInstallerTests {
 
         #expect(skill.environmentVariables["JIRA_BASE_URL"] == "")
         #expect(connector.baseURL == baseURL)
-        #expect(connector.config == [
-            "JIRA_PROJECTS": "ENG, OPS",
-            "JIRA_BASE_URL": baseURL
-        ])
+        #expect(connector.config == ["JIRA_PROJECTS": "ENG, OPS"])
+        #expect(!connector.configKeys.contains("JIRA_BASE_URL"))
 
         let task = AgentTask(title: "Use Jira", goal: "List tickets", workspace: workspace)
         let resolver = TaskCapabilityResolver(task: task).resolver
-        #expect(resolver.resolvedEnvironmentVariables["JIRA_JIRA_BASE_URL"] == baseURL)
+        #expect(TaskCapabilityResolver(task: task).allConnectors.first { $0.id == connector.id }?.baseURL == baseURL)
         #expect(resolver.resolvedEnvironmentVariables["JIRA_JIRA_PROJECTS"] == "ENG, OPS")
         #expect(resolver.resolvedEnvironmentVariables["JIRA_BASE_URL"] == "")
         #expect(resolver.resolvedEnvironmentVariables["JIRA_PROJECTS"] == nil)
@@ -383,12 +382,13 @@ struct CapabilityInstallerTests {
         second.id = "gcp-staging"
         second.configHints = [.init(key: "GCP_REGION", hint: "Region", isList: false)]
         package.connectors.append(second)
-        // A plain skill setting each account carries; the connectors' own
-        // settings are credentials (not a bundled plugin).
+        // The skill setting belongs to its activation; each connector keeps
+        // its own credentials without copying that setting.
         package.skills[0].environmentKeys.append("GCP_DATASET")
         package.skills[0].environmentValues.append("")
         let installer = CapabilityInstaller(library: library)
-        try installer.install(package, into: workspace, modelContext: context, configInputs: ["GCP_DATASET": "prod"])
+        try installer.install(package, into: workspace, modelContext: context,
+            configInputs: [PluginSetupInputs.key("GCP_DATASET", component: CapabilityResourceOrigin.componentID(for: package.skills[0])): "prod"])
 
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
         let prodID = CapabilityResourceOrigin.componentID(for: package.connectors[0])
@@ -398,14 +398,17 @@ struct CapabilityInstallerTests {
         #expect(workspace.connectors.count == 2 && prod.id != staging.id)
         #expect(prod.originComponentID == prodID && staging.originComponentID == stagingID)
         #expect(prod.credentialKeys == ["GCP_TOKEN", "GCP_PROJECT"] && staging.credentialKeys == ["GCP_TOKEN", "GCP_REGION"])
-        #expect(prod.config == ["GCP_DATASET": "prod"] && staging.config == ["GCP_DATASET": "prod"])
+        #expect(prod.config.isEmpty && staging.config.isEmpty)
+        #expect(activation.configuration(forComponent: CapabilityResourceOrigin.componentID(for: package.skills[0]))["GCP_DATASET"] == "prod")
 
         // Adding again with new settings keeps each component on its own row.
-        try installer.install(package, into: workspace, modelContext: context, configInputs: ["GCP_DATASET": "staging"])
+        try installer.install(package, into: workspace, modelContext: context,
+            configInputs: [PluginSetupInputs.key("GCP_DATASET", component: CapabilityResourceOrigin.componentID(for: package.skills[0])): "staging"])
         #expect(workspace.connectors.count == 2)
         #expect(activation.accounts(forComponent: prodID).map(\.id) == [prod.id])
         #expect(activation.accounts(forComponent: stagingID).map(\.id) == [staging.id])
-        #expect(staging.credentialKeys == ["GCP_TOKEN", "GCP_REGION"] && staging.config == ["GCP_DATASET": "staging"])
+        #expect(staging.credentialKeys == ["GCP_TOKEN", "GCP_REGION"] && staging.config.isEmpty)
+        #expect(activation.configuration(forComponent: CapabilityResourceOrigin.componentID(for: package.skills[0]))["GCP_DATASET"] == "staging")
     }
 
     /// The setup sheet keys each connector's fields and base URL by its
@@ -597,16 +600,18 @@ struct CapabilityInstallerTests {
 
         #expect(globalConnectors.isEmpty)
         #expect(firstConnector.id != secondConnector.id)
-        #expect(firstConnector.config["JIRA_BASE_URL"] == "https://first.atlassian.net")
-        #expect(secondConnector.config["JIRA_BASE_URL"] == "https://second.atlassian.net")
+        #expect(firstConnector.baseURL == "https://first.atlassian.net")
+        #expect(!firstConnector.configKeys.contains("JIRA_BASE_URL"))
+        #expect(secondConnector.baseURL == "https://second.atlassian.net")
+        #expect(!secondConnector.configKeys.contains("JIRA_BASE_URL"))
 
         let firstTask = AgentTask(title: "First", goal: "List tickets", workspace: firstWorkspace)
         let secondTask = AgentTask(title: "Second", goal: "List tickets", workspace: secondWorkspace)
         let firstEnv = TaskCapabilityResolver(task: firstTask).resolver.resolvedEnvironmentVariables
         let secondEnv = TaskCapabilityResolver(task: secondTask).resolver.resolvedEnvironmentVariables
-        #expect(firstEnv["JIRA_JIRA_BASE_URL"] == "https://first.atlassian.net")
+        #expect(TaskCapabilityResolver(task: firstTask).allConnectors.first?.baseURL == "https://first.atlassian.net")
         #expect(firstEnv["JIRA_JIRA_PROJECTS"] == "ONE")
-        #expect(secondEnv["JIRA_JIRA_BASE_URL"] == "https://second.atlassian.net")
+        #expect(TaskCapabilityResolver(task: secondTask).allConnectors.first?.baseURL == "https://second.atlassian.net")
         #expect(secondEnv["JIRA_JIRA_PROJECTS"] == "TWO")
         #expect(firstEnv["JIRA_PROJECTS"] == nil)
         #expect(secondEnv["JIRA_PROJECTS"] == nil)
