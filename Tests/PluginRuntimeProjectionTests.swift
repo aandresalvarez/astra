@@ -129,6 +129,54 @@ struct PluginRuntimeProjectionTests {
         #expect(!context.hasChanges)
     }
 
+    @Test("Plugin-owned override attachments are filtered even when their creator has no active bindings", arguments: [false, true])
+    func inactiveCreatorAttachmentIsFiltered(creatorAvailable: Bool) throws {
+        let context = try makeContext()
+        var creator = try builtIn("jira-workflow")
+        creator.connectors[0].credentialHints = [.init(key: "VISIBLE_TOKEN", hint: "Declared")]
+        creator.connectors[0].configHints = [.init(key: "JIRA_PROJECTS", hint: "Projects", isList: false)]
+        var consumer = creator
+        consumer.id = "authored-consumer"
+        consumer.connectors = []
+        let workspace = Workspace(name: "Inactive creator attachment", primaryPath: "/tmp/projection-inactive-creator")
+        context.insert(workspace)
+        WorkspaceCapabilityActivation.mutate(workspace) { state in
+            state.enableCapability(creator.id)
+            state.enableCapability(consumer.id)
+        }
+        let creatorActivation = try #require(WorkspaceCapabilityActivation.activation(for: creator.id, in: workspace))
+        let consumerActivation = try #require(WorkspaceCapabilityActivation.activation(for: consumer.id, in: workspace))
+        let spec = creator.connectors[0]
+        let account = Connector(name: "Attached account", serviceType: spec.serviceType, baseURL: spec.baseURL, authMethod: spec.authMethod)
+        account.workspace = workspace
+        context.insert(account)
+        CapabilityResourceOrigin.stamp(account, package: creator, componentID: CapabilityResourceOrigin.componentID(for: spec))
+        account.credentialKeys = ["VISIBLE_TOKEN", "RETIRED_TOKEN"]
+        account.credentialValues = ["", ""]
+        account.configKeys = ["JIRA_PROJECTS", "RETIRED_SETTING"]
+        account.configValues = ["CLIN", "retired"]
+        WorkspaceCapabilityActivation.bind(account, toComponent: CapabilityResourceOrigin.componentID(for: spec), of: creatorActivation)
+        let authored = Skill(name: "Authored consumer", allowedTools: ["Read"])
+        authored.workspace = workspace
+        context.insert(authored)
+        account.skill = authored
+        WorkspaceCapabilityActivation.setOverridden(true,
+            componentID: CapabilityResourceOrigin.componentID(for: consumer.skills[0]), rowID: authored.id, on: consumerActivation)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.removeAll { $0 == creator.id } }
+        try context.save()
+        #expect(!creatorActivation.isEnabled)
+        #expect(creatorActivation.bindings.contains { $0.account?.id == account.id })
+        let projection = PluginRuntimeProjection.project(workspace: workspace, packages: [consumer], connectorMode: .runtimeCopies,
+            definitions: creatorAvailable ? [creator, consumer] : [consumer])
+        let copy = try #require(projection.connectors.first { $0.id == account.id })
+        #expect(Set(copy.credentialKeys) == (creatorAvailable ? ["VISIBLE_TOKEN"] : []))
+        #expect(Set(copy.configKeys) == (creatorAvailable ? ["JIRA_PROJECTS"] : []))
+        #expect(projection.skills.first { $0.id == authored.id }?.connectors.contains { $0 === copy } == true)
+        #expect(account.credentialKeys == ["VISIBLE_TOKEN", "RETIRED_TOKEN"])
+        #expect(account.configKeys == ["JIRA_PROJECTS", "RETIRED_SETTING"])
+        #expect(!context.hasChanges)
+    }
+
     private static var retained: [ModelContainer] = []
 
     @Test("Projected IDs survive Remove and Add, and differ between workspaces")
