@@ -119,6 +119,7 @@ struct PluginsSurfaceView: View {
             ).allRows.first ?? placeholderRow(input.package))
         }
         let unusedAccounts = PluginsSurfacePresentation.unusedAccounts(
+            in: workspace,
             workspaceConnectors: currentCapabilities.workspaceConnectors,
             sharedConnectors: currentCapabilities.enabledGlobalConnectors,
             listedPackages: inputs.filter(\.isVisible).map(\.package),

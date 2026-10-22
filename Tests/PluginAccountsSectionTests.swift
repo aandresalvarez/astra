@@ -14,9 +14,10 @@ import ASTRACore
 struct PluginAccountsSectionTests {
     typealias Fixtures = PluginOperationsTests
 
-    private func unused(_ env: Fixtures.Environment, listing packages: [PluginPackage], query: String = "") -> [UUID] {
-        let capabilities = WorkspaceCapabilities(workspace: env.workspace)
+    private func unused(_ env: Fixtures.Environment, listing packages: [PluginPackage], workspace: Workspace? = nil, shared: [Connector] = [], query: String = "") -> [UUID] {
+        let capabilities = WorkspaceCapabilities(workspace: workspace ?? env.workspace, globalConnectors: shared)
         return PluginsSurfacePresentation.unusedAccounts(
+            in: workspace ?? env.workspace,
             workspaceConnectors: capabilities.workspaceConnectors,
             sharedConnectors: capabilities.enabledGlobalConnectors,
             listedPackages: packages,
@@ -33,6 +34,37 @@ struct PluginAccountsSectionTests {
         #expect(account.accountBindings.contains { !$0.isDeleted })
 
         #expect(unused(env, listing: [package]).isEmpty)
+    }
+
+    @Test("A shared account bound only in another workspace remains reachable here")
+    func foreignBindingDoesNotHideSharedAccount() throws {
+        let env = try Fixtures.Environment()
+        let package = Fixtures.package(version: "1.0.0")
+        try env.install(package)
+        let account = try #require(env.workspace.connectors.first)
+        account.isGlobal = true
+        let other = Workspace(name: "Other", primaryPath: env.root.appendingPathComponent("Other").path)
+        env.context.insert(other)
+        WorkspaceCapabilityActivation.mutate(other) { $0.globalConnectorIDs = [account.id.uuidString] }
+        WorkspaceCapabilityActivation.mutate(env.workspace) { $0.globalConnectorIDs = [account.id.uuidString] }
+        try env.context.save()
+
+        #expect(unused(env, listing: [package], workspace: other, shared: [account]) == [account.id])
+        #expect(unused(env, listing: [package], shared: [account]).isEmpty)
+
+        // Once this workspace also shows the account under the plugin, do
+        // not duplicate it in Accounts, including when the plugin is off.
+        let activation = PluginActivation(pluginID: package.id, isEnabled: false)
+        env.context.insert(activation)
+        activation.workspace = other
+        let binding = AccountBinding(componentID: CapabilityResourceOrigin.componentID(for: package.connectors[0]))
+        env.context.insert(binding)
+        binding.activation = activation
+        binding.account = account
+        try env.context.save()
+        #expect(unused(env, listing: [package], workspace: other, shared: [account]).isEmpty)
+        // A filtered-out plugin row no longer represents the account.
+        #expect(unused(env, listing: [], workspace: other, shared: [account]) == [account.id])
     }
 
     @Test("An account Remove keeps is listed, so Delete account can still clear it")
