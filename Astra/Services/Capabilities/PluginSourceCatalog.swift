@@ -112,7 +112,7 @@ enum PluginSourceCatalog {
     }
 
     static let readLimitProblem = "This source holds more than ASTRA reads for plugins "
-        + "(\(PluginSourceLimits.totalBytes / 1024 / 1024) MB or \(PluginSourceLimits.totalFiles.formatted()) files), so it wasn't listed."
+        + "(\(PluginSourceLimits.totalBytes / 1024 / 1024) MB, \(PluginSourceLimits.totalFiles.formatted()) file reads or \(PluginSourceLimits.totalDirectoryEntries.formatted()) directory entries), so it wasn't listed."
 
     static func plugin(
         named name: String,

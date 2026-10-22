@@ -16,8 +16,9 @@ public enum PluginSourceFileRead: Equatable, Sendable {
 /// root is ever read (threat model T4).
 public protocol PluginDirectoryReading {
     func read(_ relativePath: String, limit: Int) -> PluginSourceFileRead
-    /// Names of the entries directly inside `relativeDirectory` ("" is the root).
-    func entries(in relativeDirectory: String) -> [String]
+    /// Names directly inside `relativeDirectory` ("" is the root). Stop
+    /// while enumerating, before accumulating more than `limit` names.
+    func entries(in relativeDirectory: String, limit: Int) -> PluginDirectoryEntries
     /// The same reader rooted at a subdirectory, or nil when that directory
     /// resolves outside this root. A plugin is read through its own scoped
     /// reader, so a symlink in it can't reach a sibling plugin either.
@@ -38,26 +39,46 @@ public enum PluginSourceLimits {
     /// or all name the same one.
     public static let totalBytes = 64 * 1024 * 1024
     public static let totalFiles = 10_000
+    public static let totalDirectoryEntries = 10_000
 }
 
 /// What one listing of a source has read so far, shared by every reader
-/// scoped from the same root (`BudgetedPluginDirectory`). Every path that
+/// scoped from the same root (`BudgetedPluginDirectory`). Directory names
+/// have a separate shared budget, including names never opened as files.
+/// Every path that
 /// exists counts as one file, whether it was read, refused or only found
 /// too large; a missing one doesn't. Past either bound nothing more is
 /// read and `exceeded` is set, so the listing refuses the source.
 public final class PluginSourceReadBudget {
     public let maxBytes: Int
     public let maxFiles: Int
+    public let maxEntries: Int
+    public private(set) var entries = 0
     public private(set) var bytes = 0
     public private(set) var files = 0
     public private(set) var exceeded = false
 
-    public init(maxBytes: Int = PluginSourceLimits.totalBytes, maxFiles: Int = PluginSourceLimits.totalFiles) {
+    public init(maxBytes: Int = PluginSourceLimits.totalBytes, maxFiles: Int = PluginSourceLimits.totalFiles,
+                maxEntries: Int = PluginSourceLimits.totalDirectoryEntries) {
         self.maxBytes = maxBytes
         self.maxFiles = maxFiles
+        self.maxEntries = maxEntries
     }
 
     var remainingBytes: Int { max(0, maxBytes - bytes) }
+    var remainingEntries: Int { max(0, maxEntries - entries) }
+
+    func recordEntries(_ result: PluginDirectoryEntries) -> PluginDirectoryEntries {
+        switch result {
+        case .names(let names):
+            guard names.count <= remainingEntries else { exceeded = true; return .tooLarge }
+            entries += names.count
+            return result
+        case .tooLarge:
+            exceeded = true
+            return .tooLarge
+        }
+    }
 
     /// Records one read of `requested` bytes at most, given what it read.
     /// Returns what the caller may see: `.refused` once a bound is passed.
@@ -97,8 +118,9 @@ public struct BudgetedPluginDirectory: PluginDirectoryReading {
         return budget.record(base.read(relativePath, limit: allowed), requested: limit, allowed: allowed)
     }
 
-    public func entries(in relativeDirectory: String) -> [String] {
-        budget.exceeded ? [] : base.entries(in: relativeDirectory)
+    public func entries(in relativeDirectory: String, limit: Int) -> PluginDirectoryEntries {
+        guard !budget.exceeded else { return .tooLarge }
+        return budget.recordEntries(base.entries(in: relativeDirectory, limit: min(limit, budget.remainingEntries)))
     }
 
     public func scoped(to relativeDirectory: String) -> PluginDirectoryReading? {

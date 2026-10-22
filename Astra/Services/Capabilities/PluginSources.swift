@@ -880,10 +880,10 @@ struct BrokeredPluginDirectory: PluginDirectoryReading {
         return .data(data)
     }
 
-    func entries(in relativeDirectory: String) -> [String] {
+    func entries(in relativeDirectory: String, limit: Int) -> PluginDirectoryEntries {
         guard let directory, let components = Self.components(relativeDirectory),
-              case .opened(let opened) = directory.descend(components[...]) else { return [] }
-        return opened.names()
+              case .opened(let opened) = directory.descend(components[...]) else { return .names([]) }
+        return opened.names(limit: limit)
     }
 
     func scoped(to relativeDirectory: String) -> PluginDirectoryReading? {
@@ -978,11 +978,13 @@ private final class OpenDirectory {
         return code == ENOTDIR && info.st_mode & S_IFMT == S_IFREG ? .missing : .refused
     }
 
-    func names() -> [String] {
-        let copy = dup(descriptor)
+    func names(limit: Int) -> PluginDirectoryEntries {
+        // A fresh open description avoids sharing the enumeration offset
+        // with another scoped reader of this same directory.
+        let copy = openat(descriptor, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard copy >= 0, let stream = fdopendir(copy) else {
             if copy >= 0 { close(copy) }
-            return []
+            return .names([])
         }
         defer { closedir(stream) }
         var names: [String] = []
@@ -990,8 +992,11 @@ private final class OpenDirectory {
             let name = withUnsafePointer(to: entry.pointee.d_name) {
                 $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { String(cString: $0) }
             }
-            if name != "." && name != ".." { names.append(name) }
+            if name != "." && name != ".." {
+                guard names.count < limit else { return .tooLarge }
+                names.append(name)
+            }
         }
-        return names
+        return .names(names)
     }
 }

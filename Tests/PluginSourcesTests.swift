@@ -1289,6 +1289,53 @@ struct PluginSourcesTests {
         #expect(over.problem == PluginSourceCatalog.readLimitProblem)
     }
 
+    @Test("T11: local directory names exhaust the source budget even when no files are read", arguments: ["agents", "commands", "skills"])
+    func folderEntryEnumerationIsBounded(folderName: String) throws {
+        let fixture = try Fixture()
+        let folder = fixture.root.appendingPathComponent("entry-flood", isDirectory: true)
+        try fixture.write([".claude-plugin/plugin.json": Data(#"{"name":"Entry flood"}"#.utf8)], in: folder)
+        let entries = folder.appendingPathComponent(folderName, isDirectory: true)
+        try FileManager.default.createDirectory(at: entries, withIntermediateDirectories: true)
+        for index in 0...PluginSourceLimits.totalFiles {
+            // Empty unsupported entries must count too: byte/read limits
+            // alone never see these names.
+            try Data().write(to: entries.appendingPathComponent("entry-\(index)"))
+        }
+        let source = try #require(PluginSource.make(from: folder.path))
+        let listing = PluginSourceCatalog.listing(for: source, store: fixture.store, installed: [])
+        #expect(listing.exceededReadLimit)
+        #expect(listing.plugins.isEmpty)
+        #expect(listing.problem == PluginSourceCatalog.readLimitProblem)
+    }
+
+    @Test("Directory enumeration stops at the bound and shares its budget across scoped readers")
+    func directoryEntryBudgetIsShared() throws {
+        let fixture = try Fixture()
+        try fixture.write(["one/a": Data(), "one/b": Data(), "two/c": Data(), "two/d": Data()], in: fixture.root)
+        let raw = BrokeredPluginDirectory(root: fixture.root, kind: .folder)
+        let first = try #require(raw.scoped(to: "one"))
+        // At the exact limit there is no truncation, and another enumeration
+        // starts at the beginning rather than sharing a directory offset.
+        let atLimit = first.entries(in: "", limit: 2)
+        guard case .names(let names) = atLimit else { Issue.record("An exact-size listing was refused"); return }
+        #expect(names.sorted() == ["a", "b"])
+        #expect(first.entries(in: "", limit: 1) == .tooLarge)
+        #expect(first.entries(in: "", limit: 0) == .tooLarge)
+        let budget = PluginSourceReadBudget(maxEntries: 3)
+        let reader = BudgetedPluginDirectory(raw, budget: budget)
+        let one = try #require(reader.scoped(to: "one"))
+        let two = try #require(reader.scoped(to: "two"))
+        #expect(one.entries(in: "").sorted() == ["a", "b"])
+        #expect(budget.entries == 2)
+        #expect(!budget.exceeded)
+        #expect(two.entries(in: "").isEmpty)
+        #expect(budget.exceeded)
+        #expect(budget.entries == 2)
+        #expect(budget.files == 0)
+        #expect(one.read("a", limit: 1) == .refused)
+        #expect(one.entries(in: "").isEmpty)
+    }
+
     @Test("T11: a reader under budget never asks for more bytes than the budget has left")
     func budgetNeverReadsPastTheTotal() {
         let budget = PluginSourceReadBudget(maxBytes: 10, maxFiles: 3)
@@ -1858,7 +1905,9 @@ private struct MemoryDirectory: PluginDirectoryReading {
         return size <= limit ? .data(Data(count: size)) : .tooLarge
     }
 
-    func entries(in relativeDirectory: String) -> [String] { files.keys.sorted() }
+    func entries(in relativeDirectory: String, limit: Int) -> PluginDirectoryEntries {
+        files.count <= limit ? .names(files.keys.sorted()) : .tooLarge
+    }
     func scoped(to relativeDirectory: String) -> PluginDirectoryReading? { self }
 }
 
