@@ -213,6 +213,20 @@ public enum AstraSecureKeychainStore {
         return .failed(diagnosis: drainPendingKeychainFailureLocked(scope: "keychain_write")?.diagnosis)
     }
 
+    /// Complete session bundles require an in-place item update: ordinary
+    /// credential saves intentionally replace ACLs through delete/add.
+    public static func saveAtomically(service: String, account: String, value: String,
+                                      label: String?, allowUserInteraction: Bool = false) -> Bool {
+        guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        let saved = AstraSecureKeychain.replaceSecretAtomically(value, forAccount: account, service: service,
+            label: label, keychainPath: keychainPath, bootstrapService: bootstrapService,
+            allowUserInteraction: allowUserInteraction)
+        if !saved { _ = drainPendingKeychainFailureLocked(scope: "oauth_session_write") }
+        return saved
+    }
+
     /// A missing item is not an unreadable vault or bootstrap password.
     /// The status belongs to this read, never a shared last-error slot.
     public static func read(service: String, account: String) -> SecretReadOutcome {
