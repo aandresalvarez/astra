@@ -143,6 +143,40 @@ struct PluginAccountStructureTests {
         #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) == nil)
     }
 
+    @Test("An account structure key cannot also identify an ordinary setting", arguments: [
+        PluginConnector.ConfigHint.accountBaseURL, PluginConnector.ConfigHint.accountAlias
+    ], [false, true])
+    func ordinarySettingCannotReuseStructureKey(storage: String, reverseOrder: Bool) throws {
+        var package = Self.multiTenant()
+        let field = try #require(package.connectors[0].configHints.first { $0.storage == storage })
+        package.connectors[0].configHints[2].key = field.key
+        if reverseOrder { package.connectors[0].configHints.reverse() }
+        let connector = package.connectors[0]
+        #expect(PluginAccountFieldLayout.duplicateStructureKeys(in: connector.configHints) == [field.key])
+        #expect(CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+            .issues.contains { $0.severity == .blocker && $0.title == "Duplicate account field key" })
+        let value = storage == PluginConnector.ConfigHint.accountBaseURL ? "https://team.example.com" : "Team account"
+        #expect(throws: CapabilityInstaller.InstallationError.self) {
+            _ = try CapabilityInstaller.AccountStructure(connector, inputs: [field.key: value])
+        }
+        let env = try Fixtures.Environment()
+        #expect {
+            try env.installer.install(package, into: env.workspace, modelContext: env.context,
+                configInputs: [PluginSetupInputs.key(field.key, component: connector.setupComponentID): value],
+                announceCatalogMutation: false)
+        } throws: { error in
+            guard case CapabilityInstaller.InstallationError.blocked(let messages) = error else { return false }
+            return messages.contains { $0.contains(field.key) && $0.localizedCaseInsensitiveContains("duplicate") }
+        }
+        #expect(env.workspace.connectors.isEmpty)
+        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) == nil)
+        // Setup inputs are exact, case-sensitive keys, and separate ordinary
+        // settings must remain available beside account structure.
+        package.connectors[0].configHints = Self.multiTenant().connectors[0].configHints
+        package.connectors[0].configHints[2].key = field.key.lowercased()
+        #expect(PluginAccountFieldLayout.duplicateStructureKeys(in: package.connectors[0].configHints).isEmpty)
+    }
+
     @Test("Different structure keys remain valid and case-sensitive like setup inputs")
     func distinctStructureInputsRemainValid() {
         for alias in ["TRACKER_ACCOUNT_NAME", "tracker_site"] {
