@@ -116,6 +116,7 @@ struct TaskCapabilityResolver {
 
     private final class Memo {
         var projection: PluginRuntimeProjection?
+        var pendingLegacySkills: [Skill]?
         var enabledCapabilityPackages: [PluginPackage]?
         var globalSkills: [Skill]?
         var globalConnectors: [Connector]?
@@ -225,7 +226,9 @@ struct TaskCapabilityResolver {
             $0.skill == nil && !$0.isGlobal && !bindingOnly.contains($0.id)
                 && !WorkspaceCapabilities.isPluginAccount($0)
         } ?? []
-        var all = fromSkills + enabledPackageConnectors() + standalone
+        // Binding copies own workspace aliases and credential scope.
+        // Prefer them over the same managed account attached to a pinned skill.
+        var all = enabledPackageConnectors() + fromSkills + standalone
 
         if let ws = task.workspace, !ws.enabledGlobalConnectorIDs.isEmpty {
             let enabledIDs = Set(ws.enabledGlobalConnectorIDs)
@@ -287,11 +290,47 @@ struct TaskCapabilityResolver {
     }
 
     private func enabledPackageSkills() -> [Skill] {
-        pluginProjection.skills
+        pluginProjection.skills + pendingLegacySkills()
+    }
+
+    /// A deferred migration leaves V19's explicit selections authoritative.
+    /// Read only selected, policy-allowed legacy rows until an activation exists;
+    /// never synthesize enablement or mutate migration state during resolution.
+    private func pendingLegacySkills() -> [Skill] {
+        if let cached = memo.pendingLegacySkills { return cached }
+        guard let workspace = task.workspace else { return [] }
+        let packages = enabledCapabilityPackages().filter {
+            WorkspaceCapabilityActivation.hasPendingLegacyEnablement($0.id, in: workspace)
+        }
+        guard !packages.isEmpty else {
+            memo.pendingLegacySkills = []
+            return []
+        }
+        let shared = Set(WorkspaceCapabilityActivation.state(of: workspace).globalSkillIDs)
+        let candidates = (workspaceSkills() + globalSkills() + task.skills).filter {
+            !$0.isDeleted && ($0.isGlobal ? shared.contains($0.id.uuidString)
+                : $0.workspace?.id == workspace.id)
+        }
+        let skills = packages.flatMap { package in
+            package.skills.compactMap { spec in
+                guard let row = CapabilityRuntimeResourceMatcher.preferredPackageSkill(spec, package: package, candidates: candidates)
+                else { return nil as Skill? }
+                let copy = TaskExecutionLaunchSnapshotApplicator.detachedSkill(row)
+                for tool in SkillAttachmentVisibility.tools(of: row, in: workspace) {
+                    _ = TaskExecutionLaunchSnapshotApplicator.detachedLocalTool(tool, skill: copy)
+                }
+                for account in SkillAttachmentVisibility.connectors(of: row, in: workspace) {
+                    _ = TaskExecutionLaunchSnapshotApplicator.detachedConnector(account, skill: copy)
+                }
+                return copy
+            }
+        }
+        memo.pendingLegacySkills = skills
+        return skills
     }
 
     private func enabledPackageConnectors() -> [Connector] {
-        pluginProjection.connectors
+        pluginProjection.connectors + pendingLegacySkills().flatMap(\.connectors)
     }
 
     private func enabledPackageLocalTools() -> [LocalTool] {

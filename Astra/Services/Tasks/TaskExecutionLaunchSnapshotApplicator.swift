@@ -44,6 +44,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             pluginDefinitions: policy.pluginDefinitions,
             pluginAccounts: policy.pluginAccounts,
             accountInventory: policy.accountInventory,
+            standaloneToolIDs: policy.standaloneToolIDs,
             pluginOverrides: policy.pluginOverrides,
             authoredSkills: policy.authoredSkills,
             pendingLegacyPluginState: policy.pendingLegacyPluginState,
@@ -67,6 +68,9 @@ enum TaskExecutionLaunchSnapshotApplicator {
             workspace: workspace
         )
         if let workspace, let live = source.workspace {
+            workspace.launchStandaloneToolRoles = snapshot.standaloneToolIDs.map {
+                TaskStandaloneToolRoles.LaunchEvidence.accepted($0)
+            } ?? .legacy
             WorkspaceCapabilityActivation.applyFrozenPendingLegacy(snapshot.pendingLegacyPluginState, to: workspace)
             // The accounts and definitions frozen with them: an account
             // edited or deleted, or a plugin updated, while the request
@@ -387,8 +391,9 @@ enum TaskExecutionLaunchSnapshotApplicator {
                 && !frozenRowIDs.contains(connector.id)
                 && !(connector.isGlobal && listedConnectors.contains(connector.id.uuidString))
         }
+        let acceptedStandalone = Set(snapshot.standaloneToolIDs ?? [])
         workspace.localTools.removeAll { tool in
-            unlinked.toolIDs.contains(tool.id) && !frozenRowIDs.contains(tool.id) && !frozenTools.contains(tool.id)
+            unlinked.toolIDs.contains(tool.id) && !acceptedStandalone.contains(tool.id) && !frozenRowIDs.contains(tool.id) && !frozenTools.contains(tool.id)
                 && !(tool.isGlobal && listedTools.contains(tool.id.uuidString))
         }
     }

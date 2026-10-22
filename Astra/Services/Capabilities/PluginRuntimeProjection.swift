@@ -113,11 +113,10 @@ struct PluginRuntimeProjection {
                             skills.append(copy)
                             // The row's own attachments in this workspace
                             // come with it, wired to the copy.
-                            for tool in row.localTools where !tool.isDeleted
-                                && (tool.isGlobal || tool.workspace == nil || tool.workspace?.id == workspace.id) {
+                            for tool in SkillAttachmentVisibility.tools(of: row, in: workspace) {
                                 tools.append(TaskExecutionLaunchSnapshotApplicator.detachedLocalTool(tool, skill: copy))
                             }
-                            for connector in attachedConnectors(of: row, in: workspace)
+                            for connector in SkillAttachmentVisibility.connectors(of: row, in: workspace)
                             where seenConnectorIDs.insert(connector.id).inserted {
                                 let accountCopy = TaskExecutionLaunchSnapshotApplicator.detachedConnector(connector, skill: copy)
                                 // A later binding may claim this attachment. Keep
@@ -347,18 +346,6 @@ struct PluginRuntimeProjection {
     /// it keeps skipping the component, and the launch carries the row.
     private static func overrideRowIsGone(in workspace: Workspace) -> Bool {
         workspace.modelContext != nil
-    }
-
-    /// The connectors attached to an override row that its workspace
-    /// reaches through it: its own, or shared ones it turned on.
-    private static func attachedConnectors(of row: Skill, in workspace: Workspace) -> [Connector] {
-        let enabledShared = Set(WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs)
-        return row.connectors.filter { connector in
-            guard !connector.isDeleted else { return false }
-            return connector.isGlobal
-                ? enabledShared.contains(connector.id.uuidString)
-                : connector.workspace?.id == workspace.id
-        }
     }
 
     /// The authored row an override names: the workspace's own (or, in a
