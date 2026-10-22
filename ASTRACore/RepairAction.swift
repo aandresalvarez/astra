@@ -188,6 +188,13 @@ public struct RepairAction: Codable, Sendable, Equatable {
         guard strategy == .terminal, let command else { return self }
         guard Self.isSafeTerminalCommand(command, binary: checkBinary, allowsInstaller: verb == "Install")
         else { return requiringManualCredentialSetup() }
+        let executableWords = command.split(whereSeparator: \.isWhitespace).map(String.init)
+        let cli = ((checkBinary ?? "") as NSString).lastPathComponent
+        if executableWords.first == checkBinary,
+           !TerminalRepairPolicy.signInContextMatchesCheck(cli: cli,
+                signIn: Array(executableWords.dropFirst()), check: checkArguments ?? []) {
+            return requiringManualCredentialSetup()
+        }
         if isGitHubSignIn(command), let arguments = checkArguments {
             for (index, argument) in arguments.enumerated() {
                 let host: String?

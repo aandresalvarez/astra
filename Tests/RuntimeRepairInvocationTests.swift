@@ -84,6 +84,43 @@ struct RuntimeRepairInvocationTests {
         #expect(monitor.runtimeRepairContext == nil)
     }
 
+    @Test("Arithmetic variables are not executable commands", arguments: [
+        "cat incident.txt; (( gh ))", "(( gh + 1 )); cat incident.txt",
+        "printf '%s' $((gh)); cat incident.txt", "echo \"$((gh))\"; cat incident.txt",
+        "bash -c 'cat incident.txt; (( gh ))'",
+        "cat <<EOF\n$((gh))\nEOF\ncat incident.txt"
+    ])
+    func arithmeticCannotAttributeDiagnostics(command: String) {
+        #expect(!RuntimeRepairInvocationPolicy.admitsDiagnostics(command: command, content: output))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: command))
+        #expect(CLISessionExpiryClassifier.stop(content: output, command: command) == nil)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        _ = monitor.processEvent(.toolUse(name: "Bash", id: "arithmetic", input: ["command": command]), process: nil)
+        #expect(!monitor.processEvent(.toolResult(toolId: "arithmetic", content: output, isError: true), process: nil))
+        #expect(monitor.runtimeRepairContext == nil)
+    }
+
+    @Test("Literal arithmetic text and real nested subshells preserve executable attribution", arguments: [
+        "printf '%s' '(( gh ))'; gh api user", "echo 'literal $(( gh ))'; gh api user",
+        "( ( gh api user ) )", "gh api user # (( literal ))",
+        "cat <<'EOF'\n$((gh))\nEOF\ngh api user"
+    ])
+    func literalsDoNotDisableRealCLI(command: String) {
+        #expect(RuntimeRepairInvocationPolicy.admitsDiagnostics(command: command, content: output))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: command))
+        #expect(CLISessionExpiryClassifier.stop(content: output, command: command) != nil)
+    }
+
+    @Test("Real shell arithmetic failure does not execute the named CLI")
+    func realArithmeticVariableIsNotCLI() throws {
+        let command = "unset gh; printf '%s' '\(output)'; (( gh ))"
+        let result = try PermissionRepairCommandClient.run("/bin/sh", ["-c", command])
+        #expect(result.exitCode == 1)
+        let stdout = try #require(result.stdout)
+        #expect(stdout == output)
+        #expect(CLISessionExpiryClassifier.stop(content: stdout, command: command) == nil)
+    }
+
     @Test("A real skipped case arm succeeds and its printed incident must not pause the run")
     func skippedCaseExecutesNoCLI() throws {
         let command = "case no in yes) gh api user;; esac; printf '%s' '\(output)'"

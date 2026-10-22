@@ -150,6 +150,10 @@ enum PluginOperations {
             baseURL: connector.baseURL,
             authMethod: connector.authMethod
         )
+        // This is a new, empty account, never a legacy credential owner.
+        // Publish its private namespace with the row so shared aliases from
+        // older accounts cannot supply credentials before the first edit.
+        account.credentialNamespaceID = UUID()
         account.notes = connector.notes
         // A setting only a bundled definition may keep plain; any other is
         // a credential field of the account (`PluginConnectorFieldTrust`).

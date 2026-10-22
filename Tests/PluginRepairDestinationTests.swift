@@ -7,6 +7,46 @@ import ASTRACore
 @MainActor
 @Suite("Plugin repair destination admission")
 struct PluginRepairDestinationTests {
+    @Test("A gcloud sign-in must verify the same declared account context", arguments: [
+        "--configuration", "--account", "--project"
+    ])
+    func gcloudSelectorsMustMatchVerification(flag: String) throws {
+        for (login, check, automatic) in [
+            ([flag, "work"], [String](), false),
+            ([String](), [flag, "work"], false),
+            ([flag, "work"], [flag, "personal"], false),
+            ([flag, "work"], [flag, "work"], true),
+            ([flag + "=work"], [flag, "work"], true),
+            ([flag, "work", flag, "other"], [flag, "work"], false),
+            ([flag, "work"], [flag, "work", flag, "other"], false)
+        ] {
+            let arguments = ["auth", "list"] + check
+            #expect(HealthCheckPolicy.isReadOnly(binary: "gcloud", arguments: arguments))
+            let command = (["gcloud", "auth", "login"] + login).joined(separator: " ")
+            let component = PluginComponent(kind: .setup, id: "gcloud", name: "Cloud", setup: .init(
+                check: .init(kind: .exec, binary: "gcloud", arguments: arguments),
+                repair: .init(kind: .terminal, command: command, hint: "Sign in to the selected account.")
+            ))
+            let repair = try #require(RepairAction.from(component))
+            #expect((repair.command != nil) == automatic)
+            #expect(repair.checkArguments == arguments)
+            let saved = RepairAction(strategy: .terminal, componentName: "Saved", title: "Sign in",
+                verb: "Sign in", detail: "", command: command, checkBinary: "gcloud", checkArguments: arguments)
+            #expect((saved.executionCommand != nil) == automatic)
+            let terminal = TerminalSpy()
+            RepairActionRunner.run(saved, terminal: terminal, copy: { _ in })
+            #expect(!terminal.launched.isEmpty == automatic)
+        }
+        let missingCheck = RepairAction(strategy: .terminal, componentName: "Saved", title: "Sign in",
+            verb: "Sign in", detail: "", command: "gcloud auth login \(flag) work", checkBinary: "gcloud")
+        #expect(missingCheck.executionCommand == nil)
+        let globalOrder = RepairAction(strategy: .terminal, componentName: "Saved", title: "Sign in",
+            verb: "Sign in", detail: "", command: "gcloud \(flag)=work auth login", checkBinary: "gcloud",
+            checkArguments: [flag, "work", "auth", "list"])
+        #expect(globalOrder.executionCommand != nil)
+        #expect(HealthCheckPolicy.isReadOnly(binary: "gcloud", arguments: globalOrder.checkArguments ?? []))
+    }
+
     @Test("Source sign-in cannot select an untrusted GitHub host or overwrite ADC", arguments: [
         "gh auth login --hostname attacker.example --web", "gh auth refresh -h github.example.com",
         "gcloud auth login --update-adc", "gcloud auth application-default login",

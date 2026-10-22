@@ -51,8 +51,8 @@ public enum HealthCheckPolicy {
         // `--show-token` is not listed: it prints the token.
         "gh": [Check(positionals: ["auth", "status"], booleanFlags: ["--active", "-a"], valueFlags: ["--hostname": .host, "-h": .host])],
         "gcloud": [
-            Check(positionals: ["auth", "list"], valueFlags: ["--format": .any, "--filter": .any]),
-            Check(positionals: ["config", "get-value", "*"], valueFlags: ["--format": .any])
+            Check(positionals: ["auth", "list"], valueFlags: CLICommandShape.gcloudContextFlags.merging(["--format": .any, "--filter": .any]) { _, value in value }),
+            Check(positionals: ["config", "get-value", "*"], valueFlags: CLICommandShape.gcloudContextFlags.merging(["--format": .any]) { _, value in value })
         ],
         "az": [Check(positionals: ["account", "show"], valueFlags: ["--output": .any, "-o": .any, "--query": .any])],
         "aws": [Check(

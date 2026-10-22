@@ -1046,6 +1046,17 @@ enum CLISessionExpiryClassifier {
     /// `depth` bounds the nesting a shell `-c` payload or a here-document's
     /// substitution parses into.
     static func segments(_ line: String, depth: Int = 0) -> [Segment] {
+        parsedSegments(line, depth: depth) ?? []
+    }
+
+    /// Arithmetic is an expression, not a subshell executing its variable
+    /// names. Unsupported syntax invalidates attribution for the whole line,
+    /// including literal shell payloads and expanding here-documents.
+    static func executionSegments(_ line: String) -> [Segment]? {
+        parsedSegments(line, depth: 0)
+    }
+
+    private static func parsedSegments(_ line: String, depth: Int) -> [Segment]? {
         var segments: [Segment] = []
         var words: [String] = []
         var word = ""
@@ -1178,6 +1189,7 @@ enum CLISessionExpiryClassifier {
                     // `"$(gh auth token)"` still runs `gh`: leave the quote
                     // for the substitution, as an unquoted `$(` would.
                     if character == "$" {
+                        if index + 1 < characters.count, characters[index + 1] == "(" { return nil }
                         word.append(character)
                         index += 1
                     }
@@ -1190,6 +1202,9 @@ enum CLISessionExpiryClassifier {
                 }
                 continue
             }
+            // This position is executable shell syntax, outside literals,
+            // escaped characters and comment/here-document text.
+            if character == "(", next == "(" { return nil }
             switch character {
             case "\\":
                 escaped = true
@@ -1243,8 +1258,10 @@ enum CLISessionExpiryClassifier {
                     // An expanding body's substitutions run, feeding the
                     // command the here-document is for.
                     guard heredoc.expands, depth < maxShellDepth else { continue }
-                    for substitution in heredocSubstitutions(body.joined(separator: "\n")) {
-                        segments += Self.segments(substitution, depth: depth + 1).map { nested in
+                    guard let expressions = heredocSubstitutions(body.joined(separator: "\n")) else { return nil }
+                    for substitution in expressions {
+                        guard let parsed = parsedSegments(substitution, depth: depth + 1) else { return nil }
+                        segments += parsed.map { nested in
                             var nested = nested
                             nested.enclosingCommands = groups.compactMap(\.command) + [heredoc.command] + nested.enclosingCommands
                             nested.scope = groups.map(\.id) + [-1] + nested.scope
@@ -1270,7 +1287,13 @@ enum CLISessionExpiryClassifier {
             }
         }
         endCommand("")
-        return depth < maxShellDepth ? segments.flatMap { shellPayloadSegments($0, depth: depth) } : segments
+        guard depth < maxShellDepth else { return segments }
+        var expanded: [Segment] = []
+        for segment in segments {
+            guard let payload = shellPayloadSegments(segment, depth: depth) else { return nil }
+            expanded += payload
+        }
+        return expanded
     }
 
     /// How deeply a shell `-c` payload or a here-document substitution is
@@ -1282,9 +1305,9 @@ enum CLISessionExpiryClassifier {
     /// last one's; any other command as itself. The payload's last command
     /// takes the call's separator, and all of them its substitution and
     /// scope, in a scope of their own.
-    private static func shellPayloadSegments(_ segment: Segment, depth: Int) -> [Segment] {
+    private static func shellPayloadSegments(_ segment: Segment, depth: Int) -> [Segment]? {
         guard let payload = shellPayload(segment.words) else { return [segment] }
-        var nested = segments(payload, depth: depth + 1)
+        guard var nested = parsedSegments(payload, depth: depth + 1) else { return nil }
         guard !nested.isEmpty else { return [segment] }
         // What the shell ran under (`env GH_CONFIG_DIR=/team`, `GH_TOKEN=…`,
         // `env -u GH_TOKEN`) applies to every command it runs: each carries
@@ -1334,7 +1357,7 @@ enum CLISessionExpiryClassifier {
     /// The commands an expanding here-document body substitutes: each
     /// `$(…)` (to its matching parenthesis) and backtick span; a backslash
     /// escapes the character after it.
-    static func heredocSubstitutions(_ body: String) -> [String] {
+    private static func heredocSubstitutions(_ body: String) -> [String]? {
         let characters = Array(body)
         var found: [String] = []
         var index = 0
@@ -1343,6 +1366,7 @@ enum CLISessionExpiryClassifier {
             if character == "\\" {
                 index += 2
             } else if character == "$", index + 1 < characters.count, characters[index + 1] == "(" {
+                if index + 2 < characters.count, characters[index + 2] == "(" { return nil }
                 var depth = 1
                 var end = index + 2
                 while end < characters.count, depth > 0 {
