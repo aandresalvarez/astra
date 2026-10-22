@@ -302,6 +302,9 @@ struct PluginActivationReviewTests {
         try row("Hooks").hooksJSON = #"{"stop":[]}"#
         try row("Skills").defaultSkillIDs = [UUID().uuidString]
         let kept = try ["Models", "Hooks", "Skills"].map(row)
+        // Remove compares the person's saved template edits with the installed
+        // definition; it must not commit an unrelated pending edit.
+        try env.context.save()
 
         try CapabilityUninstaller(library: env.library).remove(package, modelContext: env.context)
         for template in kept {
