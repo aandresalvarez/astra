@@ -119,7 +119,11 @@ struct PluginRuntimeProjection {
                             }
                             for connector in attachedConnectors(of: row, in: workspace)
                             where seenConnectorIDs.insert(connector.id).inserted {
-                                connectors.append(TaskExecutionLaunchSnapshotApplicator.detachedConnector(connector, skill: copy))
+                                let accountCopy = TaskExecutionLaunchSnapshotApplicator.detachedConnector(connector, skill: copy)
+                                // A later binding may claim this attachment. Keep
+                                // its canonical copy in the final filtering pass.
+                                copies[connector.id] = (connector, accountCopy)
+                                connectors.append(accountCopy)
                             }
                         } else {
                             skills.append(row)
