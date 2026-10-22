@@ -234,8 +234,9 @@ struct PluginMirrorRewriteTests {
     }
 
     /// A shared account attached to a shared skill another workspace turned
-    /// on is in that workspace's mirror (through the skill), with no plugin
-    /// binding and no shared-list entry of its own.
+    /// on may remain in its older mirror, even with no plugin binding or
+    /// shared-list entry. Current exports omit it; deletion still sanitizes
+    /// that workspace's legacy mirror.
     @Test("Deleting an account names and rewrites a workspace whose shared skill carries it")
     func deleteScopeIncludesSkillLinkedWorkspaces() throws {
         let env = try Fixtures.Environment()
@@ -251,6 +252,9 @@ struct PluginMirrorRewriteTests {
         WorkspaceCapabilityActivation.mutate(linked) { $0.enableGlobalSkill(skill.id.uuidString) }
         try env.context.save()
 
+        let currentExport = try #require(WorkspaceConfigManager.export(workspace: linked, modelContext: env.context))
+        #expect((currentExport.connectors ?? []).allSatisfy { $0.id != account.id.uuidString })
+        #expect(currentExport.skills.allSatisfy { !($0.connectorIDs ?? []).contains(account.id.uuidString) })
         #expect(try PluginOperations.workspacesUsing(account).map(\.id) == [linked.id])
         var rewritten: [UUID] = []
         try PluginOperations.deleteAccount(account, modelContext: env.context) { rewritten.append($0.id); return true }
