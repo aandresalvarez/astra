@@ -300,6 +300,7 @@ struct CapabilityUninstaller {
             }
             modelContext.rollback()
             restore()
+            PluginSavedStateRollback.finish(in: modelContext)
             guard transaction.rollBackFiles(modelContext: modelContext) else {
                 throw PluginOperationProblem.commitUncertain(transaction.prepared.id)
             }
