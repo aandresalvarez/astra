@@ -745,6 +745,7 @@ public final class HostControlMCPServer {
     /// ASTRA's side of a write: the only way a request here can lead to one.
     /// Nil in the standalone helper, where every write waits for review.
     private let externalActionRequester: (any BrokeredExternalActionRequesting)?
+    private let mailReader: (any BrokeredMailReading)?
     private let processLimits: HostControlProcessLimits
     private lazy var server = MCPServer(
         name: "astra-host-control",
@@ -763,12 +764,14 @@ public final class HostControlMCPServer {
         withholdingObserver: BrokeredCredentialWithholdingObserving? = nil,
         processLimits: HostControlProcessLimits = .standard,
         historyReader: (any TaskHistoryReading)? = nil,
-        externalActionRequester: (any BrokeredExternalActionRequesting)? = nil
+        externalActionRequester: (any BrokeredExternalActionRequesting)? = nil,
+        mailReader: (any BrokeredMailReading)? = nil
     ) {
         let cancellationRegistry = HostControlOperationCancellationRegistry()
         self.configuration = configuration
         self.historyReader = historyReader
         self.externalActionRequester = externalActionRequester
+        self.mailReader = mailReader
         self.cancellationRegistry = cancellationRegistry
         self.processRunner = processRunner ?? HostControlProcessRunner(
             limits: processLimits,
@@ -785,6 +788,7 @@ public final class HostControlMCPServer {
 
     public func cancelActiveOperations() {
         cancellationRegistry.cancelAll()
+        mailReader?.cancelPendingReads()
     }
 
     private func handleToolCall(_ call: MCPToolCall) -> MCPServerReply {
@@ -795,6 +799,8 @@ public final class HostControlMCPServer {
         }
         let arguments = call.arguments
         switch normalizedToolName {
+        case "mail":
+            return MailReadHostControlPolicy.handle(arguments: arguments, reader: mailReader, configuration: configuration)
         case "history":
             return TaskHistoryHostControlPolicy.handle(arguments: arguments, reader: historyReader)
         case "github":
@@ -1230,6 +1236,7 @@ public final class HostControlMCPServer {
                 argumentDescription: "Help-only bq arguments, for example [\"--help\"], [\"help\"], or [\"version\"]. Resource listing, display, query, export, load, delete, copy, table mutation, and job commands are denied."
             ),
             TaskHistoryHostControlPolicy.schema,
+            MailReadHostControlPolicy.schema,
             sshSchema(),
             jiraSchema(),
             REDCapHostControlPolicy.toolSchema(timeoutDescription: timeoutDescription(kind: "request"))
