@@ -367,14 +367,7 @@ public enum WorkspaceCapabilityActivation {
         }
         let remaining = sameServiceBindings(as: account, in: activation)
             .filter { !removedIDs.contains($0.id) }
-        if !remaining.contains(where: \.isDefault),
-           let first = remaining.min(by: { $0.createdAt < $1.createdAt }),
-           let promoted = first.account {
-            for binding in remaining where binding.account?.id == promoted.id {
-                binding.isDefault = true
-                if let owner = binding.activation, owner !== activation { touch(owner) }
-            }
-        }
+        electDefault(among: remaining, excludingRevisionOf: activation)
         touch(activation)
     }
 
@@ -777,19 +770,36 @@ public enum WorkspaceCapabilityActivation {
     }
 
     private static func remove(_ activation: PluginActivation, from workspace: Workspace) {
-        // The bindings go with the activation (cascade); unbinding first
-        // gives a service whose default was one of them its oldest
-        // remaining account instead.
-        var seen = Set<UUID>()
-        for account in activation.bindings.filter({ !$0.isDeleted }).compactMap(\.account)
-        where seen.insert(account.id).inserted {
-            unbind(account, from: activation)
-        }
-        workspace.pluginActivations.removeAll { $0 === activation }
+        let accounts = activation.bindings.filter { !$0.isDeleted }.compactMap(\.account)
         if let context = activation.modelContext {
+            // Let the declared cascade delete the bindings. Unbinding first
+            // rewrites the doomed owner's revision and relationships; older
+            // SwiftData can resurrect that intermediate state after rollback.
+            let services = Set(accounts.map { normalizedService($0.serviceType) })
             context.delete(activation)
+            workspace.pluginActivations.removeAll { $0 === activation }
+            let remaining = activations(of: workspace).flatMap(\.bindings).filter { !$0.isDeleted }
+            for service in services {
+                electDefault(among: remaining.filter { normalizedService($0.account?.serviceType) == service })
+            }
         } else {
+            // Detached launch graphs have no store to perform a cascade.
+            var seen = Set<UUID>()
+            for account in accounts where seen.insert(account.id).inserted {
+                unbind(account, from: activation)
+            }
+            workspace.pluginActivations.removeAll { $0 === activation }
             activation.bindings.removeAll()
+        }
+    }
+
+    private static func electDefault(among bindings: [AccountBinding], excludingRevisionOf activation: PluginActivation? = nil) {
+        guard !bindings.contains(where: \.isDefault),
+              let first = bindings.min(by: { $0.createdAt < $1.createdAt }),
+              let promoted = first.account else { return }
+        for binding in bindings where binding.account?.id == promoted.id {
+            binding.isDefault = true
+            if let owner = binding.activation, owner !== activation { touch(owner) }
         }
     }
 

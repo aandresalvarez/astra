@@ -38,6 +38,54 @@ struct PluginRemovalCommitTests {
         #expect(try env.journal.pendingIDs().isEmpty)
     }
 
+    @Test("A refused Remove preserves its saved revision and links; a committed retry elects the remaining default")
+    func cascadeRemovalPreservesSavedOwnerUntilCommit() throws {
+        let env = try PluginOperationsTests.Environment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let first = PluginOperationsTests.package(version: "1.0.0")
+        var second = first
+        second.id = "ops.survivor"
+        second.name = "Surviving reports"
+        try env.install(first)
+        try env.install(second)
+        let removed = try #require(WorkspaceCapabilityActivation.activation(for: first.id, in: env.workspace))
+        let surviving = try #require(WorkspaceCapabilityActivation.activation(for: second.id, in: env.workspace))
+        let firstAccount = try #require(removed.bindings.first?.account)
+        let nextAccount = try #require(surviving.bindings.first?.account)
+        WorkspaceCapabilityActivation.bind(firstAccount,
+            toComponent: CapabilityResourceOrigin.componentID(for: first.connectors[0]), of: removed, isDefault: true)
+        try env.context.save()
+        let before = WorkspaceCapabilityActivation.snapshot(env.workspace)
+        let revision = removed.revision
+        let accountIDs = Set(try env.context.fetch(FetchDescriptor<Connector>()).map(\.id))
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: firstAccount.serviceType, in: env.workspace)?.id == firstAccount.id)
+        var attempts = 0
+        #expect(throws: CapabilityUninstaller.UninstallError.self) {
+            try CapabilityUninstaller(library: env.library).remove(first, modelContext: env.context, persist: { _, _ in
+                attempts += 1
+                // A deleted owner must not acquire a transient revision/link
+                // rewrite that older SwiftData can later resurrect on rollback.
+                #expect(removed.revision == revision)
+                #expect(WorkspaceCapabilityActivation.defaultAccount(forService: firstAccount.serviceType, in: env.workspace)?.id == nextAccount.id)
+                return false
+            })
+        }
+        #expect(attempts == 1)
+        #expect(!env.context.hasChanges)
+        #expect(WorkspaceCapabilityActivation.snapshot(env.workspace) == before)
+        let saved = ModelContext(env.container)
+        let workspace = try #require(try saved.fetch(FetchDescriptor<Workspace>()).first)
+        #expect(WorkspaceCapabilityActivation.snapshot(workspace) == before)
+        try CapabilityUninstaller(library: env.library).remove(first, modelContext: env.context)
+        #expect(WorkspaceCapabilityActivation.activation(for: first.id, in: env.workspace) == nil)
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: firstAccount.serviceType, in: env.workspace)?.id == nextAccount.id)
+        let committed = ModelContext(env.container)
+        let finalWorkspace = try #require(try committed.fetch(FetchDescriptor<Workspace>()).first)
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: firstAccount.serviceType, in: finalWorkspace)?.id == nextAccount.id)
+        #expect(Set(try committed.fetch(FetchDescriptor<Connector>()).map(\.id)) == accountIDs)
+        #expect(try committed.fetch(FetchDescriptor<AccountBinding>()).allSatisfy { $0.activation?.pluginID != first.id })
+    }
+
     @Test("A rejected Remove restores a clean saved graph before the next retry", arguments: [false, true])
     func rejectedRemovalLeavesReusableSavedContext(priorIntent: Bool) throws {
         let env = try PluginOperationsTests.Environment()
