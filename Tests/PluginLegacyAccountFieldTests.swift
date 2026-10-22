@@ -40,10 +40,13 @@ struct PluginLegacyAccountFieldTests {
             var package = env.package
             package.version = "2.0.0"
             package.connectors[0].configHints = [.init(key: "PROJECT", hint: "Project", isList: false)]
-            #expect(throws: ConnectorCredentialGenerationTransaction.Failure.self) {
+            #expect(throws: PluginOperations.OperationError.pendingEdits) {
                 try env.disk.installer.enable(package, in: env.disk.workspace, modelContext: env.disk.context)
             }
             #expect(account.configValues == ["ENG-2"])
+            #expect(env.disk.context.hasChanges)
+            let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.disk.context))
+            #expect(try journal.pending().isEmpty)
             let saved = try #require(try ModelContext(env.disk.context.container).fetch(FetchDescriptor<Connector>()).first)
             #expect(saved.configValues == ["ENG-1"])
         }

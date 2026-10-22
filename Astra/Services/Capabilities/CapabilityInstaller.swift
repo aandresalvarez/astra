@@ -86,6 +86,7 @@ struct CapabilityInstaller {
         pendingApproval: CapabilityApprovalRecord? = nil,
         fileOperation: PluginFileOperationContext? = nil
     ) throws -> InstallationResult {
+        try PluginActivationAdmission.requireNoUnrelatedEditsForAdd(in: workspace, modelContext: modelContext)
         let effectivePolicyContext = policyContext ?? defaultPolicyContext(for: workspace)
         let blockers = uniqueMessages(
             policyBlockerMessages(for: package, context: effectivePolicyContext)
@@ -158,6 +159,8 @@ struct CapabilityInstaller {
         rewriteMirror: (@MainActor (Workspace) -> Bool)? = nil,
         fileCommit: PluginFileCommit? = nil
     ) throws -> InstallationResult {
+        let enteredWithSavedState = !modelContext.hasChanges
+        try PluginActivationAdmission.requireNoUnrelatedEditsForAdd(in: workspace, modelContext: modelContext)
         var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
         if let traceID { startFields["trace_id"] = traceID }
         startFields["credential_input_count"] = String(credentialInputs.count)
@@ -501,6 +504,7 @@ struct CapabilityInstaller {
             restoreReconciled()
             WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
             for (other, snapshot) in pendingSnapshots { WorkspaceCapabilityActivation.restore(snapshot, to: other) }
+            if enteredWithSavedState { PluginSavedStateRollback.finish(in: modelContext) }
             // Private account generations are discarded as a whole below. Only
             // legacy/nonparticipant writes require compensating individual keys.
             let compensated = renamedSecrets.filter { copied in
@@ -608,6 +612,7 @@ struct CapabilityInstaller {
         guard let skill = try? modelContext.fetch(descriptor).first, !skill.isDeleted else {
             throw InstallationError.persistenceFailed(packageID: package.id)
         }
+        let enteredWithSavedState = !modelContext.hasChanges
         let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         if skill.isGlobal {
             WorkspaceCapabilityActivation.mutate(workspace) { state in
@@ -632,6 +637,7 @@ struct CapabilityInstaller {
         case .notCommitted:
             modelContext.rollback()
             WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
+            if enteredWithSavedState { PluginSavedStateRollback.finish(in: modelContext) }
             throw InstallationError.persistenceFailed(packageID: package.id)
         }
         AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [

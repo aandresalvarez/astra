@@ -223,6 +223,7 @@ struct PluginOperationsTests {
         let other = Workspace(name: "Other", primaryPath: env.root.appendingPathComponent("other").path)
         env.context.insert(other)
         let package = Self.package(version: "1.0.0")
+        try env.context.save()
         try env.install(package)
         let legacy = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
         let files = PluginFileOperationJournal(library: env.library, approvals: CapabilityApprovalStore())
