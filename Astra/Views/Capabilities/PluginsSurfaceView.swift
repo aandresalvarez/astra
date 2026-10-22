@@ -569,9 +569,12 @@ struct PluginsSurfaceView: View {
             Button(copy.verb, role: .destructive) {
                 confirming = nil
                 switch confirmation {
-                case .remove(let source):
-                    guard source.matches(row) else { return }
-                    remove(row.package, missing: source.isMissing)
+                case .remove(let source, let scope):
+                    guard source.matches(row) else {
+                        errorMessage = PluginRemovalScope.Failure.scopeChanged.localizedDescription
+                        return
+                    }
+                    remove(row.package, missing: source.isMissing, confirmedScope: scope)
                 case .deleteAccount(_, let scope):
                     if let account { deleteAccount(account, confirmedScope: scope) }
                     else { errorMessage = PluginOperations.OperationError.workspaceChanged.localizedDescription }
@@ -603,13 +606,13 @@ struct PluginsSurfaceView: View {
         onCatalogChanged()
     }
 
-    private func remove(_ package: PluginPackage, missing: Bool = false) {
+    private func remove(_ package: PluginPackage, missing: Bool = false, confirmedScope: PluginRemovalScope) {
         errorMessage = nil
         do {
             if missing {
-                try CapabilityCatalogActionService().forgetMissing(pluginID: package.id, modelContext: modelContext)
+                try CapabilityCatalogActionService().forgetMissing(pluginID: package.id, modelContext: modelContext, confirmedScope: confirmedScope)
             } else {
-                try CapabilityCatalogActionService().remove(package, modelContext: modelContext)
+                try CapabilityCatalogActionService().remove(package, modelContext: modelContext, confirmedScope: confirmedScope)
             }
             expanded.remove(package.id)
             catalog.loadApprovedCapabilities(announceLibraryMutations: false)

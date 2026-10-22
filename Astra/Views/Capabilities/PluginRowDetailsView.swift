@@ -177,7 +177,12 @@ struct PluginRowDetailsView<SetupRow: View>: View {
             // A plugin the library no longer has runs nowhere: it is offered
             // even while its activation is on.
             if PluginsSurfacePresentation.showsRemove(row) {
-                Button("Remove", role: .destructive) { onConfirm(.remove(source: PluginRemovalSource(row: row))) }
+                Button("Remove", role: .destructive) {
+                    do {
+                        let scope = try PluginRemovalScope.capture(pluginID: row.id, modelContext: modelContext)
+                        onConfirm(.remove(source: PluginRemovalSource(row: row), scope: scope))
+                    } catch { onError(error.localizedDescription) }
+                }
                     .controlSize(.small)
             }
         }

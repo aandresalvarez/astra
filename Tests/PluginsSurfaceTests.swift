@@ -379,7 +379,7 @@ struct PluginsSurfaceTests {
         let candidate = package("jira", name: "Jira")
         let display = PluginsSurfacePresentation.makeState([input(candidate, isEnabled: true)], query: "").allRows[0]
         let row = PluginRow(package: candidate, activation: nil, display: display)
-        let remove = PluginsSurfaceConfirmation.remove(source: PluginRemovalSource(row: row)).copy(name: "Jira")
+        let remove = PluginsSurfaceConfirmation.remove(source: PluginRemovalSource(row: row), scope: PluginRemovalScope(pluginID: row.id, workspaces: [])).copy(name: "Jira")
         #expect(remove.verb == "Remove")
         #expect(remove.message.contains("every workspace"))
         #expect(remove.message.contains("saved keys stay"))
