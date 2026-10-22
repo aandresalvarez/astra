@@ -526,6 +526,7 @@ struct ContentView: View {
             workspaces: workspaces,
             selectedWorkspace: selectedWorkspaceBinding,
             onNewTask: { startComposingTask(in: $0) },
+            onOpenWorkspaceConfiguration: openWorkspaceConfiguration,
             onRunQueue: runQueue,
             onRunTask: runSingleTask,
             onToggleDone: toggleDone,
@@ -603,7 +604,8 @@ struct ContentView: View {
             effectiveWorkspace: sceneCoordinator.workspace(for: selectedWorkspaceApp) ?? effectiveWorkspace,
             isComposingTask: isComposingTask,
             selectedWorkspaceApp: selectedWorkspaceApp,
-            isComposingWorkspaceApp: isComposingWorkspaceApp
+            isComposingWorkspaceApp: isComposingWorkspaceApp,
+            isShowingWorkspaceConfiguration: sceneSelection.isShowingWorkspaceConfiguration
         )
     }
 
@@ -1213,10 +1215,7 @@ struct ContentView: View {
     }
 
     private func openCapabilitiesManager() {
-        configureInitialTab = .capabilities
-        configureFocusItemID = nil
-        configureFocusCapabilityPackageID = nil
-        showingConfigure = true
+        openConfigureTab(.capabilities, itemID: nil)
     }
 
     private func openSkillsManager() {
@@ -2036,11 +2035,17 @@ struct ContentView: View {
         if pinnedToTask { refreshMarkdownShelfAvailabilityForSelectedTask() }
     }
 
+    private func openWorkspaceConfiguration(_ workspace: Workspace) {
+        navigateWorkspace { sceneSelection.openWorkspaceConfiguration(workspace) }
+    }
+
     private func selectWorkspaceFromSidebar(_ workspace: Workspace?) {
+        navigateWorkspace { sceneSelection.openWorkspace(workspace) }
+    }
+
+    private func navigateWorkspace(_ intent: () -> Void) {
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
-        applySceneSelectionIntent {
-            sceneSelection.openWorkspace(workspace)
-        }
+        applySceneSelectionIntent(intent)
         clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
     }
 
