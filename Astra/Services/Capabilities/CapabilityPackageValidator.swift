@@ -587,13 +587,13 @@ enum CapabilityPackageValidator {
                     "\(name) declares more than one field stored as \(storage).", component: name
                 ))
             }
-            // Endpoint and alias use the same setup-input dictionary. Each
-            // account value needs its own exact key, regardless of storage.
+            // Structure and ordinary fields share the setup-input dictionary.
+            // Each account value needs a distinct key, regardless of storage.
             for key in PluginAccountFieldLayout.duplicateStructureKeys(in: connector.configHints) {
                 let name = displayName(connector.name, fallback: connector.serviceType)
                 issues.append(issue(
                     .blocker, .invalidComponentIdentity, "Duplicate account field key",
-                    "\(name) declares \(key) for more than one account field; endpoint and name need separate keys.",
+                    "\(name) declares \(key) for more than one setup field; account structure needs a distinct key.",
                     component: name
                 ))
             }
