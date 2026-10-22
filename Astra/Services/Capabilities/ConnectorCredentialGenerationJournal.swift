@@ -139,11 +139,9 @@ struct ConnectorCredentialGenerationJournal {
               let mirrored = PluginCredentialMirrorReferences.capture(modelContext: saved, extraMirrors: extraMirrors) else { return 0 }
         var settled: [ConnectorKeychainCleanup] = []
         for candidate in candidates {
-            let namespaces = Set(KeychainSecretStore.connectorEntityIDs(id: candidate.connectorID,
-                serviceType: candidate.serviceType, baseURL: candidate.baseURL,
-                originPackageID: candidate.originPackageID, originComponentID: candidate.originComponentID,
-                credentialNamespaceID: candidate.credentialNamespaceID))
-            if ownership.currentNamespaces[candidate.connectorID] == namespaces {
+            guard let owned = KeychainSecretStore.ownedConnectorEntityIDs(for: candidate.secretFacts) else { continue }
+            let namespaces = Set(owned)
+            if let current = ownership.currentNamespaces[candidate.connectorID], namespaces.isSubset(of: current) {
                 settled.append(candidate) // Current owner, whose next edit will journal retirement again.
                 continue
             }

@@ -537,6 +537,7 @@ struct PluginRuntimeProjection {
     /// canonically (`ConnectorCredentialKey`): a saved one is stored
     /// uppercased whatever the declaration's spelling.
     private static func retain(credentials: Set<String>, config: Set<String>, on copy: Connector) {
+        let outlookFormat = copy.isStanfordOutlookMail ? copy.outlookCredentialFormat : nil
         let declared = Set(credentials.map(ConnectorCredentialKey.canonical))
         let keptCredentials = copy.credentialKeys.indices.filter { declared.contains(ConnectorCredentialKey.canonical(copy.credentialKeys[$0])) }
         if keptCredentials.count < copy.credentialKeys.count {
@@ -548,6 +549,9 @@ struct PluginRuntimeProjection {
             copy.configValues = keptConfig.map { $0 < copy.configValues.count ? copy.configValues[$0] : "" }
             copy.configKeys = keptConfig.map { copy.configKeys[$0] }
         }
+        // Storage interpretation metadata survives projection independently
+        // of plugin-declared plain settings. It never becomes a secret key.
+        if let outlookFormat { copy.outlookCredentialFormat = outlookFormat }
     }
 
     private static func makeTool(

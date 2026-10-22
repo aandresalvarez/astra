@@ -6,6 +6,15 @@ import Foundation
 /// and generation together. A missing generation or unknown format grants
 /// no access; resolving never searches another identity or endpoint alias.
 public enum OutlookCredentialIdentity {
+    public static let serviceType = "stanford_outlook_mail"
+    public static let legacyTokenKeys = ["ASTRA_MAIL_ACCESS_TOKEN", "ASTRA_MAIL_REFRESH_TOKEN", "ASTRA_MAIL_EXPIRES_AT"]
+    public static var tokenKeys: [String] { legacyTokenKeys + [OutlookOAuthBundle.storageKey] }
+
+    public static func format(keys: [String], values: [String]) -> String? {
+        guard let index = keys.firstIndex(of: formatKey), index < values.count, !values[index].isEmpty else { return nil }
+        return values[index]
+    }
+
     public static let formatKey = "ASTRA_MAIL_CREDENTIAL_FORMAT"
     public static let generationFormat = "generation-v1"
 

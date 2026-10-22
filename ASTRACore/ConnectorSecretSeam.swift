@@ -19,6 +19,10 @@ public struct ConnectorSecretFacts: Sendable, Equatable {
     /// Nil retains the historical UUID/endpoint aliases. A generation is
     /// exclusive: it never falls back into another account's legacy slots.
     public let credentialNamespaceID: UUID?
+    /// Interpretation of Outlook's internal token store; generic credential
+    /// reads never use this to add fallback namespaces.
+    public let outlookCredentialFormat: String?
+    public let includesOutlookCredentials: Bool
     public let name: String
     public let serviceType: String
     public let baseURL: String
@@ -32,10 +36,14 @@ public struct ConnectorSecretFacts: Sendable, Equatable {
         baseURL: String,
         originPackageID: String?,
         originComponentID: String?,
-        credentialNamespaceID: UUID? = nil
+        credentialNamespaceID: UUID? = nil,
+        outlookCredentialFormat: String? = nil,
+        includesOutlookCredentials: Bool = true
     ) {
         self.id = id
         self.credentialNamespaceID = credentialNamespaceID
+        self.outlookCredentialFormat = outlookCredentialFormat
+        self.includesOutlookCredentials = includesOutlookCredentials
         self.name = name
         self.serviceType = serviceType
         self.baseURL = baseURL

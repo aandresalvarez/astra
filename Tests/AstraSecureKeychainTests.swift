@@ -35,6 +35,7 @@ enum AstraSecureKeychainTestSupport {
             }
             try? FileManager.default.removeItem(atPath: keychainPath)
         }
+        try? FileManager.default.removeItem(atPath: keychainPath + ".oauth-locks")
         // Idempotent login-keychain delete; safe even if setup failed before the
         // dedicated file was created.
         deleteLoginItems(service: bootstrapService)

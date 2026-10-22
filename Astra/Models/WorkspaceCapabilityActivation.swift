@@ -1107,6 +1107,7 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
 public struct PluginAccountRecord: Codable, Equatable, Sendable {
     public let id: UUID
     public let credentialNamespaceID: UUID?
+    public let outlookCredentialFormat: String?
     public let name: String
     public let serviceType: String
     public let icon: String
@@ -1138,6 +1139,7 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
     private init(_ account: Connector, configuration: (keys: [String], values: [String])) {
         id = account.id
         credentialNamespaceID = account.credentialNamespaceID
+        outlookCredentialFormat = account.outlookCredentialFormat
         name = account.name
         serviceType = account.serviceType
         icon = account.icon
@@ -1184,6 +1186,7 @@ public struct PluginAccountRecord: Codable, Equatable, Sendable {
         account.credentialKeys = credentialKeys
         account.configKeys = configKeys
         account.configValues = configValues
+        if let outlookCredentialFormat { account.outlookCredentialFormat = outlookCredentialFormat }
         account.isGlobal = isGlobal
         account.testHTTPMethod = testHTTPMethod
         account.notes = notes

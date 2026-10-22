@@ -11,7 +11,8 @@ extension ConnectorSecretFacts {
             baseURL: connector.baseURL,
             originPackageID: connector.originPackageID,
             originComponentID: connector.originComponentID,
-            credentialNamespaceID: connector.credentialNamespaceID
+            credentialNamespaceID: connector.credentialNamespaceID,
+            outlookCredentialFormat: OutlookCredentialIdentity.format(keys: connector.configKeys, values: connector.configValues)
         )
     }
 }
@@ -302,16 +303,18 @@ public enum KeychainService {
     /// cleared, so a retry is idempotent.
     @discardableResult
     public static func deleteAll(facts: ConnectorSecretFacts, sparing: Set<String> = []) -> Bool {
-        let services = connectorServices(facts: facts).filter { !sparing.contains($0) }
-        guard !services.isEmpty else { return true }
-        let deleted = services.map { AstraSecureKeychainStore.deleteAll(service: $0) }
-        if !deleted.contains(true) {
-            AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [
-                "scope": "connector_all",
-                "namespace_count": String(services.count)
-            ], level: .warning)
+        OutlookCredentialVaultCleanup.perform(facts: facts, sparing: sparing) {
+            let services = connectorServices(facts: facts).filter { !sparing.contains($0) }
+            guard !services.isEmpty else { return true }
+            let deleted = services.map { AstraSecureKeychainStore.deleteAll(service: $0) }
+            if !deleted.contains(true) {
+                AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                    "scope": "connector_all",
+                    "namespace_count": String(services.count)
+                ], level: .warning)
+            }
+            return !deleted.contains(false)
         }
-        return !deleted.contains(false)
     }
 
     /// Delete all credentials for a skill.

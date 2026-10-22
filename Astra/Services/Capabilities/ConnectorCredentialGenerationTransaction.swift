@@ -126,6 +126,9 @@ final class ConnectorCredentialGenerationTransaction {
         let old = copying ? nil : stored?.keychainCleanup
         var staged = account.keychainCleanup
         staged.credentialNamespaceID = namespaceID
+        // This transaction stages generic credentials, not a replacement of
+        // the legacy OAuth session still owned at the logical account ID.
+        if staged.isStanfordOutlookMail && staged.outlookCredentialFormat == nil { staged.includesOutlookCredentials = false }
         let source = ConnectorSecretFacts(connector: stored ?? account)
         let target = ConnectorSecretFacts(id: source.id, name: source.name, serviceType: source.serviceType,
             baseURL: source.baseURL, originPackageID: source.originPackageID, originComponentID: source.originComponentID,
@@ -230,9 +233,7 @@ final class ConnectorCredentialGenerationTransaction {
 
     /// Called only after a proved noncommit or before any model cutover.
     func discard() {
-        let facts = ConnectorSecretFacts(id: staged.connectorID, name: staged.name, serviceType: staged.serviceType,
-            baseURL: staged.baseURL, originPackageID: staged.originPackageID, originComponentID: staged.originComponentID,
-            credentialNamespaceID: staged.credentialNamespaceID)
+        let facts = staged.secretFacts
         let cleared = !writeAttempted || ConnectorSecretSeam.required.deleteAllCredentialsReportingResult(facts: facts, sparing: [])
         if let journal, let lease {
             journal.forget((previous.map { [$0] } ?? []) + (cleared ? [staged] : []), lease: lease)

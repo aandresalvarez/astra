@@ -107,6 +107,10 @@ public enum AstraSecureKeychainStore {
         keychainPathOverride ?? channelKeychainPath
     }
 
+    static var oauthSessionLockDirectory: URL {
+        URL(fileURLWithPath: keychainPath + ".oauth-locks", isDirectory: true)
+    }
+
     private static var bootstrapService: String {
         bootstrapServiceOverride ?? channelBootstrapService
     }

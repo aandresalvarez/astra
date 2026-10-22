@@ -15,6 +15,7 @@ struct PendingTaskCredentialReferences {
     private var unknownKeys: Set<UUID> = []
     private var accounts: Set<UUID> = []
     private var accountNamespaces: Set<String> = []
+    private var unknownAccountOwnership = false
 
     func holdsSkill(_ id: UUID, key: String? = nil) -> Bool {
         guard let key else { return skills.contains(id) }
@@ -22,12 +23,9 @@ struct PendingTaskCredentialReferences {
     }
 
     func holdsAccount(_ cleanup: ConnectorKeychainCleanup) -> Bool {
-        accounts.contains(cleanup.connectorID) || !accountNamespaces.isDisjoint(with:
-            KeychainSecretStore.connectorEntityIDs(
-                id: cleanup.connectorID, serviceType: cleanup.serviceType, baseURL: cleanup.baseURL,
-                originPackageID: cleanup.originPackageID, originComponentID: cleanup.originComponentID,
-                credentialNamespaceID: cleanup.credentialNamespaceID
-            ))
+        guard let owned = KeychainSecretStore.ownedConnectorEntityIDs(for: cleanup.secretFacts) else { return true }
+        return unknownAccountOwnership || accounts.contains(cleanup.connectorID)
+            || !accountNamespaces.isDisjoint(with: owned)
     }
 
     static func capture(modelContext: ModelContext) -> Self? {
@@ -151,9 +149,12 @@ struct PendingTaskCredentialReferences {
             }
             for account in skill.connectorSnapshots ?? [] {
                 guard let rawID = account.id, let id = UUID(uuidString: rawID) else { return false }
-                accountNamespaces.formUnion(KeychainSecretStore.connectorEntityIDs(id: id,
-                    serviceType: account.serviceType, baseURL: account.baseURL, originPackageID: nil, originComponentID: nil,
-                    credentialNamespaceID: account.credentialNamespaceID))
+                let facts = ConnectorSecretFacts(id: id, name: account.name, serviceType: account.serviceType,
+                    baseURL: account.baseURL, originPackageID: nil, originComponentID: nil,
+                    credentialNamespaceID: account.credentialNamespaceID,
+                    outlookCredentialFormat: account.outlookCredentialFormat ?? OutlookCredentialIdentity.format(keys: account.configKeys, values: account.configValues))
+                guard let owned = KeychainSecretStore.ownedConnectorEntityIDs(for: facts) else { unknownAccountOwnership = true; continue }
+                accountNamespaces.formUnion(owned)
             }
         }
         return true
@@ -165,9 +166,11 @@ struct PendingTaskCredentialReferences {
     }
 
     private mutating func include(_ account: PluginAccountRecord) {
-        accountNamespaces.formUnion(KeychainSecretStore.connectorEntityIDs(id: account.id,
-            serviceType: account.serviceType, baseURL: account.baseURL,
-            originPackageID: account.originPackageID, originComponentID: account.originComponentID,
-            credentialNamespaceID: account.credentialNamespaceID))
+        let facts = ConnectorSecretFacts(id: account.id, name: account.name, serviceType: account.serviceType,
+            baseURL: account.baseURL, originPackageID: account.originPackageID, originComponentID: account.originComponentID,
+            credentialNamespaceID: account.credentialNamespaceID,
+            outlookCredentialFormat: account.outlookCredentialFormat ?? OutlookCredentialIdentity.format(keys: account.configKeys, values: account.configValues))
+        guard let owned = KeychainSecretStore.ownedConnectorEntityIDs(for: facts) else { unknownAccountOwnership = true; return }
+        accountNamespaces.formUnion(owned)
     }
 }
