@@ -68,6 +68,7 @@ enum ConnectorCredentialDuplication {
             if attemptedCommit { modelContext.rollback() }
             if copy.modelContext === modelContext { modelContext.delete(copy) }
             WorkspaceCapabilityActivation.restore(previous, to: workspace)
+            PluginSavedStateRollback.finish(in: modelContext)
             prepared?.discard()
             throw error
         }
@@ -76,6 +77,7 @@ enum ConnectorCredentialDuplication {
     static func requireReady(_ source: Connector, in workspace: Workspace, modelContext: ModelContext) throws {
         guard source.modelContext === modelContext, workspace.modelContext === modelContext,
               !source.isDeleted, !workspace.isDeleted else { throw ConnectorCredentialEditor.Failure.changedAccount }
+        guard !modelContext.hasChanges else { throw ConnectorCredentialEditor.Failure.pendingEdits }
         let files = PluginFileOperationJournal(library: CapabilityLibrary(), approvals: CapabilityApprovalStore())
         guard try files.pendingIDs().isEmpty else { throw ConnectorCredentialEditor.Failure.otherChangePending }
         var scope = Set(try PluginStateMirrors.affectedWorkspaces(workspace: workspace,

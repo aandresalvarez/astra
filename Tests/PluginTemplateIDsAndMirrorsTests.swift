@@ -30,6 +30,7 @@ struct PluginTemplateIDsAndMirrorsTests {
         // The person's own template, named like the plugin's.
         let authored = TaskTemplate(name: "Weekly", mainGoal: "My own goal", workspace: env.workspace, icon: "star", templateDescription: "")
         env.context.insert(authored)
+        try env.context.save()
         try env.install(package)
         let stamped = try #require(env.workspace.templates.first { $0.originPackageID == package.id })
         let templateID = stamped.id

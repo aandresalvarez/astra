@@ -57,6 +57,9 @@ struct CapabilityPackageCreationService {
         traceID: String? = nil,
         mutationPermit: PluginMutationScope.Permit? = nil
     ) throws -> CapabilityPackageCreationResult {
+        if enableHere {
+            try PluginActivationAdmission.requireNoUnrelatedEditsForAdd(in: workspace, modelContext: modelContext)
+        }
         guard let mutationPermit else {
             return try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore,
                 modelContext: modelContext, approvals: approvalStore) { permit in

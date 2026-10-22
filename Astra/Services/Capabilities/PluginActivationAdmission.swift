@@ -7,6 +7,19 @@ import ASTRAModels
 /// or mutating it. This is a read-only admission check, not another state owner.
 @MainActor
 enum PluginActivationAdmission {
+    /// Add may own its newly inserted onboarding workspace, but never an
+    /// unrelated editor's inserts, updates or deletions. Check before preparing
+    /// library/approval files as well as at the direct Enable entry point.
+    static func requireNoUnrelatedEditsForAdd(in workspace: Workspace, modelContext: ModelContext) throws {
+        guard modelContext.hasChanges else { return }
+        let inserted = modelContext.insertedModelsArray
+        let onlyNewWorkspace = inserted.count == 1 && inserted.contains { ($0 as? Workspace) === workspace }
+        let onlyWorkspaceUpdates = modelContext.changedModelsArray.allSatisfy { ($0 as? Workspace) === workspace }
+        guard onlyNewWorkspace, onlyWorkspaceUpdates, modelContext.deletedModelsArray.isEmpty else {
+            throw PluginOperations.OperationError.pendingEdits
+        }
+    }
+
     static func requireCurrent(in workspace: Workspace, modelContext: ModelContext) throws {
         guard workspace.modelContext === modelContext, !workspace.isDeleted else {
             throw PluginOperations.OperationError.workspaceChanged

@@ -126,6 +126,7 @@ struct CapabilityResourceKindParityTests {
         context.insert(first)
         context.insert(second)
 
+        try context.save()
         let package = everyKindPackage()
         let installer = CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
         _ = try installer.install(package, into: first, modelContext: context)
