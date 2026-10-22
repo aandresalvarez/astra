@@ -40,6 +40,8 @@ enum OutlookAuthorizationEditor {
             allowOutlookUserInteraction: allowUserInteraction)
         var attemptedCommit = false
         do {
+            // A promptable vault write may have outlived cancellation.
+            try Task.checkCancellation()
             let affected = scope.union(try ConnectorCredentialEditor.workspaceScope(of: account, modelContext: modelContext))
             try ConnectorCredentialEditor.requireReady(affected, modelContext: modelContext)
             ConnectorCredentialEditor.retainCredentialFields(on: account, prepared: prepared)

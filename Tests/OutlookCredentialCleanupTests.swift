@@ -9,8 +9,8 @@ import ASTRAModels
 @MainActor
 @Suite("Outlook credential cleanup", .serialized)
 struct OutlookCredentialCleanupTests {
-    @Test("Actual legacy writer and cleanup agree even with a separate generic generation", arguments: [false, true])
-    func actualLegacyWriterIsCompletelyCleaned(generation: Bool) throws {
+    @Test("Historical raw-trio storage is cleaned even with a separate generic generation", arguments: [false, true])
+    func historicalLegacyStorageIsCompletelyCleaned(generation: Bool) throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -20,9 +20,12 @@ struct OutlookCredentialCleanupTests {
                 account.applyStanfordOutlookDefaults()
                 account.setConfigValue(StanfordOutlookMail.clientIDKey, value: "synthetic-client")
                 if generation { account.credentialNamespaceID = UUID() }
-                let response = MicrosoftTokenResponse(tokenType: "Bearer", scope: nil, expiresIn: 3600,
-                    accessToken: "synthetic-access", refreshToken: "synthetic-refresh", idToken: nil)
-                try #require(StanfordOutlookMailAuthService().saveTokenResponse(response, connector: account))
+                // The removed writer's exact historical storage contract.
+                for (key, value) in zip(OutlookCredentialIdentity.legacyTokenKeys,
+                    ["synthetic-access", "synthetic-refresh", "2000000000"]) {
+                    try #require(KeychainService.save(key: key, value: value, connectorID: account.id))
+                }
+                StanfordOutlookMailRegistry.upsert(connector: account)
                 try #require(KeychainService.load(key: StanfordOutlookMail.refreshTokenKey, connectorID: account.id) == "synthetic-refresh")
                 try #require(account.keychainCleanup.run())
                 for key in OutlookCredentialIdentity.tokenKeys {
