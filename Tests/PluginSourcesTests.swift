@@ -694,6 +694,9 @@ struct PluginSourcesTests {
         let workspace = Workspace(name: "Sources", primaryPath: fixture.root.appendingPathComponent("ws").path)
         try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         context.insert(workspace)
+        // Remove requires a saved domain; this test exercises provenance, not
+        // the separate rejection of unrelated pending edits.
+        try context.save()
         let library = fixture.library
         let service = CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
         try library.install(package, sourceMetadata: .localLibrary())
