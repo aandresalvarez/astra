@@ -86,7 +86,11 @@ enum ConnectorCredentialDuplication {
     /// The local copy takes over only this workspace's selected bindings.
     /// Its creator remains authoritative for field trust and format checks.
     private static func bindCopy(_ copy: Connector, replacing source: Connector, in workspace: Workspace) throws {
-        for activation in WorkspaceCapabilityActivation.activations(of: workspace) {
+        let activations = WorkspaceCapabilityActivation.activations(of: workspace)
+        let hasSelectedBinding = activations.contains { activation in
+            activation.bindings.contains { !$0.isDeleted && $0.account?.id == source.id }
+        }
+        for activation in activations {
             let selected = activation.bindings.filter { !$0.isDeleted && $0.account?.id == source.id }
                 .map { ($0.componentID, $0.isDefault) }
             if !selected.isEmpty {
@@ -94,7 +98,7 @@ enum ConnectorCredentialDuplication {
                 for (component, isDefault) in selected {
                     WorkspaceCapabilityActivation.bind(copy, toComponent: component, of: activation, isDefault: isDefault)
                 }
-            } else if activation.pluginID == source.originPackageID {
+            } else if !hasSelectedBinding && activation.pluginID == source.originPackageID {
                 guard let component = source.originComponentID, activation.knownComponentIDs.contains(component)
                 else { throw ConnectorCredentialEditor.Failure.changedAccount }
                 WorkspaceCapabilityActivation.bind(copy, toComponent: component, of: activation)

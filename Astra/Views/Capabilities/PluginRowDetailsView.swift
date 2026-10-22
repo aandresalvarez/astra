@@ -52,7 +52,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
         .onChange(of: draftSource) { _, _ in loadDrafts() }
     }
 
-    private var draftSource: String {
+    private var draftSource: PluginSettingDrafts.Source {
         PluginSettingDrafts.source(package: row.package, activation: row.activation)
     }
 
@@ -95,7 +95,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
             }
             Button("Save") { save(key, of: skill, value: settingDrafts.values[draftKey] ?? "") }
                 .controlSize(.small)
-                .disabled(!settingDrafts.belongs(to: row.activation) || settingDrafts.failures[draftKey] != nil)
+                .disabled(!settingDrafts.canSave(draftKey, in: row.activation))
         }
     }
 
@@ -202,7 +202,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
             // A plugin the library no longer has runs nowhere: it is offered
             // even while its activation is on.
             if PluginsSurfacePresentation.showsRemove(row) {
-                Button("Remove", role: .destructive) { onConfirm(.remove(packageID: row.package.id)) }
+                Button("Remove", role: .destructive) { onConfirm(.remove(source: PluginRemovalSource(row: row))) }
                     .controlSize(.small)
             }
         }
@@ -227,8 +227,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
 
     private func save(_ key: String, of skill: PluginSkill, value: String) {
         let field = PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: key)
-        guard settingDrafts.belongs(to: row.activation),
-              settingDrafts.failures[field] == nil,
+        guard settingDrafts.canSave(field, in: row.activation),
               PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation, package: row.package).contains(key) else { return }
         do {
             try actions.setSetting(key, to: value, of: skill, package: row.package, workspace: workspace, modelContext: modelContext)
