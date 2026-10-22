@@ -85,4 +85,42 @@ struct AcceptedAccountInventoryPersistenceTests {
             #expect(queued.skill?.behaviorInstructions == package.skills.first?.behaviorInstructions)
         }
     }
+
+    @Test("A plugin OAuth storage format survives actual accepted inventory and detached launch")
+    func outlookMetadataSurvivesAcceptedInventory() throws {
+        let env = try PluginAddCommitTests.Fixture(installed: false)
+        defer { env.disk.removeFiles() }
+        var package = PluginOperationsTests.package(version: "1.0.0")
+        package.id = env.package.id
+        package.localTools = []
+        package.connectors[0].serviceType = OutlookCredentialIdentity.serviceType
+        package.connectors[0].authMethod = StanfordOutlookMail.authMethod
+        package.connectors[0].credentialHints = []
+        package.connectors[0].configHints = []
+        let library = CapabilityLibrary()
+        try library.install(package)
+        defer { _ = try? library.removePackage(id: package.id) }
+        try CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
+            .enable(package, in: env.workspace, modelContext: env.context)
+        let account = try #require(env.workspace.connectors.first { $0.originPackageID == package.id })
+        account.credentialNamespaceID = UUID()
+        account.outlookCredentialFormat = OutlookCredentialIdentity.generationFormat
+        account.setConfigValue(StanfordOutlookMail.clientIDKey, value: "synthetic-client")
+        try env.context.save()
+        let task = AgentTask(title: "Accepted Outlook", goal: "List mail", workspace: env.workspace)
+        env.context.insert(task)
+        try env.context.save()
+        let projected = try #require(TaskCapabilityResolver(task: task).resourceInventory.connectors.first { $0.id == account.id })
+        #expect(projected.outlookCredentialFormat == OutlookCredentialIdentity.generationFormat)
+        _ = try ExecutionRequestSubmissionService.submitInitial(for: task, into: env.context).get()
+        let request = try #require(try env.context.fetch(FetchDescriptor<TaskTurnRequest>()).first)
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let frozen = try #require(snapshot.accountInventory?.entries.first { $0.account.id == account.id })
+        #expect(frozen.account.outlookCredentialFormat == OutlookCredentialIdentity.generationFormat)
+        let launch = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        TaskCapabilitySnapshotter.refreshForFreshRun(task: launch)
+        let queued = try #require(TaskCapabilityResolver(task: launch).resourceInventory.connectors.first { $0.id == account.id })
+        #expect(queued.credentialNamespaceID == account.credentialNamespaceID)
+        #expect(queued.outlookCredentialFormat == OutlookCredentialIdentity.generationFormat)
+    }
 }

@@ -55,7 +55,7 @@ enum ConnectorCredentialMigration {
             let settled = Set(prepared.settledSettingFields.map { ConnectorCredentialKey.canonical($0.key) })
             guard promoted.isSubset(of: settled) else { throw Failure.invalidLegacyShape }
             try requireReady(scope, modelContext: modelContext)
-            account.credentialNamespaceID = prepared.namespaceID
+            prepared.apply(to: account)
             account.credentialKeys = keys.sorted()
             account.credentialValues = Array(repeating: "", count: account.credentialKeys.count)
             let retained = account.configKeys.indices.filter { !promoted.contains(ConnectorCredentialKey.canonical(account.configKeys[$0])) }

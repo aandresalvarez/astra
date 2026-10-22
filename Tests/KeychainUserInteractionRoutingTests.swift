@@ -13,7 +13,7 @@ struct KeychainUserInteractionRoutingTests {
         let connectorView = try source("Astra/Views/ConnectorsManagerView.swift")
         let skillView = try source("Astra/Views/SkillsManagerView.swift")
         let chatView = try source("Astra/Views/ChatPanelView.swift")
-        let outlook = try source("Astra/Services/Capabilities/StanfordOutlookMail.swift")
+        let outlook = try source("Astra/Services/Persistence/OutlookOAuthVaultSession.swift")
         let permissionsView = try source("Astra/Views/MacOSPermissionsSectionView.swift")
         let onboardingOrchestrator = try source("Astra/Services/Tasks/WorkspaceImportOrchestrator.swift")
 
@@ -35,7 +35,7 @@ struct KeychainUserInteractionRoutingTests {
     func backgroundKeychainPathsRemainNonInteractiveByDefault() throws {
         let keychainService = try source("Astra/Services/Persistence/KeychainService.swift")
         let skill = try source("Astra/Models/Skill.swift")
-        let outlook = try source("Astra/Services/Capabilities/StanfordOutlookMail.swift")
+        let outlook = try source("Astra/Services/Persistence/OutlookOAuthVaultSession.swift")
 
         #expect(keychainService.contains("allowUserInteraction: Bool = false"))
         #expect(skill.contains("allowUserInteraction: Bool = false"))

@@ -22,6 +22,8 @@ enum StanfordOutlookMail {
     static let scopesKey = "ASTRA_MAIL_SCOPES"
     static let tokenUpdatedAtKey = "ASTRA_MAIL_TOKEN_UPDATED_AT"
 
+    static let authorizationConfigurationKeys = [tenantDomainKey, clientIDKey, scopesKey, emailKey,
+        displayNameKey, accountIDKey, tokenUpdatedAtKey]
     static let defaultTenantDomain = "stanford.edu"
     static let defaultScopes = [
         "https://graph.microsoft.com/User.Read",
@@ -86,8 +88,29 @@ extension Connector {
         configValue(StanfordOutlookMail.displayNameKey)
     }
 
-    var hasOutlookRefreshToken: Bool {
-        KeychainService.exists(key: StanfordOutlookMail.refreshTokenKey, connectorID: id)
+    var hasOutlookAuthorization: Bool {
+        guard hasConfiguredOutlookTenantDomain, !outlookClientID.isEmpty,
+              let reference = OutlookCredentialIdentity.resolve(accountID: id, credentialNamespaceID: credentialNamespaceID,
+                format: outlookCredentialFormat) else { return false }
+        // Presentation only: atomic bundle reads need no refresh/cleanup lease.
+        let service = KeychainSecretStore.connectorEntityID(for: reference.namespaceID)
+        switch AstraSecureKeychainStore.read(service: service, account: OutlookOAuthBundle.storageKey) {
+        case .value(let json):
+            guard let data = json.data(using: .utf8), let bundle = try? JSONDecoder().decode(OutlookOAuthBundle.self, from: data),
+                  bundle.matches(tenantDomain: outlookTenantDomain, clientID: outlookClientID,
+                    principalID: configValue(StanfordOutlookMail.accountIDKey)) else { return false }
+            return !bundle.accessToken.isEmpty || bundle.refreshToken?.isEmpty == false
+        case .missing:
+            guard case .legacy = reference else { return false }
+            if case .value(let token) = AstraSecureKeychainStore.read(service: service, account: StanfordOutlookMail.refreshTokenKey) {
+                return !token.isEmpty
+            }
+            if case .value(let token) = AstraSecureKeychainStore.read(service: service, account: StanfordOutlookMail.accessTokenKey) {
+                return !token.isEmpty
+            }
+            return false
+        case .unavailable: return false
+        }
     }
 
     func applyStanfordOutlookDefaults(defaultTenant: Bool = true) {
@@ -96,8 +119,6 @@ extension Connector {
         icon = "envelope.badge.shield.half.filled"
         baseURL = StanfordOutlookMail.graphBaseURL
         testHTTPMethod = "GET"
-        credentialKeys = []
-        credentialValues = []
         if defaultTenant && configValue(StanfordOutlookMail.tenantDomainKey).isEmpty {
             setConfigValue(StanfordOutlookMail.tenantDomainKey, value: StanfordOutlookMail.defaultTenantDomain)
         }
@@ -113,13 +134,7 @@ extension Connector {
         updatedAt = Date()
     }
 
-    func clearOutlookOAuthState() {
-        KeychainService.delete(key: StanfordOutlookMail.accessTokenKey, connectorID: id)
-        KeychainService.delete(key: StanfordOutlookMail.refreshTokenKey, connectorID: id)
-        KeychainService.delete(key: StanfordOutlookMail.expiresAtKey, connectorID: id)
-        setConfigValue(StanfordOutlookMail.tokenUpdatedAtKey, value: "")
-        StanfordOutlookMailRegistry.remove(connectorID: id)
-    }
+
 }
 
 struct MicrosoftDeviceCodeResponse: Decodable, Equatable {
@@ -190,6 +205,7 @@ enum StanfordOutlookMailError: LocalizedError {
     case oauth(String)
     case graph(Int, String)
     case invalidResponse
+    case credentialWriteFailed
 
     var errorDescription: String? {
         switch self {
@@ -209,239 +225,11 @@ enum StanfordOutlookMailError: LocalizedError {
             return message
         case .graph(let status, let message):
             return "Microsoft Graph HTTP \(status): \(message)"
+        case .credentialWriteFailed:
+            return "ASTRA could not preserve the renewed authorization. Unlock the credential store and retry."
         case .invalidResponse:
             return "Microsoft returned an unexpected response."
         }
-    }
-}
-
-struct StanfordOutlookMailAuthService {
-    func startDeviceAuthorization(connector: Connector) async throws -> MicrosoftDeviceCodeResponse {
-        let tenant = connector.outlookTenantDomain
-        let clientID = connector.outlookClientID
-        guard connector.hasConfiguredOutlookTenantDomain else { throw StanfordOutlookMailError.missingTenant }
-        guard !clientID.isEmpty else { throw StanfordOutlookMailError.missingClientID }
-
-        let url = URL(string: "https://login.microsoftonline.com/\(tenant)/oauth2/v2.0/devicecode")!
-        let response: MicrosoftDeviceCodeResponse = try await postForm(
-            url: url,
-            fields: [
-                "client_id": clientID,
-                "scope": connector.configValue(StanfordOutlookMail.scopesKey).isEmpty
-                    ? StanfordOutlookMail.scopeString
-                    : connector.configValue(StanfordOutlookMail.scopesKey)
-            ]
-        )
-        return response
-    }
-
-    func pollForToken(
-        connector: Connector,
-        deviceCode: MicrosoftDeviceCodeResponse
-    ) async throws -> MicrosoftTokenResponse {
-        let tenant = connector.outlookTenantDomain
-        let clientID = connector.outlookClientID
-        guard connector.hasConfiguredOutlookTenantDomain else { throw StanfordOutlookMailError.missingTenant }
-        guard !clientID.isEmpty else { throw StanfordOutlookMailError.missingClientID }
-
-        let url = URL(string: "https://login.microsoftonline.com/\(tenant)/oauth2/v2.0/token")!
-        let deadline = Date().addingTimeInterval(TimeInterval(deviceCode.expiresIn))
-        var interval = max(deviceCode.interval, 5)
-
-        while Date() < deadline {
-            try Task.checkCancellation()
-            do {
-                let token: MicrosoftTokenResponse = try await postForm(
-                    url: url,
-                    fields: [
-                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                        "client_id": clientID,
-                        "device_code": deviceCode.deviceCode
-                    ]
-                )
-                try Task.checkCancellation()
-                return token
-            } catch let error as StanfordOutlookMailError {
-                switch error {
-                case .oauth(let message) where message.contains("authorization_pending"):
-                    try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
-                case .oauth(let message) where message.contains("slow_down"):
-                    interval += 5
-                    try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
-                case .oauth(let message) where message.contains("authorization_declined"):
-                    throw StanfordOutlookMailError.authorizationDeclined
-                case .oauth(let message) where message.contains("expired_token"):
-                    throw StanfordOutlookMailError.expiredDeviceCode
-                default:
-                    throw error
-                }
-            }
-        }
-
-        throw StanfordOutlookMailError.expiredDeviceCode
-    }
-
-    func validAccessToken(connector: Connector) async throws -> String {
-        let expiresAt = KeychainService.load(key: StanfordOutlookMail.expiresAtKey, connectorID: connector.id)
-            .flatMap(TimeInterval.init)
-            .map(Date.init(timeIntervalSince1970:))
-        if let accessToken = KeychainService.load(key: StanfordOutlookMail.accessTokenKey, connectorID: connector.id),
-           let expiresAt,
-           expiresAt.timeIntervalSinceNow > 120 {
-            return accessToken
-        }
-        return try await refreshAccessToken(connector: connector)
-    }
-
-    @discardableResult
-    func refreshAccessToken(connector: Connector) async throws -> String {
-        let tenant = connector.outlookTenantDomain
-        let clientID = connector.outlookClientID
-        guard connector.hasConfiguredOutlookTenantDomain else { throw StanfordOutlookMailError.missingTenant }
-        guard !clientID.isEmpty else { throw StanfordOutlookMailError.missingClientID }
-        guard let refreshToken = KeychainService.load(key: StanfordOutlookMail.refreshTokenKey, connectorID: connector.id),
-              !refreshToken.isEmpty else {
-            throw StanfordOutlookMailError.missingRefreshToken
-        }
-
-        let url = URL(string: "https://login.microsoftonline.com/\(tenant)/oauth2/v2.0/token")!
-        let token: MicrosoftTokenResponse = try await postForm(
-            url: url,
-            fields: [
-                "grant_type": "refresh_token",
-                "client_id": clientID,
-                "refresh_token": refreshToken,
-                "scope": connector.configValue(StanfordOutlookMail.scopesKey).isEmpty
-                    ? StanfordOutlookMail.scopeString
-                    : connector.configValue(StanfordOutlookMail.scopesKey)
-            ]
-        )
-        saveTokenResponse(token, connector: connector)
-        return token.accessToken
-    }
-
-    @discardableResult
-    func saveTokenResponse(
-        _ token: MicrosoftTokenResponse,
-        connector: Connector,
-        allowUserInteraction: Bool = false
-    ) -> Bool {
-        var savedAll = true
-        savedAll = KeychainService.save(
-            key: StanfordOutlookMail.accessTokenKey,
-            value: token.accessToken,
-            connectorID: connector.id,
-            label: "Astra Mail: \(connector.name)",
-            allowUserInteraction: allowUserInteraction
-        ) && savedAll
-        if let refreshToken = token.refreshToken, !refreshToken.isEmpty {
-            savedAll = KeychainService.save(
-                key: StanfordOutlookMail.refreshTokenKey,
-                value: refreshToken,
-                connectorID: connector.id,
-                label: "Astra Mail: \(connector.name)",
-                allowUserInteraction: allowUserInteraction
-            ) && savedAll
-        }
-        let expiresAt = Date().addingTimeInterval(TimeInterval(max(token.expiresIn, 60)))
-        savedAll = KeychainService.save(
-            key: StanfordOutlookMail.expiresAtKey,
-            value: String(expiresAt.timeIntervalSince1970),
-            connectorID: connector.id,
-            label: "Astra Mail: \(connector.name)",
-            allowUserInteraction: allowUserInteraction
-        ) && savedAll
-        // A partial save (e.g. a denied Keychain prompt partway through)
-        // must not register this connector as a working mail account: a
-        // caller who ignores this discardable result (refreshAccessToken)
-        // would otherwise leave a connector stamped "just updated" and
-        // registry-visible with incomplete/missing OAuth tokens, so a task
-        // discovers a broken mail connection instead of a clean
-        // not-signed-in state.
-        guard savedAll else { return false }
-        connector.setConfigValue(StanfordOutlookMail.tokenUpdatedAtKey, value: ISO8601DateFormatter().string(from: Date()))
-        connector.setConfigValue(StanfordOutlookMail.scopesKey, value: token.scope ?? StanfordOutlookMail.scopeString)
-        StanfordOutlookMailRegistry.upsert(connector: connector)
-        return true
-    }
-}
-
-struct StanfordOutlookMailGraphService {
-    private let auth = StanfordOutlookMailAuthService()
-
-    func testConnection(connector: Connector) async throws -> GraphMeResponse {
-        let me: GraphMeResponse = try await get(
-            connector: connector,
-            path: "/me",
-            queryItems: [
-                URLQueryItem(name: "$select", value: "id,displayName,userPrincipalName,mail")
-            ],
-            preferTextBody: false
-        )
-        connector.setConfigValue(StanfordOutlookMail.accountIDKey, value: me.id)
-        connector.setConfigValue(StanfordOutlookMail.displayNameKey, value: me.displayName ?? "")
-        if connector.outlookEmail.isEmpty {
-            connector.setConfigValue(
-                StanfordOutlookMail.emailKey,
-                value: me.mail ?? me.userPrincipalName ?? ""
-            )
-        }
-        StanfordOutlookMailRegistry.upsert(connector: connector)
-        return me
-    }
-
-    func message(connector: Connector, id messageID: String) async throws -> GraphMessage {
-        let encodedMessageID = urlPathComponent(messageID)
-        return try await get(
-            connector: connector,
-            path: "/me/messages/\(encodedMessageID)",
-            queryItems: [
-                URLQueryItem(
-                    name: "$select",
-                    value: "id,subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,body,hasAttachments,webLink"
-                )
-            ],
-            preferTextBody: true,
-            consistencyLevelEventual: false
-        )
-    }
-
-    private func get<T: Decodable>(
-        connector: Connector,
-        path: String,
-        queryItems: [URLQueryItem],
-        preferTextBody: Bool,
-        consistencyLevelEventual: Bool = false
-    ) async throws -> T {
-        let token = try await auth.validAccessToken(connector: connector)
-        var components = URLComponents(string: StanfordOutlookMail.graphBaseURL)!
-        components.percentEncodedPath = path
-        components.queryItems = queryItems
-        guard let url = components.url else { throw StanfordOutlookMailError.invalidResponse }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 30
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if preferTextBody {
-            request.setValue("outlook.body-content-type=\"text\"", forHTTPHeaderField: "Prefer")
-        }
-        if consistencyLevelEventual {
-            request.setValue("eventual", forHTTPHeaderField: "ConsistencyLevel")
-        }
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw StanfordOutlookMailError.invalidResponse
-        }
-        guard (200...299).contains(http.statusCode) else {
-            let message = String(data: data, encoding: .utf8) ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
-            throw StanfordOutlookMailError.graph(http.statusCode, message)
-        }
-
-        let decoder = JSONDecoder()
-        return try decoder.decode(T.self, from: data)
     }
 }
 
@@ -584,75 +372,17 @@ enum StanfordOutlookMailRegistry {
     }
 }
 
-private func postForm<T: Decodable>(url: URL, fields: [String: String]) async throws -> T {
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.timeoutInterval = 30
-    request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-    request.setValue("application/json", forHTTPHeaderField: "Accept")
-    request.httpBody = formEncoded(fields).data(using: .utf8)
-
-    let (data, response) = try await URLSession.shared.data(for: request)
-    guard let http = response as? HTTPURLResponse else {
-        throw StanfordOutlookMailError.invalidResponse
-    }
-
-    let decoder = JSONDecoder()
-    decoder.keyDecodingStrategy = .convertFromSnakeCase
-
-    if (200...299).contains(http.statusCode) {
-        return try decoder.decode(T.self, from: data)
-    }
-
-    if let oauth = try? decoder.decode(MicrosoftOAuthErrorResponse.self, from: data) {
-        let description = oauth.errorDescription ?? oauth.error
-        throw StanfordOutlookMailError.oauth("\(oauth.error): \(description)")
-    }
-
-    let message = String(data: data, encoding: .utf8) ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
-    throw StanfordOutlookMailError.graph(http.statusCode, message)
-}
-
-private func formEncoded(_ fields: [String: String]) -> String {
-    fields
-        .map { key, value in
-            "\(urlFormEncode(key))=\(urlFormEncode(value))"
-        }
-        .joined(separator: "&")
-}
-
-private func urlPathComponent(_ value: String) -> String {
-    var allowed = CharacterSet.urlPathAllowed
-    allowed.remove(charactersIn: ":#[]@!$&'()*+,;=/%")
-    return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
-}
-
-private func urlFormEncode(_ value: String) -> String {
-    var allowed = CharacterSet.urlQueryAllowed
-    allowed.remove(charactersIn: "&=+")
-    return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
-}
-
-/// Registered as the `OutlookMailConnectionSeam`
-/// (`ASTRACore/OutlookMailConnectionSeam.swift`) backing implementation.
-///
-/// Rather than re-deriving `StanfordOutlookMailAuthService`/
-/// `StanfordOutlookMailGraphService`'s nested OAuth-refresh-then-Graph-call
-/// flow as primitives, this reconstructs a scratch, never-persisted
-/// `Connector` from `ConnectorOutlookFacts` and runs the existing flow on it
-/// unchanged. This is safe: Keychain entries are addressed by an entity-ID
-/// string computed from `id`/`serviceType`/`baseURL`/origin fields (see
-/// `KeychainSecretStore.connectorEntityIDs(for:)`), not by Swift object
-/// identity, so the scratch connector resolves to the exact same
-/// Keychain-stored tokens and `StanfordOutlookMailRegistry` entry as the real
-/// one — see `ASTRACore/OutlookMailConnectionSeam.swift`'s header for the
-/// full reasoning.
+/// Connection checks reconstruct only the captured account identity, including
+/// its exact OAuth generation. Legacy registry deletion remains a cleanup shim.
 enum OutlookMailConnectionAdapter: OutlookMailConnectionTesting {
+    @MainActor
     static func testConnection(facts: ConnectorOutlookFacts) async throws -> OutlookConnectionResult {
         let scratch = Connector(name: facts.name, serviceType: facts.serviceType)
         scratch.id = facts.id
+        scratch.credentialNamespaceID = facts.credentialNamespaceID
         scratch.configKeys = facts.configKeys
         scratch.configValues = facts.configValues
+        if let format = facts.outlookCredentialFormat { scratch.outlookCredentialFormat = format }
 
         // Diff against configValue(_:) (first-match), not a collapsed dict,
         // so a duplicate config row that the flow never touches doesn't

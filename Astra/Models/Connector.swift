@@ -424,7 +424,8 @@ public final class Connector {
             connectorID: id, name: name, serviceType: serviceType, baseURL: baseURL,
             originPackageID: originPackageID, originComponentID: originComponentID,
             isStanfordOutlookMail: isStanfordOutlookMail,
-            credentialNamespaceID: credentialNamespaceID
+            credentialNamespaceID: credentialNamespaceID,
+            outlookCredentialFormat: OutlookCredentialIdentity.format(keys: configKeys, values: configValues)
         )
     }
 
@@ -493,8 +494,14 @@ public final class Connector {
 
         if isStanfordOutlookMail {
             do {
-                let facts = ConnectorOutlookFacts(id: id, name: name, serviceType: serviceType, configKeys: configKeys, configValues: configValues)
+                let facts = ConnectorOutlookFacts(id: id, name: name, serviceType: serviceType, configKeys: configKeys, configValues: configValues,
+                    credentialNamespaceID: credentialNamespaceID, outlookCredentialFormat: outlookCredentialFormat)
                 let result = try await OutlookMailConnectionSeam.required.testConnection(facts: facts)
+                guard !isDeleted, facts == ConnectorOutlookFacts(id: id, name: name, serviceType: serviceType,
+                    configKeys: configKeys, configValues: configValues, credentialNamespaceID: credentialNamespaceID,
+                    outlookCredentialFormat: outlookCredentialFormat) else {
+                    return (false, "This account changed while testing. Retry the connection check.")
+                }
                 // Applied per changed key (not a wholesale configKeys/
                 // configValues replacement) so a live config edit made to
                 // self while the network call above was in flight isn't
@@ -855,6 +862,17 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
     public let originComponentID: String?
     public let isStanfordOutlookMail: Bool
     public var credentialNamespaceID: UUID? = nil
+    public var outlookCredentialFormat: String? = nil
+    /// Old cleanup records own legacy OAuth. Generic-only staging explicitly
+    /// opts out so rollback never clears a live legacy authorization.
+    public var includesOutlookCredentials: Bool? = nil
+
+    public var secretFacts: ConnectorSecretFacts {
+        ConnectorSecretFacts(id: connectorID, name: name, serviceType: serviceType, baseURL: baseURL,
+            originPackageID: originPackageID, originComponentID: originComponentID,
+            credentialNamespaceID: credentialNamespaceID, outlookCredentialFormat: outlookCredentialFormat,
+            includesOutlookCredentials: includesOutlookCredentials != false)
+    }
 
     /// True when every credential namespace was cleared, so a caller with a
     /// durable record can keep it for a retry otherwise. Namespaces in
@@ -868,11 +886,7 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
         if isStanfordOutlookMail, !keepRegistryEntry {
             registryCleared = OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: connectorID)
         }
-        let cleared = ConnectorSecretSeam.required.deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts(
-            id: connectorID, name: name, serviceType: serviceType, baseURL: baseURL,
-            originPackageID: originPackageID, originComponentID: originComponentID,
-            credentialNamespaceID: credentialNamespaceID
-        ), sparing: sparing)
+        let cleared = ConnectorSecretSeam.required.deleteAllCredentialsReportingResult(facts: secretFacts, sparing: sparing)
         AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
             "connector_id": connectorID.uuidString,
             "service_type": serviceType

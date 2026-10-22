@@ -88,6 +88,17 @@ public struct KeychainSecretStore: SecretStore {
             credentialNamespaceID: facts.credentialNamespaceID)
     }
 
+    /// Namespace ownership is broader than generic reads for legacy Outlook:
+    /// its token producer used logical A even when generic credentials used G.
+    /// Nil is unresolved ownership, never permission to delete other sessions.
+    public static func ownedConnectorEntityIDs(for facts: ConnectorSecretFacts) -> [String]? {
+        let generic = connectorEntityIDs(for: facts)
+        guard facts.serviceType == OutlookCredentialIdentity.serviceType, facts.includesOutlookCredentials else { return generic }
+        guard let reference = OutlookCredentialIdentity.resolve(accountID: facts.id,
+            credentialNamespaceID: facts.credentialNamespaceID, format: facts.outlookCredentialFormat) else { return nil }
+        return unique(generic + [connectorEntityID(for: reference.namespaceID)])
+    }
+
     public static func stableConnectorEntityID(for connector: Connector) -> String? {
         stableConnectorEntityID(
             serviceType: connector.serviceType,
