@@ -227,12 +227,17 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         let standalone = Connector(name: "Standalone", serviceType: "standalone_service", authMethod: "none")
         standalone.workspace = a
         context.insert(standalone)
+        let acceptedStandaloneTool = LocalTool(name: "Already accepted", toolType: "cli", command: "echo", arguments: "accepted")
+        acceptedStandaloneTool.workspace = a
+        context.insert(acceptedStandaloneTool)
         let task = AgentTask(title: "A", goal: "Manage GCP resources", workspace: a)
         context.insert(task)
         let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, kind: .retry)
         context.insert(request)
         try context.save()
 
+        // Moving an already accepted standalone tool must not erase it.
+        acceptedStandaloneTool.skill = override
         // While it waits, new rows are attached to the override.
         let lateConnector = Connector(name: "Late", serviceType: "late_service", authMethod: "none")
         lateConnector.workspace = a
@@ -246,13 +251,35 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         #expect(TaskCapabilityResolver(task: task).allLocalTools.contains { $0.id == lateTool.id })
 
         let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
-        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        #expect(snapshot.standaloneToolIDs?.contains(acceptedStandaloneTool.id) == true)
+        let persisted = try JSONDecoder().decode(AgentTaskLaunchSnapshot.self, from: JSONEncoder().encode(snapshot))
+        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(persisted, from: task)
+        let nested = TaskExecutionLaunchSnapshotApplicator.detachedTask(AgentTaskLaunchSnapshot(task: detached), from: detached)
+        #expect(TaskCapabilityResolver(task: nested).allLocalTools.contains { $0.id == acceptedStandaloneTool.id })
+        #expect(TaskExecutionPolicySnapshotV1(task: nested).standaloneToolIDs == snapshot.standaloneToolIDs)
+        #expect(!TaskCapabilityResolver(task: nested).allLocalTools.contains { $0.id == lateTool.id })
+        // Backward decoding must preserve unknown (nil), rather than
+        // recapturing live rows as accepted during nested launches.
+        let encoded = try JSONEncoder().encode(snapshot)
+        var legacyJSON = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacyJSON.removeValue(forKey: "standaloneToolIDs")
+        let legacy = try JSONDecoder().decode(AgentTaskLaunchSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: legacyJSON))
+        let legacyTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(legacy, from: task)
+        #expect(AgentTaskLaunchSnapshot(task: legacyTask).standaloneToolIDs == nil)
+        #expect(TaskExecutionPolicySnapshotV1(task: legacyTask).standaloneToolIDs == nil)
+        legacyJSON["standaloneToolIDs"] = [] as [String]
+        let empty = try JSONDecoder().decode(AgentTaskLaunchSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: legacyJSON))
+        let emptyTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(empty, from: task)
+        #expect(AgentTaskLaunchSnapshot(task: emptyTask).standaloneToolIDs == [])
         let resolver = TaskCapabilityResolver(task: detached)
         #expect(!resolver.allConnectors.contains { $0.id == lateConnector.id })
         #expect(!resolver.allLocalTools.contains { $0.id == lateTool.id })
         #expect(detached.workspace?.connectors.contains { $0.id == lateConnector.id } == false)
         #expect(detached.workspace?.localTools.contains { $0.id == lateTool.id } == false)
         // What was in scope at submission still is.
+        #expect(resolver.allLocalTools.contains { $0.id == acceptedStandaloneTool.id })
         #expect(resolver.allLocalTools.contains { $0.id == submittedToolID })
         #expect(resolver.allConnectors.contains { $0.id == standalone.id })
     }
