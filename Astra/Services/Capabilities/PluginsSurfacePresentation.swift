@@ -76,10 +76,18 @@ enum PluginsSurfacePresentation {
     static func settingKeys(of skill: PluginSkill, in activation: PluginActivation?, package: PluginPackage? = nil) -> [String] {
         guard let activation, PluginRuntimeProjection.packageSkillOwnsSettings(skill, activation: activation) else { return [] }
         if let package, PluginRuntimeProjection.awaitsUpdate(activation, to: package) { return [] }
-        // The installer places these fields on each connector account and
-        // runtime account values take precedence over skill environment values.
-        guard package?.connectors.isEmpty != false else { return [] }
-        return skill.environmentKeys
+        guard let package, !package.connectors.isEmpty else { return skill.environmentKeys }
+        // Hide only fields the shared account layout actually stores. A
+        // skill-only secret remains owned by this activation even when the
+        // package also declares unrelated connector accounts.
+        let environmentKeys = PluginAccountFieldLayout.environmentKeys(in: package)
+        let accountKeys = Set(package.connectors.flatMap { connector in
+            let stored = PluginConnectorFieldTrust.asStored(connector, in: package)
+            return stored.credentialHints.map(\.key)
+                + PluginAccountFieldLayout.configurationKeys(hints: stored.configHints, environmentKeys: environmentKeys)
+                + connector.configHints.filter(\.isAccountStructure).map(\.key)
+        })
+        return skill.environmentKeys.filter { !accountKeys.contains($0) }
     }
 
     static func showsRemove(_ row: PluginRow) -> Bool {

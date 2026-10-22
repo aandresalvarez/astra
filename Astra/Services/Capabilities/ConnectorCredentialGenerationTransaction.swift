@@ -97,17 +97,7 @@ final class ConnectorCredentialGenerationTransaction {
         let stored = rows.first
         if let stored {
             guard (copying || !isNew),
-                  ConnectorSnapshotConfig(connector: stored) == ConnectorSnapshotConfig(connector: sourceAccount),
-                  stored.credentialValues == sourceAccount.credentialValues,
-                  stored.originPackageID == sourceAccount.originPackageID,
-                  stored.originPackageVersion == sourceAccount.originPackageVersion,
-                  stored.originComponentID == sourceAccount.originComponentID,
-                  stored.originComponentKind == sourceAccount.originComponentKind,
-                  stored.originSourceKind == sourceAccount.originSourceKind,
-                  stored.accountAlias == sourceAccount.accountAlias,
-                  stored.testHTTPMethod == sourceAccount.testHTTPMethod,
-                  stored.workspace?.id == sourceAccount.workspace?.id,
-                  stored.skill?.id == sourceAccount.skill?.id
+                  ConnectorSavedAccountState.matches(stored, sourceAccount)
             else { throw Failure.changedAccount }
         } else {
             guard !copying, isNew || modelContext.insertedModelsArray.contains(where: { ($0 as? Connector) === account })

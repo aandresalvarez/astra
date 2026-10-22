@@ -236,11 +236,15 @@ enum PluginOperations {
     ) throws {
         guard !modelContext.hasChanges else { throw OperationError.pendingEdits }
         guard account.modelContext === modelContext, !account.isDeleted else { throw OperationError.workspaceChanged }
+        // Serialize with credential producers until the deletion and cleanup
+        // intent are saved, so its admitted namespace cannot rotate in between.
+        let journal = try ConnectorCredentialGenerationJournal(modelContext: modelContext)
+        let lease = try journal?.acquireLease()
+        defer { withExtendedLifetime(lease) {} }
+        _ = try journal?.pending()
         // Who lists the account must be known before anything is deleted: a
         // workspace missed here would keep a dangling ID.
-        guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()) else {
-            throw OperationError.storeUnreadable
-        }
+        let workspaces = try PluginAccountDeletionAdmission.currentWorkspaces(for: account, modelContext: modelContext)
         let id = account.id.uuidString
         let listing = workspaces.filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) }
         // Every workspace whose mirror names the account, the one the

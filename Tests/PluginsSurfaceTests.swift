@@ -57,6 +57,25 @@ struct PluginsSurfaceTests {
         #expect(!PluginRow(package: package, activation: activation, display: display).canChangeAccountBindings)
     }
 
+    @Test("Plugins with connectors keep activation-owned skill secrets editable")
+    func activationOwnedSecretsRemainEditableBesideAccounts() throws {
+        var candidate = PluginOperationsTests.package(version: "1.0.0")
+        candidate.skills[0].environmentKeys = ["PROJECT", "API_TOKEN", "TRACKER_TOKEN"]
+        candidate.skills[0].environmentValues = ["default-project", "", ""]
+        let activation = PluginActivation(pluginID: candidate.id)
+        #expect(PluginsSurfacePresentation.settingKeys(of: candidate.skills[0], in: activation,
+            package: candidate) == ["API_TOKEN"])
+        var second = candidate.connectors[0]
+        second.id = "another-api"
+        second.credentialHints = [.init(key: "API_TOKEN", hint: "Account token")]
+        candidate.connectors.append(second)
+        #expect(PluginsSurfacePresentation.settingKeys(of: candidate.skills[0], in: activation,
+            package: candidate).isEmpty)
+        candidate.connectors = []
+        #expect(PluginsSurfacePresentation.settingKeys(of: candidate.skills[0], in: activation,
+            package: candidate) == candidate.skills[0].environmentKeys)
+    }
+
     @Test("Account-owned environment fields are edited on the account, never as ineffective skill overrides")
     func accountOwnedSettingsStayOnAccounts() throws {
         let candidate = PluginOperationsTests.package(version: "1.0.0")
