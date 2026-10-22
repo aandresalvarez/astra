@@ -64,6 +64,9 @@ struct CapabilityUninstallerTests {
         let authoredSkill = Skill(name: "Owned Skill", allowedTools: ["Read"])
         authoredSkill.isGlobal = true
         context.insert(authoredSkill)
+        // Authored resources must already be saved before the separate Remove
+        // operation; pending-edit rejection has its own regression coverage.
+        try context.save()
 
         let result = try CapabilityUninstaller(library: library).remove(package, modelContext: context)
 
