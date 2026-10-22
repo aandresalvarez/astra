@@ -426,13 +426,13 @@ struct PluginRemovalSource: Equatable {
 /// Turning a plugin off deletes nothing, so it needs none.
 enum PluginsSurfaceConfirmation: Equatable {
     /// Removing it from ASTRA turns it off in every workspace.
-    case remove(source: PluginRemovalSource)
+    case remove(source: PluginRemovalSource, scope: PluginRemovalScope)
     /// Deleting an account removes it everywhere; accepted tasks may retain access.
     case deleteAccount(packageID: String, scope: PluginAccountDeletionScope)
 
     var packageID: String {
         switch self {
-        case .remove(let source): source.packageID
+        case .remove(let source, _): source.packageID
         case .deleteAccount(let id, _): id
         }
     }

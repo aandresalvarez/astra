@@ -148,9 +148,10 @@ struct PluginSourceDefinitionOperation {
 
     /// Remove and forget-missing publish provenance only through the same
     /// matching receipt as their library and workspace deletion.
-    func removing(pluginID: String, modelContext: ModelContext,
+    func removing(pluginID: String, modelContext: ModelContext, confirmedScope: PluginRemovalScope? = nil,
         perform: (PluginFileOperationContext) throws -> CapabilityUninstaller.RemovalResult) throws -> CapabilityUninstaller.RemovalResult {
         try recover(modelContext)
+        try PluginRemovalScope.requireCurrent(pluginID: pluginID, confirmedScope: confirmedScope, modelContext: modelContext)
         let journal = PluginSourceOperationJournal(store: store)
         let prepared = try journal.prepare(pluginID: pluginID, after: nil, modelContext: modelContext)
         let operation = PluginFileOperationContext(id: prepared.id, metadataDigest: prepared.digest, metadata: journal.handler(modelContext: modelContext))

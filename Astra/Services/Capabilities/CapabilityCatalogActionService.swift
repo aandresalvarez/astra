@@ -157,11 +157,13 @@ struct CapabilityCatalogActionService {
     @discardableResult
     func remove(
         _ package: PluginPackage,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        confirmedScope: PluginRemovalScope? = nil
     ) throws -> CapabilityUninstaller.RemovalResult {
         try sourceStore.exclusively(pluginID: package.id) {
-            try PluginSourceDefinitionOperation(library: library, store: sourceStore).removing(pluginID: package.id, modelContext: modelContext) {
-                try uninstaller.remove(package, modelContext: modelContext, operation: $0)
+            try PluginSourceDefinitionOperation(library: library, store: sourceStore).removing(
+                pluginID: package.id, modelContext: modelContext, confirmedScope: confirmedScope) {
+                try uninstaller.remove(package, modelContext: modelContext, operation: $0, confirmedScope: confirmedScope)
             }
         }
     }
@@ -196,10 +198,11 @@ struct CapabilityCatalogActionService {
 
     /// Remove for a plugin the library no longer has a readable entry for.
     @discardableResult
-    func forgetMissing(pluginID: String, modelContext: ModelContext) throws -> CapabilityUninstaller.RemovalResult {
+    func forgetMissing(pluginID: String, modelContext: ModelContext, confirmedScope: PluginRemovalScope? = nil) throws -> CapabilityUninstaller.RemovalResult {
         try sourceStore.exclusively(pluginID: pluginID) {
-            try PluginSourceDefinitionOperation(library: library, store: sourceStore).removing(pluginID: pluginID, modelContext: modelContext) {
-                try uninstaller.forgetMissing(pluginID: pluginID, modelContext: modelContext, operation: $0)
+            try PluginSourceDefinitionOperation(library: library, store: sourceStore).removing(
+                pluginID: pluginID, modelContext: modelContext, confirmedScope: confirmedScope) {
+                try uninstaller.forgetMissing(pluginID: pluginID, modelContext: modelContext, operation: $0, confirmedScope: confirmedScope)
             }
         }
     }

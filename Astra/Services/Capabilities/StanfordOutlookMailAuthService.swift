@@ -70,7 +70,7 @@ struct StanfordOutlookMailAuthService: Sendable {
         let session = try sessionFactory(context.reference)
         guard let bundle = try session.load(tenantDomain: context.tenant, clientID: context.clientID, principalID: context.principalID)
         else { throw StanfordOutlookMailError.missingRefreshToken }
-        if !forceRefresh, bundle.expiresAt.timeIntervalSinceNow > 120 { return bundle.accessToken }
+        if !forceRefresh, OutlookAuthorizationReadiness.canUseAccessToken(expiresAt: bundle.expiresAt) { return bundle.accessToken }
         guard let refresh = bundle.refreshToken, !refresh.isEmpty else { throw StanfordOutlookMailError.missingRefreshToken }
         let token: MicrosoftTokenResponse = try await postForm(url: context.client.oauthURL("token"), fields: [
             "grant_type": "refresh_token", "client_id": context.clientID, "refresh_token": refresh, "scope": context.scopes])
