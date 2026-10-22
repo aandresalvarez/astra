@@ -6,7 +6,9 @@ import ASTRAModels
 /// account, bindings and mirror owners before deriving cleanup from that graph.
 @MainActor
 enum PluginAccountDeletionAdmission {
-    static func currentWorkspaces(for account: Connector, modelContext: ModelContext) throws -> [Workspace] {
+    static func currentWorkspaces(
+        for account: Connector, modelContext: ModelContext, confirmedScope: PluginAccountDeletionScope? = nil
+    ) throws -> [Workspace] {
         let saved = ModelContext(modelContext.container)
         saved.autosaveEnabled = false
         let id = account.id
@@ -24,6 +26,11 @@ enum PluginAccountDeletionAdmission {
         let actualScope = try PluginOperations.workspacesUsing(stored) { persisted }
         guard Set(expectedScope.map(\.id)) == Set(actualScope.map(\.id)) else {
             throw PluginOperations.OperationError.workspaceChanged
+        }
+        if let confirmedScope {
+            guard confirmedScope.accountID == account.id,
+                  Set(confirmedScope.workspaces.map(\.id)) == Set(actualScope.map(\.id))
+            else { throw PluginOperations.OperationError.workspaceChanged }
         }
         for workspace in expectedScope {
             try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)

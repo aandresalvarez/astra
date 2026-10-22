@@ -93,9 +93,9 @@ enum PluginsSurfacePresentation {
 
     static func confirmationCopy(
         _ confirmation: PluginsSurfaceConfirmation, account: Connector?,
-        packageName: String, in workspace: Workspace, workspaces: [String]
+        packageName: String, in workspace: Workspace
     ) -> (message: String, verb: String) {
-        confirmation.copy(name: account.map { accountTitle($0, in: workspace) } ?? packageName, workspaces: workspaces)
+        confirmation.copy(name: account.map { accountTitle($0, in: workspace) } ?? packageName)
     }
 
     struct Input {
@@ -312,7 +312,7 @@ enum PluginsSurfaceConfirmation: Equatable {
     /// Removing it from ASTRA turns it off in every workspace.
     case remove(source: PluginRemovalSource)
     /// Deleting an account removes it everywhere; accepted tasks may retain access.
-    case deleteAccount(packageID: String, accountID: UUID)
+    case deleteAccount(packageID: String, scope: PluginAccountDeletionScope)
 
     var packageID: String {
         switch self {
@@ -321,7 +321,7 @@ enum PluginsSurfaceConfirmation: Equatable {
         }
     }
 
-    func copy(name: String, workspaces: [String] = []) -> (message: String, verb: String) {
+    func copy(name: String) -> (message: String, verb: String) {
         switch self {
         case .remove:
             // Remove deletes activations (settings, secret settings); the
@@ -330,7 +330,8 @@ enum PluginsSurfaceConfirmation: Equatable {
                 "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted. Its accounts and their saved keys stay; delete an account to clear it. You can add it again later.",
                 "Remove"
             )
-        case .deleteAccount:
+        case .deleteAccount(_, let scope):
+            let workspaces = scope.workspaces.map(\.name)
             let reach = workspaces.isEmpty
                 ? ""
                 : " \(workspaces.count == 1 ? "It is used in" : "It is used in \(workspaces.count) workspaces:") \(workspaces.joined(separator: ", "))."
