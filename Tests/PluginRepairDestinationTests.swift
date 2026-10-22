@@ -34,7 +34,11 @@ struct PluginRepairDestinationTests {
                 verb: "Sign in", detail: "", command: command, checkBinary: "gcloud", checkArguments: arguments)
             #expect((saved.executionCommand != nil) == automatic)
             let terminal = TerminalSpy()
-            RepairActionRunner.run(saved, terminal: terminal, copy: { _ in })
+            // The runner admits only an executable that resolves to a trusted
+            // installed path, so the test names one instead of depending on
+            // whatever gcloud this machine or CI happens to have.
+            RepairActionRunner.run(saved, terminal: terminal,
+                resolveExecutable: { _ in "/usr/bin/gcloud" }, isInstalled: { _ in true }, copy: { _ in })
             #expect(!terminal.launched.isEmpty == automatic)
         }
         let missingCheck = RepairAction(strategy: .terminal, componentName: "Saved", title: "Sign in",
