@@ -6,7 +6,8 @@ import ASTRACore
 /// direct CLI call can authorize signing in or checking an inferred account.
 enum RuntimeRepairInvocationPolicy {
     static func admitsDiagnostics(command: String, content: String) -> Bool {
-        guard command.utf8.count <= 8_192, content.utf8.count <= 65_536 else { return false }
+        guard command.utf8.count <= 8_192, content.utf8.count <= 65_536,
+              let segments = CLISessionExpiryClassifier.executionSegments(command) else { return false }
         // A definition is not evidence that its body ran. Without typed
         // execution provenance, do not pause on text printed by another tool.
         let definition = #"(?:\bfunction\s+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\))\s*\{"#
@@ -15,7 +16,7 @@ enum RuntimeRepairInvocationPolicy {
         // iterator loops or asynchronous compound commands. Their bodies
         // are not evidence of execution, even if a later command succeeds.
         let unsupported: Set<String> = ["case", "for", "select", "foreach", "repeat", "coproc"]
-        return !CLISessionExpiryClassifier.segments(command).contains { segment in
+        return !segments.contains { segment in
             var words = segment.words
             CLISessionExpiryClassifier.stripWrappers(&words)
             return words.first.map(unsupported.contains) == true
