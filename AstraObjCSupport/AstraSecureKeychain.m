@@ -985,12 +985,22 @@ recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
                            keychainPath:(NSString *)keychainPath
                        bootstrapService:(NSString *)bootstrapService
                                  status:(OSStatus *)outStatus {
+    return [self secretForAccount:account service:service keychainPath:keychainPath
+                bootstrapService:bootstrapService status:outStatus allowUserInteraction:NO];
+}
+
++ (nullable NSString *)secretForAccount:(NSString *)account
+                                service:(NSString *)service
+                           keychainPath:(NSString *)keychainPath
+                       bootstrapService:(NSString *)bootstrapService
+                                 status:(OSStatus *)outStatus
+                   allowUserInteraction:(BOOL)allowUserInteraction {
     @synchronized (self) {
     if (outStatus != NULL) { *outStatus = errSecNotAvailable; }
     Boolean previousInteraction = true;
-    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    [self setKeychainUserInteractionAllowed:allowUserInteraction savingPrevious:&previousInteraction];
     @try {
-    SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
+    SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService userInteractionAllowed:allowUserInteraction];
     if (keychain == NULL) { return nil; }
     OSStatus status = errSecSuccess;
     NSData *data = [self readSecretDataForAccount:account service:service keychain:keychain status:&status];

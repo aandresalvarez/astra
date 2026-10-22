@@ -80,6 +80,8 @@ final class ConnectorCredentialGenerationTransaction {
         settingConflicts: SettingConflicts = .preserve,
         legacyHandling: LegacyHandling = .migrate,
         copying sourceAccount: Connector? = nil,
+        outlookChange: OutlookCredentialGenerationPreparation.Change = .preserve,
+        allowOutlookUserInteraction: Bool = false,
         lease: ConnectorCredentialGenerationJournal.Lease? = nil
     ) throws -> Self {
         guard account.modelContext === modelContext, !account.isDeleted else { throw Failure.changedAccount }
@@ -122,13 +124,22 @@ final class ConnectorCredentialGenerationTransaction {
             guard let stored, stored.configKeys == sourceAccount.configKeys,
                   stored.configValues == sourceAccount.configValues else { throw Failure.legacySourceNotSaved }
         }
+        let oauth = try OutlookCredentialGenerationPreparation.prepare(source: stored ?? sourceAccount,
+            isNew: stored == nil, copying: copying, change: outlookChange)
         let namespaceID = UUID()
-        let old = copying ? nil : stored?.keychainCleanup
+        var old = copying ? nil : stored?.keychainCleanup
+        if let previous = old, previous.isStanfordOutlookMail,
+           previous.credentialNamespaceID != nil, !oauth.ownsOAuth {
+            // This edit retires G only. Legacy OAuth A remains the live
+            // account's owner and will be journaled if it is later replaced.
+            old?.includesOutlookCredentials = false
+        }
         var staged = account.keychainCleanup
         staged.credentialNamespaceID = namespaceID
-        // This transaction stages generic credentials, not a replacement of
-        // the legacy OAuth session still owned at the logical account ID.
-        if staged.isStanfordOutlookMail && staged.outlookCredentialFormat == nil { staged.includesOutlookCredentials = false }
+        if staged.isStanfordOutlookMail {
+            staged.outlookCredentialFormat = oauth.format
+            staged.includesOutlookCredentials = oauth.ownsOAuth
+        }
         let source = ConnectorSecretFacts(connector: stored ?? account)
         let target = ConnectorSecretFacts(id: source.id, name: source.name, serviceType: source.serviceType,
             baseURL: source.baseURL, originPackageID: source.originPackageID, originComponentID: source.originComponentID,
@@ -224,7 +235,19 @@ final class ConnectorCredentialGenerationTransaction {
                 }
             }
         }
+        if oauth.bundle != nil {
+            prepared.noteWriteAttempt()
+            do { try oauth.copyBundle(to: namespaceID, allowUserInteraction: allowOutlookUserInteraction) }
+            catch { prepared.discard(); throw error }
+        }
         return prepared
+    }
+
+    /// Publish storage interpretation with the namespace as one domain edit.
+    /// Call after rebuilding plain settings, before saving the existing receipt.
+    func apply(to account: Connector) {
+        account.credentialNamespaceID = namespaceID
+        if staged.isStanfordOutlookMail { account.outlookCredentialFormat = staged.outlookCredentialFormat }
     }
 
     func completed() {

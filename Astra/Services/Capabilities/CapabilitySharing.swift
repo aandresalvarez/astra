@@ -43,6 +43,10 @@ enum CapabilitySharing {
         copy.credentialValues = Array(repeating: "", count: connector.credentialKeys.count)
         copy.configKeys = connector.configKeys
         copy.configValues = connector.configValues
+        if copy.isStanfordOutlookMail {
+            copy.credentialNamespaceID = UUID()
+            copy.outlookCredentialFormat = OutlookCredentialIdentity.generationFormat
+        }
         copy.testHTTPMethod = connector.testHTTPMethod
         copy.notes = connector.notes
         copy.workspace = workspace

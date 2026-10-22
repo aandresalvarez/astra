@@ -22,6 +22,8 @@ enum StanfordOutlookMail {
     static let scopesKey = "ASTRA_MAIL_SCOPES"
     static let tokenUpdatedAtKey = "ASTRA_MAIL_TOKEN_UPDATED_AT"
 
+    static let authorizationConfigurationKeys = [tenantDomainKey, clientIDKey, scopesKey, emailKey,
+        displayNameKey, accountIDKey, tokenUpdatedAtKey]
     static let defaultTenantDomain = "stanford.edu"
     static let defaultScopes = [
         "https://graph.microsoft.com/User.Read",
@@ -96,8 +98,6 @@ extension Connector {
         icon = "envelope.badge.shield.half.filled"
         baseURL = StanfordOutlookMail.graphBaseURL
         testHTTPMethod = "GET"
-        credentialKeys = []
-        credentialValues = []
         if defaultTenant && configValue(StanfordOutlookMail.tenantDomainKey).isEmpty {
             setConfigValue(StanfordOutlookMail.tenantDomainKey, value: StanfordOutlookMail.defaultTenantDomain)
         }

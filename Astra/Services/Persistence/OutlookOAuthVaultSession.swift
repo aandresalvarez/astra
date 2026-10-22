@@ -46,7 +46,7 @@ public final class OutlookOAuthVaultSession {
     @discardableResult
     public func save(_ bundle: OutlookOAuthBundle, allowUserInteraction: Bool = false) throws -> Bool {
         guard bundle.isSupported else { throw Failure.invalidSession }
-        switch AstraSecureKeychainStore.read(service: service, account: OutlookOAuthBundle.storageKey) {
+        switch AstraSecureKeychainStore.read(service: service, account: OutlookOAuthBundle.storageKey, allowUserInteraction: allowUserInteraction) {
         case .unavailable: throw Failure.unavailable
         case .missing: break
         case .value(let json):

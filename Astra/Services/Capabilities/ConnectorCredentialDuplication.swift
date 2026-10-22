@@ -33,7 +33,7 @@ enum ConnectorCredentialDuplication {
                 keeping: keys, replacing: [], modelContext: modelContext,
                 migratingSettings: Set(promoted.map(ConnectorCredentialKey.canonical)), copying: source)
             prepared = transaction
-            copy.credentialNamespaceID = transaction.namespaceID
+            transaction.apply(to: copy)
             copy.credentialKeys = keys.sorted()
             copy.credentialValues = Array(repeating: "", count: copy.credentialKeys.count)
             let settings = transaction.retainedSettings(of: copy)

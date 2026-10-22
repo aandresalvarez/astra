@@ -86,6 +86,15 @@ NS_ASSUME_NONNULL_BEGIN
                        bootstrapService:(NSString *)bootstrapService
                                  status:(OSStatus *)status;
 
+/// Promptable twin used only by explicit authorization publication. Background
+/// callers keep using the noninteractive status overload above.
++ (nullable NSString *)secretForAccount:(NSString *)account
+                                service:(NSString *)service
+                           keychainPath:(NSString *)keychainPath
+                       bootstrapService:(NSString *)bootstrapService
+                                 status:(OSStatus *)status
+                   allowUserInteraction:(BOOL)allowUserInteraction;
+
 /// Delete the item for (`service`, `account`). Returns `YES` if it was removed
 /// or did not exist.
 + (BOOL)deleteSecretForAccount:(NSString *)account
