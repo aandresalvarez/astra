@@ -505,8 +505,7 @@ struct PluginRuntimeProjection {
 
     /// The setting keys an account of `spec` may carry plain into a run: the
     /// settings its stored projection keeps plain
-    /// (`PluginConnectorFieldTrust.asStored`), its plugin's skill settings
-    /// (`CapabilityInstaller`) and the ones a Stanford Outlook account always
+    /// (`PluginConnectorFieldTrust.asStored`) and the ones a Stanford Outlook account always
     /// carries, less every key the plugin stores as a credential. A plain
     /// value an older row still holds for one of those (its move into the
     /// Keychain refused, or a different value already there) reaches no
@@ -514,7 +513,7 @@ struct PluginRuntimeProjection {
     private static func storedConfigKeys(of spec: PluginConnector, in package: PluginPackage, on copy: Connector) -> Set<String> {
         let stored = PluginConnectorFieldTrust.asStored(spec, in: package)
         let promoted = PluginConnectorFieldTrust.settingsStoredAsCredentials(of: spec, in: package)
-        var keys = Set(stored.configHints.map(\.key)).union(package.skills.flatMap(\.environmentKeys))
+        var keys = Set(PluginAccountFieldLayout.configurationKeys(hints: stored.configHints))
         if copy.isStanfordOutlookMail { keys.formUnion([StanfordOutlookMail.tenantDomainKey, StanfordOutlookMail.scopesKey]) }
         return keys.subtracting(promoted).subtracting(stored.credentialHints.map(\.key))
     }

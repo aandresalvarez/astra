@@ -160,8 +160,7 @@ enum PluginOperations {
         let stored = PluginConnectorFieldTrust.asStored(connector, in: package)
         account.credentialKeys = stored.credentialHints.map(\.key)
         account.credentialValues = Array(repeating: "", count: account.credentialKeys.count)
-        account.configKeys = PluginAccountFieldLayout.configurationKeys(hints: stored.configHints,
-            environmentKeys: PluginAccountFieldLayout.environmentKeys(in: package))
+        account.configKeys = PluginAccountFieldLayout.configurationKeys(hints: stored.configHints)
         let defaults = PluginAccountFieldLayout.defaults(in: package)
         account.configValues = account.configKeys.map { defaults[$0] ?? "" }
         CapabilityResourceOrigin.stamp(account, package: package, componentID: componentID)
