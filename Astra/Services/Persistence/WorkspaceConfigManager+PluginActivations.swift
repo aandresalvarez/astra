@@ -366,10 +366,10 @@ extension WorkspaceConfigManager {
         }
     }
 
-    /// Those of `workspaces` whose mirror carries any of `accountIDs`, as
-    /// `export` collects its rows: the workspace's own, its skills', a
-    /// shared one it lists, and an account any plugin's binding names
-    /// there. The one answer to which mirrors a changed account leaves stale.
+    /// Workspaces whose mirrors may carry these accounts: current export
+    /// scope plus attachments an older exporter wrote through selected skills.
+    /// Cleanup must still rewrite those legacy mirrors after visibility narrows;
+    /// this reachability grants no runtime or new-export access.
     /// Throws when the shared rows can't be read: an answer missing a
     /// workspace would let a destructive caller leave its mirror stale, so
     /// there is no partial answer. `globalRows` stands in for the fetch in
@@ -385,10 +385,13 @@ extension WorkspaceConfigManager {
              try modelContext.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal })))
         })()
         return workspaces.filter { workspace in
-            !workspace.isDeleted && connectorsForExport(
-                workspace: workspace,
-                skills: skillsForExport(workspace: workspace, globalSkills: globalSkills),
-                globalConnectors: globalConnectors
+            guard !workspace.isDeleted else { return false }
+            let skills = skillsForExport(workspace: workspace, globalSkills: globalSkills)
+            let legacyAttachment = skills.contains { skill in
+                skill.connectors.contains { !$0.isDeleted && accountIDs.contains($0.id) }
+            }
+            return legacyAttachment || connectorsForExport(
+                workspace: workspace, skills: skills, globalConnectors: globalConnectors
             ).contains { accountIDs.contains($0.id) }
         }
     }
