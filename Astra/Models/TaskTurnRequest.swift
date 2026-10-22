@@ -50,6 +50,10 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     /// Complete account inventory accepted by the submission service, including
     /// independent accounts. Nil preserves the older partial snapshot contract.
     public let accountInventory: TaskAccountInventorySnapshot?
+    /// Accepted independent tool roles. Values and enablement remain live;
+    /// this baseline prevents a later attachment from erasing an accepted role.
+    /// Nil keeps older requests' conservative late-attachment pruning.
+    public let standaloneToolIDs: [UUID]?
     /// The contents of the authored rows those activations name as
     /// overrides, so an override edited or deleted while the request waits
     /// does not change what it runs with. Nil for older requests, which read
@@ -91,6 +95,7 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
             WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.forLaunch)
         }
         self.accountInventory = accountInventory
+        standaloneToolIDs = TaskStandaloneToolRoles.capture(for: task)
         self.pluginDefinitions = pluginDefinitions
         pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
         pluginOverrides = task.workspace.map(PluginOverrideRecords.init(workspace:))

@@ -76,6 +76,11 @@ public final class Workspace: Identifiable {
     @Transient
     public var launchPluginDefinitions: [PluginPackage]? = nil
 
+    /// Transport of request-owned acceptance evidence in never-inserted launch
+    /// graphs, including the absence of a baseline in legacy requests.
+    @Transient
+    public var launchStandaloneToolRoles: TaskStandaloneToolRoles.LaunchEvidence? = nil
+
     public init(
         name: String,
         primaryPath: String,

@@ -34,6 +34,7 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
     let pluginDefinitions: [PluginPackage]?
     let pluginAccounts: [PluginAccountRecord]?
     let accountInventory: TaskAccountInventorySnapshot?
+    let standaloneToolIDs: [UUID]?
     let pluginOverrides: PluginOverrideRecords?
     let authoredSkills: [SkillLaunchRecord]?
     let pendingLegacyPluginState: WorkspaceCapabilityActivation.PendingLegacyState?
@@ -68,6 +69,7 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         // task is projected from the library as it is now.
         pluginDefinitions = task.workspace?.launchPluginDefinitions
         accountInventory = TaskExecutionLaunchSnapshotApplicator.accountInventory(for: task)
+        standaloneToolIDs = TaskStandaloneToolRoles.capture(for: task)
         pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
         pluginOverrides = task.workspace.map(PluginOverrideRecords.init(workspace:))
         authoredSkills = SkillLaunchRecord.captureAuthored(for: task)
@@ -98,6 +100,7 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         pluginDefinitions: [PluginPackage]? = nil,
         pluginAccounts: [PluginAccountRecord]? = nil,
         accountInventory: TaskAccountInventorySnapshot? = nil,
+        standaloneToolIDs: [UUID]? = nil,
         pluginOverrides: PluginOverrideRecords? = nil,
         authoredSkills: [SkillLaunchRecord]? = nil,
         pendingLegacyPluginState: WorkspaceCapabilityActivation.PendingLegacyState? = nil,
@@ -125,6 +128,7 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         self.pluginDefinitions = pluginDefinitions
         self.pluginAccounts = pluginAccounts
         self.accountInventory = accountInventory
+        self.standaloneToolIDs = standaloneToolIDs
         self.pluginOverrides = pluginOverrides
         self.authoredSkills = authoredSkills
         self.pendingLegacyPluginState = pendingLegacyPluginState

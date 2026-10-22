@@ -919,7 +919,7 @@ public enum WorkspaceConfigManager {
             globalTools: globalTools
         )
 
-        let skillConfigs = skills.compactMap(skillConfig)
+        let skillConfigs = skills.compactMap { skillConfig($0, workspace: workspace) }
         let connectorConfigs = connectors.compactMap(connectorConfig)
         let toolConfigs = localTools.compactMap(localToolConfig)
         let templateConfigs = workspace.templates.map(templateConfig)
@@ -1614,7 +1614,7 @@ public enum WorkspaceConfigManager {
     ) -> [Connector] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalConnectorIDs.compactMap(UUID.init(uuidString:)))
         let enabledGlobals = globalConnectors.filter { enabledGlobalIDs.contains($0.id) }
-        let all = uniqueByID(workspace.connectors + skills.flatMap(\.connectors) + enabledGlobals
+        let all = uniqueByID(workspace.connectors + skills.flatMap { SkillAttachmentVisibility.connectors(of: $0, in: workspace) } + enabledGlobals
             + boundAccounts(of: workspace)) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
@@ -1626,12 +1626,12 @@ public enum WorkspaceConfigManager {
     ) -> [LocalTool] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalToolIDs.compactMap(UUID.init(uuidString:)))
         let enabledGlobals = globalTools.filter { enabledGlobalIDs.contains($0.id) }
-        let all = uniqueByID(workspace.localTools + skills.flatMap(\.localTools) + enabledGlobals
+        let all = uniqueByID(workspace.localTools + skills.flatMap { SkillAttachmentVisibility.tools(of: $0, in: workspace) } + enabledGlobals
             + overridingRows(of: workspace, among: globalTools)) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 
-    private static func skillConfig(_ skill: Skill) -> SkillConfig? {
+    private static func skillConfig(_ skill: Skill, workspace: Workspace) -> SkillConfig? {
         // Guard against faulted/deleted SwiftData objects
         guard !skill.isDeleted, skill.modelContext != nil else { return nil }
         return SkillConfig(
@@ -1646,10 +1646,10 @@ public enum WorkspaceConfigManager {
             environmentKeys: skill.environmentKeys,
             environmentValues: skill.exportableEnvironmentValues,
             isGlobal: skill.isGlobal,
-            connectorIDs: skill.connectors.map { $0.id.uuidString },
-            localToolIDs: skill.localTools.map { $0.id.uuidString },
-            connectorNames: skill.connectors.map(\.name),
-            localToolNames: skill.localTools.map(\.name),
+            connectorIDs: SkillAttachmentVisibility.connectors(of: skill, in: workspace).map { $0.id.uuidString },
+            localToolIDs: SkillAttachmentVisibility.tools(of: skill, in: workspace).map { $0.id.uuidString },
+            connectorNames: SkillAttachmentVisibility.connectors(of: skill, in: workspace).map(\.name),
+            localToolNames: SkillAttachmentVisibility.tools(of: skill, in: workspace).map(\.name),
             originPackageID: skill.originPackageID,
             originPackageVersion: skill.originPackageVersion,
             originComponentID: skill.originComponentID,
