@@ -183,6 +183,48 @@ struct WorkspaceCapabilityActivationTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("Restoring binding attributes keeps the saved row instead of replacing its identity",
+          arguments: ["default", "alias", "component", "account", "age"])
+    @MainActor
+    func restoreBindingAttributesInPlace(attribute: String) throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let first = Connector(name: "Saved Jira", serviceType: "jira")
+        let other = Connector(name: "Other Jira", serviceType: "jira")
+        context.insert(first)
+        context.insert(other)
+        first.workspace = workspace
+        other.workspace = workspace
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability("jira-workflow") }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(first, toComponent: "connector:jira:jira", of: activation, isDefault: true)
+        let original = try #require(activation.bindings.first)
+        original.alias = "Saved alias"
+        original.createdAt = Date(timeIntervalSince1970: 10)
+        try context.save()
+        let before = WorkspaceCapabilityActivation.snapshot(workspace)
+
+        switch attribute {
+        case "default": original.isDefault = false
+        case "alias": original.alias = "Changed alias"
+        case "component": original.componentID = "connector:jira:renamed"
+        case "account": original.account = other
+        default: original.createdAt = Date(timeIntervalSince1970: 20)
+        }
+        WorkspaceCapabilityActivation.restore(before, to: workspace)
+        #expect(activation.bindings.count == 1)
+        #expect(activation.bindings.first === original)
+        #expect(!context.insertedModelsArray.contains { $0 is AccountBinding })
+        #expect(!context.deletedModelsArray.contains { $0 is AccountBinding })
+        #expect(WorkspaceCapabilityActivation.snapshot(workspace) == before)
+        context.rollback()
+        #expect(!context.hasChanges)
+        #expect(WorkspaceCapabilityActivation.snapshot(workspace) == before)
+        let saved = ModelContext(container)
+        let fresh = try #require(try saved.fetch(FetchDescriptor<Workspace>()).first)
+        #expect(WorkspaceCapabilityActivation.snapshot(fresh) == before)
+    }
+
     @Test("A workspace has one default account per service across its plugins")
     @MainActor
     func oneDefaultPerServiceAcrossPlugins() throws {
