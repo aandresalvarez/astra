@@ -9,6 +9,42 @@ import ASTRAModels
 @MainActor
 @Suite("Durable account credential duplication", .serialized)
 struct ConnectorCredentialDuplicationTests {
+    @Test("A copy replaces only selected consumers, with creator fallback only when unbound", arguments: ["other", "both", "unbound"])
+    func copyDoesNotGrantUnselectedCreator(selection: String) throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try ConnectorCredentialEditorTests.Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let source = try env.enable()
+            source.isGlobal = true
+            source.workspace = nil
+            env.disk.workspace.enabledGlobalConnectorIDs = [source.id.uuidString]
+            let creator = try #require(WorkspaceCapabilityActivation.activation(for: env.package.id, in: env.disk.workspace))
+            let component = try #require(source.originComponentID)
+            if selection != "both" { WorkspaceCapabilityActivation.unbind(source, from: creator) }
+            let consumer = PluginActivation(pluginID: "ops.consumer")
+            env.disk.context.insert(consumer)
+            consumer.workspace = env.disk.workspace
+            consumer.knownComponentIDs = [component]
+            if selection != "unbound" {
+                WorkspaceCapabilityActivation.bind(source, toComponent: component, of: consumer, isDefault: true)
+            }
+            try env.disk.context.save()
+            let copy = try ConnectorCredentialDuplication.duplicate(source, in: env.disk.workspace, modelContext: env.disk.context)
+            #expect(creator.bindings.contains { !$0.isDeleted && $0.account?.id == copy.id } == (selection != "other"))
+            #expect(consumer.bindings.contains { !$0.isDeleted && $0.account?.id == copy.id && $0.isDefault } == (selection != "unbound"))
+            #expect(source.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
+            #expect(copy.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
+            #expect(copy.credentialNamespaceID != source.credentialNamespaceID)
+            let creatorRuntime = PluginRuntimeProjection.project(workspace: env.disk.workspace,
+                packages: [env.package], connectorMode: .runtimeCopies, definitions: [env.package])
+            #expect(creatorRuntime.connectors.contains { $0.id == copy.id } == (selection != "other"))
+            let reopened = try env.disk.disk.reopen()
+            let saved = try #require(try reopened.mainContext.fetch(FetchDescriptor<Workspace>()).first)
+            let savedCreator = try #require(WorkspaceCapabilityActivation.activation(for: env.package.id, in: saved))
+            #expect(savedCreator.bindings.contains { !$0.isDeleted && $0.account?.id == copy.id } == (selection != "other"))
+        }
+    }
+
     @Test("Duplication refuses unrelated pending edits before save, rollback or secret staging", arguments: [false, true])
     func pendingEditsRemainOwnedByCaller(failsSave: Bool) throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
