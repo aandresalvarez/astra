@@ -38,6 +38,59 @@ struct PluginRemovalCommitTests {
         #expect(try env.journal.pendingIDs().isEmpty)
     }
 
+    @Test("A rejected Remove restores a clean saved graph before the next retry", arguments: [false, true])
+    func rejectedRemovalLeavesReusableSavedContext(priorIntent: Bool) throws {
+        let env = try PluginOperationsTests.Environment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let package = PluginOperationsTests.package(version: "1.0.0")
+        try env.install(package)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
+        activation.configKeys = ["skill:report-agent#PROJECT"]
+        activation.configValues = ["saved-project"]
+        activation.bindings.first?.alias = "Saved account alias"
+        try env.context.save()
+        let before = WorkspaceCapabilityActivation.snapshot(env.workspace)
+        let bindings = Set(try env.context.fetch(FetchDescriptor<AccountBinding>()).map(\.id))
+        let receipts = Set(try env.context.fetch(FetchDescriptor<PluginOperationReceipt>()).map(\.id))
+        let accounts = Dictionary(uniqueKeysWithValues: try env.context.fetch(FetchDescriptor<Connector>()).map {
+            ($0.id, $0.credentialNamespaceID)
+        })
+        let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("EarlierRemove.json"))
+        let uninstaller = CapabilityUninstaller(library: env.library)
+        if priorIntent { #expect(try journal.begin(package.id)) }
+
+        for attempt in 0..<2 {
+            // Retry after an earlier failed operation, both with and without
+            // a legacy intent already present on the first attempt.
+            if attempt == 1 && !priorIntent { #expect(try journal.begin(package.id)) }
+            var saveAttempts = 0
+            #expect(throws: CapabilityUninstaller.UninstallError.self) {
+                try uninstaller.remove(package, modelContext: env.context, persist: { _, _ in
+                    saveAttempts += 1
+                    return false
+                }, removeJournal: journal)
+            }
+            #expect(saveAttempts == 1)
+            #expect(!env.context.hasChanges)
+            #expect(WorkspaceCapabilityActivation.snapshot(env.workspace) == before)
+            #expect(Set(try env.context.fetch(FetchDescriptor<AccountBinding>()).map(\.id)) == bindings)
+            let saved = ModelContext(env.container)
+            let workspace = try #require(saved.fetch(FetchDescriptor<Workspace>()).first)
+            #expect(WorkspaceCapabilityActivation.snapshot(workspace) == before)
+            #expect(Dictionary(uniqueKeysWithValues: try saved.fetch(FetchDescriptor<Connector>()).map {
+                ($0.id, $0.credentialNamespaceID)
+            }) == accounts)
+            #expect(Set(try saved.fetch(FetchDescriptor<PluginOperationReceipt>()).map(\.id)) == receipts)
+            #expect(env.library.installedPackage(id: package.id) != nil)
+            #expect(try journal.pending() == ((priorIntent || attempt == 1) ? [package.id] : []))
+        }
+        // A normal retry on that same context must reach and commit Remove.
+        try uninstaller.remove(package, modelContext: env.context, removeJournal: journal)
+        #expect(try journal.pending().isEmpty)
+        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace) == nil)
+        #expect(env.library.installedPackage(id: package.id) == nil)
+    }
+
     @Test("Remove without activations cannot delete files on an unpersisted success callback")
     func noActivationNeedsActualSave() throws {
         let env = try Fixture()
