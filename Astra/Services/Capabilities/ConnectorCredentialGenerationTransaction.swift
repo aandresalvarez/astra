@@ -58,6 +58,19 @@ final class ConnectorCredentialGenerationTransaction {
         self.lease = lease
     }
 
+    /// Retire only exact source fields staged or matched to an accepted value.
+    /// Conflicting settings remain on the account for explicit review.
+    func retainedSettings(of account: Connector) -> (keys: [String], values: [String]) {
+        let retained = account.configKeys.indices.filter { index in
+            let value = index < account.configValues.count ? account.configValues[index] : ""
+            return !settledSettingFields.contains {
+                ConnectorCredentialKey.same($0.key, account.configKeys[index]) && $0.value == value
+            }
+        }
+        return (retained.map { account.configKeys[$0] },
+                retained.map { $0 < account.configValues.count ? account.configValues[$0] : "" })
+    }
+
     func noteWriteAttempt() { writeAttempted = true }
 
     static func prepare(

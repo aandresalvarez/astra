@@ -47,11 +47,15 @@ enum ConnectorCredentialDuplication {
             }
             let keys = Set((source.credentialKeys + promoted).map(ConnectorCredentialKey.canonical))
             let transaction = try ConnectorCredentialGenerationTransaction.prepare(account: copy, isNew: true,
-                keeping: keys, replacing: [], modelContext: modelContext, copying: source)
+                keeping: keys, replacing: [], modelContext: modelContext,
+                migratingSettings: Set(promoted.map(ConnectorCredentialKey.canonical)), copying: source)
             prepared = transaction
             copy.credentialNamespaceID = transaction.namespaceID
             copy.credentialKeys = keys.sorted()
             copy.credentialValues = Array(repeating: "", count: copy.credentialKeys.count)
+            let settings = transaction.retainedSettings(of: copy)
+            copy.configKeys = settings.keys
+            copy.configValues = settings.values
             try bindCopy(copy, replacing: source, in: workspace)
             CapabilitySharing.disableShared(source, in: workspace)
             attemptedCommit = true

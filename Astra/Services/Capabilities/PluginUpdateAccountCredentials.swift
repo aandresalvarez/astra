@@ -33,17 +33,9 @@ final class PluginUpdateAccountCredentials {
             migratingSettings: candidate.migratingSettings, lease: lease)
         account.credentialNamespaceID = transaction.namespaceID
         account.credentialValues = Array(repeating: "", count: account.credentialKeys.count)
-        // Retire only the exact durable source fields admitted (or matched to
-        // an accepted value); a conflicting or newer value stays on its row.
-        let retained = account.configKeys.indices.filter { index in
-            let value = index < account.configValues.count ? account.configValues[index] : ""
-            return !transaction.settledSettingFields.contains {
-                ConnectorCredentialKey.same($0.key, account.configKeys[index]) && $0.value == value
-            }
-        }
-        let values = retained.map { $0 < account.configValues.count ? account.configValues[$0] : "" }
-        account.configKeys = retained.map { account.configKeys[$0] }
-        account.configValues = values
+        let settings = transaction.retainedSettings(of: account)
+        account.configKeys = settings.keys
+        account.configValues = settings.values
         return transaction
     }
 
