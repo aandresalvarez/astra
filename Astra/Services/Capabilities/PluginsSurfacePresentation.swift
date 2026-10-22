@@ -285,18 +285,39 @@ enum PluginsSurfacePresentation {
     }
 }
 
+/// Consent belongs to the displayed definition and removal mode. An import,
+/// update or activation change requires a fresh confirmation.
+struct PluginRemovalSource: Equatable {
+    let packageID: String
+    let isMissing: Bool
+    private let definitionDigest: String
+    private let activationID: UUID?
+    private let activationRevision: Int?
+
+    init(row: PluginRow) {
+        packageID = row.id
+        isMissing = row.display.isMissing
+        definitionDigest = PluginDefinitionDigest.content(of: row.package)
+        activationID = row.activation?.id
+        activationRevision = row.activation?.revision
+    }
+
+    func matches(_ row: PluginRow) -> Bool { self == Self(row: row) }
+}
+
 /// The second tap before a destructive row action: it names what goes and
 /// what stays (`docs/design-system/lean-ui-system.md`, Interaction Rules).
 /// Turning a plugin off deletes nothing, so it needs none.
 enum PluginsSurfaceConfirmation: Equatable {
     /// Removing it from ASTRA turns it off in every workspace.
-    case remove(packageID: String)
+    case remove(source: PluginRemovalSource)
     /// Deleting an account removes it everywhere; accepted tasks may retain access.
     case deleteAccount(packageID: String, accountID: UUID)
 
     var packageID: String {
         switch self {
-        case .remove(let id), .deleteAccount(let id, _): id
+        case .remove(let source): source.packageID
+        case .deleteAccount(let id, _): id
         }
     }
 
