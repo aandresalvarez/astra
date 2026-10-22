@@ -9,6 +9,46 @@ import ASTRAModels
 @MainActor
 @Suite("Durable account credential duplication", .serialized)
 struct ConnectorCredentialDuplicationTests {
+    @Test("Duplication refuses unrelated pending edits before save, rollback or secret staging", arguments: [false, true])
+    func pendingEditsRemainOwnedByCaller(failsSave: Bool) throws {
+        try AstraSecureKeychainTestSupport.withPrivateVault {
+            let env = try ConnectorCredentialEditorTests.Fixture()
+            defer { env.disk.disk.removeFiles() }
+            let source = try env.enable()
+            let savedName = env.disk.workspace.name
+            let namespace = source.credentialNamespaceID
+            let snapshot = WorkspaceCapabilityActivation.snapshot(env.disk.workspace)
+            let receipts = Set(try env.disk.context.fetch(FetchDescriptor<PluginOperationReceipt>()).map(\.id))
+            env.disk.workspace.name = "Unfinished unrelated editor work"
+            var saves = 0
+            var mirrors = 0
+            do {
+                _ = try ConnectorCredentialDuplication.duplicate(source, in: env.disk.workspace, modelContext: env.disk.context,
+                    persist: { context in
+                        saves += 1
+                        if failsSave { throw TestFailure.afterSave }
+                        try context.save()
+                    }, rewriteMirror: { _ in mirrors += 1; return true })
+                Issue.record("Duplication admitted unrelated pending edits")
+            } catch ConnectorCredentialEditor.Failure.pendingEdits {
+                // Admission must precede every transactional side effect.
+            } catch { Issue.record("Expected pendingEdits, got \(error)") }
+            #expect(saves == 0 && mirrors == 0)
+            #expect(env.disk.context.hasChanges)
+            #expect(env.disk.workspace.name == "Unfinished unrelated editor work")
+            #expect(source.credentialNamespaceID == namespace)
+            #expect(source.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
+            let actual = WorkspaceCapabilityActivation.snapshot(env.disk.workspace)
+            #expect(actual.state == snapshot.state && actual.activations == snapshot.activations)
+            let saved = ModelContext(env.disk.context.container)
+            #expect(try saved.fetch(FetchDescriptor<Workspace>()).first?.name == savedName)
+            #expect(try saved.fetch(FetchDescriptor<Connector>()).map(\.id) == [source.id])
+            #expect(Set(try saved.fetch(FetchDescriptor<PluginOperationReceipt>()).map(\.id)) == receipts)
+            let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.disk.context))
+            #expect(try journal.pending().isEmpty)
+        }
+    }
+
     @Test("Duplicating a selected account uses a private namespace without writing its endpoint alias")
     func selectedAccountUsesIndependentNamespace() throws {
         try AstraSecureKeychainTestSupport.withPrivateVault {
@@ -59,6 +99,10 @@ struct ConnectorCredentialDuplicationTests {
             #expect(try ModelContext(env.disk.context.container).fetch(FetchDescriptor<Connector>()).count == 1)
             let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.disk.context))
             #expect(try journal.pending().isEmpty)
+            #expect(!env.disk.context.hasChanges)
+            let retry = try ConnectorCredentialDuplication.duplicate(source, in: env.disk.workspace, modelContext: env.disk.context)
+            #expect(retry.currentCredentialValue(forKey: "API_TOKEN") == "accepted-editor-token")
+            #expect(try ModelContext(env.disk.context.container).fetch(FetchDescriptor<Connector>()).count == 2)
         }
     }
 

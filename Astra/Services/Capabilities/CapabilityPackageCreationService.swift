@@ -53,6 +53,9 @@ struct CapabilityPackageCreationService {
         policyContext: CapabilityCatalogPolicyContext? = nil,
         traceID: String? = nil
     ) throws -> CapabilityPackageCreationResult {
+        if enableHere {
+            try PluginActivationAdmission.requireNoUnrelatedEditsForAdd(in: workspace, modelContext: modelContext)
+        }
         let validation = CapabilityPackageValidator.validate(
             package: package,
             installedPackages: library.installedPackages(),

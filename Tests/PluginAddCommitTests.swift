@@ -9,6 +9,72 @@ import ASTRAModels
 @MainActor
 @Suite("Plugin Add commit proof", .serialized)
 struct PluginAddCommitTests {
+    @Test("Add, Enable and Create reject another workflow's pending edit before any commit", arguments: ["enable", "install", "create"])
+    func unrelatedPendingEditsAreNotCommitted(operation: String) throws {
+        let env = try Fixture(installed: operation == "enable")
+        defer { env.disk.removeFiles() }
+        let savedName = env.workspace.name
+        let installedVersion = env.disk.library.installedPackage(id: env.package.id)?.version
+        env.workspace.name = "Unfinished unrelated editor work"
+        let sourceURL = env.disk.root.appendingPathComponent("not-exported.json")
+        do {
+            if operation == "create" {
+                var package = env.package
+                package.governance = .localDraft()
+                _ = try CapabilityPackageCreationService(library: env.disk.library).create(
+                    package, enableHere: true, sourceURL: sourceURL, workspace: env.workspace, modelContext: env.context)
+            } else if operation == "install" {
+                _ = try env.installer.install(env.package, into: env.workspace, modelContext: env.context)
+            } else {
+                _ = try env.installer.enable(env.package, in: env.workspace, modelContext: env.context)
+            }
+            Issue.record("Add accepted unrelated pending edits")
+        } catch PluginOperations.OperationError.pendingEdits {
+        } catch { Issue.record("Expected pendingEdits, got \(error)") }
+        #expect(!FileManager.default.fileExists(atPath: sourceURL.path))
+        #expect(env.context.hasChanges)
+        #expect(env.workspace.name == "Unfinished unrelated editor work")
+        let fresh = ModelContext(env.context.container)
+        #expect(try fresh.fetch(FetchDescriptor<Workspace>()).first?.name == savedName)
+        #expect(try fresh.fetch(FetchDescriptor<PluginActivation>()).isEmpty)
+        #expect(try fresh.fetch(FetchDescriptor<PluginOperationReceipt>()).isEmpty)
+        #expect(env.disk.library.installedPackage(id: env.package.id)?.version == installedVersion)
+        let files = PluginFileOperationJournal(library: env.disk.library, approvals: CapabilityApprovalStore())
+        #expect(try files.pendingIDs().isEmpty)
+    }
+
+    @Test("Onboarding may Add its sole new workspace without saving another workflow", arguments: ["none", "insert", "update", "delete"])
+    func soleNewWorkspaceCanBeAdded(otherPending: String) throws {
+        let env = try Fixture()
+        defer { env.disk.removeFiles() }
+        let path = env.disk.root.appendingPathComponent("new-workspace")
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "New onboarding workspace", primaryPath: path.path)
+        env.context.insert(workspace)
+        switch otherPending {
+        case "insert": env.context.insert(Workspace(name: "Other unfinished workspace", primaryPath: "/tmp/unrelated-onboarding"))
+        case "update": env.workspace.name = "Other unfinished edit"
+        case "delete": env.context.delete(env.workspace)
+        default: break
+        }
+        let hasUnrelatedEdits = otherPending != "none"
+        do {
+            _ = try env.installer.enable(env.package, in: workspace, modelContext: env.context)
+            #expect(!hasUnrelatedEdits)
+        } catch PluginOperations.OperationError.pendingEdits {
+            #expect(hasUnrelatedEdits)
+        }
+        let saved = ModelContext(env.context.container)
+        if hasUnrelatedEdits {
+            #expect(env.context.hasChanges)
+            #expect(try saved.fetch(FetchDescriptor<Workspace>()).count == 1)
+            #expect(try saved.fetch(FetchDescriptor<PluginActivation>()).isEmpty)
+        } else {
+            #expect(try saved.fetch(FetchDescriptor<Workspace>()).count == 2)
+            #expect(try saved.fetch(FetchDescriptor<PluginActivation>()).first?.workspace?.id == workspace.id)
+        }
+    }
+
     @Test("A successful callback without saving cannot confirm an activation")
     func successMustBeSaved() throws {
         let env = try Fixture()
@@ -18,6 +84,9 @@ struct PluginAddCommitTests {
         }
         #expect(WorkspaceCapabilityActivation.activation(for: env.package.id, in: env.workspace) == nil)
         #expect(try ModelContext(env.disk.container).fetch(FetchDescriptor<PluginActivation>()).isEmpty)
+        #expect(!env.context.hasChanges)
+        _ = try env.installer.enable(env.package, in: env.workspace, modelContext: env.context)
+        #expect(try ModelContext(env.disk.container).fetch(FetchDescriptor<PluginActivation>()).count == 1)
     }
 
     @Test("A callback failing after saving must preserve the committed activation and mirror debt")

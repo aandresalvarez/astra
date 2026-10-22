@@ -468,6 +468,7 @@ struct CapabilityInstallerTests {
         package.connectors.insert(server, at: index + 1)
         let cloud = package.connectors[index]
         let installer = CapabilityInstaller(library: library)
+        try context.save()
         try installer.install(
             package, into: source, modelContext: context,
             configInputs: [PluginSetupInputs.key("JIRA_PROJECTS", component: cloud.setupComponentID): "ENG"],
@@ -563,6 +564,7 @@ struct CapabilityInstallerTests {
 
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         let installer = CapabilityInstaller(library: library)
+        try context.save()
         try installer.install(
             package,
             into: firstWorkspace,
@@ -629,6 +631,7 @@ struct CapabilityInstallerTests {
 
         let package = makeAnalystCapabilityPackage()
         let installer = CapabilityInstaller(library: library)
+        try context.save()
         let firstResult = try installer.install(package, into: firstWorkspace, modelContext: context)
         let secondResult = try installer.install(package, into: secondWorkspace, modelContext: context)
 
@@ -1284,6 +1287,7 @@ struct CapabilityInstallerTests {
         var secondPackage = makeAnalystCapabilityPackage()
         secondPackage.id = "stanford.bigquery.second"
 
+        try context.save()
         try CapabilityInstaller(library: library).install(firstPackage, into: firstWorkspace, modelContext: context)
         try CapabilityInstaller(library: library).install(secondPackage, into: secondWorkspace, modelContext: context)
         let secondAccount = try #require(secondWorkspace.connectors.first)

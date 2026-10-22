@@ -545,6 +545,7 @@ struct PluginRuntimeProjectionTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let library = CapabilityLibrary(directory: root)
         let installer = CapabilityInstaller(library: library)
+        try context.save()
         try installer.install(gcloud, into: a, modelContext: context)
         try installer.install(gcloud, into: b, modelContext: context)
         func instructions(_ workspace: Workspace) -> [String] {
