@@ -31,6 +31,11 @@ struct CLICommandShape: Sendable {
         }
     }
 
+    /// Global selectors shared by gcloud sign-in and its read-only checks.
+    static let gcloudContextFlags: [String: Value] = [
+        "--account": .plain, "--project": .plain, "--configuration": .plain
+    ]
+
     /// The positional words, exactly; `*` is one plain operand, such as a
     /// property name (`core/project`).
     let positionals: [String]

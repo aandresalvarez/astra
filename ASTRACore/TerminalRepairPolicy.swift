@@ -28,9 +28,7 @@ public enum TerminalRepairPolicy {
 
     /// gcloud's global flags that pick the account, project or configuration
     /// a sign-in is for.
-    private static let gcloudSignInFlags: [String: CLICommandShape.Value] = [
-        "--account": .plain, "--project": .plain, "--configuration": .plain
-    ]
+    private static let gcloudSignInFlags = CLICommandShape.gcloudContextFlags
 
     // A source cannot choose an authentication server or turn an ordinary
     // login into a global ADC overwrite. ADC replacement and enterprise sign-in stay manual
@@ -65,6 +63,36 @@ public enum TerminalRepairPolicy {
     public static func isSignIn(cli: String, arguments: [String]) -> Bool {
         guard HealthCheckPolicy.knownCLIs.contains(cli), let rule = signIns[cli] else { return false }
         return rule.contains { $0.matches(arguments) }
+    }
+
+    /// Login and polling must name the same context. Never silently retarget
+    /// a declared check to the repair's account; ambiguous selectors stay manual.
+    public static func signInContextMatchesCheck(cli: String, signIn: [String], check: [String]) -> Bool {
+        guard cli == "gcloud" else { return true }
+        guard let loginContext = gcloudContext(in: signIn), let checkContext = gcloudContext(in: check) else { return false }
+        return loginContext == checkContext
+    }
+
+    private static func gcloudContext(in arguments: [String]) -> [String: String]? {
+        var context: [String: String] = [:]
+        var index = 0
+        while index < arguments.count {
+            let word = arguments[index]
+            index += 1
+            let parts = word.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let flag = String(parts[0])
+            guard let rule = gcloudSignInFlags[flag] else { continue }
+            let value: String
+            if parts.count == 2 { value = String(parts[1]) }
+            else {
+                guard index < arguments.count else { return nil }
+                value = arguments[index]
+                index += 1
+            }
+            guard context[flag] == nil, rule.accepts(value) else { return nil }
+            context[flag] = value
+        }
+        return context
     }
 
     /// The reviewed Homebrew install for each known component, keyed by the
