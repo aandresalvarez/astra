@@ -7,8 +7,10 @@ import ASTRAPersistence
 @testable import ASTRA
 
 /// End-to-end main-thread CPU cost, including SwiftData insert/save work.
-/// Disk-backed fixtures refault between actions; a history-wide scan must
-/// exceed this budget even on a warm store. No cost is subtracted or excused.
+/// Disk-backed fixtures refault between actions. Compare with an independent
+/// full-history relationship scan on the same store, so the regression gate
+/// is portable across developer machines and slower CI runners. Raw timings
+/// still include all persistence work; no cost is subtracted.
 @Suite("Long-chat main-actor cost stays bounded", .serialized)
 @MainActor
 struct TaskMainActorScalingGateTests {
@@ -19,13 +21,14 @@ struct TaskMainActorScalingGateTests {
     static let repetitions = max(1, Int(ProcessInfo.processInfo.environment["SCALING_GATE_REPETITIONS"] ?? "") ?? 5)
 
     enum Budget {
-        static let growthMilliseconds = 80.0
-        static let largeHistoryMilliseconds = 100.0
+        // Each interactive operation must cost less than half of one legacy
+        // traversal, both in total CPU and in growth as history increases.
+        // Adding even one such traversal therefore fails on any machine.
+        static let interactiveScanFraction = 0.5
         // Launch copies the complete history, including agent metadata. It
-        // has a separate linear-copy budget; the interactive reads above
-        // must still avoid history-wide work and keep their original limits.
-        static let launchGrowthMilliseconds = 180.0
-        static let launchLargeHistoryMilliseconds = 200.0
+        // may scale linearly, but bulk fetching must remain cheaper than
+        // faulting every event through the relationship individually.
+        static let launchScanFraction = 0.75
     }
 
     @Test("Send, append, view, context, permission reads and complete launch copy stay within their budgets")
@@ -34,15 +37,17 @@ struct TaskMainActorScalingGateTests {
         let large = try await measure(eventCount: Self.largeHistory)
         print("[main-actor-scaling] events=\(Self.smallHistory) \(small.summary)")
         print("[main-actor-scaling] events=\(Self.largeHistory) \(large.summary)")
+        let scanGrowth = large.legacyScanMilliseconds - small.legacyScanMilliseconds
+        try #require(small.legacyScanMilliseconds > 0)
+        try #require(scanGrowth > 0, "The independent control must exercise history-wide work")
         for operation in Operation.allCases {
-            let smallCost = small.rawMilliseconds[operation] ?? 0
-            let largeCost = large.rawMilliseconds[operation] ?? 0
-            let growthBudget = operation == .launchSnapshot ? Budget.launchGrowthMilliseconds : Budget.growthMilliseconds
-            let largeBudget = operation == .launchSnapshot ? Budget.launchLargeHistoryMilliseconds : Budget.largeHistoryMilliseconds
-            #expect(largeCost - smallCost <= growthBudget,
-                    "\(operation.rawValue): grew from \(format(smallCost)) to \(format(largeCost)) ms")
-            #expect(largeCost <= largeBudget,
-                    "\(operation.rawValue): \(format(largeCost)) ms including persistence")
+            let smallCost = try #require(small.rawMilliseconds[operation])
+            let largeCost = try #require(large.rawMilliseconds[operation])
+            let fraction = operation == .launchSnapshot ? Budget.launchScanFraction : Budget.interactiveScanFraction
+            #expect(largeCost - smallCost <= scanGrowth * fraction,
+                    "\(operation.rawValue): grew from \(format(smallCost)) to \(format(largeCost)) ms; full scan grew by \(format(scanGrowth)) ms")
+            #expect(largeCost <= large.legacyScanMilliseconds * fraction,
+                    "\(operation.rawValue): \(format(largeCost)) ms including persistence; full scan \(format(large.legacyScanMilliseconds)) ms")
         }
     }
 
@@ -64,10 +69,11 @@ struct TaskMainActorScalingGateTests {
 
     struct Measurement {
         var rawMilliseconds: [Operation: Double] = [:]
+        var legacyScanMilliseconds = 0.0
         var summary: String {
             Operation.allCases.map {
                 "\($0.rawValue)_ms=\(format(rawMilliseconds[$0] ?? 0))"
-            }.joined(separator: " ")
+            }.joined(separator: " ") + " legacy_scan_ms=\(format(legacyScanMilliseconds))"
         }
     }
 
@@ -75,12 +81,14 @@ struct TaskMainActorScalingGateTests {
         let fixture = try Fixture(eventCount: eventCount)
         defer { fixture.cleanup() }
         let context = fixture.container.mainContext
+        context.autosaveEnabled = false
         let task = try #require(try fixture.task(in: context))
         let queue = TaskQueue(poolSize: 0)
         let gitViewModel = WorkspaceGitViewModel()
         gitViewModel.setup(for: try #require(task.workspace), selectedTask: task)
         defer { gitViewModel.pauseRefresh() }
         var samples: [Operation: [Double]] = [:]
+        var legacyScanSamples: [Double] = []
         for repetition in 0..<Self.repetitions {
             // Production refaults the event relationship after every save, so
             // every operation starts from a store-backed task, never from rows
@@ -143,12 +151,34 @@ struct TaskMainActorScalingGateTests {
                 _ = TaskRuntimePermissionGrants.approvedCredentialLabels(for: task, runtime: .codexCLI)
             })
             await Task.yield()
+
+            legacyScanSamples.append(try legacyScanCost(fixture: fixture, eventCount: eventCount))
+            await Task.yield()
         }
         var measurement = Measurement()
+        measurement.legacyScanMilliseconds = median(legacyScanSamples)
         for (operation, values) in samples {
             measurement.rawMilliseconds[operation] = median(values)
         }
         return measurement
+    }
+
+    private func legacyScanCost(fixture: Fixture, eventCount: Int) throws -> Double {
+        // A separate context on the same store prevents an operation that
+        // regresses to a full scan from warming the control's relationship.
+        let context = ModelContext(fixture.container)
+        context.autosaveEnabled = false
+        let task = try #require(try fixture.task(in: context))
+        var userMessageCount = 0
+        let cost = cpuMilliseconds {
+            // Keep this independent of TaskHistoryRead: it represents the
+            // removed read path and must not inherit its optimization.
+            userMessageCount = task.events.filter {
+                $0.type == TaskEventTypes.Conversation.userMessage.rawValue
+            }.count
+        }
+        #expect(userMessageCount >= eventCount / Fixture.eventsPerRun)
+        return cost
     }
 
     private func decisionOutcomes(for task: AgentTask, fixture: Fixture, in context: ModelContext) -> TaskDecisionOutcomeCache {

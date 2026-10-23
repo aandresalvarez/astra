@@ -47,6 +47,16 @@ assert_targets "AppSemanticFitnessTests" \
   "Tests/AppSemanticFitnessTests.swift"
 
 for path in \
+  Tests/TaskMainActorScalingGateTests.swift \
+  Tests/TaskHistoryReadTests.swift \
+  Astra/Models/TaskHistoryRead.swift \
+  Astra/Services/Tasks/TaskConversationContinuationService.swift \
+  Astra/Services/Tasks/TaskExecutionLaunchSnapshotApplicator.swift \
+  Astra/Services/Runtime/TaskRuntimePermissionGrants.swift; do
+  assert_targets $'TaskMainActorScalingGateTests\nTaskHistoryReadTests\nTaskExecutionLaunchSnapshotApplicatorTests\nRuntimePermissionGrantRegressionTests' "$path"
+done
+
+for path in \
   Astra/Services/Persistence/SSHConnectionManager.swift \
   Astra/Services/Persistence/WorkspaceAutoExportWriter.swift \
   Astra/Services/Persistence/WorkspaceConfigManager.swift \
