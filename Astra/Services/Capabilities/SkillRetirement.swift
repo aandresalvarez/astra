@@ -26,6 +26,22 @@ enum SkillRetirement {
         guard skill.modelContext === modelContext, !skill.isDeleted, !skill.isSystemBuiltIn,
               skill.originPackageID == nil else { throw Failure.changedSkill }
         guard !modelContext.hasChanges else { throw Failure.pendingEdits }
+        // A second Delete must keep the original recovery action. Admission
+        // must not complete the previous receipt and silently replay deletion.
+        try requireReady(modelContext: modelContext)
+        do {
+            try PluginMutationScope.perform(pluginID: "__skill_credentials__", library: CapabilityLibrary(),
+                store: PluginSourceStore(), modelContext: modelContext) { _ in
+                    try removeReady(skill, modelContext: modelContext, persist: persist, rewriteMirror: rewriteMirror)
+                }
+        } catch PluginSourceStoreError.pluginBusy(_) { throw PluginSourceStoreError.libraryBusy }
+    }
+
+    private static func removeReady(_ skill: Skill, modelContext: ModelContext,
+                                    persist: (ModelContext) throws -> Void, rewriteMirror: ((Workspace) -> Bool)?) throws {
+        guard skill.modelContext === modelContext, !skill.isDeleted, !skill.isSystemBuiltIn,
+              skill.originPackageID == nil else { throw Failure.changedSkill }
+        guard !modelContext.hasChanges else { throw Failure.pendingEdits }
         let saved = ModelContext(modelContext.container)
         let id = skill.id
         let rows = try saved.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.id == id }))

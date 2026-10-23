@@ -23,6 +23,27 @@ enum ConnectorCredentialMigration {
     static func migrate(
         _ account: Connector, mirroredBy workspaces: [Workspace], modelContext: ModelContext,
         resolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
+        persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil,
+        permit: PluginMutationScope.Permit? = nil
+    ) throws -> Bool {
+        guard account.modelContext === modelContext, !account.isDeleted else { throw ConnectorCredentialEditor.Failure.changedAccount }
+        guard !modelContext.hasChanges else { throw Failure.unsavedChanges }
+        // Readiness precedes implicit recovery so another call cannot finish
+        // a failed operation and silently replay its original mutation.
+        try requireReady(try mirrorScope(account, workspaces: workspaces, modelContext: modelContext), modelContext: modelContext)
+        do {
+            return try PluginMutationScope.perform(pluginID: "__account_credentials__", library: CapabilityLibrary(),
+                store: PluginSourceStore(), modelContext: modelContext, permit: permit) { _ in
+                    try migrateReady(account, mirroredBy: workspaces, modelContext: modelContext,
+                        resolver: resolver, persist: persist, rewriteMirror: rewriteMirror)
+                }
+        } catch PluginSourceStoreError.pluginBusy(_) { throw PluginSourceStoreError.libraryBusy }
+    }
+
+    @discardableResult
+    private static func migrateReady(
+        _ account: Connector, mirroredBy workspaces: [Workspace], modelContext: ModelContext,
+        resolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
         persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws -> Bool {
         guard account.modelContext === modelContext, !account.isDeleted else { throw ConnectorCredentialEditor.Failure.changedAccount }

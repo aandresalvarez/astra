@@ -26,14 +26,20 @@ enum PluginStateRecovery {
     }
 
     @discardableResult
-    static func resume(_ id: UUID, modelContext: ModelContext) throws -> PluginOperationCommit.Snapshot {
+    static func resume(_ id: UUID, modelContext: ModelContext,
+                       sourceStore: PluginSourceStore = PluginSourceStore()) throws -> PluginOperationCommit.Snapshot {
         guard let receipt = try PluginOperationCommit.read(id, container: modelContext.container), receipt.manifestDigest == nil else {
             throw Failure.receiptUnavailable
         }
-        _ = PluginOperationRecovery.resumePending(modelContext: modelContext, only: id)
-        guard let completed = try PluginOperationCommit.read(id, container: modelContext.container), completed.completedAt != nil else {
-            throw PluginOperationProblem.savedRecoveryPending(id)
+        return try sourceStore.exclusively(pluginID: receipt.pluginIDs.first ?? id.uuidString) {
+            guard let current = try PluginOperationCommit.read(id, container: modelContext.container), current.manifestDigest == nil else {
+                throw Failure.receiptUnavailable
+            }
+            _ = PluginOperationRecovery.resumePending(modelContext: modelContext, only: id)
+            guard let completed = try PluginOperationCommit.read(id, container: modelContext.container), completed.completedAt != nil else {
+                throw PluginOperationProblem.savedRecoveryPending(id)
+            }
+            return completed
         }
-        return completed
     }
 }

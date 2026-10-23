@@ -29,8 +29,10 @@ enum ConnectorCredentialEditor {
         settingResolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
         persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws -> ConnectorCredentialSaveOutcome {
-        try change(value, key: key, account: account, modelContext: modelContext,
-            allowUserInteraction: allowUserInteraction, settingResolver: settingResolver, persist: persist, rewriteMirror: rewriteMirror)
+        try serializedAccount(account, modelContext: modelContext) {
+            try change(value, key: key, account: account, modelContext: modelContext,
+                allowUserInteraction: allowUserInteraction, settingResolver: settingResolver, persist: persist, rewriteMirror: rewriteMirror)
+        }
     }
 
     static func remove(
@@ -38,8 +40,10 @@ enum ConnectorCredentialEditor {
         settingResolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
         persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws {
-        _ = try change(nil, key: key, account: account, modelContext: modelContext,
-            allowUserInteraction: false, settingResolver: settingResolver, persist: persist, rewriteMirror: rewriteMirror)
+        _ = try serializedAccount(account, modelContext: modelContext) {
+            try change(nil, key: key, account: account, modelContext: modelContext,
+                allowUserInteraction: false, settingResolver: settingResolver, persist: persist, rewriteMirror: rewriteMirror)
+        }
     }
 
     /// Recovery never repeats a credential write or invents a new operation.
@@ -47,9 +51,28 @@ enum ConnectorCredentialEditor {
     static func recover(_ id: UUID, modelContext: ModelContext) throws {
         guard let saved = try PluginOperationCommit.read(id, container: modelContext.container) else { throw Failure.restartRequired }
         guard saved.manifestDigest == nil else { throw Failure.otherChangePending }
-        _ = PluginOperationRecovery.resumePending(modelContext: modelContext, only: id)
-        guard try PluginOperationCommit.read(id, container: modelContext.container)?.completedAt != nil
-        else { throw PluginOperationProblem.savedRecoveryPending(id) }
+        try serialized(modelContext: modelContext) {
+            _ = PluginOperationRecovery.resumePending(modelContext: modelContext, only: id)
+            guard try PluginOperationCommit.read(id, container: modelContext.container)?.completedAt != nil
+            else { throw PluginOperationProblem.savedRecoveryPending(id) }
+        }
+    }
+
+    private static func serializedAccount<Result>(
+        _ account: Connector, modelContext: ModelContext, _ body: () throws -> Result
+    ) throws -> Result {
+        guard account.modelContext === modelContext, !account.isDeleted else { throw Failure.changedAccount }
+        // A replay of a failed Save must first finish its existing receipt;
+        // acquiring the source lock must not silently replay that edit.
+        try requireReady(try workspaceScope(of: account, modelContext: modelContext), modelContext: modelContext)
+        return try serialized(modelContext: modelContext, body)
+    }
+
+    private static func serialized<Result>(modelContext: ModelContext, _ body: () throws -> Result) throws -> Result {
+        do {
+            return try PluginMutationScope.perform(pluginID: "__account_credentials__", library: CapabilityLibrary(),
+                store: PluginSourceStore(), modelContext: modelContext) { _ in try body() }
+        } catch PluginSourceStoreError.pluginBusy(_) { throw PluginSourceStoreError.libraryBusy }
     }
 
     private static func change(

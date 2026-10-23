@@ -57,15 +57,20 @@ struct CapabilityInstaller {
     /// What the Keychain holds for an account's key; nil reads the
     /// account's own namespaces (`Connector.currentCredentialValue`).
     private let heldCredentialOverride: ((Connector, String) -> String?)?
+    /// Where installed plugins record their source, for a pending import's
+    /// match (`PluginPendingImport`).
+    let sourceStore: PluginSourceStore
 
     init(
         library: CapabilityLibrary = CapabilityLibrary(),
         appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
         skillSecrets: (any SkillSecretPersisting.Type)? = nil,
-        heldCredential: ((Connector, String) -> String?)? = nil
+        heldCredential: ((Connector, String) -> String?)? = nil,
+        sourceStore: PluginSourceStore = PluginSourceStore()
     ) {
         self.library = library
         self.appVersion = appVersion
+        self.sourceStore = sourceStore
         self.skillSecretsOverride = skillSecrets
         self.heldCredentialOverride = heldCredential
     }
@@ -84,9 +89,21 @@ struct CapabilityInstaller {
         announceCatalogMutation: Bool = true,
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         pendingApproval: CapabilityApprovalRecord? = nil,
-        fileOperation: PluginFileOperationContext? = nil
+        fileOperation: PluginFileOperationContext? = nil,
+        mutationPermit: PluginMutationScope.Permit? = nil
     ) throws -> InstallationResult {
         try PluginActivationAdmission.requireNoUnrelatedEditsForAdd(in: workspace, modelContext: modelContext)
+        guard let mutationPermit else {
+            return try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore,
+                modelContext: modelContext, approvals: approvalStore) { permit in
+                try install(package, into: workspace, modelContext: modelContext,
+                    credentialInputs: credentialInputs, configInputs: configInputs, baseURLOverrides: baseURLOverrides,
+                    allowCredentialUserInteraction: allowCredentialUserInteraction, policyContext: policyContext,
+                    traceID: traceID, announceCatalogMutation: announceCatalogMutation, approvalStore: approvalStore,
+                    pendingApproval: pendingApproval, fileOperation: fileOperation, mutationPermit: permit)
+            }
+        }
+        try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore, modelContext: modelContext, permit: mutationPermit) { _ in }
         let effectivePolicyContext = policyContext ?? defaultPolicyContext(for: workspace)
         let blockers = uniqueMessages(
             policyBlockerMessages(for: package, context: effectivePolicyContext)
@@ -105,7 +122,7 @@ struct CapabilityInstaller {
         if Self.syntheticSkillRowID(of: package) != nil {
             func enableStoredSkill(_ files: PluginFileCommit?) throws -> InstallationResult {
                 try enable(package, in: workspace, modelContext: modelContext, policyContext: effectivePolicyContext,
-                    auditSource: "install", traceID: traceID, fileCommit: files)
+                    auditSource: "install", traceID: traceID, fileCommit: files, mutationPermit: mutationPermit)
             }
             if let pendingApproval {
                 let files = try PluginFileCommit.approval(pendingApproval, package: package,
@@ -114,13 +131,16 @@ struct CapabilityInstaller {
             }
             return try enableStoredSkill(nil)
         }
-        let transaction = try PluginInstallationTransaction.prepare(package: package, library: library,
-            modelContext: modelContext, approvals: approvalStore, approval: pendingApproval, operation: fileOperation)
-        let result = try transaction.perform(modelContext: modelContext) { files in
-            try enable(package, in: workspace, modelContext: modelContext,
-                credentialInputs: credentialInputs, configInputs: configInputs, baseURLOverrides: baseURLOverrides,
-                allowCredentialUserInteraction: allowCredentialUserInteraction, policyContext: effectivePolicyContext,
-                auditSource: "install", traceID: traceID, fileCommit: files)
+        let result = try PluginSourceDefinitionOperation(library: library, store: sourceStore).installing(package,
+            modelContext: modelContext, existing: fileOperation, approvals: approvalStore) { operation in
+            let transaction = try PluginInstallationTransaction.prepare(package: package, library: library,
+                modelContext: modelContext, approvals: approvalStore, approval: pendingApproval, operation: operation)
+            return try transaction.perform(modelContext: modelContext) { files in
+                try enable(package, in: workspace, modelContext: modelContext,
+                    credentialInputs: credentialInputs, configInputs: configInputs, baseURLOverrides: baseURLOverrides,
+                    allowCredentialUserInteraction: allowCredentialUserInteraction, policyContext: effectivePolicyContext,
+                    auditSource: "install", traceID: traceID, fileCommit: files, sourceOverride: operation?.plannedSource, mutationPermit: mutationPermit)
+            }
         }
         var installedFields = [
             "package_id": package.id,
@@ -157,10 +177,22 @@ struct CapabilityInstaller {
         persist: @MainActor (Workspace?, ModelContext) -> Bool = Self.persistActivation,
         exportMirror: (@MainActor (Workspace) -> Void)? = nil,
         rewriteMirror: (@MainActor (Workspace) -> Bool)? = nil,
-        fileCommit: PluginFileCommit? = nil
+        fileCommit: PluginFileCommit? = nil,
+        sourceOverride: PluginInstalledCopy? = nil,
+        mutationPermit: PluginMutationScope.Permit? = nil
     ) throws -> InstallationResult {
         let enteredWithSavedState = !modelContext.hasChanges
         try PluginActivationAdmission.requireNoUnrelatedEditsForAdd(in: workspace, modelContext: modelContext)
+        guard let mutationPermit else {
+            return try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore, modelContext: modelContext) { permit in
+                try enable(package, in: workspace, modelContext: modelContext,
+                    credentialInputs: credentialInputs, configInputs: configInputs, baseURLOverrides: baseURLOverrides,
+                    allowCredentialUserInteraction: allowCredentialUserInteraction, policyContext: policyContext,
+                    auditSource: auditSource, traceID: traceID, persist: persist, exportMirror: exportMirror,
+                    rewriteMirror: rewriteMirror, fileCommit: fileCommit, sourceOverride: sourceOverride, mutationPermit: permit)
+            }
+        }
+        try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore, modelContext: modelContext, permit: mutationPermit) { _ in }
         var startFields = capabilityFields(for: package, workspace: workspace, source: auditSource)
         if let traceID { startFields["trace_id"] = traceID }
         startFields["credential_input_count"] = String(credentialInputs.count)
@@ -247,9 +279,18 @@ struct CapabilityInstaller {
             // migration kept while it was missing included.
             let componentIDs = PluginRuntimeProjection.componentIDs(of: package)
             // The accounts its components created here before a Remove come
-            // back bound, stamped again, rather than as duplicates.
-            let retainedAccounts = WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: workspace)
-            let retainedTemplateIDs = WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: workspace)
+            // back bound, stamped again, rather than as duplicates: only to a
+            // copy from the source the removed one came from (T5).
+            let addingFrom = (sourceOverride ?? sourceStore.installedCopy(of: library.installedPackage(id: package.id))).source
+            let retainedAccounts = WorkspaceCapabilityActivation.retainedAccounts(of: package.id, in: workspace, addingFrom: addingFrom)
+            // So do its templates' IDs: a schedule names one, and only the
+            // same source's copy may be what it runs.
+            let retainedTemplateIDs = WorkspaceCapabilityActivation.retainedTemplateIDs(of: package.id, in: workspace, addingFrom: addingFrom)
+            // A chosen file's activation that waited for this copy (same
+            // digest, same source) gets its settings, overrides and accounts,
+            // before reinstating forgets the plugin's retired record.
+            PluginPendingImport.restore(on: activation, package: package, in: workspace,
+                provenance: PluginSourceDefinitionOperation(library: library, store: sourceStore).projectedProvenance(sourceOverride, package: package))
             WorkspaceCapabilityActivation.reinstateRetired(on: activation, declaring: componentIDs, in: workspace)
             if isNewActivation {
                 let prepared = try PluginCredentialGenerationTransaction.prepareCopy(

@@ -341,6 +341,60 @@ struct PluginsSurfaceTests {
         #expect(state.available.allSatisfy { $0.verb == .add })
     }
 
+    @Test("A held import is a row under Action needed: named, saying what it waits for, with Add only for the copy it waits for")
+    func heldImportsArePresented() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        Self.retained.append(container)
+        let workspace = Workspace(name: "Held", primaryPath: "/tmp/plugins-held")
+        container.mainContext.insert(workspace)
+        let installed = package("notes", name: "Notes")
+        func hold(_ id: String, digest: String, source: String?, recovered: Bool? = nil) {
+            var pending = RetiredPluginActivation.PendingImport(
+                digest: digest, source: source, settings: nil, overriddenComponentIDs: nil,
+                overridingRowIDs: nil, accounts: nil, knownComponentIDs: nil
+            )
+            pending.recovered = recovered
+            WorkspaceCapabilityActivation.recordPendingImport(pending, pluginID: id, in: workspace)
+        }
+        hold("notes", digest: "same", source: "plugin-source:a")
+        hold("absent", digest: "x", source: nil)
+        func rows(installedSource: String?) -> [PluginsSurfaceHeldImport] {
+            PluginsSurfacePresentation.heldImports(
+                in: workspace, installed: [installed],
+                source: { _ in installedSource },
+                matches: { pending, package in pending.digest == "same" && pending.source == installedSource },
+                sourceName: { $0 == nil ? "a local file" : "Acme Plugins" }
+            )
+        }
+        var listed = rows(installedSource: "plugin-source:a")
+        #expect(listed.map(\.id) == ["held-import:absent", "held-import:notes"])
+        #expect(listed[0].name == "absent" && !listed[0].canAdd)
+        #expect(listed[0].subtitle == "Settings from an imported workspace file, waiting for it from a local file. Install it to bring them back, or discard them.")
+        #expect(listed[1].name == "Notes" && listed[1].canAdd)
+        #expect(listed[1].subtitle == "Settings from an imported workspace file. Add it to bring them back, or discard them.")
+        // The installed copy is from elsewhere: no Add, and both places named.
+        listed = rows(installedSource: nil)
+        #expect(!listed[1].canAdd)
+        #expect(listed[1].subtitle == "Settings from an imported workspace file are for its copy from Acme Plugins, and the one installed is from a local file. Discard them, or install that copy.")
+        // Another version from the same source.
+        hold("notes", digest: "other", source: "plugin-source:a")
+        listed = rows(installedSource: "plugin-source:a")
+        #expect(!listed[1].canAdd && listed[1].subtitle.contains("another version"))
+        // Already on here, and the copy matches: it comes back at launch.
+        hold("notes", digest: "same", source: "plugin-source:a", recovered: true)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableCapability("notes")
+            $0.recordInstalledPlugin(id: "notes", version: "1.0.0")
+        }
+        listed = rows(installedSource: "plugin-source:a")
+        #expect(!listed[1].canAdd)
+        #expect(listed[1].subtitle == "Settings this workspace had come back the next time ASTRA starts, or discard them.")
+    }
+
     @Test("A draft plugin with a blocker approval can't clear names the blocker instead of offering Add")
     func hardBlockersReplaceAdd() {
         let workspace = Workspace(name: "Blocked", primaryPath: "/tmp/plugins-blocked")

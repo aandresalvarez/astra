@@ -11,7 +11,25 @@ enum SkillCredentialMigration {
     @discardableResult
     static func migrate(_ skill: Skill, modelContext: ModelContext,
                         persist: (ModelContext) throws -> Void = { try $0.save() },
-                        rewriteMirror: ((Workspace) -> Bool)? = nil) throws -> Bool {
+                        rewriteMirror: ((Workspace) -> Bool)? = nil,
+                        permit: PluginMutationScope.Permit? = nil) throws -> Bool {
+        guard skill.modelContext === modelContext, !skill.isDeleted, skill.originPackageID == nil else {
+            throw SkillCredentialEditor.Failure.changedSkill
+        }
+        guard !modelContext.hasChanges else { throw SkillCredentialEditor.Failure.pendingEdits }
+        try requireReady(modelContext: modelContext)
+        do {
+            // Startup carries the same explicit migration permit across its
+            // account and skill passes; direct callers acquire that scope.
+            return try PluginMutationScope.perform(pluginID: "__account_credentials__", library: CapabilityLibrary(),
+                store: PluginSourceStore(), modelContext: modelContext, permit: permit) { _ in
+                    try migrateReady(skill, modelContext: modelContext, persist: persist, rewriteMirror: rewriteMirror)
+                }
+        } catch PluginSourceStoreError.pluginBusy(_) { throw PluginSourceStoreError.libraryBusy }
+    }
+
+    private static func migrateReady(_ skill: Skill, modelContext: ModelContext,
+                                     persist: (ModelContext) throws -> Void, rewriteMirror: ((Workspace) -> Bool)?) throws -> Bool {
         guard skill.modelContext === modelContext, !skill.isDeleted, skill.originPackageID == nil else {
             throw SkillCredentialEditor.Failure.changedSkill
         }

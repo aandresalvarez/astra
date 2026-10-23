@@ -27,22 +27,46 @@ enum SkillCredentialEditor {
     static func save(_ value: String, forKey key: String, on skill: Skill, modelContext: ModelContext,
                      persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil) throws {
         guard !value.isEmpty else { throw Failure.invalidKey }
-        try change(value, key: key, skill: skill, modelContext: modelContext, persist: persist, rewriteMirror: rewriteMirror)
+        try serializedSkill(skill, modelContext: modelContext) {
+            try change(value, key: key, skill: skill, modelContext: modelContext, persist: persist, rewriteMirror: rewriteMirror)
+        }
     }
 
     static func remove(_ key: String, from skill: Skill, modelContext: ModelContext,
                        persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil) throws {
-        try change(nil, key: key, skill: skill, modelContext: modelContext, persist: persist, rewriteMirror: rewriteMirror)
+        try serializedSkill(skill, modelContext: modelContext) {
+            try change(nil, key: key, skill: skill, modelContext: modelContext, persist: persist, rewriteMirror: rewriteMirror)
+        }
     }
 
     static func recover(_ id: UUID, modelContext: ModelContext) throws {
         guard let receipt = try PluginOperationCommit.read(id, container: modelContext.container), receipt.manifestDigest == nil else {
             throw Failure.recoveryRequired
         }
-        _ = PluginOperationRecovery.resumePending(modelContext: modelContext, only: id)
-        guard try PluginOperationCommit.read(id, container: modelContext.container)?.completedAt != nil else {
-            throw PluginOperationProblem.savedRecoveryPending(id)
+        try serialized(modelContext: modelContext) {
+            _ = PluginOperationRecovery.resumePending(modelContext: modelContext, only: id)
+            guard try PluginOperationCommit.read(id, container: modelContext.container)?.completedAt != nil else {
+                throw PluginOperationProblem.savedRecoveryPending(id)
+            }
         }
+    }
+
+    private static func serializedSkill<Result>(
+        _ skill: Skill, modelContext: ModelContext, _ body: () throws -> Result
+    ) throws -> Result {
+        guard skill.modelContext === modelContext, !skill.isDeleted, skill.originPackageID == nil else { throw Failure.changedSkill }
+        guard !modelContext.hasChanges else { throw Failure.pendingEdits }
+        // Saving again must retain the existing receipt and recovery action;
+        // source admission must not silently complete a previous secret edit.
+        try requireReady(modelContext: modelContext)
+        return try serialized(modelContext: modelContext, body)
+    }
+
+    private static func serialized<Result>(modelContext: ModelContext, _ body: () throws -> Result) throws -> Result {
+        do {
+            return try PluginMutationScope.perform(pluginID: "__skill_credentials__", library: CapabilityLibrary(),
+                store: PluginSourceStore(), modelContext: modelContext) { _ in try body() }
+        } catch PluginSourceStoreError.pluginBusy(_) { throw PluginSourceStoreError.libraryBusy }
     }
 
     private static func change(_ replacement: String?, key rawKey: String, skill: Skill, modelContext: ModelContext,

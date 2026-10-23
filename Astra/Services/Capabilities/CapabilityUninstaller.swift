@@ -32,9 +32,12 @@ struct CapabilityUninstaller {
     }
 
     let library: CapabilityLibrary
+    /// Provenance is read before the correlated removal commits its forget.
+    let sourceStore: PluginSourceStore
 
-    init(library: CapabilityLibrary = CapabilityLibrary()) {
+    init(library: CapabilityLibrary = CapabilityLibrary(), sourceStore: PluginSourceStore = PluginSourceStore()) {
         self.library = library
+        self.sourceStore = sourceStore
     }
 
     /// Forgets a plugin the library no longer has a readable entry for
@@ -166,6 +169,9 @@ struct CapabilityUninstaller {
         let restore = PluginUpdateService.captureState(of: workspaces)
         var result = RemovalResult(packageID: package.id)
         var activationSecretSkillIDs: [UUID] = []
+        let removedSource = definitionMissing
+            ? sourceStore.provenance()[package.id].map { "\(PluginSource.metadataKind):\($0.sourceID)" }
+            : sourceStore.installedCopy(of: installedPackages.first { $0.id == package.id }).source
 
         do {
             for workspace in workspaces {
@@ -200,8 +206,10 @@ struct CapabilityUninstaller {
                 let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
                 if let activation {
                     activationSecretSkillIDs += PluginRuntimeProjection.secretNamespaces(of: activation, package: package)
-                    WorkspaceCapabilityActivation.retire(activation, in: workspace)
+                    WorkspaceCapabilityActivation.retire(activation, in: workspace, source: removedSource)
                 }
+                let hadPendingImport = WorkspaceCapabilityActivation.pendingImport(pluginID: package.id, in: workspace) != nil
+                WorkspaceCapabilityActivation.dropPendingImport(pluginID: package.id, in: workspace)
                 // Read before the activation goes: they tell a template the
                 // person edited from the plugin's own.
                 var templateDigests: [String: String] = [:]
@@ -250,9 +258,9 @@ struct CapabilityUninstaller {
                     result.removedTemplateIDs.append(template.id)
                     modelContext.delete(template)
                 }
-                WorkspaceCapabilityActivation.retainTemplateIDs(deletedTemplateIDs, pluginID: package.id, in: workspace)
+                WorkspaceCapabilityActivation.retainTemplateIDs(deletedTemplateIDs, pluginID: package.id, in: workspace, source: removedSource)
 
-                if wasPackageEnabled || wasPackageRecorded || removedPendingLegacy || hadPackageGlobals || !workspaceTemplates.isEmpty {
+                if wasPackageEnabled || wasPackageRecorded || removedPendingLegacy || hadPackageGlobals || hadPendingImport || !workspaceTemplates.isEmpty {
                     workspace.updatedAt = Date()
                     result.disabledWorkspaceIDs.append(workspace.id)
                 }

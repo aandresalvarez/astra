@@ -95,6 +95,7 @@ struct PluginsSurfaceView: View {
                 awaitsUpdate: packageState.awaitsUpdate
             )
             input.unavailableReason = PluginsSurfacePresentation.unavailableReason(for: package)
+            input.origin = PluginSourceCoordinator.shared.origin(of: package)
             // Any drift an Update would settle: version, digest, components
             // or templates.
             input.needsUpdate = activation.map {
@@ -161,6 +162,7 @@ struct PluginsSurfaceView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
+                        heldImportRows(CapabilityCatalogActionService().heldImports(in: workspace), hasActionNeeded: !current.actionNeeded.isEmpty)
                         group("Action needed", current.actionNeeded, rows: model.rows)
                         group("Ready", current.ready, rows: model.rows)
                         group("Available", current.available, rows: model.rows)
@@ -175,6 +177,11 @@ struct PluginsSurfaceView: View {
                                 .font(Stanford.caption(12))
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 8)
+                        }
+                        PluginSourcesSection(workspace: workspace, installed: catalog.packages) { result in
+                            if result.staged { presentStagedReview(id: result.package.id) }
+                            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+                            onCatalogChanged()
                         }
                     }
                 }
@@ -286,6 +293,57 @@ struct PluginsSurfaceView: View {
                     Divider().padding(.leading, 38)
                 }
             }
+        }
+    }
+
+    /// Settings a workspace file or a recovery left waiting for a plugin
+    /// copy this Mac doesn't have (R5, T5): under "Action needed", with
+    /// Add when the installed copy is the one waited for, and Discard.
+    @ViewBuilder
+    private func heldImportRows(_ held: [PluginsSurfaceHeldImport], hasActionNeeded: Bool) -> some View {
+        if !held.isEmpty {
+            if !hasActionNeeded {
+                Text("Action needed")
+                    .font(Stanford.ui(12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 10)
+            }
+            ForEach(held) { item in
+                HStack(spacing: 10) {
+                    CapabilityLeadingIcon(systemImage: "tray.and.arrow.down", brand: nil, pointSize: 16)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.name).font(Stanford.ui(14, weight: .semibold))
+                        Text(item.subtitle)
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                    if item.canAdd, let package = catalog.packages.first(where: { $0.id == item.pluginID }) {
+                        Button("Add") { add(package) }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .tint(Stanford.lagunita)
+                    }
+                    Button("Discard", role: .destructive) { discardHeldImport(item.pluginID) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                .padding(.vertical, 6)
+                .id(item.id)
+                Divider().padding(.leading, 38)
+            }
+        }
+    }
+
+    private func discardHeldImport(_ pluginID: String) {
+        errorMessage = nil
+        do {
+            try CapabilityCatalogActionService().discardPendingImport(pluginID: pluginID, workspace: workspace, modelContext: modelContext)
+            onCatalogChanged()
+        } catch {
+            errorMessage = "Couldn't discard the held settings: \(error.localizedDescription)"
         }
     }
 

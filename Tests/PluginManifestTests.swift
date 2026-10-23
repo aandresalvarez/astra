@@ -130,7 +130,7 @@ struct PluginManifestTests {
         #expect(manifest.components.filter { $0.kind == .tool }.map(\.name).contains("gcloud"))
     }
 
-    @Test("A connector's setup asks for its credentials, and MCP plugins are shell-only where MCP does not reach")
+    @Test("A connector's setup asks for its credentials, and an MCP-only plugin is unsupported where MCP does not reach")
     func connectorSetupAndWorksOn() throws {
         let jira = PluginManifestConverter.manifest(from: try builtIn("jira-workflow"))
         let connector = try #require(jira.components.first { $0.kind == .connector })
@@ -141,8 +141,9 @@ struct PluginManifestTests {
         let workspace = PluginManifestConverter.manifest(from: try builtIn("google-workspace"))
         #expect(workspace.components.filter { $0.kind == .mcp }.count == 3)
         #expect(workspace.worksOn["claude_code"] == .full)
-        #expect(workspace.worksOn["cursor_cli"] == .shellOnly)
-        #expect(workspace.worksOn["antigravity_cli"] == .shellOnly)
+        // Nothing in it reaches a runtime without MCP delivery.
+        #expect(workspace.worksOn["cursor_cli"] == .unsupported)
+        #expect(workspace.worksOn["antigravity_cli"] == .unsupported)
     }
 
     @Test("A manifest whose setup steps the package can't carry is refused, not installed without them")

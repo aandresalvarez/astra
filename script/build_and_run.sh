@@ -386,6 +386,7 @@ if [[ "$APP_INTENTS_ENABLED" == "1" ]]; then
 fi
 
 swift build "${SWIFT_BUILD_ARGS[@]}"
+swift build "${SWIFT_BUILD_ARGS[@]}" --product astra-plugin-fetch
 for tool_product in "${TOOL_PRODUCTS[@]}"; do
   swift build "${SWIFT_BUILD_ARGS[@]}" --product "$tool_product"
 done
@@ -394,6 +395,7 @@ BUILD_BINARY="$BUILD_DIR/$PRODUCT_NAME"
 
 if [[ "$REQUIRE_ARM64" == "1" ]]; then
   verify_arm64_binary "$BUILD_BINARY"
+  verify_arm64_binary "$BUILD_DIR/astra-plugin-fetch"
   for tool_product in "${TOOL_PRODUCTS[@]}"; do
     verify_arm64_binary "$BUILD_DIR/$tool_product"
   done
@@ -410,6 +412,10 @@ if [ -d "$BUILD_DIR/ASTRA_ASTRA.bundle" ]; then
   cp -R "$BUILD_DIR/ASTRA_ASTRA.bundle" "$APP_RESOURCES/"
 fi
 
+PRIVATE_HELPER="$APP_BUNDLE/Contents/Helpers/astra-plugin-fetch"
+mkdir -p "$(dirname "$PRIVATE_HELPER")"
+cp "$BUILD_DIR/astra-plugin-fetch" "$PRIVATE_HELPER"
+chmod +x "$PRIVATE_HELPER"
 BUNDLED_TOOLS_DIR="$APP_RESOURCES/ASTRA_ASTRA.bundle/Tools"
 mkdir -p "$BUNDLED_TOOLS_DIR"
 for tool_product in "${TOOL_PRODUCTS[@]}"; do
@@ -447,7 +453,7 @@ strip_bundled_binaries() {
   # -T/-x trim local symbol-table entries. Must run before codesign so the
   # signature covers the stripped bytes.
   local target
-  for target in "$APP_BINARY" "$BUNDLED_TOOLS_DIR"/*; do
+  for target in "$APP_BINARY" "$PRIVATE_HELPER" "$BUNDLED_TOOLS_DIR"/*; do
     [[ -f "$target" ]] || continue
     local before after
     before="$(stat -f%z "$target" 2>/dev/null || echo 0)"
@@ -580,6 +586,7 @@ sign_developer_id() {
 }
 
 sign_bundled_tools_for_notarization() {
+  sign_developer_id "$PRIVATE_HELPER"
   local tool_product
   for tool_product in "${TOOL_PRODUCTS[@]}"; do
     sign_developer_id "$BUNDLED_TOOLS_DIR/$tool_product"
@@ -654,6 +661,10 @@ else
 fi
 
 verify_app_bundle() {
+  if [[ ! -x "$PRIVATE_HELPER" ]]; then
+    echo "FAIL: private plugin fetch helper missing" >&2
+    return 1
+  fi
   local errors=0
 
   if [[ ! -x "$APP_BINARY" ]]; then

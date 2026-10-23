@@ -9,6 +9,7 @@ struct PluginsSurfaceFitnessTests {
     private let viewFiles = [
         "Astra/Views/Capabilities/PluginsSurfaceView.swift",
         "Astra/Views/Capabilities/PluginRowDetailsView.swift",
+        "Astra/Views/Capabilities/PluginSourcesSection.swift",
         "Astra/Views/Capabilities/PluginAccountsSection.swift",
         "Astra/Views/Capabilities/PluginStateRecoverySection.swift"
     ]
@@ -25,7 +26,9 @@ struct PluginsSurfaceFitnessTests {
                 "WorkspaceCapabilityActivation.unbind", "WorkspaceCapabilityActivation.setConfigValue",
                 "WorkspaceCapabilityActivation.updateActivation", "WorkspaceCapabilityActivation.restore",
                 "PluginOperations.setSetting", "PluginOperations.addAccount", "PluginOperations.deleteAccount",
-                "PluginOperations.makeDefault", "PluginUpdateService.reconcile"
+                "PluginOperations.makeDefault", "PluginUpdateService.reconcile",
+                "PluginSourceStore(", "PluginSourceFetcher(", ".importValidatedPackage(", "coordinator.add(",
+                "coordinator.remove(", "coordinator.refresh("
             ] {
                 #expect(!source.contains(forbidden), "\(viewFile) calls \(forbidden) directly; go through CapabilityCatalogActionService")
             }

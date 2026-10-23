@@ -46,6 +46,9 @@ enum RuntimeSeamRegistration {
         TaskPlanReconstructionSeam.register(TaskPlanService.self)
         TaskForkSourcePointerSeam.register(TaskForkManifestService.self)
         TaskGeneratedFileQuerySeam.register(TaskGeneratedFiles.self)
+        // Not `PluginSourceIdentitySeam`: it reads the person's plugin
+        // source store, so only the app's launch path registers it
+        // (`PluginSourceStore.launchedApp`); the test bootstrap runs this.
     }
 }
 

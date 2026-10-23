@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 import ASTRAModels
 import ASTRACore
 
@@ -29,7 +30,8 @@ extension WorkspaceConfigManager {
             credentialNamespaceSeed: String? = nil,
             digest: String? = nil,
             templateDigests: [String]? = nil,
-            awaitingUpdate: Bool? = nil
+            awaitingUpdate: Bool? = nil,
+            source: String? = nil
         ) {
             self.id = id
             self.activationID = activationID
@@ -46,6 +48,7 @@ extension WorkspaceConfigManager {
             self.digest = digest
             self.templateDigests = templateDigests
             self.awaitingUpdate = awaitingUpdate
+            self.source = source
         }
 
         public var id: String
@@ -80,6 +83,13 @@ extension WorkspaceConfigManager {
         /// Whether an automatic reconcile held the activation back from its
         /// library definition; restored only from the workspace's own mirror.
         public var awaitingUpdate: Bool?
+        /// Where the copy `digest` names came from when the mirror was
+        /// written: `plugin-source:<id>` for a plugin source (its ID hashes
+        /// the full location, so it also fixes the kind), nil for a local
+        /// copy, as in a file written before sources. A chosen file's
+        /// activation is accepted only where the installed copy has the same
+        /// source (`CapabilityImportVerifier.installedSources`).
+        public var source: String?
     }
 
     public struct PluginAccountRef: Codable, Sendable, Equatable {
@@ -125,7 +135,19 @@ extension WorkspaceConfigManager {
         return rows.filter { ids.contains($0.id) }
     }
 
-    static func installedPluginRefs(for workspace: Workspace) -> [InstalledPluginRef] {
+    /// `sourceIdentity` answers where the copy an activation recorded came
+    /// from (`PluginSourceIdentitySeam` in the export).
+    ///
+    /// An activation held back from the installed copy's Update
+    /// (`awaitingUpdate`) records a digest the copy no longer has, so its
+    /// source is the installed copy's (`awaitedSource`): the one whose Update
+    /// it awaits. A source can only replace its own copy (T5), so that is
+    /// the source of the copy it recorded too.
+    static func installedPluginRefs(
+        for workspace: Workspace,
+        sourceIdentity: (_ pluginID: String, _ digest: String) -> String?,
+        awaitedSource: (_ pluginID: String) -> String? = { _ in nil }
+    ) -> [InstalledPluginRef] {
         var refs = WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
             let configuration = PluginLaunchConfiguration.activation(activation)
             let settings = Dictionary(zip(configuration.keys, configuration.values), uniquingKeysWith: { _, last in last })
@@ -155,7 +177,9 @@ extension WorkspaceConfigManager {
                 credentialNamespaceSeed: activation.credentialNamespaceSeed.isEmpty ? nil : activation.credentialNamespaceSeed,
                 digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest,
                 templateDigests: activation.templateDigests.isEmpty ? nil : activation.templateDigests,
-                awaitingUpdate: activation.awaitingUpdate ? true : nil
+                awaitingUpdate: activation.awaitingUpdate ? true : nil,
+                source: activation.recordedDigest.isEmpty ? nil : sourceIdentity(activation.pluginID, activation.recordedDigest)
+                    ?? (activation.awaitingUpdate ? awaitedSource(activation.pluginID) : nil)
             )
         }
         // Pending V19 installations are still authoritative ownership. A
@@ -194,10 +218,23 @@ extension WorkspaceConfigManager {
         toolsByID: [String: LocalTool],
         trust: CapabilityImportTrustPolicy,
         fileWorkspaceID: UUID? = nil,
-        sessionAccountIDs: Set<String> = []
+        sessionAccountIDs: Set<String> = [],
+        held: [String] = []
     ) -> [String: String] {
         var projectedIDs: [String: String] = [:]
         for ref in config.installedPlugins ?? [] {
+            // A chosen file's activation this Mac can't accept yet (its
+            // plugin not installed here, or another copy or source of it)
+            // keeps its non-secret payload pending, with this import's own
+            // rows, until the same digest and source are installed
+            // (`PluginPendingImport`). Nothing of it is applied now.
+            if case .validate = trust, !isAcceptedCopy(ref, trust: trust), let digest = ref.digest, !digest.isEmpty {
+                WorkspaceCapabilityActivation.recordPendingImport(
+                    pendingImport(of: ref, digest: digest, connectorsByID: connectorsByID, skillsByID: skillsByID,
+                                  toolsByID: toolsByID, sessionAccountIDs: sessionAccountIDs),
+                    pluginID: ref.id, in: workspace
+                )
+            }
             guard let activation = WorkspaceCapabilityActivation.activation(for: ref.id, in: workspace) else { continue }
             // A chosen file may keep the workspace's ID, so every activation
             // it brings, accepted or not, gets its own namespaces: one left
@@ -314,6 +351,17 @@ extension WorkspaceConfigManager {
         if case .preserveRecordedState = trust, let retired = config.retiredPlugins {
             WorkspaceCapabilityActivation.restoreRetired(retired, to: workspace)
         }
+        // An activation the workspace's own mirror recorded for a copy from
+        // another source than the one installed (`heldOnRecovery`) waits as a
+        // pending import, restored once the installed copy is from the
+        // recorded source again; recorded after the retired entries, which
+        // would replace it.
+        for ref in config.installedPlugins ?? [] where held.contains(ref.id) {
+            var pending = pendingImport(of: ref, digest: ref.digest ?? "", connectorsByID: connectorsByID, skillsByID: skillsByID,
+                                        toolsByID: toolsByID, sessionAccountIDs: sessionAccountIDs)
+            pending.recovered = true
+            WorkspaceCapabilityActivation.recordPendingImport(pending, pluginID: ref.id, in: workspace)
+        }
         // The import turned on every shared row it read, the overrides the
         // mirror carries only so they can be named again included.
         WorkspaceCapabilityActivation.takeOverridesOffSharedLists(in: workspace)
@@ -327,6 +375,44 @@ extension WorkspaceConfigManager {
     /// The rows the mirror's own shared list names, by their ID here.
     static func listedSharedAccountIDs(of config: WorkspaceConfig, connectorsByID: [String: Connector]) -> Set<String> {
         Set(requestedActivation(from: config).globalConnectorIDs.map { connectorsByID[$0]?.id.uuidString ?? $0 })
+    }
+
+    /// `ref`'s payload in this workspace's terms: the rows the import created
+    /// for the file's override rows and accounts (a row the file named but
+    /// the import didn't create is left out), and no secret.
+    static func pendingImport(
+        of ref: InstalledPluginRef,
+        digest: String,
+        connectorsByID: [String: Connector],
+        skillsByID: [String: Skill],
+        toolsByID: [String: LocalTool],
+        sessionAccountIDs: Set<String>
+    ) -> RetiredPluginActivation.PendingImport {
+        let overridden = ref.overriddenComponentIDs ?? []
+        let rows = ref.overridingRowIDs ?? []
+        let overrides: [(String, String)] = overridden.enumerated().compactMap { index, componentID in
+            let fileRowID = index < rows.count ? rows[index] : ""
+            guard let row = skillsByID[fileRowID]?.id ?? toolsByID[fileRowID]?.id else { return nil }
+            return (componentID, row.uuidString)
+        }
+        let accounts = (ref.accounts ?? []).compactMap { account -> RetiredPluginActivation.PendingImport.Account? in
+            guard let connector = connectorsByID[account.connectorID] else { return nil }
+            let created = sessionAccountIDs.contains(connector.id.uuidString)
+            guard created || !connector.isGlobal else { return nil }
+            return .init(
+                componentID: account.componentID, connectorID: connector.id.uuidString, isDefault: account.isDefault,
+                boundAt: account.boundAt, createdByImport: created ? true : nil
+            )
+        }
+        return RetiredPluginActivation.PendingImport(
+            digest: digest,
+            source: ref.source,
+            settings: ref.settings,
+            overriddenComponentIDs: overrides.isEmpty ? nil : overrides.map(\.0),
+            overridingRowIDs: overrides.isEmpty ? nil : overrides.map(\.1),
+            accounts: accounts.isEmpty ? nil : accounts,
+            knownComponentIDs: ref.knownComponentIDs
+        )
     }
 
     /// Writes `workspace`'s mirror now, on this thread, registering its

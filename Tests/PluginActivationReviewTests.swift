@@ -426,7 +426,7 @@ struct PluginActivationReviewTests {
         #expect(PluginRuntimeProjection.runnable(library, in: env.workspace).isEmpty)
         // Snapshots, queued records and the workspace mirror carry it.
         #expect(PluginActivationRecord(activation).awaitingUpdate)
-        #expect(WorkspaceConfigManager.installedPluginRefs(for: env.workspace).first { $0.id == v1.id }?.awaitingUpdate == true)
+        #expect(WorkspaceConfigManager.installedPluginRefs(for: env.workspace, sourceIdentity: { _, _ in nil }).first { $0.id == v1.id }?.awaitingUpdate == true)
 
         try PluginUpdateService.reconcileAll(modelContext: env.context, packages: library, mode: .release, approvalRecords: PluginOperationsTests.approvals(library))
         #expect(!activation.awaitingUpdate)

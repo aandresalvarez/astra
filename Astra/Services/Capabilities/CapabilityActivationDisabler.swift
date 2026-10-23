@@ -51,21 +51,34 @@ struct CapabilityActivationDisabler {
         in workspace: Workspace,
         modelContext: ModelContext,
         library: CapabilityLibrary = CapabilityLibrary(),
+        sourceStore: PluginSourceStore = PluginSourceStore(),
         persist: (ModelContext) throws -> Void = { try $0.save() },
         rewriteMirror: ((Workspace) -> Bool)? = nil
     ) -> Result {
         do {
             guard PluginsSurfacePresentation.offersTurnOff(package) else { throw Problem.cannotTurnOff }
-            try requireReady(workspace, modelContext: modelContext, library: library)
-            if package.id.hasPrefix("skill."), package.sourceMetadata?.kind == "shared" {
-                guard let rowID = CapabilityInstaller.syntheticSkillRowID(of: package) else { throw Problem.changedResource }
-                let saved = ModelContext(modelContext.container)
-                let rows = try saved.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.id == rowID }))
-                guard rows.count == 1, let row = rows.first, row.isGlobal, !row.isSystemBuiltIn else { throw Problem.changedResource }
+            // Check and commit under the same nonblocking source lock. State
+            // Turn off must refuse existing recovery debt, never implicitly
+            // finish or replay it before validating this request.
+            return try sourceStore.exclusively(pluginID: package.id) {
+                try requireReady(workspace, modelContext: modelContext, library: library)
+                if package.id.hasPrefix("skill."), package.sourceMetadata?.kind == "shared" {
+                    guard let rowID = CapabilityInstaller.syntheticSkillRowID(of: package) else { throw Problem.changedResource }
+                    let saved = ModelContext(modelContext.container)
+                    let rows = try saved.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.id == rowID }))
+                    guard rows.count == 1, let row = rows.first, row.isGlobal, !row.isSystemBuiltIn else { throw Problem.changedResource }
+                }
+                return apply(package, in: workspace, modelContext: modelContext, persist: persist, rewriteMirror: rewriteMirror)
             }
-            return apply(package, in: workspace, modelContext: modelContext, persist: persist, rewriteMirror: rewriteMirror)
         } catch let problem as Problem { return Result(packageID: package.id, persisted: false, problem: problem) }
-        catch let problem as PluginOperationProblem {
+        catch let problem as PluginSourceStoreError {
+            switch problem {
+            case .libraryBusy, .pluginBusy(_):
+                return Result(packageID: package.id, persisted: false, problem: .libraryBusy)
+            default:
+                return Result(packageID: package.id, persisted: false, problem: .recoveryRequired)
+            }
+        } catch let problem as PluginOperationProblem {
             return Result(packageID: package.id, persisted: false, problem: Self.problem(problem))
         } catch { return Result(packageID: package.id, persisted: false, problem: .recoveryRequired) }
     }

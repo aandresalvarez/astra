@@ -13,6 +13,23 @@ enum ConnectorCredentialDuplication {
         settingResolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
         persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws -> Connector {
+        // Do not let acquiring a lock silently complete and replay a prior
+        // failed Duplicate. Its saved operation must be recovered explicitly.
+        try requireReady(source, in: workspace, modelContext: modelContext)
+        do {
+            return try PluginMutationScope.perform(pluginID: "__account_credentials__", library: CapabilityLibrary(),
+                store: PluginSourceStore(), modelContext: modelContext) { _ in
+                    try duplicateReady(source, in: workspace, modelContext: modelContext,
+                        settingResolver: settingResolver, persist: persist, rewriteMirror: rewriteMirror)
+                }
+        } catch PluginSourceStoreError.pluginBusy(_) { throw PluginSourceStoreError.libraryBusy }
+    }
+
+    private static func duplicateReady(
+        _ source: Connector, in workspace: Workspace, modelContext: ModelContext,
+        settingResolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
+        persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil
+    ) throws -> Connector {
         try requireReady(source, in: workspace, modelContext: modelContext)
         SwiftDataPluginRelationshipPreparation.prepare(workspace, additionalAccounts: [source])
         let previous = WorkspaceCapabilityActivation.snapshot(workspace)
