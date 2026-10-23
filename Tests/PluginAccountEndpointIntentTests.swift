@@ -26,10 +26,8 @@ struct PluginAccountEndpointIntentTests {
         let account = try #require(activation.accounts(forComponent: component).first)
         account.baseURL = "https://custom.tracker.example.com"
         try env.context.save()
-        let initial = CapabilitySetupPresentation.initialValues(for: package, in: env.workspace)
-        try #require(initial.baseURLs[component] == account.baseURL)
-        var inputs = initial.config
-        var urls = initial.baseURLs
+        var inputs: [String: String] = [:]
+        var urls = [component: account.baseURL]
         if structureField {
             inputs[PluginSetupInputs.key("SITE", component: component)] = spec.baseURL
             // Structural endpoint is the one field this form submits.

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRACore
 import ASTRAModels
 
@@ -113,6 +114,8 @@ enum PluginsSurfacePresentation {
         var isVisible: Bool
         var isRemovable: Bool
         var needsUpdate: Bool = false
+        /// Why it can't be added whatever the policy says; shown instead of Add.
+        var unavailableReason: String? = nil
         /// Why a plugin that is not on can't be added, when approval would
         /// not clear it: shown in place of Add, which could only fail.
         var blocker: String?
@@ -171,14 +174,14 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: input.isMissing ? nil : !input.isEnabled ? (input.blocker == nil ? .add : nil) : (offersUpdate ? .update : nil),
+                verb: input.isMissing || input.unavailableReason != nil ? nil : (!input.isEnabled ? (input.blocker == nil ? .add : nil) : (offersUpdate ? .update : nil)),
                 isMissing: input.isMissing
             )
             if input.isMissing {
                 state.actionNeeded.append(row)
             } else if !input.isEnabled {
                 state.available.append(row)
-            } else if input.pendingSteps > 0 || offersUpdate {
+            } else if input.pendingSteps > 0 || offersUpdate || input.unavailableReason != nil {
                 state.actionNeeded.append(row)
             } else {
                 state.ready.append(row)
@@ -191,6 +194,7 @@ enum PluginsSurfacePresentation {
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
         if input.isMissing { return missingMessage }
+        if let reason = input.unavailableReason { return reason }
         if !input.isEnabled, let blocker = input.blocker { return blocker }
         if input.isEnabled, input.awaitsUpdate { return awaitsUpdateMessage }
         let contents = input.package.contentParts.joined(separator: ", ")
@@ -202,6 +206,15 @@ enum PluginsSurfacePresentation {
         }
         let pending = input.pendingSteps == 1 ? "1 step pending" : "\(input.pendingSteps) steps pending"
         return contents.isEmpty ? pending : "\(pending) · \(contents)"
+    }
+
+    /// Why a plugin can't be added on this build whatever the policy says:
+    /// one that needs an OAuth account sign-in, which ASTRA does not offer
+    /// (owner decision: the Google OAuth stack is deleted), would add and then
+    /// never work.
+    static func unavailableReason(for package: PluginPackage) -> String? {
+        guard package.setupRequirements.contains(where: { $0.kind == .oauthAccount }) else { return nil }
+        return "Needs an account sign-in that ASTRA can't do."
     }
 
     /// Whether a row offers Turn off, which never deletes. A standalone
@@ -259,6 +272,49 @@ enum PluginsSurfacePresentation {
         }
     }
 
+    /// The accounts this workspace sees (its own rows and the shared ones it
+    /// lists) that no listed plugin row shows under a connector component:
+    /// kept by Remove, released by an Update that dropped their component,
+    /// or bound to a component the listed definition no longer declares.
+    /// Delete account is the only operation that clears their credentials,
+    /// so the surface lists them on their own. A row attached to a skill
+    /// belongs to that skill's row.
+    static func unusedAccounts(
+        in workspace: Workspace,
+        workspaceConnectors: [Connector],
+        sharedConnectors: [Connector],
+        listedPackages: [PluginPackage],
+        query: String = ""
+    ) -> [Connector] {
+        var offered: [String: Set<String>] = [:]
+        for package in listedPackages {
+            offered[package.id, default: []].formUnion(package.connectors.map(CapabilityResourceOrigin.componentID(for:)))
+        }
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var seen = Set<UUID>()
+        return (workspaceConnectors + sharedConnectors)
+            .filter { account in
+                guard !account.isDeleted, account.skill == nil, seen.insert(account.id).inserted else { return false }
+                let shown = account.accountBindings.contains { binding in
+                    guard !binding.isDeleted, let activation = binding.activation, !activation.isDeleted,
+                          activation.workspace?.id == workspace.id else { return false }
+                    return offered[activation.pluginID]?.contains(binding.componentID) == true
+                }
+                guard !shown else { return false }
+                return needle.isEmpty || [account.name, account.serviceType, account.baseURL]
+                    .contains { $0.lowercased().contains(needle) }
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// "Jira · Shared · https://example.atlassian.net": the service first.
+    static func accountSubtitle(_ account: Connector) -> String {
+        let service = account.serviceType.replacingOccurrences(of: "_", with: " ").capitalized
+        return [service, account.isGlobal ? "Shared" : "", account.baseURL]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
+
     /// The name `workspace` knows `account` by, as the runtime names it:
     /// its binding alias there when a shared account's name collides, else
     /// the row's name. Two accounts never read the same next to Edit, Make
@@ -282,7 +338,7 @@ enum PluginsSurfacePresentation {
     @MainActor
     static func pendingAccountAction(for package: PluginPackage) -> PendingAccountAction {
         do {
-            _ = try CapabilityCatalogActionService.addRoute(for: package)
+            try CapabilityCatalogActionService.validateAccountSupport(for: package)
             return .reconnect
         } catch {
             return .unsupported(error.localizedDescription)
@@ -329,18 +385,22 @@ enum PluginsSurfaceConfirmation: Equatable {
     func copy(name: String) -> (message: String, verb: String) {
         switch self {
         case .remove:
-            // Remove deletes activations (settings, secret settings); the
-            // accounts and their credentials stay until deleted one by one.
             return (
                 "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted. Its accounts and their saved keys stay; delete an account to clear it. You can add it again later.",
                 "Remove"
             )
         case .deleteAccount(_, let scope):
-            let workspaces = scope.workspaces.map(\.name)
-            let reach = workspaces.isEmpty
-                ? ""
-                : " \(workspaces.count == 1 ? "It is used in" : "It is used in \(workspaces.count) workspaces:") \(workspaces.joined(separator: ", "))."
-            return ("Delete the account \(name) and its saved keys?\(reach) Tasks already accepted may keep access until they finish or are cancelled. To revoke access, revoke the credentials with the provider.", "Delete")
+            return Self.deleteAccountCopy(name: name, scope: scope)
         }
+    }
+
+    /// The account delete's copy, also asked by an account no plugin row
+    /// shows (`PluginAccountsSection`).
+    static func deleteAccountCopy(name: String, scope: PluginAccountDeletionScope) -> (message: String, verb: String) {
+        let workspaces = scope.workspaces.map(\.name)
+        let reach = workspaces.isEmpty
+            ? ""
+            : " \(workspaces.count == 1 ? "It is used in" : "It is used in \(workspaces.count) workspaces:") \(workspaces.joined(separator: ", "))."
+        return ("Delete the account \(name) and its saved keys?\(reach) Tasks already accepted may keep access until they finish or are cancelled. To revoke access, revoke the credentials with the provider.", "Delete")
     }
 }

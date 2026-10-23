@@ -29,7 +29,6 @@ struct ArchitectureFitnessTests {
             "Diagnostics",
             "Feedback",
             "Git",
-            "GoogleWorkspace",
             "Packs",
             "Persistence",
             "Runtime",
@@ -1059,25 +1058,6 @@ struct ArchitectureFitnessTests {
         #expect(!app.contains("struct StoreStartupBlockedView"))
     }
 
-    @Test("Plugin catalog view delegates capability side effects to action service")
-    func pluginCatalogViewDelegatesCapabilitySideEffects() throws {
-        let root = try repositoryRoot()
-        let view = try String(
-            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
-            encoding: .utf8
-        )
-
-        #expect(!view.contains("CapabilityInstaller("))
-        #expect(!view.contains("CapabilityUninstaller("))
-        #expect(!view.contains("CapabilityPackageCreationService("))
-        #expect(view.contains("CapabilityCatalogActionService("))
-        // Catalog reload ownership is limited to initial population and the
-        // centralized typed persistence-event handler. Mutation callbacks
-        // must not add post-action reloads of their own.
-        #expect(view.components(separatedBy: "catalog.loadApprovedCapabilities(").count - 1 == 2)
-        #expect(view.contains("catalog.loadApprovedCapabilities(announceLibraryMutations: false)"))
-    }
-
     @Test("Catalog invalidations follow durable capability mutations")
     func catalogInvalidationsFollowDurableMutations() throws {
         let root = try repositoryRoot()
@@ -1150,38 +1130,9 @@ struct ArchitectureFitnessTests {
         #expect(!policy.contains(#"packageSourceMetadata?.trustLevel == "built-in""#))
     }
 
-    @Test("Plugin catalog import presentation lives with catalog presentation contracts")
-    func pluginCatalogImportPresentationLivesWithCatalogPresentationContracts() throws {
+    @Test("Resource managers save through the capability persistence boundary")
+    func resourceManagersSaveThroughCapabilityPersistence() throws {
         let root = try repositoryRoot()
-        let view = try String(
-            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
-            encoding: .utf8
-        )
-        let presentation = try String(
-            contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/PluginCatalogPresentation.swift"),
-            encoding: .utf8
-        )
-
-        #expect(!view.contains("enum CapabilityImportPresentation"))
-        #expect(presentation.contains("enum CapabilityImportPresentation"))
-    }
-
-    @Test("Plugin catalog body uses cached presentation projection")
-    func pluginCatalogBodyUsesCachedPresentationProjection() throws {
-        let root = try repositoryRoot()
-        let view = try String(
-            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
-            encoding: .utf8
-        )
-
-        #expect(view.contains("let state = cachedPresentationState"))
-        #expect(!view.contains("let state = presentationState"))
-        #expect(view.contains("PluginCatalogPresentationCache"))
-        let presentation = try String(
-            contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/PluginCatalogPresentation.swift"),
-            encoding: .utf8
-        )
-        #expect(!presentation.contains("@Observable\nfinal class PluginCatalogPresentationCache"))
         for resourceView in ["ConnectorsManagerView.swift", "SkillsManagerView.swift", "ToolsManagerView.swift"] {
             let source = try String(
                 contentsOf: root.appendingPathComponent("Astra/Views/\(resourceView)"),
@@ -1189,8 +1140,6 @@ struct ArchitectureFitnessTests {
             )
             #expect(source.contains("CapabilityPersistence.saveResourceMutation"))
         }
-        #expect(!view.contains("JSONEncoder().encode(catalog.packages)"))
-        #expect(!view.contains("catalogResourceRevision"))
     }
 
     @Test("Workspace rail view keeps pure presentation contracts extracted")
@@ -1966,7 +1915,6 @@ struct ArchitectureFitnessTests {
             // parsesJSONLines, and probing `--output-format` where the CLI is
             // already being run rather than during launch preflight.
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_841, .owner("Runtime adapter registry")),
-            "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_460, .owner("Shelf markdown panel")),
             // Budget raised for Track A4 (ASTRAPersistence extraction): every
             // public struct now needs an explicit `public init` (Swift's

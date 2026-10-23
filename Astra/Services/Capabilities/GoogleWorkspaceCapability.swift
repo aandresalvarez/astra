@@ -17,30 +17,4 @@ enum GoogleWorkspaceCapability {
                 && requirement.provider == connectorBinding
         }
     }
-
-    /// Whether the account a Google Workspace plugin runs as can still get a
-    /// usable token: the profile is active, its Keychain token was neither
-    /// revoked nor lost, and it holds every scope the Workspace products need
-    /// (`GoogleWorkspaceSetupStateFactory.missingScopes`). An expired access
-    /// token refreshes on use (`GoogleWorkspaceRemoteMCPVaultTokenResolver`),
-    /// so it still counts while a refresh token is stored; without one the
-    /// refresh fails (`missingRefreshToken`) and the account must reconnect.
-    /// An unchecked one (nil) is judged by the profile. A status read
-    /// earlier is judged at `now`: its access token expires on its own,
-    /// without the profile changing.
-    static func isAccountConnected(
-        _ profile: GoogleOAuthAccountProfile?,
-        credentialStatus: GoogleOAuthCredentialStatus?,
-        hasRefreshToken: Bool,
-        now: Date = Date()
-    ) -> Bool {
-        guard let profile, profile.authState == .active else { return false }
-        switch credentialStatus {
-        case .missingAccount, .revokedToken: return false
-        case .expiredToken where !hasRefreshToken: return false
-        case .available(let expiresAt, _) where expiresAt <= now && !hasRefreshToken: return false
-        case .available, .expiredToken, nil:
-            return GoogleWorkspaceSetupStateFactory.missingScopes(profile: profile, credentialStatus: credentialStatus).isEmpty
-        }
-    }
 }

@@ -24,28 +24,13 @@ enum CapabilityAccountSetupError: Error, Equatable, LocalizedError {
 
 @MainActor
 struct CapabilityCatalogActionService {
-    /// What Plugins Add does with a package.
-    enum AddRoute: Equatable {
-        /// Install, approve and enable in one step.
-        case enable
-        /// Open the install flow that connects the package's account first.
-        case connectAccount
-    }
-
-    /// OAuth providers with a real sign-in flow (`CapabilityInstallSheetRouter`).
-    static let supportedOAuthProviders: Set<String> = [GoogleWorkspaceCapability.connectorBinding]
-
-    /// How Add handles `package`. A package that needs an account of a
-    /// provider ASTRA can't sign in to is refused: the router's fallback
-    /// sheet would enable it with no account, and it would read as ready
-    /// though its setup never ran. An optional account neither routes nor
-    /// refuses: the plugin works without it.
-    static func addRoute(for package: PluginPackage) throws -> AddRoute {
-        let accounts = package.setupRequirements.filter { $0.kind == .oauthAccount && $0.required }
-        if let unsupported = accounts.first(where: { !supportedOAuthProviders.contains($0.provider ?? "") }) {
+    /// Required OAuth accounts have no setup flow after the old OAuth stack
+    /// was retired. Refuse them explicitly; optional accounts do not block
+    /// the plugin's independent features. There is no sign-in route to return.
+    static func validateAccountSupport(for package: PluginPackage) throws {
+        if let unsupported = package.setupRequirements.first(where: { $0.kind == .oauthAccount && $0.required }) {
             throw CapabilityAccountSetupError.unsupportedProvider(account: unsupported.displayName, provider: unsupported.provider)
         }
-        return accounts.isEmpty ? .enable : .connectAccount
     }
 
     let installer: CapabilityInstaller
@@ -97,7 +82,7 @@ struct CapabilityCatalogActionService {
             // Every enable path (the legacy catalog's install sheets and
             // Configure included) refuses a required account ASTRA can't
             // sign in to, not only Plugins Add.
-            _ = try Self.addRoute(for: package)
+            try Self.validateAccountSupport(for: package)
             let result = try installer.install(
                 package,
                 into: workspace,
@@ -222,7 +207,7 @@ struct CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
-        _ = try Self.addRoute(for: package)
+        try Self.validateAccountSupport(for: package)
         let stored = PluginInstallationTransaction.reviewedPackage(package)
         let pending = try CapabilityApprovalGrant.pendingRecord(for: stored, context: policyContext,
             approvedBy: "user", reviewNotes: "Added in Plugins.")
@@ -255,10 +240,8 @@ struct CapabilityCatalogActionService {
 
     /// The approval Add writes when the policy holds `package` for review:
     /// the person adding it is the reviewer. Returns the context to enable
-    /// against. An install flow that connects an account first (OAuth) takes
-    /// it the same way, so its enable isn't refused for want of approval.
-    /// Audited like the catalog review's approval: the record is a durable
-    /// permission change even when the enable after it never happens.
+    /// against. Audited like the catalog review's approval: the record is a
+    /// durable permission change even when the enable after it never happens.
     func grantPendingApproval(
         for package: PluginPackage,
         workspace: Workspace,
@@ -416,6 +399,79 @@ struct CapabilityCatalogActionService {
     ) throws {
         try PluginOperations.deleteAccount(account, modelContext: modelContext, confirmedScope: confirmedScope)
         CapabilityCatalogPersistenceEvents.post(.global)
+    }
+
+    /// Imports a validated plugin file. A newer version of an installed
+    /// plugin is an Update for every workspace (see
+    /// `CapabilityPackageImporter.importValidatedPackage`).
+    @discardableResult
+    func importPlugin(
+        _ report: CapabilityPackageValidationReport,
+        workspace: Workspace,
+        modelContext: ModelContext,
+        traceID: String
+    ) throws -> CapabilityPackageImportResult {
+        guard report.canInstall else {
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: CapabilityAudit.importJSONFailureFields(
+                report: report, workspace: workspace, traceID: traceID, result: "validation_blocked"
+            ), level: .warning)
+            throw CapabilityPackageImportError(report: report)
+        }
+        do {
+            let result = try CapabilityPackageImporter(library: library).importValidatedPackage(report, modelContext: modelContext)
+            AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
+                "source": "import_json",
+                "trace_id": traceID,
+                "package_id": result.package.id,
+                "package_name": result.package.name,
+                "package_version": result.package.version,
+                "workspace_id": workspace.id.uuidString
+            ])
+            return result
+        } catch {
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: CapabilityAudit.importJSONFailureFields(
+                report: report, workspace: workspace, traceID: traceID, result: "import_failed",
+                errorType: String(describing: type(of: error))
+            ), level: .error)
+            throw error
+        }
+    }
+
+    /// An admin's catalog review of one version (digest) of a plugin.
+    func setApprovalStatus(
+        _ status: CapabilityApprovalStatus,
+        for package: PluginPackage,
+        workspace: Workspace,
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore()
+    ) throws {
+        let traceID = AuditTrace.make("capability-approval")
+        do {
+            let record = try approvalStore.save(
+                package: package,
+                status: status,
+                approvedBy: "ASTRA local admin",
+                reviewNotes: "Updated from the Plugins review controls."
+            )
+            AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: [
+                "source": "plugins_review",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "package_version": package.version,
+                "status": record.status.rawValue,
+                "workspace_id": workspace.id.uuidString,
+                "digest_prefix": String(record.sourceDigest.prefix(12))
+            ])
+        } catch {
+            AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: [
+                "source": "plugins_review",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "status": status.rawValue,
+                "result": "failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            throw error
+        }
     }
 
     /// Turns a shared account on in this workspace: the step an added

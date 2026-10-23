@@ -20,7 +20,6 @@ else
 fi
 REQUIRE_ARM64="${ASTRA_REQUIRE_ARM64:-1}"
 SPARKLE_PUBLIC_ED_KEY="${ASTRA_SPARKLE_PUBLIC_ED_KEY:-${SPARKLE_PUBLIC_ED_KEY:-}}"
-GOOGLE_MANAGED_OAUTH_CLIENT_ID="${ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID:-}"
 SIGN_IDENTITY_RAW="${ASTRA_SIGN_IDENTITY:-}"
 # Trim leading/trailing whitespace (including a leading/trailing newline from
 # copy-pasting into the GitHub secret field). codesign matches -s against the
@@ -196,11 +195,6 @@ validate_sparkle_public_ed_key() {
   [[ "$decoded_length" == "32" ]]
 }
 
-validate_google_managed_oauth_client_id() {
-  local client_id="$1"
-  [[ "$client_id" =~ ^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$ ]]
-}
-
 find_local_team_signing_identity() {
   local identities candidate
   identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
@@ -306,11 +300,6 @@ SPARKLE_FEED_URL="${ASTRA_SPARKLE_FEED_URL:-$DEFAULT_SPARKLE_FEED_URL}"
 
 if [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]] && ! validate_sparkle_public_ed_key "$SPARKLE_PUBLIC_ED_KEY"; then
   echo "Invalid ASTRA_SPARKLE_PUBLIC_ED_KEY: expected a base64 Sparkle EdDSA public key that decodes to 32 bytes." >&2
-  exit 2
-fi
-
-if [[ -n "$GOOGLE_MANAGED_OAUTH_CLIENT_ID" ]] && ! validate_google_managed_oauth_client_id "$GOOGLE_MANAGED_OAUTH_CLIENT_ID"; then
-  echo "Invalid ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID: expected a Google OAuth client ID ending in .apps.googleusercontent.com." >&2
   exit 2
 fi
 
@@ -538,13 +527,6 @@ if [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
   cat >>"$INFO_PLIST" <<PLIST
   <key>SUPublicEDKey</key>
   <string>$SPARKLE_PUBLIC_ED_KEY</string>
-PLIST
-fi
-
-if [[ -n "$GOOGLE_MANAGED_OAUTH_CLIENT_ID" ]]; then
-  cat >>"$INFO_PLIST" <<PLIST
-  <key>ASTRAGoogleOAuthClientID</key>
-  <string>$GOOGLE_MANAGED_OAUTH_CLIENT_ID</string>
 PLIST
 fi
 

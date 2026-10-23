@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import SwiftData
 import ASTRACore
 import ASTRAModels
@@ -23,7 +25,6 @@ struct PluginsSurfaceView: View {
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true }) private var globalSkills: [Skill]
     @Query(filter: #Predicate<Connector> { $0.isGlobal == true }) private var globalConnectors: [Connector]
     @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true }) private var globalTools: [LocalTool]
-    @Query private var googleAccounts: [GoogleOAuthAccountProfile]
 
     @State private var query = ""
     @State private var expanded: Set<String> = []
@@ -33,17 +34,14 @@ struct PluginsSurfaceView: View {
     @State private var errorMessage: String?
     @State private var confirming: PluginsSurfaceConfirmation?
     @StateObject private var repairs = PluginRepairCoordinator()
-    /// Only the latest health scan may publish; an older one finishing last
-    /// would bring back failures a repair already fixed.
-    /// A plugin whose setup connects an account goes through its install
-    /// flow, which does that.
-    @State private var accountSetupPackage: PluginPackage?
-    @State private var accountSetupContext: CapabilityCatalogPolicyContext?
+    @State private var showCreateWizard = false
+    @State private var importReview: CapabilityImportReview?
+    /// A draft an import kept beside an approved copy, awaiting review.
+    @State private var stagedReview: PluginStagedReview?
+    @State private var showMCPPaste = false
+    @State private var pastedMCPTarget = ""
+    @State private var mcpInstallRequest: MCPInstallChatRequest?
     @State private var approvalGeneration = 0
-    /// The Keychain side of the Google account, read on refresh rather than
-    /// on every render; the profile's own state comes from the store.
-    @State private var googleCredentialStatuses: [UUID: GoogleOAuthCredentialStatus] = [:]
-    @State private var googleRefreshableAccountIDs: Set<UUID> = []
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -67,18 +65,14 @@ struct PluginsSurfaceView: View {
         )
     }
 
-    private var googleAccountConnected: Bool {
-        let account = GoogleWorkspaceSetupStateFactory.selectedAccount(from: googleAccounts)
-        return GoogleWorkspaceCapability.isAccountConnected(
-            account,
-            credentialStatus: account.flatMap { googleCredentialStatuses[$0.id] },
-            hasRefreshToken: account.map { googleRefreshableAccountIDs.contains($0.id) } ?? false
-        )
-    }
+    /// This build signs in to no account (the Google OAuth stack is
+    /// deleted), so a required account is always a pending step.
+    private var googleAccountConnected: Bool { false }
 
     /// The rows and their display, built in one pass so every action takes
-    /// the same package and activation the row shows.
-    private var surface: (state: PluginsSurfaceState, rows: [String: PluginRow]) {
+    /// the same package and activation the row shows, and the accounts none
+    /// of the listed rows shows.
+    private var surface: (state: PluginsSurfaceState, rows: [String: PluginRow], unusedAccounts: [Connector]) {
         let context = policyContext
         let currentCapabilities = capabilities
         let googleConnected = googleAccountConnected
@@ -100,6 +94,7 @@ struct PluginsSurfaceView: View {
                 blocker: listing.blocker,
                 awaitsUpdate: packageState.awaitsUpdate
             )
+            input.unavailableReason = PluginsSurfacePresentation.unavailableReason(for: package)
             // Any drift an Update would settle: version, digest, components
             // or templates.
             input.needsUpdate = activation.map {
@@ -120,7 +115,14 @@ struct PluginsSurfaceView: View {
                 activation: WorkspaceCapabilityActivation.activation(for: input.package.id, in: workspace),
                 display: PluginsSurfacePresentation.makeState([input], query: "").allRows.first ?? placeholderRow(input.package))
         }
-        return (PluginsSurfacePresentation.makeState(inputs, query: query), rows)
+        let unusedAccounts = PluginsSurfacePresentation.unusedAccounts(
+            in: workspace,
+            workspaceConnectors: currentCapabilities.workspaceConnectors,
+            sharedConnectors: currentCapabilities.enabledGlobalConnectors,
+            listedPackages: inputs.filter(\.isVisible).map(\.package),
+            query: query
+        )
+        return (PluginsSurfacePresentation.makeState(inputs, query: query), rows, unusedAccounts)
     }
 
     private func placeholderRow(_ package: PluginPackage) -> PluginsSurfaceRow {
@@ -139,6 +141,14 @@ struct PluginsSurfaceView: View {
                 TextField("Search: jira, gmail, bigquery", text: $query)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 260)
+                Menu("New") {
+                    Button("Create a plugin…") { showCreateWizard = true }
+                    Button("From an MCP server…") { showMCPPaste = true }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                Button("Import file…") { openImportPanel() }
+                    .controlSize(.small)
             }
             if let errorMessage {
                 Text(errorMessage)
@@ -154,7 +164,13 @@ struct PluginsSurfaceView: View {
                         group("Action needed", current.actionNeeded, rows: model.rows)
                         group("Ready", current.ready, rows: model.rows)
                         group("Available", current.available, rows: model.rows)
-                        if current.isEmpty {
+                        PluginAccountsSection(
+                            accounts: model.unusedAccounts,
+                            onEditAccount: { onEditElement(.connectors, $0) },
+                            onChanged: { onCatalogChanged() },
+                            onError: { errorMessage = $0 }
+                        )
+                        if current.isEmpty && model.unusedAccounts.isEmpty {
                             Text(query.isEmpty ? "No plugins yet." : "Nothing matches \u{201C}\(query)\u{201D}.")
                                 .font(Stanford.caption(12))
                                 .foregroundStyle(.secondary)
@@ -168,19 +184,6 @@ struct PluginsSurfaceView: View {
         }
         .padding(16)
         .onDisappear { repairs.cancelAll() }
-        .sheet(item: $accountSetupPackage) { package in
-            CapabilityInstallSheetRouter(
-                package: package,
-                workspace: workspace,
-                policyContext: accountSetupContext ?? policyContext,
-                onDismiss: { accountSetupPackage = nil },
-                onInstalled: { _ in
-                    accountSetupPackage = nil
-                    onCatalogChanged()
-                    refreshStatuses()
-                }
-            )
-        }
         .onAppear {
             expanded = PluginsSurfacePreferences.expandedPluginIDs(workspaceID: workspace.id)
             refreshApprovalRecords()
@@ -190,10 +193,6 @@ struct PluginsSurfaceView: View {
             }
             refreshStatuses()
         }
-        // A sign-in, reauthorization or revocation stamps the profile.
-        .onChange(of: googleAccounts.map(\.updatedAt)) { _, _ in refreshGoogleCredential() }
-        // Nor does an access token reaching its expiry: read it again then.
-        .task(id: googleCredentialExpiry) { await refreshGoogleCredential(at: googleCredentialExpiry) }
         // Contextual checks (GitHub repository access) describe one checkout:
         // a new working path, from any window, scans again.
         .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshStatuses() }
@@ -215,6 +214,46 @@ struct PluginsSurfaceView: View {
                 catalog.loadApprovedCapabilities(announceLibraryMutations: false)
             }
             refreshStatuses()
+        }
+        .sheet(isPresented: $showCreateWizard) {
+            CapabilityCreationWizardView(workspace: workspace) { package, enableHere, sourceURL in
+                create(package, enableHere: enableHere, sourceURL: sourceURL)
+            }
+        }
+        .sheet(item: $importReview) { review in
+            CapabilityImportReviewSheet(
+                review: review,
+                onCancel: { importReview = nil },
+                onImport: { importFile($0) }
+            )
+        }
+        .alert("\(stagedReview?.package.name ?? "") \(stagedReview?.package.version ?? "") is waiting for review", isPresented: Binding(
+            get: { stagedReview != nil }, set: { if !$0 { stagedReview = nil } }
+        ), presenting: stagedReview) { draft in
+            Button("Approve and update") { approveStaged(draft) }
+            Button("Discard", role: .destructive) { discardStaged(draft) }
+            Button("Later", role: .cancel) {}
+        } message: { _ in
+            Text("The approved version stays in use in every workspace until you approve this one.")
+        }
+        .sheet(isPresented: $showMCPPaste) {
+            MCPInstallTargetPasteSheet(
+                targetText: $pastedMCPTarget,
+                onCancel: { showMCPPaste = false },
+                onReview: { reviewPastedMCPTarget() }
+            )
+        }
+        .sheet(item: $mcpInstallRequest) { request in
+            CapabilityMCPInstallReviewSheet(
+                request: request,
+                workspace: workspace,
+                onCancel: { mcpInstallRequest = nil },
+                onInstalled: { package in
+                    mcpInstallRequest = nil
+                    catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+                    selectedPackageID = package.id
+                }
+            )
         }
     }
 
@@ -297,7 +336,10 @@ struct PluginsSurfaceView: View {
                     setupRow: { componentRow($0, package: pluginRow.package, isEnabled: row.isEnabled, position: $1) },
                     onEditAccount: { onEditElement(.connectors, $0) },
                     onConfirm: { confirming = $0 },
+                    approvalRecords: approvalRecords,
+                    policyContext: policyContext,
                     onTurnOff: { disable(pluginRow.package) },
+                    onSetApproval: { setApproval($0, for: pluginRow.package) },
                     onUpdate: { update(pluginRow) },
                     onChanged: { errorMessage = nil; onCatalogChanged() },
                     onError: { errorMessage = $0 }
@@ -437,32 +479,7 @@ struct PluginsSurfaceView: View {
         }
     }
 
-    private func refreshGoogleCredential() {
-        let usesGoogle = packages.contains(where: GoogleWorkspaceCapability.usesGoogleWorkspaceOAuthSetup)
-        let account = usesGoogle ? GoogleWorkspaceSetupStateFactory.selectedAccount(from: googleAccounts) : nil
-        let vault = GoogleOAuthCredentialVault()
-        googleCredentialStatuses = account.map { [$0.id: vault.credentialStatus(for: $0)] } ?? [:]
-        googleRefreshableAccountIDs = account.map { vault.hasRefreshToken(for: $0) ? [$0.id] : [] } ?? []
-    }
-
-    /// When the cached access token expires; the row may change then.
-    private var googleCredentialExpiry: Date? {
-        googleCredentialStatuses.values.compactMap { status -> Date? in
-            if case .available(let expiresAt, _) = status { return expiresAt }
-            return nil
-        }.min()
-    }
-
-    private func refreshGoogleCredential(at expiry: Date?) async {
-        guard let expiry else { return }
-        let delay = max(expiry.timeIntervalSinceNow, 0) + 1
-        try? await Task.sleep(for: .seconds(delay))
-        guard !Task.isCancelled else { return }
-        refreshGoogleCredential()
-    }
-
     private func refreshStatuses() {
-        refreshGoogleCredential()
         let enabled = packages.filter {
             !$0.prerequisites.isEmpty
                 && CapabilityPackageState(package: $0, workspace: workspace, capabilities: capabilities).isEnabled
@@ -503,16 +520,6 @@ struct PluginsSurfaceView: View {
     private func add(_ package: PluginPackage) {
         errorMessage = nil
         do {
-            if try CapabilityCatalogActionService.addRoute(for: package) == .connectAccount {
-                // The same one-step approval as Add, before the flow enables it.
-                accountSetupContext = try CapabilityCatalogActionService().grantPendingApproval(
-                    for: package, workspace: workspace, policyContext: policyContext,
-                    source: "plugins_add_connect_account", traceID: AuditTrace.make("plugins-add")
-                )
-                accountSetupPackage = package
-                refreshApprovalRecords()
-                return
-            }
             try CapabilityCatalogActionService().add(
                 package,
                 workspace: workspace,
@@ -525,6 +532,106 @@ struct PluginsSurfaceView: View {
             refreshStatuses()
         } catch {
             errorMessage = "Couldn't add \(package.name): \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - New and import
+
+    private func create(_ package: PluginPackage, enableHere: Bool, sourceURL: URL?) {
+        errorMessage = nil
+        do {
+            let result = try CapabilityCatalogActionService().create(
+                package,
+                enableHere: enableHere,
+                sourceURL: sourceURL,
+                workspace: workspace,
+                modelContext: modelContext,
+                policyContext: policyContext,
+                traceID: AuditTrace.make(enableHere ? "capability-create-enable" : "capability-create")
+            )
+            if result.approvalRecordChanged { refreshApprovalRecords() }
+            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+            expanded.insert(package.id)
+            onCatalogChanged()
+        } catch {
+            errorMessage = "Couldn't create \(package.name): \(error.localizedDescription)"
+        }
+    }
+
+    private func openImportPanel() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Plugin"
+        panel.prompt = "Review"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        importReview = CapabilityImportReview(report: CapabilityPackageImporter().validateFile(at: url))
+    }
+
+    private func importFile(_ report: CapabilityPackageValidationReport) {
+        errorMessage = nil
+        do {
+            let result = try CapabilityCatalogActionService().importPlugin(
+                report, workspace: workspace, modelContext: modelContext, traceID: AuditTrace.make("capability-import")
+            )
+            importReview = nil
+            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+            if result.staged { presentStagedReview(id: result.package.id) } else { expanded.insert(result.package.id) }
+            onCatalogChanged()
+        } catch {
+            importReview = nil
+            errorMessage = "Couldn't import the plugin: \(error.localizedDescription)"
+        }
+    }
+
+    private func presentStagedReview(id: String) {
+        do { stagedReview = try CapabilityCatalogActionService().reviewStaged(id: id) }
+        catch { errorMessage = "Couldn't open the pending update: \(error.localizedDescription)" }
+    }
+
+    private func approveStaged(_ draft: PluginStagedReview) {
+        errorMessage = nil
+        do {
+            try CapabilityCatalogActionService().approveStaged(draft, modelContext: modelContext)
+            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+            expanded.insert(draft.id)
+            onCatalogChanged()
+        } catch {
+            errorMessage = "Couldn't approve the update: \(error.localizedDescription)"
+        }
+    }
+
+    private func discardStaged(_ draft: PluginStagedReview) {
+        errorMessage = nil
+        do {
+            try CapabilityCatalogActionService().discardStaged(draft, modelContext: modelContext)
+            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+            onCatalogChanged()
+        } catch { errorMessage = "Couldn't discard the update: \(error.localizedDescription)" }
+    }
+
+    private func reviewPastedMCPTarget() {
+        guard let result = MCPInstallChatCommand.installResult(input: "/mcp \(pastedMCPTarget)") else {
+            errorMessage = "Paste an MCP npm, uvx, Docker, JSON, or HTTPS target to review."
+            return
+        }
+        switch result {
+        case .request(let request):
+            showMCPPaste = false
+            DispatchQueue.main.async { mcpInstallRequest = request }
+        case .failure(let failure):
+            errorMessage = failure.message
+        }
+    }
+
+    private func setApproval(_ status: CapabilityApprovalStatus, for package: PluginPackage) {
+        errorMessage = nil
+        do {
+            try CapabilityCatalogActionService().setApprovalStatus(status, for: package, workspace: workspace)
+            refreshApprovalRecords()
+        } catch {
+            errorMessage = "Couldn't update the review of \(package.name): \(error.localizedDescription)"
         }
     }
 
@@ -557,14 +664,11 @@ struct PluginsSurfaceView: View {
         // not silently expand what the person is about to confirm.
         let copy = PluginsSurfacePresentation.confirmationCopy(confirmation, account: account,
             packageName: row.package.name, in: workspace)
-        return HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(copy.message)
-                .font(Stanford.caption(12))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            Button("Cancel") { confirming = nil }
-                .controlSize(.small)
-            Button(copy.verb, role: .destructive) {
+        return PluginsSurfaceConfirmationRow(
+            message: copy.message,
+            verb: copy.verb,
+            onCancel: { confirming = nil },
+            onConfirm: {
                 confirming = nil
                 switch confirmation {
                 case .remove(let source, let scope):
@@ -578,10 +682,7 @@ struct PluginsSurfaceView: View {
                     else { errorMessage = PluginOperations.OperationError.workspaceChanged.localizedDescription }
                 }
             }
-            .controlSize(.small)
-        }
-        .padding(8)
-        .background(Stanford.statusError.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        )
     }
 
     private func deleteAccount(_ account: Connector, confirmedScope: PluginAccountDeletionScope) {

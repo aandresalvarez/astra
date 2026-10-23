@@ -12,7 +12,6 @@ struct KeychainUserInteractionRoutingTests {
     func explicitCredentialEntryPathsRequestPromptableSaves() throws {
         let connectorView = try source("Astra/Views/ConnectorsManagerView.swift")
         let skillView = try source("Astra/Views/SkillsManagerView.swift")
-        let pluginView = try source("Astra/Views/PluginCatalogView.swift")
         let chatView = try source("Astra/Views/ChatPanelView.swift")
         let outlook = try source("Astra/Services/Persistence/OutlookOAuthVaultSession.swift")
         let permissionsView = try source("Astra/Views/MacOSPermissionsSectionView.swift")
@@ -22,7 +21,6 @@ struct KeychainUserInteractionRoutingTests {
         // The view delegates; the runtime test below checks the actual save
         // policy rather than requiring Keychain implementation in a view.
         #expect(skillView.contains("SkillCredentialEditor.save("))
-        #expect(pluginView.contains("allowCredentialUserInteraction: credentialValues.values.contains"))
         #expect(chatView.contains("allowCredentialUserInteraction: !credentials.isEmpty"))
         #expect(outlook.contains("allowUserInteraction: allowUserInteraction"))
         // The Retry-Keychain-Check action (both the row-level and header

@@ -654,19 +654,17 @@ struct PluginsSurfaceTests {
         withExtendedLifetime(container) {}
     }
 
-    @Test("Add connects a supported account first, and refuses one ASTRA can't sign in to")
+    @Test("Add refuses a plugin that needs an account sign-in, which this build has none of")
     func addRefusesUnsupportedOAuthProviders() throws {
-        #expect(try CapabilityCatalogActionService.addRoute(for: builtIn("google-workspace")) == .connectAccount)
-        #expect(try CapabilityCatalogActionService.addRoute(for: builtIn("jira-workflow")) == .enable)
-        let google = try #require(try builtIn("google-workspace").setupRequirements.first)
+        #expect(throws: CapabilityAccountSetupError.self) {
+            try CapabilityCatalogActionService.validateAccountSupport(for: builtIn("google-workspace"))
+        }
+        try CapabilityCatalogActionService.validateAccountSupport(for: builtIn("jira-workflow"))
         for provider in ["salesforce", nil] {
-            let account = PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: provider)
-            for requirements in [[account], [google, account]] {
-                var imported = package("imported-crm", name: "CRM")
-                imported.setupRequirements = requirements
-                #expect(throws: CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)) {
-                    try CapabilityCatalogActionService.addRoute(for: imported)
-                }
+            var imported = package("imported-crm", name: "CRM")
+            imported.setupRequirements = [PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: provider)]
+            #expect(throws: CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)) {
+                try CapabilityCatalogActionService.validateAccountSupport(for: imported)
             }
         }
 
@@ -734,15 +732,20 @@ struct PluginsSurfaceTests {
             imported.setupRequirements = [
                 PluginSetupRequirement(id: "acct", kind: .oauthAccount, displayName: "Account", provider: provider, required: false)
             ]
-            #expect(try CapabilityCatalogActionService.addRoute(for: imported) == .enable)
+            try CapabilityCatalogActionService.validateAccountSupport(for: imported)
         }
     }
 
     @Test("A pending account offers Reconnect only when Add can sign in to it")
     func pendingAccountOffersReconnectOnlyForSupportedProviders() throws {
+        // R4 has no sign-in flow for any provider (`supportedOAuthProviders`
+        // is empty), so even the Google account gets the reason, no button.
         let google = try builtIn("google-workspace")
-        #expect(PluginsSurfacePresentation.pendingAccountAction(for: google) == .reconnect)
         let googleAccount = try #require(google.setupRequirements.first)
+        let googleRefused = CapabilityAccountSetupError.unsupportedProvider(
+            account: googleAccount.displayName, provider: googleAccount.provider
+        )
+        #expect(PluginsSurfacePresentation.pendingAccountAction(for: google) == .unsupported(try #require(googleRefused.errorDescription)))
         for provider in ["salesforce", nil] {
             let account = PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: provider)
             // Alone, or beside a Google account Add could connect: Add
@@ -751,9 +754,12 @@ struct PluginsSurfaceTests {
                 var crm = package("imported-crm", name: "CRM")
                 crm.setupRequirements = requirements
                 #expect(!PluginsSurfacePresentation.pendingAccounts(for: crm, googleAccountConnected: false).isEmpty)
-                let expected = CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)
+                // Add names the first account it can't sign in to.
+                let expected = requirements.first?.id == googleAccount.id
+                    ? googleRefused
+                    : CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)
                 #expect(PluginsSurfacePresentation.pendingAccountAction(for: crm) == .unsupported(try #require(expected.errorDescription)))
-                #expect(throws: expected) { try CapabilityCatalogActionService.addRoute(for: crm) }
+                #expect(throws: expected) { try CapabilityCatalogActionService.validateAccountSupport(for: crm) }
             }
         }
         // The row reads it from that rule, not a copy of it.
@@ -776,84 +782,6 @@ struct PluginsSurfaceTests {
         var crm = package("imported-crm", name: "CRM")
         crm.setupRequirements = [PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM", provider: "salesforce")]
         #expect(PluginsSurfacePresentation.pendingAccounts(for: crm, googleAccountConnected: true).map(\.id) == ["crm"])
-
-        // Connected means the runtime can still get a token: an expired one
-        // refreshes, a revoked or lost one does not.
-        let scopes = GoogleWorkspaceSetupStateFactory.requiredScopes
-        let active = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com", grantedScopes: scopes)
-        #expect(GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .expiredToken, hasRefreshToken: true))
-        #expect(GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: nil, hasRefreshToken: true))
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .missingAccount, hasRefreshToken: true))
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .revokedToken, hasRefreshToken: true))
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(nil, credentialStatus: nil, hasRefreshToken: true))
-        for state in [GoogleOAuthAccountAuthState.needsReauth, .revoked] {
-            let stale = GoogleOAuthAccountProfile(subject: "2", email: "b@example.com", grantedScopes: scopes, authState: state)
-            #expect(!GoogleWorkspaceCapability.isAccountConnected(stale, credentialStatus: .expiredToken, hasRefreshToken: true))
-        }
-    }
-
-    @Test("An expired token counts as connected only while a refresh token is stored")
-    func expiredTokenWithoutRefreshTokenIsNotConnected() throws {
-        let scopes = GoogleWorkspaceSetupStateFactory.requiredScopes
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        for refreshToken in ["1//refresh", nil] {
-            let profile = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com", grantedScopes: scopes)
-            let vault = GoogleOAuthCredentialVault(secretStore: MockSecretStore())
-            try vault.save(
-                GoogleOAuthTokenSet(accessToken: "ya29.access", refreshToken: refreshToken, expiresAt: now, grantedScopes: scopes),
-                for: profile, now: now
-            )
-            let status = vault.credentialStatus(for: profile, now: now.addingTimeInterval(60))
-            #expect(status == .expiredToken)
-            #expect(vault.hasRefreshToken(for: profile) == (refreshToken != nil))
-            let connected = GoogleWorkspaceCapability.isAccountConnected(
-                profile, credentialStatus: status, hasRefreshToken: vault.hasRefreshToken(for: profile)
-            )
-            #expect(connected == (refreshToken != nil), "refresh token: \(refreshToken ?? "none")")
-        }
-    }
-
-    @Test("A cached access token that has since expired counts only while a refresh token is stored")
-    func cachedStatusExpiresWithItsToken() throws {
-        let scopes = GoogleWorkspaceSetupStateFactory.requiredScopes
-        let profile = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com", grantedScopes: scopes)
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let cached = GoogleOAuthCredentialStatus.available(expiresAt: now, grantedScopes: scopes)
-        #expect(GoogleWorkspaceCapability.isAccountConnected(profile, credentialStatus: cached, hasRefreshToken: false, now: now.addingTimeInterval(-60)))
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(profile, credentialStatus: cached, hasRefreshToken: false, now: now))
-        #expect(GoogleWorkspaceCapability.isAccountConnected(profile, credentialStatus: cached, hasRefreshToken: true, now: now.addingTimeInterval(60)))
-        // The surface reads the Keychain again when the cached token expires.
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift")
-        let source = try String(contentsOf: url, encoding: .utf8)
-        #expect(source.contains(".task(id: googleCredentialExpiry) { await refreshGoogleCredential(at: googleCredentialExpiry) }"))
-    }
-
-    @Test("An account missing a newly required Workspace scope is a pending step, not Ready")
-    func missingOAuthScopesArePending() throws {
-        let google = try builtIn("google-workspace")
-        let required = GoogleWorkspaceSetupStateFactory.requiredScopes
-        let gmail = try #require(required.first { $0.contains("gmail") })
-        let lacking = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com", grantedScopes: required.filter { $0 != gmail })
-        let full = GoogleOAuthAccountProfile(subject: "2", email: "b@example.com", grantedScopes: required)
-        let expires = Date().addingTimeInterval(3_600)
-        // The runtime refuses a token without the scope, whichever side lacks it.
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: .available(expiresAt: expires, grantedScopes: required), hasRefreshToken: true))
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: nil, hasRefreshToken: true))
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(full, credentialStatus: .available(expiresAt: expires, grantedScopes: []), hasRefreshToken: true))
-        #expect(GoogleWorkspaceCapability.isAccountConnected(full, credentialStatus: .available(expiresAt: expires, grantedScopes: required), hasRefreshToken: true))
-        let connected = GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: .expiredToken, hasRefreshToken: true)
-        #expect(PluginsSurfacePresentation.pendingAccounts(for: google, googleAccountConnected: connected).count == 1)
-    }
-
-    @Test("The preview is on by default in development builds only, and remembers a choice")
-    func previewFlagDefaultsByChannel() {
-        let defaults = InMemoryDefaults()
-        #expect(PluginsSurfacePreferences.isEnabled(in: defaults, channel: .development))
-        #expect(!PluginsSurfacePreferences.isEnabled(in: defaults, channel: .production))
-        PluginsSurfacePreferences.setEnabled(true, in: defaults)
-        #expect(PluginsSurfacePreferences.isEnabled(in: defaults, channel: .production))
     }
 
     // MARK: - Fixtures

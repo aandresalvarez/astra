@@ -225,11 +225,6 @@ struct CapabilityGalleryInventoryTests {
         #expect(allowed.map(\.id) == ["clinical-only", "researcher-only"])
     }
 
-    @Test("gallery uses one column in every presentation")
-    func galleryUsesOneColumn() {
-        #expect(CapabilityGalleryLayout.columnCount(for: .embedded) == 1)
-        #expect(CapabilityGalleryLayout.columnCount(for: .modal) == 1)
-    }
 }
 
 private func makeGalleryPackage(

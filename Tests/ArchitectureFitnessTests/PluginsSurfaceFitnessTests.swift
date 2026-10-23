@@ -9,6 +9,7 @@ struct PluginsSurfaceFitnessTests {
     private let viewFiles = [
         "Astra/Views/Capabilities/PluginsSurfaceView.swift",
         "Astra/Views/Capabilities/PluginRowDetailsView.swift",
+        "Astra/Views/Capabilities/PluginAccountsSection.swift",
         "Astra/Views/Capabilities/PluginStateRecoverySection.swift"
     ]
 
