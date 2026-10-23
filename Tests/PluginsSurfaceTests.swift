@@ -11,6 +11,51 @@ import ASTRAModels
 @Suite("Plugins surface")
 @MainActor
 struct PluginsSurfaceTests {
+    @Test("Missing pending legacy plugins stay visible before and after Turn off")
+    func missingPendingLegacyRows() throws {
+        let env = try PluginOperationsTests.Environment()
+        env.workspace.legacyEnabledCapabilityIDs = ["gone-on", "gone-on", "known"]
+        env.workspace.legacyInstalledPluginIDs = ["gone-off", "gone-on", "listed"]
+        env.workspace.legacyInstalledPluginVersions = ["1", "2", "3"]
+        try env.context.save()
+        func inputs() -> [PluginsSurfacePresentation.Input] {
+            PluginsSurfacePresentation.missingInputs(in: env.workspace, libraryIDs: ["known"], listedIDs: ["listed"])
+        }
+        let rows = inputs()
+        #expect(Set(rows.map { $0.package.id }) == ["gone-on", "gone-off"])
+        #expect(rows.count == 2)
+        #expect(rows.first { $0.package.id == "gone-on" }?.isEnabled == true)
+        #expect(rows.first { $0.package.id == "gone-off" }?.isEnabled == false)
+        let missing = PluginsSurfacePresentation.missingInput(pluginID: "gone-on", isEnabled: true)
+        let result = CapabilityActivationDisabler().disable(missing.package, in: env.workspace,
+            modelContext: env.context, library: env.library, rewriteMirror: { _ in true })
+        #expect(result.persisted)
+        #expect(inputs().first { $0.package.id == "gone-on" }?.isEnabled == false)
+        #expect(!env.workspace.enabledCapabilityIDs.contains("gone-on"))
+    }
+
+    @Test("A secondary skill keeps account-name collisions editable because runtime attaches accounts only to the primary skill")
+    func secondarySkillSettingOwnership() throws {
+        let env = try PluginOperationsTests.Environment()
+        var candidate = PluginOperationsTests.package(version: "1.0.0")
+        candidate.connectors[0].configHints = [.init(key: "PROJECT", hint: "Account project", isList: false)]
+        var secondary = candidate.skills[0]
+        secondary.id = "secondary"
+        secondary.name = "Secondary"
+        candidate.skills.append(secondary)
+        try env.install(candidate)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: candidate.id, in: env.workspace))
+        #expect(PluginsSurfacePresentation.settingKeys(of: candidate.skills[0], in: activation, package: candidate).isEmpty)
+        #expect(PluginsSurfacePresentation.settingKeys(of: secondary, in: activation, package: candidate) == ["PROJECT"])
+        try PluginOperations.setSetting("PROJECT", to: "secondary-project", of: secondary,
+            package: candidate, in: env.workspace, modelContext: env.context)
+        let projection = PluginRuntimeProjection.project(workspace: env.workspace, packages: [candidate],
+            connectorMode: .runtimeCopies, definitions: [candidate])
+        let skill = try #require(projection.skills.first { $0.name == secondary.name })
+        #expect(skill.environmentVariables["PROJECT"] == "secondary-project")
+        #expect(!projection.connectors.contains { $0.skill?.id == skill.id })
+    }
+
     @Test("A successor skill cannot expose editable settings before Update")
     func renamedSkillSettingsWaitForUpdate() throws {
         let env = try PluginOperationsTests.Environment()

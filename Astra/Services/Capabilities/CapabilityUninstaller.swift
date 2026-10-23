@@ -185,6 +185,7 @@ struct CapabilityUninstaller {
 
                 let wasPackageEnabled = workspace.enabledCapabilityIDs.contains(package.id)
                 let wasPackageRecorded = workspace.installedPluginIDSet.contains(package.id)
+                let removedPendingLegacy = WorkspaceCapabilityActivation.forgetPendingLegacyPlugin(package.id, in: workspace)
                 let hadPackageGlobals =
                     workspace.enabledGlobalSkillIDs.contains { removableGlobalSkillIDs.contains($0) } ||
                     workspace.enabledGlobalConnectorIDs.contains { removableGlobalConnectorIDs.contains($0) } ||
@@ -251,7 +252,7 @@ struct CapabilityUninstaller {
                 }
                 WorkspaceCapabilityActivation.retainTemplateIDs(deletedTemplateIDs, pluginID: package.id, in: workspace)
 
-                if wasPackageEnabled || wasPackageRecorded || hadPackageGlobals || !workspaceTemplates.isEmpty {
+                if wasPackageEnabled || wasPackageRecorded || removedPendingLegacy || hadPackageGlobals || !workspaceTemplates.isEmpty {
                     workspace.updatedAt = Date()
                     result.disabledWorkspaceIDs.append(workspace.id)
                 }
