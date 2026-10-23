@@ -567,10 +567,14 @@ struct TaskThreadArchitectureFitnessTests {
         // queued behind a running provider that then raises a live
         // permission request leaves the user unable to approve, deny, or
         // stop without first cancelling every queued message.
-        #expect(dockSource.contains("!runtimePermissionState.hasOpenApprovalRequest"))
-        let guardRange = try #require(dockSource.range(of: "!runtimePermissionState.hasOpenApprovalRequest"))
+        // The dock captures one current permission state for this render;
+        // both the waiting guard and the action builder must use that value.
+        let stateRange = try #require(dockSource.range(of: "let permission = runtimePermissionState"))
+        let guardRange = try #require(dockSource.range(of: "!permission.hasOpenApprovalRequest"))
         let waitingReturnRange = try #require(dockSource.range(of: "return waitingPresentation"))
+        #expect(stateRange.lowerBound < guardRange.lowerBound)
         #expect(guardRange.lowerBound < waitingReturnRange.lowerBound)
+        #expect(dockSource.contains("runtimePermission: permission"))
     }
 
     /// `NSRegularExpression(pattern:)` compiles an ICU program every call, and

@@ -229,6 +229,7 @@ struct TaskMainView: View {
     /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
     @State var decisionArtifactPathsCache: [String] = []
     @State var decisionOutcomeCache = TaskDecisionOutcomeCache()
+    @State private var deliverableIntentMemo = TaskDeliverableIntentMemo()
     /// Not `private`: refreshed from `TaskMainViewMissionControl.swift`.
     @State var missionControlSnapshotCache = TaskMissionControlSnapshot.empty
     @State var missionControlStateRevision = 0
@@ -3470,23 +3471,31 @@ struct TaskMainView: View {
     }
 
     private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
+        let permission = runtimePermissionState
         // A queued follow-up must not hide a LIVE permission request: the
         // provider is still waiting on an approve/deny decision, and that
         // dock's Approve/Deny/Stop controls are unreachable from the waiting
         // dock. Only prefer the waiting dock when no permission decision is
         // outstanding.
-        if !runtimePermissionState.hasOpenApprovalRequest,
+        if !permission.hasOpenApprovalRequest,
            let waitingPresentation = taskTurnWaitingDockPresentation {
             return waitingPresentation
         }
+        let reviewInput = PendingTaskReviewSnapshotInput(
+            task: task, snapshot: currentThreadSnapshot,
+            deliveredRequestFollowUpRunID: decisionOutcomeCache.deliveredRequestFollowUpRunID,
+            artifactRequirement: deliverableIntentMemo.requiresArtifact(for: task)
+        )
+        let pendingReview = permission.hasOpenApprovalRequest
+            ? PendingTaskReviewState.none : PendingTaskReviewPolicy.reviewState(for: reviewInput)
         return TaskDecisionDockContextBuilder.build(TaskDecisionDockContextBuilder.Input(
             status: task.status,
             isClosed: task.isDone,
             review: taskReviewPresentation,
             mission: missionControlPresentation,
             verification: currentVerificationPresentation,
-            pendingReviewState: pendingTaskReviewState,
-            runtimePermission: runtimePermissionState,
+            pendingReviewState: pendingReview,
+            runtimePermission: permission,
             hasApprovedPermissionContinuation: LegacyApprovedPermissionContinuation.isAvailable(task: task),
             hasGitPublishRequest: shouldOfferGitPublishReview,
             githubReviewPath: decisionOutcomeCache.githubReviewPath,
@@ -3497,8 +3506,8 @@ struct TaskMainView: View {
             canOpenPlan: onOpenPlan != nil,
             isPlanCanvasVisible: isPlanCanvasVisible,
             canRunApprovedPlan: taskQueue != nil,
-            latestRunHasNoUsableResult: latestRunHasNoUsableResult,
-            completedTaskNeedsArtifactAttention: completedTaskNeedsArtifactAttention,
+            latestRunHasNoUsableResult: pendingReview.dismissalReason == .noUsableResult || pendingReview.dismissalReason == .missingRequiredArtifact,
+            completedTaskNeedsArtifactAttention: PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(reviewInput),
             canCancel: onCancelTask != nil,
             canRun: onRunTask != nil,
             canApprove: onApproveTask != nil,
@@ -3714,30 +3723,6 @@ struct TaskMainView: View {
 
     private var canApproveSimilarRuntimePermissionForTask: Bool {
         runtimePermissionState.canApproveSimilarForTask
-    }
-
-    private var latestRunHasNoUsableResult: Bool {
-        pendingTaskDismissalReason == .noUsableResult ||
-            pendingTaskDismissalReason == .missingRequiredArtifact
-    }
-
-    private var pendingTaskDismissalReason: PendingTaskDismissalReason? {
-        pendingTaskReviewState.dismissalReason
-    }
-
-    private var pendingTaskReviewState: PendingTaskReviewState {
-        guard !hasOpenRuntimePermissionApprovalRequest else { return .none }
-        return PendingTaskReviewPolicy.reviewState(for: pendingTaskReviewSnapshotInput)
-    }
-
-    private var completedTaskNeedsArtifactAttention: Bool {
-        PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(
-            pendingTaskReviewSnapshotInput
-        )
-    }
-
-    private var pendingTaskReviewSnapshotInput: PendingTaskReviewSnapshotInput {
-        PendingTaskReviewSnapshotInput(task: task, snapshot: currentThreadSnapshot, deliveredRequestFollowUpRunID: decisionOutcomeCache.deliveredRequestFollowUpRunID)
     }
 
     private var composerPlaceholder: String {
