@@ -422,13 +422,13 @@ public enum PluginManifestConverter {
     /// earlier ASTRA that ignored the `id`, even one the payload repeats).
     private static func identifiedTool(_ component: PluginComponent, shared: Set<String>) -> PluginLocalTool? {
         guard var tool = component.tool else { return nil }
-        if component.id != PluginComponent.defaultID(forName: tool.name) || tool.id != nil {
-            let current = identity(["tool", component.id])
-            for legacy in legacyIdentities(of: component) {
-                tool.replaces = adding(legacy, to: tool.replaces, unless: current, shared: shared)
-            }
-            tool.id = component.id
+        // The manifest ID is stable even when its spelling is the name's
+        // default. Command/type changes must not retire this component.
+        let current = identity(["tool", component.id])
+        for legacy in legacyIdentities(of: component) {
+            tool.replaces = adding(legacy, to: tool.replaces, unless: current, shared: shared)
         }
+        tool.id = component.id
         return tool
     }
 

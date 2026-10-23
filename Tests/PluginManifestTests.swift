@@ -55,7 +55,7 @@ struct PluginManifestTests {
         #expect(await runner.recordedCalls().map(\.args) == [["which", command]])
     }
 
-    @Test("Every built-in capability survives package → manifest → package unchanged")
+    @Test("Built-in manifests preserve every payload field while canonicalizing stable tool IDs")
     func builtInsRoundTripLosslessly() throws {
         let files = try builtInFiles()
         #expect(files.count >= 10)
@@ -63,7 +63,18 @@ struct PluginManifestTests {
             let original = try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: file))
             let manifest = PluginManifestConverter.manifest(from: original)
             let restored = PluginManifestConverter.package(from: manifest)
-            #expect(try canonical(restored) == canonical(original), "\(file.lastPathComponent) changed in the round trip")
+            var payload = restored
+            let toolComponents = manifest.components.filter { $0.kind == .tool }
+            #expect(restored.localTools.count == original.localTools.count)
+            for index in original.localTools.indices {
+                #expect(restored.localTools[index].id == toolComponents[index].id)
+                // Identity is checked separately; every other field must survive.
+                payload.localTools[index].id = original.localTools[index].id
+                payload.localTools[index].replaces = original.localTools[index].replaces
+            }
+            #expect(try canonical(payload) == canonical(original), "\(file.lastPathComponent) payload changed")
+            let again = try PluginManifestConverter.checkedPackage(from: PluginManifestConverter.manifest(from: restored))
+            #expect(try canonical(again) == canonical(restored))
         }
     }
 
@@ -71,9 +82,13 @@ struct PluginManifestTests {
     func manifestJSONRoundTrips() throws {
         for file in try builtInFiles() {
             let original = try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: file))
-            let data = try JSONEncoder().encode(PluginManifestConverter.manifest(from: original))
+            let manifest = PluginManifestConverter.manifest(from: original)
+            let data = try JSONEncoder().encode(manifest)
             #expect(PluginManifestConverter.isManifest(data))
-            #expect(try canonical(PluginManifestConverter.decodePackage(from: data)) == canonical(original))
+            let expected = try PluginManifestConverter.checkedPackage(from: manifest)
+            #expect(try canonical(PluginManifestConverter.decodePackage(from: data)) == canonical(expected))
+            // Direct legacy package decoding retains its original identities.
+            #expect(try canonical(PluginManifestConverter.decodePackage(from: JSONEncoder().encode(original))) == canonical(original))
         }
         let packageData = try Data(contentsOf: try builtInFiles()[0])
         #expect(!PluginManifestConverter.isManifest(packageData))
