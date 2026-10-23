@@ -57,14 +57,19 @@ enum TaskDeliverableExpectation {
     }
 
     static func followsUpDeliveredRequest(_ run: TaskRun, in task: AgentTask) -> Bool {
-        let relevantTypes = deliveryHistoryEventTypes
-        return followsUpDeliveredRequest(
-            runID: run.id,
-            startedAt: run.startedAt,
-            events: task.events.lazy
-                .filter { relevantTypes.contains($0.type) }
-                .map { HistoryEvent(type: $0.type, runID: $0.run?.id, timestamp: $0.timestamp, payload: $0.payload) },
-            runs: task.runs.lazy.map { HistoryRun(id: $0.id, startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason) }
+        followsUpDeliveredRequest(runID: run.id, startedAt: run.startedAt, in: task)
+    }
+
+    /// Reads delivery evidence and run metadata without materializing tool
+    /// traffic or caching mutable domain state.
+    static func followsUpDeliveredRequest(runID: UUID, startedAt: Date, in task: AgentTask) -> Bool {
+        followsUpDeliveredRequest(
+            runID: runID,
+            startedAt: startedAt,
+            events: TaskHistoryRead.records(for: task, ofTypes: deliveryHistoryEventTypes).lazy
+                .map { HistoryEvent(type: $0.type, runID: $0.runID, timestamp: $0.timestamp, payload: $0.payload) },
+            runs: TaskHistoryRead.runs(for: task).lazy
+                .map { HistoryRun(id: $0.id, startedAt: $0.startedAt, status: $0.runStatus, stopReason: $0.stopReason) }
         )
     }
 

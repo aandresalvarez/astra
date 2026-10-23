@@ -152,7 +152,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         let detachedRuns = source.runs.map { detachedRun($0, task: task) }
         let runByID = Dictionary(uniqueKeysWithValues: detachedRuns.map { ($0.id, $0) })
         task.runs = detachedRuns
-        task.events = source.events.map { detachedEvent($0, task: task, runs: runByID) }
+        task.events = TaskHistoryRead.events(for: source).map { detachedEvent($0, task: task, runs: runByID) }
         task.artifacts = source.artifacts.map { detachedArtifact($0, task: task) }
         if let accepted = snapshot.authoredSkills {
             task.skills = accepted.map { record in

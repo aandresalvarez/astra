@@ -717,9 +717,8 @@ final class GitHubReviewPublicationService {
 
     static func hasDispatched(task: AgentTask, filePath: String) -> Bool {
         let root = TaskOutputArtifactPathPolicy.ResolvedRoot(TaskWorkspaceAccess(task: task).taskFolder)
-        return task.events.contains { event in
-            guard event.type == GitHubReviewPublicationEventTypes.dispatched,
-                  let data = event.payload.data(using: .utf8),
+        return TaskHistoryRead.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.dispatched]).contains { event in
+            guard let data = event.payload.data(using: .utf8),
                   let record = try? JSONDecoder().decode(GitHubReviewPublicationRecord.self, from: data) else {
                 return false
             }
@@ -733,9 +732,8 @@ final class GitHubReviewPublicationService {
             || (try? FileManager.default.attributesOfItem(atPath: filePath + "." + retiredMarkerExtension)) != nil {
             return true
         }
-        return task.events.contains { event in
-            guard event.type == GitHubReviewPublicationEventTypes.unusable,
-                  let data = event.payload.data(using: .utf8),
+        return TaskHistoryRead.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.unusable]).contains { event in
+            guard let data = event.payload.data(using: .utf8),
                   let record = try? JSONDecoder().decode(GitHubReviewUnusableArtifactRecord.self, from: data) else {
                 return false
             }
@@ -756,9 +754,8 @@ final class GitHubReviewPublicationService {
     /// would see, not whichever review file sorts first — or none, when the
     /// requested file was never registered as an artifact.
     static func candidatePaths(task: AgentTask, filePaths: [String]) -> [String] {
-        let requested = task.events
-            .filter { $0.type == GitHubReviewPublicationEventTypes.requested }
-            .sorted { $0.timestamp > $1.timestamp }
+        let requested = TaskHistoryRead.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.requested])
+            .reversed()
             .compactMap { event -> String? in
                 (try? JSONDecoder().decode(GitHubReviewRequestRecord.self, from: Data(event.payload.utf8)))?.filePath
             }
@@ -770,9 +767,8 @@ final class GitHubReviewPublicationService {
     /// file's place in the task folder; nil when the agent never named it.
     static func requestedDigest(task: AgentTask, filePath: String) -> String? {
         let root = TaskOutputArtifactPathPolicy.ResolvedRoot(TaskWorkspaceAccess(task: task).taskFolder)
-        return task.events
-            .filter { $0.type == GitHubReviewPublicationEventTypes.requested }
-            .sorted { $0.timestamp > $1.timestamp }
+        return TaskHistoryRead.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.requested])
+            .reversed()
             .lazy
             .compactMap { try? JSONDecoder().decode(GitHubReviewRequestRecord.self, from: Data($0.payload.utf8)) }
             .first { GitHubReviewArtifactPolicy.sameFile($0.filePath, filePath, root: root) }?
@@ -816,11 +812,10 @@ final class GitHubReviewPublicationService {
     }
 
     static func hasReceipt(task: AgentTask, run: TaskRun) -> Bool {
-        task.events.contains { event in
-            event.run?.id == run.id
-                && [GitHubReviewPublicationEventTypes.receipt,
-                    GitHubReviewPublicationEventTypes.receiptRecovery].contains(event.type)
-        }
+        TaskHistoryRead.records(
+            for: task,
+            ofTypes: [GitHubReviewPublicationEventTypes.receipt, GitHubReviewPublicationEventTypes.receiptRecovery]
+        ).contains { $0.runID == run.id }
     }
 
     func prepareFirstAvailable(task: AgentTask, filePaths: [String]) async throws -> GitHubReviewProposal {

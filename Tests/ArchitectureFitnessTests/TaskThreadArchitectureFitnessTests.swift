@@ -270,7 +270,9 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!taskMainView.contains("pendingMutations(task:"))
         #expect(taskMainView.contains(".task(id: decisionOutcomeInputSignature)"))
         #expect(outcomes.contains("threadViewModel.appliedSnapshotRevision"))
-        #expect(outcomes.contains("pendingMutations(taskID: task.id, in: modelContext)"))
+        #expect(outcomes.contains("pendingMutations(task: task)"))
+        let mutations = try source("Astra/Services/Tasks/ConnectorMutationRequirement.swift", root: root)
+        #expect(mutations.contains("TaskHistoryRead.records(for: task, ofTypes: resolutionEventTypes)"))
         #expect(!outcomes.contains("task.events"))
         #expect(!outcomes.contains("task.runs"))
     }

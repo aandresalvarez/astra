@@ -17,13 +17,20 @@ private func makeLaunchSnapshotContainer() throws -> ModelContainer {
 @MainActor
 @Suite("Task execution launch snapshot applicator")
 struct TaskExecutionLaunchSnapshotApplicatorTests {
-    @Test("Queued request uses a detached immutable configuration and preserves editable state")
-    func buildsDetachedCompleteSnapshot() throws {
+    @Test("Queued request uses a detached immutable configuration and preserves editable state", arguments: [false, true])
+    func buildsDetachedCompleteSnapshot(persisted: Bool) throws {
+        let container = persisted ? try makeLaunchSnapshotContainer() : nil
+        let context = container?.mainContext
+        context?.autosaveEnabled = false
         let workspace = Workspace(name: "Queued workspace", primaryPath: "/tmp/queued-workspace")
         let task = AgentTask(title: "Queued", goal: "Run", workspace: workspace)
         let priorRun = TaskRun(task: task)
         priorRun.status = .completed
-        let priorEvent = TaskEvent(task: task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "prior")
+        let priorEvent = TaskEvent(task: task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "prior", run: priorRun)
+        priorEvent.agentName = "Researcher"
+        priorEvent.agentId = "agent-1"
+        priorEvent.teamName = "Research"
+        priorEvent.category = "message"
         task.runs = [priorRun]
         task.events = [priorEvent]
         task.runtimeID = "codex_cli"
@@ -43,6 +50,12 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         task.skillSnapshotsJSON = "submitted-skills"
         task.runtimePermissionGrantsJSON = "submitted-grants"
         let request = TaskTurnRequest(task: task, messageEventID: .init(), sequence: 1)
+        if let context {
+            context.insert(workspace)
+            context.insert(task)
+            context.insert(request)
+            try context.save()
+        }
 
         task.runtimeID = "claude_code"
         task.model = "edited-model"
@@ -73,12 +86,26 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         #expect(launchTask.runtimePermissionGrantsJSON == "submitted-grants")
         #expect(launchTask.workspace?.primaryPath == workspace.primaryPath)
         #expect(launchTask.events.contains { $0.id == priorEvent.id })
+        let copiedEvent = try #require(launchTask.events.first { $0.id == priorEvent.id })
+        #expect(copiedEvent.payload == priorEvent.payload)
+        #expect(copiedEvent.timestamp == priorEvent.timestamp)
+        #expect(copiedEvent.agentName == priorEvent.agentName)
+        #expect(copiedEvent.agentId == priorEvent.agentId)
+        #expect(copiedEvent.teamName == priorEvent.teamName)
+        #expect(copiedEvent.category == priorEvent.category)
+        #expect(copiedEvent.run?.id == priorRun.id)
+        #expect(copiedEvent.run?.task === launchTask)
         #expect(launchTask.runs.contains { $0.id == priorRun.id })
         #expect(task.workspace === workspace)
         #expect(task.events.contains { $0.id == priorEvent.id })
         #expect(task.runs.contains { $0.id == priorRun.id })
         #expect(priorEvent.task === task)
         #expect(priorRun.task === task)
+        #expect(launchTask.modelContext == nil)
+        if let context {
+            try context.save()
+            #expect(try context.fetchCount(FetchDescriptor<AgentTask>()) == 1)
+        }
 
         #expect(task.runtimeID == "claude_code")
         #expect(task.model == "edited-model")

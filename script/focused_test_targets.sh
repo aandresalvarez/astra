@@ -32,6 +32,12 @@ target_for_path() {
     Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
       ;;
+    Tests/TaskMainActorScalingGateTests.swift|Tests/TaskHistoryReadTests.swift|Astra/Models/TaskHistoryRead.swift|Astra/Services/Tasks/TaskConversationContinuationService.swift|Astra/Services/Tasks/TaskExecutionLaunchSnapshotApplicator.swift|Astra/Services/Runtime/TaskRuntimePermissionGrants.swift)
+      add_target "TaskMainActorScalingGateTests"
+      add_target "TaskHistoryReadTests"
+      add_target "TaskExecutionLaunchSnapshotApplicatorTests"
+      add_target "RuntimePermissionGrantRegressionTests"
+      ;;
     Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Astra/Services/Persistence/WorkspaceSavedExportSnapshot.swift|Astra/Services/Persistence/WorkspaceExportChangeScope.swift|Astra/Services/Persistence/WorkspaceSavedExportLease.swift|Astra/Services/Persistence/WorkspaceSnapshotDirectory.swift|Tests/WorkspaceSavedExportPendingTests.swift|Tests/WorkspaceSavedExportReplacementTests.swift|Tests/WorkspaceSnapshotDirectoryTests.swift|Tests/WorkspaceSavedExportSnapshotTests.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceSavedExportReviewTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
       add_target "RuntimeSettlementReviewRegressionTests"
       add_target "WorkspaceSavedAutoExportTests"
