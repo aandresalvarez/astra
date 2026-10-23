@@ -39,6 +39,11 @@ struct PluginHistoricalReviewRegressionTests {
     @Test("A deferred V19 migration preserves enabled skills and their local tools", arguments: [false, true])
     func deferredMigrationKeepsSkillAndTools(workspaceScopedRows: Bool) throws {
         let fixture = try PluginMigrationFixture(workspaceScopedRows: workspaceScopedRows)
+        let originalSkill = try #require(try fixture.context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.gcloudSkillID })
+        let expectedToolIDs = Set(originalSkill.localTools.map(\.id))
+        let expectedAccountIDs = Set(originalSkill.connectors.map(\.id))
+        #expect(!expectedToolIDs.isEmpty)
+        #expect(!expectedAccountIDs.isEmpty)
         try FileManager.default.createDirectory(at: fixture.storeDirectory.appendingPathComponent("PluginSecretCleanup.json", isDirectory: true),
             withIntermediateDirectories: true)
         #expect(throws: PluginActivationMigration.MigrationError.cleanupUnrecordable) {
@@ -46,8 +51,12 @@ struct PluginHistoricalReviewRegressionTests {
         }
         let workspace = try fixture.workspace(fixture.aID)
         let skill = try #require(try fixture.context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.gcloudSkillID })
-        let expectedToolIDs = Set(skill.localTools.map(\.id))
-        #expect(!expectedToolIDs.isEmpty)
+        #expect(Set(skill.localTools.map(\.id)) == expectedToolIDs)
+        #expect(Set(skill.connectors.map(\.id)) == expectedAccountIDs)
+        #expect(try fixture.context.fetch(FetchDescriptor<Connector>()).filter { expectedAccountIDs.contains($0.id) }
+            .allSatisfy { $0.skill?.id == fixture.gcloudSkillID })
+        #expect(try fixture.context.fetch(FetchDescriptor<LocalTool>()).filter { expectedToolIDs.contains($0.id) }
+            .allSatisfy { $0.skill?.id == fixture.gcloudSkillID })
         // Skill-only access: no enabled account may indirectly reintroduce
         // the skill and hide a missing legacy projection.
         workspace.enabledGlobalConnectorIDs.removeAll { $0 == fixture.sharedGCloudID.uuidString }
