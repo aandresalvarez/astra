@@ -28,7 +28,7 @@ struct TaskMainActorScalingGateTests {
         static let launchLargeHistoryMilliseconds = 200.0
     }
 
-    @Test("Send, append, view refresh and complete launch copy stay within their budgets")
+    @Test("Send, append, view, context, permission reads and complete launch copy stay within their budgets")
     func operationsStayWithinBudget() async throws {
         let small = try await measure(eventCount: Self.smallHistory)
         let large = try await measure(eventCount: Self.largeHistory)
@@ -59,6 +59,7 @@ struct TaskMainActorScalingGateTests {
         case viewUpdate = "view_update"
         case launchSnapshot = "launch_snapshot"
         case contextRefresh = "context_refresh"
+        case permissionGrants = "permission_grants"
     }
 
     struct Measurement {
@@ -133,6 +134,13 @@ struct TaskMainActorScalingGateTests {
             try context.save()
             samples[.contextRefresh, default: []].append(cpuMilliseconds {
                 TaskContextStateManager.refresh(task: task)
+            })
+            await Task.yield()
+
+            try context.save()
+            samples[.permissionGrants, default: []].append(cpuMilliseconds {
+                _ = TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: .claudeCode)
+                _ = TaskRuntimePermissionGrants.approvedCredentialLabels(for: task, runtime: .codexCLI)
             })
             await Task.yield()
         }

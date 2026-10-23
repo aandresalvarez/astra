@@ -155,6 +155,40 @@ struct TaskHistoryReadTests {
         f.context.rollback()
     }
 
+    @Test("Legacy grants respect pending changes, rollback, runtime and persistent task ownership")
+    func legacyGrantsStayCurrent() throws {
+        let f = try Fixture()
+        f.context.autosaveEnabled = false
+        let duplicate = AgentTask(title: "Imported copy", goal: "g", workspace: f.workspace)
+        duplicate.id = f.task.id
+        f.context.insert(duplicate)
+        func grantEvent(_ task: AgentTask, runtime: AgentRuntimeID, label: String) throws -> TaskEvent {
+            let payload = TaskRuntimePermissionGrants.Payload(
+                brokerVersion: PermissionBroker.brokerVersion, providerID: runtime,
+                grants: [.credential(label: label)], approvedAt: Date(), source: "legacy-test"
+            )
+            let event = TaskEvent(task: task, type: TaskRuntimePermissionGrants.eventType,
+                                  payload: String(decoding: try JSONEncoder().encode(payload), as: UTF8.self))
+            f.context.insert(event)
+            return event
+        }
+        let own = try grantEvent(f.task, runtime: .codexCLI, label: "own")
+        _ = try grantEvent(duplicate, runtime: .codexCLI, label: "other-owner")
+        _ = try grantEvent(f.task, runtime: .claudeCode, label: "other-runtime")
+        try f.context.save()
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: f.task, runtime: .codexCLI) == ["own"])
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: f.task).isEmpty)
+        SwiftDataTaskRollbackPreparation.prepare(f.task)
+        _ = try grantEvent(f.task, runtime: .codexCLI, label: "pending")
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: f.task, runtime: .codexCLI) == ["own", "pending"])
+        f.context.rollback()
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: f.task, runtime: .codexCLI) == ["own"])
+        SwiftDataTaskRollbackPreparation.prepare(f.task)
+        f.context.delete(own)
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: f.task, runtime: .codexCLI).isEmpty)
+        f.context.rollback()
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: f.task, runtime: .codexCLI) == ["own"])
+    }
 
     // MARK: - Fixture
 
