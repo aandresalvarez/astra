@@ -204,15 +204,15 @@ struct WorkspacePluginTrackingTests {
     @Test("Record and retrieve installed plugin version")
     @MainActor func recordAndRetrieve() {
         let ws = Workspace(name: "Test", primaryPath: "/tmp/test-ws")
-        ws.recordInstalledPlugin(id: "example-plugin", version: "2.0.0")
+        WorkspaceCapabilityActivation.mutate(ws) { $0.recordInstalledPlugin(id: "example-plugin", version: "2.0.0") }
         #expect(ws.installedVersion(of: "example-plugin") == "2.0.0")
     }
 
     @Test("Update existing plugin version")
     @MainActor func updateVersion() {
         let ws = Workspace(name: "Test", primaryPath: "/tmp/test-ws")
-        ws.recordInstalledPlugin(id: "example-plugin", version: "1.0.0")
-        ws.recordInstalledPlugin(id: "example-plugin", version: "2.0.0")
+        WorkspaceCapabilityActivation.mutate(ws) { $0.recordInstalledPlugin(id: "example-plugin", version: "1.0.0") }
+        WorkspaceCapabilityActivation.mutate(ws) { $0.recordInstalledPlugin(id: "example-plugin", version: "2.0.0") }
         #expect(ws.installedVersion(of: "example-plugin") == "2.0.0")
         #expect(ws.installedPluginIDs.filter { $0 == "example-plugin" }.count == 1)
     }
@@ -226,8 +226,8 @@ struct WorkspacePluginTrackingTests {
     @Test("installedPluginIDSet returns correct set")
     @MainActor func idSet() {
         let ws = Workspace(name: "Test", primaryPath: "/tmp/test-ws")
-        ws.recordInstalledPlugin(id: "a", version: "1.0.0")
-        ws.recordInstalledPlugin(id: "b", version: "1.0.0")
+        WorkspaceCapabilityActivation.mutate(ws) { $0.recordInstalledPlugin(id: "a", version: "1.0.0") }
+        WorkspaceCapabilityActivation.mutate(ws) { $0.recordInstalledPlugin(id: "b", version: "1.0.0") }
         #expect(ws.installedPluginIDSet == ["a", "b"])
     }
 }

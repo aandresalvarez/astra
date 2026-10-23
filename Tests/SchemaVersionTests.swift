@@ -976,7 +976,9 @@ struct SchemaVersionTests {
             #expect(event.payload == "Saved message")
             if pass == 0 {
                 task.title = "Edited chat"
-                workspace.recordInstalledPlugin(id: "existing-plugin", version: "1.0.0")
+                WorkspaceCapabilityActivation.mutate(workspace) {
+                    $0.recordInstalledPlugin(id: "existing-plugin", version: "1.0.0")
+                }
                 try context.save()
             } else {
                 #expect(workspace.installedVersion(of: "existing-plugin") == "1.0.0")

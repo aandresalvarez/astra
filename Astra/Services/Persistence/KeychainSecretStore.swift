@@ -61,6 +61,9 @@ public struct KeychainSecretStore: SecretStore {
         originComponentID: String?
     ) -> [String] {
         var entityIDs = [connectorEntityID(for: id)]
+        // A selected-file import has no authority to inherit an endpoint's
+        // older shared alias. Its durable identity survives recovery too.
+        if ConnectorCredentialIdentity.usesIsolatedNamespace(id) { return entityIDs }
         if let stableEntityID = stableConnectorEntityID(
             serviceType: serviceType,
             baseURL: baseURL,

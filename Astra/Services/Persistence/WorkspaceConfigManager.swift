@@ -144,7 +144,8 @@ public enum WorkspaceConfigManager {
     }
 
     public struct WorkspaceConfigImportResult {
-        public init(status: Status, workspace: Workspace, workspaceID: String, skillCount: Int, connectorCount: Int, localToolCount: Int, taskCount: Int, quarantinedScheduleCount: Int, skippedConnectorCount: Int, skippedLocalToolCount: Int, droppedAdditionalPaths: [String] = []) {
+        public init(status: Status, workspace: Workspace, workspaceID: String, skillCount: Int, connectorCount: Int, localToolCount: Int, taskCount: Int, quarantinedScheduleCount: Int, skippedConnectorCount: Int, skippedLocalToolCount: Int, droppedAdditionalPaths: [String] = [], capabilityTrust: CapabilityImportTrustReport = .init()) {
+            self.capabilityTrust = capabilityTrust
             self.status = status
             self.workspace = workspace
             self.workspaceID = workspaceID
@@ -175,6 +176,8 @@ public enum WorkspaceConfigManager {
         /// Configured additional folders left out because worktree cleanup
         /// was removing them when the import ran. Callers tell the user.
         public var droppedAdditionalPaths: [String]
+        /// What `.validate` capability trust removed; empty otherwise.
+        public var capabilityTrust: CapabilityImportTrustReport
 
         public var didImport: Bool {
             status == .imported
@@ -192,7 +195,7 @@ public enum WorkspaceConfigManager {
                 "skipped_connector_count": String(skippedConnectorCount),
                 "skipped_local_tool_count": String(skippedLocalToolCount),
                 "dropped_additional_path_count": String(droppedAdditionalPaths.count)
-            ]
+            ].merging(capabilityTrust.isEmpty ? [:] : capabilityTrust.auditFields) { $1 }
         }
     }
 
@@ -333,52 +336,6 @@ public enum WorkspaceConfigManager {
         public var localToolIDs: [String]?
         public var connectorNames: [String]?
         public var localToolNames: [String]?
-        public var originPackageID: String? = nil
-        public var originPackageVersion: String? = nil
-        public var originComponentID: String? = nil
-        public var originComponentKind: String? = nil
-        public var originSourceKind: String? = nil
-        public var createdAt: Date?
-        public var updatedAt: Date?
-    }
-
-    public struct ConnectorConfig: Codable, Sendable {
-        public init(id: String? = nil, name: String, serviceType: String, icon: String, description: String, baseURL: String, authMethod: String, credentialKeys: [String], configKeys: [String], configValues: [String], isGlobal: Bool? = nil, notes: String, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, accountAlias: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
-            self.id = id
-            self.name = name
-            self.serviceType = serviceType
-            self.icon = icon
-            self.description = description
-            self.baseURL = baseURL
-            self.authMethod = authMethod
-            self.credentialKeys = credentialKeys
-            self.configKeys = configKeys
-            self.configValues = configValues
-            self.isGlobal = isGlobal
-            self.notes = notes
-            self.originPackageID = originPackageID
-            self.originPackageVersion = originPackageVersion
-            self.originComponentID = originComponentID
-            self.originComponentKind = originComponentKind
-            self.originSourceKind = originSourceKind
-            self.accountAlias = accountAlias
-            self.createdAt = createdAt
-            self.updatedAt = updatedAt
-        }
-
-        public var id: String?
-        public var name: String
-        public var serviceType: String
-        public var icon: String
-        public var description: String
-        public var baseURL: String
-        public var authMethod: String
-        public var credentialKeys: [String]
-        public var configKeys: [String]
-        public var configValues: [String]
-        public var isGlobal: Bool?
-        public var notes: String
-        public var accountAlias: String? = nil
         public var originPackageID: String? = nil
         public var originPackageVersion: String? = nil
         public var originComponentID: String? = nil
@@ -1234,13 +1191,17 @@ public enum WorkspaceConfigManager {
         from config: WorkspaceConfig,
         modelContext: ModelContext,
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
-        taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine
+        taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
+        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState,
+        replacementCredentialIdentity: WorkspaceReplacementCredentialIdentity? = nil
     ) -> Workspace {
         importWorkspaceResult(
             from: config,
             modelContext: modelContext,
             scheduleTrustPolicy: scheduleTrustPolicy,
-            taskRecoveryTrustPolicy: taskRecoveryTrustPolicy
+            taskRecoveryTrustPolicy: taskRecoveryTrustPolicy,
+            capabilityTrust: capabilityTrust,
+            replacementCredentialIdentity: replacementCredentialIdentity
         ).workspace
     }
 
@@ -1255,7 +1216,9 @@ public enum WorkspaceConfigManager {
         from config: WorkspaceConfig,
         modelContext: ModelContext,
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
-        taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine
+        taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
+        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState,
+        replacementCredentialIdentity: WorkspaceReplacementCredentialIdentity? = nil
     ) -> WorkspaceConfigImportResult {
         let additionalPaths = config.additionalPaths.filter { !TaskWorktreeCheckoutReservation.isReserved($0) }
         let droppedAdditionalPaths = config.additionalPaths.filter { !additionalPaths.contains($0) }
@@ -1278,12 +1241,7 @@ public enum WorkspaceConfigManager {
             workspace.id = id
         }
         workspace.lastUsedSkillNames = config.lastUsedSkillNames ?? []
-        workspace.enabledGlobalSkillIDs = config.enabledGlobalSkillIDs ?? []
-        workspace.enabledGlobalConnectorIDs = config.enabledGlobalConnectorIDs ?? []
         workspace.defaultAccountServiceTypes = config.defaultAccountServiceTypes ?? []
-        workspace.enabledGlobalToolIDs = config.enabledGlobalToolIDs ?? []
-        workspace.enabledCapabilityIDs = config.enabledCapabilityIDs ?? []
-        workspace.enabledPackIDs = config.enabledPackIDs ?? []
         workspace.shelfVisibilityOverrides = config.shelfVisibilityOverrides ?? [:]
         workspace.memories = config.memories ?? []
         workspace.isStarred = config.isStarred ?? false
@@ -1293,31 +1251,43 @@ public enum WorkspaceConfigManager {
             primaryPath: config.primaryPath,
             additionalPaths: config.additionalPaths
         )
-        if let refs = config.installedPlugins {
-            workspace.installedPluginIDs = refs.map(\.id)
-            workspace.installedPluginVersions = refs.map(\.version)
-        }
         workspace.createdAt = config.createdAt ?? workspace.createdAt
         workspace.updatedAt = config.updatedAt ?? workspace.updatedAt
         modelContext.insert(workspace)
+        var activation = requestedActivation(from: config)
+        var trustReport = CapabilityImportTrustReport()
+        reconcile(&activation, trust: capabilityTrust, modelContext: modelContext, report: &trustReport)
 
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
         var skippedConnectorCount = 0
+        // A picked file may not re-parent a shared row this machine already has,
+        // nor give a row it creates an ID it chose: secrets live under UUID
+        // namespaces, so a reused UUID would read another row's credentials.
+        // Created rows get fresh IDs unless the explicit replacement's local
+        // owner independently vouched for the unchanged resource. The maps
+        // stay keyed by the file's IDs.
+        var reusedRowIDs = Set<String>()
+        let freshIDs: Bool = { if case .validate = capabilityTrust { return true } else { return false } }()
+        let retainedConnectorIDs = replacementCredentialIdentity?.connectorIDs(in: config) ?? []
+        let retainedSkillIDs = replacementCredentialIdentity?.skillIDs(in: config) ?? []
         var importedConnectorIDs: [String: String] = [:]
         for cc in config.connectors ?? [] {
-            guard let connector = reusedGlobalConnector(for: cc, modelContext: modelContext) ?? makeConnector(from: cc) else {
+            let reused = reusedGlobalConnector(for: cc, modelContext: modelContext)
+            if let reused, case .validate = capabilityTrust { reusedRowIDs.insert(reused.id.uuidString) }
+            guard let connector = reused ?? makeConnector(from: cc) else {
                 skippedConnectorCount += 1
                 continue
             }
+            if reused == nil { sanitizeCreated(connector, trust: capabilityTrust, report: &trustReport) }
+            if reused == nil, freshIDs, !retainedConnectorIDs.contains(cc.id ?? "") { connector.id = ConnectorCredentialIdentity.isolatedImportID() }
             connector.workspace = (connector.isGlobal ? nil : workspace)
-            if connector.isGlobal {
-                appendUnique(connector.id.uuidString, to: &workspace.enabledGlobalConnectorIDs)
-            }
+            if connector.isGlobal { activation.enableGlobalConnector(connector.id.uuidString) }
             if connector.modelContext == nil {
                 modelContext.insert(connector)
             }
             connectorsByID[connector.id.uuidString] = connector
+            if let fileID = cc.id { connectorsByID[fileID] = connector }
             if let sourceID = cc.id { importedConnectorIDs[sourceID] = connector.id.uuidString }
             if connectorsByName[connector.name] == nil {
                 connectorsByName[connector.name] = connector
@@ -1331,18 +1301,21 @@ public enum WorkspaceConfigManager {
         var toolsByName: [String: LocalTool] = [:]
         var skippedLocalToolCount = 0
         for tc in config.localTools ?? [] {
-            guard let tool = reusedGlobalTool(for: tc, modelContext: modelContext) ?? makeLocalTool(from: tc) else {
+            let reused = reusedGlobalTool(for: tc, modelContext: modelContext)
+            if let reused, case .validate = capabilityTrust { reusedRowIDs.insert(reused.id.uuidString) }
+            guard let tool = reused ?? makeLocalTool(from: tc) else {
                 skippedLocalToolCount += 1
                 continue
             }
+            if reused == nil { sanitizeCreated(tool, trust: capabilityTrust, report: &trustReport) }
+            if reused == nil, freshIDs { tool.id = UUID() }
             tool.workspace = (tool.isGlobal ? nil : workspace)
-            if tool.isGlobal {
-                appendUnique(tool.id.uuidString, to: &workspace.enabledGlobalToolIDs)
-            }
+            if tool.isGlobal { activation.enableGlobalTool(tool.id.uuidString) }
             if tool.modelContext == nil {
                 modelContext.insert(tool)
             }
             toolsByID[tool.id.uuidString] = tool
+            if let fileID = tc.id { toolsByID[fileID] = tool }
             if toolsByName[tool.name] == nil {
                 toolsByName[tool.name] = tool
             }
@@ -1351,33 +1324,44 @@ public enum WorkspaceConfigManager {
         var skillsByID: [String: Skill] = [:]
         var skillsByName: [String: Skill] = [:]
         for sc in config.skills {
-            let skill = reusedGlobalSkill(for: sc, modelContext: modelContext) ?? makeSkill(from: sc)
+            let reused = reusedGlobalSkill(for: sc, modelContext: modelContext)
+            // The fresh ID is set before the skill is built: building it moves
+            // its secrets into the Keychain under its ID.
+            let skill = reused ?? makeSkill(from: sc, freshID: freshIDs && !retainedSkillIDs.contains(sc.id ?? ""))
+            if reused == nil { sanitizeCreated(skill, trust: capabilityTrust, report: &trustReport) }
             if skill.modelContext == nil {
                 modelContext.insert(skill)
             }
             skill.workspace = (skill.isGlobal ? nil : workspace)
-            if skill.isGlobal {
-                appendUnique(skill.id.uuidString, to: &workspace.enabledGlobalSkillIDs)
-            }
-            linkResources(
+            if skill.isGlobal { activation.enableGlobalSkill(skill.id.uuidString) }
+            // A reused shared skill keeps its attachments: the file may not
+            // hang its own resources on a row other workspaces use.
+            if reused == nil || !freshIDs { linkResources(
                 skill: skill,
                 connectorIDs: sc.connectorIDs,
                 connectorNames: sc.connectorNames,
                 localToolIDs: sc.localToolIDs,
                 localToolNames: sc.localToolNames,
-                connectorsByID: connectorsByID,
-                connectorsByName: connectorsByName,
-                toolsByID: toolsByID,
-                toolsByName: toolsByName
-            )
+                connectorsByID: connectorsByID.filter { !reusedRowIDs.contains($0.value.id.uuidString) },
+                connectorsByName: connectorsByName.filter { !reusedRowIDs.contains($0.value.id.uuidString) },
+                toolsByID: toolsByID.filter { !reusedRowIDs.contains($0.value.id.uuidString) },
+                toolsByName: toolsByName.filter { !reusedRowIDs.contains($0.value.id.uuidString) }
+            ) }
             skillsByID[skill.id.uuidString] = skill
+            if let fileID = sc.id { skillsByID[fileID] = skill }
             if skillsByName[skill.name] == nil {
                 skillsByName[skill.name] = skill
             }
         }
 
+        WorkspaceCapabilityActivation.apply(activation, to: workspace)
+
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)
+            // Skill IDs from the file resolve to the rows it created (fresh
+            // under `.validate`).
+            template.defaultSkillIDs = template.defaultSkillIDs.map { skillsByID[$0]?.id.uuidString ?? $0 }
+            sanitizeCreated(template, trust: capabilityTrust, report: &trustReport)
             modelContext.insert(template)
         }
 
@@ -1392,6 +1376,7 @@ public enum WorkspaceConfigManager {
         let quarantinedScheduleCount = scheduleTrustPolicy.quarantinedScheduleCount(in: config.schedules)
         for sc in config.schedules ?? [] {
             let schedule = makeImportedSchedule(from: sc, workspace: workspace, trustPolicy: scheduleTrustPolicy)
+            schedule.skillIDs = schedule.skillIDs.map { skillsByID[$0]?.id.uuidString ?? $0 }
             modelContext.insert(schedule)
         }
 
@@ -1400,6 +1385,8 @@ public enum WorkspaceConfigManager {
                 importTask(
                     tc,
                     recoveryTrust: taskRecoveryTrustPolicy,
+                    freshIDs: freshIDs,
+                    protectedRowIDs: reusedRowIDs,
                     workspace: workspace,
                     modelContext: modelContext,
                     skillsByID: &skillsByID,
@@ -1437,7 +1424,8 @@ public enum WorkspaceConfigManager {
             quarantinedScheduleCount: quarantinedScheduleCount,
             skippedConnectorCount: skippedConnectorCount,
             skippedLocalToolCount: skippedLocalToolCount,
-            droppedAdditionalPaths: droppedAdditionalPaths
+            droppedAdditionalPaths: droppedAdditionalPaths,
+            capabilityTrust: trustReport
         )
         AuditLoggingSeam.required.audit(.workspaceImported, category: "Persistence", fields: result.auditFields, level: .info)
         return result
@@ -2172,7 +2160,7 @@ public enum WorkspaceConfigManager {
         return tool
     }
 
-    private static func makeSkill(from config: SkillConfig) -> Skill {
+    private static func makeSkill(from config: SkillConfig, freshID: Bool = false) -> Skill {
         let skill = Skill(
             name: config.name,
             icon: config.icon,
@@ -2182,7 +2170,7 @@ public enum WorkspaceConfigManager {
             customTools: config.customTools,
             behaviorInstructions: config.behaviorInstructions
         )
-        if let id = config.id.flatMap(UUID.init(uuidString:)) {
+        if !freshID, let id = config.id.flatMap(UUID.init(uuidString:)) {
             skill.id = id
         }
         skill.environmentKeys = config.environmentKeys
@@ -2202,7 +2190,7 @@ public enum WorkspaceConfigManager {
         return skill
     }
 
-    private static func makeRestoredSkill(from snapshot: SkillSnapshotConfig, workspace: Workspace) -> Skill {
+    private static func makeRestoredSkill(from snapshot: SkillSnapshotConfig, workspace: Workspace, freshID: Bool = false) -> Skill {
         let restoredName = snapshot.name.hasSuffix(" (Restored)") ? snapshot.name : "\(snapshot.name) (Restored)"
         let restoredDescription = snapshot.description.isEmpty
             ? "Restored from task history snapshot."
@@ -2216,7 +2204,7 @@ public enum WorkspaceConfigManager {
             customTools: snapshot.customTools,
             behaviorInstructions: snapshot.behaviorInstructions
         )
-        if let id = snapshot.id.flatMap(UUID.init(uuidString:)) {
+        if !freshID, let id = snapshot.id.flatMap(UUID.init(uuidString:)) {
             skill.id = id
         }
         skill.environmentKeys = snapshot.environmentKeys
@@ -2444,6 +2432,8 @@ public enum WorkspaceConfigManager {
     private static func importTask(
         _ config: TaskConfig,
         recoveryTrust: TaskRecoveryImportTrustPolicy,
+        freshIDs: Bool = false,
+        protectedRowIDs: Set<String> = [],
         workspace: Workspace,
         modelContext: ModelContext,
         skillsByID: inout [String: Skill],
@@ -2552,6 +2542,8 @@ public enum WorkspaceConfigManager {
 
         linkSkills(
             to: task,
+            freshIDs: freshIDs,
+            protectedRowIDs: protectedRowIDs,
             skillIDs: config.skillIDs,
             legacySkillNames: config.skillNames,
             snapshots: config.skillSnapshots ?? [],
@@ -2899,6 +2891,8 @@ public enum WorkspaceConfigManager {
 
     private static func linkSkills(
         to task: AgentTask,
+        freshIDs: Bool = false,
+        protectedRowIDs: Set<String> = [],
         skillIDs: [String]?,
         legacySkillNames: [String],
         snapshots: [SkillSnapshotConfig],
@@ -2911,6 +2905,9 @@ public enum WorkspaceConfigManager {
         toolsByID: inout [String: LocalTool],
         toolsByName: inout [String: LocalTool]
     ) {
+        // The shared import map includes declared skills and rows restored
+        // for earlier tasks, including the fast path below.
+        defer { remapSnapshots(of: task, to: skillsByID) }
         let snapshotsByID = Dictionary(
             snapshots.compactMap { snapshot -> (String, SkillSnapshotConfig)? in
                 guard let id = snapshot.id else { return nil }
@@ -2928,6 +2925,8 @@ public enum WorkspaceConfigManager {
                 if let snapshot = snapshotsByID[id] {
                     let restored = restoreSkill(
                         from: snapshot,
+                        freshIDs: freshIDs,
+                        protectedRowIDs: protectedRowIDs,
                         workspace: workspace,
                         modelContext: modelContext,
                         connectorsByID: &connectorsByID,
@@ -2936,6 +2935,7 @@ public enum WorkspaceConfigManager {
                         toolsByName: &toolsByName
                     )
                     skillsByID[restored.id.uuidString] = restored
+                    skillsByID[id] = restored
                     if skillsByName[restored.name] == nil {
                         skillsByName[restored.name] = restored
                     }
@@ -2953,6 +2953,8 @@ public enum WorkspaceConfigManager {
 
     private static func restoreSkill(
         from snapshot: SkillSnapshotConfig,
+        freshIDs: Bool = false,
+        protectedRowIDs: Set<String> = [],
         workspace: Workspace,
         modelContext: ModelContext,
         connectorsByID: inout [String: Connector],
@@ -2963,8 +2965,10 @@ public enum WorkspaceConfigManager {
         for connectorSnapshot in snapshot.connectorSnapshots ?? [] {
             guard let id = connectorSnapshot.id, connectorsByID[id] == nil else { continue }
             guard let connector = makeConnector(from: connectorSnapshot, workspace: workspace) else { continue }
+            if freshIDs { connector.id = ConnectorCredentialIdentity.isolatedImportID() }
             modelContext.insert(connector)
             connectorsByID[connector.id.uuidString] = connector
+            connectorsByID[id] = connector
             if connectorsByName[connector.name] == nil {
                 connectorsByName[connector.name] = connector
             }
@@ -2972,25 +2976,28 @@ public enum WorkspaceConfigManager {
         for toolSnapshot in snapshot.localToolSnapshots ?? [] {
             guard let id = toolSnapshot.id, toolsByID[id] == nil else { continue }
             guard let tool = makeLocalTool(from: toolSnapshot, workspace: workspace) else { continue }
+            if freshIDs { tool.id = UUID() }
             modelContext.insert(tool)
             toolsByID[tool.id.uuidString] = tool
+            toolsByID[id] = tool
             if toolsByName[tool.name] == nil {
                 toolsByName[tool.name] = tool
             }
         }
 
-        let skill = makeRestoredSkill(from: snapshot, workspace: workspace)
+        let skill = makeRestoredSkill(from: snapshot, workspace: workspace, freshID: freshIDs)
         modelContext.insert(skill)
+        // Shared rows the import reused keep their owner here too.
         linkResources(
             skill: skill,
             connectorIDs: snapshot.connectorIDs,
             connectorNames: nil,
             localToolIDs: snapshot.localToolIDs,
             localToolNames: nil,
-            connectorsByID: connectorsByID,
-            connectorsByName: connectorsByName,
-            toolsByID: toolsByID,
-            toolsByName: toolsByName
+            connectorsByID: connectorsByID.filter { !protectedRowIDs.contains($0.value.id.uuidString) },
+            connectorsByName: connectorsByName.filter { !protectedRowIDs.contains($0.value.id.uuidString) },
+            toolsByID: toolsByID.filter { !protectedRowIDs.contains($0.value.id.uuidString) },
+            toolsByName: toolsByName.filter { !protectedRowIDs.contains($0.value.id.uuidString) }
         )
         return skill
     }
@@ -3000,10 +3007,6 @@ public enum WorkspaceConfigManager {
         skills.append(skill)
     }
 
-    private static func appendUnique(_ value: String, to values: inout [String]) {
-        guard !values.contains(value) else { return }
-        values.append(value)
-    }
 
     private static func importedActiveWorkingPath(
         _ activeWorkingPath: String?,

@@ -996,10 +996,19 @@ final class TaskLifecycleCoordinator {
                             config.tasks = freshExport.tasks
                         }
                     }
+                    guard let credentialIdentity = WorkspaceReplacementCredentialIdentity(
+                        workspace: existing, modelContext: modelContext
+                    ) else {
+                        AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
+                            "operation": "replace_workspace", "reason": "credential_owner_snapshot_failed"
+                        ], level: .error)
+                        return nil
+                    }
                     let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
                     return replaceWorkspace(existing, replacementPath: config.primaryPath) {
                         WorkspaceConfigManager.importWorkspace(
-                            from: config, modelContext: modelContext, scheduleTrustPolicy: scheduleTrustPolicy
+                            from: config, modelContext: modelContext, scheduleTrustPolicy: scheduleTrustPolicy,
+                            capabilityTrust: .validate(.live()), replacementCredentialIdentity: credentialIdentity
                         )
                     }
                 case .duplicate:
@@ -1023,10 +1032,14 @@ final class TaskLifecycleCoordinator {
                             dupConfig.tasks = freshExport.tasks
                         }
                     }
-                    return WorkspaceConfigManager.importWorkspace(from: dupConfig, modelContext: modelContext)
+                    return WorkspaceConfigManager.importWorkspace(
+                        from: dupConfig, modelContext: modelContext, capabilityTrust: .validate(.live())
+                    )
                 }
             }
-            return WorkspaceConfigManager.importWorkspace(from: config, modelContext: modelContext)
+            return WorkspaceConfigManager.importWorkspace(
+                from: config, modelContext: modelContext, capabilityTrust: .validate(.live())
+            )
         } catch {
             AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
                 "operation": "import_config",
@@ -1086,7 +1099,8 @@ final class TaskLifecycleCoordinator {
                     config.primaryPath = url.path
                     return WorkspaceConfigManager.importWorkspace(
                         from: config, modelContext: modelContext,
-                        scheduleTrustPolicy: .preserveEnabledState, taskRecoveryTrustPolicy: .trustedLocalRecovery
+                        scheduleTrustPolicy: .preserveEnabledState, taskRecoveryTrustPolicy: .trustedLocalRecovery,
+                        capabilityTrust: .preserveRecordedState
                     )
                 }
             case .duplicate:
