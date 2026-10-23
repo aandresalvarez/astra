@@ -12,6 +12,8 @@ final class TaskLifecycleCoordinator {
     private let worktreeCleanupStore: TaskWorktreeCleanupStore
     private let workspaceDeletionCleanupStore: WorkspaceDeletionCleanupStore
     private let persistWorkspaceChange: @MainActor (Workspace?, ModelContext) -> Bool
+    /// Re-runs a repair's own check before Resume (tests substitute it).
+    var repairCheck: @Sendable (RepairAction) async -> Bool = { await PluginRepairCoordinator.liveCheck($0) }
 
     init(
         modelContext: ModelContext,
@@ -154,6 +156,31 @@ final class TaskLifecycleCoordinator {
     /// `@discardableResult` — production callers ignore it.
     @discardableResult
     func retryTask(_ task: AgentTask) -> Task<Void, Never>? {
+        // After an expired sign-in, Retry continues the stopped session like
+        // Resume, so it waits for the same check (`resumeTask`).
+        let latest = task.runs.max(by: { $0.startedAt < $1.startedAt })
+        guard latest?.typedStopReason == .capabilitySessionExpired,
+              var repair = pendingRepair(for: task), repair.checkBinary != nil else {
+            return retryVerifiedTask(task)
+        }
+        repair = repair.checking(in: Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary))
+        repair.checkWorkingDirectory = Self.checkWorkingDirectory(for: task)
+        repair = CLISessionExpiryClassifier.checkingCredentialFile(CLISessionExpiryClassifier.checkingLaunchHost(repair))
+        let check = repairCheck
+        let origin = RepairCheckOrigin(task)
+        return Task { @MainActor [weak self] in
+            let repair = await CLISessionExpiryClassifier.checkingCheckoutHost(repair)
+            let works = await check(repair)
+            guard let self, origin.stillHolds(for: task, audit: .taskRetried) else { return }
+            if works {
+                _ = self.retryVerifiedTask(task)
+            } else {
+                self.recordRepairStillNeeded(task, repair: repair, action: "retried")
+            }
+        }
+    }
+
+    private func retryVerifiedTask(_ task: AgentTask) -> Task<Void, Never>? {
         // A durable submission leaves the task's terminal status untouched
         // while it waits, so status-gated Retry surfaces can still fire.
         // Starting a second continuation here would race the pending
@@ -178,10 +205,15 @@ final class TaskLifecycleCoordinator {
         // A first run the user (or an ASTRA restart) cut short still has a
         // provider session. Retry continues it rather than relaunching the
         // initial prompt into a brand-new session.
-        let interruptedResumeMessage = retryFollowUpMessage == nil
-            ? interruptedRunResumeMessage(for: task, retryTurn: retryTurn)
+        // After an expired plugin sign-in the turn, follow-up or not, resumes
+        // where it stopped: resending the follow-up would repeat its writes.
+        let afterExpiry = task.runs.max(by: { $0.startedAt < $1.startedAt })?.typedStopReason == .capabilitySessionExpired
+        let interruptedResumeMessage = retryFollowUpMessage == nil || afterExpiry
+            ? interruptedRunResumeMessage(for: task, retryTurn: retryTurn, acceptsFollowUp: afterExpiry)
             : nil
-        let launchMessage = retryFollowUpMessage ?? interruptedResumeMessage
+        let launchMessage = afterExpiry
+            ? interruptedResumeMessage ?? retryFollowUpMessage
+            : retryFollowUpMessage ?? interruptedResumeMessage
         let retryMode = interruptedResumeMessage != nil
             ? "interrupted_resume"
             : (launchMessage == nil ? "initial_task" : "continuation")
@@ -228,7 +260,7 @@ final class TaskLifecycleCoordinator {
     /// path, and a runtime without native resume would only get a thinner
     /// prompt than the initial one. Whether the session is actually resumable
     /// is the worker's call; if not, it falls back to a history-carrying prompt.
-    private func interruptedRunResumeMessage(for task: AgentTask, retryTurn: TaskTurnRequest?) -> String? {
+    private func interruptedRunResumeMessage(for task: AgentTask, retryTurn: TaskTurnRequest?, acceptsFollowUp: Bool = false) -> String? {
         guard task.hasProviderSession,
               AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: task.resolvedRuntimeID),
               let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt }),
@@ -236,7 +268,9 @@ final class TaskLifecycleCoordinator {
               // drops it, so Retry must take the from-scratch path with its reset instead.
               latestRun.runtimeID == task.resolvedRuntimeID.rawValue,
               let stopReason = latestRun.typedStopReason,
-              [.cancelled, .appRestarted, "queue_cancelled"].contains(stopReason),
+              // A run stopped for an expired plugin sign-in resumes after the
+              // repair, so work it already did (external writes) isn't replayed.
+              [.cancelled, .appRestarted, "queue_cancelled", .capabilitySessionExpired].contains(stopReason),
               // A from-scratch run cut off before its init frame never learned a session, while
               // task.sessionId can still name an older run's: only a run that owns it can be resumed.
               let runSession = latestRun.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -245,10 +279,15 @@ final class TaskLifecycleCoordinator {
         // Scheduled, chained and approved-plan launches keep their own relaunch path.
         guard task.originScheduleID == nil, task.chainedFromID == nil else { return nil }
         if let retryTurn {
-            guard retryTurn.kind == .initial || retryTurn.kind == .retry else { return nil }
+            guard retryTurn.kind == .initial || retryTurn.kind == .retry || (acceptsFollowUp && retryTurn.kind == .followUp)
+            else { return nil }
             if let sourceEvent = task.events.first(where: { $0.id == retryTurn.sourceEventID }),
                let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent),
-               source.launchMode != .initial || source.planSnapshot != nil
+               // After an expired sign-in a follow-up, or a retry that was
+               // itself continuing one, resumes rather than replays.
+               (source.launchMode != .initial
+                    && !(acceptsFollowUp && (retryTurn.kind == .followUp || source.launchMode == .continuation)))
+                || source.planSnapshot != nil
                 || source.scheduleID != nil || source.sourceTaskID != nil {
                 return nil
             }
@@ -311,7 +350,154 @@ final class TaskLifecycleCoordinator {
     }
 
     @discardableResult
+    /// After a stop for an expired sign-in, Resume first re-runs that
+    /// repair's check: resuming before the sign-in finished would start a run
+    /// that fails its pre-launch check, and that newer run would no longer
+    /// carry the repair. When the check fails, the task records why and stays
+    /// on the stopped run, whose repair is still offered.
     func resumeTask(_ task: AgentTask) -> Task<Void, Never>? {
+        guard var repair = pendingRepair(for: task), repair.checkBinary != nil else {
+            return resumeVerifiedTask(task)
+        }
+        repair = repair.checking(in: Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary))
+        repair.checkWorkingDirectory = Self.checkWorkingDirectory(for: task)
+        repair = CLISessionExpiryClassifier.checkingCredentialFile(CLISessionExpiryClassifier.checkingLaunchHost(repair))
+        let check = repairCheck
+        let origin = RepairCheckOrigin(task)
+        return Task { @MainActor [weak self] in
+            let repair = await CLISessionExpiryClassifier.checkingCheckoutHost(repair)
+            let works = await check(repair)
+            guard let self, origin.stillHolds(for: task, audit: .taskResumed) else { return }
+            if works {
+                _ = self.resumeVerifiedTask(task)
+            } else {
+                self.recordRepairStillNeeded(task, repair: repair)
+            }
+        }
+    }
+
+    /// The task as Resume or Retry found it before the repair check, which can
+    /// take seconds. If the person closed or deleted the task meanwhile, or a
+    /// newer run started or the status moved on, the check's answer is about a
+    /// task they already left, so nothing continues and nothing is recorded.
+    private struct RepairCheckOrigin {
+        let taskID: UUID
+        let status: TaskStatus
+        let isDone: Bool
+        let latestRunID: UUID?
+
+        init(_ task: AgentTask) {
+            taskID = task.id
+            status = task.status
+            isDone = task.isDone
+            latestRunID = task.runs.max(by: { $0.startedAt < $1.startedAt })?.id
+        }
+
+        @MainActor
+        func stillHolds(for task: AgentTask, audit event: AuditEvent) -> Bool {
+            let reason: String? = if task.isDeleted || task.modelContext == nil {
+                "task_deleted"
+            } else if task.isDone != isDone {
+                "task_closed"
+            } else if task.status != status {
+                "status_changed"
+            } else if task.runs.max(by: { $0.startedAt < $1.startedAt })?.id != latestRunID {
+                "newer_run"
+            } else {
+                nil
+            }
+            guard let reason else { return true }
+            AppLogger.audit(event, category: "UI", taskID: taskID, fields: [
+                "outcome": "skipped_after_repair_check",
+                "reason": reason
+            ], level: .warning)
+            return false
+        }
+    }
+
+    private static let gitHubCheckVariables: Set<String> = [
+        "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "GH_REPO", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+        "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME", "PATH"
+    ]
+
+    /// The variables the resumed run gives the checked CLI, so a repair check
+    /// judges the credentials that run gets: for `gh` its token variables
+    /// (which override any sign-in), the GitHub Enterprise host and
+    /// tokens (`GH_REPO`'s host, else `GH_HOST`, picks the host), the
+    /// configuration directory its stored login lives in (`GH_CONFIG_DIR`,
+    /// else `XDG_CONFIG_HOME`, else `HOME`) and the `PATH` that finds the binary, for
+    /// `gcloud` the whole stripped launch environment, where
+    /// `CLOUDSDK_CONFIG`, `CLOUDSDK_CORE_ACCOUNT` or
+    /// `GOOGLE_APPLICATION_CREDENTIALS` pick the account it uses. Built from
+    /// the same launch scope as the run, detached skill snapshots included: a
+    /// snapshot whose skill was removed still delivers its variables.
+    /// `binary` may be the path of the installation that failed; its name
+    /// picks the variables. A relative `PATH` entry is resolved from the
+    /// run's code directory (`RepairAction.checkWorkingDirectory`). An empty
+    /// value is the resumed run's value too, not a missing one.
+    static func projectedCheckEnvironment(for task: AgentTask, binary: String?) -> [String: String]? {
+        let binary = binary.map { ($0 as NSString).lastPathComponent }
+        guard binary == "gh" || binary == "gcloud" else { return nil }
+        let scope = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: Self.resumeContinuationMessage(for: task),
+            runtime: task.resolvedRuntimeID
+        ).providerLaunch
+        var launchEnvironment = scope.resolver.resolvedEnvironmentVariables
+        BrokeredConnectorEnvironment.strip(from: &launchEnvironment, capabilityScope: scope)
+        // An empty value is kept: the launch overlay applies it too, so
+        // `PATH=""` or `GH_TOKEN=""` overrides ASTRA's own value there.
+        let environment = launchEnvironment.filter { key, _ in
+            binary == "gcloud" || Self.gitHubCheckVariables.contains(key)
+        }
+        return environment.isEmpty ? nil : environment
+    }
+
+    /// The directory the resumed run starts in, where its checks resolve a
+    /// relative `PATH` entry and `gh` infers its host from the checkout.
+    static func checkWorkingDirectory(for task: AgentTask) -> String? {
+        TaskWorkspaceAccess(task: task).codeWorkingDirectory
+    }
+
+    /// The repair the task's latest run stopped for, if it stopped for one.
+    /// A stop whose fix is outside ASTRA (a rejected `GH_TOKEN`) records no
+    /// repair to offer, but its check is still the one Resume and Retry run.
+    /// `task.events` is a stored relationship with no order, so the run's
+    /// events are read newest first by timestamp, and the stop is the newest
+    /// error that is a sign-in stop message: another error in the same run
+    /// must not hide it.
+    func pendingRepair(for task: AgentTask) -> RepairAction? {
+        guard let run = task.runs.max(by: { $0.startedAt < $1.startedAt }) else { return nil }
+        let newestFirst = task.events.filter { $0.run?.id == run.id }.sorted { $0.timestamp > $1.timestamp }
+        if let captured = newestFirst.first(where: { $0.type == TaskEventTypes.System.runtimeRepairContext.rawValue }) {
+            return RuntimeRepairContext.decode(from: captured.payload)?.repair
+                ?? RuntimeRepairContext.manualReview(message: "The saved repair context could not be read.").repair
+        }
+        if let recorded = newestFirst
+            .first(where: { $0.type == TaskEventTypes.System.runtimeRepairRequired.rawValue })
+            .flatMap({ RepairAction.decode(from: $0.payload) }) {
+            return recorded
+        }
+        // Legacy-only reader for stops saved before structured repair contexts.
+        guard run.typedStopReason == .capabilitySessionExpired else { return nil }
+        return newestFirst.lazy
+            .filter { $0.type == TaskEventTypes.System.error.rawValue }
+            .compactMap { CLISessionExpiryClassifier.family(forStopMessage: $0.payload) }
+            .first?.repair
+    }
+
+    private func recordRepairStillNeeded(_ task: AgentTask, repair: RepairAction, action: String = "resumed") {
+        let run = task.runs.max(by: { $0.startedAt < $1.startedAt })
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: "\(repair.componentName) still isn't working, so the task wasn't \(action). \(repair.detail)",
+            run: run
+        ))
+        _ = persistWorkspaceChange(task.workspace, modelContext)
+    }
+
+    private func resumeVerifiedTask(_ task: AgentTask) -> Task<Void, Never>? {
         if LegacyApprovedPermissionContinuation.isAvailable(task: task) {
             guard let submission = LegacyApprovedPermissionContinuation.submit(task: task, modelContext: modelContext) else { return nil }
             return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)

@@ -464,6 +464,8 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.readiness.level == .needsAttention)
         #expect(state.readiness.messages == ["Jira: connector not active for this workspace"])
         #expect(state.connectorsNeedingAttention.isEmpty)
+        // The missing account still counts as a step, so the row isn't Ready.
+        #expect(state.missingConnectors.map(\.name) == ["Jira"])
     }
 
     @Test("package state points setup at the linked connector when it is disabled")
@@ -488,6 +490,70 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.readiness.messages == ["Jira: connector not active for this workspace"])
         #expect(state.connectorsNeedingAttention.map(\.id) == [connector.id])
         #expect(state.attentionMessages(for: connector) == state.readiness.messages)
+    }
+
+    @Test("A shared account that is off here needs turning on, not a key, and the action service turns it on")
+    @MainActor
+    func inactiveSharedConnectorIsActivatedNotKeyed() throws {
+        let workspace = Workspace(name: "Inactive Shared Jira", primaryPath: "/tmp/inactive-shared-jira")
+        let connector = Connector(name: "Jira", serviceType: "jira", authMethod: "none")
+        connector.isGlobal = true
+        let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        skill.isGlobal = true
+        skill.connectors = [connector]
+        workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        func state() -> CapabilityPackageState {
+            CapabilityPackageState(
+                package: package, workspace: workspace,
+                capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [skill], globalConnectors: [connector]),
+                secretStore: MockSecretStore()
+            )
+        }
+        #expect(state().inactiveSharedConnectors.map(\.id) == [connector.id])
+
+        // A failed save leaves the account off.
+        let container = try makeCapabilitiesPersistenceContainer()
+        let service = CapabilityCatalogActionService()
+        #expect(!service.activateSharedConnector(connector, workspace: workspace, modelContext: container.mainContext) { _, _ in false })
+        #expect(!workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString))
+
+        #expect(service.activateSharedConnector(connector, workspace: workspace, modelContext: container.mainContext) { _, _ in true })
+        #expect(workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString))
+        #expect(state().inactiveSharedConnectors.isEmpty)
+        #expect(state().connectorsNeedingAttention.isEmpty)
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("Turning a shared account on from Plugins is audited like the Configure toggle, and so is a failed save")
+    @MainActor
+    func sharedConnectorActivationIsAudited() throws {
+        let workspace = Workspace(name: "Audited Shared Jira", primaryPath: "/tmp/audited-shared-jira")
+        let connector = Connector(name: "Jira", serviceType: "jira", authMethod: "none")
+        connector.isGlobal = true
+        let container = try makeCapabilitiesPersistenceContainer()
+        let service = CapabilityCatalogActionService()
+        func audits() -> [String] {
+            AppLogger.flushForTesting()
+            return AppLogger.entries.map(\.message).filter {
+                $0.contains(AuditEvent.connectorUpdated.rawValue) && $0.contains("connector_id=\(connector.id.uuidString)")
+            }
+        }
+
+        #expect(!service.activateSharedConnector(connector, workspace: workspace, modelContext: container.mainContext) { _, _ in false })
+        let failure = try #require(audits().last)
+        for field in ["result=failed", "enabled_global=false", "workspace_id=\(workspace.id.uuidString)"] {
+            #expect(failure.contains(field), "missing \(field)")
+        }
+
+        #expect(service.activateSharedConnector(connector, workspace: workspace, modelContext: container.mainContext) { _, _ in true })
+        let success = try #require(audits().last)
+        for field in ["enabled_global=true", "workspace_id=\(workspace.id.uuidString)", "source=plugins_turn_on"] {
+            #expect(success.contains(field), "missing \(field)")
+        }
+        #expect(!success.contains("result=failed"))
+        #expect(audits().count == 2)
+        withExtendedLifetime(container) {}
     }
 
     @Test("package state links configured connectors by non-custom service type")

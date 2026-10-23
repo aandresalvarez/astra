@@ -1735,7 +1735,8 @@ final class AgentRuntimeWorker {
             .providerSemanticProgressStalled,
             .providerActiveToolStalled,
             .providerWorkspaceJobStalled,
-            .providerRunWallClockExceeded
+            .providerRunWallClockExceeded,
+            .capabilitySessionExpired
         ].contains(stopReason)
     }
 

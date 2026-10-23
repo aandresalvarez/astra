@@ -444,7 +444,8 @@ struct CapabilityPackageValidatorTests {
         var package = makePackage(governance: .localDraft())
         package.prerequisites = [
             CLIPrerequisite(
-                binary: "astra-missing-binary-\(UUID().uuidString)",
+                // A known CLI (`HealthCheckPolicy.versionForms`), not installed here.
+                binary: "terraform",
                 displayName: "Missing CLI",
                 purpose: "Test warning",
                 installHint: "Install it."

@@ -83,7 +83,8 @@ enum CapabilityPackageValidator {
         let decoder = JSONDecoder()
         let decoded: PluginPackage
         do {
-            decoded = try decoder.decode(PluginPackage.self, from: data)
+            // A Plugins 2.0 manifest (`components`) converts to its package.
+            decoded = try PluginManifestConverter.decodePackage(from: data, decoder: decoder)
         } catch {
             return CapabilityPackageValidationReport(
                 package: nil,
@@ -613,6 +614,49 @@ enum CapabilityPackageValidator {
                     .unsafeLocalTool,
                     "Unsafe prerequisite",
                     "\(prerequisite.displayName) declares an unsafe binary or liveness arguments: \(reason).",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
+            // The check runs on every scan with no click, so it may only read
+            // status (`HealthCheckPolicy`): refused here, as the checker never
+            // runs it.
+            guard HealthCheckPolicy.isReadOnly(binary: prerequisite.binary, arguments: prerequisite.livenessArgs)
+                || HealthCheckPolicy.isExistenceOnly(binary: prerequisite.binary, arguments: prerequisite.livenessArgs) else {
+                let check = ([prerequisite.binary] + prerequisite.livenessArgs).joined(separator: " ")
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe health check",
+                    "\(prerequisite.displayName) checks itself with `\(check)`; a check may only run a read-only status command of a CLI ASTRA knows, such as `gh --version` or `gh auth status`.",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
+            // The install link becomes a repair button: a web page only.
+            if let url = prerequisite.installURL, !RepairAction.isSafeRepairURL(url) {
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe install link",
+                    "\(prerequisite.displayName) links to \(url.scheme ?? "a non-web") address; install links must be https.",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
+            // A sign-in hint whose first command runs the CLI becomes its Sign
+            // in button, so it may only sign in (`TerminalRepairPolicy`):
+            // refused here at import, as the button refuses it at launch. A
+            // hint naming another program (`stanford-graph-mail login` for
+            // `pwsh`) is guidance and offers no button.
+            if let command = prerequisite.authHint.flatMap(PluginManifestConverter.firstCommand),
+               command.split(whereSeparator: \.isWhitespace).first.map(String.init) == prerequisite.binary,
+               !RepairAction.isSafeTerminalCommand(command, binary: prerequisite.binary, allowsInstaller: false) {
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe repair command",
+                    "\(prerequisite.displayName) offers `\(command)` as its sign-in; a repair may only run \(prerequisite.binary)'s own sign-in command.",
                     component: prerequisite.displayName
                 ))
                 continue

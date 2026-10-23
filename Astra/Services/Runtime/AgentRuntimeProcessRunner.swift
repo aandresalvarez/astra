@@ -1084,6 +1084,7 @@ final class AgentRuntimeProcessRunner {
                     policyApprovalMessage: monitor.policyApprovalMessage,
                     runtimeStopReason: dockerFailure?.stopReason ?? monitor.runtimeStopReason,
                     runtimeStopMessage: dockerFailure?.message ?? monitor.runtimeStopMessage,
+                    runtimeRepairContext: dockerFailure == nil ? monitor.runtimeRepairContext : nil,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,

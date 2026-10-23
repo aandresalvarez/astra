@@ -493,7 +493,7 @@ enum CapabilityRuntimeIntegrityService {
             return .credential
         case .authorizationRequired:
             return .credential
-        case .unresponsive:
+        case .unresponsive, .notChecked:
             return .localTool
         }
     }

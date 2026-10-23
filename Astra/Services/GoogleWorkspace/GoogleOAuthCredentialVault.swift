@@ -50,6 +50,13 @@ struct GoogleOAuthCredentialVault {
         return token
     }
 
+    /// Whether an expired access token can be refreshed without signing in.
+    /// Checks presence only (`save` never stores a blank one), so a status
+    /// read doesn't load the secret.
+    func hasRefreshToken(for profile: GoogleOAuthAccountProfile) -> Bool {
+        secretStore.exists(key: Self.refreshTokenKey, entityID: Self.entityID(for: profile.id))
+    }
+
     func accessToken(for profile: GoogleOAuthAccountProfile, now: Date = Date()) throws -> String {
         switch credentialStatus(for: profile, now: now) {
         case .available:

@@ -18,6 +18,9 @@ import Foundation
 ///                       hung background state.
 ///   - `missingBinary` — `which` / PATH scan returned nothing. User needs
 ///                       to install it.
+///   - `notChecked`    — the declared check is not a read-only status
+///                       command (`HealthCheckPolicy`), so it was never run.
+///                       Not usable: an unrun check is not a pass.
 public enum HealthStatus: Sendable, Equatable {
     case healthy(path: String, version: String)
     case unverified(path: String, detail: String)
@@ -25,12 +28,20 @@ public enum HealthStatus: Sendable, Equatable {
     case authorizationRequired(detail: String, authorizationURL: URL?)
     case unresponsive(detail: String)
     case missingBinary
+    case notChecked(detail: String)
+
+    /// The declared check was refused and never ran: neither a pass nor a
+    /// failure a sign-in or install could fix.
+    public var isNotChecked: Bool {
+        if case .notChecked = self { return true }
+        return false
+    }
 
     public var executablePath: String? {
         switch self {
         case .healthy(let path, _), .unverified(let path, _):
             return path
-        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary:
+        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary, .notChecked:
             return nil
         }
     }
@@ -42,7 +53,7 @@ public enum HealthStatus: Sendable, Equatable {
         switch self {
         case .healthy, .unverified:
             return true
-        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary:
+        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary, .notChecked:
             return false
         }
     }
@@ -96,6 +107,7 @@ public struct EnvironmentHealthChecker: Sendable {
     private let overridePath: String?
     private let fallbackDirectories: [String]
     private let isExecutable: @Sendable (String) -> Bool
+    private let isInstalled: @Sendable (String) -> Bool
 
     public init(
         runner: BinaryRunner = ProcessBinaryRunner(),
@@ -104,13 +116,15 @@ public struct EnvironmentHealthChecker: Sendable {
         fallbackDirectories: [String] = EnvironmentHealthChecker.defaultFallbackDirectories,
         isExecutable: @escaping @Sendable (String) -> Bool = {
             FileManager.default.isExecutableFile(atPath: $0)
-        }
+        },
+        isInstalled: @escaping @Sendable (String) -> Bool = { TrustedExecutablePath.isInstalled($0) }
     ) {
         self.runner = runner
         self.envPath = envPath
         self.overridePath = overridePath
         self.fallbackDirectories = fallbackDirectories
         self.isExecutable = isExecutable
+        self.isInstalled = isInstalled
     }
 
     /// Check a single binary. Order: resolve → liveness → semantic.
@@ -138,6 +152,24 @@ public struct EnvironmentHealthChecker: Sendable {
             : whichPath
         guard !resolved.isEmpty else {
             return .missingBinary
+        }
+
+        // A check with no arguments only finds the binary; it never runs it.
+        if HealthCheckPolicy.isExistenceOnly(binary: binary, arguments: livenessArgs) {
+            return binary.contains("/") || resolved.hasPrefix("/")
+                ? .healthy(path: resolved, version: "")
+                : .notChecked(detail: "not checked: `\(resolved)` is not an absolute path")
+        }
+        // A check that is not a read-only status command is never run: it
+        // would run on every scan, unasked (`HealthCheckPolicy`).
+        guard HealthCheckPolicy.isReadOnly(binary: binary, arguments: livenessArgs) else {
+            return .notChecked(detail: HealthCheckPolicy.refusal(binary: binary, arguments: livenessArgs))
+        }
+        // And what was found must be that CLI: a declared path still an
+        // installed path once symlinks resolve, a bare name found on ASTRA's
+        // own search path as an absolute path (`TrustedExecutablePath`).
+        guard binary.contains("/") ? isInstalled(resolved) : resolved.hasPrefix("/") else {
+            return .notChecked(detail: "not checked: `\(resolved)` is not an installed copy of \((binary as NSString).lastPathComponent)")
         }
 
         // Step 2: liveness probe. Run the resolved binary directly so we're

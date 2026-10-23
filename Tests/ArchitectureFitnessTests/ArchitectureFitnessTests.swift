@@ -1867,6 +1867,8 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": ["run", "run?"],
             "Astra/Services/Runtime/RuntimeTurnOutcomeService.swift": ["run"],
+            // Extracted run outcome; AgentTask transitions still use TaskStateMachine.
+            "Astra/Services/Runtime/RuntimeStopOutcome.swift": ["run"],
             "Astra/Services/Runtime/RuntimeTurnSettlementService.swift": ["run"],
             "Astra/Services/Runtime/ApprovedPlanRuntimeSettlement.swift": ["run?"],
             "Astra/Models/AgentTaskForkService.swift": ["newRun"],

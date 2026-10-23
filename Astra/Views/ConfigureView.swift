@@ -1077,7 +1077,7 @@ struct CapabilityCreationWizardView: View {
             return "Issue"
         case .some(.missingBinary):
             return "Not found"
-        case nil:
+        case .some(.notChecked), nil:
             return "Not checked"
         }
     }
@@ -1094,7 +1094,7 @@ struct CapabilityCreationWizardView: View {
             return Stanford.poppy
         case .some(.unresponsive), .some(.missingBinary):
             return Stanford.cardinalRed
-        case nil:
+        case .some(.notChecked), nil:
             return Stanford.coolGrey
         }
     }

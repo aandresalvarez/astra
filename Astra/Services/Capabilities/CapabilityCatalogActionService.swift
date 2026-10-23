@@ -9,8 +9,45 @@ struct CapabilityCatalogCreateActionResult {
     var installedPackage: PluginPackage?
 }
 
+/// A plugin needs an account ASTRA has no sign-in flow for.
+enum CapabilityAccountSetupError: Error, Equatable, LocalizedError {
+    case unsupportedProvider(account: String, provider: String?)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedProvider(let account, let provider):
+            let named = provider.map { " (\($0))" } ?? ""
+            return "This plugin needs \(account)\(named), and ASTRA can't connect that kind of account yet."
+        }
+    }
+}
+
 @MainActor
 struct CapabilityCatalogActionService {
+    /// What Plugins Add does with a package.
+    enum AddRoute: Equatable {
+        /// Install, approve and enable in one step.
+        case enable
+        /// Open the install flow that connects the package's account first.
+        case connectAccount
+    }
+
+    /// OAuth providers with a real sign-in flow (`CapabilityInstallSheetRouter`).
+    static let supportedOAuthProviders: Set<String> = [GoogleWorkspaceCapability.connectorBinding]
+
+    /// How Add handles `package`. A package that needs an account of a
+    /// provider ASTRA can't sign in to is refused: the router's fallback
+    /// sheet would enable it with no account, and it would read as ready
+    /// though its setup never ran. An optional account neither routes nor
+    /// refuses: the plugin works without it.
+    static func addRoute(for package: PluginPackage) throws -> AddRoute {
+        let accounts = package.setupRequirements.filter { $0.kind == .oauthAccount && $0.required }
+        if let unsupported = accounts.first(where: { !supportedOAuthProviders.contains($0.provider ?? "") }) {
+            throw CapabilityAccountSetupError.unsupportedProvider(account: unsupported.displayName, provider: unsupported.provider)
+        }
+        return accounts.isEmpty ? .enable : .connectAccount
+    }
+
     let installer: CapabilityInstaller
     let creationService: CapabilityPackageCreationService
     let uninstaller: CapabilityUninstaller
@@ -53,6 +90,10 @@ struct CapabilityCatalogActionService {
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
         do {
+            // Every enable path (the legacy catalog's install sheets and
+            // Configure included) refuses a required account ASTRA can't
+            // sign in to, not only Plugins Add.
+            _ = try Self.addRoute(for: package)
             let result = try installer.install(
                 package,
                 into: workspace,
@@ -130,6 +171,162 @@ struct CapabilityCatalogActionService {
         modelContext: ModelContext
     ) throws -> CapabilityUninstaller.RemovalResult {
         try uninstaller.remove(package, modelContext: modelContext)
+    }
+
+    /// Plugins 2.0 one-step Add: install, approve and enable in this workspace.
+    /// When the policy holds the package for review, the person adding it is
+    /// the reviewer, so the approval record is written first and the enable
+    /// runs against it. Connector sign-ins are left for later: adding never
+    /// asks for credentials.
+    @discardableResult
+    func add(
+        _ package: PluginPackage,
+        workspace: Workspace,
+        modelContext: ModelContext,
+        policyContext: CapabilityCatalogPolicyContext,
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
+        traceID: String
+    ) throws -> CapabilityInstaller.InstallationResult {
+        _ = try Self.addRoute(for: package)
+        let context = try grantPendingApproval(
+            for: package, workspace: workspace, policyContext: policyContext,
+            approvalStore: approvalStore, source: "plugins_add", traceID: traceID
+        )
+        return try enable(
+            package,
+            workspace: workspace,
+            modelContext: modelContext,
+            policyContext: context,
+            source: "plugins_add",
+            traceID: traceID
+        )
+    }
+
+    /// The approval Add writes when the policy holds `package` for review:
+    /// the person adding it is the reviewer. Returns the context to enable
+    /// against. An install flow that connects an account first (OAuth) takes
+    /// it the same way, so its enable isn't refused for want of approval.
+    /// Audited like the catalog review's approval: the record is a durable
+    /// permission change even when the enable after it never happens.
+    func grantPendingApproval(
+        for package: PluginPackage,
+        workspace: Workspace,
+        policyContext: CapabilityCatalogPolicyContext,
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
+        source: String,
+        traceID: String
+    ) throws -> CapabilityCatalogPolicyContext {
+        var context = policyContext
+        var fields = [
+            "source": source,
+            "trace_id": traceID,
+            "package_id": package.id,
+            "package_name": package.name,
+            "package_version": package.version,
+            "status": CapabilityApprovalStatus.approved.rawValue,
+            "workspace_id": workspace.id.uuidString
+        ]
+        do {
+            guard let record = try CapabilityApprovalGrant.pendingRecord(
+                for: package,
+                context: policyContext,
+                approvedBy: "user",
+                reviewNotes: "Added in Plugins."
+            ) else { return context }
+            fields["digest_prefix"] = String(record.sourceDigest.prefix(12))
+            let saved = try approvalStore.save(
+                package: package,
+                status: record.status,
+                approvedBy: record.approvedBy,
+                reviewNotes: record.reviewNotes,
+                approvedAt: record.approvedAt
+            )
+            context.approvalRecords.append(saved)
+            fields["status"] = saved.status.rawValue
+            fields["digest_prefix"] = String(saved.sourceDigest.prefix(12))
+            AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: fields)
+            return context
+        } catch {
+            fields["result"] = "failed"
+            fields["error_type"] = String(describing: type(of: error))
+            AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: fields, level: .error)
+            throw error
+        }
+    }
+
+    /// Turns a package off in one workspace, leaving it installed. A saved
+    /// disable is audited like Configure's (`capabilityDisabled`): it takes
+    /// the workspace's access to the package and may delete its workspace
+    /// resources. A rolled-back one is audited by the disabler.
+    @discardableResult
+    func disable(
+        _ package: PluginPackage,
+        workspace: Workspace,
+        capabilities: WorkspaceCapabilities,
+        modelContext: ModelContext,
+        traceID: String = AuditTrace.make("capability-disable")
+    ) -> CapabilityActivationDisabler.Result {
+        let result = CapabilityActivationDisabler().disable(
+            package,
+            in: workspace,
+            capabilities: capabilities,
+            modelContext: modelContext
+        )
+        if result.persisted {
+            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                "source": "plugins_turn_off",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "workspace_id": workspace.id.uuidString,
+                "disabled_skills_count": String(result.disabledSkillIDs.count),
+                "disabled_connectors_count": String(result.disabledConnectorIDs.count),
+                "disabled_tools_count": String(result.disabledToolIDs.count),
+                "removed_workspace_skills_count": String(result.removedWorkspaceSkillIDs.count),
+                "removed_workspace_connectors_count": String(result.removedWorkspaceConnectorIDs.count),
+                "enabled_capability_ids": CapabilityAudit.compactNames(WorkspaceCapabilityActivation.state(of: workspace).capabilityIDs)
+            ])
+        }
+        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+        return result
+    }
+
+    /// Turns a shared account on in this workspace: the step an added
+    /// plugin's account needs when it exists, shared, but is off here. False
+    /// when the save fails; the activation is then undone. Audited like the
+    /// Configure toggle (`connectorUpdated`): it grants the workspace the
+    /// account's credentials.
+    @discardableResult
+    func activateSharedConnector(
+        _ connector: Connector,
+        workspace: Workspace,
+        modelContext: ModelContext,
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
+    ) -> Bool {
+        guard connector.isGlobal else { return false }
+        guard !WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs.contains(connector.id.uuidString) else {
+            return true
+        }
+        var fields = [
+            "connector_id": connector.id.uuidString,
+            "workspace_id": workspace.id.uuidString,
+            "source": "plugins_turn_on"
+        ]
+        CapabilitySharing.enableShared(connector, in: workspace)
+        guard persist(workspace, modelContext) else {
+            CapabilitySharing.disableShared(connector, in: workspace)
+            fields["enabled_global"] = "false"
+            fields["result"] = "failed"
+            AppLogger.audit(.connectorUpdated, category: "Capabilities", fields: fields, level: .error)
+            return false
+        }
+        fields["enabled_global"] = String(
+            WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs.contains(connector.id.uuidString)
+        )
+        AppLogger.audit(.connectorUpdated, category: "Capabilities", fields: fields)
+        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+        return true
     }
 
     private func failureFields(

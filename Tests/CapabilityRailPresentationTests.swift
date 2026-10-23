@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ASTRA
 import ASTRACore
@@ -277,6 +278,17 @@ struct CapabilityRailPresentationTests {
         #expect(WorkspaceSetupChecklistPresentation.configuredCountSubtitle(4) == "4 configured")
         #expect(CapabilityRailSectionPresentation.readySummarySubtitle(count: 2) == "Ready · 2")
         #expect(CapabilityRailSectionPresentation.draftSummarySubtitle(count: 1) == "Draft · 1")
+    }
+
+    /// The rail's lifecycle has no hosted view here, so the trigger is pinned
+    /// in the source, like the Plugins surface's.
+    @Test("a new working path rescans the rail's contextual repairs")
+    func workingPathChangeRescansRailPrerequisites() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Views/WorkspaceRightRailView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains(".onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshCapabilityPrerequisiteStatuses() }"))
     }
 
     @Test("repository rail exposes git controls by default")
