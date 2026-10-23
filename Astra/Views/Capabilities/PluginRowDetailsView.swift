@@ -192,6 +192,10 @@ struct PluginRowDetailsView<SetupRow: View>: View {
                 Toggle("On in this workspace", isOn: Binding(get: { true }, set: { if !$0 { onTurnOff() } }))
                     .toggleStyle(.switch)
                     .controlSize(.small)
+            } else if !PluginsSurfacePresentation.offersTurnOff(row.package) {
+                Text("Edit or delete this skill in Skills.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
             }
             if row.display.verb == .update {
                 Button("Update") { onUpdate() }
