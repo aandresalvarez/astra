@@ -9,10 +9,24 @@ import Observation
 final class ComposerSubmissionIntent {
     private(set) var signature: String?
 
-    func requestIfUnresolved(signature: String, state: RuntimeEligibilityPreviewState) {
-        guard state.currentSnapshot(for: signature) == nil,
-              !state.isUnavailable(for: signature) else { return }
-        if self.signature != signature { self.signature = signature }
+    /// All provider-backed composer paths, including Plan, share this gate.
+    func canSubmitOrWait(
+        request: RuntimeEligibilityPreviewRequest,
+        state: RuntimeEligibilityPreviewState,
+        canExecute: Bool
+    ) -> Bool {
+        if canExecute {
+            cancel()
+            return true
+        }
+        requestIfUnresolved(request: request, state: state)
+        return false
+    }
+
+    func requestIfUnresolved(request: RuntimeEligibilityPreviewRequest, state: RuntimeEligibilityPreviewState) {
+        guard state.currentSnapshot(for: request.signature) == nil,
+              !state.isUnavailable(for: request.signature) else { return }
+        if signature != request.submissionSignature { signature = request.submissionSignature }
     }
 
     func matches(_ signature: String) -> Bool { self.signature == signature }
@@ -27,8 +41,15 @@ final class ComposerSubmissionIntent {
 
     /// Consume before invoking Send so repeated Return and late evaluations
     /// cannot submit twice. A changed composer must never inherit this intent.
-    func consume(signature: String, allowed: Bool) -> Bool {
-        guard matches(signature) else { return false }
+    func consume(
+        evaluatedRequest: RuntimeEligibilityPreviewRequest,
+        currentRequest: RuntimeEligibilityPreviewRequest,
+        allowed: Bool
+    ) -> Bool {
+        // Read the live request at the owning composer: an old async pass may
+        // finish before SwiftUI cancels its task after a history/readiness update.
+        guard evaluatedRequest.signature == currentRequest.signature,
+              matches(currentRequest.submissionSignature) else { return false }
         cancel()
         return allowed
     }

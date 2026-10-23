@@ -10,6 +10,18 @@ import Testing
 /// mechanism in a hosted view; this pins that `TaskMainView` keeps using it.
 @Suite("Composer draft fitness")
 struct ComposerDraftFitnessTests {
+    @Test("Plan and Run share the early Return gate before provider work")
+    func allNewTaskProviderPathsRememberEarlyReturn() throws {
+        let panel = try source("Astra/Views/ChatPanelView.swift")
+        let plan = try code(panel, from: "private func sendMessage()", to: "private func quickRun()")
+        let run = try code(panel, from: "private func quickRun()", to: "let traceID")
+        #expect(plan.contains("guard canSubmitComposerOrWait() else { return }"))
+        #expect(run.contains("guard canSubmitComposerOrWait() else { return }"))
+        let gate = try code(panel, from: "private func canSubmitComposerOrWait()", to: "private func submitComposer()")
+        #expect(gate.contains("submissionIntent.canSubmitOrWait("))
+        #expect(gate.contains("canExecute: selectedComposerRuntimeCanExecuteRequest"))
+    }
+
     private var root: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

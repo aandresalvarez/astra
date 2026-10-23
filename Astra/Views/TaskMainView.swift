@@ -4224,8 +4224,12 @@ struct TaskMainView: View {
                         previewRequest,
                         state: Bindable(composerDraft).eligibilityPreviewState,
                         submissionIntent: composerDraft.submissionIntent
-                    ) { signature in
-                        guard runtimeEligibilityPreviewRequest.signature == signature else { return }
+                    ) { evaluatedRequest, allowed in
+                        guard composerDraft.submissionIntent.consume(
+                            evaluatedRequest: evaluatedRequest,
+                            currentRequest: runtimeEligibilityPreviewRequest,
+                            allowed: allowed
+                        ) else { return }
                         sendMessage()
                     }
                 }
@@ -4677,13 +4681,11 @@ struct TaskMainView: View {
             return
         }
         if sendAction.launchesProviderWork,
-           !selectedComposerRuntimeCanExecuteRequest {
-            composerDraft.submissionIntent.requestIfUnresolved(
-                signature: runtimeEligibilityPreviewRequest.signature,
-                state: composerDraft.eligibilityPreviewState
-            )
-            return
-        }
+           !composerDraft.submissionIntent.canSubmitOrWait(
+                request: runtimeEligibilityPreviewRequest,
+                state: composerDraft.eligibilityPreviewState,
+                canExecute: selectedComposerRuntimeCanExecuteRequest
+           ) { return }
         shouldScrollAfterUserMessage = true
 
         switch sendAction {

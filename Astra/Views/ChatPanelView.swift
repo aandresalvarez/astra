@@ -198,7 +198,7 @@ struct ChatPanelView: View {
         )
     }
 
-    private var composerReasoningEffort: String? {
+    var composerReasoningEffort: String? {
         composerReasoningEffort(model: defaultModel, runtime: defaultRuntime)
     }
 
@@ -476,8 +476,10 @@ struct ChatPanelView: View {
             await refreshRuntimeAvailability()
         }
         .runtimeEligibilityPreview(runtimeEligibilityPreviewRequest, state: $runtimeEligibilityPreviewState,
-                                   submissionIntent: submissionIntent) { signature in
-            guard runtimeEligibilityPreviewRequest.signature == signature else { return }
+                                   submissionIntent: submissionIntent) { evaluatedRequest, allowed in
+            guard submissionIntent.consume(evaluatedRequest: evaluatedRequest,
+                                           currentRequest: runtimeEligibilityPreviewRequest,
+                                           allowed: allowed) else { return }
             submitComposer()
         }
         .onAppear {
@@ -1207,6 +1209,12 @@ struct ChatPanelView: View {
         )
     }
 
+    private func canSubmitComposerOrWait() -> Bool {
+        submissionIntent.canSubmitOrWait(request: runtimeEligibilityPreviewRequest,
+                                         state: runtimeEligibilityPreviewState,
+                                         canExecute: selectedComposerRuntimeCanExecuteRequest)
+    }
+
     private func submitComposer() {
         // The worktree on disk may have changed since the binding was cached.
         refreshWorktreeBinding()
@@ -1284,7 +1292,7 @@ struct ChatPanelView: View {
             guard workspace != nil else { messages.append(ChatMessage(role: "assistant", content: "Select a workspace first — Workspace Apps are workspace-scoped.")); return }
             onStartWorkspaceAppStudio?(appStudioRequest.initialPrompt); return
         }
-        guard selectedComposerRuntimeCanExecuteRequest else { return }
+        guard canSubmitComposerOrWait() else { return }
         // /recap — one-shot prose summary for resuming later. Injected into skillCtx
         // for this message only; does not use activeSlashContext (no ongoing wizard).
         let recapContext: String? = (lower == "/recap" || lower.hasPrefix("/recap "))
@@ -1373,11 +1381,7 @@ struct ChatPanelView: View {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty,
               !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }
-        guard selectedComposerRuntimeCanExecuteRequest else {
-            submissionIntent.requestIfUnresolved(signature: runtimeEligibilityPreviewRequest.signature,
-                                                 state: runtimeEligibilityPreviewState)
-            return
-        }
+        guard canSubmitComposerOrWait() else { return }
         let traceID = AuditTrace.make("quick-run")
         let workerSelection = composerWorkerSelection
         let runtime = workerSelection.profile.runtime
