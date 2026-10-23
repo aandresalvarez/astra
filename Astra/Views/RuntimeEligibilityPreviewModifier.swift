@@ -172,6 +172,8 @@ struct RuntimeEligibilityPreviewRequest {
             task.id.uuidString,
             task.resolvedRuntimeID.rawValue,
             String(task.runtimeExplicitlySelected),
+            task.model,
+            String(task.tokenBudget),
             selectedPolicyLevelRaw,
             String(skipPermissions),
             acceptedTurn,
@@ -225,6 +227,8 @@ struct RuntimeEligibilityPreviewRequest {
             workspace.map { String(describing: $0.persistentModelID) } ?? "none",
             requestedRuntime.rawValue,
             String(runtimeExplicitlySelected),
+            defaultModel,
+            String(defaultBudget),
             selectedPolicyLevelRaw,
             String(skipPermissions),
             acceptedTurn,
@@ -378,17 +382,29 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
 
     let request: RuntimeEligibilityPreviewRequest
     @Binding var state: RuntimeEligibilityPreviewState
+    let submissionIntent: ComposerSubmissionIntent?
+    let onSubmit: (String) -> Void
+
+    private struct WorkID: Equatable {
+        let signature: String
+        let submitRequested: Bool
+    }
 
     func body(content: Content) -> some View {
-        content.task(id: request.signature) {
+        content.task(id: WorkID(signature: request.signature,
+                               submitRequested: submissionIntent?.matches(request.signature) == true)) {
+            submissionIntent?.invalidate(unless: request.signature)
             guard request.hasAcceptedTurn else {
+                submissionIntent?.cancel()
                 state = .idle
                 return
             }
             // Nothing is written until the debounce elapses: a keystroke that
             // is followed by another one within 350 ms costs no state change and
             // therefore no extra body pass of the 6,000-line composer view.
-            try? await Task.sleep(for: Self.debounce)
+            if submissionIntent?.matches(request.signature) != true {
+                try? await Task.sleep(for: Self.debounce)
+            }
             guard !Task.isCancelled else { return }
             let previous = state.lastResolvedSnapshot
             state = .pending(signature: request.signature, previous: previous)
@@ -399,8 +415,13 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
             // the main actor; both passes below then resolve against them
             // without touching the disk.
             let inputsStartedAt = DispatchTime.now().uptimeNanoseconds
-            guard let inputs = await CapabilityResolutionInputs.loadDetached(),
-                  !Task.isCancelled else { return }
+            let loadedInputs = await CapabilityResolutionInputs.loadDetached()
+            guard !Task.isCancelled else { return }
+            guard let inputs = loadedInputs else {
+                state = .evaluated(signature: request.signature, snapshot: nil)
+                _ = submissionIntent?.consume(signature: request.signature, allowed: false)
+                return
+            }
             let inputsMilliseconds = PerformanceTelemetry.elapsedMilliseconds(since: inputsStartedAt)
 
             // Score the selected runtime alone first. Send only consults that
@@ -423,6 +444,14 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
                 snapshot: selected,
                 inputsMilliseconds: inputsMilliseconds
             )
+
+            if submissionIntent?.matches(request.signature) == true {
+                state = .evaluated(signature: request.signature, snapshot: selected)
+                if submissionIntent?.consume(signature: request.signature, allowed: selectionIsEligible) == true {
+                    onSubmit(request.signature)
+                }
+                return
+            }
 
             if let selected, selectionIsEligible {
                 state = .evaluated(
@@ -461,6 +490,8 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
             )
             state = .evaluated(signature: request.signature, snapshot: full)
         }
+        .onChange(of: request.signature) { submissionIntent?.invalidate(unless: request.signature) }
+        .onDisappear { submissionIntent?.cancel() }
     }
 
     private func logEvaluation(
@@ -511,9 +542,12 @@ final class MainActorSliceMeter {
 extension View {
     func runtimeEligibilityPreview(
         _ request: RuntimeEligibilityPreviewRequest,
-        state: Binding<RuntimeEligibilityPreviewState>
+        state: Binding<RuntimeEligibilityPreviewState>,
+        submissionIntent: ComposerSubmissionIntent? = nil,
+        onSubmit: @escaping (String) -> Void = { _ in }
     ) -> some View {
-        modifier(RuntimeEligibilityPreviewModifier(request: request, state: state))
+        modifier(RuntimeEligibilityPreviewModifier(request: request, state: state,
+                                                  submissionIntent: submissionIntent, onSubmit: onSubmit))
     }
 }
 

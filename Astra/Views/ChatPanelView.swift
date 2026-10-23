@@ -114,6 +114,7 @@ struct ChatPanelView: View {
     @State var capabilitySnapshot = ComposerCapabilitySnapshot.empty
     @State var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     @State var runtimeEligibilityPreviewState = RuntimeEligibilityPreviewState.idle
+    @State private var submissionIntent = ComposerSubmissionIntent()
     // Random per session; a live-cycling prompt mutated while the user was reading it.
     @State private var newTaskPromptIndex = Int.random(in: 0..<ChatPanelView.newTaskPrompts.count)
     @FocusState private var isComposerFocused: Bool
@@ -339,7 +340,7 @@ struct ChatPanelView: View {
         workspace?.primaryPath ?? FileManager.default.currentDirectoryPath
     }
 
-    var body: some View {
+    private var chatLayout: some View {
         VStack(spacing: 0) {
             // Chat area — hero centered when empty, scrollable when has messages
             if messages.isEmpty && !isThinking && !showSpecCard && pendingPlan == nil && approvedDraftPlan == nil {
@@ -460,6 +461,10 @@ struct ChatPanelView: View {
             // Composer
             composerView
         }
+    }
+
+    var body: some View {
+        chatLayout
         .navigationTitle(draftTask != nil ? "Draft" : "New Task")
         .navigationSubtitle(workspace?.name ?? "Astra")
         .background {
@@ -470,7 +475,11 @@ struct ChatPanelView: View {
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
-        .runtimeEligibilityPreview(runtimeEligibilityPreviewRequest, state: $runtimeEligibilityPreviewState)
+        .runtimeEligibilityPreview(runtimeEligibilityPreviewRequest, state: $runtimeEligibilityPreviewState,
+                                   submissionIntent: submissionIntent) { signature in
+            guard runtimeEligibilityPreviewRequest.signature == signature else { return }
+            submitComposer()
+        }
         .onAppear {
             alignDefaultModelWithRuntime()
             initializeComposerPolicyFromDefaults()
@@ -488,24 +497,31 @@ struct ChatPanelView: View {
             taskCreation.detach()
         }
         .onChange(of: worktreeBindingSignature, initial: true) { refreshWorktreeBinding() }
+        .onChange(of: worktreeSelection.requestPayload) { submissionIntent.cancel() }
+        .onChange(of: isPlanModeActive) { submissionIntent.cancel() }
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: defaultRuntimeID) { alignDefaultModelWithRuntime() }
         .onChange(of: claudeAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: copilotAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: runtimeModelCacheRevision) { alignDefaultModelWithRuntime() }
-        .onChange(of: workspace?.persistentModelID) {
-            chatReplyTask?.cancel()
-            planGenerationTask?.cancel()
-            isThinking = false
-            activeSlashContext = nil
-            if draftTask?.workspace?.id != workspace?.id { draftTask = nil }
-            loadSSHConnections()
-            excludedSkillIDs = []
-            if !isCapabilitySnapshotCurrent { capabilitySnapshot = .empty }
-            taskCreation.detach()
-            worktreeSelection = NewTaskWorktreeSelection()
-            taskCreationError = nil
-        }
+        .onChange(of: workspace?.persistentModelID) { resetForWorkspaceChange() }
+    }
+
+    private func resetForWorkspaceChange() {
+        submissionIntent.cancel()
+        chatReplyTask?.cancel()
+        planGenerationTask?.cancel()
+        isThinking = false
+        activeSlashContext = nil
+        let draftWorkspaceID: UUID? = draftTask?.workspace?.id
+        let selectedWorkspaceID: UUID? = workspace?.id
+        if draftWorkspaceID != selectedWorkspaceID { draftTask = nil }
+        loadSSHConnections()
+        excludedSkillIDs = []
+        if !isCapabilitySnapshotCurrent { capabilitySnapshot = .empty }
+        taskCreation.detach()
+        worktreeSelection = NewTaskWorktreeSelection()
+        taskCreationError = nil
     }
 
     // MARK: - Scroll behavior
@@ -927,7 +943,7 @@ struct ChatPanelView: View {
                     .padding(.horizontal, 18)
                     .padding(.top, attachedFiles.isEmpty ? 14 : 8)
                     .padding(.bottom, 12)
-                    .onSubmit {
+                    .onComposerSubmit {
                         submitComposer()
                     }
                     .accessibilityIdentifier("ComposerInput")
@@ -956,6 +972,8 @@ struct ChatPanelView: View {
 
                 Color.clear
                     .frame(height: 2)
+
+                ComposerSubmissionStatus(intent: submissionIntent)
 
                 ComposerToolbar(
                     model: defaultModel,
@@ -1353,8 +1371,13 @@ struct ChatPanelView: View {
     /// Quick run: create task directly from input text and run immediately
     private func quickRun() {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !input.isEmpty, selectedComposerRuntimeCanExecuteRequest,
+        guard !input.isEmpty,
               !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }
+        guard selectedComposerRuntimeCanExecuteRequest else {
+            submissionIntent.requestIfUnresolved(signature: runtimeEligibilityPreviewRequest.signature,
+                                                 state: runtimeEligibilityPreviewState)
+            return
+        }
         let traceID = AuditTrace.make("quick-run")
         let workerSelection = composerWorkerSelection
         let runtime = workerSelection.profile.runtime

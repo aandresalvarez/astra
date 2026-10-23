@@ -603,6 +603,7 @@ struct TaskMainView: View {
                 loadSSHConnections()
             }
         }
+        .onChange(of: isPlanMode) { cancelComposerSubmission() }
         .onChange(of: claudeAvailableModels) {
             deferTaskViewMutation {
                 alignTaskModelWithRuntime()
@@ -4161,7 +4162,7 @@ struct TaskMainView: View {
                         .padding(.top, composerAttachments.isEmpty ? TaskComposerPresentation.inputTopPadding : TaskComposerPresentation.inputTopPaddingWithAttachments)
                         .padding(.bottom, TaskComposerPresentation.inputBottomPadding)
                         .focused(composerFocus)
-                        .onSubmit {
+                        .onComposerSubmit {
                             if showSlashMenu && !visibleSlashOptions.isEmpty {
                                 selectSlashOption()
                             } else {
@@ -4200,6 +4201,8 @@ struct TaskMainView: View {
                 Color.clear
                     .frame(height: 2)
 
+                ComposerSubmissionStatus(intent: composerDraft.submissionIntent)
+
                 TaskComposerTextReader(draft: composerDraft) { text in
                     let previewRequest = eligibilityPreviewRequest(text)
                     toolbar.composing(
@@ -4209,8 +4212,12 @@ struct TaskMainView: View {
                     )
                     .runtimeEligibilityPreview(
                         previewRequest,
-                        state: Bindable(composerDraft).eligibilityPreviewState
-                    )
+                        state: Bindable(composerDraft).eligibilityPreviewState,
+                        submissionIntent: composerDraft.submissionIntent
+                    ) { signature in
+                        guard runtimeEligibilityPreviewRequest.signature == signature else { return }
+                        sendMessage()
+                    }
                 }
 
             }
@@ -4643,6 +4650,10 @@ struct TaskMainView: View {
         onOpenPlan?(task)
     }
 
+    private func cancelComposerSubmission() {
+        composerDraft.submissionIntent.cancel()
+    }
+
     private func sendMessage() {
         let sendAction = TaskComposerCoordinator.sendAction(
             messageText: composerDraft.text,
@@ -4657,6 +4668,10 @@ struct TaskMainView: View {
         }
         if sendAction.launchesProviderWork,
            !selectedComposerRuntimeCanExecuteRequest {
+            composerDraft.submissionIntent.requestIfUnresolved(
+                signature: runtimeEligibilityPreviewRequest.signature,
+                state: composerDraft.eligibilityPreviewState
+            )
             return
         }
         shouldScrollAfterUserMessage = true
