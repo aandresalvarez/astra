@@ -58,6 +58,7 @@ struct TaskMainActorScalingGateTests {
         /// the task changes: the decision dock and the worktree scope label.
         case viewUpdate = "view_update"
         case launchSnapshot = "launch_snapshot"
+        case contextRefresh = "context_refresh"
     }
 
     struct Measurement {
@@ -126,6 +127,12 @@ struct TaskMainActorScalingGateTests {
             samples[.launchSnapshot, default: []].append(cpuMilliseconds {
                 let copy = TaskExecutionLaunchSnapshotApplicator.detachedTask(launch, from: task)
                 #expect(copy.events.count >= eventCount)
+            })
+            await Task.yield()
+
+            try context.save()
+            samples[.contextRefresh, default: []].append(cpuMilliseconds {
+                TaskContextStateManager.refresh(task: task)
             })
             await Task.yield()
         }

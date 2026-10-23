@@ -18,12 +18,16 @@ public enum TaskHistoryRead {
         }, matches: { _ in true })
     }
 
-    public static func records(for task: AgentTask, ofTypes types: Set<String>) -> [TaskEventRecord] {
+    public static func events(for task: AgentTask, ofTypes types: Set<String>) -> [TaskEvent] {
         let taskID = task.id
         let values = Array(types)
         return events(task: task, predicate: #Predicate<TaskEvent> {
             $0.task?.id == taskID && values.contains($0.type)
         }, matches: { types.contains($0.type) })
+    }
+
+    public static func records(for task: AgentTask, ofTypes types: Set<String>) -> [TaskEventRecord] {
+        events(for: task, ofTypes: types)
             .map(TaskEventRecord.init(event:))
             .sorted(by: TaskEventRecord.isChronologicallyOrdered)
     }

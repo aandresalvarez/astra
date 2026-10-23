@@ -1105,9 +1105,8 @@ public enum TaskContextStateManager {
         task: AgentTask,
         taskFolder: String
     ) -> TaskContextState.Turn {
-        let runBlockers = task.events
+        let runBlockers = TaskHistoryRead.events(for: task, ofTypes: ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"])
             .filter { $0.run?.id == run.id }
-            .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) }
             .map { boundedInline($0.payload, maxCharacters: 220) }
         let discoveredRunFiles = TaskOutputDiscovery.filesChanged(
             during: run,
@@ -1209,8 +1208,7 @@ public enum TaskContextStateManager {
     ) -> [TaskEvent] {
         guard mode == .blocked else { return [] }
         let blockingTypes = ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"]
-        let events = task.events
-            .filter { blockingTypes.contains($0.type) }
+        let events = TaskHistoryRead.events(for: task, ofTypes: Set(blockingTypes))
             .sorted { $0.timestamp > $1.timestamp }
         guard let latestRun else {
             return Array(events.prefix(6))
@@ -1399,13 +1397,8 @@ public enum TaskContextStateManager {
             )
         }
 
-        let contractEvents = task.events.filter { event in
-            guard [TaskValidationEventTypes.contractCreated,
-                   TaskValidationEventTypes.contractUpdated,
-                   TaskValidationEventTypes.contractPassed,
-                   TaskValidationEventTypes.contractFailed,
-                   TaskValidationEventTypes.contractOverridden].contains(event.type),
-                  let payload = decodeContractPayload(event.payload) else {
+        let contractEvents = TaskHistoryRead.events(for: task, ofTypes: validationContractEventTypes).filter { event in
+            guard let payload = decodeContractPayload(event.payload) else {
                 return false
             }
             return payload.planID == plan.planID
@@ -1463,13 +1456,8 @@ public enum TaskContextStateManager {
     private static func validationContractStateFromEvents(
         task: AgentTask
     ) -> TaskContextState.ValidationContractSummary? {
-        let contractEvents = task.events.compactMap { event -> (event: TaskEvent, payload: TaskValidationContractEventPayload)? in
-            guard [TaskValidationEventTypes.contractCreated,
-                   TaskValidationEventTypes.contractUpdated,
-                   TaskValidationEventTypes.contractPassed,
-                   TaskValidationEventTypes.contractFailed,
-                   TaskValidationEventTypes.contractOverridden].contains(event.type),
-                  let payload = decodeContractPayload(event.payload) else {
+        let contractEvents = TaskHistoryRead.events(for: task, ofTypes: validationContractEventTypes).compactMap { event -> (event: TaskEvent, payload: TaskValidationContractEventPayload)? in
+            guard let payload = decodeContractPayload(event.payload) else {
                 return nil
             }
             return (event, payload)
@@ -1542,8 +1530,7 @@ public enum TaskContextStateManager {
             TaskValidationEventTypes.assertionSkipped,
             TaskValidationEventTypes.assertionReviewed
         ]
-        for event in task.events
-            .filter({ validationEventTypes.contains($0.type) })
+        for event in TaskHistoryRead.events(for: task, ofTypes: Set(validationEventTypes))
             .sorted(by: { $0.timestamp > $1.timestamp }) {
             guard let payload = decodeAssertionPayload(event.payload),
                   payload.planID == planID,
@@ -1557,8 +1544,7 @@ public enum TaskContextStateManager {
 
     @MainActor
     private static func latestHandoffState(task: AgentTask) -> TaskContextState.HandoffSummary? {
-        guard let event = task.events
-            .filter({ $0.type == TaskHandoffEventTypes.created || $0.type == TaskHandoffEventTypes.updated })
+        guard let event = TaskHistoryRead.events(for: task, ofTypes: [TaskHandoffEventTypes.created, TaskHandoffEventTypes.updated])
             .sorted(by: { $0.timestamp > $1.timestamp })
             .first,
             let payload = TaskWorkerHandoffCodec.decode(event.payload) else {
@@ -1604,11 +1590,17 @@ public enum TaskContextStateManager {
     ) -> TaskContextState.Verification {
         let command = normalizedTestCommand(task)
         let artifactStatus = artifactVerificationStatus(for: artifacts)
-        let latestValidation = task.events
+        let latestValidation = TaskHistoryRead.events(for: task, ofTypes: [
+            TaskValidationEventTypes.contractPassed, TaskValidationEventTypes.contractFailed,
+            TaskValidationEventTypes.contractOverridden, "task.completed", "error"
+        ])
             .filter(isValidationEvent)
             .sorted { $0.timestamp > $1.timestamp }
             .first
-        let latestDeliverableVerification = task.events
+        let latestDeliverableVerification = TaskHistoryRead.events(for: task, ofTypes: [
+            TaskDeliverableVerificationEventTypes.passed, TaskDeliverableVerificationEventTypes.reviewNeeded,
+            TaskDeliverableVerificationEventTypes.failed
+        ])
             .filter(isDeliverableVerificationEvent)
             .sorted { $0.timestamp > $1.timestamp }
             .first
@@ -1776,8 +1768,7 @@ public enum TaskContextStateManager {
 
     @MainActor
     private static func recentQuestions(for task: AgentTask) -> [String] {
-        task.events
-            .filter { $0.type == TaskPlanConversationEventTypes.assistantMessage || $0.type == "agent.response" }
+        TaskHistoryRead.events(for: task, ofTypes: [TaskPlanConversationEventTypes.assistantMessage, "agent.response"])
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(6)
             .flatMap { questionSentences(in: $0.payload) }
@@ -1790,8 +1781,7 @@ public enum TaskContextStateManager {
     @MainActor
     private static func standingUserInstructions(for task: AgentTask) -> [TaskContextState.ContextFact] {
         let pendingTurnMessageIDs = TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
-        let userMessages = task.events
-            .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
+        let userMessages = TaskHistoryRead.events(for: task, ofTypes: ["user.message", TaskPlanConversationEventTypes.userMessage])
             .filter { !pendingTurnMessageIDs.contains($0.id) }
             .sorted { $0.timestamp < $1.timestamp }
         guard userMessages.count > 1 else { return [] }
@@ -1985,6 +1975,12 @@ public enum TaskContextStateManager {
         let command = task.testCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         return command.isEmpty ? nil : command
     }
+
+    private static let validationContractEventTypes: Set<String> = [
+        TaskValidationEventTypes.contractCreated, TaskValidationEventTypes.contractUpdated,
+        TaskValidationEventTypes.contractPassed, TaskValidationEventTypes.contractFailed,
+        TaskValidationEventTypes.contractOverridden
+    ]
 
     private static func isValidationEvent(_ event: TaskEvent) -> Bool {
         if event.type == TaskValidationEventTypes.contractPassed ||
