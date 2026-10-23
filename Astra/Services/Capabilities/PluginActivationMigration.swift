@@ -235,6 +235,7 @@ enum PluginActivationMigration {
                 }
             }
 
+            var accountsToDetach: [Connector] = []
             // Original V20 selections take precedence; V19 falls back to the
             // oldest account when it has no recorded service default.
             for connector in connectors.sorted(by: { $0.createdAt < $1.createdAt }) where isPluginOrigin(connector) {
@@ -260,7 +261,9 @@ enum PluginActivationMigration {
                     CapabilityResourceOrigin.releaseProvenance(of: connector)
                     continue
                 }
-                if !(connector.skill.map { independentSkillIDs.contains($0.id) } ?? false) { connector.skill = nil }
+                if let owner = connector.skill, !independentSkillIDs.contains(owner.id) {
+                    accountsToDetach.append(connector)
+                }
                 for (workspace, activation, componentID) in bindings
                 where !activation.bindings.contains(where: { $0.account?.id == connector.id && $0.componentID == componentID }) {
                     PluginV20AccountChoices.bind(connector, componentID: componentID, to: activation, in: workspace)
@@ -326,12 +329,18 @@ enum PluginActivationMigration {
                     continue
                 }
                 releasedSkillIDs.append(skill.secretNamespaceID)
-                for connector in skill.connectors { connector.skill = nil }
-                for tool in skill.localTools { tool.skill = nil }
+                // Saved deletion owns nullify. Detaching first records an
+                // intermediate missing owner that older SwiftData can revive
+                // on rollback instead of the original skill attachment.
                 modelContext.delete(skill)
                 report.skillsProjected += 1
             }
 
+            // Accounts keep independent skills. For a deleted owner, let
+            // nullify commit the unlink; only a surviving owner needs a write.
+            for account in accountsToDetach {
+                if let owner = account.skill, !owner.isDeleted { account.skill = nil }
+            }
             for tool in tools where isPluginOrigin(tool) {
                 let pluginID = trimmed(tool.originPackageID)
                 let package = packagesByID[pluginID]
@@ -348,7 +357,7 @@ enum PluginActivationMigration {
                 // stays that skill's, as an authored row. Edited, it is also
                 // what the workspaces with the plugin used: there it replaces
                 // the plugin's tool, as any edited tool does.
-                let keptForIndependentSkill = tool.skill.map { independentSkillIDs.contains($0.id) } ?? false
+                let keptForIndependentSkill = tool.skill.map { !$0.isDeleted && independentSkillIDs.contains($0.id) } ?? false
                 if keptForIndependentSkill, !isEdited(tool, spec: spec) {
                     clearOrigin(tool)
                     report.toolsKeptAsAuthored += 1
@@ -358,7 +367,7 @@ enum PluginActivationMigration {
                     clearOrigin(tool)
                     // Its skill row may be deleted above: the projection wires
                     // the runtime's copy to the plugin's first skill instead.
-                    if !keptForIndependentSkill { tool.skill = nil }
+                    if !keptForIndependentSkill, let owner = tool.skill, !owner.isDeleted { tool.skill = nil }
                     let toolID = tool.id.uuidString
                     for (workspace, activation) in using where !usesOnItsOwn(workspace, pluginID, \.globalToolIDs, tool.id) {
                         WorkspaceCapabilityActivation.setOverridden(true, componentID: componentID, rowID: tool.id, on: activation)
@@ -374,7 +383,7 @@ enum PluginActivationMigration {
                 }
                 if workspaces.contains(where: { usesOnItsOwn($0, pluginID, \.globalToolIDs, tool.id) }) {
                     clearOrigin(tool)
-                    tool.skill = nil
+                    if let owner = tool.skill, !owner.isDeleted { tool.skill = nil }
                     report.toolsKeptAsAuthored += 1
                     continue
                 }

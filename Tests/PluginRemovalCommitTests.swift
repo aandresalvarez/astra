@@ -66,6 +66,7 @@ struct PluginRemovalCommitTests {
                 // A deleted owner must not acquire a transient revision/link
                 // rewrite that older SwiftData can later resurrect on rollback.
                 #expect(removed.revision == revision)
+                #expect(removed.workspace?.id == env.workspace.id)
                 #expect(WorkspaceCapabilityActivation.defaultAccount(forService: firstAccount.serviceType, in: env.workspace)?.id == nextAccount.id)
                 return false
             })
@@ -115,6 +116,7 @@ struct PluginRemovalCommitTests {
             #expect(throws: CapabilityUninstaller.UninstallError.self) {
                 try uninstaller.remove(package, modelContext: env.context, persist: { _, _ in
                     saveAttempts += 1
+                    #expect(activation.workspace?.id == env.workspace.id)
                     return false
                 }, removeJournal: journal)
             }

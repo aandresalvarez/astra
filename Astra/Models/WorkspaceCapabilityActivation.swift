@@ -780,8 +780,11 @@ public enum WorkspaceCapabilityActivation {
             // rewrites the doomed owner's revision and relationships; older
             // SwiftData can resurrect that intermediate state after rollback.
             let services = Set(accounts.map { normalizedService($0.serviceType) })
+            // Do not rewrite the inverse after marking its owner deleted.
+            // Older SwiftData can restore that intermediate nil workspace
+            // on rollback. The cascade owns the saved unlink; live readers
+            // already exclude deleted activations.
             context.delete(activation)
-            workspace.pluginActivations.removeAll { $0 === activation }
             let remaining = activations(of: workspace).flatMap(\.bindings).filter { !$0.isDeleted }
             for service in services {
                 electDefault(among: remaining.filter { normalizedService($0.account?.serviceType) == service })
