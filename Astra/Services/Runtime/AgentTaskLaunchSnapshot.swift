@@ -1,5 +1,4 @@
 import Foundation
-import ASTRACore
 import ASTRAModels
 
 /// Immutable request-time configuration passed through a runtime launch.
@@ -24,24 +23,6 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
     let templateHooksJSON: String
     let skillSnapshotsJSON: String
     let runtimePermissionGrantsJSON: String?
-    /// The plugin activations the launch runs with (see
-    /// `TaskExecutionPolicySnapshotV1.pluginActivations`); nil reads the live
-    /// workspace's.
-    let pluginActivations: [PluginActivationRecord]?
-    /// The plugin definitions, bound accounts and override rows frozen with
-    /// those activations (`TaskExecutionPolicySnapshotV1`); nil reads the
-    /// live library and rows.
-    let pluginDefinitions: [PluginPackage]?
-    let pluginAccounts: [PluginAccountRecord]?
-    let accountInventory: TaskAccountInventorySnapshot?
-    let standaloneToolIDs: [UUID]?
-    let pluginOverrides: PluginOverrideRecords?
-    let authoredSkills: [SkillLaunchRecord]?
-    let pendingLegacyPluginState: WorkspaceCapabilityActivation.PendingLegacyState?
-    /// The removed activations' record frozen with them
-    /// (`TaskExecutionPolicySnapshotV1.retiredPluginActivations`); nil reads
-    /// the live workspace's.
-    let retiredPluginActivations: [RetiredPluginActivation]?
 
     init(task: AgentTask) {
         id = task.id
@@ -62,19 +43,6 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         templateHooksJSON = task.templateHooksJSON
         skillSnapshotsJSON = task.skillSnapshotsJSON
         runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
-        pluginActivations = task.workspace.map {
-            WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.forLaunch)
-        }
-        // A launch copy carries its request's frozen definitions on; a live
-        // task is projected from the library as it is now.
-        pluginDefinitions = task.workspace?.launchPluginDefinitions
-        accountInventory = TaskExecutionLaunchSnapshotApplicator.accountInventory(for: task)
-        standaloneToolIDs = TaskStandaloneToolRoles.capture(for: task)
-        pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
-        pluginOverrides = task.workspace.map(PluginOverrideRecords.init(workspace:))
-        authoredSkills = SkillLaunchRecord.captureAuthored(for: task)
-        pendingLegacyPluginState = task.workspace.map(WorkspaceCapabilityActivation.pendingLegacyState(of:))
-        retiredPluginActivations = task.workspace.map(WorkspaceCapabilityActivation.retiredActivations(of:))
     }
 
     init(
@@ -95,16 +63,7 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         executionEnvironmentSnapshotJSON: String?,
         templateHooksJSON: String,
         skillSnapshotsJSON: String,
-        runtimePermissionGrantsJSON: String?,
-        pluginActivations: [PluginActivationRecord]? = nil,
-        pluginDefinitions: [PluginPackage]? = nil,
-        pluginAccounts: [PluginAccountRecord]? = nil,
-        accountInventory: TaskAccountInventorySnapshot? = nil,
-        standaloneToolIDs: [UUID]? = nil,
-        pluginOverrides: PluginOverrideRecords? = nil,
-        authoredSkills: [SkillLaunchRecord]? = nil,
-        pendingLegacyPluginState: WorkspaceCapabilityActivation.PendingLegacyState? = nil,
-        retiredPluginActivations: [RetiredPluginActivation]? = nil
+        runtimePermissionGrantsJSON: String?
     ) {
         self.id = id
         self.model = model
@@ -124,14 +83,5 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         self.templateHooksJSON = templateHooksJSON
         self.skillSnapshotsJSON = skillSnapshotsJSON
         self.runtimePermissionGrantsJSON = runtimePermissionGrantsJSON
-        self.pluginActivations = pluginActivations
-        self.pluginDefinitions = pluginDefinitions
-        self.pluginAccounts = pluginAccounts
-        self.accountInventory = accountInventory
-        self.standaloneToolIDs = standaloneToolIDs
-        self.pluginOverrides = pluginOverrides
-        self.authoredSkills = authoredSkills
-        self.pendingLegacyPluginState = pendingLegacyPluginState
-        self.retiredPluginActivations = retiredPluginActivations
     }
 }

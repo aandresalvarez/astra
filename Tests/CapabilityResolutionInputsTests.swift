@@ -37,11 +37,9 @@ struct CapabilityResolutionInputsTests {
         let workspace = Workspace(name: "Inputs", primaryPath: root.path)
         // Enabled packages and packs are what send resolution to the readers;
         // a workspace with neither returns before reaching any of them.
-        context.insert(workspace)
-        WorkspaceCapabilityActivation.mutate(workspace) { state in
-            for package in PluginCatalog.builtInPackages.prefix(2) { state.enableCapability(package.id) }
-        }
+        workspace.enabledCapabilityIDs = PluginCatalog.builtInPackages.prefix(2).map(\.id)
         workspace.enabledPackIDs = ["astra-test-pack"]
+        context.insert(workspace)
         let task = AgentTask(
             title: "Inputs task",
             goal: "Summarize the ticket",

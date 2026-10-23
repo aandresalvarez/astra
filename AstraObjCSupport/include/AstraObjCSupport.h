@@ -61,39 +61,12 @@ NS_ASSUME_NONNULL_BEGIN
                              keychainPath:(NSString *)keychainPath
                          bootstrapService:(NSString *)bootstrapService;
 
-/// Atomic value update for complete authorization bundles. Refuses ACL errors
-/// without deleting the previous item or recovering an unreadable keychain.
-+ (BOOL)replaceSecretAtomically:(NSString *)value
-                    forAccount:(NSString *)account
-                       service:(NSString *)service
-                         label:(nullable NSString *)label
-                  keychainPath:(NSString *)keychainPath
-              bootstrapService:(NSString *)bootstrapService
-          allowUserInteraction:(BOOL)allowUserInteraction;
-
 /// Load the value for (`service`, `account`) from the dedicated keychain, or
 /// `nil` if absent / the keychain is unavailable.
 + (nullable NSString *)secretForAccount:(NSString *)account
                                 service:(NSString *)service
                            keychainPath:(NSString *)keychainPath
                        bootstrapService:(NSString *)bootstrapService;
-
-/// Read with a call-scoped status. A missing bootstrap/keychain reports
-/// unavailable, never item-not-found (which refers only to a credential).
-+ (nullable NSString *)secretForAccount:(NSString *)account
-                                service:(NSString *)service
-                           keychainPath:(NSString *)keychainPath
-                       bootstrapService:(NSString *)bootstrapService
-                                 status:(OSStatus *)status;
-
-/// Promptable twin used only by explicit authorization publication. Background
-/// callers keep using the noninteractive status overload above.
-+ (nullable NSString *)secretForAccount:(NSString *)account
-                                service:(NSString *)service
-                           keychainPath:(NSString *)keychainPath
-                       bootstrapService:(NSString *)bootstrapService
-                                 status:(OSStatus *)status
-                   allowUserInteraction:(BOOL)allowUserInteraction;
 
 /// Delete the item for (`service`, `account`). Returns `YES` if it was removed
 /// or did not exist.

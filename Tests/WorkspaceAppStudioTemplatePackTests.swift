@@ -188,7 +188,7 @@ struct WorkspaceAppStudioTemplatePackTests {
     func capabilityIDsAloneDoNotMakeStudioPackTemplatesVisible() throws {
         let capabilityIDThatMatchesAPackID = "github-workflow"
         let workspace = Self.workspace()
-        workspace.testEnabledCapabilityIDs = [capabilityIDThatMatchesAPackID]
+        workspace.enabledCapabilityIDs = [capabilityIDThatMatchesAPackID]
         let snapshot = Self.snapshot(entries: [
             Self.entry(
                 packID: capabilityIDThatMatchesAPackID,
@@ -218,7 +218,7 @@ struct WorkspaceAppStudioTemplatePackTests {
     @Test("Studio template loading source uses workspace pack enablement")
     func studioTemplateLoadingSourceUsesWorkspacePackEnablement() throws {
         let workspace = Self.workspace()
-        workspace.testEnabledCapabilityIDs = ["astra.pack.research"]
+        workspace.enabledCapabilityIDs = ["astra.pack.research"]
         workspace.enabledPackIDs = ["astra.pack.devops"]
         let snapshot = Self.snapshot(entries: [
             Self.entry(

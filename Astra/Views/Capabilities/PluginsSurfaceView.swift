@@ -92,8 +92,7 @@ struct PluginsSurfaceView: View {
                     + PluginsSurfacePresentation.pendingAccounts(for: package, googleAccountConnected: googleConnected).count,
                 isVisible: listing.isVisible,
                 isRemovable: Self.isRemovable(package),
-                blocker: listing.blocker,
-                awaitsUpdate: packageState.awaitsUpdate
+                blocker: listing.blocker
             )
         }, query: query)
     }
@@ -114,7 +113,6 @@ struct PluginsSurfaceView: View {
                     .foregroundStyle(Stanford.statusError)
             }
             let current = state
-            PluginStateRecoverySection(onChanged: onCatalogChanged, onError: { errorMessage = $0 })
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
@@ -269,11 +267,7 @@ struct PluginsSurfaceView: View {
             }
             if row.isEnabled || row.isRemovable {
                 HStack {
-                    if row.isEnabled, !PluginsSurfacePresentation.offersTurnOff(package) {
-                        Text("Written in this workspace. Edit or delete it in Skills.")
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(.secondary)
-                    } else if row.isEnabled {
+                    if row.isEnabled {
                         Toggle("On in this workspace", isOn: Binding(
                             get: { confirming != .turnOff(packageID: package.id) },
                             set: { if !$0 { confirming = .turnOff(packageID: package.id) } }
@@ -304,10 +298,12 @@ struct PluginsSurfaceView: View {
         let packageState = isEnabled && component.kind == .connector
             ? CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
             : nil
-        // The account bound to this very component, so a renamed account
-        // still gets its action and a second one of the service its own.
-        let connector = component.connector.flatMap { packageState?.connectorNeedingAttention(for: $0) }
-        let missing = component.connector.map { packageState?.isMissing($0) ?? false } ?? false
+        // Matched like the package state matches them (service type, aliases),
+        // so a renamed account still gets its action.
+        let connector = component.connector.flatMap { spec in
+            packageState?.connectorsNeedingAttention.first { CapabilityRuntimeResourceMatcher.connectorMatches(spec, connector: $0) }
+        }
+        let missing = packageState?.missingConnectors.contains { $0.name == component.name } ?? false
         let accountPending = isEnabled && component.requirement.map { requirement in
             PluginsSurfacePresentation.pendingAccounts(for: package, googleAccountConnected: googleAccountConnected)
                 .contains { $0.id == requirement.id }
@@ -542,10 +538,9 @@ struct PluginsSurfaceView: View {
 
     private func disable(_ package: PluginPackage) {
         let result = CapabilityCatalogActionService().disable(
-            package, workspace: workspace, modelContext: modelContext
+            package, workspace: workspace, capabilities: capabilities, modelContext: modelContext
         )
-        if let problem = result.problem, problem.operationID == nil { errorMessage = problem.localizedDescription }
-        else if !result.persisted && result.problem == nil { errorMessage = "Couldn't turn off \(package.name). Try again." }
+        if !result.persisted { errorMessage = "Couldn't turn off \(package.name). Try again." }
         onCatalogChanged()
     }
 

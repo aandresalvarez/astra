@@ -82,13 +82,9 @@ enum AgentPromptConnectorContextBuilder {
             let route: String
             if let tool = HostControlPlaneMCPProjection.connectorToolName(serviceType),
                hostControlTools.contains(tool) {
-                if tool == "mail" {
-                    route = mailRuntimeExample(accountID: conn.id, usesHostControlCLIRelay: usesHostControlCLIRelay)
-                } else {
-                    route = usesHostControlCLIRelay
-                        ? #"astra-host-control \#(tool) --operation status --alias "\#(alias)""#
-                        : #"mcp__astra_host__\#(tool) with {"operation":"status","alias":"\#(alias)"}"#
-                }
+                route = usesHostControlCLIRelay
+                    ? #"astra-host-control \#(tool) --operation status --alias "\#(alias)""#
+                    : #"mcp__astra_host__\#(tool) with {"operation":"status","alias":"\#(alias)"}"#
             } else if HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration(serviceType) {
                 // A brokered connector's credentials never enter the process
                 // environment, so pointing at env vars here would name
@@ -233,9 +229,6 @@ enum AgentPromptConnectorContextBuilder {
     ) -> String? {
         let serviceType = connector.serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch serviceType {
-        case "stanford_outlook_mail":
-            return hostControlRouted ? mailRuntimeExample(accountID: connector.id,
-                usesHostControlCLIRelay: usesHostControlCLIRelay) : nil
         case "jira":
             return jiraRuntimeExample(
                 for: connector,
@@ -260,13 +253,6 @@ enum AgentPromptConnectorContextBuilder {
         default:
             return nil
         }
-    }
-
-    private static func mailRuntimeExample(accountID: UUID, usesHostControlCLIRelay: Bool) -> String {
-        if usesHostControlCLIRelay {
-            return "astra-host-control mail folders --account " + accountID.uuidString
-        }
-        return #"mcp__astra_host__mail with {"operation":"folders","account":"\#(accountID.uuidString)"}"#
     }
 
     private static func jiraRuntimeExample(

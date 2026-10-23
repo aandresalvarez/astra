@@ -313,45 +313,44 @@ struct CredentialSweepFitnessTests {
         )
     }
 
-    @Test("Account installation admits new values into a journaled private generation and never restores over accepted credentials")
-    func credentialInstallationUsesPrivateGeneration() throws {
-        let installer = try fileText("Astra/Services/Capabilities/CapabilityInstaller.swift")
-        let generation = try fileText("Astra/Services/Capabilities/ConnectorCredentialGenerationTransaction.swift")
-        let save = try body(from: "private func saveConnectorCredentials(",
-            until: "\n    private func connectorConfigKeys(", in: installer)
-        #expect(save.contains("connector.saveCredentialChecked("))
-        let prepared = try #require(save.range(of: "try willWrite()"))
-        let write = try #require(save.range(of: "connector.saveCredentialChecked("))
-        #expect(prepared.upperBound < write.lowerBound)
-        #expect(!save.contains("restorePreviouslyStoredCredential") && !save.contains("savedThisCall"))
-        let journal = try #require(generation.range(of: "journal.record("))
-        let copy = try #require(generation.range(of: "ConnectorSecretSeam.required.saveCredential("))
-        #expect(journal.upperBound < copy.lowerBound)
-        #expect(generation.contains("let namespaceID = UUID()"))
-        #expect(generation.contains("credentialNamespaceID: namespaceID"))
-        let discard = try body(from: "func discard()", until: "\n}", in: generation)
-        #expect(discard.contains("let facts = staged.secretFacts"), "Discard must retain the staged namespace and its exact OAuth ownership, rather than reconstructing defaults.")
-        #expect(!discard.contains("ConnectorSecretFacts("))
-        #expect(discard.contains("deleteAllCredentialsReportingResult"))
-        #expect(!discard.contains("saveCredential("))
-        let noRollback = try #require(installer.range(of: "guard !PluginOperationProblem.preventsRollback(error)"))
-        let release = try #require(installer.range(of: "stagedAccountCredentials.forEach { $0.discard() }"))
-        #expect(noRollback.upperBound < release.lowerBound)
-    }
+    @Test("An install rollback restores without re-asking admission, and reports a restore it could not make")
+    func credentialRollbackDoesNotReRunAdmission() throws {
+        let source = try fileText("Astra/Services/Capabilities/CapabilityInstaller.swift")
+        let saveBody = try body(
+            from: "private func saveConnectorCredentials(",
+            until: "\n    private func connectorConfigKeys(",
+            in: source
+        )
+        let rollback = try body(
+            from: "guard outcome.isSaved else {",
+            until: "savedThisCall.append(",
+            in: saveBody
+        )
 
-    @Test("Account editor delegates credential mutations and recovery to the durable service")
-    func accountEditorUsesDurableCredentialBoundary() throws {
-        let view = try fileText("Astra/Views/ConnectorsManagerView.swift")
-        let service = try fileText("Astra/Services/Capabilities/ConnectorCredentialEditor.swift")
-        #expect(!view.contains("connector.saveCredentialChecked(") && !view.contains("connector.removeCredential("))
-        #expect(view.contains("ConnectorCredentialEditor.save(") && view.contains("ConnectorCredentialEditor.remove("))
-        #expect(view.contains("ConnectorCredentialEditor.recover("))
-        #expect(service.contains("ConnectorCredentialGenerationTransaction.prepare("))
-        #expect(service.contains("PluginStateCommit.save("))
-        #expect(!service.contains("account.removeCredential("))
-        let recovery = try body(from: "static func recover(", until: "private static func change(", in: service)
-        #expect(recovery.contains("PluginOperationRecovery.resumePending("))
-        #expect(!recovery.contains("saveCredentialChecked(") && !recovery.contains("change("))
+        // Admission decides whether a *new* value may be stored. Asking it
+        // again on the way back means the undo can be refused — a tightened
+        // package format, a reuse scan that now sees the value elsewhere — and
+        // the refusal is pure loss: the prior value is already overwritten, so
+        // "no" leaves the failed install's credential in place instead.
+        #expect(
+            !rollback.contains("connector.saveCredential"),
+            """
+            The rollback restores through the admission-controlled write again. \
+            A value already in the Keychain has been admitted once; re-judging \
+            it can only fail the undo.
+            """
+        )
+        #expect(
+            rollback.contains("connector.restorePreviouslyStoredCredential("),
+            "The rollback no longer restores through the non-admitting path; this guard has lost its subject."
+        )
+        // Fire-and-forget is the failure mode that matters: a restore that did
+        // not land means a credential the user had working is gone, and it is
+        // the one thing they cannot discover for themselves.
+        #expect(
+            rollback.contains("credentialRestoreFailed"),
+            "A failed restore is swallowed; the install reports its own failure and not the worse one."
+        )
     }
 
     // MARK: - Helpers

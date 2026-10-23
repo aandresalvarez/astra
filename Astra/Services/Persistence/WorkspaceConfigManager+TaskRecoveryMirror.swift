@@ -108,7 +108,7 @@ extension WorkspaceConfigManager {
     }
 
     private static func redactedLaunchPolicy(_ source: [String: Any]) throws -> [String: Any] {
-        var policy = try PluginLaunchPolicyRedactor.redact(source)
+        var policy = source
         if let value = policy["skillSnapshotsJSON"] as? String, !value.isEmpty {
             let snapshots = try JSONDecoder().decode([SkillSnapshotConfig].self, from: Data(value.utf8))
             policy["skillSnapshotsJSON"] = String(data: try JSONEncoder().encode(snapshots.map(redactedSkillSnapshot)), encoding: .utf8)

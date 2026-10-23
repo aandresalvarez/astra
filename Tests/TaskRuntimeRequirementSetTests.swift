@@ -22,7 +22,7 @@ struct TaskRuntimeRequirementSetTests {
     @Test("GitHub host-control skill creates host-control requirement")
     func githubHostControlSkillCreatesRequirement() {
         let workspace = Workspace(name: "Repo", primaryPath: NSTemporaryDirectory())
-        workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
 
         let skill = Skill(
             name: "GitHub Workflow",

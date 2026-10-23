@@ -13,7 +13,7 @@ private func makeCapabilityActivationDisablerContainer() throws -> ModelContaine
 @Suite("CapabilityActivationDisablerTests")
 @MainActor
 struct CapabilityActivationDisablerTests {
-    @Test("turning an installed plugin off leaves shared rows enabled, owned or not")
+    @Test("disabling package uses origin metadata before legacy name matching")
     func disablingPackageUsesOriginMetadataBeforeLegacyNameMatching() throws {
         let container = try makeCapabilityActivationDisablerContainer()
         let context = container.mainContext
@@ -58,20 +58,19 @@ struct CapabilityActivationDisablerTests {
             templates: [],
             governance: .builtInApproved(riskLevel: .medium)
         )
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         workspace.enabledGlobalSkillIDs = [legacySkill.id.uuidString, ownedSkill.id.uuidString]
 
-        try context.save()
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            modelContext: context)
+            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [legacySkill, ownedSkill]),
+            modelContext: context,
+            availablePackages: [package]
+        )
 
-        // The activation alone records that the plugin is off; legacy shared
-        // rows, stamped or not, are no longer how a plugin reaches a run.
-        #expect(result.disabledSkillIDs.isEmpty)
-        #expect(workspace.enabledGlobalSkillIDs == [legacySkill.id.uuidString, ownedSkill.id.uuidString])
+        #expect(result.disabledSkillIDs == [ownedSkill.id])
+        #expect(workspace.enabledGlobalSkillIDs == [legacySkill.id.uuidString])
         #expect(workspace.enabledCapabilityIDs.isEmpty)
-        #expect(workspace.installedPluginIDs == [package.id])
     }
 }

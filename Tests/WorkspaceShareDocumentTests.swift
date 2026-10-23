@@ -582,7 +582,7 @@ struct WorkspaceShareDocumentTests {
         let root = try Self.temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let (senderContainer, senderWorkspace) = try Self.makeWorkspace(root: root, name: "Sender")
-        senderWorkspace.testEnabledCapabilityIDs = ["some.uninstalled.capability"]
+        senderWorkspace.enabledCapabilityIDs = ["some.uninstalled.capability"]
 
         let packageURL = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter().exportConfigurationPackage(

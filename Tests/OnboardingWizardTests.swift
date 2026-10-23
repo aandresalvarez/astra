@@ -343,7 +343,7 @@ struct OnboardingWizardTests {
         let container = try makeCapabilitySetupCopyContainer()
         let context = container.mainContext
         let source = Workspace(name: "Clinical Ops", primaryPath: "/tmp/clinical-ops")
-        source.testEnabledCapabilityIDs = [
+        source.enabledCapabilityIDs = [
             "jira-workflow",
             "github-workflow",
             "gcloud-workflow",
@@ -388,11 +388,6 @@ struct OnboardingWizardTests {
         redcap.credentialKeys = ["REDCAP_API_TOKEN"]
         redcap.credentialValues = [""]
         context.insert(redcap)
-        // With the plugins on, these rows are their accounts: a copy reads
-        // only an activation's bound accounts.
-        #expect(source.testBind(jira, toPlugin: "jira-workflow"))
-        #expect(source.testBind(gcloud, toPlugin: "gcloud-workflow"))
-        #expect(source.testBind(redcap, toPlugin: "redcap-workflow"))
 
         let store = MockSecretStore()
         store.save(
@@ -448,7 +443,7 @@ struct OnboardingWizardTests {
         let container = try makeCapabilitySetupCopyContainer()
         let context = container.mainContext
         let source = Workspace(name: "Legacy REDCap", primaryPath: "/tmp/legacy-redcap")
-        source.testEnabledCapabilityIDs = ["redcap-workflow"]
+        source.enabledCapabilityIDs = ["redcap-workflow"]
         context.insert(source)
 
         let redcap = Connector(
@@ -463,13 +458,12 @@ struct OnboardingWizardTests {
         redcap.configKeys = ["API_URL"]
         redcap.configValues = ["https://redcap.legacy.edu/api/"]
         context.insert(redcap)
-        #expect(source.testBind(redcap, toPlugin: "redcap-workflow"))
 
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "redcap-workflow" })
-        let inputs = PluginSetupInputs.flattened(CapabilitySetupCopier(secretStore: MockSecretStore()).installationInputs(
+        let inputs = CapabilitySetupCopier(secretStore: MockSecretStore()).installationInputs(
             for: package,
             from: source
-        ), for: package.connectors)
+        )
 
         #expect(inputs.credentialInputs["REDCAP_API_TOKEN"] == "legacy-token")
         #expect(inputs.configInputs["REDCAP_API_URL"] == "https://redcap.legacy.edu/api/")
@@ -546,7 +540,7 @@ struct OnboardingWizardTests {
         context.insert(jira)
 
         let deletedConnectorID = UUID()
-        source.testEnabledCapabilityIDs = ["redcap-workflow"]
+        source.enabledCapabilityIDs = ["redcap-workflow"]
         source.enabledGlobalConnectorIDs = [deletedConnectorID.uuidString, jira.id.uuidString]
 
         let store = MockSecretStore()
@@ -615,48 +609,13 @@ struct OnboardingWizardTests {
         #expect(summary.inputsByPackageID["jira-workflow"]?.credentialInputs["JIRA_API_TOKEN"] == "coral-token")
     }
 
-    @Test("Copy Setup copies one bound account whole: the default's URL, settings and secrets together")
-    @MainActor
-    func copySetupCopiesTheDefaultAccountWhole() throws {
-        let container = try makeCapabilitySetupCopyContainer()
-        let context = container.mainContext
-        let source = Workspace(name: "Two Jira sites", primaryPath: "/tmp/two-jira-sites")
-        context.insert(source)
-        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
-        func account(_ name: String, _ url: String, _ projects: String) -> Connector {
-            let connector = Connector(name: name, serviceType: "jira", connectorDescription: "", baseURL: url, authMethod: "basic")
-            connector.workspace = source
-            connector.configKeys = ["JIRA_PROJECTS"]
-            connector.configValues = [projects]
-            context.insert(connector)
-            return connector
-        }
-        let primary = account("Jira", "https://default.atlassian.net", "DEF")
-        let secondary = account("Jira Ops", "https://second.atlassian.net", "SEC")
-        WorkspaceCapabilityActivation.mutate(source) { $0.enableCapability(package.id) }
-        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: source))
-        let component = CapabilityResourceOrigin.componentID(for: package.connectors[0])
-        WorkspaceCapabilityActivation.bind(primary, toComponent: component, of: activation, isDefault: true)
-        WorkspaceCapabilityActivation.bind(secondary, toComponent: component, of: activation)
-        #expect(activation.accounts(forComponent: component).map(\.id) == [primary.id, secondary.id])
-
-        // Keyed by component (R3); the flat view onboarding reads.
-        let inputs = PluginSetupInputs.flattened(
-            CapabilitySetupCopier(secretStore: MockSecretStore()).installationInputs(for: package, from: source), for: package.connectors
-        )
-        #expect(inputs.baseURLOverrides[package.connectors[0].name] == "https://default.atlassian.net")
-        #expect(inputs.configInputs["JIRA_BASE_URL"] == "https://default.atlassian.net")
-        #expect(inputs.configInputs["JIRA_PROJECTS"] == "DEF")
-        withExtendedLifetime(container) {}
-    }
-
     @Test("Workspace capability setup ignores unchanged default base URLs")
     @MainActor
     func workspaceCapabilitySetupIgnoresUnchangedDefaultBaseURLs() throws {
         let container = try makeCapabilitySetupCopyContainer()
         let context = container.mainContext
         let source = Workspace(name: "Empty REDCap", primaryPath: "/tmp/empty-redcap")
-        source.testEnabledCapabilityIDs = ["redcap-workflow"]
+        source.enabledCapabilityIDs = ["redcap-workflow"]
         context.insert(source)
 
         let redcap = Connector(
@@ -727,11 +686,11 @@ struct OnboardingWizardTests {
         #expect(summary.selectedPackageIDs == ["jira-workflow"])
 
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
-        let inputs = PluginSetupInputs.flattened(CapabilitySetupCopier(secretStore: store).installationInputs(
+        let inputs = CapabilitySetupCopier(secretStore: store).installationInputs(
             for: package,
             from: source,
             globalConnectors: [jira]
-        ), for: package.connectors)
+        )
 
         #expect(inputs.baseURLOverrides["Jira"] == "https://shared.atlassian.net")
         #expect(inputs.configInputs["JIRA_BASE_URL"] == "https://shared.atlassian.net")

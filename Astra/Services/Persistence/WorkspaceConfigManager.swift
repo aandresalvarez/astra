@@ -200,7 +200,7 @@ public enum WorkspaceConfigManager {
     }
 
     public struct WorkspaceConfig: Codable, Sendable {
-        public init(version: Int = WorkspaceConfigManager.currentVersion, id: String? = nil, name: String, primaryPath: String, additionalPaths: [String], icon: String, instructions: String, isStarred: Bool? = nil, activeWorkingPath: String? = nil, activeExecutionEnvironmentJSON: String? = nil, lastUsedSkillNames: [String]? = nil, enabledGlobalSkillIDs: [String]? = nil, enabledGlobalConnectorIDs: [String]? = nil, defaultAccountServiceTypes: [String]? = nil, defaultAccountConnectorIDs: [String]? = nil, enabledGlobalToolIDs: [String]? = nil, enabledCapabilityIDs: [String]? = nil, enabledPackIDs: [String]? = nil, shelfVisibilityOverrides: [String: Bool]? = nil, memories: [String]? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, skills: [SkillConfig], connectors: [ConnectorConfig]? = nil, localTools: [LocalToolConfig]? = nil, templates: [TemplateConfig]? = nil, schedules: [ScheduleConfig]? = nil, sshConnections: [SSHConnection], tasks: [TaskConfig]? = nil, workspaceApps: [WorkspaceAppConfig]? = nil, workspaceAppRuns: [WorkspaceAppRunConfig]? = nil, workspaceAppRunEvents: [WorkspaceAppRunEventConfig]? = nil, workspaceAppDependencyBindings: [WorkspaceAppDependencyBindingConfig]? = nil, workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil, googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil, installedPlugins: [InstalledPluginRef]? = nil, retiredPlugins: [RetiredPluginActivation]? = nil, exportedAt: Date) {
+        public init(version: Int = WorkspaceConfigManager.currentVersion, id: String? = nil, name: String, primaryPath: String, additionalPaths: [String], icon: String, instructions: String, isStarred: Bool? = nil, activeWorkingPath: String? = nil, activeExecutionEnvironmentJSON: String? = nil, lastUsedSkillNames: [String]? = nil, enabledGlobalSkillIDs: [String]? = nil, enabledGlobalConnectorIDs: [String]? = nil, defaultAccountServiceTypes: [String]? = nil, defaultAccountConnectorIDs: [String]? = nil, enabledGlobalToolIDs: [String]? = nil, enabledCapabilityIDs: [String]? = nil, enabledPackIDs: [String]? = nil, shelfVisibilityOverrides: [String: Bool]? = nil, memories: [String]? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, skills: [SkillConfig], connectors: [ConnectorConfig]? = nil, localTools: [LocalToolConfig]? = nil, templates: [TemplateConfig]? = nil, schedules: [ScheduleConfig]? = nil, sshConnections: [SSHConnection], tasks: [TaskConfig]? = nil, workspaceApps: [WorkspaceAppConfig]? = nil, workspaceAppRuns: [WorkspaceAppRunConfig]? = nil, workspaceAppRunEvents: [WorkspaceAppRunEventConfig]? = nil, workspaceAppDependencyBindings: [WorkspaceAppDependencyBindingConfig]? = nil, workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil, googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil, installedPlugins: [InstalledPluginRef]? = nil, exportedAt: Date) {
             self.version = version
             self.id = id
             self.name = name
@@ -237,7 +237,6 @@ public enum WorkspaceConfigManager {
             self.workspaceAppAutomationStates = workspaceAppAutomationStates
             self.googleOAuthAccountProfiles = googleOAuthAccountProfiles
             self.installedPlugins = installedPlugins
-            self.retiredPlugins = retiredPlugins
             self.exportedAt = exportedAt
         }
 
@@ -281,14 +280,24 @@ public enum WorkspaceConfigManager {
         public var workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil
         public var googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil
         public var installedPlugins: [InstalledPluginRef]?
-        public var retiredPlugins: [RetiredPluginActivation]?
         public var exportedAt: Date
     }
 
-    public struct SkillConfig: Codable, Sendable {
-        public init(id: String? = nil, name: String, icon: String, description: String, allowedTools: [String], disallowedTools: [String], customTools: [String], behaviorInstructions: String, environmentKeys: [String], environmentValues: [String], isGlobal: Bool? = nil, connectorIDs: [String]? = nil, localToolIDs: [String]? = nil, connectorNames: [String]? = nil, localToolNames: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, credentialNamespaceID: UUID? = nil) {
+    public struct InstalledPluginRef: Codable, Sendable {
+        public init(id: String, version: String, name: String? = nil) {
             self.id = id
-            self.credentialNamespaceID = credentialNamespaceID
+            self.version = version
+            self.name = name
+        }
+
+        public var id: String
+        public var version: String
+        public var name: String?
+    }
+
+    public struct SkillConfig: Codable, Sendable {
+        public init(id: String? = nil, name: String, icon: String, description: String, allowedTools: [String], disallowedTools: [String], customTools: [String], behaviorInstructions: String, environmentKeys: [String], environmentValues: [String], isGlobal: Bool? = nil, connectorIDs: [String]? = nil, localToolIDs: [String]? = nil, connectorNames: [String]? = nil, localToolNames: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
             self.name = name
             self.icon = icon
             self.description = description
@@ -313,7 +322,6 @@ public enum WorkspaceConfigManager {
         }
 
         public var id: String?
-        public var credentialNamespaceID: UUID?
         public var name: String
         public var icon: String
         public var description: String
@@ -919,7 +927,7 @@ public enum WorkspaceConfigManager {
             globalTools: globalTools
         )
 
-        let skillConfigs = skills.compactMap { skillConfig($0, workspace: workspace) }
+        let skillConfigs = skills.compactMap(skillConfig)
         let connectorConfigs = connectors.compactMap(connectorConfig)
         let toolConfigs = localTools.compactMap(localToolConfig)
         let templateConfigs = workspace.templates.map(templateConfig)
@@ -936,7 +944,12 @@ public enum WorkspaceConfigManager {
             .map(workspaceAppAutomationStateConfig)
         let googleOAuthProfileConfigs = googleOAuthProfilesForExport(workspace: workspace).map(googleOAuthAccountProfileConfig)
 
-        let pluginRefs = installedPluginRefs(for: workspace)
+        var pluginRefs: [InstalledPluginRef] = []
+        for (idx, pluginID) in workspace.installedPluginIDs.enumerated() {
+            let ver = idx < workspace.installedPluginVersions.count
+                ? workspace.installedPluginVersions[idx] : "0.0.0"
+            pluginRefs.append(InstalledPluginRef(id: pluginID, version: ver))
+        }
 
         return WorkspaceConfig(
             id: workspace.id.uuidString,
@@ -974,7 +987,6 @@ public enum WorkspaceConfigManager {
             workspaceAppAutomationStates: workspaceAppAutomationStateConfigs.isEmpty ? nil : workspaceAppAutomationStateConfigs,
             googleOAuthAccountProfiles: googleOAuthProfileConfigs.isEmpty ? nil : googleOAuthProfileConfigs,
             installedPlugins: pluginRefs.isEmpty ? nil : pluginRefs,
-            retiredPlugins: retiredPluginRefs(for: workspace),
             exportedAt: Date()
         )
     }
@@ -1181,7 +1193,6 @@ public enum WorkspaceConfigManager {
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
         taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
         capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState,
-        sourceWorkspaceID: UUID? = nil,
         replacementCredentialIdentity: WorkspaceReplacementCredentialIdentity? = nil
     ) -> Workspace {
         importWorkspaceResult(
@@ -1190,7 +1201,6 @@ public enum WorkspaceConfigManager {
             scheduleTrustPolicy: scheduleTrustPolicy,
             taskRecoveryTrustPolicy: taskRecoveryTrustPolicy,
             capabilityTrust: capabilityTrust,
-            sourceWorkspaceID: sourceWorkspaceID,
             replacementCredentialIdentity: replacementCredentialIdentity
         ).workspace
     }
@@ -1200,8 +1210,7 @@ public enum WorkspaceConfigManager {
     /// destructive step. An additional root that cleanup starts removing
     /// between that check and this import is dropped and reported in
     /// `droppedAdditionalPaths`, never persisted silently as part of the
-    /// workspace. `sourceWorkspaceID` names the file's workspace when the
-    /// import does not keep its ID (Duplicate), for its projected skill IDs.
+    /// workspace.
     @MainActor
     public static func importWorkspaceResult(
         from config: WorkspaceConfig,
@@ -1209,7 +1218,6 @@ public enum WorkspaceConfigManager {
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
         taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
         capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState,
-        sourceWorkspaceID: UUID? = nil, importSession: ImportSession? = nil,
         replacementCredentialIdentity: WorkspaceReplacementCredentialIdentity? = nil
     ) -> WorkspaceConfigImportResult {
         let additionalPaths = config.additionalPaths.filter { !TaskWorktreeCheckoutReservation.isReserved($0) }
@@ -1248,8 +1256,7 @@ public enum WorkspaceConfigManager {
         modelContext.insert(workspace)
         var activation = requestedActivation(from: config)
         var trustReport = CapabilityImportTrustReport()
-        reconcile(&activation, pluginRefs: config.installedPlugins ?? [], trust: capabilityTrust,
-                  modelContext: modelContext, report: &trustReport)
+        reconcile(&activation, trust: capabilityTrust, modelContext: modelContext, report: &trustReport)
 
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
@@ -1264,8 +1271,8 @@ public enum WorkspaceConfigManager {
         let freshIDs: Bool = { if case .validate = capabilityTrust { return true } else { return false } }()
         let retainedConnectorIDs = replacementCredentialIdentity?.connectorIDs(in: config) ?? []
         let retainedSkillIDs = replacementCredentialIdentity?.skillIDs(in: config) ?? []
+        var importedConnectorIDs: [String: String] = [:]
         for cc in config.connectors ?? [] {
-            if freshIDs, adoptSharedAccount(cc, importSession, workspace, &activation, &connectorsByID, &reusedRowIDs) { continue }
             let reused = reusedGlobalConnector(for: cc, modelContext: modelContext)
             if let reused, case .validate = capabilityTrust { reusedRowIDs.insert(reused.id.uuidString) }
             guard let connector = reused ?? makeConnector(from: cc) else {
@@ -1273,26 +1280,22 @@ public enum WorkspaceConfigManager {
                 continue
             }
             if reused == nil { sanitizeCreated(connector, trust: capabilityTrust, report: &trustReport) }
-            if reused == nil, freshIDs {
-                if retainedConnectorIDs.contains(cc.id ?? "") {
-                    replacementCredentialIdentity?.restoreNamespace(of: connector, sourceID: cc.id ?? "")
-                } else {
-                    connector.id = ConnectorCredentialIdentity.isolatedImportID()
-                }
-                importSession?.record(connector, for: cc, createdIn: workspace,
-                                      listed: cc.id.map(requestedActivation(from: config).globalConnectorIDs.contains) ?? false)
-            }
+            if reused == nil, freshIDs, !retainedConnectorIDs.contains(cc.id ?? "") { connector.id = ConnectorCredentialIdentity.isolatedImportID() }
             connector.workspace = (connector.isGlobal ? nil : workspace)
             if connector.isGlobal { activation.enableGlobalConnector(connector.id.uuidString) }
-            if connector.modelContext == nil { modelContext.insert(connector) }
+            if connector.modelContext == nil {
+                modelContext.insert(connector)
+            }
             connectorsByID[connector.id.uuidString] = connector
             if let fileID = cc.id { connectorsByID[fileID] = connector }
-            // Skills name it as the file does (`connectorNames`), sanitized or not.
-            for name in [cc.name, connector.name] where connectorsByName[name] == nil { connectorsByName[name] = connector }
+            if let sourceID = cc.id { importedConnectorIDs[sourceID] = connector.id.uuidString }
+            if connectorsByName[connector.name] == nil {
+                connectorsByName[connector.name] = connector
+            }
         }
 
         // A shared account can be reused by identity/name with a different UUID.
-        workspace.defaultAccountConnectorIDs = (config.defaultAccountConnectorIDs ?? []).map { connectorsByID[$0]?.id.uuidString ?? $0 }
+        workspace.defaultAccountConnectorIDs = (config.defaultAccountConnectorIDs ?? []).map { importedConnectorIDs[$0] ?? $0 }
 
         var toolsByID: [String: LocalTool] = [:]
         var toolsByName: [String: LocalTool] = [:]
@@ -1325,12 +1328,7 @@ public enum WorkspaceConfigManager {
             // The fresh ID is set before the skill is built: building it moves
             // its secrets into the Keychain under its ID.
             let skill = reused ?? makeSkill(from: sc, freshID: freshIDs && !retainedSkillIDs.contains(sc.id ?? ""))
-            if reused == nil {
-                sanitizeCreated(skill, trust: capabilityTrust, report: &trustReport)
-                if retainedSkillIDs.contains(sc.id ?? "") {
-                    replacementCredentialIdentity?.restoreNamespace(of: skill, sourceID: sc.id ?? "")
-                }
-            }
+            if reused == nil { sanitizeCreated(skill, trust: capabilityTrust, report: &trustReport) }
             if skill.modelContext == nil {
                 modelContext.insert(skill)
             }
@@ -1357,16 +1355,12 @@ public enum WorkspaceConfigManager {
         }
 
         WorkspaceCapabilityActivation.apply(activation, to: workspace)
-        let projectedIDs = restoreActivationDetails(from: config, into: workspace, connectorsByID: connectorsByID,
-                                 skillsByID: skillsByID, toolsByID: toolsByID, trust: capabilityTrust,
-                                 fileWorkspaceID: sourceWorkspaceID ?? workspace.id, sessionAccountIDs: importSession?.sharedRowIDs(in: workspace) ?? [])
 
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)
-            // Skill IDs from the file resolve to the rows it created (fresh under `.validate`).
-            WorkspaceCapabilityActivation.rewriteDefaultSkills(of: template, in: workspace) { ids in
-                ids.map { skillsByID[$0]?.id.uuidString ?? projectedIDs[$0] ?? $0 }
-            }
+            // Skill IDs from the file resolve to the rows it created (fresh
+            // under `.validate`).
+            template.defaultSkillIDs = template.defaultSkillIDs.map { skillsByID[$0]?.id.uuidString ?? $0 }
             sanitizeCreated(template, trust: capabilityTrust, report: &trustReport)
             modelContext.insert(template)
         }
@@ -1382,7 +1376,7 @@ public enum WorkspaceConfigManager {
         let quarantinedScheduleCount = scheduleTrustPolicy.quarantinedScheduleCount(in: config.schedules)
         for sc in config.schedules ?? [] {
             let schedule = makeImportedSchedule(from: sc, workspace: workspace, trustPolicy: scheduleTrustPolicy)
-            schedule.skillIDs = schedule.skillIDs.map { skillsByID[$0]?.id.uuidString ?? projectedIDs[$0] ?? $0 }
+            schedule.skillIDs = schedule.skillIDs.map { skillsByID[$0]?.id.uuidString ?? $0 }
             modelContext.insert(schedule)
         }
 
@@ -1465,12 +1459,12 @@ public enum WorkspaceConfigManager {
         try data.write(to: url)
     }
 
-    static func fetchGlobalSkills(modelContext: ModelContext) -> [Skill] {
+    private static func fetchGlobalSkills(modelContext: ModelContext) -> [Skill] {
         let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal })
         return (try? modelContext.fetch(descriptor)) ?? []
     }
 
-    static func fetchGlobalConnectors(modelContext: ModelContext) -> [Connector] {
+    private static func fetchGlobalConnectors(modelContext: ModelContext) -> [Connector] {
         let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal })
         return (try? modelContext.fetch(descriptor)) ?? []
     }
@@ -1599,23 +1593,22 @@ public enum WorkspaceConfigManager {
         []
     }
 
-    static func skillsForExport(workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
+    private static func skillsForExport(workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalSkillIDs.compactMap(UUID.init(uuidString:)))
         let taskSkills = workspace.tasks.flatMap(\.skills)
         let enabledGlobals = globalSkills.filter { enabledGlobalIDs.contains($0.id) }
-        let all = uniqueByID(workspace.skills + taskSkills + enabledGlobals + overridingRows(of: workspace, among: globalSkills)) { $0.id }
+        let all = uniqueByID(workspace.skills + taskSkills + enabledGlobals) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 
-    static func connectorsForExport(
+    private static func connectorsForExport(
         workspace: Workspace,
         skills: [Skill],
         globalConnectors: [Connector]
     ) -> [Connector] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalConnectorIDs.compactMap(UUID.init(uuidString:)))
         let enabledGlobals = globalConnectors.filter { enabledGlobalIDs.contains($0.id) }
-        let all = uniqueByID(workspace.connectors + skills.flatMap { SkillAttachmentVisibility.connectors(of: $0, in: workspace) } + enabledGlobals
-            + boundAccounts(of: workspace)) { $0.id }
+        let all = uniqueByID(workspace.connectors + skills.flatMap(\.connectors) + enabledGlobals) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 
@@ -1626,12 +1619,11 @@ public enum WorkspaceConfigManager {
     ) -> [LocalTool] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalToolIDs.compactMap(UUID.init(uuidString:)))
         let enabledGlobals = globalTools.filter { enabledGlobalIDs.contains($0.id) }
-        let all = uniqueByID(workspace.localTools + skills.flatMap { SkillAttachmentVisibility.tools(of: $0, in: workspace) } + enabledGlobals
-            + overridingRows(of: workspace, among: globalTools)) { $0.id }
+        let all = uniqueByID(workspace.localTools + skills.flatMap(\.localTools) + enabledGlobals) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 
-    private static func skillConfig(_ skill: Skill, workspace: Workspace) -> SkillConfig? {
+    private static func skillConfig(_ skill: Skill) -> SkillConfig? {
         // Guard against faulted/deleted SwiftData objects
         guard !skill.isDeleted, skill.modelContext != nil else { return nil }
         return SkillConfig(
@@ -1646,26 +1638,23 @@ public enum WorkspaceConfigManager {
             environmentKeys: skill.environmentKeys,
             environmentValues: skill.exportableEnvironmentValues,
             isGlobal: skill.isGlobal,
-            connectorIDs: SkillAttachmentVisibility.connectors(of: skill, in: workspace).map { $0.id.uuidString },
-            localToolIDs: SkillAttachmentVisibility.tools(of: skill, in: workspace).map { $0.id.uuidString },
-            connectorNames: SkillAttachmentVisibility.connectors(of: skill, in: workspace).map(\.name),
-            localToolNames: SkillAttachmentVisibility.tools(of: skill, in: workspace).map(\.name),
+            connectorIDs: skill.connectors.map { $0.id.uuidString },
+            localToolIDs: skill.localTools.map { $0.id.uuidString },
+            connectorNames: skill.connectors.map(\.name),
+            localToolNames: skill.localTools.map(\.name),
             originPackageID: skill.originPackageID,
             originPackageVersion: skill.originPackageVersion,
             originComponentID: skill.originComponentID,
             originComponentKind: skill.originComponentKind,
             originSourceKind: skill.originSourceKind,
             createdAt: skill.createdAt,
-            updatedAt: skill.updatedAt,
-            credentialNamespaceID: skill.credentialNamespaceID
+            updatedAt: skill.updatedAt
         )
     }
 
     private static func connectorConfig(_ connector: Connector) -> ConnectorConfig? {
         guard !connector.isDeleted, connector.modelContext != nil else { return nil }
         guard ConnectorSecurityPolicy.isRuntimeSafe(connector) else { return nil }
-        let config = ConnectorSettingStorageSeam.exportableConfig(keys: connector.configKeys, values: connector.configValues,
-                                                                  originPackageID: connector.originPackageID, originComponentID: connector.originComponentID)
         return ConnectorConfig(
             id: connector.id.uuidString,
             name: connector.name,
@@ -1675,8 +1664,8 @@ public enum WorkspaceConfigManager {
             baseURL: connector.baseURL,
             authMethod: connector.authMethod,
             credentialKeys: connector.credentialKeys,
-            configKeys: config.keys,
-            configValues: config.values,
+            configKeys: connector.configKeys,
+            configValues: connector.configValues,
             isGlobal: connector.isGlobal,
             notes: connector.notes,
             originPackageID: connector.originPackageID,
@@ -1686,9 +1675,7 @@ public enum WorkspaceConfigManager {
             originSourceKind: connector.originSourceKind,
             accountAlias: connector.accountAlias,
             createdAt: connector.createdAt,
-            updatedAt: connector.updatedAt,
-            credentialNamespaceID: connector.credentialNamespaceID,
-            outlookCredentialFormat: connector.outlookCredentialFormat
+            updatedAt: connector.updatedAt
         )
     }
 
@@ -2067,7 +2054,7 @@ public enum WorkspaceConfigManager {
             return nil
         }
         let connector = Connector(
-            name: AccountDisplayName.sanitized(config.name) ?? AccountDisplayName.sanitized(config.serviceType) ?? "Account",
+            name: config.name,
             serviceType: config.serviceType,
             icon: config.icon,
             connectorDescription: config.description,
@@ -2077,12 +2064,10 @@ public enum WorkspaceConfigManager {
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             connector.id = id
         }
-        connector.credentialNamespaceID = config.credentialNamespaceID
         connector.credentialKeys = config.credentialKeys
         connector.credentialValues = Array(repeating: "", count: config.credentialKeys.count)
         connector.configKeys = config.configKeys
         connector.configValues = config.configValues
-        if let format = config.outlookCredentialFormat { connector.outlookCredentialFormat = format }
         connector.isGlobal = config.isGlobal ?? false
         connector.notes = config.notes
         connector.originPackageID = config.originPackageID
@@ -2105,7 +2090,7 @@ public enum WorkspaceConfigManager {
             return nil
         }
         let connector = Connector(
-            name: AccountDisplayName.sanitized(snapshot.name) ?? AccountDisplayName.sanitized(snapshot.serviceType) ?? "Account",
+            name: snapshot.name,
             serviceType: snapshot.serviceType,
             icon: snapshot.icon,
             connectorDescription: snapshot.description,
@@ -2115,12 +2100,10 @@ public enum WorkspaceConfigManager {
         if let id = snapshot.id.flatMap(UUID.init(uuidString:)) {
             connector.id = id
         }
-        connector.credentialNamespaceID = snapshot.credentialNamespaceID
         connector.credentialKeys = snapshot.credentialKeys
         connector.credentialValues = Array(repeating: "", count: snapshot.credentialKeys.count)
         connector.configKeys = snapshot.configKeys
         connector.configValues = snapshot.configValues
-        if let format = snapshot.outlookCredentialFormat { connector.outlookCredentialFormat = format }
         connector.isGlobal = false
         connector.notes = snapshot.notes
         connector.createdAt = snapshot.createdAt ?? connector.createdAt
@@ -2190,7 +2173,6 @@ public enum WorkspaceConfigManager {
         if !freshID, let id = config.id.flatMap(UUID.init(uuidString:)) {
             skill.id = id
         }
-        if !freshID { skill.credentialNamespaceID = config.credentialNamespaceID }
         skill.environmentKeys = config.environmentKeys
         let storedValues = Array(config.environmentValues.prefix(config.environmentKeys.count))
         skill.environmentValues = storedValues + Array(repeating: "", count: max(0, config.environmentKeys.count - storedValues.count))
@@ -2225,7 +2207,6 @@ public enum WorkspaceConfigManager {
         if !freshID, let id = snapshot.id.flatMap(UUID.init(uuidString:)) {
             skill.id = id
         }
-        if !freshID { skill.credentialNamespaceID = snapshot.credentialNamespaceID }
         skill.environmentKeys = snapshot.environmentKeys
         let storedValues = Array(snapshot.environmentValues.prefix(snapshot.environmentKeys.count))
         skill.environmentValues = storedValues + Array(repeating: "", count: max(0, snapshot.environmentKeys.count - storedValues.count))
@@ -2269,6 +2250,28 @@ public enum WorkspaceConfigManager {
         template.createdAt = config.createdAt ?? template.createdAt
         template.updatedAt = config.updatedAt ?? template.updatedAt
         return template
+    }
+
+    static func redactedSkillSnapshot(_ snapshot: SkillSnapshotConfig) -> SkillSnapshotConfig {
+        SkillSnapshotConfig(
+            id: snapshot.id,
+            name: snapshot.name,
+            icon: snapshot.icon,
+            description: snapshot.description,
+            allowedTools: snapshot.allowedTools,
+            disallowedTools: snapshot.disallowedTools,
+            customTools: snapshot.customTools,
+            behaviorInstructions: snapshot.behaviorInstructions,
+            environmentKeys: snapshot.environmentKeys,
+            environmentValues: Array(repeating: "", count: snapshot.environmentKeys.count),
+            isGlobal: snapshot.isGlobal,
+            connectorIDs: snapshot.connectorIDs,
+            localToolIDs: snapshot.localToolIDs,
+            connectorSnapshots: snapshot.connectorSnapshots,
+            localToolSnapshots: snapshot.localToolSnapshots,
+            createdAt: snapshot.createdAt,
+            updatedAt: snapshot.updatedAt
+        )
     }
 
     private static func makeImportedSchedule(
@@ -2513,7 +2516,7 @@ public enum WorkspaceConfigManager {
             task.templateID = UUID(uuidString: id)
         }
         task.templateHooksJSON = config.templateHooksJSON ?? ""
-        task.skillSnapshots = importedSkillSnapshots(config.skillSnapshots ?? [], freshIDs: freshIDs)
+        task.skillSnapshots = config.skillSnapshots ?? []
         task.executionEnvironmentSnapshotJSON = sanitizedExecutionEnvironmentJSON(
             config.executionEnvironmentSnapshotJSON,
             preservingHost: true
@@ -2962,15 +2965,12 @@ public enum WorkspaceConfigManager {
         for connectorSnapshot in snapshot.connectorSnapshots ?? [] {
             guard let id = connectorSnapshot.id, connectorsByID[id] == nil else { continue }
             guard let connector = makeConnector(from: connectorSnapshot, workspace: workspace) else { continue }
-            if freshIDs {
-                connector.id = ConnectorCredentialIdentity.isolatedImportID()
-                connector.credentialNamespaceID = nil
-            }
+            if freshIDs { connector.id = ConnectorCredentialIdentity.isolatedImportID() }
             modelContext.insert(connector)
             connectorsByID[connector.id.uuidString] = connector
             connectorsByID[id] = connector
-            for name in [connectorSnapshot.name, connector.name] where connectorsByName[name] == nil {
-                connectorsByName[name] = connector
+            if connectorsByName[connector.name] == nil {
+                connectorsByName[connector.name] = connector
             }
         }
         for toolSnapshot in snapshot.localToolSnapshots ?? [] {
@@ -3006,6 +3006,7 @@ public enum WorkspaceConfigManager {
         guard !skills.contains(where: { $0.id == skill.id }) else { return }
         skills.append(skill)
     }
+
 
     private static func importedActiveWorkingPath(
         _ activeWorkingPath: String?,

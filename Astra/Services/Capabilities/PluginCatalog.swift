@@ -25,7 +25,6 @@ final class PluginCatalog {
         // this load returns; ignore that nested request because this load has
         // already read the repaired library and assigned the current snapshot.
         guard !isLoadingApprovedCapabilities else { return }
-        CapabilityApprovalDigest.invalidate()
         isLoadingApprovedCapabilities = true
         defer { isLoadingApprovedCapabilities = false }
         let libraryChanged = (try? library.syncApprovedPackages(Self.builtInPackages)) == true

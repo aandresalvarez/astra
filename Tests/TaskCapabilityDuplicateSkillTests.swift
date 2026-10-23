@@ -18,7 +18,7 @@ private func makeTaskCapabilityDuplicateSkillContainer() throws -> ModelContaine
 @Suite("Task capability duplicate skills")
 @MainActor
 struct TaskCapabilityDuplicateSkillTests {
-    @Test("An enabled plugin resolves only its projected skill, never stale rows of it")
+    @Test("Enabled package resolves only its current package-owned skill")
     func enabledPackageRejectsStaleDuplicateSkillInstructions() throws {
         let container = try makeTaskCapabilityDuplicateSkillContainer()
         let context = container.mainContext
@@ -28,7 +28,7 @@ struct TaskCapabilityDuplicateSkillTests {
         let pluginSkill = try #require(package.skills.first)
 
         let workspace = Workspace(name: "GitHub Duplicate", primaryPath: "/tmp/github-duplicate")
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         context.insert(workspace)
 
         let current = Skill(
@@ -63,16 +63,11 @@ struct TaskCapabilityDuplicateSkillTests {
         context.insert(task)
         try context.save()
 
-        // Leftover plugin rows (a store the migration has not reached) are
-        // never matched: the plugin's skill is projected from its definition.
         let resolver = TaskCapabilityResolver(task: task)
-        let skills = resolver.allBehaviorSkills
-        #expect(skills.count == 1)
-        #expect(skills.first.map(PluginRuntimeProjection.isProjected) == true)
-        #expect(skills.first?.behaviorInstructions == pluginSkill.behaviorInstructions)
+        #expect(resolver.allBehaviorSkills.map(\.id) == [current.id])
 
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
-        #expect(!prompt.contains("CURRENT_GITHUB_INSTRUCTIONS"))
+        #expect(prompt.contains("CURRENT_GITHUB_INSTRUCTIONS"))
         #expect(!prompt.contains("STALE_GITHUB_INSTRUCTIONS"))
     }
 

@@ -129,7 +129,6 @@ private enum StubConnectorSecretPersistence: ConnectorSecretPersisting {
     static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, allowUserInteraction: Bool) -> Bool { writeSucceeds }
     static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, store: SecretStore) -> Bool { writeSucceeds }
     static func deleteCredential(key: String, facts: ConnectorSecretFacts) -> Bool { true }
-    static func deleteCredential(key: String, facts: ConnectorSecretFacts, store: SecretStore) -> Bool { true }
     static func credentialExists(key: String, facts: ConnectorSecretFacts) -> Bool { false }
     static func loadCredential(key: String, facts: ConnectorSecretFacts) -> String? { nil }
     static func deleteAllCredentials(facts: ConnectorSecretFacts) {}

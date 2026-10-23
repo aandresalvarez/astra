@@ -105,11 +105,7 @@ public struct PluginComponent: Codable, Sendable {
     }
 
     public var kind: Kind
-    /// Stable within the plugin. For a skill, connector or tool it is the
-    /// component's identity: converting to a package carries it onto the
-    /// payload's `id` whenever it differs from the name-derived default, so
-    /// renaming a component that keeps its `id` keeps its settings,
-    /// accounts and secrets. Defaults to `defaultID(forName:)`.
+    /// Stable within the plugin; derived from the payload's name or binary.
     public var id: String
     public var name: String
     public var summary: String
@@ -122,17 +118,6 @@ public struct PluginComponent: Codable, Sendable {
     public var template: PluginTemplate?
     /// For `setup` components: a CLI prerequisite or an account requirement.
     public var requirement: PluginSetupRequirement?
-
-    /// The identity a component without an explicit `id` derives from its
-    /// name. `CapabilityResourceOrigin` normalizes with this same function,
-    /// so a default `id` and the name it came from name the same component.
-    public static func defaultID(forName name: String) -> String {
-        name
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: #"[^a-z0-9._-]+"#, with: "-", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-    }
 
     public init(
         kind: Kind,
@@ -292,16 +277,16 @@ public enum PluginManifestConverter {
     public static func manifest(from package: PluginPackage) -> PluginManifest {
         var components: [PluginComponent] = []
         components += package.skills.map {
-            PluginComponent(kind: .skill, id: $0.id ?? PluginComponent.defaultID(forName: $0.name), name: $0.name, summary: $0.description, skill: $0)
+            PluginComponent(kind: .skill, id: slug($0.name), name: $0.name, summary: $0.description, skill: $0)
         }
         components += package.connectors.map {
             PluginComponent(
-                kind: .connector, id: $0.id ?? PluginComponent.defaultID(forName: $0.name), name: $0.name, summary: $0.description,
+                kind: .connector, id: slug($0.name), name: $0.name, summary: $0.description,
                 setup: connectorSetup($0), connector: $0
             )
         }
         components += package.localTools.map {
-            PluginComponent(kind: .tool, id: $0.id ?? PluginComponent.defaultID(forName: $0.name), name: $0.name, summary: $0.description, tool: $0)
+            PluginComponent(kind: .tool, id: slug($0.name), name: $0.name, summary: $0.description, tool: $0)
         }
         components += package.mcpServers.map {
             PluginComponent(
@@ -341,7 +326,6 @@ public enum PluginManifestConverter {
     }
 
     public static func package(from manifest: PluginManifest) -> PluginPackage {
-        let shared = sharedLegacyIdentities(manifest.components)
         var package = PluginPackage(
             id: manifest.id,
             name: manifest.name,
@@ -353,9 +337,9 @@ public enum PluginManifestConverter {
             tags: manifest.tags,
             version: manifest.version,
             setupGuide: manifest.setupGuide,
-            skills: manifest.components.compactMap { identifiedSkill($0, shared: shared) },
-            connectors: manifest.components.compactMap { identifiedConnector($0, shared: shared) },
-            localTools: manifest.components.compactMap { identifiedTool($0, shared: shared) },
+            skills: manifest.components.compactMap(\.skill),
+            connectors: manifest.components.compactMap(\.connector),
+            localTools: manifest.components.compactMap(\.tool),
             mcpServers: manifest.components.compactMap(\.mcp),
             templates: manifest.components.compactMap(\.template),
             setupRequirements: manifest.components.compactMap(\.requirement),
@@ -378,87 +362,6 @@ public enum PluginManifestConverter {
             return try checkedPackage(from: decoder.decode(PluginManifest.self, from: data))
         }
         return try decoder.decode(PluginPackage.self, from: data)
-    }
-
-    /// The payload with the component's `id` as its identity. A default
-    /// `id` (the one its name derives) is left off, so a package converted
-    /// to a manifest and back is unchanged. A payload identified here also
-    /// replaces the identity its name derives, whether or not it repeats the
-    /// `id` itself: an earlier ASTRA ignored both, so an activation it made
-    /// keys this component's settings, accounts and secrets by that name.
-    /// An identity two components' names derive (`shared`) is not added: it
-    /// can't say which of them an earlier activation meant.
-    private static func identifiedSkill(_ component: PluginComponent, shared: Set<String>) -> PluginSkill? {
-        guard var skill = component.skill else { return nil }
-        if component.id != PluginComponent.defaultID(forName: skill.name) || skill.id != nil {
-            skill.replaces = adding(
-                identity(["skill", skill.name]), to: skill.replaces, unless: identity(["skill", component.id]), shared: shared
-            )
-            skill.id = component.id
-        }
-        return skill
-    }
-
-    private static func identifiedConnector(_ component: PluginComponent, shared: Set<String>) -> PluginConnector? {
-        guard var connector = component.connector else { return nil }
-        if component.id != PluginComponent.defaultID(forName: connector.name) || connector.id != nil {
-            connector.replaces = adding(
-                identity(["connector", connector.serviceType, connector.name]),
-                to: connector.replaces,
-                unless: identity(["connector", connector.serviceType, component.id]),
-                shared: shared
-            )
-            connector.id = component.id
-        }
-        return connector
-    }
-
-    /// A tool without an `id` is identified by its type, command and name; one
-    /// identified here also replaces that form, both with the name its `id`
-    /// derives from (a version that renamed it) and with its own name (an
-    /// earlier ASTRA that ignored the `id`, even one the payload repeats).
-    private static func identifiedTool(_ component: PluginComponent, shared: Set<String>) -> PluginLocalTool? {
-        guard var tool = component.tool else { return nil }
-        // The manifest ID is stable even when its spelling is the name's
-        // default. Command/type changes must not retire this component.
-        let current = identity(["tool", component.id])
-        for legacy in legacyIdentities(of: component) {
-            tool.replaces = adding(legacy, to: tool.replaces, unless: current, shared: shared)
-        }
-        tool.id = component.id
-        return tool
-    }
-
-    /// A component identity in `CapabilityResourceOrigin.componentID`'s form.
-    private static func identity(_ parts: [String]) -> String {
-        parts.map { PluginComponent.defaultID(forName: $0) }.joined(separator: ":")
-    }
-
-    private static func adding(
-        _ identity: String, to replaces: [String]?, unless current: String, shared: Set<String>
-    ) -> [String]? {
-        guard identity != current, !shared.contains(identity), !(replaces ?? []).contains(identity) else { return replaces }
-        return (replaces ?? []) + [identity]
-    }
-
-    /// The identities a component's name derives in `componentID`'s form (a
-    /// tool's both with its `id` and its name), whatever `id` it declares.
-    private static func legacyIdentities(of component: PluginComponent) -> [String] {
-        if let skill = component.skill { return [identity(["skill", skill.name])] }
-        if let connector = component.connector { return [identity(["connector", connector.serviceType, connector.name])] }
-        guard let tool = component.tool else { return [] }
-        let forms = [component.id, tool.name].map { identity(["tool", tool.toolType, tool.command, $0]) }
-        return forms[0] == forms[1] ? [forms[0]] : forms
-    }
-
-    /// Name-derived identities more than one component derives: two
-    /// same-service connectors sharing a name, say. Neither may claim it.
-    private static func sharedLegacyIdentities(_ components: [PluginComponent]) -> Set<String> {
-        var counts: [String: Int] = [:]
-        for component in components {
-            for legacy in legacyIdentities(of: component) { counts[legacy, default: 0] += 1 }
-        }
-        return Set(counts.filter { $0.value > 1 }.keys)
     }
 
     /// `package(from:)`, refusing a manifest whose setup steps the package

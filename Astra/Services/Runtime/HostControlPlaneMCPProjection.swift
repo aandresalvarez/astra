@@ -55,7 +55,7 @@ enum HostControlPlaneMCPProjection {
     }
 
     static let serverID = "astra_host"
-    static let toolNames = ["github", "gcloud", "bq", "ssh", "jira", "redcap", "mail", "history"]
+    static let toolNames = ["github", "gcloud", "bq", "ssh", "jira", "redcap", "history"]
     static let githubPackageID = "github-workflow"
 
     static func isEnabled(for environment: WorkspaceExecutionEnvironment) -> Bool {
@@ -498,8 +498,6 @@ enum HostControlPlaneMCPProjection {
 
     private static func runtimeSupportPurpose(for tool: String) -> String {
         switch tool {
-        case "mail":
-            return "Read approved Outlook accounts, folders and messages through ASTRA; credentials stay in the app."
         case "history":
             return "Retrieve bounded pages of this task's original durable evidence without database or arbitrary file access."
         case "github":
@@ -526,8 +524,6 @@ enum HostControlPlaneMCPProjection {
 
     private static func allowedInputKeys(for tool: String) -> [String] {
         switch tool {
-        case "mail":
-            return ["operation", "account", "query", "message_id", "limit"]
         case "history":
             return ["event_id", "before_id", "offset"]
         case "github":

@@ -123,11 +123,8 @@ struct CapabilityUpdateRoundTripTests {
             modelContext: context,
             policyContext: .currentUser(workspace: workspace, approvalRecords: [v1Record])
         )
-        let enabledSkill = try #require(
-            WorkspaceCapabilities(workspace: workspace, packageDefinitions: [v1Stored]).activeSkills.first
-        )
+        let enabledSkill = try #require(try context.fetch(FetchDescriptor<Skill>()).first)
         #expect(enabledSkill.behaviorInstructions == "v1 behavior")
-        #expect(try context.fetch(FetchDescriptor<Skill>()).isEmpty)
 
         // v2: import replaces the file and returns the package to draft.
         let v2 = updatePackage(version: "2.0.0", instructions: "v2 behavior")
@@ -161,19 +158,17 @@ struct CapabilityUpdateRoundTripTests {
         )
         #expect(approvedDecision.canRun)
 
-        // Re-enable (the post-approval refresh path) records v2 on the same
-        // activation; the projection reads the v2 definition.
+        // Re-enable (the post-approval refresh path) upserts the v2
+        // definitions onto the existing resources instead of duplicating.
         _ = try installer.enable(
             stored,
             in: workspace,
             modelContext: context,
             policyContext: .currentUser(workspace: workspace, approvalRecords: [v1Record, v2Record])
         )
-        let skills = WorkspaceCapabilities(workspace: workspace, packageDefinitions: [stored]).activeSkills
+        let skills = try context.fetch(FetchDescriptor<Skill>())
         #expect(skills.count == 1)
-        #expect(skills.first?.id == enabledSkill.id)
         #expect(skills.first?.behaviorInstructions == "v2 behavior")
-        #expect(try context.fetch(FetchDescriptor<PluginActivation>()).count == 1)
         #expect(workspace.installedVersion(of: v1.id) == "2.0.0")
     }
 }

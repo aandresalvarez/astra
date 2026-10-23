@@ -120,13 +120,9 @@ struct CapabilityResourceKindParityTests {
         let context = container.mainContext
         let first = Workspace(name: "First", primaryPath: root.appendingPathComponent("a").path)
         let second = Workspace(name: "Second", primaryPath: root.appendingPathComponent("b").path)
-        for workspace in [first, second] {
-            try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
-        }
         context.insert(first)
         context.insert(second)
 
-        try context.save()
         let package = everyKindPackage()
         let installer = CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
         _ = try installer.install(package, into: first, modelContext: context)
@@ -153,16 +149,11 @@ struct CapabilityResourceKindParityTests {
         #expect(!FileManager.default.fileExists(atPath: library.packageURL(for: package.id).path))
 
         let skills = try context.fetch(FetchDescriptor<Skill>())
+        let connectors = try context.fetch(FetchDescriptor<Connector>())
         let tools = try context.fetch(FetchDescriptor<LocalTool>())
         #expect(!skills.contains { CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id) })
+        #expect(!connectors.contains { CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id) })
         #expect(!tools.contains { CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id) })
-        #expect(try context.fetch(FetchDescriptor<PluginActivation>()).isEmpty)
-        #expect(try context.fetch(FetchDescriptor<AccountBinding>()).isEmpty)
-        // The connector rows are the workspaces' accounts: Remove keeps them,
-        // unbound, for the person to delete or reuse.
-        let accounts = try context.fetch(FetchDescriptor<Connector>())
-        #expect(accounts.count == 2)
-        #expect(accounts.allSatisfy { $0.accountBindings.isEmpty })
     }
 }
 
@@ -170,8 +161,8 @@ struct CapabilityResourceKindParityTests {
 @MainActor
 struct CapabilityDisableSharedClaimsTests {
 
-    @Test("Turning one plugin off leaves another plugin with the same skill on")
-    func disablePreservesOtherPlugin() throws {
+    @Test("Disabling one package preserves global resources claimed by another enabled package")
+    func disablePreservesSharedClaims() throws {
         let root = try destructiveTempDirectory(named: "astra-shared-claims")
         defer { try? FileManager.default.removeItem(at: root) }
         let library = CapabilityLibrary(directory: root)
@@ -199,24 +190,35 @@ struct CapabilityDisableSharedClaimsTests {
         let installer = CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
         _ = try installer.install(alpha, into: workspace, modelContext: context)
         _ = try installer.install(beta, into: workspace, modelContext: context)
-        // Each plugin projects its own skill, so the two never contend for a row.
-        #expect(WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages()).activeSkills.count == 2)
+        #expect(workspace.enabledGlobalSkillIDs.count == 1)
 
+        func currentCapabilities() throws -> WorkspaceCapabilities {
+            WorkspaceCapabilities(
+                workspace: workspace,
+                globalSkills: try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
+            )
+        }
         CapabilityActivationDisabler().disable(
             alpha,
             in: workspace,
-            modelContext: context)
+            capabilities: try currentCapabilities(),
+            modelContext: context,
+            availablePackages: [alpha, beta]
+        )
 
+        // beta still claims the shared skill, so its activation survives.
         #expect(!workspace.enabledCapabilityIDs.contains("alpha-pkg"))
         #expect(workspace.enabledCapabilityIDs.contains("beta-pkg"))
-        #expect(WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages()).activeSkills.map(\.originPackageID) == ["beta-pkg"])
+        #expect(workspace.enabledGlobalSkillIDs.count == 1)
 
         CapabilityActivationDisabler().disable(
             beta,
             in: workspace,
-            modelContext: context)
-        #expect(WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages()).activeSkills.isEmpty)
-        #expect(workspace.installedPluginIDs.sorted() == ["alpha-pkg", "beta-pkg"])
+            capabilities: try currentCapabilities(),
+            modelContext: context,
+            availablePackages: [alpha, beta]
+        )
+        #expect(workspace.enabledGlobalSkillIDs.isEmpty)
     }
 }
 
@@ -231,7 +233,7 @@ struct CapabilityLifecycleMatrixTests {
     ) -> CapabilityLifecycleSnapshot {
         var package = everyKindPackage(id: "matrix-pkg")
         package.governance = governance
-        workspace.testEnabledCapabilityIDs = enabled ? ["matrix-pkg"] : []
+        workspace.enabledCapabilityIDs = enabled ? ["matrix-pkg"] : []
         let context = CapabilityCatalogPolicyContext.workspaceUser(
             workspace: workspace,
             isAdmin: true,

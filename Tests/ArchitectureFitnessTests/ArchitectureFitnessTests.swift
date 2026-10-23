@@ -1083,30 +1083,38 @@ struct ArchitectureFitnessTests {
         let root = try repositoryRoot()
         let configure = try String(
             contentsOf: root.appendingPathComponent("Astra/Views/ConfigureView.swift"), encoding: .utf8)
-        let skills = try String(
-            contentsOf: root.appendingPathComponent("Astra/Views/SkillsTabContent.swift"), encoding: .utf8)
         let creation = try String(
             contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/CapabilityPackageCreationService.swift"),
             encoding: .utf8)
+        let catalogView = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"), encoding: .utf8)
 
         #expect(configure.contains("CapabilityPersistence.saveResourceMutation"))
-        #expect(!skills.contains("WorkspacePersistenceCoordinator.saveAndAutoExport"))
-        #expect(!skills.contains("skill.cleanupKeychain("))
         let resourcesStart = try #require(configure.range(of: "struct ConnectorsTabContent"))
         let resourcesEnd = try #require(configure.range(of: "// MARK: - Templates Tab"))
         #expect(!configure[resourcesStart.lowerBound..<resourcesEnd.lowerBound].contains(
             "WorkspacePersistenceCoordinator.saveAndAutoExport"))
-        // Create orchestrates the prepared-file boundary rather than doing
-        // independent live library/approval writes. Behavioral crash tests
-        // verify replay; this guard keeps write ownership out of this facade.
-        #expect(!creation.contains("library.install("))
-        #expect(!creation.contains("approvalStore.save("))
-        #expect(!creation.contains("saveBeforeDependentWrite("))
-        #expect(creation.contains("PluginInstallationTransaction.prepare("))
-        #expect(creation.contains("pendingApproval: pendingApproval"))
         let suppressedInstall = try #require(creation.range(of: "announceCatalogMutation: false"))
-        let globalPost = try #require(creation.range(of: "CapabilityCatalogPersistenceEvents.post(.global)", range: suppressedInstall.lowerBound..<creation.endIndex))
-        #expect(suppressedInstall.lowerBound < globalPost.lowerBound)
+        let approvalSave = try #require(creation.range(of: "let approvalRecord = try saveApprovalRecordIfNeeded"))
+        let globalPost = try #require(creation.range(of: "CapabilityCatalogPersistenceEvents.post(.global)", range: approvalSave.lowerBound..<creation.endIndex))
+        #expect(suppressedInstall.lowerBound < approvalSave.lowerBound)
+        #expect(approvalSave.lowerBound < globalPost.lowerBound)
+        #expect(catalogView.contains("CapabilityPersistence.saveResourceMutation(workspace: workspace"))
+    }
+
+    @Test("Plugin catalog approval refresh cancels stale loads")
+    func pluginCatalogApprovalRefreshCancelsStaleLoads() throws {
+        let root = try repositoryRoot()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(view.contains("@State private var approvalRecordsRefreshTask: Task<Void, Never>?"))
+        #expect(view.contains("@State private var approvalRecordsRefreshGeneration = 0"))
+        #expect(view.contains("approvalRecordsRefreshTask?.cancel()"))
+        #expect(view.contains("approvalRecordsRefreshGeneration == refreshGeneration"))
+        #expect(view.contains("cancelApprovalRecordsRefresh()"))
     }
 
     @Test("Admin policy contexts come only from the currentUser factory")
@@ -1974,7 +1982,7 @@ struct ArchitectureFitnessTests {
             // all-public struct) to stay constructible from outside this new
             // target - a hard language requirement, not scope creep.
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_200, .owner("Workspace mirror persistence")),
-            "Astra/Views/ConfigureView.swift": .init(2_300, .owner("Legacy configure surface")),
+            "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
             // Self-referential: this file crossed its own 2,000-line
             // threshold from the file-access-broker tests added for issue

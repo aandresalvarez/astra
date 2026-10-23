@@ -22,7 +22,7 @@ struct AgentPolicyGitHubRoutingTests {
             $0.id == HostControlPlaneMCPProjection.githubPackageID
         })
         let workspace = Workspace(name: "GitHub Metadata Policy", primaryPath: "/tmp/astra-github-metadata-policy")
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         let task = AgentTask(
             title: "Review PR metadata",
             goal: "Use GitHub to inspect pull request metadata and checks",
@@ -70,7 +70,7 @@ struct AgentPolicyGitHubRoutingTests {
             $0.id == HostControlPlaneMCPProjection.githubPackageID
         })
         let workspace = Workspace(name: "Native Git Policy", primaryPath: "/tmp/astra-native-git-policy")
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         let task = AgentTask(
             title: "Sync branch",
             goal: "Pull latest code before editing",
@@ -112,7 +112,7 @@ struct AgentPolicyGitHubRoutingTests {
             $0.id == HostControlPlaneMCPProjection.githubPackageID
         })
         let workspace = Workspace(name: "Native gh Auth Policy", primaryPath: "/tmp/astra-native-gh-auth-policy")
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         let task = AgentTask(
             title: "Check auth",
             goal: "Check GitHub CLI authentication state",
@@ -152,7 +152,7 @@ struct AgentPolicyGitHubRoutingTests {
             $0.id == HostControlPlaneMCPProjection.githubPackageID
         })
         let workspace = Workspace(name: "Cursor GitHub Metadata", primaryPath: "/tmp/astra-cursor-github-metadata")
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         let task = AgentTask(
             title: "ASTRA task 9FA6AF3D PR metadata",
             goal: "Use GitHub to find the pull request and issue metadata for ASTRA task 9FA6AF3D-F4D3-4035-BFC2-826487DA32ED",

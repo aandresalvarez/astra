@@ -48,11 +48,11 @@ struct ScheduleEditorView: View {
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
     private var globalSkills: [Skill]
 
-    /// Loaded once in `.task`, so rendering never scans the plugin library.
-    @State private var routineCatalog = RoutineSkillCatalog.builtIns
-
     private var availableSkills: [Skill] {
-        WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills, catalog: routineCatalog)
+        let workspaceSkills = workspace.skills.filter { !$0.isGlobal }
+        let enabledIDs = Set(workspace.enabledGlobalSkillIDs)
+        let enabledGlobals = globalSkills.filter { enabledIDs.contains($0.id.uuidString) }
+        return (workspaceSkills + enabledGlobals).sorted { $0.name < $1.name }
     }
 
     private let budgetPresets = TaskExecutionDefaults.budgetPresets
@@ -456,9 +456,6 @@ struct ScheduleEditorView: View {
             .padding(.vertical, 14)
         }
         .frame(width: 560, height: 760)
-        .task(id: workspace.id) {
-            routineCatalog = await RoutineSkillCatalog.load(enabledPackIDs: WorkspaceCapabilityActivation.state(of: workspace).packIDs)
-        }
         .alert("Delete Routine", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) { deleteSchedule() }
@@ -680,8 +677,7 @@ struct ScheduleEditorView: View {
         s.dailyHour = dailyHour
         s.dailyMinute = dailyMinute
         s.weeklyDayOfWeek = weeklyDayOfWeek
-        // Against durable state, not the catalog loaded when the editor opened.
-        s.skillIDs = RoutineSkillCatalog.validatedSelection(Array(selectedSkillIDs), in: workspace, globalSkills: globalSkills)
+        s.skillIDs = Array(selectedSkillIDs)
         s.routinePaths = routinePaths
         s.resultMode = resultMode
 

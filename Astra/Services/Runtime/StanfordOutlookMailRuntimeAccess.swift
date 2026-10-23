@@ -1,40 +1,45 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
-import HostControlToolSupport
 
-/// One launch's approved value records. A local-tool declaration grants no
-/// account access, and later live edits cannot change a captured generation.
-@MainActor
+/// Whether a run may be handed `ASTRA_MAIL_REGISTRY_PATH`.
+///
+/// That variable is not a route, it is a credential pointer. The registry it
+/// names hands the helper the Keychain service holding the mailbox access and
+/// refresh tokens, which the helper then reads with `/usr/bin/security` —
+/// outside the connector projection, so `connectorCredentialExposurePolicy`
+/// never sees it and cannot withhold it.
+///
+/// That is why this one cannot follow reachability the way a route does.
+/// Connector preflight walks only the narrated set, so an enabled Stanford mail
+/// connector that this turn's wording pruned raises no first-use approval;
+/// widening the injection to the reachable tier would let a turn about
+/// something else perform authenticated mailbox reads that the user was never
+/// asked about.
+///
+/// Narrated is unchanged — preflight walks it, so the approval exists. Offered
+/// has to carry the grant the narrated path would have obtained.
 enum StanfordOutlookMailRuntimeAccess {
-    struct Snapshot {
-        let accounts: [PluginAccountRecord]
-        let withheldAccountCount: Int
-
-        @MainActor
-        func makeReader(load: @escaping @MainActor @Sendable (PluginAccountRecord, MailReadRequest) async throws -> Data = {
-            try await StanfordOutlookMailGraphService().read(account: $0, request: $1)
-        }) -> BrokeredMailReadBridge {
-            do {
-                let session = try OutlookMailReadSession(accounts: accounts, withheldAccounts: withheldAccountCount, load: load)
-                return BrokeredMailReadBridge { try await session.readMail($0) }
-            } catch {
-                // Malformed captured state closes this route without silently
-                // picking a different account or blocking unrelated tools.
-                return BrokeredMailReadBridge { _ in throw MailReadFailure.invalidSnapshot }
-            }
+    @MainActor
+    static func isGranted(
+        for task: AgentTask,
+        in capabilityScope: TaskCapabilityPromptScope,
+        runtime: AgentRuntimeID?,
+        additionalGrants: [PermissionGrant]
+    ) -> Bool {
+        if capabilityScope.connectors.contains(where: { $0.isStanfordOutlookMail })
+            || capabilityScope.localTools.contains(where: { $0.command == StanfordOutlookMail.toolCommand }) {
+            return true
         }
-    }
-
-    static func capture(for task: AgentTask, in scope: TaskCapabilityPromptScope,
-                        runtime: AgentRuntimeID?, additionalGrants: [PermissionGrant]) -> Snapshot {
-        let narrated = Set(scope.connectors.map(\.id))
-        let approved = TaskCapabilityResolver.approvedCredentialConnectorIDs(
-            in: TaskRuntimePermissionGrants.approvedCredentialLabels(for: task, runtime: runtime,
-                additionalGrants: additionalGrants))
-        let reachable = scope.reachableConnectors.filter(\.isStanfordOutlookMail)
-        let allowed = reachable.filter { narrated.contains($0.id) || approved.contains($0.id) }
-        return Snapshot(accounts: allowed.map(PluginAccountRecord.init),
-            withheldAccountCount: reachable.count - allowed.count)
+        let offered = capabilityScope.reachableConnectors.filter(\.isStanfordOutlookMail)
+        guard !offered.isEmpty else { return false }
+        let approvedConnectorIDs = TaskCapabilityResolver.approvedCredentialConnectorIDs(
+            in: TaskRuntimePermissionGrants.approvedCredentialLabels(
+                for: task,
+                runtime: runtime,
+                additionalGrants: additionalGrants
+            )
+        )
+        return offered.contains { approvedConnectorIDs.contains($0.id) }
     }
 }

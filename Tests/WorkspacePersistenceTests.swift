@@ -35,7 +35,7 @@ private func gitPathIsIgnored(_ relativePath: String, in repository: URL) throws
 @MainActor
 private func makeRichWorkspace(in context: ModelContext, root: String) throws -> Workspace {
     let workspace = Workspace(name: "Persistence", primaryPath: root)
-    workspace.testEnabledCapabilityIDs = ["stanford.builder"]
+    workspace.enabledCapabilityIDs = ["stanford.builder"]
     workspace.enabledPackIDs = ["astra.pack.devops"]
     workspace.shelfVisibilityOverrides = [
         "browser": true,

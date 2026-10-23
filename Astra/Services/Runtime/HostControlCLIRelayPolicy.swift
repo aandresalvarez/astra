@@ -24,8 +24,6 @@ enum HostControlCLIRelayPolicy {
         }
 
         switch tokens[1].lowercased() {
-        case "mail":
-            return MailReadRequest.arguments(fromCLI: Array(tokens.dropFirst(2))) != nil
         case "history":
             guard let values = pairedOptions(Array(tokens.dropFirst(2)), allowed: ["--event-id", "--before-id", "--offset"]) else { return false }
             var args: [String: Any] = [:]
@@ -222,9 +220,6 @@ enum HostControlCLIRelayPolicy {
     }
 
     private static func shellTokens(_ command: String) -> [String]? {
-        // A line break separates shell commands. Reject it before the
-        // whitespace tokenizer could turn two commands into one valid call.
-        guard !command.unicodeScalars.contains(where: { $0.value == 10 || $0.value == 13 }) else { return nil }
         var tokens: [String] = []
         var token = ""
         var quote: Quote?

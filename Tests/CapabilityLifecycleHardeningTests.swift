@@ -183,8 +183,8 @@ struct WorkspaceInstalledPluginRecordTests {
     @Test("Version write repairs a desynced versions array")
     func desyncedVersionArrayIsRepaired() {
         let workspace = Workspace(name: "Desync", primaryPath: "/tmp/desync")
-        workspace.testInstalledPluginIDs = ["a", "b"]
-        workspace.testInstalledPluginVersions = ["1.0.0"]
+        workspace.installedPluginIDs = ["a", "b"]
+        workspace.installedPluginVersions = ["1.0.0"]
 
         WorkspaceCapabilityActivation.mutate(workspace) { $0.recordInstalledPlugin(id: "b", version: "2.0.0") }
 

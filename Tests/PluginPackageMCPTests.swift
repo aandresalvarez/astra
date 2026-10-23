@@ -170,7 +170,7 @@ struct PluginPackageMCPTests {
     @MainActor
     func runtimeMCPManifestListsOnlyEnabledRunnablePackages() {
         let workspace = Workspace(name: "MCP Runtime", primaryPath: "/tmp/mcp-runtime")
-        workspace.testEnabledCapabilityIDs = ["mcp-approved", "mcp-draft"]
+        workspace.enabledCapabilityIDs = ["mcp-approved", "mcp-draft"]
         WorkspaceCapabilityActivation.mutate(workspace) { $0.recordInstalledPlugin(id: "mcp-approved", version: "1.0.0") }
         WorkspaceCapabilityActivation.mutate(workspace) { $0.recordInstalledPlugin(id: "mcp-draft", version: "1.0.0") }
 

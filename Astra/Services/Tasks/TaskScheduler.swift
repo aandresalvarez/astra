@@ -147,7 +147,7 @@ final class TaskScheduler {
         if schedule.workspace != nil {
             let globalDescriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })
             let globals = (try? modelContext.fetch(globalDescriptor)) ?? []
-            for skill in AgentTask.storableSkills(Self.resolvedSkills(for: schedule, globalSkills: globals), in: task.workspace) {
+            for skill in Self.resolvedSkills(for: schedule, globalSkills: globals) {
                 task.skills.append(skill)
             }
         }
@@ -207,7 +207,8 @@ final class TaskScheduler {
         guard !effectiveSkillIDs.isEmpty else { return [] }
 
         let idSet = Set(effectiveSkillIDs)
-        return WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills)
+        return WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills)
+            .activeSkills
             .filter { idSet.contains($0.id.uuidString) }
     }
 }

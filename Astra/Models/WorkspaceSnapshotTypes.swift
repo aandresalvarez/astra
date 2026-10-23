@@ -17,9 +17,7 @@ extension ConnectorSnapshotConfig {
             isGlobal: connector.isGlobal,
             notes: connector.notes,
             createdAt: connector.createdAt,
-            updatedAt: connector.updatedAt,
-            credentialNamespaceID: connector.credentialNamespaceID,
-            outlookCredentialFormat: connector.outlookCredentialFormat
+            updatedAt: connector.updatedAt
         )
     }
 }
@@ -60,8 +58,7 @@ extension SkillSnapshotConfig {
             connectorSnapshots: skill.connectors.map(ConnectorSnapshotConfig.init(connector:)),
             localToolSnapshots: skill.localTools.map(LocalToolSnapshotConfig.init(localTool:)),
             createdAt: skill.createdAt,
-            updatedAt: skill.updatedAt,
-            credentialNamespaceID: skill.credentialNamespaceID
+            updatedAt: skill.updatedAt
         )
     }
 }

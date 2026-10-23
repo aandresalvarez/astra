@@ -29,69 +29,11 @@ extension WorkspaceConfigManager {
         public var approvedPackageIDs: Set<String>
         public var installedPackageIDs: Set<String>
         public var availablePackIDs: Set<String>
-        /// Each installed package's component IDs; an imported activation
-        /// keeps settings, bindings and overrides only for these.
-        public var declaredComponentIDs: [String: Set<String>]
-        /// Each installed package's approval digest. An imported activation
-        /// recorded against another digest (another copy under the same ID)
-        /// stays off and brings none of its settings or accounts.
-        public var installedDigests: [String: String]
-        /// Each installed package's content digest (`PluginDefinitionDigest`),
-        /// which activations record now: one recorded against it accepted
-        /// this definition, from whichever copy. `installedDigests` judges a
-        /// file written before content digests.
-        public var installedContentDigests: [String: String]
-        /// Each installed package's connector components, by component ID.
-        /// An imported account is bound only to a component it is an account
-        /// of (`acceptsAccount`).
-        public var connectorComponents: [String: [String: ConnectorComponent]]
 
-        public struct ConnectorComponent: Sendable, Equatable {
-            public var serviceType: String
-            public var name: String
-
-            public init(serviceType: String, name: String) {
-                self.serviceType = serviceType
-                self.name = name
-            }
-        }
-
-        public init(
-            approvedPackageIDs: Set<String>,
-            installedPackageIDs: Set<String>,
-            availablePackIDs: Set<String>,
-            declaredComponentIDs: [String: Set<String>] = [:],
-            installedDigests: [String: String] = [:],
-            installedContentDigests: [String: String] = [:],
-            connectorComponents: [String: [String: ConnectorComponent]] = [:]
-        ) {
+        public init(approvedPackageIDs: Set<String>, installedPackageIDs: Set<String>, availablePackIDs: Set<String>) {
             self.approvedPackageIDs = approvedPackageIDs
             self.installedPackageIDs = installedPackageIDs
             self.availablePackIDs = availablePackIDs
-            self.declaredComponentIDs = declaredComponentIDs
-            self.installedDigests = installedDigests
-            self.installedContentDigests = installedContentDigests
-            self.connectorComponents = connectorComponents
-        }
-
-        /// True when `connector` may be bound as an account of the installed
-        /// plugin's connector component: a row the import created (a shared
-        /// row it reused keeps its credentials to itself) for the component's
-        /// own service. A custom or unnamed service also needs the
-        /// component's name. Projection and readiness trust a binding, so the
-        /// file's word that a row is an account is never enough.
-        /// `createdByImport` marks a shared row this same import created for
-        /// another workspace (`ImportSession`): created, so it may be bound.
-        public func acceptsAccount(
-            _ connector: Connector, componentID: String, pluginID: String, createdByImport: Bool = false
-        ) -> Bool {
-            guard createdByImport || !connector.isGlobal,
-                  let component = connectorComponents[pluginID]?[componentID] else { return false }
-            func normalized(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            let service = normalized(component.serviceType)
-            guard normalized(connector.serviceType) == service else { return false }
-            guard service.isEmpty || service == "custom" else { return true }
-            return !normalized(component.name).isEmpty && normalized(connector.name) == normalized(component.name)
         }
     }
 
@@ -100,9 +42,6 @@ extension WorkspaceConfigManager {
         public var capabilitiesUnavailable: [String] = []
         public var packsUnavailable: [String] = []
         public var pluginsUnavailable: [String] = []
-        /// Plugins whose activation names another copy than the installed
-        /// one: kept, but off and without their details.
-        public var pluginsChanged: [String] = []
         public var unknownSharedRowIDs: [String] = []
         public var originStampsStripped = 0
         public var sharedRowsLocalized = 0
@@ -116,7 +55,6 @@ extension WorkspaceConfigManager {
                 "capabilities_unavailable": capabilitiesUnavailable.joined(separator: ", "),
                 "packs_unavailable": packsUnavailable.joined(separator: ", "),
                 "plugins_unavailable": pluginsUnavailable.joined(separator: ", "),
-                "plugins_changed": pluginsChanged.joined(separator: ", "),
                 "unknown_shared_row_count": String(unknownSharedRowIDs.count),
                 "origin_stamps_stripped": String(originStampsStripped),
                 "shared_rows_localized": String(sharedRowsLocalized)
@@ -140,18 +78,9 @@ extension WorkspaceConfigManager {
     /// Drops what this machine cannot back: packages that are not installed
     /// and approved, packs it does not have, and shared rows that do not exist
     /// here. Shared rows the import itself reuses are re-enabled afterwards.
-    /// True when a chosen file's activation was recorded against the copy
-    /// installed here. The workspace's own mirror is always its own copy.
-    static func isAcceptedCopy(_ ref: InstalledPluginRef, trust: CapabilityImportTrustPolicy) -> Bool {
-        guard case .validate(let verifier) = trust else { return true }
-        guard let digest = ref.digest, !digest.isEmpty else { return false }
-        return verifier.installedContentDigests[ref.id] == digest || verifier.installedDigests[ref.id] == digest
-    }
-
     @MainActor
     static func reconcile(
         _ state: inout WorkspaceCapabilityActivationState,
-        pluginRefs: [InstalledPluginRef],
         trust: CapabilityImportTrustPolicy,
         modelContext: ModelContext,
         report: inout CapabilityImportTrustReport
@@ -161,12 +90,6 @@ extension WorkspaceConfigManager {
         state.capabilityIDs.removeAll { !verifier.approvedPackageIDs.contains($0) }
         report.packsUnavailable = state.packIDs.filter { !verifier.availablePackIDs.contains($0) }
         state.packIDs.removeAll { !verifier.availablePackIDs.contains($0) }
-        // Another copy under the same ID never inherits the file's enablement.
-        let changed = Set(pluginRefs.filter {
-            verifier.installedPackageIDs.contains($0.id) && !isAcceptedCopy($0, trust: trust)
-        }.map(\.id))
-        report.pluginsChanged = state.pluginIDs.filter(changed.contains)
-        state.capabilityIDs.removeAll(where: changed.contains)
 
         var keptIDs: [String] = []
         var keptVersions: [String] = []
@@ -229,10 +152,6 @@ extension WorkspaceConfigManager {
 
     static func sanitizeCreated(_ connector: Connector, trust: CapabilityImportTrustPolicy, report: inout CapabilityImportTrustReport) {
         guard case .validate = trust else { return }
-        // A selected file cannot select local vault addresses, including
-        // historical stable endpoint aliases it might otherwise inherit.
-        connector.credentialNamespaceID = UUID()
-        if connector.isStanfordOutlookMail { connector.outlookCredentialFormat = OutlookCredentialIdentity.generationFormat }
         if connector.isGlobal {
             connector.isGlobal = false
             report.sharedRowsLocalized += 1
@@ -287,7 +206,6 @@ extension WorkspaceConfigManager {
             guard let id = snapshot.id, let row = restored[id] else { return snapshot }
             var remapped = snapshot
             remapped.id = row.id.uuidString
-            remapped.credentialNamespaceID = row.credentialNamespaceID
             remapped.name = row.name
             return remapped
         }

@@ -104,7 +104,7 @@ enum MCPRuntimeProjection {
             packPolicy: packPolicy
         )
 
-        let servers = PluginRuntimeProjection.runnable(packages, in: workspace)
+        let servers = packages
             .filter { enabledPackageIDs.contains($0.id) }
             .filter { CapabilityCatalogPolicy.decision(for: $0, context: context).canRun }
             .flatMap { package in

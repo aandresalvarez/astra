@@ -99,7 +99,7 @@ invalidates a prior local approval.
 ## Stable Components
 
 - `skills`: behavior instructions, allowed provider tools, disallowed provider tools, custom tool names, and environment keys.
-- `connectors`: credential and config profile shapes. Values are entered later and stored through ASTRA, not in JSON. Only ASTRA's bundled plugins keep plain settings (`configHints`), and only the ones their own definition declares; every `configHints` field of any other package is stored as a credential: in the Keychain, entered masked, and never exported with the workspace.
+- `connectors`: credential and config profile shapes. Values are entered later and stored through ASTRA, not in JSON.
 - `localTools`: command names and safe default arguments for local CLIs or scripts.
 - `mcpServers`: stdio or remote MCP server declarations and tool allow/exclude lists.
 - `templates`: task templates.

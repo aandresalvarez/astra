@@ -61,7 +61,7 @@ struct TaskCapabilityResolverTests {
         #expect(snapshot.providerLaunch.prunedForBrowserTask)
         #expect(!snapshot.providerLaunch.behaviorSkills.map(\.name).contains("GitHub Agent"))
         #expect(!snapshot.providerLaunch.localTools.contains { $0.command == "gh" })
-        workspace.testEnabledCapabilityIDs = []
+        workspace.enabledCapabilityIDs = []
         task.goal = "Use GitHub to list PRs"
         try context.save()
 
@@ -76,7 +76,7 @@ struct TaskCapabilityResolverTests {
         let context = container.mainContext
 
         let workspace = Workspace(name: "Jira Host Control", primaryPath: "/tmp/jira-host-control")
-        workspace.testEnabledCapabilityIDs = ["custom-jira-host-control"]
+        workspace.enabledCapabilityIDs = ["custom-jira-host-control"]
         context.insert(workspace)
 
         let jiraSkill = Skill(
@@ -109,9 +109,8 @@ struct TaskCapabilityResolverTests {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
 
-        // The skill under test is pinned as an authored row; turning the
-        // built-in Jira plugin on would project its own skill beside it.
         let workspace = Workspace(name: "Jira REST", primaryPath: "/tmp/jira-rest")
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
         context.insert(workspace)
 
         let jiraSkill = Skill(
@@ -276,7 +275,7 @@ struct TaskCapabilityResolverTests {
         let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
 
         let workspace = Workspace(name: "Starr Data Lake", primaryPath: "/tmp/starr-data-lake")
-        workspace.testEnabledCapabilityIDs = [jiraPackage.id]
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
         context.insert(workspace)
 
         let jiraSkill = Skill(
@@ -899,14 +898,22 @@ struct TaskCapabilityResolverTests {
         #expect(!gcloudInstructions.contains("Use the GCP_PROJECT environment variable when set"))
     }
 
-    @Test("An enabled plugin reaches the account bound to it, whatever its name")
+    @Test("Enabled package IDs resolve runtime resources even when activation IDs drift")
     func enabledPackageIDResolvesResourcesWhenActivationIDsDrift() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
 
         let workspace = Workspace(name: "Package Drift", primaryPath: "/tmp/package-drift")
-        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
         context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
 
         let jiraConnector = Connector(
             name: "Jira-new",
@@ -916,9 +923,8 @@ struct TaskCapabilityResolverTests {
             authMethod: "none"
         )
         jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
         context.insert(jiraConnector)
-        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
-        WorkspaceCapabilityActivation.bind(jiraConnector, toComponent: "connector:jira:jira", of: activation)
 
         let task = AgentTask(
             title: "Use Jira",
@@ -1179,14 +1185,14 @@ struct TaskCapabilityResolverTests {
         #expect(!connectorsEnv.contains(#""credentials":{""#))
     }
 
-    @Test("An enabled plugin projects its current skill and tool, ignoring legacy rows")
+    @Test("Enabled package uses matched local tool owner when package skill name changed")
     func enabledPackageUsesMatchedLocalToolOwnerWhenPackageSkillNameChanged() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
         let graphPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "stanford-healthcare-graph-mail" })
 
         let workspace = Workspace(name: "Graph Mail Rename", primaryPath: "/tmp/graph-mail-rename")
-        workspace.testEnabledCapabilityIDs = [graphPackage.id]
+        workspace.enabledCapabilityIDs = [graphPackage.id]
         context.insert(workspace)
 
         let legacySkill = Skill(
@@ -1216,9 +1222,8 @@ struct TaskCapabilityResolverTests {
         try context.save()
 
         let resolver = TaskCapabilityResolver(task: task)
-        #expect(resolver.allBehaviorSkills.map(\.name) == graphPackage.skills.map(\.name))
-        #expect(resolver.allLocalTools.map(\.command) == graphPackage.localTools.map(\.command))
-        #expect(!resolver.allLocalTools.contains { $0.id == graphTool.id })
+        #expect(resolver.allBehaviorSkills.map(\.name) == ["Stanford Graph Mail Agent"])
+        #expect(resolver.allLocalTools.map(\.command) == ["stanford-graph-mail"])
 
         let issues = CapabilityRuntimeIntegrityService.issues(
             for: task,
@@ -1550,15 +1555,23 @@ struct TaskCapabilityResolverTests {
         #expect(issue.message.contains("disabled in this workspace"))
     }
 
-    @Test("Runtime integrity passes when the enabled plugin's account is bound")
+    @Test("Runtime integrity passes when enabled package resources resolve through package ID")
     func runtimeIntegrityPassesForResolvedEnabledPackageResources() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
         let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
 
         let workspace = Workspace(name: "Resolved Package", primaryPath: "/tmp/resolved-package")
-        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
         context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use Jira REST API."
+        )
+        jiraSkill.isGlobal = true
+        context.insert(jiraSkill)
 
         let jiraConnector = Connector(
             name: "Configured Jira",
@@ -1568,9 +1581,8 @@ struct TaskCapabilityResolverTests {
             authMethod: "none"
         )
         jiraConnector.isGlobal = true
+        jiraConnector.skill = jiraSkill
         context.insert(jiraConnector)
-        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
-        WorkspaceCapabilityActivation.bind(jiraConnector, toComponent: "connector:jira:jira", of: activation)
 
         let task = AgentTask(
             title: "Use Jira",
@@ -1609,7 +1621,7 @@ struct TaskCapabilityResolverTests {
             templates: [],
             governance: .localDraft()
         )
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         context.insert(workspace)
         let task = AgentTask(title: "Use draft", goal: "Run draft capability", workspace: workspace)
         context.insert(task)
@@ -1636,7 +1648,7 @@ struct TaskCapabilityResolverTests {
     private func makeGitHubEnabledWorkspace(in context: ModelContext, name: String) throws -> (Workspace, PluginPackage) {
         let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
         let workspace = Workspace(name: name, primaryPath: "/tmp/\(name)")
-        workspace.testEnabledCapabilityIDs = [githubPackage.id]
+        workspace.enabledCapabilityIDs = [githubPackage.id]
         context.insert(workspace)
 
         let githubSkill = Skill(
@@ -1851,7 +1863,7 @@ struct TaskCapabilityResolverTests {
         )
 
         let workspace = Workspace(name: "Google Drive Integrity", primaryPath: "/tmp/google-drive-integrity")
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         context.insert(workspace)
 
         let task = AgentTask(
@@ -1885,7 +1897,7 @@ struct TaskCapabilityResolverTests {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "github-roster", primaryPath: "/tmp/github-roster")
-        workspace.testEnabledCapabilityIDs = ["github-workflow"]
+        workspace.enabledCapabilityIDs = ["github-workflow"]
         context.insert(workspace)
         try context.save()
 
@@ -1937,7 +1949,7 @@ struct TaskCapabilityResolverTests {
                 command: "astra-test-missing-mcp-binary-\(UUID().uuidString)"
             )
         ]
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         context.insert(workspace)
         let task = AgentTask(title: "Use MCP", goal: "Run MCP capability", workspace: workspace)
         context.insert(task)
@@ -2413,7 +2425,7 @@ struct TaskCapabilityResolverTests {
         let context = container.mainContext
 
         let workspace = Workspace(name: "Drive Browser Workspace", primaryPath: "/tmp/drive-browser-workspace")
-        workspace.testEnabledCapabilityIDs = ["google-drive-browser"]
+        workspace.enabledCapabilityIDs = ["google-drive-browser"]
         context.insert(workspace)
 
         let task = AgentTask(
@@ -2582,7 +2594,7 @@ struct TaskCapabilityResolverTests {
     @Test("Browser adapters require runnable catalog policy")
     func browserAdaptersRequireRunnableCatalogPolicy() throws {
         let workspace = Workspace(name: "Draft Browser Workspace", primaryPath: "/tmp/draft-browser-workspace")
-        workspace.testEnabledCapabilityIDs = ["draft-drive-browser"]
+        workspace.enabledCapabilityIDs = ["draft-drive-browser"]
         var draftPackage = PluginPackage(
             id: "draft-drive-browser",
             name: "Draft Drive Browser",
@@ -2633,7 +2645,7 @@ struct TaskCapabilityResolverTests {
     @Test("Pack capability filters load approval store when package governance can be approval-overridden")
     func packCapabilityFiltersLoadApprovalStoreWhenPackageGovernanceCanBeApprovalOverridden() throws {
         let workspace = Workspace(name: "Approved Draft Workspace", primaryPath: "/tmp/approved-draft-workspace")
-        workspace.testEnabledCapabilityIDs = ["draft-approved-tool"]
+        workspace.enabledCapabilityIDs = ["draft-approved-tool"]
         let draftPackage = PluginPackage(
             id: "draft-approved-tool",
             name: "Draft Approved Tool",
@@ -2725,7 +2737,7 @@ struct TaskCapabilityResolverTests {
             browserAdapters: ["unknownAdapter"],
             governance: .builtInApproved(riskLevel: .high)
         )
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         context.insert(workspace)
         let task = AgentTask(title: "Use browser", goal: "Use unknown adapter", workspace: workspace)
         context.insert(task)

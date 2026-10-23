@@ -33,7 +33,7 @@ struct CodexMCPLaunchProjection {
         var browserServerProjected = false
         var servers = MCPRuntimeProjection.enabledServers(
             for: task.workspace,
-            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(for: task.workspace),
+            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
             approvalRecords: CapabilityApprovalStore().records()
         )
         if let workspaceServer = DockerWorkspaceMCPProjection.resolvedServer(

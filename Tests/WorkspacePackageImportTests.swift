@@ -359,7 +359,7 @@ struct WorkspacePackageImportTests {
         // has installed AND approved locally (approval lives in a digest-bound
         // record; the on-disk governance is normalized to draft).
         let fixture = try Self.exportedPackage(root: root) { workspace in
-            workspace.testEnabledCapabilityIDs = ["local.tool", "custom.approved"]
+            workspace.enabledCapabilityIDs = ["local.tool", "custom.approved"]
         }
 
         let targetContainer = try Self.makeContainer()
@@ -405,7 +405,7 @@ struct WorkspacePackageImportTests {
         // The share enables an ID it does NOT embed — one that happens to exist,
         // unapproved, in the recipient's own library. Plus its own embedded draft.
         let fixture = try Self.exportedPackage(root: root) { workspace in
-            workspace.testEnabledCapabilityIDs = ["local.tool", "recipient.private"]
+            workspace.enabledCapabilityIDs = ["local.tool", "recipient.private"]
         }
 
         let targetContainer = try Self.makeContainer()
@@ -591,7 +591,7 @@ struct WorkspacePackageImportTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = try Self.exportedPackage(root: root) { workspace in
             // One capability the recipient has, one it doesn't.
-            workspace.testEnabledCapabilityIDs = ["local.tool", "missing.builtin"]
+            workspace.enabledCapabilityIDs = ["local.tool", "missing.builtin"]
         }
 
         let report = WorkspacePackageService().validatePackage(at: fixture.packageURL)
@@ -790,7 +790,7 @@ struct WorkspacePackageImportTests {
             makeCapability(id: "local.tool", governance: .localDraft()),
             sourceMetadata: .localLibrary()
         )
-        workspace.testEnabledCapabilityIDs = ["local.tool"]
+        workspace.enabledCapabilityIDs = ["local.tool"]
 
         configure(workspace)
 
