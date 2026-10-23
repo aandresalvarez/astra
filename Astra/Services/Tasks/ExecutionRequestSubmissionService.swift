@@ -352,7 +352,7 @@ enum ExecutionRequestSubmissionService {
         }
     }
 
-    static func decodeSourcePayload(_ event: TaskEvent) -> TaskExecutionSourcePayloadV1? {
+    static func decodeSourcePayload(_ event: some TaskEventValue) -> TaskExecutionSourcePayloadV1? {
         guard [
             TaskEventTypes.ExecutionRequest.initial,
             TaskEventTypes.ExecutionRequest.retry,

@@ -859,7 +859,7 @@ final class AgentRuntimeWorker {
         }
         let launchExecutionPolicy = executionPolicy.applyingProviderRender(manifest.providerRender)
         let startTime = Date()
-        guard let publicationBeforeGitStatus = TaskGitPublicationWorkspaceBaselineService.capture(
+        guard let publicationBeforeGitStatus = await TaskGitPublicationWorkspaceBaselineService.capture(
             task: task,
             run: run,
             workspacePath: executionPath,
@@ -870,14 +870,26 @@ final class AgentRuntimeWorker {
         let beforeGitStatus = runtimeAdapter.recordsInferredFileChanges
             ? publicationBeforeGitStatus
             : nil
-        let beforeDirtyFingerprints = beforeGitStatus.map {
-            AgentFileChangeDetector.fileFingerprints(
-                for: AgentFileChangeDetector.absolutePaths(fromGitStatus: $0, workspacePath: executionPath),
-                workspacePath: executionPath
-            )
+        var beforeDirtyFingerprints: [String: AgentFileChangeDetector.FileFingerprint]?
+        if let beforeGitStatus {
+            beforeDirtyFingerprints = await BlockingWork.run {
+                AgentFileChangeDetector.fileFingerprints(
+                    for: AgentFileChangeDetector.absolutePaths(fromGitStatus: beforeGitStatus, workspacePath: executionPath),
+                    workspacePath: executionPath
+                )
+            }
         }
         let taskFolderBeforeRun = await TaskFolderRunSnapshot.capture(for: task)
         await TaskFolderRunSnapshot.persistBaseline(taskFolderBeforeRun, task: task, run: run)
+        // Preparation now suspends for Git and filesystem work. Cancellation
+        // during that work must win before any provider process is launched.
+        guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
+            if run.status == .running {
+                TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            }
+            return
+        }
         let capabilityScope = capabilityResolutionSnapshot.providerLaunch
         if !capabilityScope.behaviorSkills.isEmpty {
             let skillNames = capabilityScope.behaviorSkills.map(\.name).joined(separator: ", ")
@@ -1112,7 +1124,7 @@ final class AgentRuntimeWorker {
         let streamSnapshot = streamTelemetry?.snapshot()
 
         if let beforeGitStatus, let beforeDirtyFingerprints {
-            AgentFileChangeDetector.appendInferredFileChanges(
+            await AgentFileChangeDetector.appendInferredFileChanges(
                 to: run,
                 task: task,
                 modelContext: modelContext,

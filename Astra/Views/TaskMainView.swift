@@ -4811,46 +4811,19 @@ struct TaskMainView: View {
             ])
             onMoveToDraft?(task)
         } else if [.running, .pendingUser, .completed, .failed, .budgetExceeded, .cancelled].contains(task.status), let taskQueue {
-            // Persist the user's turn before waiting for a worker or the
-            // workspace lock. The runtime links this existing event to its run
-            // on admission instead of inserting a duplicate message.
-            let submission = TaskTurnSubmissionService.submit(
+            let continuation = TaskConversationContinuationService.continueConversation(
                 message: msg,
                 attachmentPaths: attachmentPaths,
-                for: task,
-                into: modelContext
-            )
-            guard case let .success(savedTurn) = submission else {
-                AppLogger.audit(.runtimePersistenceSummary, category: "UI", taskID: task.id, fields: [
-                    "operation": "turn_submission",
-                    "result": "failed"
-                ], level: .error)
-                return
-            }
-            composerDraft.text = ""
-            attachedFiles = []
-            if task.isDone { task.isDone = false } // reopen: sidebar review/unread predicates gate on !isDone
-            if task.status != .running {
-                let interruptionSummary = TaskRunLifecycleService.cancelTask(
-                    task,
-                    modelContext: modelContext,
-                    source: .supersededByNewRun
-                )
-                if interruptionSummary.runsUpdated > 0 {
-                    AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
-                        "source": TaskRunInterruptionSource.supersededByNewRun.auditSource,
-                        "running_runs_cancelled": String(interruptionSummary.runsUpdated),
-                        "next_action": "continue_session"
-                    ], level: .warning)
-                }
-            }
-            logTaskCapabilityContext(source: "task_continue_chat", traceID: traceID)
-            recordCurrentTaskPolicyIfNeeded(source: "task_continue_chat")
-            taskQueue.signalExecutionRequest(
-                id: savedTurn.requestID,
                 task: task,
+                policyLevel: currentTaskPolicyLevel,
+                source: "task_continue_chat",
+                traceID: traceID,
+                taskQueue: taskQueue,
                 modelContext: modelContext
             )
+            guard case .success = continuation else { return }
+            composerDraft.text = ""
+            attachedFiles = []
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             TaskEventInsertionService.insert(event, attachmentPaths: attachmentPaths, into: modelContext)
@@ -4944,14 +4917,16 @@ struct TaskMainView: View {
         taskSkipPermissions = level == .autonomous
     }
 
+    private var currentTaskPolicyLevel: AgentPolicyLevel {
+        taskSkipPermissions ? AgentPolicyLevel.autonomous : AgentPolicyLevel.normalized(taskPolicyLevelRaw)
+    }
+
     private func recordCurrentTaskPolicyIfNeeded(source: String) {
-        let level = taskSkipPermissions ? AgentPolicyLevel.autonomous : AgentPolicyLevel.normalized(taskPolicyLevelRaw)
-        guard TaskPolicyStore.latestSelectedLevel(for: task) != level else { return }
-        TaskPolicyStore.recordSelection(
-            level: level,
+        TaskConversationContinuationService.recordPolicyLevelIfChanged(
+            currentTaskPolicyLevel,
             task: task,
-            modelContext: modelContext,
-            source: source
+            source: source,
+            modelContext: modelContext
         )
     }
 
