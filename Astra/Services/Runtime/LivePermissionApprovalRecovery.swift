@@ -73,7 +73,7 @@ enum LivePermissionApprovalRecovery {
             }
             return true
         } catch {
-            TaskEventIndex.delete(event, from: modelContext)
+            modelContext.delete(event)
             AppLogger.audit(.taskFailed, category: "Persistence", taskID: task.id,
                 fields: ["operation": "live_approval_delivery", "result": "receipt_not_saved"], level: .error)
             return false

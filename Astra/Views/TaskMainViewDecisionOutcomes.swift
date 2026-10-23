@@ -71,8 +71,8 @@ extension TaskMainView {
 /// The decision dock's history-backed answers, as one function of the task,
 /// its latest run, the transcript window the view already holds, and the
 /// artifact paths it already cached. Kept apart from the view so
-/// `TaskMainActorScalingGateTests` can hold it to a cost that does not grow
-/// with the task's history.
+/// `TaskMainActorScalingGateTests` can bound the complete read cost
+/// on disk-backed long histories.
 @MainActor
 enum TaskDecisionOutcomeResolver {
     struct LatestRun: Equatable {
@@ -88,17 +88,10 @@ enum TaskDecisionOutcomeResolver {
         modelContext: ModelContext
     ) -> TaskDecisionOutcomeCache {
         var outcomes = TaskDecisionOutcomeCache()
-        // A prepared task answers both history rules from `TaskEventIndex`;
-        // any other keeps the bounded store reads.
-        let indexed = TaskEventIndex.shared.isPrepared(task.id)
         if let latestRun {
-            let follows = indexed
-                ? TaskDeliverableExpectation.followsUpDeliveredRequest(
-                    runID: latestRun.id, startedAt: latestRun.startedAt, in: task
-                )
-                : (try? TaskDeliverableExpectation.followsUpDeliveredRequest(
-                    taskID: task.id, runID: latestRun.id, startedAt: latestRun.startedAt, in: modelContext
-                )) == true
+            let follows = (try? TaskDeliverableExpectation.followsUpDeliveredRequest(
+                taskID: task.id, runID: latestRun.id, startedAt: latestRun.startedAt, in: modelContext
+            )) == true
             if follows { outcomes.deliveredRequestFollowUpRunID = latestRun.id }
         }
         if let latestRunID = latestRun?.id {
@@ -108,11 +101,9 @@ enum TaskDecisionOutcomeResolver {
                 events: windowEvents
             ) != nil
         }
-        let pendingMutations = indexed
-            ? ConnectorMutationRequirementResolver.pendingMutations(task: task)
-            : try? ConnectorMutationRequirementResolver.pendingMutations(taskID: task.id, in: modelContext)
+        let pendingMutations = ConnectorMutationRequirementResolver.pendingMutations(task: task)
         outcomes.pendingConnectorMutationTargets = ConnectorMutationCoordinator
-            .reviewable(pendingMutations ?? []).map(\.target)
+            .reviewable(pendingMutations).map(\.target)
         if task.status != .running, task.status != .queued,
            let reviewPath = GitHubReviewPublicationService.pendingCandidatePath(
             task: task, filePaths: decisionArtifactPaths

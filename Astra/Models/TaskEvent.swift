@@ -29,26 +29,17 @@ public final class TaskEvent {
     public init(task: AgentTask, type: String, payload: String = "", run: TaskRun? = nil,
          agentName: String? = nil, agentId: String? = nil, teamName: String? = nil) {
         let now = Date()
-        let eventID = UUID()
-        let redactedPayload = RunSecretRedactionScope.redact(payload, taskID: task.id)
-        self.id = eventID
+        self.id = UUID()
         self.task = task
         self.run = run
         self.type = type
-        self.payload = redactedPayload
+        self.payload = RunSecretRedactionScope.redact(payload, taskID: task.id)
         self.timestamp = now
         self.agentName = agentName
         self.agentId = agentId
         self.teamName = teamName
         self.category = Self.categoryFor(type: type)
         task.updatedAt = now
-        // The index folds the event here because this is the one place every
-        // event is made; values only, so the init does not read itself back.
-        TaskEventIndex.shared.noteCreated(
-            in: task,
-            record: TaskEventRecord(id: eventID, runID: run?.id, type: type, payload: redactedPayload, timestamp: now),
-            run: run.map { TaskRunRecord(id: $0.id, startedAt: $0.startedAt, runStatus: $0.status, stopReason: $0.stopReason) }
-        )
     }
 
     public convenience init(task: AgentTask, eventType: TaskEventType, payload: String = "", run: TaskRun? = nil,

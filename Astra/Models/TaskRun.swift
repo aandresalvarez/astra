@@ -63,10 +63,6 @@ public final class TaskRun {
         self.costUSD = 0
         self.fileChangesJSON = "[]"
         self.stopReason = ""
-        TaskEventIndex.shared.noteRun(
-            TaskRunRecord(id: id, startedAt: startedAt, runStatus: .running, stopReason: ""),
-            of: task
-        )
     }
 
     /// Replaces the stored output and recomputes the protocol-marker flag.

@@ -22,15 +22,19 @@ enum AgentFileChangeDetector {
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = FileHandle.nullDevice
+            let output: Data
             do {
                 try process.run()
+                // Drain while Git runs. Waiting first deadlocks when status
+                // output fills the pipe on a checkout with many dirty files.
+                output = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
             } catch {
                 return []
             }
             guard process.terminationStatus == 0 else { return [] }
-            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            return Set(output.split(separator: "\n").map(String.init))
+            let text = String(data: output, encoding: .utf8) ?? ""
+            return Set(text.split(separator: "\n").map(String.init))
         }
     }
 

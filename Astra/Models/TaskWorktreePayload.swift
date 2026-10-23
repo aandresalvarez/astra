@@ -157,17 +157,9 @@ public enum TaskWorktreeBinding {
         }
     }
 
-    /// The task's `task.worktree.prepared` events, newest first. A prepared
-    /// task answers from `TaskEventIndex`; any other reads its events.
+    /// Only this task's worktree evidence, read in its current context.
     static func preparedRecords(for task: AgentTask) -> [TaskEventRecord] {
-        let type = TaskEventTypes.Task.worktreePrepared.rawValue
-        if let facts = TaskEventIndex.shared.facts(for: task) {
-            return facts.records(ofType: type).reversed()
-        }
-        return task.events
-            .filter { !$0.isDeleted && $0.type == type }
-            .sorted { $0.timestamp > $1.timestamp }
-            .map(TaskEventRecord.init(event:))
+        TaskHistoryRead.records(for: task, ofTypes: [TaskEventTypes.Task.worktreePrepared.rawValue]).reversed()
     }
 
     private static func state(of task: AgentTask, pinned candidate: String?) -> State {
@@ -261,7 +253,7 @@ public enum TaskWorktreeBinding {
     /// The row behind a prepared record. Only inheritance and cleanup need
     /// the row itself, and they are not per-frame paths.
     public static func preparedEvent(_ eventID: UUID, in task: AgentTask) -> TaskEvent? {
-        task.events.first { !$0.isDeleted && $0.id == eventID }
+        TaskHistoryRead.event(id: eventID, in: task)
     }
 
     public static func payload(for task: AgentTask) -> TaskWorktreePayload? {

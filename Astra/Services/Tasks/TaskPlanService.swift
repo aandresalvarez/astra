@@ -78,16 +78,6 @@ enum TaskPlanService: Sendable {
     /// can share between two live tasks. Any row owned by another task means
     /// the id alone cannot answer, so that rare case replays the relationship.
     static func reconstruct(for task: AgentTask) -> TaskPlanState {
-        // A prepared task with no plan answers from `TaskEventIndex` without a
-        // query; one with a plan also needs its runs' recovered progress,
-        // which the store read below supplies.
-        if let facts = TaskEventIndex.shared.facts(for: task) {
-            var state = reconstruct(from: facts.records(ofTypes: planStateEventTypes))
-            if state.plan == nil {
-                state.latestEventAt = facts.latestEventAt
-                return state
-            }
-        }
         let owner = task.persistentModelID
         guard let modelContext = task.modelContext,
               let input = try? TaskPlanStateReader.read(taskID: task.id, modelContext: modelContext),
@@ -114,24 +104,13 @@ enum TaskPlanService: Sendable {
         return try modelContext.fetch(descriptor).first
     }
 
-    /// Every type `reconstruct(from:)` acts on.
-    static let planStateEventTypes: Set<String> = Set([
-        TaskPlanEventTypes.created,
-        TaskPlanEventTypes.updated,
-        TaskPlanEventTypes.approved,
-        TaskPlanEventTypes.cancelled,
-        TaskPlanEventTypes.executionStarted,
-        TaskPlanEventTypes.executionCompleted,
-        TaskPlanEventTypes.executionFailed
-    ]).union(TaskPlanEventTypes.stepEvents)
-
     static func reconstruct(from events: [TaskEvent], recoveryRuns: [TaskRun]) -> TaskPlanState {
         var state = reconstruct(from: events)
         applyRecoveredProtocolProgress(from: recoveryRuns, to: &state)
         return state
     }
 
-    static func reconstruct<Event: TaskEventValue>(from events: [Event]) -> TaskPlanState {
+    static func reconstruct(from events: [TaskEvent]) -> TaskPlanState {
         var state = TaskPlanState.empty
         let reconstruction = sortedEventsForReconstruction(events)
         state.latestEventAt = reconstruction.latestEventAt
@@ -210,11 +189,11 @@ enum TaskPlanService: Sendable {
     /// a long task holds thousands of conversation events — and only the plan
     /// events are sorted, by those read-once keys. Filtering first keeps their
     /// relative input order, so the offset tie-break orders them as before.
-    private static func sortedEventsForReconstruction<Event: TaskEventValue>(
-        _ events: [Event]
-    ) -> (planEvents: [Event], latestEventAt: Date?) {
+    private static func sortedEventsForReconstruction(
+        _ events: [TaskEvent]
+    ) -> (planEvents: [TaskEvent], latestEventAt: Date?) {
         var latestEventAt: Date?
-        var planEvents: [(offset: Int, timestamp: Date, priority: Int, event: Event)] = []
+        var planEvents: [(offset: Int, timestamp: Date, priority: Int, event: TaskEvent)] = []
         for (offset, event) in events.enumerated() {
             let timestamp = event.timestamp
             if latestEventAt.map({ timestamp > $0 }) ?? true {

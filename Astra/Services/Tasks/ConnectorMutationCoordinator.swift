@@ -1155,7 +1155,7 @@ final class ConnectorMutationCoordinator {
             try durableEventSave(task.workspace, modelContext, task.id, ["operation": operation])
         } catch {
             task.events.removeAll { $0.id == event.id }
-            TaskEventIndex.delete(event, from: modelContext)
+            modelContext.delete(event)
             task.updatedAt = previousUpdatedAt
             throw error
         }

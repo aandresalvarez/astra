@@ -121,7 +121,7 @@ struct MCPRuntimeProjectionTests {
         let container = try makeMCPContainer()
         let workspace = Workspace(name: "MCP", primaryPath: "/tmp/mcp")
         container.mainContext.insert(workspace)
-        workspace.enabledCapabilityIDs = ["approved-pkg", "draft-pkg"]
+        workspace.testEnabledCapabilityIDs = ["approved-pkg", "draft-pkg"]
 
         let approved = mcpPackage(id: "approved-pkg", approved: true, servers: [stdioServer(id: "alpha")])
         let draft = mcpPackage(id: "draft-pkg", approved: false, servers: [stdioServer(id: "beta")])
@@ -155,7 +155,7 @@ struct MCPRuntimeProjectionTests {
         let container = try makeMCPContainer()
         let workspace = Workspace(name: "MCP", primaryPath: "/tmp/mcp-dupe")
         container.mainContext.insert(workspace)
-        workspace.enabledCapabilityIDs = ["a-pkg", "b-pkg"]
+        workspace.testEnabledCapabilityIDs = ["a-pkg", "b-pkg"]
 
         let first = mcpPackage(id: "a-pkg", servers: [stdioServer(id: "shared")])
         let second = mcpPackage(id: "b-pkg", servers: [stdioServer(id: "shared")])
@@ -954,10 +954,7 @@ struct MCPRuntimeParityTests {
         CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: capabilities,
-            modelContext: context,
-            availablePackages: [package]
-        )
+            modelContext: context)
         #expect(!workspace.enabledCapabilityIDs.contains("mcp-only"))
         #expect(MCPRuntimeProjection.enabledServers(
             for: workspace,

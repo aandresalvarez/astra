@@ -77,11 +77,17 @@ struct MainActorProcessLaunchFitnessTests {
             func onMain() async {
                 let process = Process()
             }
+            func afterClosedBoundary() async {
+                await BlockingWork.run {
+                    return 1
+                }
+                let process = Process()
+            }
         }
         """
         let sites = Self.classify(source, path: "Sample.swift")
-        #expect(sites.map(\.function) == ["blocking", "offMain", "wrapped", "onMain"])
-        #expect(sites.map(\.compliant) == [false, true, true, false])
+        #expect(sites.map(\.function) == ["blocking", "offMain", "wrapped", "onMain", "afterClosedBoundary"])
+        #expect(sites.map(\.compliant) == [false, true, true, false, false])
     }
 
     // MARK: - Classification
@@ -142,11 +148,20 @@ struct MainActorProcessLaunchFitnessTests {
             let typeAttributes = typeLine.map { lines[max(0, $0 - 2)...$0].joined(separator: "\n") } ?? ""
             let isMainActor = attributes.contains("@MainActor")
                 || (typeAttributes.contains("@MainActor") && !declaration.contains("nonisolated"))
-            let body = lines[functionLine...index].joined(separator: "\n")
-            let insideBoundary = body.range(
-                of: #"BlockingWork\.run|Task\.detached|DispatchQueue[^\n]*\.async"#,
-                options: .regularExpression
-            ) != nil
+            // A completed off-main closure earlier in the function does not
+            // protect subsequent main-actor work. Match an enclosing scope,
+            // not merely a boundary name somewhere in the preceding text.
+            let insideBoundary = (functionLine..<index).contains { candidate in
+                let boundaryDepth = indent(lines[candidate])
+                guard boundaryDepth < depth,
+                      lines[candidate].range(
+                        of: #"BlockingWork\.run|Task\.detached|DispatchQueue[^\n]*\.async"#,
+                        options: .regularExpression
+                      ) != nil else { return false }
+                return !lines[(candidate + 1)..<index].contains {
+                    indent($0) <= boundaryDepth && $0.trimmingCharacters(in: .whitespaces).hasPrefix("}")
+                }
+            }
             let isAsync = signature.contains(" async")
             sites.append(Site(
                 path: path,

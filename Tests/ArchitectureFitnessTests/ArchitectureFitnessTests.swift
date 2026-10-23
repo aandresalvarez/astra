@@ -29,7 +29,6 @@ struct ArchitectureFitnessTests {
             "Diagnostics",
             "Feedback",
             "Git",
-            "GoogleWorkspace",
             "Packs",
             "Persistence",
             "Runtime",
@@ -72,10 +71,11 @@ struct ArchitectureFitnessTests {
         // the WorkspaceApps template-pack bridge, and the portable-workspace
         // import flow, which must reconcile a share's referenced pack IDs against
         // the recipient's real catalog (surface missing packs, drop unresolved
-        // ones from the enabled set) rather than trusting arbitrary IDs. And the
-        // capability-resolution input snapshot, which reads the pack catalog once
-        // off the main actor so admission does not re-read it per lookup.
+        // ones from the enabled set) rather than trusting arbitrary IDs. The
+        // config verifier applies the same admission to a chosen config, and
+        // the resolution snapshot reads the pack catalog once off the main actor.
         let allowedPackAdapters: Set<String> = [
+            "Astra/Services/Capabilities/CapabilityImportVerifier+Live.swift",
             "Astra/Services/Capabilities/CapabilityResolutionInputs.swift",
             "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift",
             "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift",
@@ -1058,62 +1058,35 @@ struct ArchitectureFitnessTests {
         #expect(!app.contains("struct StoreStartupBlockedView"))
     }
 
-    @Test("Plugin catalog view delegates capability side effects to action service")
-    func pluginCatalogViewDelegatesCapabilitySideEffects() throws {
-        let root = try repositoryRoot()
-        let view = try String(
-            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
-            encoding: .utf8
-        )
-
-        #expect(!view.contains("CapabilityInstaller("))
-        #expect(!view.contains("CapabilityUninstaller("))
-        #expect(!view.contains("CapabilityPackageCreationService("))
-        #expect(view.contains("CapabilityCatalogActionService("))
-        // Catalog reload ownership is limited to initial population and the
-        // centralized typed persistence-event handler. Mutation callbacks
-        // must not add post-action reloads of their own.
-        #expect(view.components(separatedBy: "catalog.loadApprovedCapabilities(").count - 1 == 2)
-        #expect(view.contains("catalog.loadApprovedCapabilities(announceLibraryMutations: false)"))
-    }
-
     @Test("Catalog invalidations follow durable capability mutations")
     func catalogInvalidationsFollowDurableMutations() throws {
         let root = try repositoryRoot()
         let configure = try String(
             contentsOf: root.appendingPathComponent("Astra/Views/ConfigureView.swift"), encoding: .utf8)
+        let skills = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/SkillsTabContent.swift"), encoding: .utf8)
         let creation = try String(
             contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/CapabilityPackageCreationService.swift"),
             encoding: .utf8)
-        let catalogView = try String(
-            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"), encoding: .utf8)
 
         #expect(configure.contains("CapabilityPersistence.saveResourceMutation"))
+        #expect(!skills.contains("WorkspacePersistenceCoordinator.saveAndAutoExport"))
+        #expect(!skills.contains("skill.cleanupKeychain("))
         let resourcesStart = try #require(configure.range(of: "struct ConnectorsTabContent"))
         let resourcesEnd = try #require(configure.range(of: "// MARK: - Templates Tab"))
         #expect(!configure[resourcesStart.lowerBound..<resourcesEnd.lowerBound].contains(
             "WorkspacePersistenceCoordinator.saveAndAutoExport"))
+        // Create orchestrates the prepared-file boundary rather than doing
+        // independent live library/approval writes. Behavioral crash tests
+        // verify replay; this guard keeps write ownership out of this facade.
+        #expect(!creation.contains("library.install("))
+        #expect(!creation.contains("approvalStore.save("))
+        #expect(!creation.contains("saveBeforeDependentWrite("))
+        #expect(creation.contains("PluginInstallationTransaction.prepare("))
+        #expect(creation.contains("pendingApproval: pendingApproval"))
         let suppressedInstall = try #require(creation.range(of: "announceCatalogMutation: false"))
-        let approvalSave = try #require(creation.range(of: "let approvalRecord = try saveApprovalRecordIfNeeded"))
-        let globalPost = try #require(creation.range(of: "CapabilityCatalogPersistenceEvents.post(.global)", range: approvalSave.lowerBound..<creation.endIndex))
-        #expect(suppressedInstall.lowerBound < approvalSave.lowerBound)
-        #expect(approvalSave.lowerBound < globalPost.lowerBound)
-        #expect(catalogView.contains("CapabilityPersistence.saveResourceMutation(workspace: workspace"))
-    }
-
-    @Test("Plugin catalog approval refresh cancels stale loads")
-    func pluginCatalogApprovalRefreshCancelsStaleLoads() throws {
-        let root = try repositoryRoot()
-        let view = try String(
-            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
-            encoding: .utf8
-        )
-
-        #expect(view.contains("@State private var approvalRecordsRefreshTask: Task<Void, Never>?"))
-        #expect(view.contains("@State private var approvalRecordsRefreshGeneration = 0"))
-        #expect(view.contains("approvalRecordsRefreshTask?.cancel()"))
-        #expect(view.contains("approvalRecordsRefreshGeneration == refreshGeneration"))
-        #expect(view.contains("cancelApprovalRecordsRefresh()"))
+        let globalPost = try #require(creation.range(of: "CapabilityCatalogPersistenceEvents.post(.global)", range: suppressedInstall.lowerBound..<creation.endIndex))
+        #expect(suppressedInstall.lowerBound < globalPost.lowerBound)
     }
 
     @Test("Admin policy contexts come only from the currentUser factory")
@@ -1157,38 +1130,9 @@ struct ArchitectureFitnessTests {
         #expect(!policy.contains(#"packageSourceMetadata?.trustLevel == "built-in""#))
     }
 
-    @Test("Plugin catalog import presentation lives with catalog presentation contracts")
-    func pluginCatalogImportPresentationLivesWithCatalogPresentationContracts() throws {
+    @Test("Resource managers save through the capability persistence boundary")
+    func resourceManagersSaveThroughCapabilityPersistence() throws {
         let root = try repositoryRoot()
-        let view = try String(
-            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
-            encoding: .utf8
-        )
-        let presentation = try String(
-            contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/PluginCatalogPresentation.swift"),
-            encoding: .utf8
-        )
-
-        #expect(!view.contains("enum CapabilityImportPresentation"))
-        #expect(presentation.contains("enum CapabilityImportPresentation"))
-    }
-
-    @Test("Plugin catalog body uses cached presentation projection")
-    func pluginCatalogBodyUsesCachedPresentationProjection() throws {
-        let root = try repositoryRoot()
-        let view = try String(
-            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
-            encoding: .utf8
-        )
-
-        #expect(view.contains("let state = cachedPresentationState"))
-        #expect(!view.contains("let state = presentationState"))
-        #expect(view.contains("PluginCatalogPresentationCache"))
-        let presentation = try String(
-            contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/PluginCatalogPresentation.swift"),
-            encoding: .utf8
-        )
-        #expect(!presentation.contains("@Observable\nfinal class PluginCatalogPresentationCache"))
         for resourceView in ["ConnectorsManagerView.swift", "SkillsManagerView.swift", "ToolsManagerView.swift"] {
             let source = try String(
                 contentsOf: root.appendingPathComponent("Astra/Views/\(resourceView)"),
@@ -1196,8 +1140,6 @@ struct ArchitectureFitnessTests {
             )
             #expect(source.contains("CapabilityPersistence.saveResourceMutation"))
         }
-        #expect(!view.contains("JSONEncoder().encode(catalog.packages)"))
-        #expect(!view.contains("catalogResourceRevision"))
     }
 
     @Test("Workspace rail view keeps pure presentation contracts extracted")
@@ -1866,6 +1808,8 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": ["run", "run?"],
             "Astra/Services/Runtime/RuntimeTurnOutcomeService.swift": ["run"],
+            // Extracted run outcome; AgentTask transitions still use TaskStateMachine.
+            "Astra/Services/Runtime/RuntimeStopOutcome.swift": ["run"],
             "Astra/Services/Runtime/RuntimeTurnSettlementService.swift": ["run"],
             "Astra/Services/Runtime/ApprovedPlanRuntimeSettlement.swift": ["run?"],
             "Astra/Models/AgentTaskForkService.swift": ["newRun"],
@@ -1971,7 +1915,6 @@ struct ArchitectureFitnessTests {
             // parsesJSONLines, and probing `--output-format` where the CLI is
             // already being run rather than during launch preflight.
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_841, .owner("Runtime adapter registry")),
-            "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_460, .owner("Shelf markdown panel")),
             // Budget raised for Track A4 (ASTRAPersistence extraction): every
             // public struct now needs an explicit `public init` (Swift's
@@ -1979,7 +1922,7 @@ struct ArchitectureFitnessTests {
             // all-public struct) to stay constructible from outside this new
             // target - a hard language requirement, not scope creep.
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_200, .owner("Workspace mirror persistence")),
-            "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
+            "Astra/Views/ConfigureView.swift": .init(2_300, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
             // Self-referential: this file crossed its own 2,000-line
             // threshold from the file-access-broker tests added for issue

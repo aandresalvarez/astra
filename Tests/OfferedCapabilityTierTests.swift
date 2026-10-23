@@ -380,14 +380,7 @@ struct OfferedCapabilityTierTests {
         #expect(!prompt.contains("Export instrument rows from the study registry"))
     }
 
-    /// `ASTRA_MAIL_REGISTRY_PATH` is not a route, it is a credential pointer:
-    /// the registry it names hands the helper the Keychain service holding the
-    /// mailbox tokens, which the helper reads with `/usr/bin/security` - outside
-    /// the connector projection, so nothing downstream can withhold it.
-    /// Connector preflight walks only the narrated set, so injecting this from
-    /// the reachable tier would let a turn about something else perform
-    /// authenticated mailbox reads the user was never asked about.
-    @Test("An offered-only mail connector gets no registry pointer until it is approved")
+    @Test("Outlook credentials never leave the app even after account approval")
     func offeredOnlyMailConnectorGetsNoRegistryPointerUntilApproved() throws {
         let container = try ModelContainer(
             for: ASTRASchema.current,
@@ -431,22 +424,25 @@ struct OfferedCapabilityTierTests {
         #expect(registryPath(contextText: unrelatedTurn) == nil)
 
         // Narrated: preflight walks this set, so the first-use approval was
-        // raised and the pointer is the run doing what it was asked to do.
+        // raised; its credentials still remain in the app.
         let mailTurn = "read my Stanford Outlook Mail inbox"
         #expect(TaskCapabilityResolutionSnapshot.capture(
             for: task,
             providerLaunchContextText: mailTurn
         ).providerLaunch.connectors.contains { $0.id == mail.id })
-        #expect(registryPath(contextText: mailTurn) == StanfordOutlookMail.registryURL.path)
+        #expect(registryPath(contextText: mailTurn) == nil)
 
-        // An approved credential grant is the same consent by another route, so
-        // the offered tier has to carry it - otherwise approving the card leaves
-        // the helper without the pointer the approval was about.
+        // Approval selects this account inside the app; it never restores the
+        // retired registry pointer in the provider environment.
         let grant = PermissionGrant.credential(
             label: "connector:\(mail.id.uuidString):\(StanfordOutlookMail.accessTokenKey)"
         )
         #expect(registryPath(contextText: unrelatedTurn, grants: [grant])
-            == StanfordOutlookMail.registryURL.path)
+            == nil)
+        #expect(StanfordOutlookMailRuntimeAccess.capture(for: task, in: offeredScope,
+            runtime: nil, additionalGrants: []).accounts.isEmpty)
+        #expect(StanfordOutlookMailRuntimeAccess.capture(for: task, in: offeredScope,
+            runtime: nil, additionalGrants: [grant]).accounts.map(\.id) == [mail.id])
         // Including where the scope was captured before the approval existed,
         // which is the seam this guard actually sits on.
         #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
@@ -454,7 +450,7 @@ struct OfferedCapabilityTierTests {
             capabilityScope: offeredScope,
             contextText: unrelatedTurn,
             executionPolicy: AgentRuntimeExecutionPolicy(permissionGrantsOverride: [grant])
-        )["ASTRA_MAIL_REGISTRY_PATH"] == StanfordOutlookMail.registryURL.path)
+        )["ASTRA_MAIL_REGISTRY_PATH"] == nil)
     }
 
     /// Preflight is the launch-blocking surface, and it reads the browser MCP

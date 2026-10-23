@@ -224,7 +224,7 @@ final class TaskQueue {
               request.state.isActive else {
             return Task {}
         }
-        guard TaskEventIndex.contains(eventID: request.sourceEventID, in: task) else {
+        guard TaskHistoryRead.contains(eventID: request.sourceEventID, in: task) else {
             failPersistedTurn(request, reason: "source_event_missing", modelContext: modelContext)
             return Task {}
         }
@@ -711,7 +711,7 @@ final class TaskQueue {
         guard let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext),
               request.taskID == task.id,
               request.state.isActive,
-              let sourceEvent = TaskEventIndex.record(id: request.sourceEventID, in: task) else {
+              let sourceEvent = TaskHistoryRead.record(id: request.sourceEventID, in: task) else {
             return false
         }
         let message = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent)?.message
@@ -1549,10 +1549,9 @@ final class TaskQueue {
             failPersistedTurn(request, reason: "task_missing", modelContext: modelContext)
             return
         }
-        guard await TaskEventIndex.shared.prepareForAdmission(task), request.state.isActive else { return }
         let launchSnapshot = TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task)
         let resourceAccess = resourceAccess(for: request, task: task)
-        guard let sourceEvent = TaskEventIndex.record(id: request.sourceEventID, in: task) else {
+        guard let sourceEvent = TaskHistoryRead.record(id: request.sourceEventID, in: task) else {
             failPersistedTurn(request, reason: "source_event_missing", modelContext: modelContext)
             return
         }

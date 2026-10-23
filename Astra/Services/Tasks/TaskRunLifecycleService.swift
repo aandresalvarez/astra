@@ -290,7 +290,8 @@ enum TaskRunLifecycleService {
         guard let runs = try? modelContext.fetch(descriptor) else {
             return task.runs.filter { $0.completedAt == nil }
         }
-        return runs
+        let owner = task.persistentModelID
+        return runs.filter { !$0.isDeleted && $0.task?.persistentModelID == owner }
     }
 
     private static func fetchIncompleteRuns(modelContext: ModelContext) -> [TaskRun] {

@@ -961,7 +961,7 @@ enum TaskPolicyStore {
 
     @MainActor
     static func latestSelectedLevel(for task: AgentTask) -> AgentPolicyLevel? {
-        TaskEventIndex.records(for: task, ofTypes: [selectedPolicyEventType])
+        TaskHistoryRead.records(for: task, ofTypes: [selectedPolicyEventType])
             .last
             .flatMap { event in
                 if let data = event.payload.data(using: .utf8),

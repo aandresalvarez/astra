@@ -163,14 +163,40 @@ struct BrokeredConnectorRegistryTests {
         )
     }
 
+    /// The person picked a default (Make default), so an omitted alias is not
+    /// a guess: it reaches that account, and naming another still wins.
+    @Test("An omitted alias resolves to the one default, and a named alias still wins")
+    func omittedAliasResolvesToTheDefault() {
+        let configuration = Self.twoREDCapConnectors(defaults: ["c2"])
+
+        #expect(
+            HostControlBrokeredServices.resolveConnector(forServiceType: "redcap", alias: nil, in: configuration)
+                .connector?.id == "c2"
+        )
+        #expect(
+            HostControlBrokeredServices.resolveConnector(forServiceType: "redcap", alias: "primary", in: configuration)
+                .connector?.id == "c1"
+        )
+    }
+
+    @Test("Two connectors marked default are refused like none")
+    func twoDefaultsAreRefused() {
+        let resolution = HostControlBrokeredServices.resolveConnector(
+            forServiceType: "redcap",
+            alias: nil,
+            in: Self.twoREDCapConnectors(defaults: ["c1", "c2"])
+        )
+        #expect(resolution == .ambiguous(alias: nil, candidates: ["primary", "secondary"]))
+    }
+
     // MARK: - Helpers
 
-    private static func twoREDCapConnectors() -> HostControlToolConfiguration {
+    private static func twoREDCapConnectors(defaults: Set<String> = []) -> HostControlToolConfiguration {
         HostControlToolConfiguration(
             connectorsJSON: """
             {"connectors":[\
-            \(connectorJSON(id: "c1", alias: "primary", serviceType: "redcap")),\
-            \(connectorJSON(id: "c2", alias: "secondary", serviceType: "redcap"))\
+            \(connectorJSON(id: "c1", alias: "primary", serviceType: "redcap", isDefault: defaults.contains("c1"))),\
+            \(connectorJSON(id: "c2", alias: "secondary", serviceType: "redcap", isDefault: defaults.contains("c2")))\
             ]}
             """
         )
@@ -184,11 +210,12 @@ struct BrokeredConnectorRegistryTests {
         )
     }
 
-    private static func connectorJSON(id: String, alias: String, serviceType: String) -> String {
+    /// Without `isDefault` the JSON is a manifest from before defaults existed.
+    private static func connectorJSON(id: String, alias: String, serviceType: String, isDefault: Bool = false) -> String {
         """
         {"id":"\(id)","alias":"\(alias)","envPrefix":"REDCAP","name":"REDCap",\
         "serviceType":"\(serviceType)","baseURL":"https://redcap.example.edu/api/",\
-        "authMethod":"token","env":{},"credentials":{},"config":{}}
+        "authMethod":"token","env":{},"credentials":{},"config":{}\(isDefault ? #","isDefault":true"# : "")}
         """
     }
 }

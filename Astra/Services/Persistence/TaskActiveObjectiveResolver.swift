@@ -109,7 +109,7 @@ extension TaskContextStateManager {
     }
 
     public static func firstConversationRequestValue(for task: AgentTask) -> String? {
-        TaskEventIndex.records(for: task, ofTypes: conversationRequestEventTypes)
+        TaskHistoryRead.records(for: task, ofTypes: conversationRequestEventTypes)
             .first?
             .payload
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -118,10 +118,10 @@ extension TaskContextStateManager {
     static let conversationRequestEventTypes: Set<String> = ["user.message", TaskPlanConversationEventTypes.userMessage]
 
     public static func firstConversationEventValue(for task: AgentTask) -> TaskEvent? {
-        task.events
-            .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
-            .sorted { $0.timestamp < $1.timestamp }
-            .first
+        guard let first = TaskHistoryRead.records(for: task, ofTypes: conversationRequestEventTypes).first else {
+            return nil
+        }
+        return TaskHistoryRead.event(id: first.id, in: task)
     }
 
     /// Whether `text` (typically the CURRENT turn's follow-up message, before
@@ -153,7 +153,7 @@ private struct ObjectiveOverride: Equatable {
 
 private func latestObjectiveOverride(for task: AgentTask) -> ObjectiveOverride? {
     let pendingTurnMessageIDs = TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
-    let userMessages = TaskEventIndex.records(
+    let userMessages = TaskHistoryRead.records(
         for: task,
         ofTypes: TaskContextStateManager.conversationRequestEventTypes
     ).filter { !pendingTurnMessageIDs.contains($0.id) }

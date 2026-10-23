@@ -109,11 +109,11 @@
       "displayName" : "Google Cloud login",
       "installHint" : "",
       "livenessArgs" : [
-        "auth",
-        "list",
-        "--format=value(account)"
+        "config",
+        "config-helper",
+        "--format=value(credential.token_expiry)"
       ],
-      "purpose" : "At least one active account is required for API calls.",
+      "purpose" : "A signed-in account whose credentials still refresh is required for API calls.",
       "semantic" : "stdoutNonEmpty"
     }
   ],

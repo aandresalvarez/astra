@@ -60,16 +60,15 @@ enum TaskDeliverableExpectation {
         followsUpDeliveredRequest(runID: run.id, startedAt: run.startedAt, in: task)
     }
 
-    /// From the task's delivery-history records and runs: `TaskEventIndex`
-    /// for a prepared task, so the answer costs the task's turns, never its
-    /// event log.
+    /// Reads delivery evidence and run metadata without materializing tool
+    /// traffic or caching mutable domain state.
     static func followsUpDeliveredRequest(runID: UUID, startedAt: Date, in task: AgentTask) -> Bool {
         followsUpDeliveredRequest(
             runID: runID,
             startedAt: startedAt,
-            events: TaskEventIndex.records(for: task, ofTypes: deliveryHistoryEventTypes).lazy
+            events: TaskHistoryRead.records(for: task, ofTypes: deliveryHistoryEventTypes).lazy
                 .map { HistoryEvent(type: $0.type, runID: $0.runID, timestamp: $0.timestamp, payload: $0.payload) },
-            runs: TaskEventIndex.runs(for: task).lazy
+            runs: TaskHistoryRead.runs(for: task).lazy
                 .map { HistoryRun(id: $0.id, startedAt: $0.startedAt, status: $0.runStatus, stopReason: $0.stopReason) }
         )
     }

@@ -70,7 +70,7 @@ enum ChainedTaskSubmissionService {
             into: modelContext
         ) else {
             if let receipt { modelContext.delete(receipt) }
-            TaskEventIndex.delete(chainEvent, from: modelContext)
+            modelContext.delete(chainEvent)
             modelContext.delete(nextTask)
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
                 "operation": "chained_execution_submission"

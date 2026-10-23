@@ -308,7 +308,7 @@ enum RuntimeTurnSettlementService {
             // Delete only the tentative verdict. Captured result/receipts must
             // remain staged so a later save cannot discard observed execution.
             for event in task.events where event.run?.id == run.id
-                && event.type == TaskEventTypes.System.runtimeTurnSettled.rawValue { TaskEventIndex.delete(event, from: modelContext) }
+                && event.type == TaskEventTypes.System.runtimeTurnSettled.rawValue { modelContext.delete(event) }
             reportPersistenceFailure(task: task, run: run, modelContext: modelContext)
             return false
         }

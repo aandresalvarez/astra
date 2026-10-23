@@ -119,7 +119,7 @@ enum ConnectorMutationRequirementResolver {
     /// already sent if the send was claimed — rather than letting it vanish.
     @MainActor
     static func pendingMutations(task: AgentTask) -> [TaskStagedConnectorMutation] {
-        pendingMutations(events: TaskEventIndex.records(for: task, ofTypes: resolutionEventTypes).map {
+        pendingMutations(events: TaskHistoryRead.records(for: task, ofTypes: resolutionEventTypes).map {
             TaskOutcomeEventRecord(id: $0.id, runID: $0.runID, type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
         })
     }
@@ -220,7 +220,7 @@ enum ConnectorMutationRequirementResolver {
     static func recordedStagedPaths(task: AgentTask) -> Set<String> {
         let decoder = TaskEventPayloadCodec.makeDecoder()
         return Set(
-            TaskEventIndex.records(for: task, ofTypes: [ConnectorMutationEventTypes.staged])
+            TaskHistoryRead.records(for: task, ofTypes: [ConnectorMutationEventTypes.staged])
                 .compactMap { event -> String? in
                     guard let data = event.payload.data(using: .utf8),
                           let staged = try? decoder.decode(TaskStagedConnectorMutation.self, from: data) else {

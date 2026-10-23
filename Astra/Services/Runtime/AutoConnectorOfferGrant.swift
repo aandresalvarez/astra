@@ -52,7 +52,7 @@ enum AutoConnectorOfferGrant {
             task.runtimePermissionOpenRequestsJSON = openRequestsBefore
             let added = task.events.filter { !eventsBefore.contains($0.id) }
             task.events.removeAll { !eventsBefore.contains($0.id) }
-            added.forEach { TaskEventIndex.delete($0, from: modelContext) }
+            added.forEach(modelContext.delete)
             AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
                 "source": "auto_connector_offer_grant",
                 "result": "grant_unpersisted"

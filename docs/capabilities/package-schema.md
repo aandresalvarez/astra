@@ -99,7 +99,7 @@ invalidates a prior local approval.
 ## Stable Components
 
 - `skills`: behavior instructions, allowed provider tools, disallowed provider tools, custom tool names, and environment keys.
-- `connectors`: credential and config profile shapes. Values are entered later and stored through ASTRA, not in JSON.
+- `connectors`: credential and config profile shapes. Values are entered later and stored through ASTRA, not in JSON. Only ASTRA's bundled plugins keep plain settings (`configHints`), and only the ones their own definition declares; every `configHints` field of any other package is stored as a credential: in the Keychain, entered masked, and never exported with the workspace.
 - `localTools`: command names and safe default arguments for local CLIs or scripts.
 - `mcpServers`: stdio or remote MCP server declarations and tool allow/exclude lists.
 - `templates`: task templates.
@@ -411,3 +411,13 @@ External packages can add data-driven capability behavior. They cannot add new n
 - Keychain storage semantics
 - provider runtimes
 - app-specific UI beyond the generic import, setup, review, and enable screens
+
+### Manifest setup checks
+
+The Plugins 2.0 manifest adapter accepts setup checks only when the package and
+current runtime can carry them. A `processStarts` check on an MCP component is
+rejected instead of being displayed as an unexecuted promise. Declare a separate
+setup component with a read-only `exec` check for the required executable; an
+empty argument list checks that the executable exists without starting it. The
+pasted MCP install flow already creates executable prerequisites. Actual MCP
+server startup happens when the task uses that server.

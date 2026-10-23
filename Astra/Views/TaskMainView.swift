@@ -270,6 +270,7 @@ struct TaskMainView: View {
     @State private var sensitiveDataSwitchPrompt = RuntimeSensitiveDataSwitchPrompt()
     @State private var isPreparingGitPublishProposal = false
     @State private var gitPublishPreparationError: String?
+    @StateObject private var repairActionPresentation = TaskRepairActionPresentation()
     @FocusState private var isComposerFocused: Bool
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -534,6 +535,7 @@ struct TaskMainView: View {
             onResolved: { threadViewModel.refreshSnapshot(for: task) }
         )
         .runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)
+        .taskRepairNotice(repairActionPresentation, taskID: task.id, runID: latestRun?.id)
         .alert("Couldn’t Fork Conversation", isPresented: isForkCreationErrorPresented) {
             Button("OK", role: .cancel) { forkCreationError = nil }
         } message: {
@@ -722,12 +724,6 @@ struct TaskMainView: View {
     @MainActor
     private func initializeDisplayedTaskState() async {
         guard await waitForViewUpdateBoundary() else { return }
-        Task {
-            // History facts the dock, the rail, and the send path read are
-            // built off the main actor once; until then they read the events.
-            await TaskEventIndex.shared.prepare(task)
-            recomputeDecisionOutcomes()
-        }
 
         TaskOpenResponsivenessTelemetry.measurePhase(
             "task_initialization",
@@ -3469,16 +3465,6 @@ struct TaskMainView: View {
         currentThreadSnapshot.latestRun
     }
 
-    /// The structured launch-block payload for the latest run, if any was
-    /// recorded — scoped to that specific run via `TaskEventSnapshot.runID`,
-    /// not the whole thread's error history.
-    private var latestRunLaunchBlock: TaskRunLaunchBlockPayload? {
-        guard let runID = latestRun?.id else { return nil }
-        return sortedEvents
-            .last { $0.runID == runID && $0.type == TaskEventTypes.System.runtimeLaunchBlocked.rawValue }
-            .flatMap { TaskRunLaunchBlockPayload.decode(from: $0.payload) }
-    }
-
     private var taskReviewPresentation: TaskReviewPresentation {
         TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
     }
@@ -3522,7 +3508,8 @@ struct TaskMainView: View {
             canToggleDone: canToggleTaskDoneFromDecisionDock,
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
-            launchBlock: latestRunLaunchBlock,
+            launchBlock: TaskRunStopEvidence.launchBlock(events: sortedEvents, runID: latestRun?.id),
+            repair: TaskRunStopEvidence.presentationRepair(events: sortedEvents, runID: latestRun?.id, task: task),
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails
         ))
@@ -3889,6 +3876,8 @@ struct TaskMainView: View {
             onRetryTask?(task)
         case .resume:
             onResumeTask?(task)
+        case .runRepair:
+            repairActionPresentation.start(events: sortedEvents, runID: latestRun?.id, task: task)
         case .reportProblem:
             reportCurrentFailure()
         case .openArtifact:
@@ -4108,7 +4097,8 @@ struct TaskMainView: View {
             },
             onToggleSkill: { skill, enabled in
                 if enabled {
-                    if !task.skills.contains(where: { $0.id == skill.id }) {
+                    if !task.skills.contains(where: { $0.id == skill.id }),
+                       !AgentTask.storableSkills([skill], in: task.workspace).isEmpty {
                         task.skills.append(skill)
                     }
                 } else {
@@ -4237,6 +4227,7 @@ struct TaskMainView: View {
                         state: Bindable(composerDraft).eligibilityPreviewState
                     )
                 }
+
             }
             .background(composerFill)
             .clipShape(composerShape)
@@ -4607,7 +4598,9 @@ struct TaskMainView: View {
 
         // Attach skills by name
         if let skillNames = json["skills"] as? [String] {
-            let matchedIDs = workspace.skills.filter { skillNames.contains($0.name) }.map { $0.id.uuidString }
+            let globalSkills = (try? modelContext.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))) ?? []
+            let matchedIDs = WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills)
+                .filter { skillNames.contains($0.name) }.map { $0.id.uuidString }
             schedule.skillIDs = matchedIDs
         }
 

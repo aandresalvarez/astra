@@ -881,6 +881,15 @@ final class AgentRuntimeWorker {
         }
         let taskFolderBeforeRun = await TaskFolderRunSnapshot.capture(for: task)
         await TaskFolderRunSnapshot.persistBaseline(taskFolderBeforeRun, task: task, run: run)
+        // Preparation now suspends for Git and filesystem work. Cancellation
+        // during that work must win before any provider process is launched.
+        guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
+            if run.status == .running {
+                TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            }
+            return
+        }
         let capabilityScope = capabilityResolutionSnapshot.providerLaunch
         if !capabilityScope.behaviorSkills.isEmpty {
             let skillNames = capabilityScope.behaviorSkills.map(\.name).joined(separator: ", ")
@@ -889,6 +898,10 @@ final class AgentRuntimeWorker {
             modelContext.insert(skillEvent)
         }
 
+        let mailAccess = StanfordOutlookMailRuntimeAccess.capture(for: task, in: capabilityScope,
+            runtime: selectedRuntime, additionalGrants: executionPolicy.permissionGrantsOverride ?? [])
+        HostControlBrokerSessionRegistry.shared.bindMailReader(mailAccess.makeReader(), taskID: task.id, runID: run.id)
+        defer { HostControlBrokerSessionRegistry.shared.unbindMailReader(taskID: task.id, runID: run.id) }
         HostControlBrokerSessionRegistry.shared.bindHistory(container: modelContext.container, taskID: task.id, runID: run.id)
         defer { HostControlBrokerSessionRegistry.shared.unbindHistory(taskID: task.id, runID: run.id) }
         // The run's own level, fixed here: a write the agent asks for is sent
@@ -1738,7 +1751,8 @@ final class AgentRuntimeWorker {
             .providerSemanticProgressStalled,
             .providerActiveToolStalled,
             .providerWorkspaceJobStalled,
-            .providerRunWallClockExceeded
+            .providerRunWallClockExceeded,
+            .capabilitySessionExpired
         ].contains(stopReason)
     }
 

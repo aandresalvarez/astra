@@ -717,7 +717,7 @@ final class GitHubReviewPublicationService {
 
     static func hasDispatched(task: AgentTask, filePath: String) -> Bool {
         let root = TaskOutputArtifactPathPolicy.ResolvedRoot(TaskWorkspaceAccess(task: task).taskFolder)
-        return TaskEventIndex.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.dispatched]).contains { event in
+        return TaskHistoryRead.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.dispatched]).contains { event in
             guard let data = event.payload.data(using: .utf8),
                   let record = try? JSONDecoder().decode(GitHubReviewPublicationRecord.self, from: data) else {
                 return false
@@ -732,7 +732,7 @@ final class GitHubReviewPublicationService {
             || (try? FileManager.default.attributesOfItem(atPath: filePath + "." + retiredMarkerExtension)) != nil {
             return true
         }
-        return TaskEventIndex.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.unusable]).contains { event in
+        return TaskHistoryRead.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.unusable]).contains { event in
             guard let data = event.payload.data(using: .utf8),
                   let record = try? JSONDecoder().decode(GitHubReviewUnusableArtifactRecord.self, from: data) else {
                 return false
@@ -754,7 +754,7 @@ final class GitHubReviewPublicationService {
     /// would see, not whichever review file sorts first — or none, when the
     /// requested file was never registered as an artifact.
     static func candidatePaths(task: AgentTask, filePaths: [String]) -> [String] {
-        let requested = TaskEventIndex.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.requested])
+        let requested = TaskHistoryRead.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.requested])
             .reversed()
             .compactMap { event -> String? in
                 (try? JSONDecoder().decode(GitHubReviewRequestRecord.self, from: Data(event.payload.utf8)))?.filePath
@@ -767,7 +767,7 @@ final class GitHubReviewPublicationService {
     /// file's place in the task folder; nil when the agent never named it.
     static func requestedDigest(task: AgentTask, filePath: String) -> String? {
         let root = TaskOutputArtifactPathPolicy.ResolvedRoot(TaskWorkspaceAccess(task: task).taskFolder)
-        return TaskEventIndex.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.requested])
+        return TaskHistoryRead.records(for: task, ofTypes: [GitHubReviewPublicationEventTypes.requested])
             .reversed()
             .lazy
             .compactMap { try? JSONDecoder().decode(GitHubReviewRequestRecord.self, from: Data($0.payload.utf8)) }
@@ -806,13 +806,13 @@ final class GitHubReviewPublicationService {
             }
         } catch {
             task.events.removeAll { $0.id == event.id }
-            TaskEventIndex.delete(event, from: modelContext)
+            modelContext.delete(event)
             throw error
         }
     }
 
     static func hasReceipt(task: AgentTask, run: TaskRun) -> Bool {
-        TaskEventIndex.records(
+        TaskHistoryRead.records(
             for: task,
             ofTypes: [GitHubReviewPublicationEventTypes.receipt, GitHubReviewPublicationEventTypes.receiptRecovery]
         ).contains { $0.runID == run.id }
@@ -1132,7 +1132,6 @@ final class GitHubReviewPublicationService {
             // receipt in its own event so a transient receipt transaction
             // failure does not strand an already-posted review.
             modelContext.rollback()
-            TaskEventIndex.shared.markAllStale()
             task.events.removeAll { !persistedEventIDs.contains($0.id) }
             TaskStateMachine.restoreFailedExternalOutcomeReceipt(
                 task: task, run: run, snapshot: priorState
@@ -1167,7 +1166,6 @@ final class GitHubReviewPublicationService {
                 return receipt
             } catch {
                 modelContext.rollback()
-                TaskEventIndex.shared.markAllStale()
                 task.events.removeAll { !persistedEventIDs.contains($0.id) }
                 TaskStateMachine.restoreFailedExternalOutcomeReceipt(
                     task: task, run: run, snapshot: priorState

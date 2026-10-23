@@ -133,7 +133,6 @@ enum PersistedTurnRuntimeEventLinker {
         if let eventID,
            let event = sourceEvent(eventID, of: task, in: modelContext) {
             event.run = run
-            TaskEventIndex.shared.noteChanged(event)
             TaskThreadChangeNotifier.post(taskID: task.id, source: "turn_request_admitted")
             return true
         }
@@ -145,10 +144,6 @@ enum PersistedTurnRuntimeEventLinker {
     /// One row by id, matched in the store rather than by faulting the task's
     /// whole event relationship in to compare ids.
     private static func sourceEvent(_ eventID: UUID, of task: AgentTask, in modelContext: ModelContext) -> TaskEvent? {
-        let taskID = task.id
-        var descriptor = FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.id == eventID && $0.task?.id == taskID })
-        descriptor.fetchLimit = 1
-        if let fetched = try? modelContext.fetch(descriptor) { return fetched.first }
-        return task.events.first { $0.id == eventID }
+        TaskHistoryRead.event(id: eventID, in: task)
     }
 }

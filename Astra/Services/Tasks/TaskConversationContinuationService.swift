@@ -9,8 +9,8 @@ import ASTRAModels
 /// worker, the provider — is asynchronous.
 ///
 /// It lives here rather than in `TaskMainView` so the send can be measured on
-/// its own: `TaskMainActorScalingGateTests` holds it to a cost that does not
-/// grow with the task's history.
+/// its own: `TaskMainActorScalingGateTests` holds the entire operation to an interactive
+/// budget on disk-backed long histories.
 @MainActor
 enum TaskConversationContinuationService {
     struct Continuation: Equatable {
