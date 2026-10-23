@@ -60,7 +60,12 @@ enum PluginsSurfacePresentation {
     static func settingKeys(of skill: PluginSkill, in activation: PluginActivation?, package: PluginPackage? = nil) -> [String] {
         guard let activation, PluginRuntimeProjection.packageSkillOwnsSettings(skill, activation: activation) else { return [] }
         if let package, PluginRuntimeProjection.awaitsUpdate(activation, to: package) { return [] }
-        guard let package, !package.connectors.isEmpty else { return skill.environmentKeys }
+        guard let package, !package.connectors.isEmpty,
+              let primary = package.skills.first,
+              CapabilityResourceOrigin.componentID(for: primary) == CapabilityResourceOrigin.componentID(for: skill)
+        else { return skill.environmentKeys }
+        // Runtime associates the package accounts with its first skill only.
+        // A secondary skill's activation values can execute without those accounts.
         // Hide only fields the shared account layout actually stores. A
         // skill-only secret remains owned by this activation even when the
         // package also declares unrelated connector accounts.

@@ -114,13 +114,11 @@ struct PluginsSurfaceView: View {
         // An activation whose plugin the library no longer has is listed
         // too, so it can be removed (`CapabilityUninstaller.forgetMissing`).
         let libraryIDs = Set((catalog.packages + PluginCatalog.builtInPackages).map(\.id))
-        for activation in WorkspaceCapabilityActivation.activations(of: workspace)
-        where !activation.isDeleted && !libraryIDs.contains(activation.pluginID) && rows[activation.pluginID] == nil {
-            let input = PluginsSurfacePresentation.missingInput(pluginID: activation.pluginID, isEnabled: activation.isEnabled)
+        for input in PluginsSurfacePresentation.missingInputs(in: workspace, libraryIDs: libraryIDs, listedIDs: Set(rows.keys)) {
             inputs.append(input)
-            rows[activation.pluginID] = PluginRow(package: input.package, activation: activation, display: PluginsSurfacePresentation.makeState(
-                [input], query: ""
-            ).allRows.first ?? placeholderRow(input.package))
+            rows[input.package.id] = PluginRow(package: input.package,
+                activation: WorkspaceCapabilityActivation.activation(for: input.package.id, in: workspace),
+                display: PluginsSurfacePresentation.makeState([input], query: "").allRows.first ?? placeholderRow(input.package))
         }
         return (PluginsSurfacePresentation.makeState(inputs, query: query), rows)
     }
