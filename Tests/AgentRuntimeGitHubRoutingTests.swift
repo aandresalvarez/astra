@@ -47,7 +47,7 @@ struct AgentRuntimeGitHubRoutingTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
         let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
-        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let task = AgentTask(
             title: "ASTRA task 9FA6AF3D PR metadata",
             goal: "Use GitHub to find the pull request and issue metadata for ASTRA task 9FA6AF3D-F4D3-4035-BFC2-826487DA32ED",

@@ -11,6 +11,7 @@ import ASTRAModels
 @Suite("Plugins surface")
 @MainActor
 struct PluginsSurfaceTests {
+    private static var retained: [ModelContainer] = []
     @Test("A prerequisite without a completed health check remains pending")
     func uncheckedPrerequisitesArePending() {
         var candidate = package("unchecked", name: "Unchecked")
@@ -114,18 +115,19 @@ struct PluginsSurfaceTests {
         #expect(!source.contains("if let command = repair.command {"))
     }
 
-    @Test("Turning off and removing ask first, naming what is deleted and how far it reaches")
+    @Test("Turning off and removing say exactly what they delete and what stays")
     func destructiveActionsConfirm() {
         let off = PluginsSurfaceConfirmation.turnOff(packageID: "jira").copy(name: "Jira", hasAccounts: true)
         #expect(off.verb == "Turn off")
-        #expect(off.message.contains("in this workspace") && off.message.contains("saved keys"))
-        // Shared accounts aren't deleted by turning a plugin off, so the copy
-        // doesn't promise it.
-        #expect(off.message.contains("shared accounts are kept"))
-        #expect(!PluginsSurfaceConfirmation.turnOff(packageID: "x").copy(name: "X", hasAccounts: false).message.contains("keys"))
+        // Turning off deletes nothing.
+        #expect(off.message.contains("in this workspace") && off.message.contains("Nothing is deleted"))
+        #expect(!off.message.contains("are deleted"))
         let remove = PluginsSurfaceConfirmation.remove(packageID: "jira").copy(name: "Jira", hasAccounts: true)
         #expect(remove.verb == "Remove")
         #expect(remove.message.contains("every workspace"))
+        // Remove keeps accounts and their keys; only Delete account clears them.
+        #expect(remove.message.contains("saved keys stay"))
+        #expect(!PluginsSurfaceConfirmation.remove(packageID: "x").copy(name: "X", hasAccounts: false).message.contains("keys"))
     }
 
     @Test("Expanded plugin rows are remembered per workspace")
@@ -149,6 +151,54 @@ struct PluginsSurfaceTests {
         #expect(PluginsSurfaceView.isRemovable(package("imported.plugin", name: "Imported")))
     }
 
+    @Test("A standalone skill's row turns off deleting nothing, and a workspace's own skill offers no Turn off")
+    func standaloneSkillRowsTurnOffWithoutDeleting() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        Self.retained.append(container)
+        let context = container.mainContext
+        let workspace = Workspace(name: "Standalone", primaryPath: "/tmp/plugins-standalone")
+        context.insert(workspace)
+        let own = Skill(name: "Local Analyst", allowedTools: ["Read"])
+        own.workspace = workspace
+        // The shared row's connector matches this workspace's own one by
+        // service, which the legacy disabler would delete with it.
+        let sharedNotes = Connector(name: "Notes", serviceType: "notes")
+        sharedNotes.isGlobal = true
+        let shared = Skill(name: "Shared Analyst", allowedTools: ["Read"])
+        shared.isGlobal = true
+        let workspaceNotes = Connector(name: "Notes", serviceType: "notes")
+        workspaceNotes.workspace = workspace
+        [own, shared].forEach { context.insert($0) }
+        [sharedNotes, workspaceNotes].forEach { context.insert($0) }
+        shared.connectors = [sharedNotes]
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableGlobalSkill(shared.id.uuidString)
+            $0.enableGlobalConnector(sharedNotes.id.uuidString)
+        }
+        try context.save()
+        let capabilities = WorkspaceCapabilities(workspace: workspace, globalSkills: [shared], globalConnectors: [sharedNotes])
+        let rows = CapabilityCatalogInventory.configuredPackages(catalogPackages: [], capabilities: capabilities, workspace: workspace)
+        let ownRow = try #require(rows.first { $0.id == "skill.\(own.id.uuidString.lowercased())" })
+        let sharedRow = try #require(rows.first { $0.id == "skill.\(shared.id.uuidString.lowercased())" })
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-plugins-standalone-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = CapabilityCatalogActionService(library: CapabilityLibrary(directory: root))
+
+        #expect(!PluginsSurfacePresentation.offersTurnOff(ownRow))
+        #expect(!service.disable(ownRow, workspace: workspace, modelContext: context).persisted)
+        #expect(PluginsSurfacePresentation.offersTurnOff(sharedRow))
+        #expect(service.disable(sharedRow, workspace: workspace, modelContext: context).persisted)
+
+        #expect(!workspace.enabledGlobalSkillIDs.contains(shared.id.uuidString))
+        #expect(Set(try context.fetch(FetchDescriptor<Skill>()).map(\.id)) == [own.id, shared.id])
+        #expect(Set(try context.fetch(FetchDescriptor<Connector>()).map(\.id)) == [sharedNotes.id, workspaceNotes.id])
+    }
+
     @Test("Search reaches inside a plugin: bigquery finds Google Cloud through its bq tool")
     func searchReachesComponents() throws {
         let gcloud = try builtIn("gcloud-workflow")
@@ -167,7 +217,10 @@ struct PluginsSurfaceTests {
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
         )
         let context = container.mainContext
-        let workspace = Workspace(name: "Add", primaryPath: "/tmp/plugins-add")
+        let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-lifecycle-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+        let workspace = Workspace(name: "Add", primaryPath: workspaceFolder.path)
         context.insert(workspace)
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-plugins-add-\(UUID().uuidString)", isDirectory: true)
@@ -254,11 +307,11 @@ struct PluginsSurfaceTests {
         context.insert(workspace)
         let plugin = package("turn-off-plugin", name: "Turn Off Plugin")
         WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs = [plugin.id, "kept-plugin"] }
+        try context.save()
         let traceID = AuditTrace.make("turn-off")
 
         let result = CapabilityCatalogActionService().disable(
             plugin, workspace: workspace,
-            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: []),
             modelContext: context, traceID: traceID
         )
 

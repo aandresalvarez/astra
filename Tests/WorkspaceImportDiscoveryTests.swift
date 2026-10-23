@@ -289,6 +289,64 @@ struct WorkspaceImportOrchestratorTests {
         #expect(result.imported.last?.skills.count == 3)
     }
 
+    @Test("a parent Workspaces folder's children share an account only when the person confirmed it")
+    @MainActor
+    func batchImportSharesAccountsOnlyWhenConfirmed() throws {
+        let source = try makeWorkspaceImportContainer()
+        let account = Connector(name: "Team API", serviceType: "custom", baseURL: "https://api.example.invalid")
+        account.isGlobal = true
+        source.mainContext.insert(account)
+        // Each import reads its own copy: an import rewrites the mirrors it
+        // reads with the rows it created.
+        var roots: [URL] = []
+        defer { roots.forEach { try? FileManager.default.removeItem(at: $0.deletingLastPathComponent()) } }
+        func makeRoot() throws -> URL {
+            let root = try makeTemporaryDirectory(named: "Workspaces")
+            roots.append(root)
+            for name in ["alpha", "beta"] {
+                let folder = try makeDirectory(name, in: root)
+                let workspace = Workspace(name: name.capitalized, primaryPath: folder.path)
+                source.mainContext.insert(workspace)
+                CapabilitySharing.enableShared(account, in: workspace)
+                try source.mainContext.save()
+                try WorkspaceConfigManager.exportToFile(
+                    workspace: workspace, modelContext: source.mainContext,
+                    url: folder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+                )
+            }
+            return root
+        }
+
+        // Nothing confirmed: each file is its own trust domain, so each
+        // workspace gets its own row, as a single import gives it (a crafted
+        // sibling file describing the account the same way is never bound
+        // to the other's row).
+        let separate = try makeWorkspaceImportContainer()
+        let separateResult = WorkspaceImportOrchestrator(modelContext: separate.mainContext, taskQueue: TaskQueue())
+            .importWorkspaces(from: [try makeRoot()], existingWorkspaces: []) { _, _ in .skip }
+        #expect(separateResult.imported.map(\.name) == ["Alpha", "Beta"])
+        let separateRows = try separate.mainContext.fetch(FetchDescriptor<Connector>()).filter { $0.name == "Team API" }
+        #expect(separateRows.count == 2)
+        #expect(Set(separateRows.compactMap { $0.workspace?.id }) == Set(separateResult.imported.map(\.id)))
+        #expect(separateRows.allSatisfy { !$0.isGlobal && $0.id != account.id })
+
+        // Confirmed for this account: one row, shared, on both lists.
+        let target = try makeWorkspaceImportContainer()
+        let context = target.mainContext
+        let result = WorkspaceImportOrchestrator(modelContext: context, taskQueue: TaskQueue())
+            .importWorkspaces(from: [try makeRoot()], existingWorkspaces: [], sharedAccountIDs: [account.id.uuidString]) { _, _ in .skip }
+
+        #expect(result.imported.map(\.name) == ["Alpha", "Beta"])
+        let rows = try context.fetch(FetchDescriptor<Connector>()).filter { $0.name == "Team API" }
+        #expect(rows.count == 1)
+        #expect(rows.first?.isGlobal == true)
+        // A fresh ID: it can't read the source row's credentials.
+        #expect(rows.first?.id != account.id)
+        for workspace in result.imported {
+            #expect(workspace.enabledGlobalConnectorIDs == rows.map(\.id.uuidString))
+        }
+    }
+
     @Test("duplicate imports use the supplied duplicate policy")
     @MainActor
     func duplicateImportsUseSuppliedPolicy() throws {

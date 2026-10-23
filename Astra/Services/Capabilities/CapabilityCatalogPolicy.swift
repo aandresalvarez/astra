@@ -284,11 +284,7 @@ enum CapabilityCatalogPolicy {
         }
 
         for connector in package.connectors {
-            if let reason = ConnectorSecurityPolicy.credentialTransportViolation(
-                baseURL: connector.baseURL,
-                authMethod: connector.authMethod,
-                credentialKeys: connector.credentialHints.map(\.key)
-            ) {
+            if let reason = PluginConnectorFieldTrust.credentialTransportViolation(of: connector, in: package) {
                 operationalBlockers.append(.unsafeConnector(name: displayName(connector.name, fallback: connector.serviceType), reason: reason))
             }
         }
@@ -391,25 +387,44 @@ enum CapabilityCatalogPolicy {
         )
     }
 
+    /// Which approval record governs `package`, the one rule for it: none
+    /// when its version has no record (its own governance applies), a
+    /// mismatch when its version has records but none for this copy's
+    /// digest, else the newest record for this copy. The rail keys its cache
+    /// on it (`CapabilityRailPackageSignature`), so a decision changes the key.
+    enum ApprovalMatch: Equatable {
+        case none
+        case mismatch
+        case record(CapabilityApprovalRecord)
+    }
+
+    static func approvalMatch(
+        for package: PluginPackage,
+        records: [CapabilityApprovalRecord],
+        digest: (PluginPackage) -> String? = { try? CapabilityApprovalDigest.digest(for: $0) }
+    ) -> ApprovalMatch {
+        let versionRecords = records.filter { $0.packageID == package.id && $0.packageVersion == package.version }
+        guard !versionRecords.isEmpty else { return .none }
+        guard let digest = digest(package),
+              let record = versionRecords.last(where: { $0.sourceDigest == digest }) else { return .mismatch }
+        return .record(record)
+    }
+
     private static func effectiveGovernance(
         for package: PluginPackage,
         context: CapabilityCatalogPolicyContext
     ) -> (governance: CapabilityGovernance, blockers: [CapabilityCatalogBlocker]) {
         var governance = package.governance
         var blockers: [CapabilityCatalogBlocker] = []
-        let versionRecords = context.approvalRecords.filter {
-            $0.packageID == package.id && $0.packageVersion == package.version
-        }
-        guard !versionRecords.isEmpty else {
+        let record: CapabilityApprovalRecord
+        switch approvalMatch(for: package, records: context.approvalRecords) {
+        case .none:
             return (governance, blockers)
-        }
-        guard let digest = try? CapabilityApprovalDigest.digest(for: package) else {
+        case .mismatch:
             blockers.append(.approvalDigestMismatch)
             return (governance, blockers)
-        }
-        guard let record = versionRecords.last(where: { $0.sourceDigest == digest }) else {
-            blockers.append(.approvalDigestMismatch)
-            return (governance, blockers)
+        case .record(let matched):
+            record = matched
         }
 
         governance.approvalStatus = record.status

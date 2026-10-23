@@ -1156,7 +1156,10 @@ final class TaskLifecycleCoordinator {
         return replacement
     }
 
+    /// `importSession` spans one Import Workspace action: workspaces it
+    /// imports together share only the accounts the person confirmed.
     func importFromConfig(at url: URL, existingWorkspaces: [Workspace],
+                          importSession: WorkspaceConfigManager.ImportSession? = nil,
                           askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
         do {
             var config = try WorkspaceConfigManager.loadConfig(from: url)
@@ -1192,10 +1195,11 @@ final class TaskLifecycleCoordinator {
                     }
                     let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
                     return replaceWorkspace(existing, replacementPath: config.primaryPath) {
-                        WorkspaceConfigManager.importWorkspace(
+                        WorkspaceConfigManager.importWorkspaceResult(
                             from: config, modelContext: modelContext, scheduleTrustPolicy: scheduleTrustPolicy,
-                            capabilityTrust: .validate(.live()), replacementCredentialIdentity: credentialIdentity
-                        )
+                            capabilityTrust: .validate(.live()), importSession: importSession,
+                            replacementCredentialIdentity: credentialIdentity
+                        ).workspace
                     }
                 case .duplicate:
                     var dupConfig = config
@@ -1218,14 +1222,17 @@ final class TaskLifecycleCoordinator {
                             dupConfig.tasks = freshExport.tasks
                         }
                     }
-                    return WorkspaceConfigManager.importWorkspace(
-                        from: dupConfig, modelContext: modelContext, capabilityTrust: .validate(.live())
-                    )
+                    // The file's projected skill IDs (in its templates and
+                    // schedules) were derived from the ID cleared above.
+                    return WorkspaceConfigManager.importWorkspaceResult(
+                        from: dupConfig, modelContext: modelContext, capabilityTrust: .validate(.live()),
+                        sourceWorkspaceID: configID.flatMap(UUID.init(uuidString:)), importSession: importSession
+                    ).workspace
                 }
             }
-            return WorkspaceConfigManager.importWorkspace(
-                from: config, modelContext: modelContext, capabilityTrust: .validate(.live())
-            )
+            return WorkspaceConfigManager.importWorkspaceResult(
+                from: config, modelContext: modelContext, capabilityTrust: .validate(.live()), importSession: importSession
+            ).workspace
         } catch {
             AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
                 "operation": "import_config",
@@ -1479,19 +1486,6 @@ final class TaskLifecycleCoordinator {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard collapsed.count > 240 else { return collapsed }
         return String(collapsed.prefix(240)) + "..."
-    }
-
-    // MARK: - Migration
-
-    func migrateConnectorCredentials(workspaces: [Workspace], globalConnectors: [Connector] = []) {
-        StartupCredentialMigrationService.migrateConnectorCredentials(
-            workspaces: workspaces,
-            globalConnectors: globalConnectors
-        )
-    }
-
-    func migrateSkillSecrets(skills: [Skill]) {
-        StartupCredentialMigrationService.migrateSkillSecrets(skills: skills)
     }
 
     // MARK: - Seeding

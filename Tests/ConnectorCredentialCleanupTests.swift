@@ -1070,7 +1070,10 @@ struct ConnectorCredentialCleanupTests {
         #expect(app.contains("|| connectorCleanup"))
         // A launch that skipped the scan resumes no credential cleanup, and
         // an unconfirmed workspace deletion is dropped only after both passes.
-        let gate = try #require(app.range(of: "if WorkspaceRecoveryTrust.allowsCleanup {\n                    WorkspaceDeletionCleanupService.resumePending("))
+        let gate = try #require(app.range(of: "if WorkspaceRecoveryTrust.allowsCleanup {"))
+        let operations = try #require(app.range(of: "PluginOperationRecovery.resumePending(modelContext: modelContext)", range: trusted.upperBound..<gate.lowerBound))
+        let workspaces = try #require(app.range(of: "WorkspaceDeletionCleanupService.resumePending(", range: gate.upperBound..<app.endIndex))
+        #expect(trusted.upperBound <= operations.lowerBound && operations.upperBound < workspaces.lowerBound)
         let connectors = try #require(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: gate.upperBound..<app.endIndex))
         let drop = try #require(app.range(of: "WorkspaceDeletionCleanupService.dropUnconfirmed(\n                        modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker", range: connectors.upperBound..<app.endIndex))
         #expect(app[gate.upperBound..<drop.lowerBound].contains("dropsUnconfirmed: false"))
@@ -1112,7 +1115,10 @@ struct ConnectorCredentialCleanupTests {
         )
         defer { try? FileManager.default.removeItem(at: outbox.directory) }
         try withTemporaryCredentialKeychain {
-            let workspace = Workspace(name: "WS", primaryPath: "/tmp/astra-connector-cleanup-ws")
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-configure-cleanup-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let workspace = Workspace(name: "WS", primaryPath: folder.path)
             let connector = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
             connector.isGlobal = true
             context.insert(workspace)
@@ -1136,6 +1142,7 @@ struct ConnectorCredentialCleanupTests {
             })
             #expect(try context.fetchCount(FetchDescriptor<Connector>()) == 0)
             #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
+            #expect(FileManager.default.fileExists(atPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath)))
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
             #expect(outbox.pending()?.records.isEmpty == true)
         }
@@ -1187,8 +1194,8 @@ struct ConnectorCredentialCleanupTests {
         #expect(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: trusted.upperBound..<app.endIndex) != nil)
     }
 
-    @Test("Disabling a package keeps the credentials a recreated connector outside it still reads")
-    func disableSparesSharedNamespace() throws {
+    @Test("Turning a plugin off keeps isolated credentials and legacy shared aliases", arguments: [false, true])
+    func disableSparesSharedNamespace(legacy: Bool) throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-credential-cleanup-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1205,11 +1212,15 @@ struct ConnectorCredentialCleanupTests {
                 package, into: workspace, modelContext: context, credentialInputs: ["SVC_TOKEN": "secret-value"]
             )
             let installed = try #require(workspace.connectors.first)
+            if legacy {
+                installed.credentialNamespaceID = nil
+                #expect(installed.restorePreviouslyStoredCredential(key: "SVC_TOKEN", value: "secret-value"))
+            }
             let recreated = recreation(of: installed)
             recreated.isGlobal = true
             context.insert(recreated)
             try context.save()
-            #expect(KeychainService.load(key: "SVC_TOKEN", connector: recreated) == "secret-value")
+            #expect(KeychainService.load(key: "SVC_TOKEN", connector: recreated) == (legacy ? "secret-value" : nil))
 
             let capabilities = WorkspaceCapabilities(
                 workspace: workspace,
@@ -1218,11 +1229,11 @@ struct ConnectorCredentialCleanupTests {
             )
             let installedID = installed.id
             let result = CapabilityActivationDisabler().disable(
-                package, in: workspace, capabilities: capabilities, modelContext: context, availablePackages: [package]
-            )
-            #expect(result.removedWorkspaceConnectorIDs == [installedID])
-            #expect(KeychainService.load(key: "SVC_TOKEN", connector: recreated) == "secret-value")
-            #expect(KeychainService.load(key: "SVC_TOKEN", connectorID: installedID) == nil)
+                package, in: workspace, modelContext: context)
+            #expect(result.removedWorkspaceConnectorIDs.isEmpty)
+            #expect(workspace.connectors.map(\.id) == [installedID])
+            #expect(KeychainService.load(key: "SVC_TOKEN", connector: recreated) == (legacy ? "secret-value" : nil))
+            #expect(KeychainService.load(key: "SVC_TOKEN", connector: installed) == "secret-value")
         }
     }
 }
