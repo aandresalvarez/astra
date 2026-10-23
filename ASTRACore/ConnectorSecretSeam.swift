@@ -14,8 +14,15 @@ import os
 // touched (`credentialKeys`/`credentialValues` mutation, `updatedAt`) stays
 // in `Connector.swift` itself, which now calls this seam only for the
 // Keychain I/O primitives.
-public struct ConnectorSecretFacts: Sendable {
+public struct ConnectorSecretFacts: Sendable, Equatable {
     public let id: UUID
+    /// Nil retains the historical UUID/endpoint aliases. A generation is
+    /// exclusive: it never falls back into another account's legacy slots.
+    public let credentialNamespaceID: UUID?
+    /// Interpretation of Outlook's internal token store; generic credential
+    /// reads never use this to add fallback namespaces.
+    public let outlookCredentialFormat: String?
+    public let includesOutlookCredentials: Bool
     public let name: String
     public let serviceType: String
     public let baseURL: String
@@ -28,9 +35,15 @@ public struct ConnectorSecretFacts: Sendable {
         serviceType: String,
         baseURL: String,
         originPackageID: String?,
-        originComponentID: String?
+        originComponentID: String?,
+        credentialNamespaceID: UUID? = nil,
+        outlookCredentialFormat: String? = nil,
+        includesOutlookCredentials: Bool = true
     ) {
         self.id = id
+        self.credentialNamespaceID = credentialNamespaceID
+        self.outlookCredentialFormat = outlookCredentialFormat
+        self.includesOutlookCredentials = includesOutlookCredentials
         self.name = name
         self.serviceType = serviceType
         self.baseURL = baseURL
@@ -67,6 +80,8 @@ public protocol ConnectorSecretPersisting: Sendable {
     /// Matches `ConnectorSecretPersistence.credentials(for:store:)`: tries
     /// every namespace `facts` resolves to, first match per key wins.
     static func loadAllCredentials(keys: [String], facts: ConnectorSecretFacts, store: SecretStore) -> [String: String]
+    /// A refused vault read must not be treated as an unconfigured key.
+    static func readCredential(key: String, facts: ConnectorSecretFacts, store: SecretStore) -> SecretReadOutcome
     @discardableResult
     static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, allowUserInteraction: Bool) -> Bool
     /// The same write, reporting why it failed rather than only that it did.
@@ -87,6 +102,11 @@ public protocol ConnectorSecretPersisting: Sendable {
     static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, store: SecretStore) -> Bool
     @discardableResult
     static func deleteCredential(key: String, facts: ConnectorSecretFacts) -> Bool
+    /// Store-injectable twin of `deleteCredential(key:facts:)`, as
+    /// `saveCredential(_:key:facts:store:)` is of the save: every namespace
+    /// `facts` resolves to.
+    @discardableResult
+    static func deleteCredential(key: String, facts: ConnectorSecretFacts, store: SecretStore) -> Bool
     static func credentialExists(key: String, facts: ConnectorSecretFacts) -> Bool
     /// Matches `KeychainService.load(key:connector:)`'s existing quirk:
     /// unlike `loadAllCredentials`, this bypasses the injectable
@@ -104,6 +124,10 @@ public protocol ConnectorSecretPersisting: Sendable {
 }
 
 public extension ConnectorSecretPersisting {
+    static func readCredential(key: String, facts: ConnectorSecretFacts, store: SecretStore) -> SecretReadOutcome {
+        loadAllCredentials(keys: [key], facts: facts, store: store)[key].map(SecretReadOutcome.value) ?? .missing
+    }
+
     /// `deleteAllCredentials` reporting whether every namespace was cleared.
     /// Defaulted to success so test fakes keep compiling; a fake can't
     /// delete selectively, so it deletes nothing while anything is spared.

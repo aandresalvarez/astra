@@ -69,7 +69,7 @@ struct GitPublishPolicyTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
         let workspace = Workspace(name: "GitHub Mode Routing", primaryPath: root.path)
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         let packageSkill = try #require(package.skills.first)
         let githubSkill = Skill(
             name: packageSkill.name,

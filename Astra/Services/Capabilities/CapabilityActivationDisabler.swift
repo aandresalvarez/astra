@@ -2,242 +2,126 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
+/// Turn off changes membership only. Resource rows and credential generations
+/// belong to their owners, never to a catalog name match.
 @MainActor
 struct CapabilityActivationDisabler {
+    enum Problem: Error, Equatable, LocalizedError {
+        case changedWorkspace, changedResource, cannotTurnOff, pendingEdits, recoveryRequired, saveFailed, libraryBusy
+        case savedRecoveryPending(UUID), commitUncertain(UUID)
+
+        var operationID: UUID? {
+            switch self {
+            case .savedRecoveryPending(let id), .commitUncertain(let id): id
+            default: nil
+            }
+        }
+        var errorDescription: String? {
+            switch self {
+            case .changedWorkspace: "This workspace changed. Reopen Plugins before retrying."
+            case .changedResource: "This shared skill changed. Reopen Plugins before retrying."
+            case .cannotTurnOff: "Workspace skills are removed through Skills."
+            case .pendingEdits: "Save other edits before turning this plugin off."
+            case .recoveryRequired: "Finish plugin recovery before turning this plugin off."
+            case .saveFailed: "The change could not be saved. The previous plugin state was kept."
+            case .libraryBusy: "Another plugin operation is in progress. Retry when it finishes."
+            case .savedRecoveryPending(let id): PluginOperationProblem.savedRecoveryPending(id).localizedDescription
+            case .commitUncertain(let id): PluginOperationProblem.commitUncertain(id).localizedDescription
+            }
+        }
+    }
+
     struct Result: Equatable {
         var packageID: String
         var disabledSkillIDs: [UUID] = []
-        var disabledConnectorIDs: [UUID] = []
-        var disabledToolIDs: [UUID] = []
-        var removedWorkspaceSkillIDs: [UUID] = []
-        var removedWorkspaceConnectorIDs: [UUID] = []
-        /// False when the disable was rolled back, leaving the package
-        /// enabled; the caller must not report it as done.
         var persisted = true
+        var problem: Problem?
+        // Retain audit compatibility; Turn off has no destructive result.
+        var disabledConnectorIDs: [UUID] { [] }
+        var disabledToolIDs: [UUID] { [] }
+        var removedWorkspaceSkillIDs: [UUID] { [] }
+        var removedWorkspaceConnectorIDs: [UUID] { [] }
     }
 
     @discardableResult
     func disable(
         _ package: PluginPackage,
         in workspace: Workspace,
-        capabilities: WorkspaceCapabilities,
         modelContext: ModelContext,
-        availablePackages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions(),
-        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
-        connectorCleanupStore: ConnectorCredentialCleanupStore? = nil
+        library: CapabilityLibrary = CapabilityLibrary(),
+        persist: (ModelContext) throws -> Void = { try $0.save() },
+        rewriteMirror: ((Workspace) -> Bool)? = nil
     ) -> Result {
-        let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
-        let state = CapabilityPackageState(
-            package: package,
-            workspace: workspace,
-            capabilities: capabilities
-        )
-        let remainingPackages = remainingEnabledPackages(
-            excluding: package,
-            workspace: workspace,
-            capabilities: capabilities,
-            availablePackages: availablePackages
-        )
+        do {
+            guard PluginsSurfacePresentation.offersTurnOff(package) else { throw Problem.cannotTurnOff }
+            try requireReady(workspace, modelContext: modelContext, library: library)
+            if package.id.hasPrefix("skill."), package.sourceMetadata?.kind == "shared" {
+                guard let rowID = CapabilityInstaller.syntheticSkillRowID(of: package) else { throw Problem.changedResource }
+                let saved = ModelContext(modelContext.container)
+                let rows = try saved.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.id == rowID }))
+                guard rows.count == 1, let row = rows.first, row.isGlobal, !row.isSystemBuiltIn else { throw Problem.changedResource }
+            }
+            return apply(package, in: workspace, modelContext: modelContext, persist: persist, rewriteMirror: rewriteMirror)
+        } catch let problem as Problem { return Result(packageID: package.id, persisted: false, problem: problem) }
+        catch let problem as PluginOperationProblem {
+            return Result(packageID: package.id, persisted: false, problem: Self.problem(problem))
+        } catch { return Result(packageID: package.id, persisted: false, problem: .recoveryRequired) }
+    }
+
+    private func apply(_ package: PluginPackage, in workspace: Workspace, modelContext: ModelContext,
+                       persist: (ModelContext) throws -> Void, rewriteMirror: ((Workspace) -> Bool)?) -> Result {
+        let before = WorkspaceCapabilityActivation.snapshot(workspace)
         var result = Result(packageID: package.id)
-
-        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.removeAll { $0 == package.id } }
-
-        let removableGlobalSkillIDs = Set(state.linkedSkills
-            .filter { skill in
-                skill.isGlobal && !isClaimedByRemainingPackages(skill, excluding: package, remainingPackages: remainingPackages)
-            }
-            .map { $0.id.uuidString })
-        result.disabledSkillIDs = removableGlobalSkillIDs.compactMap(UUID.init(uuidString:))
-        WorkspaceCapabilityActivation.mutate(workspace) {
-            $0.globalSkillIDs.removeAll { removableGlobalSkillIDs.contains($0) }
-        }
-
-        let removableGlobalConnectorIDs = Set(state.linkedConnectors
-            .filter { connector in
-                connector.isGlobal && !isClaimedByRemainingPackages(connector, excluding: package, remainingPackages: remainingPackages)
-            }
-            .map { $0.id.uuidString })
-        result.disabledConnectorIDs = removableGlobalConnectorIDs.compactMap(UUID.init(uuidString:))
-        WorkspaceCapabilityActivation.mutate(workspace) {
-            $0.globalConnectorIDs.removeAll { removableGlobalConnectorIDs.contains($0) }
-        }
-
-        let removableGlobalToolIDs = Set(state.linkedTools
-            .filter { tool in
-                tool.isGlobal && !isClaimedByRemainingPackages(tool, excluding: package, remainingPackages: remainingPackages)
-            }
-            .map { $0.id.uuidString })
-        result.disabledToolIDs = removableGlobalToolIDs.compactMap(UUID.init(uuidString:))
-        WorkspaceCapabilityActivation.mutate(workspace) {
-            $0.globalToolIDs.removeAll { removableGlobalToolIDs.contains($0) }
-        }
-
-        // Keychain entries are wiped only after the SwiftData deletes are
-        // saved; otherwise a failed save would leave connector/skill records
-        // that look configured but whose credentials are gone.
-        var pendingKeychainCleanups: [() -> Void] = []
-        // Snapshotted before the delete; run after the save, against the
-        // connectors that remain.
-        var pendingConnectorCleanups: [ConnectorKeychainCleanup] = []
-
-        for connector in state.linkedConnectors where !connector.isGlobal {
-            guard !isClaimedByRemainingPackages(connector, excluding: package, remainingPackages: remainingPackages) else { continue }
-            pendingConnectorCleanups.append(connector.keychainCleanup)
-            result.removedWorkspaceConnectorIDs.append(connector.id)
-            modelContext.delete(connector)
-        }
-
-        let remainingExplicitPackages = remainingPackages.filter { !$0.isSyntheticWorkspaceSkillPackage }
-        for skill in state.linkedSkills where !skill.isGlobal {
-            guard !isClaimedByRemainingPackages(skill, excluding: package, remainingPackages: remainingExplicitPackages) else { continue }
-            pendingKeychainCleanups.append { skill.cleanupKeychain() }
-            result.removedWorkspaceSkillIDs.append(skill.id)
-            modelContext.delete(skill)
-        }
-
-        workspace.updatedAt = Date()
-
-        // Always persist: disable mutates the workspace membership arrays
-        // (enabledCapabilityIDs / enabled-global IDs) even when no
-        // keychain-backed workspace resource is deleted — e.g. global-only
-        // or MCP-only packages. Skipping the save there would make the
-        // disable look applied in memory but never reach SwiftData / the
-        // exported config. Keychain cleanup stays gated on a successful save.
-        if ConnectorCredentialCleanup.deleteThenClean(
-            pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
-            save: { persist(workspace, modelContext) }
-        ) {
-            pendingKeychainCleanups.forEach { $0() }
+        if let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) {
+            guard activation.isEnabled else { return result }
+            WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.removeAll { $0 == package.id } }
+        } else if let rowID = CapabilityInstaller.syntheticSkillRowID(of: package) {
+            let id = rowID.uuidString
+            guard WorkspaceCapabilityActivation.hasSharedResource(.skill, id: rowID, in: workspace) else { return result }
+            WorkspaceCapabilityActivation.mutate(workspace) { $0.globalSkillIDs.removeAll { $0 == id } }
+            result.disabledSkillIDs = [rowID]
         } else {
-            // Failed save: revert the pending deletes and the workspace
-            // membership arrays (which rollback does not restore) so the
-            // package reads as still enabled (truthful) and no keychain
-            // credential is orphaned by a later unrelated save.
+            guard WorkspaceCapabilityActivation.turnOffPendingLegacyPlugin(package.id, in: workspace) else { return result }
+        }
+        workspace.updatedAt = Date()
+        switch PluginStateCommit.save(workspace: workspace, pluginIDs: [package.id], modelContext: modelContext,
+            persist: persist, export: rewriteMirror) {
+        case .completed: break
+        case .pendingRecovery(let id): result.problem = .savedRecoveryPending(id)
+        case .indeterminate(let id, _): result.persisted = false; result.problem = .commitUncertain(id)
+        case .notCommitted:
             modelContext.rollback()
-            WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
-            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
-                "source": "package_disable",
-                "package_id": package.id,
-                "result": "save_failed_disable_rolled_back",
-                "deferred_cleanup_count": String(pendingKeychainCleanups.count + pendingConnectorCleanups.count)
-            ], level: .error)
-            return Result(packageID: package.id, persisted: false)
+            WorkspaceCapabilityActivation.restore(before, to: workspace)
+            result = Result(packageID: package.id, persisted: false, problem: .saveFailed)
         }
         return result
     }
 
-    private func remainingEnabledPackages(
-        excluding package: PluginPackage,
-        workspace: Workspace,
-        capabilities: WorkspaceCapabilities,
-        availablePackages: [PluginPackage]
-    ) -> [PluginPackage] {
-        let enabledIDs = Set(workspace.enabledCapabilityIDs).subtracting([package.id])
-        let enabledCatalogPackages = availablePackages.filter { enabledIDs.contains($0.id) }
-        // Only the synthetic standalone-skill projections. Catalog packages
-        // count as remaining solely via explicit enablement above — a
-        // resource-projected "still configured" catalog package would
-        // otherwise keep a shared resource alive after every package
-        // claiming it was disabled (mutual-claim deadlock).
-        let syntheticPackages = CapabilityCatalogInventory.configuredPackages(
-            catalogPackages: availablePackages,
-            capabilities: capabilities,
-            workspace: workspace
-        )
-        .filter { $0.id != package.id && $0.isSyntheticWorkspaceSkillPackage }
-        return uniquePackages(enabledCatalogPackages + syntheticPackages)
-    }
-
-    private func claims(_ skill: Skill, package: PluginPackage) -> Bool {
-        if CapabilityResourceOrigin.isOwnedBy(skill, packageID: package.id) {
-            return true
+    private func requireReady(_ workspace: Workspace, modelContext: ModelContext, library: CapabilityLibrary) throws {
+        guard workspace.modelContext === modelContext, !workspace.isDeleted else { throw Problem.changedWorkspace }
+        guard !modelContext.hasChanges else { throw Problem.pendingEdits }
+        let id = workspace.id
+        let savedContext = ModelContext(modelContext.container)
+        let rows = try savedContext.fetch(FetchDescriptor<Workspace>(predicate: #Predicate { $0.id == id }))
+        guard rows.count == 1, let saved = rows.first,
+              WorkspaceCapabilityActivation.snapshot(saved) == WorkspaceCapabilityActivation.snapshot(workspace) else {
+            throw Problem.changedWorkspace
         }
-        return package.skills.contains {
-            CapabilityRuntimeResourceMatcher.skillMatches($0, skill: skill)
+        guard try PluginFileOperationJournal(library: library, approvals: CapabilityApprovalStore()).pendingIDs().isEmpty else {
+            throw Problem.recoveryRequired
+        }
+        if let pending = try PluginPendingOperations.capture(modelContext: modelContext).first {
+            guard pending.snapshot.manifestDigest == nil else { throw Problem.recoveryRequired }
+            throw pending.problem
         }
     }
 
-    private func claims(_ connector: Connector, package: PluginPackage) -> Bool {
-        if CapabilityResourceOrigin.isOwnedBy(connector, packageID: package.id) {
-            return true
+    private static func problem(_ problem: PluginOperationProblem) -> Problem {
+        switch problem {
+        case .savedRecoveryPending(let id): .savedRecoveryPending(id)
+        case .commitUncertain(let id): .commitUncertain(id)
         }
-        return package.connectors.contains {
-            CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector)
-        }
-    }
-
-    private func claims(_ tool: LocalTool, package: PluginPackage) -> Bool {
-        if CapabilityResourceOrigin.isOwnedBy(tool, packageID: package.id) {
-            return true
-        }
-        return package.localTools.contains {
-            CapabilityRuntimeResourceMatcher.toolMatches($0, tool: tool)
-        }
-    }
-
-    private func isClaimedByRemainingPackages(
-        _ skill: Skill,
-        excluding package: PluginPackage,
-        remainingPackages: [PluginPackage]
-    ) -> Bool {
-        remainingPackages.contains { remaining in
-            // Synthetic standalone-skill packages only preserve user-created
-            // resources. A package-originated resource is governed by real
-            // package claims, so a lingering synthetic self-claim must not
-            // keep it active after its last claiming package is disabled.
-            if CapabilityResourceOrigin.hasOrigin(skill),
-               remaining.isSyntheticWorkspaceSkillPackage {
-                return false
-            }
-            return claims(skill, package: remaining)
-        }
-    }
-
-    private func isClaimedByRemainingPackages(
-        _ connector: Connector,
-        excluding package: PluginPackage,
-        remainingPackages: [PluginPackage]
-    ) -> Bool {
-        remainingPackages.contains { remaining in
-            // Synthetic standalone-skill packages only preserve user-created
-            // resources. A package-originated resource is governed by real
-            // package claims, so a lingering synthetic self-claim must not
-            // keep it active after its last claiming package is disabled.
-            if CapabilityResourceOrigin.hasOrigin(connector),
-               remaining.isSyntheticWorkspaceSkillPackage {
-                return false
-            }
-            return claims(connector, package: remaining)
-        }
-    }
-
-    private func isClaimedByRemainingPackages(
-        _ tool: LocalTool,
-        excluding package: PluginPackage,
-        remainingPackages: [PluginPackage]
-    ) -> Bool {
-        remainingPackages.contains { remaining in
-            // Synthetic standalone-skill packages only preserve user-created
-            // resources. A package-originated resource is governed by real
-            // package claims, so a lingering synthetic self-claim must not
-            // keep it active after its last claiming package is disabled.
-            if CapabilityResourceOrigin.hasOrigin(tool),
-               remaining.isSyntheticWorkspaceSkillPackage {
-                return false
-            }
-            return claims(tool, package: remaining)
-        }
-    }
-
-    private func uniquePackages(_ packages: [PluginPackage]) -> [PluginPackage] {
-        var seen = Set<String>()
-        return packages.filter { seen.insert($0.id).inserted }
-    }
-}
-
-private extension PluginPackage {
-    var isSyntheticWorkspaceSkillPackage: Bool {
-        id.hasPrefix("skill.") && (sourceMetadata?.kind == "workspace" || sourceMetadata?.kind == "shared")
     }
 }

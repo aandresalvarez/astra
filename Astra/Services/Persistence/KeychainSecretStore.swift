@@ -9,6 +9,10 @@ import ASTRAModels
 public struct KeychainSecretStore: SecretStore {
     public init() {}
 
+    public func read(key: String, entityID: String) -> SecretReadOutcome {
+        AstraSecureKeychainStore.read(service: entityID, account: key)
+    }
+
     public func load(key: String, entityID: String) -> String? {
         AstraSecureKeychainStore.load(service: entityID, account: key)
     }
@@ -46,7 +50,8 @@ public struct KeychainSecretStore: SecretStore {
             serviceType: connector.serviceType,
             baseURL: connector.baseURL,
             originPackageID: connector.originPackageID,
-            originComponentID: connector.originComponentID
+            originComponentID: connector.originComponentID,
+            credentialNamespaceID: connector.credentialNamespaceID
         )
     }
 
@@ -58,8 +63,10 @@ public struct KeychainSecretStore: SecretStore {
         serviceType: String,
         baseURL: String,
         originPackageID: String?,
-        originComponentID: String?
+        originComponentID: String?,
+        credentialNamespaceID: UUID? = nil
     ) -> [String] {
+        if let credentialNamespaceID { return [connectorEntityID(for: credentialNamespaceID)] }
         var entityIDs = [connectorEntityID(for: id)]
         // A selected-file import has no authority to inherit an endpoint's
         // older shared alias. Its durable identity survives recovery too.
@@ -73,6 +80,23 @@ public struct KeychainSecretStore: SecretStore {
             entityIDs.append(stableEntityID)
         }
         return unique(entityIDs)
+    }
+
+    public static func connectorEntityIDs(for facts: ConnectorSecretFacts) -> [String] {
+        connectorEntityIDs(id: facts.id, serviceType: facts.serviceType, baseURL: facts.baseURL,
+            originPackageID: facts.originPackageID, originComponentID: facts.originComponentID,
+            credentialNamespaceID: facts.credentialNamespaceID)
+    }
+
+    /// Namespace ownership is broader than generic reads for legacy Outlook:
+    /// its token producer used logical A even when generic credentials used G.
+    /// Nil is unresolved ownership, never permission to delete other sessions.
+    public static func ownedConnectorEntityIDs(for facts: ConnectorSecretFacts) -> [String]? {
+        let generic = connectorEntityIDs(for: facts)
+        guard facts.serviceType == OutlookCredentialIdentity.serviceType, facts.includesOutlookCredentials else { return generic }
+        guard let reference = OutlookCredentialIdentity.resolve(accountID: facts.id,
+            credentialNamespaceID: facts.credentialNamespaceID, format: facts.outlookCredentialFormat) else { return nil }
+        return unique(generic + [connectorEntityID(for: reference.namespaceID)])
     }
 
     public static func stableConnectorEntityID(for connector: Connector) -> String? {

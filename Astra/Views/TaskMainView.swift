@@ -4097,7 +4097,8 @@ struct TaskMainView: View {
             },
             onToggleSkill: { skill, enabled in
                 if enabled {
-                    if !task.skills.contains(where: { $0.id == skill.id }) {
+                    if !task.skills.contains(where: { $0.id == skill.id }),
+                       !AgentTask.storableSkills([skill], in: task.workspace).isEmpty {
                         task.skills.append(skill)
                     }
                 } else {
@@ -4226,6 +4227,7 @@ struct TaskMainView: View {
                         state: Bindable(composerDraft).eligibilityPreviewState
                     )
                 }
+
             }
             .background(composerFill)
             .clipShape(composerShape)
@@ -4596,7 +4598,9 @@ struct TaskMainView: View {
 
         // Attach skills by name
         if let skillNames = json["skills"] as? [String] {
-            let matchedIDs = workspace.skills.filter { skillNames.contains($0.name) }.map { $0.id.uuidString }
+            let globalSkills = (try? modelContext.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))) ?? []
+            let matchedIDs = WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills)
+                .filter { skillNames.contains($0.name) }.map { $0.id.uuidString }
             schedule.skillIDs = matchedIDs
         }
 

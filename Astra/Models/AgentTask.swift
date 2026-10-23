@@ -255,4 +255,18 @@ public final class AgentTask {
         TaskStatusPresentation.color(for: status.rawValue)
     }
 
+
+    /// The skills a stored task in `workspace` may keep in `skills`: stored
+    /// rows only, less the rows its activations name as overrides. A skill
+    /// with no model context is derived (a plugin's projected skill or a
+    /// launch copy); relating it to a stored task would make SwiftData insert
+    /// it as a phantom row. An override row is stored, but pinning it would
+    /// keep its plugin's behavior after the plugin is turned off or removed.
+    /// Plugin skills reach a run through the workspace's activation, so
+    /// leaving them out of the pin list loses nothing.
+    public static func storableSkills(_ skills: [Skill], in workspace: Workspace?) -> [Skill] {
+        let overriding = workspace.map(WorkspaceCapabilityActivation.overridingRowIDs(of:)) ?? []
+        return skills.filter { $0.modelContext != nil && !overriding.contains($0.id) }
+    }
+
 }

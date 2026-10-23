@@ -10,6 +10,9 @@ public struct WorkspaceReplacementCredentialIdentity {
     private let connectors: [String: Data]
     private let skills: [String: Data]
     private let dependencies: Data
+    private struct CapturedNamespace { let value: UUID? }
+    private let connectorNamespaces: [String: CapturedNamespace]
+    private let skillNamespaces: [String: CapturedNamespace]
 
     @MainActor
     public init?(workspace: Workspace, modelContext: ModelContext) {
@@ -18,11 +21,37 @@ public struct WorkspaceReplacementCredentialIdentity {
               let dependencies = Self.dependencyFingerprint(exported) else { return nil }
         workspaceID = workspace.id.uuidString
         workspacePath = workspace.primaryPath
-        let connectorIDs = Set(workspace.connectors.filter { !$0.isGlobal && $0.workspace?.id == workspace.id }.map { $0.id.uuidString })
-        let skillIDs = Set(workspace.skills.filter { !$0.isGlobal && $0.workspace?.id == workspace.id }.map { $0.id.uuidString })
+        let localConnectors = workspace.connectors.filter { !$0.isGlobal && $0.workspace?.id == workspace.id }
+        let connectorIDs = Set(Dictionary(grouping: localConnectors, by: { $0.id })
+            .filter { $0.value.count == 1 }.keys.map { $0.uuidString })
+        let localSkills = workspace.skills.filter { !$0.isGlobal && $0.workspace?.id == workspace.id }
+        let skillIDs = Set(Dictionary(grouping: localSkills, by: { $0.id })
+            .filter { $0.value.count == 1 }.keys.map { $0.uuidString })
         connectors = Self.records(exported.connectors ?? [], id: { $0.id }, ownedIDs: connectorIDs)
         skills = Self.records(exported.skills, id: { $0.id }, ownedIDs: skillIDs)
         self.dependencies = dependencies
+        var accountNamespaces: [String: CapturedNamespace] = [:]
+        for account in localConnectors where connectorIDs.contains(account.id.uuidString) {
+            accountNamespaces[account.id.uuidString] = CapturedNamespace(value: account.credentialNamespaceID)
+        }
+        connectorNamespaces = accountNamespaces
+        var authoredNamespaces: [String: CapturedNamespace] = [:]
+        for skill in localSkills where skillIDs.contains(skill.id.uuidString) {
+            authoredNamespaces[skill.id.uuidString] = CapturedNamespace(value: skill.credentialNamespaceID)
+        }
+        skillNamespaces = authoredNamespaces
+    }
+
+    @MainActor
+    func restoreNamespace(of connector: Connector, sourceID: String) {
+        guard let captured = connectorNamespaces[sourceID] else { return }
+        connector.credentialNamespaceID = captured.value
+    }
+
+    @MainActor
+    func restoreNamespace(of skill: Skill, sourceID: String) {
+        guard let captured = skillNamespaces[sourceID] else { return }
+        skill.credentialNamespaceID = captured.value
     }
 
     func connectorIDs(in config: WorkspaceConfigManager.WorkspaceConfig) -> Set<String> {

@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 /// The Plugins 2.0 surface as plain values: one list in three groups, status
 /// carried by the group heading, one verb per row (Plugins 2.0 spec, UI).
@@ -9,6 +10,9 @@ import ASTRACore
 struct PluginsSurfaceRow: Equatable, Identifiable {
     enum Verb: Equatable {
         case add
+        /// The workspace still runs an earlier definition (a reconcile that
+        /// could not finish): bring it up to the library's.
+        case update
     }
 
     let id: String
@@ -19,6 +23,21 @@ struct PluginsSurfaceRow: Equatable, Identifiable {
     let isEnabled: Bool
     let isRemovable: Bool
     let verb: Verb?
+    /// An activation of a plugin the library has no readable entry for:
+    /// nothing of it runs, and Remove forgets it
+    /// (`CapabilityUninstaller.forgetMissing`).
+    var isMissing = false
+}
+
+/// One plugin as the surface acts on it, built once per render with its
+/// display row: Expand, Add, Update, Turn off and Remove all take this, so
+/// nothing resolves the package or the activation again by ID.
+struct PluginRow: Identifiable {
+    let package: PluginPackage
+    let activation: PluginActivation?
+    let display: PluginsSurfaceRow
+
+    var id: String { package.id }
 }
 
 struct PluginsSurfaceState: Equatable {
@@ -27,6 +46,7 @@ struct PluginsSurfaceState: Equatable {
     var available: [PluginsSurfaceRow] = []
 
     var isEmpty: Bool { actionNeeded.isEmpty && ready.isEmpty && available.isEmpty }
+    var allRows: [PluginsSurfaceRow] { actionNeeded + ready + available }
 }
 
 enum PluginsSurfacePresentation {
@@ -39,10 +59,34 @@ enum PluginsSurfacePresentation {
         /// Hidden or blocked by policy; such packages are not listed.
         var isVisible: Bool
         var isRemovable: Bool
+        var needsUpdate: Bool = false
         /// Why a plugin that is not on can't be added, when approval would
         /// not clear it: shown in place of Add, which could only fail.
         var blocker: String?
+        /// On, but the installed definition is not the one this workspace
+        /// accepted (`CapabilityPackageState.awaitsUpdate`): nothing of it
+        /// runs here until Update accepts it, so the row needs action and
+        /// offers Update.
+        var awaitsUpdate = false
+        /// An activation whose plugin the library no longer has.
+        var isMissing = false
     }
+
+    static let missingMessage = "Not installed anymore. Add it again from its file, or Remove it to forget its settings here."
+
+    /// The row of an activation whose plugin the library has no readable
+    /// entry for, built from what the activation names: its plugin ID.
+    static func missingInput(pluginID: String, isEnabled: Bool) -> Input {
+        Input(
+            package: PluginPackage(
+                id: pluginID, name: pluginID, icon: "puzzlepiece", description: "", author: "", category: "",
+                tags: [], version: "", skills: [], connectors: [], localTools: [], templates: []
+            ),
+            isEnabled: isEnabled, pendingSteps: 0, isVisible: true, isRemovable: true, isMissing: true
+        )
+    }
+
+    static let awaitsUpdateMessage = "A new version is installed. Update it to use it here."
 
     /// Whether a package is listed and what keeps it from being added. Listed
     /// when policy shows it and it is on, can be turned on, or needs only the
@@ -63,6 +107,9 @@ enum PluginsSurfacePresentation {
             .filter { $0.isVisible && matches($0.package, query: query) }
             .sorted { $0.package.name.localizedCaseInsensitiveCompare($1.package.name) == .orderedAscending }
         for input in sorted {
+            // An activation awaiting the installed definition is one Update
+            // settles, so it offers Update rather than Add again.
+            let offersUpdate = input.needsUpdate || input.awaitsUpdate
             let row = PluginsSurfaceRow(
                 id: input.package.id,
                 name: input.package.name,
@@ -71,11 +118,14 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: input.isEnabled || input.blocker != nil ? nil : .add
+                verb: input.isMissing ? nil : !input.isEnabled ? (input.blocker == nil ? .add : nil) : (offersUpdate ? .update : nil),
+                isMissing: input.isMissing
             )
-            if !input.isEnabled {
+            if input.isMissing {
+                state.actionNeeded.append(row)
+            } else if !input.isEnabled {
                 state.available.append(row)
-            } else if input.pendingSteps > 0 {
+            } else if input.pendingSteps > 0 || offersUpdate {
                 state.actionNeeded.append(row)
             } else {
                 state.ready.append(row)
@@ -87,13 +137,32 @@ enum PluginsSurfacePresentation {
     /// "1 step pending · 1 skill, 3 tools" for an added plugin with work left;
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
+        if input.isMissing { return missingMessage }
         if !input.isEnabled, let blocker = input.blocker { return blocker }
+        if input.isEnabled, input.awaitsUpdate { return awaitsUpdateMessage }
         let contents = input.package.contentParts.joined(separator: ", ")
+        if input.isEnabled, input.needsUpdate {
+            return contents.isEmpty ? "Update to \(input.package.version)" : "Update to \(input.package.version) · \(contents)"
+        }
         guard input.isEnabled, input.pendingSteps > 0 else {
             return contents.isEmpty ? input.package.description : contents
         }
         let pending = input.pendingSteps == 1 ? "1 step pending" : "\(input.pendingSteps) steps pending"
         return contents.isEmpty ? pending : "\(pending) · \(contents)"
+    }
+
+    /// Whether a row offers Turn off, which never deletes. A standalone
+    /// workspace skill (`skill.<uuid>`) is on for as long as it exists, so it
+    /// is edited or deleted where it was written, not switched off here.
+    static func offersTurnOff(_ package: PluginPackage) -> Bool {
+        !(package.id.hasPrefix("skill.") && package.sourceMetadata?.kind == "workspace")
+    }
+
+    /// Whether an expanded row shows the Turn off switch: the row is on here
+    /// and may be turned off. A shared standalone skill has no activation,
+    /// so the row's own state says whether it is on.
+    static func showsTurnOff(_ row: PluginRow) -> Bool {
+        (row.activation?.isEnabled ?? row.display.isEnabled) && offersTurnOff(row.package)
     }
 
     /// Name, summary and tags, plus what is inside: skill names, tool names and
@@ -137,6 +206,14 @@ enum PluginsSurfacePresentation {
         }
     }
 
+    /// The name `workspace` knows `account` by, as the runtime names it:
+    /// its binding alias there when a shared account's name collides, else
+    /// the row's name. Two accounts never read the same next to Edit, Make
+    /// default and Delete.
+    static func accountTitle(_ account: Connector, in workspace: Workspace) -> String {
+        WorkspaceCapabilityActivation.alias(of: account, in: workspace)
+    }
+
     /// What a pending account's row offers.
     enum PendingAccountAction: Equatable {
         /// Add, which routes through the install flow that signs in again.
@@ -163,8 +240,7 @@ enum PluginsSurfacePresentation {
 /// The second tap before a destructive row action: it names what goes and
 /// what stays (`docs/design-system/lean-ui-system.md`, Interaction Rules).
 enum PluginsSurfaceConfirmation: Equatable {
-    /// Turning a plugin off here removes the accounts and keys it created in
-    /// this workspace.
+    /// Turning off preserves saved accounts, settings and keys.
     case turnOff(packageID: String)
     /// Removing it from ASTRA turns it off in every workspace.
     case remove(packageID: String)
@@ -178,15 +254,21 @@ enum PluginsSurfaceConfirmation: Equatable {
     func copy(name: String, hasAccounts: Bool) -> (message: String, verb: String) {
         switch self {
         case .turnOff:
-            // What the disabler deletes: the accounts this workspace owns.
-            // A shared account (and its keys) stays for the other workspaces.
-            let detail = hasAccounts
-                ? " The accounts it created in this workspace and their saved keys are deleted; shared accounts are kept. Turning it on again asks for the deleted ones."
-                : " Turning it on again restores it."
-            return ("Turn off \(name) in this workspace?" + detail, "Turn off")
-        case .remove:
+            // Turn off deletes nothing: accounts, settings and keys stay. A
+            // standalone workspace skill, which only deleting turns off, is
+            // not offered it (`PluginsSurfacePresentation.offersTurnOff`).
             return (
-                "Remove \(name) from ASTRA? It turns off in every workspace, and the accounts and saved keys it created there are deleted; shared accounts, ones another plugin also uses, and connected sign-ins are kept. You can add it again later.",
+                "Turn off \(name) in this workspace? Nothing is deleted: its accounts, settings and saved keys stay, and turning it on again restores it.",
+                "Turn off"
+            )
+        case .remove:
+            // Remove deletes activations (settings, secret settings); the
+            // accounts and their credentials stay until deleted one by one.
+            let accounts = hasAccounts
+                ? " Its accounts and their saved keys stay; delete an account from Accounts to clear it."
+                : ""
+            return (
+                "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted.\(accounts) You can add it again later.",
                 "Remove"
             )
         }

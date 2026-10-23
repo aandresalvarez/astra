@@ -61,6 +61,14 @@ struct LaunchSnapshotDisciplineTests {
         "validationStrategy"
     ]
 
+    /// Derived resource records are frozen with workspace state, rather than
+    /// assigned to scalar AgentTask fields. The behavioral retirement tests
+    /// verify that authored records and their attachments stay authoritative.
+    private static let snapshotOwnedResourceFields: Set<String> = [
+        "pluginActivations", "pluginDefinitions", "pluginAccounts", "pluginOverrides", "retiredPluginActivations",
+        "authoredSkills", "pendingLegacyPluginState", "accountInventory", "standaloneToolIDs"
+    ]
+
     // MARK: - Freeze chain
 
     @Test("Snapshot-owned field set is consistent across the whole freeze chain")
@@ -73,7 +81,7 @@ struct LaunchSnapshotDisciplineTests {
         //    which detachedTask copies from the source task, not the snapshot).
         let snapshotProperties = try Set(
             capturedNames(in: snapshotSource, pattern: #"(?m)^    let ([A-Za-z_]\w*):"#)
-        ).subtracting(["id"])
+        ).subtracting(["id"]).subtracting(Self.snapshotOwnedResourceFields)
         #expect(
             snapshotProperties == Self.snapshotOwnedFields,
             "AgentTaskLaunchSnapshot gained or lost a field. Update snapshotOwnedFields and re-audit the allowlists below: \(symmetricDifference(snapshotProperties, Self.snapshotOwnedFields))"
@@ -87,6 +95,13 @@ struct LaunchSnapshotDisciplineTests {
             applied == Self.snapshotOwnedFields,
             "TaskExecutionLaunchSnapshotApplicator.detachedTask must assign every snapshot-owned field from the snapshot: \(symmetricDifference(applied, Self.snapshotOwnedFields))"
         )
+
+        for field in Self.snapshotOwnedResourceFields {
+            #expect(
+                applicatorSource.contains("snapshot.\(field)") && requestSource.contains("public let \(field):"),
+                "\(field) must be captured by TaskExecutionPolicySnapshotV1 and applied from the snapshot by detachedTask."
+            )
+        }
 
         // 3. Every field is actually captured at admission time — otherwise the
         //    "frozen" value is whatever the live task happened to hold later.

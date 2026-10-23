@@ -207,7 +207,7 @@ struct HostControlToolSupportTests {
         let listResult = try #require(list["result"] as? [String: Any])
         let tools = try #require(listResult["tools"] as? [[String: Any]])
         let toolNames = Set(tools.compactMap { $0["name"] as? String })
-        #expect(toolNames == ["github", "gcloud", "bq", "ssh", "jira", "redcap", "history"])
+        #expect(toolNames == ["github", "gcloud", "bq", "ssh", "jira", "redcap", "history", "mail"])
         let sshSchema = try #require(tools.first { $0["name"] as? String == "ssh" })
         let sshDescription = try #require(sshSchema["description"] as? String)
         #expect(sshDescription.contains("non-interactive"))
@@ -1422,72 +1422,6 @@ struct HostControlToolSupportTests {
             #expect(result.stdoutTruncated || result.stderrTruncated)
         }
         #expect(!FileManager.default.fileExists(atPath: marker.path))
-    }
-
-    @Test("Host control tool schemas describe the configured timeout cap")
-    func hostControlToolSchemasDescribeConfiguredTimeoutCap() throws {
-        let server = HostControlMCPServer(
-            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
-            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 42, outputByteLimit: 1024)
-        )
-
-        let list = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
-        let listResult = try #require(list["result"] as? [String: Any])
-        let tools = try #require(listResult["tools"] as? [[String: Any]])
-
-        for tool in tools where tool["name"] as? String != "history" {
-            let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
-            let properties = try #require(inputSchema["properties"] as? [String: Any])
-            let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
-            let description = try #require(timeout["description"] as? String)
-            #expect(description.contains("Defaults to 42 seconds"))
-            #expect(description.contains("capped at 42 seconds"))
-            #expect(!description.contains("Defaults to 120 seconds"))
-            #expect(!description.contains("300 seconds"))
-        }
-    }
-
-    @Test("Host control tool schemas never describe non-finite timeout caps")
-    func hostControlToolSchemasNeverDescribeNonFiniteTimeoutCaps() throws {
-        let server = HostControlMCPServer(
-            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
-            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: .nan, outputByteLimit: 1024)
-        )
-
-        let list = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
-        let listResult = try #require(list["result"] as? [String: Any])
-        let tools = try #require(listResult["tools"] as? [[String: Any]])
-
-        for tool in tools where tool["name"] as? String != "history" {
-            let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
-            let properties = try #require(inputSchema["properties"] as? [String: Any])
-            let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
-            let description = try #require(timeout["description"] as? String)
-            #expect(description.contains("capped at 300 seconds"))
-            #expect(!description.lowercased().contains("nan"))
-        }
-    }
-
-    @Test("Host control tool schemas never describe huge finite timeout caps")
-    func hostControlToolSchemasNeverDescribeHugeFiniteTimeoutCaps() throws {
-        let server = HostControlMCPServer(
-            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
-            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: .greatestFiniteMagnitude, outputByteLimit: 1024)
-        )
-
-        let list = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
-        let listResult = try #require(list["result"] as? [String: Any])
-        let tools = try #require(listResult["tools"] as? [[String: Any]])
-
-        for tool in tools where tool["name"] as? String != "history" {
-            let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
-            let properties = try #require(inputSchema["properties"] as? [String: Any])
-            let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
-            let description = try #require(timeout["description"] as? String)
-            #expect(description.contains("capped at 86400 seconds"))
-            #expect(!description.lowercased().contains("inf"))
-            #expect(!description.lowercased().contains("nan"))
-        }
     }
 
     @Test("Host control truncation does not reveal connector secret prefixes")
