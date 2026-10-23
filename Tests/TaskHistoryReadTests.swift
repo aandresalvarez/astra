@@ -102,6 +102,7 @@ struct TaskHistoryReadTests {
         #expect(TaskHistoryRead.runs(for: f.task).map(\.runStatus) == [.completed])
         #expect(TaskHistoryRead.runs(for: duplicate).map(\.runStatus) == [.running])
         #expect(TaskHistoryRead.records(for: duplicate, ofTypes: ["user.message"]).count == 1)
+        #expect(TaskHistoryRead.events(for: duplicate).map(\.payload) == ["copy"])
     }
 
     @Test("Uncommitted events in another context cannot change this context's policy")

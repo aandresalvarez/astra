@@ -21,9 +21,14 @@ struct TaskMainActorScalingGateTests {
     enum Budget {
         static let growthMilliseconds = 80.0
         static let largeHistoryMilliseconds = 100.0
+        // Launch copies the complete history, including agent metadata. It
+        // has a separate linear-copy budget; the interactive reads above
+        // must still avoid history-wide work and keep their original limits.
+        static let launchGrowthMilliseconds = 180.0
+        static let launchLargeHistoryMilliseconds = 200.0
     }
 
-    @Test("Send, append and view refresh include all main-thread work within budget")
+    @Test("Send, append, view refresh and complete launch copy stay within their budgets")
     func operationsStayWithinBudget() async throws {
         let small = try await measure(eventCount: Self.smallHistory)
         let large = try await measure(eventCount: Self.largeHistory)
@@ -32,9 +37,11 @@ struct TaskMainActorScalingGateTests {
         for operation in Operation.allCases {
             let smallCost = small.rawMilliseconds[operation] ?? 0
             let largeCost = large.rawMilliseconds[operation] ?? 0
-            #expect(largeCost - smallCost <= Budget.growthMilliseconds,
+            let growthBudget = operation == .launchSnapshot ? Budget.launchGrowthMilliseconds : Budget.growthMilliseconds
+            let largeBudget = operation == .launchSnapshot ? Budget.launchLargeHistoryMilliseconds : Budget.largeHistoryMilliseconds
+            #expect(largeCost - smallCost <= growthBudget,
                     "\(operation.rawValue): grew from \(format(smallCost)) to \(format(largeCost)) ms")
-            #expect(largeCost <= Budget.largeHistoryMilliseconds,
+            #expect(largeCost <= largeBudget,
                     "\(operation.rawValue): \(format(largeCost)) ms including persistence")
         }
     }
@@ -50,6 +57,7 @@ struct TaskMainActorScalingGateTests {
         /// What the task view and the right rail's Git section evaluate when
         /// the task changes: the decision dock and the worktree scope label.
         case viewUpdate = "view_update"
+        case launchSnapshot = "launch_snapshot"
     }
 
     struct Measurement {
@@ -110,6 +118,14 @@ struct TaskMainActorScalingGateTests {
                 _ = TaskRuntimePermissionState.build(task: task)
                 _ = gitViewModel.activeSelectionScopeLabel
                 _ = gitViewModel.unavailableWorktreePath
+            })
+            await Task.yield()
+
+            try context.save()
+            let launch = AgentTaskLaunchSnapshot(task: task)
+            samples[.launchSnapshot, default: []].append(cpuMilliseconds {
+                let copy = TaskExecutionLaunchSnapshotApplicator.detachedTask(launch, from: task)
+                #expect(copy.events.count >= eventCount)
             })
             await Task.yield()
         }

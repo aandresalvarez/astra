@@ -9,6 +9,15 @@ import SwiftData
 /// Imported copies may share UUIDs, so a UUID narrows the query but the
 /// persistent owner decides which rows belong to this task.
 public enum TaskHistoryRead {
+    /// A launch snapshot needs every event, including agent metadata. Fetch
+    /// them together instead of faulting the relationship one row at a time.
+    public static func events(for task: AgentTask) -> [TaskEvent] {
+        let taskID = task.id
+        return events(task: task, predicate: #Predicate<TaskEvent> {
+            $0.task?.id == taskID
+        }, matches: { _ in true })
+    }
+
     public static func records(for task: AgentTask, ofTypes types: Set<String>) -> [TaskEventRecord] {
         let taskID = task.id
         let values = Array(types)
@@ -50,8 +59,10 @@ public enum TaskHistoryRead {
         matches: (TaskEvent) -> Bool
     ) -> [TaskEvent] {
         let owner = task.persistentModelID
+        var descriptor = FetchDescriptor(predicate: predicate)
+        descriptor.relationshipKeyPathsForPrefetching = [\TaskEvent.run]
         guard let context = task.modelContext,
-              let rows = try? context.fetch(FetchDescriptor(predicate: predicate)) else {
+              let rows = try? context.fetch(descriptor) else {
             return task.events.filter { !$0.isDeleted && matches($0) }
         }
         return rows.filter { !$0.isDeleted && $0.task?.persistentModelID == owner && matches($0) }
