@@ -461,7 +461,7 @@ public enum TaskContextStateManager {
         guard let folder = ensureTaskFolder(for: task) else { return false }
         var state = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id) ?? initialState(for: task)
         TaskObjectiveAssessmentEventStore.reconcileProjection(&state, task: task)
-        updateDerivedFields(&state, task: task, latestRun: run)
+        updateDerivedFields(&state, task: task, latestRun: run, events: TaskContextEventIndex(task: task))
         reconcileObjectiveAssessmentProjection(&state, task: task, followUpMessage: message)
 
         let turn = makeTurn(
@@ -485,14 +485,18 @@ public enum TaskContextStateManager {
     }
 
     /// The model-reading half of `refresh`. See `refreshLoadingOffMainActor`.
+    /// `events` is injectable only so tests can compare indexes.
     @MainActor @discardableResult
     static func applyRefresh(
         existing: TaskContextState?, folder: String, task: AgentTask, followUpMessage: String,
-        outputObservation: TaskOutputObservation? = nil
+        outputObservation: TaskOutputObservation? = nil, events: TaskContextEventIndex? = nil
     ) -> Bool {
         var state = existing ?? initialState(for: task)
         TaskObjectiveAssessmentEventStore.reconcileProjection(&state, task: task)
-        updateDerivedFields(&state, task: task, latestRun: latestRun(for: task), outputObservation: outputObservation)
+        updateDerivedFields(
+            &state, task: task, latestRun: latestRun(for: task),
+            events: events ?? TaskContextEventIndex(task: task), outputObservation: outputObservation
+        )
         reconcileObjectiveAssessmentProjection(&state, task: task, followUpMessage: followUpMessage)
         // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
         guard existing != state else { return false }
@@ -815,7 +819,7 @@ public enum TaskContextStateManager {
             filesChanged: [],
             changedFiles: [],
             artifacts: [],
-            verification: verificationState(task: task, latestRun: nil, artifacts: []),
+            verification: verificationState(task: task, events: TaskContextEventIndex(events: task.events), latestRun: nil, artifacts: []),
             validationContract: nil,
             latestHandoff: nil,
             correctiveWork: nil,
@@ -830,7 +834,7 @@ public enum TaskContextStateManager {
 
     @MainActor
     private static func updateDerivedFields(
-        _ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?,
+        _ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?, events: TaskContextEventIndex,
         outputObservation: TaskOutputObservation? = nil
     ) {
         let planState = TaskPlanReconstructionSeam.required.reconstruct(for: task)
@@ -840,12 +844,13 @@ public enum TaskContextStateManager {
         let discoveredTaskOutputFiles = outputs.discoveredFiles
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
-            firstConversationRequest(for: task),
+            firstConversationRequest(in: events),
             state.startingRequest,
             task.goal
         )
         let activeObjective = activeObjectiveResolution(
             for: task,
+            events: events,
             planState: planState,
             startingRequest: state.startingRequest,
             approvedGoal: state.approvedGoal
@@ -878,7 +883,7 @@ public enum TaskContextStateManager {
             let detail = step.detail.trimmingCharacters(in: .whitespacesAndNewlines)
             return detail.isEmpty ? "Blocked step: \(step.title)" : "Blocked step: \(step.title) - \(detail)"
         } ?? []
-        let eventBlockers = activeEventBlockers(task: task, latestRun: latestRun, mode: state.mode)
+        let eventBlockers = activeEventBlockers(events: events, latestRun: latestRun, mode: state.mode)
         let eventBlockerMessages = eventBlockers.map { boundedInline($0.payload, maxCharacters: 220) }
         state.blockers = dedupeKeepingOrder(planBlockers + eventBlockerMessages, limit: maxListItems)
 
@@ -893,26 +898,26 @@ public enum TaskContextStateManager {
                 .filter(outputs.isUserFacing),
             limit: 50
         )
-        state.openQuestions = dedupeKeepingOrder(state.openQuestions + recentQuestions(for: task), limit: 10)
-        state.nextLikelyAction = nextLikelyAction(task: task, planState: planState)
-        state.objective = objectiveState(task: task, planState: planState, state: state)
+        state.openQuestions = dedupeKeepingOrder(state.openQuestions + recentQuestions(in: events), limit: 10)
+        state.nextLikelyAction = nextLikelyAction(task: task, events: events, planState: planState)
+        state.objective = objectiveState(task: task, events: events, planState: planState, state: state)
         state.constraints = task.constraints.map {
             contextFact($0, sourcePointers: [sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task constraint")])
         }
         state.acceptanceCriteria = task.acceptanceCriteria.map {
             contextFact($0, sourcePointers: [sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task acceptance criterion")])
         }
-        let standing = standingUserInstructions(for: task)
+        let standing = standingUserInstructions(in: events)
         state.standingInstructions = standing.isEmpty ? nil : standing
         state.testCommand = normalizedTestCommand(task)
         state.decisionFacts = decisionFacts(for: state, task: task, planState: planState)
         state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers, eventBlockers: eventBlockers)
         state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, outputs: outputs)
         state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, outputs: outputs)
-        state.verification = verificationState(task: task, latestRun: latestRun, artifacts: state.artifacts)
-        state.validationContract = validationContractState(task: task, planState: planState)
-        state.latestHandoff = latestHandoffState(task: task)
-        state.correctiveWork = correctiveWorkState(task: task)
+        state.verification = verificationState(task: task, events: events, latestRun: latestRun, artifacts: state.artifacts)
+        state.validationContract = validationContractState(events: events, planState: planState)
+        state.latestHandoff = latestHandoffState(events: events)
+        state.correctiveWork = correctiveWorkState(events: events)
         state.sourcePointers = sourcePointers(for: task, state: state)
     }
 
@@ -1134,11 +1139,12 @@ public enum TaskContextStateManager {
     @MainActor
     private static func objectiveState(
         task: AgentTask,
+        events: TaskContextEventIndex,
         planState: TaskPlanState,
         state: TaskContextState
     ) -> TaskContextState.Objective {
         var sources = [sourcePointer(kind: "task", id: task.id.uuidString, summary: "Task goal")]
-        if let firstEvent = firstConversationEvent(for: task) {
+        if let firstEvent = firstConversationEventValue(in: events.userMessages) {
             sources.append(eventSource(firstEvent, summary: "First user request"))
         }
         if let plan = planState.plan {
@@ -1146,6 +1152,7 @@ public enum TaskContextStateManager {
         }
         let activeObjective = activeObjectiveResolution(
             for: task,
+            events: events,
             planState: planState,
             startingRequest: state.startingRequest,
             approvedGoal: state.approvedGoal
@@ -1203,13 +1210,13 @@ public enum TaskContextStateManager {
 
     @MainActor
     private static func activeEventBlockers(
-        task: AgentTask,
+        events index: TaskContextEventIndex,
         latestRun: TaskRun?,
         mode: TaskThreadMode
     ) -> [TaskEvent] {
         guard mode == .blocked else { return [] }
         let blockingTypes = ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"]
-        let events = task.events
+        let events = index.blocking
             .filter { blockingTypes.contains($0.type) }
             .sorted { $0.timestamp > $1.timestamp }
         guard let latestRun else {
@@ -1344,26 +1351,26 @@ public enum TaskContextStateManager {
 
     @MainActor
     private static func validationContractState(
-        task: AgentTask,
+        events: TaskContextEventIndex,
         planState: TaskPlanState
     ) -> TaskContextState.ValidationContractSummary? {
         if let plan = planState.plan,
            let contract = plan.validationContract,
            !contract.assertions.isEmpty {
-            return validationContractState(task: task, plan: plan, contract: contract)
+            return validationContractState(events: events, plan: plan, contract: contract)
         }
 
-        return validationContractStateFromEvents(task: task)
+        return validationContractStateFromEvents(events)
     }
 
     private static func validationContractState(
-        task: AgentTask,
+        events: TaskContextEventIndex,
         plan: TaskPlanPayload,
         contract: TaskValidationContract
     ) -> TaskContextState.ValidationContractSummary? {
         guard !contract.assertions.isEmpty else { return nil }
 
-        let assertionEvents = latestAssertionEventsByID(task: task, planID: plan.planID)
+        let assertionEvents = latestAssertionEventsByID(events, planID: plan.planID)
         var requiredPassed = 0
         let assertions = contract.assertions.map { assertion in
             let eventPair = assertionEvents[assertion.id]
@@ -1399,7 +1406,7 @@ public enum TaskContextStateManager {
             )
         }
 
-        let contractEvents = task.events.filter { event in
+        let contractEvents = events.validationContract.filter { event in
             guard [TaskValidationEventTypes.contractCreated,
                    TaskValidationEventTypes.contractUpdated,
                    TaskValidationEventTypes.contractPassed,
@@ -1461,9 +1468,9 @@ public enum TaskContextStateManager {
     }
 
     private static func validationContractStateFromEvents(
-        task: AgentTask
+        _ events: TaskContextEventIndex
     ) -> TaskContextState.ValidationContractSummary? {
-        let contractEvents = task.events.compactMap { event -> (event: TaskEvent, payload: TaskValidationContractEventPayload)? in
+        let contractEvents = events.validationContract.compactMap { event -> (event: TaskEvent, payload: TaskValidationContractEventPayload)? in
             guard [TaskValidationEventTypes.contractCreated,
                    TaskValidationEventTypes.contractUpdated,
                    TaskValidationEventTypes.contractPassed,
@@ -1479,7 +1486,7 @@ public enum TaskContextStateManager {
         }
 
         let planID = latest.payload.planID
-        let assertionEvents = latestAssertionEventsByID(task: task, planID: planID)
+        let assertionEvents = latestAssertionEventsByID(events, planID: planID)
         let assertions = assertionEvents.values
             .sorted { lhs, rhs in
                 lhs.payload.assertionID.localizedStandardCompare(rhs.payload.assertionID) == .orderedAscending
@@ -1530,7 +1537,7 @@ public enum TaskContextStateManager {
     }
 
     private static func latestAssertionEventsByID(
-        task: AgentTask,
+        _ events: TaskContextEventIndex,
         planID: UUID
     ) -> [String: (event: TaskEvent, payload: TaskValidationAssertionEventPayload)] {
         var results: [String: (event: TaskEvent, payload: TaskValidationAssertionEventPayload)] = [:]
@@ -1542,7 +1549,7 @@ public enum TaskContextStateManager {
             TaskValidationEventTypes.assertionSkipped,
             TaskValidationEventTypes.assertionReviewed
         ]
-        for event in task.events
+        for event in events.validationAssertions
             .filter({ validationEventTypes.contains($0.type) })
             .sorted(by: { $0.timestamp > $1.timestamp }) {
             guard let payload = decodeAssertionPayload(event.payload),
@@ -1556,8 +1563,8 @@ public enum TaskContextStateManager {
     }
 
     @MainActor
-    private static func latestHandoffState(task: AgentTask) -> TaskContextState.HandoffSummary? {
-        guard let event = task.events
+    private static func latestHandoffState(events: TaskContextEventIndex) -> TaskContextState.HandoffSummary? {
+        guard let event = events.handoffs
             .filter({ $0.type == TaskHandoffEventTypes.created || $0.type == TaskHandoffEventTypes.updated })
             .sorted(by: { $0.timestamp > $1.timestamp })
             .first,
@@ -1578,8 +1585,8 @@ public enum TaskContextStateManager {
     }
 
     @MainActor
-    private static func correctiveWorkState(task: AgentTask) -> [TaskContextState.CorrectiveWorkSummary]? {
-        let records = TaskCorrectiveWorkQueries.latestCorrectiveSteps(for: task)
+    private static func correctiveWorkState(events: TaskContextEventIndex) -> [TaskContextState.CorrectiveWorkSummary]? {
+        let records = TaskCorrectiveWorkQueries.latestCorrectiveSteps(in: events.corrective)
         guard !records.isEmpty else { return nil }
         return records.prefix(10).map { record in
             let payload = record.payload
@@ -1599,16 +1606,17 @@ public enum TaskContextStateManager {
     @MainActor
     private static func verificationState(
         task: AgentTask,
+        events: TaskContextEventIndex,
         latestRun: TaskRun?,
         artifacts: [TaskContextState.ArtifactReference]
     ) -> TaskContextState.Verification {
         let command = normalizedTestCommand(task)
         let artifactStatus = artifactVerificationStatus(for: artifacts)
-        let latestValidation = task.events
+        let latestValidation = events.validation
             .filter(isValidationEvent)
             .sorted { $0.timestamp > $1.timestamp }
             .first
-        let latestDeliverableVerification = task.events
+        let latestDeliverableVerification = events.deliverableVerification
             .filter(isDeliverableVerificationEvent)
             .sorted { $0.timestamp > $1.timestamp }
             .first
@@ -1764,19 +1772,12 @@ public enum TaskContextStateManager {
         )
     }
 
-    @MainActor
-    private static func firstConversationRequest(for task: AgentTask) -> String? {
-        firstConversationRequestValue(for: task)
+    private static func firstConversationRequest(in events: TaskContextEventIndex) -> String? {
+        firstConversationEventValue(in: events.userMessages)?.payload.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    @MainActor
-    private static func firstConversationEvent(for task: AgentTask) -> TaskEvent? {
-        firstConversationEventValue(for: task)
-    }
-
-    @MainActor
-    private static func recentQuestions(for task: AgentTask) -> [String] {
-        task.events
+    private static func recentQuestions(in events: TaskContextEventIndex) -> [String] {
+        events.assistantReplies
             .filter { $0.type == TaskPlanConversationEventTypes.assistantMessage || $0.type == "agent.response" }
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(6)
@@ -1787,10 +1788,9 @@ public enum TaskContextStateManager {
     /// length-capped), so a mid-conversation constraint survives past the transcript
     /// window. Excludes the first message (pinned as startingRequest) and bare
     /// acknowledgements; everything else is retained for the model to weigh.
-    @MainActor
-    private static func standingUserInstructions(for task: AgentTask) -> [TaskContextState.ContextFact] {
-        let pendingTurnMessageIDs = TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
-        let userMessages = task.events
+    private static func standingUserInstructions(in events: TaskContextEventIndex) -> [TaskContextState.ContextFact] {
+        let pendingTurnMessageIDs = events.pendingTurnMessageIDs
+        let userMessages = events.userMessages
             .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
             .filter { !pendingTurnMessageIDs.contains($0.id) }
             .sorted { $0.timestamp < $1.timestamp }
@@ -1871,8 +1871,8 @@ public enum TaskContextStateManager {
     }
 
     @MainActor
-    private static func nextLikelyAction(task: AgentTask, planState: TaskPlanState) -> String? {
-        if let correction = TaskCorrectiveWorkQueries.openCorrectiveSteps(for: task).first {
+    private static func nextLikelyAction(task: AgentTask, events: TaskContextEventIndex, planState: TaskPlanState) -> String? {
+        if let correction = TaskCorrectiveWorkQueries.openCorrectiveSteps(in: events.corrective).first {
             let payload = correction.payload
             return "Review corrective work for failed assertion \(payload.failedAssertionID): \(boundedInline(payload.suggestedRepair, maxCharacters: 220))"
         }

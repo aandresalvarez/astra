@@ -291,6 +291,172 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(state.turns.contains { $0.ask == "written between load and apply" })
     }
 
+    /// The derive reads `task.events` through a one-pass index of per-helper
+    /// buckets instead of a full scan per helper. An index whose every bucket
+    /// holds every event is exactly what the helpers scanned before, so the
+    /// two must derive identical state for a history touching every bucket.
+    /// The two cases swap which verification source is newest, since the
+    /// derive reports only the newer one.
+    @Test("The bucketed event index derives what full event scans derive", arguments: [true, false])
+    func bucketedEventIndexMatchesFullScans(withPlanContract: Bool) throws {
+        let fixture = try makeFixture("event-index-\(withPlanContract)")
+        defer { fixture.cleanup() }
+        let task = fixture.task
+        let context = fixture.container.mainContext
+        try addEveryBucketedEventKind(to: task, withPlanContract: withPlanContract, in: context)
+        // Blocked mode is what makes the derive read blocking events at all.
+        task.status = .pendingUser
+
+        let bucketed = TaskContextEventIndex(task: task)
+        let everyEvent = TaskContextEventIndex(
+            unbucketed: task.events,
+            pendingTurnMessageIDs: bucketed.pendingTurnMessageIDs
+        )
+        #expect(bucketed.pendingTurnMessageIDs.count == 1)
+        #expect(bucketed.userMessages.count < task.events.count)
+
+        func derive(_ events: TaskContextEventIndex) throws -> TaskContextState {
+            TaskContextStateManager.applyRefresh(existing: nil, folder: fixture.folder, task: task, followUpMessage: "", events: events)
+            var state = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+            state.updatedAt = ""
+            return state
+        }
+        let expected = try derive(everyEvent)
+        let actual = try derive(bucketed)
+        #expect(actual == expected)
+
+        // Each bucket reaches the derive: emptying any one of them changes the
+        // state, so a bucket missing a type its helper reads cannot pass above.
+        var buckets: [(String, WritableKeyPath<TaskContextEventIndex, [TaskEvent]>)] = [
+            ("userMessages", \.userMessages), ("assistantReplies", \.assistantReplies),
+            ("blocking", \.blocking), ("validationContract", \.validationContract),
+            ("validationAssertions", \.validationAssertions), ("handoffs", \.handoffs),
+            ("corrective", \.corrective)
+        ]
+        buckets.append(withPlanContract
+            ? ("deliverableVerification", \.deliverableVerification)
+            : ("validation", \.validation))
+        for (name, bucket) in buckets {
+            var emptied = bucketed
+            emptied[keyPath: bucket] = []
+            #expect(try derive(emptied) != expected, "emptying \(name) left the state unchanged")
+        }
+        var unfiltered = bucketed
+        unfiltered.pendingTurnMessageIDs = []
+        #expect(try derive(unfiltered) != expected, "pending turn messages were not hidden")
+
+        // Guards the fixture: each helper the index feeds produced something,
+        // so the equality above compared real derivations, not empty ones.
+        #expect(actual.mode == .blocked)
+        #expect(!actual.blockers.isEmpty)
+        #expect(!actual.openQuestions.isEmpty)
+        #expect(actual.startingRequest == "Build the quarterly report")
+        #expect(actual.currentObjective == "ship the CSV export")
+        #expect(actual.standingInstructions?.map(\.text).contains("Keep the old column order") == true)
+        #expect(actual.standingInstructions?.map(\.text).contains("The goal is to rewrite it in Rust") == false)
+        #expect(actual.verification.strategy == (withPlanContract ? "deliverable_verification" : "validation_contract"))
+        #expect(actual.validationContract?.assertions.isEmpty == false)
+        #expect(actual.latestHandoff?.suggestedNextAction == "Re-run the export")
+        #expect(actual.correctiveWork?.count == 1)
+        #expect(actual.nextLikelyAction?.contains("corrective work") == true)
+    }
+
+    private func addEveryBucketedEventKind(to task: AgentTask, withPlanContract: Bool, in context: ModelContext) throws {
+        var clock: TimeInterval = 1_000
+        @discardableResult
+        func add(_ type: String, _ payload: String, sameInstant: Bool = false) -> TaskEvent {
+            if !sameInstant { clock += 1 }
+            let event = TaskEvent(task: task, type: type, payload: payload)
+            event.timestamp = Date(timeIntervalSince1970: clock)
+            context.insert(event)
+            return event
+        }
+        func json<T: Encodable>(_ value: T) throws -> String {
+            String(decoding: try TaskEventPayloadCodec.makeISO8601Encoder().encode(value), as: UTF8.self)
+        }
+
+        let planID = UUID()
+        if withPlanContract {
+            let plan = TaskPlanPayload(
+                planID: planID,
+                title: "Report plan",
+                goal: "Build the quarterly report",
+                steps: [TaskPlanPayloadStep(id: "export", title: "Export the report")],
+                validationContract: TaskValidationContract(assertions: [
+                    TaskValidationAssertion(id: "csv", scope: .plan, description: "CSV opens", method: .command, command: "true"),
+                    TaskValidationAssertion(id: "totals", scope: .plan, description: "Totals match", method: .command, command: "true")
+                ])
+            )
+            add(TaskPlanEventTypes.created, TaskPlanService.encodePlanPayload(plan))
+            add(TaskPlanEventTypes.approved, TaskPlanService.encodePlanPayload(plan))
+        }
+
+        add("user.message", "Build the quarterly report")
+        add("tool.call", "noise between buckets", sameInstant: true)
+        add(TaskPlanConversationEventTypes.userMessage, "Keep the old column order")
+        add("user.message", "ok proceed")
+        add("user.message", "Actually, the new goal is to ship the CSV export")
+        let pending = add("user.message", "The goal is to rewrite it in Rust")
+        context.insert(TaskTurnRequest(task: task, messageEventID: pending.id, sequence: 1, state: .waitingForWorker))
+
+        add("agent.response", "Done with the draft.\nShould totals include tax?")
+        add(TaskPlanConversationEventTypes.assistantMessage, "Which quarter do you mean?", sameInstant: true)
+        func addDeliverableVerification() throws {
+            add(TaskDeliverableVerificationEventTypes.reviewNeeded, try json(TaskDeliverableVerificationEventPayload(
+                version: 1, profile: .dataArtifact, level: .needsHumanReview, status: "review_needed",
+                canComplete: false, requiresHumanReview: true, summary: "Spot-check the CSV",
+                checks: [TaskDeliverableCheck(id: "open", title: "Opens", status: .passed, summary: "Opens cleanly")],
+                evidencePaths: ["/tmp/report.csv"], verifiedAt: Date(timeIntervalSince1970: clock)
+            )))
+        }
+        // The derive reports whichever verification source is newer.
+        if !withPlanContract {
+            try addDeliverableVerification()
+        }
+        add("permission.denied", "Write to /etc denied")
+        add("budget.exceeded", "Token budget exceeded")
+        add("error", "Network unreachable")
+        add("error", "\(ValidationOutcomeMarker.testsFailed.rawValue): 2 failing")
+        add("task.completed", "\(ValidationOutcomeMarker.testsPassed.rawValue) after retry")
+
+        for (id, status) in [("csv", "started"), ("csv", "failed"), ("totals", "passed")] {
+            add(status == "started" ? TaskValidationEventTypes.assertionStarted
+                : status == "failed" ? TaskValidationEventTypes.assertionFailed : TaskValidationEventTypes.assertionPassed,
+                try json(TaskValidationAssertionEventPayload(
+                    version: 1, planID: planID, assertionID: id, scope: .plan, method: .command,
+                    required: true, status: status, summary: "\(id) \(status)"
+                )))
+        }
+        add(TaskValidationEventTypes.contractCreated, try json(TaskValidationContractEventPayload(
+            version: 1, planID: planID, status: "running", requiredPassed: 0, requiredTotal: 2,
+            failedRequiredAssertionIDs: [], summary: "Contract created"
+        )))
+        add(TaskValidationEventTypes.contractFailed, try json(TaskValidationContractEventPayload(
+            version: 1, planID: planID, status: "failed", requiredPassed: 1, requiredTotal: 2,
+            failedRequiredAssertionIDs: ["csv"], summary: "CSV failed"
+        )))
+
+        for (index, type) in [TaskHandoffEventTypes.created, TaskHandoffEventTypes.updated].enumerated() {
+            add(type, try json(TaskWorkerHandoffPayload(
+                version: 1, runID: UUID(), taskStatus: "pendingUser", runStatus: "completed",
+                completedWork: ["Draft \(index)"], unfinishedWork: ["CSV"], commands: [], filesChanged: [],
+                artifactsCreated: [], validationEvidence: [], blockers: [], risks: [],
+                suggestedNextAction: index == 0 ? "Draft again" : "Re-run the export", createdAt: "2026-10-20T00:00:00Z"
+            )))
+        }
+        for status in ["proposed", "approved"] {
+            add(status == "proposed" ? TaskCorrectiveEventTypes.stepCreated : TaskCorrectiveEventTypes.stepApproved,
+                try json(TaskCorrectiveStepPayload(
+                    version: 1, planID: planID, failedAssertionID: "csv", failureSummary: "CSV failed",
+                    suggestedRepair: "Quote the commas", status: status, createdAt: "2026-10-20T00:00:00Z"
+                )))
+        }
+        if withPlanContract {
+            try addDeliverableVerification()
+        }
+        try context.save()
+    }
+
     /// The point of the observation: the apply must not touch the output
     /// folder at all, however big it is — no scan, and no symlink-resolving
     /// visibility or existence check per path. Counted rather than timed,
