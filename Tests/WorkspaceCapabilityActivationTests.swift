@@ -166,7 +166,10 @@ struct WorkspaceCapabilityActivationTests {
         #expect(activation.accounts(forComponent: component).map(\.name) == ["Jira Stanford"])
         #expect(activation.bindings.first?.isDefault == true)
         WorkspaceCapabilityActivation.mutate(workspace) { $0 = WorkspaceCapabilityActivationState() }
-        #expect(workspace.pluginActivations.isEmpty)
+        // Managed relationships can retain a tombstone until commit. It is
+        // already invisible through the owner, without unlinking its inverse.
+        #expect(WorkspaceCapabilityActivation.activations(of: workspace).isEmpty)
+        #expect(activation.workspace?.id == workspace.id)
 
         WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
         let restored = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
@@ -180,6 +183,11 @@ struct WorkspaceCapabilityActivationTests {
         context.delete(second)
         try context.save()
         #expect(restored.accounts(forComponent: component).map(\.name) == ["Jira Stanford"])
+        #expect(workspace.pluginActivations.count == 1)
+        let saved = try ModelContext(container).fetch(FetchDescriptor<PluginActivation>())
+        #expect(saved.count == 1)
+        #expect(saved.first?.id == restored.id)
+        #expect(saved.first?.workspace?.id == workspace.id)
         withExtendedLifetime(container) {}
     }
 
