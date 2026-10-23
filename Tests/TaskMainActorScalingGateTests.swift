@@ -107,6 +107,7 @@ struct TaskMainActorScalingGateTests {
             try context.save()
             samples[.viewUpdate, default: []].append(cpuMilliseconds {
                 _ = decisionOutcomes(for: task, fixture: fixture, in: context)
+                _ = TaskRuntimePermissionState.build(task: task)
                 _ = gitViewModel.activeSelectionScopeLabel
                 _ = gitViewModel.unavailableWorktreePath
             })

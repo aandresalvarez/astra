@@ -122,6 +122,39 @@ struct TaskHistoryReadTests {
         #expect(TaskPolicyStore.latestSelectedLevel(for: f.task) == .review)
     }
 
+    @Test("Legacy permission reads track pending approvals and rollback without crossing task owners")
+    func legacyPermissionsStayCurrent() throws {
+        let f = try Fixture()
+        f.context.autosaveEnabled = false
+        f.task.runtimePermissionOpenRequestsJSON = nil
+        let duplicate = AgentTask(title: "Imported copy", goal: "g", workspace: f.workspace)
+        duplicate.id = f.task.id
+        f.context.insert(duplicate)
+        let request = TaskEvent(task: f.task, type: "permission.approval.requested",
+                                payload: "Runtime grant: Bash(gh pr list *)")
+        request.timestamp = Date(timeIntervalSince1970: 1_000)
+        f.context.insert(request)
+        let otherApproval = TaskEvent(task: duplicate, type: "task.approved", payload: "approved")
+        otherApproval.timestamp = request.timestamp.addingTimeInterval(1)
+        f.context.insert(otherApproval)
+        try f.context.save()
+        #expect(TaskRuntimePermissionState.build(task: f.task).hasOpenApprovalRequest)
+        // Match production reversible edits: materialize the task relationships
+        // before SwiftData captures a rollback snapshot. The reader itself stays pure.
+        SwiftDataTaskRollbackPreparation.prepare(f.task)
+        let approval = TaskEvent(task: f.task, type: "task.approved", payload: "approved")
+        approval.timestamp = request.timestamp.addingTimeInterval(2)
+        f.context.insert(approval)
+        #expect(!TaskRuntimePermissionState.build(task: f.task).hasOpenApprovalRequest)
+        f.context.rollback()
+        #expect(TaskRuntimePermissionState.build(task: f.task).hasOpenApprovalRequest)
+        SwiftDataTaskRollbackPreparation.prepare(f.task)
+        f.context.delete(request)
+        #expect(!TaskRuntimePermissionState.build(task: f.task).hasOpenApprovalRequest)
+        f.context.rollback()
+    }
+
+
     // MARK: - Fixture
 
     struct Answers: Equatable {
