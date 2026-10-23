@@ -40,7 +40,7 @@ struct CapabilityLifecycleResolverTests {
         #expect(snapshot.canEnable)
 
         WorkspaceCapabilityActivation.mutate(workspace) { $0.recordInstalledPlugin(id: package.id, version: package.version) }
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         context = CapabilityCatalogPolicyContext.workspaceUser(
             workspace: workspace,
             currentAppVersion: SemanticVersion(1, 0, 0)

@@ -220,7 +220,7 @@ struct AstraPackPolicyTests {
     @MainActor
     func workspacePolicyProviderFailsClosedForUnresolvedEnabledPacks() {
         let workspace = Workspace(name: "Missing Pack Workspace", primaryPath: "/tmp/missing-pack-workspace")
-        workspace.enabledCapabilityIDs = ["policy-package"]
+        workspace.testEnabledCapabilityIDs = ["policy-package"]
         workspace.enabledPackIDs = ["astra.pack.missing"]
         let package = makeCapabilityPackage(id: "policy-package")
 
@@ -251,7 +251,7 @@ struct AstraPackPolicyTests {
     @MainActor
     func workspaceContextFactoryAppliesResolvedPackPolicy() {
         let workspace = Workspace(name: "Policy Factory", primaryPath: "/tmp/policy-factory")
-        workspace.enabledCapabilityIDs = ["policy-package"]
+        workspace.testEnabledCapabilityIDs = ["policy-package"]
         workspace.enabledPackIDs = ["astra.pack.policy"]
         let package = makeCapabilityPackage(id: "policy-package")
         let resolvedPolicy = PackWorkspacePolicyProvider.resolvedPolicy(

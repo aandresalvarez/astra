@@ -163,13 +163,7 @@ struct DisableConnectorSharedClaimTests {
         CapabilityActivationDisabler().disable(
             alpha,
             in: workspace,
-            capabilities: WorkspaceCapabilities(
-                workspace: workspace,
-                globalConnectors: try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true }))
-            ),
-            modelContext: context,
-            availablePackages: [alpha, beta]
-        )
+            modelContext: context)
 
         // beta still claims the shared connector → it is not deleted.
         #expect(try context.fetch(FetchDescriptor<Connector>()).count == connectorsAfterInstall)
@@ -210,13 +204,8 @@ struct DisableConnectorSharedClaimTests {
         CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: WorkspaceCapabilities(
-                workspace: workspace,
-                globalSkills: try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
-            ),
             modelContext: context,
-            availablePackages: [package],
-            persist: { _, _ in persistCount += 1; return true }
+            persist: { context in persistCount += 1; try context.save() }
         )
 
         // The save runs even though no keychain-backed resource was deleted.

@@ -1745,15 +1745,6 @@ final class AgentRuntimeProcessRunner {
     ) -> [String: String] {
         var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
         BrokeredConnectorEnvironment.strip(from: &taskEnv, capabilityScope: capabilityScope)
-        if StanfordOutlookMailRuntimeAccess.isGranted(
-            for: task,
-            in: capabilityScope,
-            runtime: executionPolicy.launchSnapshot?.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)),
-            additionalGrants: executionPolicy.permissionGrantsOverride ?? []
-        ) {
-            taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
-            taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
-        }
         if capabilityScope.exposesBrowserBridge ||
             TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {

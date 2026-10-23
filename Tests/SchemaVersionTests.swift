@@ -366,34 +366,43 @@ struct SchemaVersionTests {
     func v20VersionIdentifier() {
         #expect(ASTRASchemaV20.versionIdentifier == Schema.Version(20, 0, 0))
         #expect(ASTRASchemaV20.models.count == 19)
-        #expect(ASTRASchemaV20.models.contains { $0 == Connector.self })
-        #expect(ASTRASchemaV20.models.contains { $0 == Workspace.self })
+        #expect(ASTRASchemaV20.models.contains { $0 == ASTRASchemaV20Models.Connector.self })
+        #expect(ASTRASchemaV20.models.contains { $0 == ASTRASchemaV20Models.Workspace.self })
+    }
+
+    @Test("Plugins 2.0 uses a new V21 schema after original V20")
+    func v21VersionIdentifier() {
+        #expect(ASTRASchemaV21.versionIdentifier == Schema.Version(21, 0, 0))
+        #expect(ASTRASchemaV21.models.count == 22)
+        #expect(ASTRASchemaV21.models.contains { $0 == PluginActivation.self })
+        #expect(ASTRASchemaV21.models.contains { $0 == AccountBinding.self })
+        #expect(ASTRASchemaV21.models.contains { $0 == PluginOperationReceipt.self })
     }
 
     @Test("Advertised current schema matches the compiled current model")
     func advertisedCurrentSchemaMatchesCompiledModel() {
-        #expect(ASTRASchema.currentVersion == 20)
-        #expect(ASTRASchemaV20.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
+        #expect(ASTRASchema.currentVersion == 21)
+        #expect(ASTRASchemaV21.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV20")
+    @Test("Migration plan lists SchemaV1 through SchemaV21")
     func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 20)
+        #expect(ASTRAMigrationPlan.schemas.count == 21)
     }
 
-    @Test("Migration plan has V1 to V20 lightweight stages")
+    @Test("Migration plan has V1 to V21 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 19)
+        #expect(ASTRAMigrationPlan.stages.count == 20)
     }
 
     @Test("Orphan recovery plan keeps the colliding V12 isolated")
     func orphanRecoveryPlanIsIsolated() {
         // The isolated V12 recovery plans migrate their colliding-V12 store
         // forward to current: V12x → V13 → … → V19 → V20.
-        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 9)
-        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 8)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 9)
-        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 8)
+        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 10)
+        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 9)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.schemas.count == 10)
+        #expect(ASTRAFeedbackOnlyV12MigrationPlan.stages.count == 9)
     }
 
     @Test("Frozen V12 and V13 schemas match all observed on-disk fingerprints")
@@ -492,7 +501,7 @@ struct SchemaVersionTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [config]
         )
-        #expect(container.schema.entities.count == 19)
+        #expect(container.schema.entities.count == 22)
     }
 
     @MainActor
@@ -824,8 +833,8 @@ struct SchemaVersionTests {
     }
 
     @MainActor
-    @Test("Production SchemaV19 store migrates to V20 and gains empty account fields")
-    func v19StoreMigratesToConnectorAccounts() throws {
+    @Test("Production SchemaV19 store migrates through original V20 to V21 with no activations yet")
+    func v19StoreMigratesToPluginActivations() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-schema-v19-accounts-migration-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -868,13 +877,13 @@ struct SchemaVersionTests {
         let connector = try #require(try context.fetch(FetchDescriptor<Connector>()).first)
         let schedule = try #require(try context.fetch(FetchDescriptor<TaskSchedule>()).first)
         #expect(workspace.id == workspaceID)
-        #expect(workspace.enabledCapabilityIDs == ["jira-workflow"])
+        #expect(workspace.legacyEnabledCapabilityIDs == ["jira-workflow"])
         #expect(workspace.enabledGlobalConnectorIDs == ["shared"])
-        #expect(workspace.defaultAccountServiceTypes.isEmpty)
-        #expect(workspace.defaultAccountConnectorIDs.isEmpty)
+        #expect(workspace.pluginActivations.isEmpty)
+        #expect(try context.fetch(FetchDescriptor<PluginActivation>()).isEmpty)
         #expect(connector.id == connectorID)
         #expect(connector.name == "Stanford Jira")
-        #expect(connector.accountAlias == nil)
+        #expect(connector.accountBindings.isEmpty)
         #expect(connector.workspace?.id == workspaceID)
         #expect(schedule.reasoningEffort == "high")
     }
@@ -889,6 +898,7 @@ struct SchemaVersionTests {
         let storeURL = root.appendingPathComponent("store.store")
         let workspaceID: UUID
         let connectorIDs: [UUID]
+        let skillID: UUID
         let taskID: UUID
         let runID: UUID
         let eventID: UUID
@@ -902,10 +912,14 @@ struct SchemaVersionTests {
                 configurations: [ModelConfiguration(url: storeURL)]
             )
             let context = container.mainContext
-            let workspace = Workspace(name: "Existing V20", primaryPath: "/tmp/existing-v20")
+            let workspace = ASTRASchemaV20Models.Workspace()
+            workspace.name = "Existing V20"
+            workspace.primaryPath = "/tmp/existing-v20"
             context.insert(workspace)
             let connectors = ["Research", "Personal"].map { alias in
-                let connector = Connector(name: "\(alias) Jira", serviceType: "jira")
+                let connector = ASTRASchemaV20Models.Connector()
+                connector.name = "\(alias) Jira"
+                connector.serviceType = "jira"
                 connector.accountAlias = alias
                 connector.workspace = workspace
                 context.insert(connector)
@@ -915,16 +929,30 @@ struct SchemaVersionTests {
             // Deliberately select the second account; loading must preserve
             // the saved choice rather than infer it from the first connector.
             workspace.defaultAccountConnectorIDs = [connectors[1].id.uuidString]
-            let task = AgentTask(title: "Existing chat", goal: "Preserve history", workspace: workspace)
+            let skill = ASTRASchemaV20Models.Skill()
+            skill.name = "Legacy namespace"
+            skill.workspace = workspace
+            context.insert(skill)
+            let task = ASTRASchemaV20Models.AgentTask()
+            task.title = "Existing chat"
+            task.goal = "Preserve history"
+            task.workspace = workspace
+            task.skills = [skill]
             context.insert(task)
-            let run = TaskRun(task: task)
-            run.setOutput("Saved result")
+            let run = ASTRASchemaV20Models.TaskRun()
+            run.task = task
+            run.output = "Saved result"
             context.insert(run)
-            let event = TaskEvent(task: task, type: "user_message", payload: "Saved message", run: run)
+            let event = ASTRASchemaV20Models.TaskEvent()
+            event.task = task
+            event.type = "user_message"
+            event.payload = "Saved message"
+            event.run = run
             context.insert(event)
             try context.save()
             workspaceID = workspace.id
             connectorIDs = connectors.map(\.id)
+            skillID = skill.id
             taskID = task.id
             runID = run.id
             eventID = event.id
@@ -964,6 +992,10 @@ struct SchemaVersionTests {
                 #expect(connector.accountAlias == alias)
                 #expect(connector.workspace?.id == workspaceID)
             }
+            let skill = try #require(try context.fetch(FetchDescriptor<Skill>()).first { $0.id == skillID })
+            #expect(skill.credentialNamespaceID == nil)
+            #expect(skill.secretNamespaceID == skillID)
+            #expect(task.skills.map(\.id) == [skillID])
             #expect(task.id == taskID)
             #expect(task.workspace?.id == workspaceID)
             #expect(task.title == (pass == 0 ? "Existing chat" : "Edited chat"))
@@ -982,6 +1014,7 @@ struct SchemaVersionTests {
                 try context.save()
             } else {
                 #expect(workspace.installedVersion(of: "existing-plugin") == "1.0.0")
+                #expect(WorkspaceCapabilityActivation.activation(for: "existing-plugin", in: workspace)?.credentialNamespaceSeed == "")
             }
         }
     }

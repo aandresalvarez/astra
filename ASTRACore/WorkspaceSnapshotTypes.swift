@@ -2,6 +2,8 @@ import Foundation
 
 public struct ConnectorSnapshotConfig: Codable, Equatable, Sendable {
     public var id: String?
+    public var credentialNamespaceID: UUID?
+    public var outlookCredentialFormat: String?
     public var name: String
     public var serviceType: String
     public var icon: String
@@ -30,9 +32,13 @@ public struct ConnectorSnapshotConfig: Codable, Equatable, Sendable {
         isGlobal: Bool?,
         notes: String,
         createdAt: Date?,
-        updatedAt: Date?
+        updatedAt: Date?,
+        credentialNamespaceID: UUID? = nil,
+        outlookCredentialFormat: String? = nil
     ) {
         self.id = id
+        self.credentialNamespaceID = credentialNamespaceID
+        self.outlookCredentialFormat = outlookCredentialFormat ?? OutlookCredentialIdentity.format(keys: configKeys, values: configValues)
         self.name = name
         self.serviceType = serviceType
         self.icon = icon
@@ -88,6 +94,7 @@ public struct LocalToolSnapshotConfig: Codable, Equatable, Sendable {
 
 public struct SkillSnapshotConfig: Codable, Equatable, Sendable {
     public var id: String?
+    public var credentialNamespaceID: UUID?
     public var name: String
     public var icon: String
     public var description: String
@@ -122,9 +129,11 @@ public struct SkillSnapshotConfig: Codable, Equatable, Sendable {
         connectorSnapshots: [ConnectorSnapshotConfig]?,
         localToolSnapshots: [LocalToolSnapshotConfig]?,
         createdAt: Date?,
-        updatedAt: Date?
+        updatedAt: Date?,
+        credentialNamespaceID: UUID? = nil
     ) {
         self.id = id
+        self.credentialNamespaceID = credentialNamespaceID
         self.name = name
         self.icon = icon
         self.description = description

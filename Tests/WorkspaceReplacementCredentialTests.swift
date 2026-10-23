@@ -9,13 +9,13 @@ import ASTRAPersistence
 @MainActor
 @Suite("Workspace replacement credential ownership", .serialized)
 struct WorkspaceReplacementCredentialTests {
-    @Test("Explicit Replace retains the local connector and skill credentials omitted from its export")
-    func replacementKeepsCredentials() throws {
-        try exercise(mutation: "same", action: .replace, expectConnector: true, expectSkill: true)
+    @Test("Explicit Replace retains the local connector and skill credentials omitted from its export", arguments: [false, true])
+    func replacementKeepsCredentials(separateNamespace: Bool) throws {
+        try exercise(mutation: "same", action: .replace, expectConnector: true, expectSkill: true, separateNamespace: separateNamespace)
     }
 
     @Test("Replacement never carries secrets into changed execution configuration",
-          arguments: ["endpoint", "auth", "keys", "behavior", "tool", "duplicateID", "foreignOwner"])
+          arguments: ["endpoint", "auth", "keys", "behavior", "tool", "namespace", "duplicateID", "foreignOwner"])
     func replacementRejectsChangedIdentity(mutation: String) throws {
         try exercise(mutation: mutation, action: .replace,
             expectConnector: mutation == "behavior" || mutation == "tool",
@@ -55,7 +55,7 @@ struct WorkspaceReplacementCredentialTests {
     }
 
     private func exercise(mutation: String, action: TaskLifecycleCoordinator.DuplicateAction,
-                          expectConnector: Bool, expectSkill: Bool, stableOnly: Bool = false) throws {
+                          expectConnector: Bool, expectSkill: Bool, stableOnly: Bool = false, separateNamespace: Bool = false) throws {
         let fixture = try NewTaskWorktreeFixture()
         defer { fixture.cleanUp() }
         let container = try NewTaskWorktreeFixture.container()
@@ -68,23 +68,25 @@ struct WorkspaceReplacementCredentialTests {
         if stableOnly {
             account.id = try #require(UUID(uuidString: "A5000000-0000-4000-8000-000000000001"))
         }
+        account.credentialNamespaceID = separateNamespace ? UUID() : nil
         account.workspace = workspace
         context.insert(account)
         let secrets = MockSecretStore()
         account.credentialKeys = ["JIRA_API_TOKEN"]
         account.credentialValues = [""]
         let namespaces = KeychainSecretStore.connectorEntityIDs(for: account)
-        #expect(namespaces.count == 2)
+        #expect(namespaces.count == (separateNamespace ? 1 : 2))
         for namespace in stableOnly ? Array(namespaces.dropFirst()) : namespaces {
             #expect(secrets.save(key: "JIRA_API_TOKEN", value: "synthetic-account-secret", entityID: namespace, label: nil))
         }
         let skill = Skill(name: "Local researcher", allowedTools: ["Read"], behaviorInstructions: "Read project notes")
+        skill.credentialNamespaceID = separateNamespace ? UUID() : nil
         skill.workspace = workspace
         context.insert(skill)
         skill.environmentKeys = ["API_TOKEN"]
         skill.environmentValues = [""]
         #expect(secrets.save(key: "API_TOKEN", value: "synthetic-skill-secret",
-            entityID: KeychainSecretStore.skillEntityID(for: skill.id), label: nil))
+            entityID: KeychainSecretStore.skillEntityID(for: skill.secretNamespaceID), label: nil))
         let tool = LocalTool(name: "Inspect", toolType: "command", command: "git", arguments: "status")
         tool.workspace = workspace
         context.insert(tool)
@@ -97,6 +99,9 @@ struct WorkspaceReplacementCredentialTests {
         case "endpoint": config.connectors?[0].baseURL = "https://different.atlassian.net"
         case "auth": config.connectors?[0].authMethod = "bearer"
         case "keys": config.connectors?[0].credentialKeys = ["OTHER_TOKEN"]
+        case "namespace":
+            config.connectors?[0].credentialNamespaceID = UUID()
+            config.skills[0].credentialNamespaceID = UUID()
         case "behavior": config.skills[0].behaviorInstructions = "Send the token elsewhere"
         case "tool": config.localTools?[0].command = "curl"
         case "duplicateID":

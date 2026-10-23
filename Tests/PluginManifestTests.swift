@@ -55,7 +55,7 @@ struct PluginManifestTests {
         #expect(await runner.recordedCalls().map(\.args) == [["which", command]])
     }
 
-    @Test("Every built-in capability survives package → manifest → package unchanged")
+    @Test("Built-in manifests preserve every payload field while canonicalizing stable tool IDs")
     func builtInsRoundTripLosslessly() throws {
         let files = try builtInFiles()
         #expect(files.count >= 10)
@@ -63,7 +63,18 @@ struct PluginManifestTests {
             let original = try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: file))
             let manifest = PluginManifestConverter.manifest(from: original)
             let restored = PluginManifestConverter.package(from: manifest)
-            #expect(try canonical(restored) == canonical(original), "\(file.lastPathComponent) changed in the round trip")
+            var payload = restored
+            let toolComponents = manifest.components.filter { $0.kind == .tool }
+            #expect(restored.localTools.count == original.localTools.count)
+            for index in original.localTools.indices {
+                #expect(restored.localTools[index].id == toolComponents[index].id)
+                // Identity is checked separately; every other field must survive.
+                payload.localTools[index].id = original.localTools[index].id
+                payload.localTools[index].replaces = original.localTools[index].replaces
+            }
+            #expect(try canonical(payload) == canonical(original), "\(file.lastPathComponent) payload changed")
+            let again = try PluginManifestConverter.checkedPackage(from: PluginManifestConverter.manifest(from: restored))
+            #expect(try canonical(again) == canonical(restored))
         }
     }
 
@@ -71,9 +82,13 @@ struct PluginManifestTests {
     func manifestJSONRoundTrips() throws {
         for file in try builtInFiles() {
             let original = try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: file))
-            let data = try JSONEncoder().encode(PluginManifestConverter.manifest(from: original))
+            let manifest = PluginManifestConverter.manifest(from: original)
+            let data = try JSONEncoder().encode(manifest)
             #expect(PluginManifestConverter.isManifest(data))
-            #expect(try canonical(PluginManifestConverter.decodePackage(from: data)) == canonical(original))
+            let expected = try PluginManifestConverter.checkedPackage(from: manifest)
+            #expect(try canonical(PluginManifestConverter.decodePackage(from: data)) == canonical(expected))
+            // Direct legacy package decoding retains its original identities.
+            #expect(try canonical(PluginManifestConverter.decodePackage(from: JSONEncoder().encode(original))) == canonical(original))
         }
         let packageData = try Data(contentsOf: try builtInFiles()[0])
         #expect(!PluginManifestConverter.isManifest(packageData))
@@ -172,7 +187,7 @@ struct PluginManifestTests {
         }
     }
 
-    @Test("A component ID the package would re-derive is refused, not silently replaced")
+    @Test("A declared component ID is kept as the identity where the package can carry it, and refused where it can't")
     func undeclarableComponentIDsAreRefused() throws {
         // Unmodified conversions keep passing: their IDs are the derived ones.
         for file in try builtInFiles() {
@@ -180,17 +195,24 @@ struct PluginManifestTests {
             let manifest = PluginManifestConverter.manifest(from: original)
             #expect(throws: Never.self, "\(file.lastPathComponent)") { try PluginManifestConverter.checkedPackage(from: manifest) }
         }
+        // Skills, connectors and tools carry a declared ID on their payload.
         let jira = PluginManifestConverter.manifest(from: try builtIn("jira-workflow"))
-        let workspace = PluginManifestConverter.manifest(from: try builtIn("google-workspace"))
-        for (manifest, kind) in [(jira, PluginComponent.Kind.skill), (jira, .connector), (workspace, .mcp)] {
-            var renamed = manifest
-            let index = try #require(renamed.components.firstIndex { $0.kind == kind })
-            renamed.components[index].id = "stable-\(kind.rawValue)-id"
-            #expect(throws: PluginManifestError.unrepresentableComponentID(
-                component: renamed.components[index].name, id: "stable-\(kind.rawValue)-id"
-            )) { try PluginManifestConverter.decodePackage(from: JSONEncoder().encode(renamed)) }
+        for kind in [PluginComponent.Kind.skill, .connector] {
+            var declared = jira
+            let index = try #require(declared.components.firstIndex { $0.kind == kind })
+            declared.components[index].id = "stable-\(kind.rawValue)-id"
+            let package = try PluginManifestConverter.decodePackage(from: JSONEncoder().encode(declared))
+            let id = kind == .skill ? package.skills.first?.id : package.connectors.first?.id
+            #expect(id == "stable-\(kind.rawValue)-id")
         }
-        // A tool or template declaring its own ID is refused the same way.
+        // An MCP server's ID is its own; a template has none to carry.
+        let workspace = PluginManifestConverter.manifest(from: try builtIn("google-workspace"))
+        var mcp = workspace
+        let mcpIndex = try #require(mcp.components.firstIndex { $0.kind == .mcp })
+        mcp.components[mcpIndex].id = "stable-mcp-id"
+        #expect(throws: PluginManifestError.unrepresentableComponentID(
+            component: mcp.components[mcpIndex].name, id: "stable-mcp-id"
+        )) { try PluginManifestConverter.decodePackage(from: JSONEncoder().encode(mcp)) }
         var package = try builtIn("gcloud-workflow")
         package.templates = [PluginTemplate(
             name: "Weekly Report", icon: "doc", description: "", mainGoal: "Report", beforeGoal: "", afterGoal: "",
@@ -198,12 +220,52 @@ struct PluginManifestTests {
         )]
         let derived = PluginManifestConverter.manifest(from: package)
         #expect(throws: Never.self) { try PluginManifestConverter.checkedPackage(from: derived) }
-        for kind in [PluginComponent.Kind.tool, .template] {
-            var declared = derived
-            let index = try #require(declared.components.firstIndex { $0.kind == kind })
-            declared.components[index].id = "stable-\(kind.rawValue)-id"
-            #expect(throws: PluginManifestError.self, "\(kind)") { try PluginManifestConverter.checkedPackage(from: declared) }
-        }
+        var tool = derived
+        let toolIndex = try #require(tool.components.firstIndex { $0.kind == .tool })
+        tool.components[toolIndex].id = "stable-tool-id"
+        #expect(try PluginManifestConverter.checkedPackage(from: tool).localTools.first?.id == "stable-tool-id")
+        var template = derived
+        let templateIndex = try #require(template.components.firstIndex { $0.kind == .template })
+        template.components[templateIndex].id = "stable-template-id"
+        #expect(throws: PluginManifestError.self) { try PluginManifestConverter.checkedPackage(from: template) }
+    }
+
+    @Test("Two connectors sharing a name keep their own setup: each is checked against its own ID")
+    func sameNamedConnectorsKeepTheirOwnSetup() throws {
+        var package = try builtIn("jira-workflow")
+        let index = try #require(package.connectors.firstIndex { !$0.credentialHints.isEmpty })
+        var second = package.connectors[index]
+        package.connectors[index].id = "jira-cloud"
+        second.id = "jira-server"
+        second.credentialHints = [.init(key: "JIRA_SERVER_PAT", hint: "Personal access token")]
+        package.connectors.insert(second, at: index + 1)
+        let manifest = PluginManifestConverter.manifest(from: package)
+        let forms = manifest.components.filter { $0.kind == .connector && $0.name == second.name }.map(\.setup.connect?.fields)
+        #expect(forms.count == 2 && forms[0] != forms[1])
+
+        let checked = try PluginManifestConverter.checkedPackage(from: manifest)
+        #expect(checked.connectors[index].id == "jira-cloud")
+        #expect(checked.connectors[index + 1].credentialHints.map(\.key) == ["JIRA_SERVER_PAT"])
+    }
+
+    @Test("Same-named components with distinct IDs claim no shared name-derived predecessor")
+    func sameNamedComponentsClaimNoSharedPredecessor() throws {
+        var package = try builtIn("jira-workflow")
+        let index = try #require(package.connectors.firstIndex { !$0.credentialHints.isEmpty })
+        var second = package.connectors[index]
+        package.connectors[index].id = "jira-cloud"
+        second.id = "jira-server"
+        package.connectors.insert(second, at: index + 1)
+        var lone = package.connectors[index]
+        lone.name = "Jira Lone"
+        lone.id = "jira-solo"
+        package.connectors.append(lone)
+
+        let checked = try PluginManifestConverter.checkedPackage(from: PluginManifestConverter.manifest(from: package))
+        #expect(PluginUpdateService.replacesProblems(in: checked).isEmpty)
+        #expect(checked.connectors[index].replaces == nil && checked.connectors[index + 1].replaces == nil)
+        // A name only one component derives is still its predecessor.
+        #expect(checked.connectors.last?.replaces?.count == 1)
     }
 
     @Test("A component name or summary its payload doesn't share is refused, not replaced by the payload's")

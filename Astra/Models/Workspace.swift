@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 @Model
 public final class Workspace: Identifiable {
@@ -13,16 +14,21 @@ public final class Workspace: Identifiable {
     public var enabledGlobalSkillIDs: [String] = []
     public var enabledGlobalConnectorIDs: [String] = []
     public var enabledGlobalToolIDs: [String] = []
-    public var enabledCapabilityIDs: [String] = []
+    /// V19 enablement, moved by `PluginActivationMigration` onto
+    /// `pluginActivations` and then cleared. Until then (a failed migration
+    /// rolls it back) `WorkspaceCapabilityActivation.enabledPluginIDs(of:)`
+    /// still counts it.
+    @Attribute(originalName: "enabledCapabilityIDs")
+    public var legacyEnabledCapabilityIDs: [String] = []
     public var enabledPackIDs: [String] = []
     public var shelfVisibilityOverrideIDs: [String] = []
     public var shelfVisibilityOverrideValues: [Bool] = []
     public var memories: [String] = []
-    public var installedPluginIDs: [String] = []
-    public var installedPluginVersions: [String] = []
-    /// Paired service types and connector UUIDs persisted by early V20 Dev
-    /// builds. Preserve these account choices when opening those stores;
-    /// account selection in this build still follows the existing policies.
+    @Attribute(originalName: "installedPluginIDs")
+    public var legacyInstalledPluginIDs: [String] = []
+    @Attribute(originalName: "installedPluginVersions")
+    public var legacyInstalledPluginVersions: [String] = []
+    /// Original V20 choices, read when legacy accounts become plugin bindings.
     public var defaultAccountServiceTypes: [String] = []
     public var defaultAccountConnectorIDs: [String] = []
     public var isStarred: Bool = false
@@ -34,6 +40,9 @@ public final class Workspace: Identifiable {
     /// JSON-encoded default execution environment for new runs. Nil means host.
     /// Existing threads keep their own task/run snapshot once execution starts.
     public var activeExecutionEnvironmentJSON: String?
+    /// What Remove kept of this workspace's plugin activations, as JSON
+    /// (`RetiredPluginActivation`). Owned by `WorkspaceCapabilityActivation`.
+    public var retiredPluginActivationsJSON: String?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -54,6 +63,23 @@ public final class Workspace: Identifiable {
 
     @Relationship(deleteRule: .cascade, inverse: \TaskSchedule.workspace)
     public var schedules: [TaskSchedule] = []
+
+    /// Installed plugins and their per-workspace state, owned by
+    /// `WorkspaceCapabilityActivation`.
+    @Relationship(deleteRule: .cascade, inverse: \PluginActivation.workspace)
+    public var pluginActivations: [PluginActivation] = []
+
+    /// On a never-inserted launch copy only: the plugin definitions its
+    /// request froze at submission, which its plugins are projected from
+    /// instead of the live library. Nil everywhere else. Set only by
+    /// `TaskExecutionLaunchSnapshotApplicator`; never stored.
+    @Transient
+    public var launchPluginDefinitions: [PluginPackage]? = nil
+
+    /// Transport of request-owned acceptance evidence in never-inserted launch
+    /// graphs, including the absence of a baseline in legacy requests.
+    @Transient
+    public var launchStandaloneToolRoles: TaskStandaloneToolRoles.LaunchEvidence? = nil
 
     public init(
         name: String,
@@ -124,10 +150,25 @@ public final class Workspace: Identifiable {
         return active != primaryPath
     }
 
+    /// Enabled plugin IDs, derived from `pluginActivations` (and, until the
+    /// V20 migration has moved it, the legacy enablement:
+    /// `WorkspaceCapabilityActivation.enabledPluginIDs(of:)`).
+    public var enabledCapabilityIDs: [String] {
+        WorkspaceCapabilityActivation.enabledPluginIDs(of: self)
+    }
+
+    /// Every plugin with an activation here, on or off, and its recorded
+    /// version, paired by index.
+    public var installedPluginIDs: [String] {
+        WorkspaceCapabilityActivation.state(of: self).pluginIDs
+    }
+
+    public var installedPluginVersions: [String] {
+        WorkspaceCapabilityActivation.state(of: self).pluginVersions
+    }
+
     public func installedVersion(of pluginID: String) -> String? {
-        guard let idx = installedPluginIDs.firstIndex(of: pluginID),
-              idx < installedPluginVersions.count else { return nil }
-        return installedPluginVersions[idx]
+        WorkspaceCapabilityActivation.activation(for: pluginID, in: self)?.recordedVersion
     }
 
     public var installedPluginIDSet: Set<String> {
