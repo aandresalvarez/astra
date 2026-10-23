@@ -76,15 +76,20 @@ struct PluginsSurfaceView: View {
         )
     }
 
-    private var state: PluginsSurfaceState {
+    /// The rows and their display, built in one pass so every action takes
+    /// the same package and activation the row shows.
+    private var surface: (state: PluginsSurfaceState, rows: [String: PluginRow]) {
         let context = policyContext
         let currentCapabilities = capabilities
         let googleConnected = googleAccountConnected
-        return PluginsSurfacePresentation.makeState(packages.map { package in
+        var rows: [String: PluginRow] = [:]
+        var inputs: [PluginsSurfacePresentation.Input] = []
+        for package in packages {
             let packageState = CapabilityPackageState(package: package, workspace: workspace, capabilities: currentCapabilities)
             let decision = CapabilityCatalogPolicy.decision(for: package, context: context)
+            let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
             let listing = PluginsSurfacePresentation.listing(for: decision, isEnabled: packageState.isEnabled)
-            return PluginsSurfacePresentation.Input(
+            var input = PluginsSurfacePresentation.Input(
                 package: package,
                 isEnabled: packageState.isEnabled,
                 pendingSteps: packageState.connectorsNeedingAttention.count + packageState.missingConnectors.count
@@ -95,7 +100,34 @@ struct PluginsSurfaceView: View {
                 blocker: listing.blocker,
                 awaitsUpdate: packageState.awaitsUpdate
             )
-        }, query: query)
+            // Any drift an Update would settle: version, digest, components
+            // or templates.
+            input.needsUpdate = activation.map {
+                PluginUpdateService.needsReconcile($0, to: package)
+                    || !PluginTemplateSync.isInSync(package, in: workspace)
+            } ?? false
+            inputs.append(input)
+            rows[package.id] = PluginRow(package: package, activation: activation, display: PluginsSurfacePresentation.makeState(
+                [input], query: ""
+            ).allRows.first ?? placeholderRow(package))
+        }
+        // An activation whose plugin the library no longer has is listed
+        // too, so it can be removed (`CapabilityUninstaller.forgetMissing`).
+        let libraryIDs = Set((catalog.packages + PluginCatalog.builtInPackages).map(\.id))
+        for input in PluginsSurfacePresentation.missingInputs(in: workspace, libraryIDs: libraryIDs, listedIDs: Set(rows.keys)) {
+            inputs.append(input)
+            rows[input.package.id] = PluginRow(package: input.package,
+                activation: WorkspaceCapabilityActivation.activation(for: input.package.id, in: workspace),
+                display: PluginsSurfacePresentation.makeState([input], query: "").allRows.first ?? placeholderRow(input.package))
+        }
+        return (PluginsSurfacePresentation.makeState(inputs, query: query), rows)
+    }
+
+    private func placeholderRow(_ package: PluginPackage) -> PluginsSurfaceRow {
+        PluginsSurfaceRow(
+            id: package.id, name: package.name, icon: package.icon, subtitle: "",
+            pendingSteps: 0, isEnabled: false, isRemovable: false, verb: nil
+        )
     }
 
     var body: some View {
@@ -113,14 +145,15 @@ struct PluginsSurfaceView: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.statusError)
             }
-            let current = state
-            PluginStateRecoverySection(onChanged: onCatalogChanged, onError: { errorMessage = $0 })
+            PluginStateRecoverySection(onChanged: { errorMessage = nil; onCatalogChanged() }, onError: { errorMessage = $0 })
+            let model = surface
+            let current = model.state
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
-                        group("Action needed", current.actionNeeded)
-                        group("Ready", current.ready)
-                        group("Available", current.available)
+                        group("Action needed", current.actionNeeded, rows: model.rows)
+                        group("Ready", current.ready, rows: model.rows)
+                        group("Available", current.available, rows: model.rows)
                         if current.isEmpty {
                             Text(query.isEmpty ? "No plugins yet." : "Nothing matches \u{201C}\(query)\u{201D}.")
                                 .font(Stanford.caption(12))
@@ -178,6 +211,7 @@ struct PluginsSurfaceView: View {
             // window) reloads this surface's catalog snapshot; a workspace
             // change is observed through the model.
             if (notification.object as? CapabilityCatalogPersistenceChange)?.workspaceID == nil {
+                confirming = nil
                 catalog.loadApprovedCapabilities(announceLibraryMutations: false)
             }
             refreshStatuses()
@@ -200,21 +234,23 @@ struct PluginsSurfaceView: View {
     }
 
     @ViewBuilder
-    private func group(_ title: String, _ rows: [PluginsSurfaceRow]) -> some View {
-        if !rows.isEmpty {
+    private func group(_ title: String, _ displays: [PluginsSurfaceRow], rows: [String: PluginRow]) -> some View {
+        if !displays.isEmpty {
             Text(title)
                 .font(Stanford.ui(12, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .padding(.top, 10)
-            ForEach(rows) { row in
-                rowView(row)
-                    .id(row.id)
-                Divider().padding(.leading, 38)
+            ForEach(displays) { display in
+                if let row = rows[display.id] {
+                    rowView(row, display: display)
+                        .id(display.id)
+                    Divider().padding(.leading, 38)
+                }
             }
         }
     }
 
-    private func rowView(_ row: PluginsSurfaceRow) -> some View {
+    private func rowView(_ pluginRow: PluginRow, display row: PluginsSurfaceRow) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
                 Button {
@@ -240,7 +276,12 @@ struct PluginsSurfaceView: View {
                 }
                 .buttonStyle(.plain)
                 if row.verb == .add {
-                    Button("Add") { add(row.id) }
+                    Button("Add") { add(pluginRow) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(Stanford.lagunita)
+                } else if row.verb == .update {
+                    Button("Update") { update(pluginRow) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .tint(Stanford.lagunita)
@@ -249,52 +290,26 @@ struct PluginsSurfaceView: View {
                     .font(Stanford.ui(11, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
-            if expanded.contains(row.id), let package = packages.first(where: { $0.id == row.id }) {
-                details(package, row: row)
-                    .padding(.leading, 38)
+            if expanded.contains(row.id) {
+                PluginRowDetailsView(
+                    row: pluginRow,
+                    workspace: workspace,
+                    setupRow: { componentRow($0, package: pluginRow.package, isEnabled: row.isEnabled, position: $1) },
+                    onEditAccount: { onEditElement(.connectors, $0) },
+                    onConfirm: { confirming = $0 },
+                    onTurnOff: { disable(pluginRow.package) },
+                    onUpdate: { update(pluginRow) },
+                    onChanged: { errorMessage = nil; onCatalogChanged() },
+                    onError: { errorMessage = $0 }
+                )
+                .padding(.leading, 38)
+                if let confirming, confirming.packageID == row.id {
+                    confirmationRow(confirming, row: pluginRow)
+                        .padding(.leading, 38)
+                }
             }
         }
         .padding(.vertical, 6)
-    }
-
-    @ViewBuilder
-    private func details(_ package: PluginPackage, row: PluginsSurfaceRow) -> some View {
-        let manifest = PluginManifestConverter.manifest(from: package)
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(manifest.components.enumerated()), id: \.offset) { index, component in
-                componentRow(
-                    component, package: package, isEnabled: row.isEnabled,
-                    position: PluginManifestConverter.prerequisitePosition(ofComponentAt: index, in: manifest)
-                )
-            }
-            if row.isEnabled || row.isRemovable {
-                HStack {
-                    if row.isEnabled, !PluginsSurfacePresentation.offersTurnOff(package) {
-                        Text("Written in this workspace. Edit or delete it in Skills.")
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(.secondary)
-                    } else if row.isEnabled {
-                        Toggle("On in this workspace", isOn: Binding(
-                            get: { confirming != .turnOff(packageID: package.id) },
-                            set: { if !$0 { confirming = .turnOff(packageID: package.id) } }
-                        ))
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                    }
-                    Spacer()
-                    // Remove reaches every workspace, so it is offered once the
-                    // plugin is off here; a plugin off everywhere can still go.
-                    if row.isRemovable, !row.isEnabled {
-                        Button("Remove", role: .destructive) { confirming = .remove(packageID: package.id) }
-                            .controlSize(.small)
-                    }
-                }
-                .padding(.top, 4)
-                if let confirming, confirming.packageID == package.id {
-                    confirmationRow(confirming, package: package)
-                }
-            }
-        }
     }
 
     /// `position`: the prerequisite this setup component checks, by position.
@@ -351,14 +366,15 @@ struct PluginsSurfaceView: View {
                     .tint(Stanford.lagunita)
             } else if missing {
                 // Its account was deleted: adding again recreates it.
-                Button("Set up") { add(package.id) }
+                Button("Set up") { add(package) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .tint(Stanford.lagunita)
             } else if accountPending {
+                // Add routes through the install flow that signs in again.
                 switch PluginsSurfacePresentation.pendingAccountAction(for: package) {
                 case .reconnect:
-                    Button("Reconnect") { add(package.id) }
+                    Button("Reconnect") { add(package) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .tint(Stanford.lagunita)
@@ -480,8 +496,11 @@ struct PluginsSurfaceView: View {
 
     // MARK: - Actions
 
-    private func add(_ packageID: String) {
-        guard let package = packages.first(where: { $0.id == packageID }) else { return }
+    private func add(_ row: PluginRow) {
+        add(row.package)
+    }
+
+    private func add(_ package: PluginPackage) {
         errorMessage = nil
         do {
             if try CapabilityCatalogActionService.addRoute(for: package) == .connectAccount {
@@ -501,11 +520,22 @@ struct PluginsSurfaceView: View {
                 policyContext: policyContext,
                 traceID: AuditTrace.make("plugins-add")
             )
-            expanded.insert(packageID)
+            expanded.insert(package.id)
             onCatalogChanged()
             refreshStatuses()
         } catch {
             errorMessage = "Couldn't add \(package.name): \(error.localizedDescription)"
+        }
+    }
+
+    private func update(_ row: PluginRow) {
+        errorMessage = nil
+        do {
+            try CapabilityCatalogActionService().update(row.package, modelContext: modelContext)
+            onCatalogChanged()
+            refreshStatuses()
+        } catch {
+            errorMessage = "Couldn't update \(row.package.name): \(error.localizedDescription)"
         }
     }
 
@@ -518,8 +548,15 @@ struct PluginsSurfaceView: View {
         onCatalogChanged()
     }
 
-    private func confirmationRow(_ confirmation: PluginsSurfaceConfirmation, package: PluginPackage) -> some View {
-        let copy = confirmation.copy(name: package.name, hasAccounts: !package.connectors.isEmpty)
+    private func confirmationRow(_ confirmation: PluginsSurfaceConfirmation, row: PluginRow) -> some View {
+        let account: Connector? = {
+            guard case .deleteAccount(_, let scope) = confirmation else { return nil }
+            return row.activation?.bindings.compactMap(\.account).first { $0.id == scope.accountID }
+        }()
+        // Account scope was captured at the first tap; a re-render must
+        // not silently expand what the person is about to confirm.
+        let copy = PluginsSurfacePresentation.confirmationCopy(confirmation, account: account,
+            packageName: row.package.name, in: workspace)
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(copy.message)
                 .font(Stanford.caption(12))
@@ -530,8 +567,15 @@ struct PluginsSurfaceView: View {
             Button(copy.verb, role: .destructive) {
                 confirming = nil
                 switch confirmation {
-                case .turnOff: disable(package)
-                case .remove: remove(package)
+                case .remove(let source, let scope):
+                    guard source.matches(row) else {
+                        errorMessage = PluginRemovalScope.Failure.scopeChanged.localizedDescription
+                        return
+                    }
+                    remove(row.package, missing: source.isMissing, confirmedScope: scope)
+                case .deleteAccount(_, let scope):
+                    if let account { deleteAccount(account, confirmedScope: scope) }
+                    else { errorMessage = PluginOperations.OperationError.workspaceChanged.localizedDescription }
                 }
             }
             .controlSize(.small)
@@ -540,7 +584,18 @@ struct PluginsSurfaceView: View {
         .background(Stanford.statusError.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
     }
 
+    private func deleteAccount(_ account: Connector, confirmedScope: PluginAccountDeletionScope) {
+        errorMessage = nil
+        do {
+            try CapabilityCatalogActionService().deleteAccount(account, confirmedScope: confirmedScope, modelContext: modelContext)
+            onCatalogChanged()
+        } catch {
+            errorMessage = "Couldn't delete \(account.name): \(error.localizedDescription)"
+        }
+    }
+
     private func disable(_ package: PluginPackage) {
+        errorMessage = nil
         let result = CapabilityCatalogActionService().disable(
             package, workspace: workspace, modelContext: modelContext
         )
@@ -549,10 +604,14 @@ struct PluginsSurfaceView: View {
         onCatalogChanged()
     }
 
-    private func remove(_ package: PluginPackage) {
+    private func remove(_ package: PluginPackage, missing: Bool = false, confirmedScope: PluginRemovalScope) {
         errorMessage = nil
         do {
-            try CapabilityCatalogActionService().remove(package, modelContext: modelContext)
+            if missing {
+                try CapabilityCatalogActionService().forgetMissing(pluginID: package.id, modelContext: modelContext, confirmedScope: confirmedScope)
+            } else {
+                try CapabilityCatalogActionService().remove(package, modelContext: modelContext, confirmedScope: confirmedScope)
+            }
             expanded.remove(package.id)
             catalog.loadApprovedCapabilities(announceLibraryMutations: false)
             onCatalogChanged()

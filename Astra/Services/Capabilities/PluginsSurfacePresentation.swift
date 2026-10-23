@@ -38,6 +38,11 @@ struct PluginRow: Identifiable {
     let display: PluginsSurfaceRow
 
     var id: String { package.id }
+
+    var canChangeAccountBindings: Bool {
+        guard let activation, activation.isEnabled else { return false }
+        return !PluginRuntimeProjection.awaitsUpdate(activation, to: package)
+    }
 }
 
 struct PluginsSurfaceState: Equatable {
@@ -50,6 +55,54 @@ struct PluginsSurfaceState: Equatable {
 }
 
 enum PluginsSurfacePresentation {
+    /// The settings that affect the skill this activation actually runs.
+    /// An authored replacement owns its own settings instead.
+    static func settingKeys(of skill: PluginSkill, in activation: PluginActivation?, package: PluginPackage? = nil) -> [String] {
+        guard let activation, PluginRuntimeProjection.packageSkillOwnsSettings(skill, activation: activation) else { return [] }
+        if let package, PluginRuntimeProjection.awaitsUpdate(activation, to: package) { return [] }
+        guard let package, !package.connectors.isEmpty,
+              let primary = package.skills.first,
+              CapabilityResourceOrigin.componentID(for: primary) == CapabilityResourceOrigin.componentID(for: skill)
+        else { return skill.environmentKeys }
+        // Runtime associates the package accounts with its first skill only.
+        // A secondary skill's activation values can execute without those accounts.
+        // Hide only fields the shared account layout actually stores. A
+        // skill-only secret remains owned by this activation even when the
+        // package also declares unrelated connector accounts.
+        let accountKeys = Set(package.connectors.flatMap { connector in
+            let stored = PluginConnectorFieldTrust.asStored(connector, in: package)
+            return stored.credentialHints.map(\.key)
+                + PluginAccountFieldLayout.configurationKeys(hints: stored.configHints)
+                + connector.configHints.filter(\.isAccountStructure).map(\.key)
+        })
+        return skill.environmentKeys.filter { !accountKeys.contains($0) }
+    }
+
+    static func showsRemove(_ row: PluginRow) -> Bool {
+        row.display.isRemovable && (!row.display.isEnabled || row.display.isMissing)
+    }
+
+    static func expandedSetupComponents(for row: PluginRow, in workspace: Workspace? = nil) -> [(component: PluginComponent, position: Int?)] {
+        let manifest = PluginManifestConverter.manifest(from: row.package)
+        return manifest.components.enumerated()
+            .filter { entry in
+                guard entry.element.kind != .skill else { return false }
+                guard entry.element.kind == .connector, let activation = row.activation else { return true }
+                guard let workspace, let connector = entry.element.connector else { return false }
+                return activation.accounts(forComponent: CapabilityResourceOrigin.componentID(for: connector)).contains {
+                    $0.isGlobal && !WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs.contains($0.id.uuidString)
+                }
+            }
+            .map { ($0.element, PluginManifestConverter.prerequisitePosition(ofComponentAt: $0.offset, in: manifest)) }
+    }
+
+    static func confirmationCopy(
+        _ confirmation: PluginsSurfaceConfirmation, account: Connector?,
+        packageName: String, in workspace: Workspace
+    ) -> (message: String, verb: String) {
+        confirmation.copy(name: account.map { accountTitle($0, in: workspace) } ?? packageName)
+    }
+
     struct Input {
         var package: PluginPackage
         var isEnabled: Bool
@@ -237,40 +290,57 @@ enum PluginsSurfacePresentation {
     }
 }
 
+/// Consent belongs to the displayed definition and removal mode. An import,
+/// update or activation change requires a fresh confirmation.
+struct PluginRemovalSource: Equatable {
+    let packageID: String
+    let isMissing: Bool
+    private let definitionDigest: String
+    private let activationID: UUID?
+    private let activationRevision: Int?
+
+    init(row: PluginRow) {
+        packageID = row.id
+        isMissing = row.display.isMissing
+        definitionDigest = PluginDefinitionDigest.content(of: row.package)
+        activationID = row.activation?.id
+        activationRevision = row.activation?.revision
+    }
+
+    func matches(_ row: PluginRow) -> Bool { self == Self(row: row) }
+}
+
 /// The second tap before a destructive row action: it names what goes and
 /// what stays (`docs/design-system/lean-ui-system.md`, Interaction Rules).
+/// Turning a plugin off deletes nothing, so it needs none.
 enum PluginsSurfaceConfirmation: Equatable {
-    /// Turning off preserves saved accounts, settings and keys.
-    case turnOff(packageID: String)
     /// Removing it from ASTRA turns it off in every workspace.
-    case remove(packageID: String)
+    case remove(source: PluginRemovalSource, scope: PluginRemovalScope)
+    /// Deleting an account removes it everywhere; accepted tasks may retain access.
+    case deleteAccount(packageID: String, scope: PluginAccountDeletionScope)
 
     var packageID: String {
         switch self {
-        case .turnOff(let id), .remove(let id): id
+        case .remove(let source, _): source.packageID
+        case .deleteAccount(let id, _): id
         }
     }
 
-    func copy(name: String, hasAccounts: Bool) -> (message: String, verb: String) {
+    func copy(name: String) -> (message: String, verb: String) {
         switch self {
-        case .turnOff:
-            // Turn off deletes nothing: accounts, settings and keys stay. A
-            // standalone workspace skill, which only deleting turns off, is
-            // not offered it (`PluginsSurfacePresentation.offersTurnOff`).
-            return (
-                "Turn off \(name) in this workspace? Nothing is deleted: its accounts, settings and saved keys stay, and turning it on again restores it.",
-                "Turn off"
-            )
         case .remove:
             // Remove deletes activations (settings, secret settings); the
             // accounts and their credentials stay until deleted one by one.
-            let accounts = hasAccounts
-                ? " Its accounts and their saved keys stay; delete an account from Accounts to clear it."
-                : ""
             return (
-                "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted.\(accounts) You can add it again later.",
+                "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted. Its accounts and their saved keys stay; delete an account to clear it. You can add it again later.",
                 "Remove"
             )
+        case .deleteAccount(_, let scope):
+            let workspaces = scope.workspaces.map(\.name)
+            let reach = workspaces.isEmpty
+                ? ""
+                : " \(workspaces.count == 1 ? "It is used in" : "It is used in \(workspaces.count) workspaces:") \(workspaces.joined(separator: ", "))."
+            return ("Delete the account \(name) and its saved keys?\(reach) Tasks already accepted may keep access until they finish or are cancelled. To revoke access, revoke the credentials with the provider.", "Delete")
         }
     }
 }
