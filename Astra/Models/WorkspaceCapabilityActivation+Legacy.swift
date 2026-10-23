@@ -21,6 +21,24 @@ extension WorkspaceCapabilityActivation {
         return true
     }
 
+    /// Remove retires pending V19 membership as well as activations. Filter
+    /// parallel version entries by the same original indices, preserving
+    /// unrelated pairs and even incomplete legacy arrays for rollback/export.
+    @discardableResult
+    public static func forgetPendingLegacyPlugin(_ pluginID: String, in workspace: Workspace) -> Bool {
+        let enabled = workspace.legacyEnabledCapabilityIDs.filter { $0 != pluginID }
+        let removed = Set(workspace.legacyInstalledPluginIDs.indices.filter {
+            workspace.legacyInstalledPluginIDs[$0] == pluginID
+        })
+        guard enabled != workspace.legacyEnabledCapabilityIDs || !removed.isEmpty else { return false }
+        workspace.legacyEnabledCapabilityIDs = enabled
+        workspace.legacyInstalledPluginIDs = workspace.legacyInstalledPluginIDs.enumerated()
+            .filter { !removed.contains($0.offset) }.map(\.element)
+        workspace.legacyInstalledPluginVersions = workspace.legacyInstalledPluginVersions.enumerated()
+            .filter { !removed.contains($0.offset) }.map(\.element)
+        return true
+    }
+
     public static func isPluginOriginDisabled(_ pluginID: String?, in workspace: Workspace) -> Bool {
         guard let id = pluginID?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty else { return false }
         if let activation = activation(for: id, in: workspace) { return !activation.isEnabled || activation.awaitingUpdate }

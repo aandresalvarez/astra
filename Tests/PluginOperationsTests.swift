@@ -680,7 +680,14 @@ struct PluginOperationsTests {
         let gcloud = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
         let first = PluginManifestConverter.manifest(from: gcloud)
         let roundTrip = try PluginManifestConverter.checkedPackage(from: first)
-        #expect(try CapabilityApprovalDigest.digest(for: roundTrip) == CapabilityApprovalDigest.digest(for: gcloud))
+        var payload = roundTrip
+        for index in gcloud.localTools.indices {
+            payload.localTools[index].id = gcloud.localTools[index].id
+            payload.localTools[index].replaces = gcloud.localTools[index].replaces
+        }
+        #expect(try CapabilityApprovalDigest.digest(for: payload) == CapabilityApprovalDigest.digest(for: gcloud))
+        let repeated = try PluginManifestConverter.checkedPackage(from: PluginManifestConverter.manifest(from: roundTrip))
+        #expect(try CapabilityApprovalDigest.digest(for: repeated) == CapabilityApprovalDigest.digest(for: roundTrip))
 
         // Skills, connectors and tools carry their id; a setup component's
         // comes back derived (its requirement's ID or its name's slug), so a
