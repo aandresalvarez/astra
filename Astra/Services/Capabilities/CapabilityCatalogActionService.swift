@@ -51,7 +51,6 @@ struct CapabilityCatalogActionService {
     let installer: CapabilityInstaller
     let creationService: CapabilityPackageCreationService
     let uninstaller: CapabilityUninstaller
-    let library: CapabilityLibrary
 
     init(
         library: CapabilityLibrary = CapabilityLibrary(),
@@ -60,7 +59,6 @@ struct CapabilityCatalogActionService {
         self.installer = CapabilityInstaller(library: library, appVersion: appVersion)
         self.creationService = CapabilityPackageCreationService(library: library, appVersion: appVersion)
         self.uninstaller = CapabilityUninstaller(library: library)
-        self.library = library
     }
 
     /// Writes the package's shareable source JSON to `url`. The exported
@@ -89,9 +87,7 @@ struct CapabilityCatalogActionService {
         allowCredentialUserInteraction: Bool = false,
         policyContext: CapabilityCatalogPolicyContext,
         source: String,
-        traceID: String,
-        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
-        pendingApproval: CapabilityApprovalRecord? = nil
+        traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
         do {
             // Every enable path (the legacy catalog's install sheets and
@@ -107,7 +103,7 @@ struct CapabilityCatalogActionService {
                 baseURLOverrides: baseURLOverrides,
                 allowCredentialUserInteraction: allowCredentialUserInteraction,
                 policyContext: policyContext,
-                traceID: traceID, approvalStore: approvalStore, pendingApproval: pendingApproval
+                traceID: traceID
             )
             CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
             return result
@@ -177,36 +173,6 @@ struct CapabilityCatalogActionService {
         try uninstaller.remove(package, modelContext: modelContext)
     }
 
-    /// Approves the draft an import staged over an approved plugin
-    /// (`CapabilityLibrary.stage`) through the prepared file/receipt boundary.
-    /// Reconciliation and approval either commit together or retain the draft
-    /// and restore the previous installed bytes.
-    func reviewStaged(id: String) throws -> PluginStagedReview {
-        try PluginStagedReview.capture(id: id, library: library)
-    }
-
-    @discardableResult
-    func approveStaged(
-        _ review: PluginStagedReview,
-        modelContext: ModelContext,
-        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
-        approvedBy: String = "ASTRA local admin"
-    ) throws -> PluginPackage {
-        try PluginStagedApproval.approve(review, library: library, modelContext: modelContext,
-            approvalStore: approvalStore, approvedBy: approvedBy)
-    }
-
-    /// Drops a staged draft: the approved copy stays what it was.
-    func discardStaged(_ review: PluginStagedReview, modelContext: ModelContext) throws {
-        try PluginStagedDiscard.discard(review, library: library, modelContext: modelContext)
-    }
-
-    /// Remove for a plugin the library no longer has a readable entry for.
-    @discardableResult
-    func forgetMissing(pluginID: String, modelContext: ModelContext) throws -> CapabilityUninstaller.RemovalResult {
-        try uninstaller.forgetMissing(pluginID: pluginID, modelContext: modelContext)
-    }
-
     /// Plugins 2.0 one-step Add: install, approve and enable in this workspace.
     /// When the policy holds the package for review, the person adding it is
     /// the reviewer, so the approval record is written first and the enable
@@ -222,35 +188,19 @@ struct CapabilityCatalogActionService {
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
         _ = try Self.addRoute(for: package)
-        let stored = PluginInstallationTransaction.reviewedPackage(package)
-        let pending = try CapabilityApprovalGrant.pendingRecord(for: stored, context: policyContext,
-            approvedBy: "user", reviewNotes: "Added in Plugins.")
-        var context = policyContext
-        if let pending { context.approvalRecords.append(pending) }
-        do {
-            let result = try enable(stored, workspace: workspace, modelContext: modelContext,
-                policyContext: context, source: "plugins_add", traceID: traceID,
-                approvalStore: approvalStore, pendingApproval: pending)
-            if let pending { auditAddedApproval(pending, workspace: workspace, traceID: traceID) }
-            return result
-        } catch {
-            if let pending, let problem = error as? PluginOperationProblem,
-               (try? PluginOperationCommit.read(problem.operationID, container: modelContext.container)) != nil,
-               approvalStore.records().contains(pending) {
-                auditAddedApproval(pending, workspace: workspace, traceID: traceID)
-            }
-            throw error
-        }
+        let context = try grantPendingApproval(
+            for: package, workspace: workspace, policyContext: policyContext,
+            approvalStore: approvalStore, source: "plugins_add", traceID: traceID
+        )
+        return try enable(
+            package,
+            workspace: workspace,
+            modelContext: modelContext,
+            policyContext: context,
+            source: "plugins_add",
+            traceID: traceID
+        )
     }
-
-    private func auditAddedApproval(_ record: CapabilityApprovalRecord, workspace: Workspace, traceID: String) {
-        AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: [
-            "source": "plugins_add", "trace_id": traceID, "package_id": record.packageID,
-            "package_version": record.packageVersion, "status": record.status.rawValue,
-            "workspace_id": workspace.id.uuidString, "digest_prefix": String(record.sourceDigest.prefix(12))
-        ])
-    }
-
 
     /// The approval Add writes when the policy holds `package` for review:
     /// the person adding it is the reviewer. Returns the context to enable
@@ -304,28 +254,24 @@ struct CapabilityCatalogActionService {
         }
     }
 
-    /// Turns a package off in one workspace, leaving it installed and
-    /// deleting nothing. A row standing for a standalone skill
-    /// (`skill.<uuid>`) has no activation: a shared skill leaves this
-    /// workspace's scope, and a workspace's own skill, which has no off state
-    /// short of deleting it, is refused (`PluginsSurfacePresentation.offersTurnOff`).
-    /// A saved disable is audited like Configure's (`capabilityDisabled`); a
-    /// rolled-back one is audited by the disabler.
+    /// Turns a package off in one workspace, leaving it installed. A saved
+    /// disable is audited like Configure's (`capabilityDisabled`): it takes
+    /// the workspace's access to the package and may delete its workspace
+    /// resources. A rolled-back one is audited by the disabler.
     @discardableResult
     func disable(
         _ package: PluginPackage,
         workspace: Workspace,
+        capabilities: WorkspaceCapabilities,
         modelContext: ModelContext,
         traceID: String = AuditTrace.make("capability-disable")
     ) -> CapabilityActivationDisabler.Result {
-        guard PluginsSurfacePresentation.offersTurnOff(package) else {
-            return CapabilityActivationDisabler.Result(packageID: package.id, persisted: false, problem: .cannotTurnOff)
-        }
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            modelContext: modelContext,
-            library: library)
+            capabilities: capabilities,
+            modelContext: modelContext
+        )
         if result.persisted {
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
                 "source": "plugins_turn_off",
@@ -344,75 +290,6 @@ struct CapabilityCatalogActionService {
         }
         CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return result
-    }
-
-    /// Read-only presentation of saved/uncertain state receipts. Reopening
-    /// Plugins must rediscover recovery from its owner, not a vanished row.
-    func pendingStateRecoveries(modelContext: ModelContext) throws -> [PluginStateRecovery.Item] {
-        try PluginStateRecovery.pending(modelContext: modelContext)
-    }
-
-    func finishStateRecovery(_ id: UUID, modelContext: ModelContext) throws {
-        let receipt = try PluginStateRecovery.resume(id, modelContext: modelContext)
-        if receipt.workspaceIDs.isEmpty { CapabilityCatalogPersistenceEvents.post(.global) }
-        else { for workspaceID in receipt.workspaceIDs { CapabilityCatalogPersistenceEvents.post(.workspace(workspaceID)) } }
-    }
-
-    /// The row's Update: brings every workspace's activations of `package`
-    /// to its definition in the library, releasing what it dropped. Only
-    /// the definition read back from the library is reconciled against,
-    /// never the row's own copy: with none readable, nothing changes.
-    func update(_ package: PluginPackage, modelContext: ModelContext) throws {
-        guard let definition = library.installedPackages().first(where: { $0.id == package.id }) else {
-            throw PluginUpdateService.UpdateError.definitionUnreadable(plugin: package.name)
-        }
-        // Refused for every workspace if one with an activation of it would
-        // refuse this definition, as an import is, before anything changes.
-        if let refusal = PluginUpdateService.refusals(for: definition, modelContext: modelContext).first {
-            throw refusal
-        }
-        try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: [definition], mode: .release)
-        CapabilityCatalogPersistenceEvents.post(.global)
-    }
-
-    /// A plugin skill's setting in one workspace (secret ones to the Keychain).
-    func setSetting(
-        _ key: String,
-        to value: String,
-        of skill: PluginSkill,
-        package: PluginPackage,
-        workspace: Workspace,
-        modelContext: ModelContext
-    ) throws {
-        try PluginOperations.setSetting(key, to: value, of: skill, package: package, in: workspace, modelContext: modelContext)
-    }
-
-    /// A new account for a connector component, bound in this workspace.
-    @discardableResult
-    func addAccount(
-        for connector: PluginConnector,
-        of package: PluginPackage,
-        workspace: Workspace,
-        modelContext: ModelContext
-    ) throws -> Connector {
-        let account = try PluginOperations.addAccount(for: connector, of: package, in: workspace, modelContext: modelContext)
-        return account
-    }
-
-    func makeDefault(
-        _ account: Connector,
-        componentID: String,
-        package: PluginPackage,
-        workspace: Workspace,
-        modelContext: ModelContext
-    ) throws {
-        try PluginOperations.makeDefault(account, componentID: componentID, package: package, in: workspace, modelContext: modelContext)
-    }
-
-    /// Deletes an account in every workspace, with its credentials.
-    func deleteAccount(_ account: Connector, modelContext: ModelContext) throws {
-        try PluginOperations.deleteAccount(account, modelContext: modelContext)
-        CapabilityCatalogPersistenceEvents.post(.global)
     }
 
     /// Turns a shared account on in this workspace: the step an added
@@ -448,7 +325,6 @@ struct CapabilityCatalogActionService {
             WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs.contains(connector.id.uuidString)
         )
         AppLogger.audit(.connectorUpdated, category: "Capabilities", fields: fields)
-        PluginStateMirrors.exportAfterSave(workspace: workspace, accounts: [connector], modelContext: modelContext)
         CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return true
     }

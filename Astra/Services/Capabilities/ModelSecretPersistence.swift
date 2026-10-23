@@ -9,22 +9,16 @@ import ASTRAPersistence
 /// audit logging all moved into `Connector.swift` itself as part of Track
 /// A2.5, which now calls through here only for the pure Keychain I/O.
 enum ConnectorSecretPersistence: ConnectorSecretPersisting {
-    static func readCredential(key: String, facts: ConnectorSecretFacts, store: SecretStore) -> SecretReadOutcome {
-        guard !OutlookCredentialIdentity.isInternalKey(key) else { return .unavailable }
-        for namespace in KeychainSecretStore.connectorEntityIDs(for: facts) {
-            switch store.read(key: key, entityID: namespace) {
-            case .value(let value): return .value(value)
-            case .missing: continue
-            case .unavailable: return .unavailable
-            }
-        }
-        return .missing
-    }
-
     static func loadAllCredentials(keys: [String], facts: ConnectorSecretFacts, store: SecretStore) -> [String: String] {
-        let entityIDs = KeychainSecretStore.connectorEntityIDs(for: facts)
+        let entityIDs = KeychainSecretStore.connectorEntityIDs(
+            id: facts.id,
+            serviceType: facts.serviceType,
+            baseURL: facts.baseURL,
+            originPackageID: facts.originPackageID,
+            originComponentID: facts.originComponentID
+        )
         var result: [String: String] = [:]
-        for key in keys where !OutlookCredentialIdentity.isInternalKey(key) {
+        for key in keys {
             for entityID in entityIDs {
                 if let value = store.load(key: key, entityID: entityID) {
                     result[key] = value
@@ -69,17 +63,16 @@ enum ConnectorSecretPersistence: ConnectorSecretPersisting {
 
     @discardableResult
     static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, store: SecretStore) -> Bool {
-        guard !OutlookCredentialIdentity.isInternalKey(key) else { return false }
-        let entityIDs = KeychainSecretStore.connectorEntityIDs(for: facts)
+        let entityIDs = KeychainSecretStore.connectorEntityIDs(
+            id: facts.id,
+            serviceType: facts.serviceType,
+            baseURL: facts.baseURL,
+            originPackageID: facts.originPackageID,
+            originComponentID: facts.originComponentID
+        )
         return entityIDs.map { entityID in
             store.save(key: key, value: value, entityID: entityID, label: "Astra: \(facts.name)")
         }.allSatisfy { $0 }
-    }
-
-    @discardableResult
-    static func deleteCredential(key: String, facts: ConnectorSecretFacts, store: SecretStore) -> Bool {
-        guard !OutlookCredentialIdentity.isInternalKey(key) else { return false }
-        return KeychainSecretStore.connectorEntityIDs(for: facts).map { store.delete(key: key, entityID: $0) }.allSatisfy { $0 }
     }
 
     @discardableResult
@@ -119,10 +112,6 @@ enum ConnectorSecretPersistence: ConnectorSecretPersisting {
 /// Keychain I/O plumbing with no `Skill`/logging references (both moved to
 /// `Skill.swift` as part of Track A2.4).
 enum SkillSecretPersistence: SkillSecretPersisting {
-    static func readSecretValue(key: String, skillID: UUID, store: SecretStore) -> SecretReadOutcome {
-        store.read(key: key, entityID: KeychainSecretStore.skillEntityID(for: skillID))
-    }
-
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? {
         let entityID = KeychainSecretStore.skillEntityID(for: skillID)
         return store.load(key: key, entityID: entityID)

@@ -79,7 +79,7 @@ struct WorkspacePackageTests {
             Self.makeCapability(id: "local.tool", governance: .builtInApproved()),
             sourceMetadata: .localLibrary()
         )
-        workspace.testEnabledCapabilityIDs = ["local.tool"]
+        workspace.enabledCapabilityIDs = ["local.tool"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         let result = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -212,7 +212,7 @@ struct WorkspacePackageTests {
             Self.makeCapability(id: "local.tool", governance: .localDraft()),
             sourceMetadata: .localLibrary()
         )
-        workspace.testEnabledCapabilityIDs = ["local.tool"]
+        workspace.enabledCapabilityIDs = ["local.tool"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -388,7 +388,7 @@ struct WorkspacePackageTests {
             Self.makeCapability(id: "local.tool", governance: .localDraft()),
             sourceMetadata: .localLibrary()
         )
-        workspace.testEnabledCapabilityIDs = ["local.tool"]
+        workspace.enabledCapabilityIDs = ["local.tool"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -426,7 +426,7 @@ struct WorkspacePackageTests {
             Self.makeCapability(id: "local.tool", governance: .localDraft()),
             sourceMetadata: .localLibrary()
         )
-        workspace.testEnabledCapabilityIDs = ["local.tool"]
+        workspace.enabledCapabilityIDs = ["local.tool"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -462,7 +462,7 @@ struct WorkspacePackageTests {
             Self.makeCapability(id: "local.tool", governance: .localDraft()),
             sourceMetadata: .localLibrary()
         )
-        workspace.testEnabledCapabilityIDs = ["local.tool"]
+        workspace.enabledCapabilityIDs = ["local.tool"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -597,7 +597,7 @@ struct WorkspacePackageTests {
 
         let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
         try capabilityLibrary.install(CapabilityPackageSource(package: capability, manifestURL: nil, assetRootURL: assetRoot))
-        workspace.testEnabledCapabilityIDs = ["local.tool"]
+        workspace.enabledCapabilityIDs = ["local.tool"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -690,7 +690,7 @@ struct WorkspacePackageTests {
             Self.makeCapability(id: "local.tool", governance: .localDraft()),
             sourceMetadata: .localLibrary()
         )
-        workspace.testEnabledCapabilityIDs = ["local.tool"]
+        workspace.enabledCapabilityIDs = ["local.tool"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -727,7 +727,7 @@ struct WorkspacePackageTests {
             environmentValues: ["hunter2-embedded-secret", "us-west"]
         )]
         try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
-        workspace.testEnabledCapabilityIDs = ["secret.cap"]
+        workspace.enabledCapabilityIDs = ["secret.cap"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -770,7 +770,7 @@ struct WorkspacePackageTests {
             credentialHints: [], configHints: [], notes: ""
         )]
         try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
-        workspace.testEnabledCapabilityIDs = ["conn.cap"]
+        workspace.enabledCapabilityIDs = ["conn.cap"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -807,7 +807,7 @@ struct WorkspacePackageTests {
             url: URL(string: "https://api.example.com/mcp?api_token=supersecret123")
         )]
         try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
-        workspace.testEnabledCapabilityIDs = ["mcp.cap"]
+        workspace.enabledCapabilityIDs = ["mcp.cap"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -857,7 +857,7 @@ struct WorkspacePackageTests {
             passContextToMain: false, passContextToAfter: false
         )]
         try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
-        workspace.testEnabledCapabilityIDs = ["tmpl.cap"]
+        workspace.enabledCapabilityIDs = ["tmpl.cap"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -898,7 +898,7 @@ struct WorkspacePackageTests {
         let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
         let capability = Self.makeCapability(id: "prereq.cap", governance: .localDraft())
         try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
-        workspace.testEnabledCapabilityIDs = ["prereq.cap"]
+        workspace.enabledCapabilityIDs = ["prereq.cap"]
 
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
@@ -1028,7 +1028,7 @@ struct WorkspacePackageTests {
         let capabilityLibrary = CapabilityLibrary(directory: root.appendingPathComponent("capabilities", isDirectory: true))
         let capability = Self.makeCapability(id: "cp.cap", governance: .localDraft())
         try capabilityLibrary.install(capability, sourceMetadata: .localLibrary())
-        workspace.testEnabledCapabilityIDs = ["cp.cap"]
+        workspace.enabledCapabilityIDs = ["cp.cap"]
         let destination = root.appendingPathComponent("export.astra-share", isDirectory: true)
         _ = try WorkspacePackageExporter(capabilityLibrary: capabilityLibrary).exportConfigurationPackage(
             workspace: workspace, modelContext: container.mainContext, to: destination

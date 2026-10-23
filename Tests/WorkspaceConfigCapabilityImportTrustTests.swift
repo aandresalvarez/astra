@@ -16,8 +16,7 @@ struct WorkspaceConfigCapabilityImportTrustTests {
     private let verifier = Manager.CapabilityImportVerifier(
         approvedPackageIDs: ["github-workflow"],
         installedPackageIDs: ["github-workflow", "draft-pack"],
-        availablePackIDs: ["astra.pack.devops"],
-        installedDigests: ["github-workflow": "digest-github", "draft-pack": "digest-draft"]
+        availablePackIDs: ["astra.pack.devops"]
     )
 
     @Test("A validated import drops unbacked enablement and never mints shared rows or origin stamps")
@@ -233,43 +232,6 @@ struct WorkspaceConfigCapabilityImportTrustTests {
         withExtendedLifetime(container) {}
     }
 
-    @Test("Chosen-file task snapshot accounts never inherit a file-supplied credential namespace", arguments: [false, true])
-    @MainActor
-    func snapshotAccountsIsolateCredentialNamespaces(preserveRecordedState: Bool) throws {
-        let container = try makeContainer()
-        let context = container.mainContext
-        var config = minimalConfig()
-        let namespace = UUID()
-        let accountID = UUID()
-        let skillID = UUID().uuidString
-        let now = Date()
-        config.tasks = [Manager.TaskConfig(
-            title: "Old task", goal: "Export", status: "completed", inputs: [], constraints: [],
-            acceptanceCriteria: [], tokenBudget: 1000, tokensUsed: 0, model: "m", costUSD: 0, maxTurns: 5,
-            createdAt: now, updatedAt: now, runs: [], events: [],
-            skillIDs: [skillID], skillNames: [], skillSnapshots: [SkillSnapshotConfig(
-                id: skillID, name: "Snapshot Agent", icon: "sparkles", description: "", allowedTools: [],
-                disallowedTools: [], customTools: [], behaviorInstructions: "Help.", environmentKeys: [], environmentValues: [],
-                isGlobal: false, connectorIDs: [accountID.uuidString], localToolIDs: [],
-                connectorSnapshots: [ConnectorSnapshotConfig(id: accountID.uuidString,
-                    name: "Snapshot account", serviceType: "jira", icon: "link", description: "",
-                    baseURL: "https://acme.atlassian.net", authMethod: "none", credentialKeys: [],
-                    configKeys: [], configValues: [], isGlobal: false, notes: "", createdAt: now, updatedAt: now, credentialNamespaceID: namespace)],
-                localToolSnapshots: [], createdAt: now, updatedAt: now)])]
-        let result = Manager.importWorkspaceResult(from: config, modelContext: context,
-            capabilityTrust: preserveRecordedState ? .preserveRecordedState : .validate(verifier))
-        let account = try #require(result.workspace.connectors.first)
-        if preserveRecordedState {
-            #expect(account.id == accountID)
-            #expect(account.credentialNamespaceID == namespace)
-        } else {
-            #expect(account.id != accountID)
-            #expect(account.credentialNamespaceID == nil)
-            #expect(ConnectorCredentialIdentity.usesIsolatedNamespace(account.id))
-        }
-        withExtendedLifetime(container) {}
-    }
-
     @Test("Every imported task snapshot names its rekeyed or previously restored live skill", arguments: [false, true])
     @MainActor
     func restoredSnapshotNamesTheRestoredRow(declared: Bool) throws {
@@ -432,9 +394,9 @@ struct WorkspaceConfigCapabilityImportTrustTests {
         config.enabledPackIDs = ["astra.pack.devops", "astra.pack.unknown"]
         config.enabledGlobalSkillIDs = enabledGlobalSkillIDs
         config.installedPlugins = [
-            Manager.InstalledPluginRef(id: "github-workflow", version: "1.0.0", digest: "digest-github"),
+            Manager.InstalledPluginRef(id: "github-workflow", version: "1.0.0"),
             Manager.InstalledPluginRef(id: "not-installed", version: "9.9.9"),
-            Manager.InstalledPluginRef(id: "draft-pack", version: "0.1.0", digest: "digest-draft")
+            Manager.InstalledPluginRef(id: "draft-pack", version: "0.1.0")
         ]
         config.skills = [skillConfig(name: "Forged Agent", isGlobal: true)]
         config.connectors = [

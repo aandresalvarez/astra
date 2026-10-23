@@ -57,9 +57,6 @@ struct CapabilityGalleryInventoryTests {
         var approved = makeGalleryPackage(id: "jira-workflow", name: "Jira Workflow", category: "Integrations")
         approved.skills[0].name = "Jira Agent"
 
-        let activation = WorkspaceCapabilityActivation.updateActivation(for: approved.id, in: workspace) { $0 }
-        WorkspaceCapabilityActivation.setOverridden(true, componentID: CapabilityResourceOrigin.componentID(for: approved.skills[0]),
-            rowID: skill.id, on: activation)
         let packages = CapabilityGalleryInventory.managementPackages(
             catalogPackages: [approved],
             capabilities: WorkspaceCapabilities(workspace: workspace),

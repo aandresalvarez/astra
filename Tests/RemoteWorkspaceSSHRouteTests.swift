@@ -128,8 +128,8 @@ struct RemoteWorkspaceSSHRouteTests {
         })
         let profile = profile ?? .defaultProfile(for: runtime)
         let workspace = Workspace(name: "SSH render", primaryPath: "/tmp/astra-ssh-route-render")
+        workspace.enabledCapabilityIDs = needsGitHub ? [package.id] : []
         context.insert(workspace)
-        if needsGitHub { WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(package.id) } }
         let contextText = needsGitHub
             ? "Use GitHub to inspect PR metadata, issue links, and checks for this task."
             : "Check disk usage on the remote server."

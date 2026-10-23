@@ -10,9 +10,7 @@ extension ConnectorSecretFacts {
             serviceType: connector.serviceType,
             baseURL: connector.baseURL,
             originPackageID: connector.originPackageID,
-            originComponentID: connector.originComponentID,
-            credentialNamespaceID: connector.credentialNamespaceID,
-            outlookCredentialFormat: OutlookCredentialIdentity.format(keys: connector.configKeys, values: connector.configValues)
+            originComponentID: connector.originComponentID
         )
     }
 }
@@ -44,7 +42,13 @@ public enum KeychainService {
     /// `ModelSecretPersistence.swift`) calls, since it no longer has a live
     /// `Connector` (Track A2.5).
     private static func connectorServices(facts: ConnectorSecretFacts) -> [String] {
-        KeychainSecretStore.connectorEntityIDs(for: facts)
+        KeychainSecretStore.connectorEntityIDs(
+            id: facts.id,
+            serviceType: facts.serviceType,
+            baseURL: facts.baseURL,
+            originPackageID: facts.originPackageID,
+            originComponentID: facts.originComponentID
+        )
     }
 
     private static func skillService(for skillID: UUID) -> String {
@@ -128,7 +132,6 @@ public enum KeychainService {
         label: String? = nil,
         allowUserInteraction: Bool = false
     ) -> KeychainWriteOutcome {
-        guard !OutlookCredentialIdentity.isInternalKey(key) else { return .failed(diagnosis: nil) }
         let services = connectorServices(facts: facts)
         // Every namespace is still attempted even after one fails — a partial
         // write is what makes an equivalent recreated connector find the secret
@@ -200,7 +203,6 @@ public enum KeychainService {
 
     /// Facts-based twin of `load(key:connector:)` — see `connectorServices(facts:)`.
     public static func load(key: String, facts: ConnectorSecretFacts) -> String? {
-        guard !OutlookCredentialIdentity.isInternalKey(key) else { return nil }
         for service in connectorServices(facts: facts) {
             if let value = AstraSecureKeychainStore.load(service: service, account: key) {
                 return value
@@ -259,7 +261,6 @@ public enum KeychainService {
     /// Facts-based twin of `delete(key:connector:)` — see `connectorServices(facts:)`.
     @discardableResult
     public static func delete(key: String, facts: ConnectorSecretFacts) -> Bool {
-        guard !OutlookCredentialIdentity.isInternalKey(key) else { return false }
         let services = connectorServices(facts: facts)
         let deleted = services.map { service in
             AstraSecureKeychainStore.delete(service: service, account: key)
@@ -306,18 +307,16 @@ public enum KeychainService {
     /// cleared, so a retry is idempotent.
     @discardableResult
     public static func deleteAll(facts: ConnectorSecretFacts, sparing: Set<String> = []) -> Bool {
-        OutlookCredentialVaultCleanup.perform(facts: facts, sparing: sparing) {
-            let services = connectorServices(facts: facts).filter { !sparing.contains($0) }
-            guard !services.isEmpty else { return true }
-            let deleted = services.map { AstraSecureKeychainStore.deleteAll(service: $0) }
-            if !deleted.contains(true) {
-                AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [
-                    "scope": "connector_all",
-                    "namespace_count": String(services.count)
-                ], level: .warning)
-            }
-            return !deleted.contains(false)
+        let services = connectorServices(facts: facts).filter { !sparing.contains($0) }
+        guard !services.isEmpty else { return true }
+        let deleted = services.map { AstraSecureKeychainStore.deleteAll(service: $0) }
+        if !deleted.contains(true) {
+            AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_all",
+                "namespace_count": String(services.count)
+            ], level: .warning)
         }
+        return !deleted.contains(false)
     }
 
     /// Delete all credentials for a skill.
@@ -365,8 +364,7 @@ public enum KeychainService {
 
     /// Facts-based twin of `exists(key:connector:)` — see `connectorServices(facts:)`.
     public static func exists(key: String, facts: ConnectorSecretFacts) -> Bool {
-        guard !OutlookCredentialIdentity.isInternalKey(key) else { return false }
-        return connectorServices(facts: facts).contains { service in
+        connectorServices(facts: facts).contains { service in
             AstraSecureKeychainStore.exists(service: service, account: key)
         }
     }

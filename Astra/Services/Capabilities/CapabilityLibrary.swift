@@ -8,18 +8,6 @@ struct CapabilityLibrary {
         var packageDirectoryURL: URL
         var existingStorageURL: URL?
         var snapshotURL: URL?
-
-        /// False when there was an installed copy and it couldn't be copied
-        /// aside: a restore would leave the new copy in place.
-        var canRestore: Bool { existingStorageURL == nil || snapshotURL != nil }
-    }
-
-    /// A restore removed the new copy but couldn't copy the previous one
-    /// back: it exists only in the snapshot, which is kept at
-    /// `snapshotDirectory` so it can be recovered.
-    struct PackageStorageRestoreFailure: Equatable {
-        var packageID: String
-        var snapshotDirectory: URL
     }
 
     enum RemovalError: Error, Equatable, LocalizedError {
@@ -37,13 +25,11 @@ struct CapabilityLibrary {
     }
 
     let directory: URL
-    let fileManager: FileManager
-    let publishesChanges: Bool
+    private let fileManager: FileManager
 
-    init(directory: URL = Self.capabilitiesDirectory(), fileManager: FileManager = .default, publishesChanges: Bool = true) {
+    init(directory: URL = Self.capabilitiesDirectory(), fileManager: FileManager = .default) {
         self.directory = directory
         self.fileManager = fileManager
-        self.publishesChanges = publishesChanges
     }
 
     static func capabilitiesDirectory(
@@ -57,12 +43,6 @@ struct CapabilityLibrary {
             fileManager: fileManager
         )
             .appendingPathComponent("Capabilities", isDirectory: true)
-    }
-
-    func publishChange() {
-        CapabilityApprovalDigest.invalidate()
-        guard publishesChanges else { return }
-        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
     }
 
     func ensureDirectoryExists() throws {
@@ -202,7 +182,7 @@ struct CapabilityLibrary {
         let data = try encoder.encode(storedPackage)
         try removeItemIfPresent(at: packageManifestURL(for: storedPackage.id).deletingLastPathComponent())
         try data.write(to: packageURL(for: storedPackage.id), options: [.atomic])
-        publishChange()
+        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
     }
 
     func install(_ source: CapabilityPackageSource) throws {
@@ -246,7 +226,7 @@ struct CapabilityLibrary {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(storedPackage)
         try data.write(to: manifestURL, options: [.atomic])
-        publishChange()
+        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
     }
 
     @discardableResult
@@ -305,7 +285,7 @@ struct CapabilityLibrary {
             removedPackage = true
         }
         if removedPackage {
-            publishChange()
+            NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
         }
         return changed
     }
@@ -339,7 +319,7 @@ struct CapabilityLibrary {
         } else {
             try fileManager.removeItem(at: url)
         }
-        publishChange()
+        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
         return package
     }
 
@@ -411,15 +391,12 @@ struct CapabilityLibrary {
         }
     }
 
-    /// Puts the storage `snapshot` captured back. Returns the failure when
-    /// the previous copy couldn't be put back, for the caller to report.
-    @discardableResult
-    func restorePackageStorage(_ snapshot: PackageStorageSnapshot) -> PackageStorageRestoreFailure? {
+    func restorePackageStorage(_ snapshot: PackageStorageSnapshot) {
         guard let snapshotURL = snapshot.snapshotURL else {
             if snapshot.existingStorageURL == nil {
                 removePackageStorage(jsonURL: snapshot.jsonURL, packageDirectoryURL: snapshot.packageDirectoryURL)
             }
-            return nil
+            return
         }
 
         removePackageStorage(jsonURL: snapshot.jsonURL, packageDirectoryURL: snapshot.packageDirectoryURL)
@@ -436,17 +413,9 @@ struct CapabilityLibrary {
                     "snapshot_path": snapshotURL.deletingLastPathComponent().path,
                     "error_type": String(describing: type(of: error))
                 ], level: .error)
-                return PackageStorageRestoreFailure(packageID: snapshot.id, snapshotDirectory: snapshotURL.deletingLastPathComponent())
+                return
             }
         }
-        try? fileManager.removeItem(at: snapshotURL.deletingLastPathComponent())
-        return nil
-    }
-
-    /// Deletes a snapshot that is no longer needed: the change it guarded
-    /// was kept, or never started.
-    func discardPackageStorageSnapshot(_ snapshot: PackageStorageSnapshot) {
-        guard let snapshotURL = snapshot.snapshotURL else { return }
         try? fileManager.removeItem(at: snapshotURL.deletingLastPathComponent())
     }
 

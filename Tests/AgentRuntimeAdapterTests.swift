@@ -3060,7 +3060,7 @@ struct AgentRuntimeAdapterTests {
         let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: root, supportsAdditionalMCPConfig: false)
 
         let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
-        workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let task = AgentTask(
             title: "Review PR",
             goal: "Use GitHub to inspect pull requests",
@@ -3117,7 +3117,7 @@ struct AgentRuntimeAdapterTests {
         let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: root, supportsAdditionalMCPConfig: true)
 
         let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
-        workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let task = AgentTask(
             title: "Review PR",
             goal: "Use GitHub to inspect pull requests",

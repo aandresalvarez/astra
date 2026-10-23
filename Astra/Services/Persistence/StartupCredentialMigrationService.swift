@@ -1,0 +1,96 @@
+import Foundation
+import SwiftData
+import ASTRAModels
+import ASTRACore
+
+public enum StartupCredentialMigrationService {
+    @MainActor
+    public static func schedule(modelContainer: ModelContainer) {
+        guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") }) else {
+            return
+        }
+
+        Task { @MainActor in
+            migrate(modelContext: modelContainer.mainContext)
+        }
+    }
+
+    @MainActor
+    public static func migrate(modelContext: ModelContext) {
+        let workspaces: [Workspace]
+        do {
+            workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
+        } catch {
+            workspaces = []
+            logFetchFailure(scope: "workspace_connectors", error: error)
+        }
+
+        let globalConnectors: [Connector]
+        do {
+            globalConnectors = try modelContext.fetch(
+                FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
+            )
+        } catch {
+            globalConnectors = []
+            logFetchFailure(scope: "global_connectors", error: error)
+        }
+
+        let skills: [Skill]
+        do {
+            skills = try modelContext.fetch(FetchDescriptor<Skill>())
+        } catch {
+            skills = []
+            logFetchFailure(scope: "skills", error: error)
+        }
+
+        migrateConnectorCredentials(workspaces: workspaces, globalConnectors: globalConnectors)
+        migrateSkillSecrets(skills: skills)
+        // The two passes above touch the dedicated keychain once per connector
+        // and once per skill, so if it cannot be opened at all this is the
+        // earliest and loudest place to find out. Previously it wasn't found out
+        // anywhere: the migration logged `result=checked` just the same, and the
+        // app went on to report every credential as simply not configured.
+        AstraSecureKeychainStore.logPendingKeychainFailure(scope: "startup")
+        AuditLoggingSeam.required.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
+            "scope": "startup",
+            "result": "checked",
+            "workspace_count": String(workspaces.count),
+            "workspace_connector_count": String(workspaces.reduce(0) { $0 + $1.connectors.count }),
+            "global_connector_count": String(globalConnectors.count),
+            "skill_count": String(skills.count)
+        ], level: .debug)
+    }
+
+    public static func migrateConnectorCredentials(workspaces: [Workspace], globalConnectors: [Connector] = []) {
+        var seen = Set<UUID>()
+        let connectors = workspaces.flatMap(\.connectors) + globalConnectors
+        for connector in connectors where seen.insert(connector.id).inserted {
+            connector.migrateToKeychain()
+            // Move any secrets older versions stored in the login keychain
+            // into ASTRA's dedicated keychain. Idempotent; runs once at launch
+            // (not on every Connector instantiation), enumerating by service
+            // so it covers every credential/OAuth key without naming them.
+            KeychainService.migrateConnectorFromLoginKeychain(connector: connector)
+        }
+    }
+
+    public static func migrateSkillSecrets(skills: [Skill]) {
+        for skill in skills {
+            skill.migrateSecretsToKeychain()
+            // See migrateConnectorCredentials: relocate legacy login-keychain
+            // secrets into ASTRA's dedicated keychain. Done here rather than in
+            // Skill.migrateSecretsToKeychain() (which Skill.init() calls on every
+            // instantiation) to keep the per-init path free of keychain queries.
+            KeychainService.migrateSkillFromLoginKeychain(skillID: skill.id)
+        }
+    }
+
+    private static func logFetchFailure(scope: String, error: Error) {
+        AuditLoggingSeam.required.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
+            "scope": scope,
+            "result": "fetch_failed",
+            "reason": error.localizedDescription,
+            "error_type": String(describing: type(of: error))
+        ], level: .warning)
+    }
+}

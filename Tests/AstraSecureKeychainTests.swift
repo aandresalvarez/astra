@@ -35,7 +35,6 @@ enum AstraSecureKeychainTestSupport {
             }
             try? FileManager.default.removeItem(atPath: keychainPath)
         }
-        try? FileManager.default.removeItem(atPath: keychainPath + ".oauth-locks")
         // Idempotent login-keychain delete; safe even if setup failed before the
         // dedicated file was created.
         deleteLoginItems(service: bootstrapService)
@@ -51,28 +50,6 @@ enum AstraSecureKeychainTestSupport {
         AstraSecureKeychain.perform(keychainUserInteractionDisabled: {
             SecItemDelete(query as CFDictionary)
         })
-    }
-
-    @MainActor
-    static func withPrivateVault<T>(_ body: () throws -> T) rethrows -> T {
-        let path = tempKeychainPath()
-        let bootstrap = "astra-private-vault-test-" + UUID().uuidString
-        installTestBootstrapPassword(service: bootstrap)
-        defer { cleanup(keychainPath: path, bootstrapService: bootstrap, services: []) }
-        return try AstraSecureKeychainStore.$keychainPathOverride.withValue(path) {
-            try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) { try body() }
-        }
-    }
-
-    @MainActor
-    static func withPrivateVault<T>(_ body: () async throws -> T) async rethrows -> T {
-        let path = tempKeychainPath()
-        let bootstrap = "astra-private-vault-test-" + UUID().uuidString
-        installTestBootstrapPassword(service: bootstrap)
-        defer { cleanup(keychainPath: path, bootstrapService: bootstrap, services: []) }
-        return try await AstraSecureKeychainStore.$keychainPathOverride.withValue(path) {
-            try await AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) { try await body() }
-        }
     }
 
     /// Run keychain assertions with Security.framework UI disabled. This catches
@@ -195,12 +172,8 @@ struct AstraSecureKeychainTests {
             in: source
         )
 
-        // Legacy background reads select NO explicitly; the common overload
-        // applies that policy while explicit foreground authorization may opt in.
-        #expect(secretBody.contains("bootstrapService:bootstrapService status:outStatus allowUserInteraction:NO"))
-        #expect(secretBody.contains("setKeychainUserInteractionAllowed:allowUserInteraction savingPrevious:"))
-        #expect(existsBody.contains("disableKeychainUserInteractionSavingPrevious"))
         for body in [secretBody, existsBody] {
+            #expect(body.contains("disableKeychainUserInteractionSavingPrevious"))
             #expect(body.contains("restoreKeychainUserInteraction"))
             #expect(!body.contains("SecItemCopyMatching"))
         }

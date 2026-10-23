@@ -27,7 +27,6 @@ struct CapabilityActivationOwnerFitnessTests {
     private func isExempt(_ relative: String) -> Bool {
         relative == "Astra/Models/Workspace.swift"
             || relative == "Astra/Models/WorkspaceCapabilityActivation.swift"
-            || relative == "Astra/Models/WorkspaceCapabilityActivation+Legacy.swift"
             || relative == "Astra/Models/SchemaVersions.swift"
             || (relative.hasPrefix("Astra/Models/ASTRASchemaV") && relative.hasSuffix(".swift"))
     }
@@ -40,25 +39,24 @@ struct CapabilityActivationOwnerFitnessTests {
     /// reader moves behind the owner; never raise one.
     private let readRegistry: [String: Int] = [
         "Astra/Services/Browser/ShelfQuerySession.swift": 4,
+        "Astra/Services/Capabilities/CapabilityActivationDisabler.swift": 1,
         "Astra/Services/Capabilities/CapabilityAudit.swift": 5,
         "Astra/Services/Capabilities/CapabilityCatalogPolicy.swift": 2,
-        "Astra/Services/Capabilities/CapabilityInstaller.swift": 3,
-        "Astra/Services/Capabilities/CapabilityPackageState.swift": 3,
+        "Astra/Services/Capabilities/CapabilityDefinitionRepairService.swift": 3,
+        "Astra/Services/Capabilities/CapabilityInstaller.swift": 4,
+        "Astra/Services/Capabilities/CapabilityPackageState.swift": 4,
         "Astra/Services/Capabilities/CapabilityRuntimeIntegrityService.swift": 1,
         "Astra/Services/Capabilities/CapabilityRuntimeResourceMatcher.swift": 2,
         "Astra/Services/Capabilities/CapabilitySetupCopier.swift": 3,
         "Astra/Services/Capabilities/CapabilityUninstaller.swift": 7,
         "Astra/Services/Capabilities/MCPRuntimeProjection.swift": 1,
-        // The V19 -> V20 migration reads the legacy shared-row lists it prunes,
-        // and which workspaces list a plugin row without the plugin.
-        "Astra/Services/Capabilities/PluginActivationMigration.swift": 3,
         "Astra/Services/Capabilities/PluginCatalogPresentation.swift": 1,
         "Astra/Services/Capabilities/TaskCapabilityResolver.swift": 7,
         "Astra/Services/Capabilities/WorkspaceCapabilities.swift": 4,
         "Astra/Services/Packs/AstraPackProfileResolver.swift": 1,
         "Astra/Services/Packs/PackWorkspacePolicyProvider.swift": 1,
         "Astra/Services/Persistence/WorkspaceConfigManager+CapabilityImportTrust.swift": 5,
-        "Astra/Services/Persistence/WorkspaceConfigManager.swift": 8,
+        "Astra/Services/Persistence/WorkspaceConfigManager.swift": 11,
         "Astra/Services/Runtime/AgentRuntimeCapabilityLaunchAudit.swift": 5,
         "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": 1,
         "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift": 1,
@@ -66,11 +64,12 @@ struct CapabilityActivationOwnerFitnessTests {
         "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift": 2,
         "Astra/Services/WorkspacePackage/WorkspaceShareProjection.swift": 2,
         "Astra/Views/ComposerCapabilitySnapshot.swift": 7,
-        "Astra/Views/ConfigureView.swift": 8,
+        "Astra/Views/ConfigureView.swift": 11,
         "Astra/Views/ConnectorsManagerView.swift": 1,
         "Astra/Views/ContentView.swift": 7,
         "Astra/Views/ContentViewBrowserSessionPolicyCache.swift": 4,
         "Astra/Views/PluginCatalogView.swift": 2,
+        "Astra/Views/ScheduleEditorView.swift": 1,
         "Astra/Views/ToolsManagerView.swift": 1,
         "Astra/Views/WorkspaceAppStudioChatView.swift": 1,
         "Astra/Views/WorkspaceHomeView.swift": 1,

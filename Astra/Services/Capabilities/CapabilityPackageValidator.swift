@@ -13,7 +13,6 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case invalidPackageID
         case duplicatePackageID
         case duplicatePackageFilename
-        case duplicateMCPServerID
         case invalidVersion
         case localSourceNormalized
         case missingGovernance
@@ -28,7 +27,6 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case packageUpdate
         case invalidIconAsset
         case missingIconAsset
-        case invalidComponentIdentity
     }
 
     var severity: Severity
@@ -195,7 +193,7 @@ enum CapabilityPackageValidator {
         validatePayload(package, issues: &issues)
         validateIconDescriptor(package.iconDescriptor, sourceURL: sourceURL, issues: &issues)
         validateLocalTools(package.localTools, issues: &issues)
-        validateConnectors(package.connectors, in: package, issues: &issues)
+        validateConnectors(package.connectors, issues: &issues)
         validateBrowserAdapters(package.browserAdapters, issues: &issues)
         validateMCPServers(in: package, issues: &issues)
         validatePrerequisites(
@@ -268,50 +266,6 @@ enum CapabilityPackageValidator {
             return
         }
 
-        // Settings, accounts and secrets are keyed by component identity, so
-        // two components may not share one, and a rename must be declared
-        // unambiguously (`replaces`).
-        let componentIDs = PluginUpdateService.componentIDs(of: package)
-        let duplicates = Dictionary(grouping: componentIDs, by: { $0 }).filter { $0.value.count > 1 }.keys.sorted()
-        for duplicate in duplicates {
-            issues.append(issue(
-                .blocker,
-                .invalidComponentIdentity,
-                "Duplicate component",
-                "Two components share the identity \(duplicate); give one of them its own id.",
-                component: duplicate
-            ))
-        }
-        // Templates are matched to their rows by identity too.
-        let templateIDs = package.templates.map(CapabilityResourceOrigin.componentID(for:))
-        for duplicate in Dictionary(grouping: templateIDs, by: { $0 }).filter({ $0.value.count > 1 }).keys.sorted() {
-            issues.append(issue(
-                .blocker,
-                .invalidComponentIdentity,
-                "Duplicate template",
-                "Two templates share the identity \(duplicate); give one of them another name.",
-                component: duplicate
-            ))
-        }
-        for problem in PluginUpdateService.replacesProblems(in: package) {
-            issues.append(issue(.blocker, .invalidComponentIdentity, "Invalid replaces", problem))
-        }
-        // Against the installed version: a component that takes over one
-        // the installed version declares beside it would merge two owners.
-        if let installed = installedPackages.first(where: { $0.id == package.id }) {
-            let before = Set(PluginUpdateService.componentIDs(of: installed))
-            for (old, new) in PluginUpdateService.renames(in: package).sorted(by: { $0.key < $1.key })
-            where old != new && before.contains(old) && before.contains(new) {
-                issues.append(issue(
-                    .blocker,
-                    .invalidComponentIdentity,
-                    "Rename into an existing component",
-                    "\(new) replaces \(old), but the installed version has both: their settings, accounts and secrets can't be merged.",
-                    component: new
-                ))
-            }
-        }
-
         if !isValidPackageIDLiteral(rawID) {
             issues.append(issue(
                 .blocker,
@@ -377,59 +331,6 @@ enum CapabilityPackageValidator {
                 "Package ID \(package.id) maps to the same filename as installed package \(collision.id).",
                 component: package.id
             ))
-        }
-
-        // Projected MCP servers, provider configuration and permission names
-        // use the server ID unqualified: one ID across two plugins would
-        // drop a server or point a permission at the wrong plugin.
-        for server in package.mcpServers {
-            let serverID = server.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if let owner = installedPackages.first(where: { other in
-                other.id.lowercased() != normalizedID
-                    && other.mcpServers.contains { $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == serverID }
-            }) {
-                issues.append(issue(
-                    .blocker,
-                    .duplicateMCPServerID,
-                    "MCP server ID in use",
-                    "MCP server \(server.id) is already declared by installed plugin \(owner.id).",
-                    component: server.id
-                ))
-            }
-        }
-
-        // Two servers of one package with one ID: the projection keeps only
-        // the first, so the other's tools would silently be missing.
-        let serverIDs = package.mcpServers.map { $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-        for duplicate in Dictionary(grouping: serverIDs, by: { $0 }).filter({ $0.value.count > 1 }).keys.sorted() {
-            issues.append(issue(
-                .blocker,
-                .duplicateMCPServerID,
-                "Duplicate MCP server ID",
-                "Two MCP servers in \(package.name) share the ID \(duplicate); give one of them its own.",
-                component: duplicate
-            ))
-        }
-
-        // A setting is stored under `componentID#KEY`
-        // (`PluginActivation.settingKey`) and split at the last `#`, so a key
-        // containing one would be read back under the wrong component.
-        for skill in package.skills {
-            let duplicates = Dictionary(grouping: skill.environmentKeys, by: { $0 })
-                .filter { $0.value.count > 1 }.keys.sorted()
-            for key in duplicates {
-                issues.append(issue(.blocker, .invalidComponentIdentity, "Duplicate setting name",
-                    "\(skill.name) declares \(key) more than once; each setting needs one field.", component: key))
-            }
-            for key in skill.environmentKeys where key.contains("#") {
-                issues.append(issue(
-                    .blocker,
-                    .invalidComponentIdentity,
-                    "Invalid setting name",
-                    "\(skill.name) declares the setting \(key); setting names cannot contain #.",
-                    component: key
-                ))
-            }
         }
 
         if !isValidSemanticVersionLiteral(package.version) {
@@ -559,62 +460,14 @@ enum CapabilityPackageValidator {
 
     private static func validateConnectors(
         _ connectors: [PluginConnector],
-        in package: PluginPackage,
         issues: inout [CapabilityPackageValidationIssue]
     ) {
-        // Only a bundled plugin keeps plain settings, and only ones its own
-        // definition declares (`PluginConnectorFieldTrust`); every other
-        // plugin's settings are stored as credentials. A bundled setting
-        // named like a credential is a definition mistake: refused.
-        let isBundled = PluginConnectorFieldTrust.isBundled(package.id)
         for connector in connectors {
-            for hint in connector.configHints where isBundled && RunSecretRedaction.isSecretKey(hint.key) {
-                let name = displayName(connector.name, fallback: connector.serviceType)
-                issues.append(issue(
-                    .blocker,
-                    .unsafeConnector,
-                    "Credential stored as a setting",
-                    "\(name) declares \(hint.key) as a plain setting. A key named like a credential must be a credential field, kept in the Keychain.",
-                    component: name
-                ))
-            }
-            // One endpoint and one name per account.
-            for storage in [PluginConnector.ConfigHint.accountBaseURL, PluginConnector.ConfigHint.accountAlias]
-            where connector.configHints.filter({ $0.storage == storage }).count > 1 {
-                let name = displayName(connector.name, fallback: connector.serviceType)
-                issues.append(issue(
-                    .blocker, .invalidComponentIdentity, "Two fields for one account value",
-                    "\(name) declares more than one field stored as \(storage).", component: name
-                ))
-            }
-            // Structure and ordinary fields share the setup-input dictionary.
-            // Each account value needs a distinct key, regardless of storage.
-            for key in PluginAccountFieldLayout.duplicateStructureKeys(in: connector.configHints) {
-                let name = displayName(connector.name, fallback: connector.serviceType)
-                issues.append(issue(
-                    .blocker, .invalidComponentIdentity, "Duplicate account field key",
-                    "\(name) declares \(key) for more than one setup field; account structure needs a distinct key.",
-                    component: name
-                ))
-            }
-            // Credentials are stored under their canonical key: two that
-            // differ only in case would be one Keychain item.
-            let stored = connector.credentialHints.map(\.key)
-                + PluginConnectorFieldTrust.settingsStoredAsCredentials(of: connector, in: package)
-            let collisions = Dictionary(grouping: stored, by: ConnectorCredentialKey.canonical).filter { $0.value.count > 1 }
-            for (canonical, spellings) in collisions.sorted(by: { $0.key < $1.key }) {
-                let name = displayName(connector.name, fallback: connector.serviceType)
-                issues.append(issue(
-                    .blocker,
-                    .invalidComponentIdentity,
-                    Set(spellings).count == 1 ? "Duplicate credential key" : "Credential keys differ only in case",
-                    Set(spellings).count == 1
-                        ? "\(name) declares \(canonical) more than once; each credential needs one field."
-                        : "\(name) declares \(spellings.sorted().joined(separator: " and ")), which are stored as one key, \(canonical).",
-                    component: name
-                ))
-            }
-            guard let reason = PluginConnectorFieldTrust.credentialTransportViolation(of: connector, in: package) else {
+            guard let reason = ConnectorSecurityPolicy.credentialTransportViolation(
+                baseURL: connector.baseURL,
+                authMethod: connector.authMethod,
+                credentialKeys: connector.credentialHints.map(\.key)
+            ) else {
                 continue
             }
             let name = displayName(connector.name, fallback: connector.serviceType)

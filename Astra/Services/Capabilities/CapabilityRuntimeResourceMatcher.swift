@@ -42,24 +42,6 @@ enum CapabilityRuntimeResourceMatcher {
         ].joined(separator: "|")
     }
 
-    /// The definitions a run in `workspace` resolves its plugins against: a
-    /// launch copy's frozen ones (`Workspace.launchPluginDefinitions`, set
-    /// when its request was submitted), else the library's. Every runtime
-    /// consumer that projects plugin resources for a launch (skills, tools,
-    /// MCP servers, browser adapters, prerequisites) reads this, so a plugin
-    /// updated while a request waits changes none of them.
-    static func packageDefinitions(
-        for workspace: Workspace?,
-        library: CapabilityLibrary = CapabilityLibrary()
-    ) -> [PluginPackage] {
-        if let frozen = workspace?.launchPluginDefinitions {
-            return uniquePackages(frozen + PluginCatalog.builtInPackages)
-        }
-        return packageDefinitions(library: library)
-    }
-
-    /// A launch copy resolves against its frozen definitions
-    /// (`packageDefinitions(for:)`), under the same policy gates.
     static func enabledPackages(
         for workspace: Workspace?,
         library: CapabilityLibrary = CapabilityLibrary(),
@@ -69,9 +51,8 @@ enum CapabilityRuntimeResourceMatcher {
         guard let workspace else { return [] }
         let enabledIDs = Set(workspace.enabledCapabilityIDs)
         guard !enabledIDs.isEmpty else { return [] }
-        let definitions = packageDefinitions(for: workspace, library: library)
         return packPolicyAllowedPackages(
-            definitions.filter { enabledIDs.contains($0.id) },
+            packageDefinitions(library: library).filter { enabledIDs.contains($0.id) },
             workspace: workspace,
             approvalRecords: approvalRecords,
             packPolicy: packPolicy,
@@ -253,8 +234,6 @@ enum CapabilityRuntimeResourceMatcher {
         packPolicy suppliedPackPolicy: PackResolvedPolicy?,
         resolvePackPolicyIfNeeded: Bool
     ) -> [PluginPackage] {
-        // A plugin whose activation awaits Update doesn't run.
-        let packages = PluginRuntimeProjection.runnable(packages, in: workspace)
         guard !packages.isEmpty else { return [] }
         let packPolicy = suppliedPackPolicy
             ?? (resolvePackPolicyIfNeeded ? PackWorkspacePolicyProvider.resolvedPolicy(for: workspace) : .empty)

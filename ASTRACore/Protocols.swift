@@ -1,13 +1,6 @@
 import Foundation
 
-public enum SecretReadOutcome: Equatable, Sendable {
-    case value(String)
-    case missing
-    case unavailable
-}
-
 public protocol SecretStore {
-    func read(key: String, entityID: String) -> SecretReadOutcome
     func load(key: String, entityID: String) -> String?
     @discardableResult
     func save(key: String, value: String, entityID: String, label: String?) -> Bool
@@ -18,12 +11,6 @@ public protocol SecretStore {
 }
 
 public extension SecretStore {
-    /// Optional-only stores retain their historical missing-value contract.
-    /// Vault implementations must distinguish unreadable storage from absence.
-    func read(key: String, entityID: String) -> SecretReadOutcome {
-        load(key: key, entityID: entityID).map(SecretReadOutcome.value) ?? .missing
-    }
-
     func loadAll(keys: [String], entityID: String) -> [String: String] {
         var result: [String: String] = [:]
         for key in keys {

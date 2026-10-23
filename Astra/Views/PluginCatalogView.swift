@@ -76,8 +76,6 @@ struct PluginCatalogView: View {
     @State private var showCreateWizard = false
     @State private var importReview: CapabilityImportReview?
     @State private var importError: String?
-    /// A draft an import kept beside an approved copy, awaiting review.
-    @State private var stagedReview: PluginStagedReview?
     @State private var showMCPInstallTargetSheet = false
     @State private var pastedMCPInstallTarget = ""
     @State private var mcpInstallRequest: MCPInstallChatRequest?
@@ -293,22 +291,6 @@ struct PluginCatalogView: View {
             Button("OK", role: .cancel) { installError = nil }
         } message: {
             Text(installError ?? "")
-        }
-        .alert("\(stagedReview?.package.name ?? "") \(stagedReview?.package.version ?? "") is waiting for review", isPresented: Binding(
-            get: { stagedReview != nil }, set: { if !$0 { stagedReview = nil } }
-        ), presenting: stagedReview) { draft in
-            Button("Approve and update") {
-                do { try CapabilityCatalogActionService().approveStaged(draft, modelContext: modelContext) } catch {
-                    importError = error.localizedDescription
-                }
-            }
-            Button("Discard", role: .destructive) {
-                do { try CapabilityCatalogActionService().discardStaged(draft, modelContext: modelContext) }
-                catch { importError = error.localizedDescription }
-            }
-            Button("Later", role: .cancel) {}
-        } message: { _ in
-            Text("The approved version stays in use in every workspace until you approve this one.")
         }
         .alert("Capability could not be imported", isPresented: Binding(
             get: { importError != nil },
@@ -921,7 +903,9 @@ struct PluginCatalogView: View {
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            modelContext: modelContext
+            capabilities: capabilities,
+            modelContext: modelContext,
+            availablePackages: capabilityInventoryPackages
         )
         // A rolled-back disable left the package enabled; it isn't saved
         // again or reported as done.
@@ -929,7 +913,8 @@ struct PluginCatalogView: View {
             removalError = "ASTRA couldn't disable \(package.name), so it stays enabled. Try again."
             return
         }
-        if let problem = result.problem { removalError = problem.localizedDescription; return }
+        workspace.updatedAt = Date()
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
             "source": "configure",
             "trace_id": traceID,
@@ -1069,8 +1054,8 @@ struct PluginCatalogView: View {
             return
         }
         do {
-            let result = try CapabilityPackageImporter().importValidatedPackage(report, modelContext: modelContext)
-            if result.staged { stagedReview = try CapabilityCatalogActionService().reviewStaged(id: result.package.id) } else { openPackageEditor(result.package.id) }
+            let result = try CapabilityPackageImporter().importValidatedPackage(report)
+            openPackageEditor(result.package.id)
             importReview = nil
             AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
                 "source": "import_json",
@@ -2118,8 +2103,6 @@ struct PluginInstallSheet: View {
     @Query(sort: \Workspace.name) private var capabilitySetupSourceWorkspaces: [Workspace]
     /// Unfiltered: `copyableSetupSourceKey` has to see workspace-owned edits.
     @Query private var allConnectors: [Connector]
-    /// A connector's fields by `PluginSetupInputs.key`, its base URL by its
-    /// component ID: two connectors with one name never share a value.
     @State private var credentialValues: [String: String] = [:]
     @State private var configValues: [String: String] = [:]
     @State private var baseURLValues: [String: String] = [:]
@@ -2137,17 +2120,11 @@ struct PluginInstallSheet: View {
         package.requiresSetup || !package.prerequisites.isEmpty
     }
 
-    /// The connectors' fields as their accounts store them: a setting only
-    /// a bundled plugin keeps plain is otherwise a masked credential field.
-    private var storedConnectors: [PluginConnector] {
-        package.connectors.map { PluginConnectorFieldTrust.asStored($0, in: package) }
-    }
-
     private var hasRequiredEmpty: Bool {
         // At least one credential field should be filled for each connector
-        for conn in storedConnectors {
+        for conn in package.connectors {
             for hint in conn.credentialHints {
-                if (credentialValues[fieldKey(hint.key, of: conn)] ?? "").isEmpty {
+                if (credentialValues[hint.key] ?? "").isEmpty {
                     return true
                 }
             }
@@ -2191,7 +2168,7 @@ struct PluginInstallSheet: View {
                         copySetupSection
                     }
 
-                    ForEach(storedConnectors, id: \.setupComponentID) { connector in
+                    ForEach(package.connectors, id: \.name) { connector in
                         connectorSetupSection(connector)
                     }
 
@@ -2265,11 +2242,12 @@ struct PluginInstallSheet: View {
         }
         .frame(width: 560, height: 600)
         .onAppear {
-            // Pre-populate from the account the workspace already binds to
-            // each component (Add again keeps its setup), else its defaults.
-            let initial = CapabilitySetupPresentation.initialValues(for: package, in: workspace)
-            baseURLValues.merge(initial.baseURLs) { current, _ in current }
-            configValues.merge(initial.config) { current, _ in current }
+            // Pre-populate base URLs from connector defaults
+            for conn in package.connectors {
+                if !conn.baseURL.isEmpty {
+                    baseURLValues[conn.name] = conn.baseURL
+                }
+            }
         }
         // Keyed so the sweep runs once per real change to the source
         // workspaces, rather than three times per keystroke into the credential
@@ -2412,7 +2390,6 @@ struct PluginInstallSheet: View {
         guard !inputs.credentialInputs.isEmpty || !inputs.configInputs.isEmpty || !inputs.baseURLOverrides.isEmpty else {
             return
         }
-        // Keyed by the component each value was copied from, as this form's own are.
         credentialValues.merge(inputs.credentialInputs) { _, copied in copied }
         configValues.merge(inputs.configInputs) { _, copied in copied }
         baseURLValues.merge(inputs.baseURLOverrides) { _, copied in copied }
@@ -2550,10 +2527,9 @@ struct PluginInstallSheet: View {
     @MainActor
     private func validateConnector(_ pluginConnector: PluginConnector, traceID: String) async -> [PluginInstallValidationResult] {
         var results: [PluginInstallValidationResult] = []
-        // Its settings a bundled plugin doesn't keep plain are credentials.
-        let stored = PluginConnectorFieldTrust.asStored(pluginConnector, in: package)
-        let missingCredentials = stored.credentialHints.compactMap { hint -> String? in
-            let value = credentialValues[fieldKey(hint.key, of: stored)]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let missingCredentials = pluginConnector.credentialHints.compactMap { hint -> String? in
+            let value = credentialValues[hint.key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return value.isEmpty ? hint.key : nil
         }
         if !missingCredentials.isEmpty {
@@ -2586,8 +2562,8 @@ struct PluginInstallSheet: View {
             return results
         }
 
-        let connector = validationConnector(from: stored)
-        let store = PluginInstallValidationSecretStore(credentials: PluginSetupInputs.view(credentialValues, component: stored.setupComponentID))
+        let connector = validationConnector(from: pluginConnector)
+        let store = PluginInstallValidationSecretStore(credentials: credentialValues)
         let testResult = await connector.testConnection(
             store: store,
             source: "capability_setup_validation",
@@ -2617,8 +2593,7 @@ struct PluginInstallSheet: View {
         connector.credentialKeys = pluginConnector.credentialHints.map(\.key)
         connector.credentialValues = Array(repeating: "", count: connector.credentialKeys.count)
         connector.configKeys = pluginConnector.configHints.map(\.key)
-        let ownConfig = PluginSetupInputs.view(configValues, component: pluginConnector.setupComponentID)
-        connector.configValues = connector.configKeys.map { ownConfig[$0] ?? "" }
+        connector.configValues = connector.configKeys.map { configValues[$0] ?? "" }
         if connector.isStanfordOutlookMail {
             connector.applyStanfordOutlookDefaults()
         }
@@ -2636,12 +2611,7 @@ struct PluginInstallSheet: View {
     }
 
     private func resolvedBaseURL(for connector: PluginConnector) -> String {
-        baseURLValues[connector.setupComponentID]?.trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? connector.accountBaseURLField.flatMap { configValues[PluginSetupInputs.key($0.key, component: connector.setupComponentID)] } ?? connector.baseURL
-    }
-
-    private func fieldKey(_ key: String, of connector: PluginConnector) -> String {
-        PluginSetupInputs.key(key, component: connector.setupComponentID)
+        baseURLValues[connector.name]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? connector.baseURL
     }
 
     private func isPlaceholderBaseURL(_ value: String) -> Bool {
@@ -2765,7 +2735,7 @@ struct PluginInstallSheet: View {
                     color: Stanford.poppy
                 ) {
                     ForEach(connector.credentialHints, id: \.key) { hint in
-                        credentialField(for: hint, key: fieldKey(hint.key, of: connector))
+                        credentialField(for: hint)
                     }
                 }
             }
@@ -2778,7 +2748,7 @@ struct PluginInstallSheet: View {
                     color: Stanford.lagunita
                 ) {
                     ForEach(connector.configHints, id: \.key) { hint in
-                        configField(for: hint, key: fieldKey(hint.key, of: connector))
+                        configField(for: hint)
                     }
                 }
             }
@@ -2819,15 +2789,15 @@ struct PluginInstallSheet: View {
         .padding(.top, 2)
     }
 
-    private func credentialField(for hint: PluginConnector.CredentialHint, key: String) -> some View {
+    private func credentialField(for hint: PluginConnector.CredentialHint) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             setupFieldHeader(for: hint.key)
             SecretEntryField(
                 CapabilitySetupPresentation.credentialPlaceholder(for: hint),
                 text: Binding(
-                    get: { credentialValues[key] ?? "" },
+                    get: { credentialValues[hint.key] ?? "" },
                     set: {
-                        credentialValues[key] = $0
+                        credentialValues[hint.key] = $0
                         resetValidation()
                     }
                 ),
@@ -2838,13 +2808,13 @@ struct PluginInstallSheet: View {
         }
     }
 
-    private func configField(for hint: PluginConnector.ConfigHint, key: String) -> some View {
+    private func configField(for hint: PluginConnector.ConfigHint) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             setupFieldHeader(for: hint.key)
             TextField(CapabilitySetupPresentation.configPlaceholder(for: hint), text: Binding(
-                get: { configValues[key] ?? "" },
+                get: { configValues[hint.key] ?? "" },
                 set: {
-                    configValues[key] = $0
+                    configValues[hint.key] = $0
                     resetValidation()
                 }
             ))
@@ -2878,9 +2848,9 @@ struct PluginInstallSheet: View {
                 .font(Stanford.caption(11).weight(.semibold))
                 .foregroundStyle(Stanford.black)
             TextField(connector.baseURL, text: Binding(
-                get: { baseURLValues[connector.setupComponentID] ?? connector.baseURL },
+                get: { baseURLValues[connector.name] ?? connector.baseURL },
                 set: {
-                    baseURLValues[connector.setupComponentID] = $0
+                    baseURLValues[connector.name] = $0
                     resetValidation()
                 }
             ))

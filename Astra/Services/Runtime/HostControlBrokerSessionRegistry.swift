@@ -81,22 +81,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var sessions: [SessionKey: HostControlBrokerSession] = [:]
     private var historyReaders: [SessionKey: any TaskHistoryReading] = [:]
-    private var mailReaders: [SessionKey: any BrokeredMailReading] = [:]
     private var externalActionRequesters: [SessionKey: any BrokeredExternalActionRequesting] = [:]
-
-    func bindMailReader(_ reader: any BrokeredMailReading, taskID: UUID, runID: UUID) {
-        let previous = lock.withLock { mailReaders.updateValue(reader, forKey: sessionKey(taskID: taskID, runID: runID)) }
-        if let previous, previous !== reader { previous.closeMailAccess() }
-    }
-
-    func mailReader(taskID: UUID, runID: UUID?) -> (any BrokeredMailReading)? {
-        lock.withLock { mailReaders[sessionKey(taskID: taskID, runID: runID)] }
-    }
-
-    func unbindMailReader(taskID: UUID, runID: UUID) {
-        let reader = lock.withLock { mailReaders.removeValue(forKey: sessionKey(taskID: taskID, runID: runID)) }
-        reader?.closeMailAccess()
-    }
 
     /// Bind the durable store before handing a detached execution task to a provider.
     func bindHistory(container: ModelContainer, taskID: UUID, runID: UUID) {
@@ -191,8 +176,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             expectedHelperPath: expectedHelperPath,
             withholdingObserver: BrokeredCredentialWithholdingRecorder(taskID: task.id, runID: runID),
             historyReader: reader ?? task.modelContext.map { TaskHistoryEvidenceReader(container: $0.container, taskID: task.id) },
-            externalActionRequester: externalActionRequester(taskID: task.id, runID: runID),
-            mailReader: mailReader(taskID: task.id, runID: runID)
+            externalActionRequester: externalActionRequester(taskID: task.id, runID: runID)
         )
         guard let socketPath = session.start(
             allowsFileDropFallback: runtime.map(Self.providerSandboxedRuntimes.contains) == true
@@ -240,8 +224,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         })
         let brokeredConnectors = capabilityScope.reachableConnectors.filter {
-            !$0.isStanfordOutlookMail
-                && HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
+            HostControlPlaneMCPProjection.brokerOwnsConnectorConfiguration($0.serviceType)
                 && HostControlPlaneMCPProjection.connectorToolName($0.serviceType)
                     .map(brokeredTools.contains) == true
         }
@@ -270,13 +253,10 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             credentialExposurePolicy: .allowAllCredentials
         ).configuredCredentialLabels())
         let exposedLabels = narratedApprovedLabels.union(approvedLabels)
-        // The bindings' default rides along, so a call that names no account
-        // reaches the one the person made default instead of being refused.
         var environment = ConnectorRuntimeProjection(
             connectors: brokeredConnectors,
             secretStore: secretStore,
-            credentialExposurePolicy: .approvedLabels(exposedLabels),
-            defaultConnectorIDs: capabilityScope.defaultConnectorIDs
+            credentialExposurePolicy: .approvedLabels(exposedLabels)
         ).environmentVariables()
         let withheld = BrokeredCredentialWithholdingProjection.manifest(
             connectors: brokeredConnectors,
@@ -362,15 +342,13 @@ private final class HostControlBrokerSession: @unchecked Sendable {
         expectedHelperPath: String,
         withholdingObserver: BrokeredCredentialWithholdingObserving? = nil,
         historyReader: (any TaskHistoryReading)? = nil,
-        externalActionRequester: (any BrokeredExternalActionRequesting)? = nil,
-        mailReader: (any BrokeredMailReading)? = nil
+        externalActionRequester: (any BrokeredExternalActionRequesting)? = nil
     ) {
         server = HostControlMCPServer(
             configuration: configuration,
             withholdingObserver: withholdingObserver,
             historyReader: historyReader,
-            externalActionRequester: externalActionRequester,
-            mailReader: mailReader
+            externalActionRequester: externalActionRequester
         )
         self.expectedHelperPath = Self.canonicalPath(expectedHelperPath)
     }

@@ -11,7 +11,7 @@ struct WorkspaceRightRailPerformanceTests {
     @Test("GitHub read-only mode preserves GitHub-origin behavior skill semantics")
     func githubReadOnlyModeUsesBehaviorSkillOrigin() {
         let workspace = makeWorkspace(name: "Origin semantics")
-        workspace.testEnabledCapabilityIDs = []
+        workspace.enabledCapabilityIDs = []
         let task = AgentTask(title: "Inspect", goal: "Inspect the proposed change")
         task.workspace = workspace
         let skill = Skill(name: "Change reviewer", allowedTools: ["Read"])
@@ -92,7 +92,7 @@ struct WorkspaceRightRailPerformanceTests {
     @Test("Bounded host-control input fails closed for package-backed resolution")
     func boundedHostControlInputFailsClosedForPackageBackedResolution() {
         let workspace = makeWorkspace(name: "Pruning semantics")
-        workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let task = AgentTask(title: "Summarize notes", goal: "Summarize local meeting notes")
         task.workspace = workspace
         var githubPackage = browserAdapterPackage(
@@ -577,7 +577,7 @@ struct WorkspaceRightRailPerformanceTests {
         #expect(cache.matches(timestampOnlySignature))
         #expect(cache.snapshot(for: timestampOnlySignature) != nil)
 
-        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
         let changedSignature = CapabilityRailSnapshotSignature(
             workspace: workspace,
             globalSkills: [globalSkill],
@@ -661,13 +661,13 @@ struct WorkspaceRightRailPerformanceTests {
     func capabilityRailSignaturePreservesInstalledPluginVersionPairings() {
         let firstWorkspace = makeWorkspace(name: "Installed Plugins")
         firstWorkspace.id = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
-        firstWorkspace.testInstalledPluginIDs = ["plugin-b", "plugin-a"]
-        firstWorkspace.testInstalledPluginVersions = ["2.0.0", "1.0.0"]
+        firstWorkspace.installedPluginIDs = ["plugin-b", "plugin-a"]
+        firstWorkspace.installedPluginVersions = ["2.0.0", "1.0.0"]
 
         let secondWorkspace = makeWorkspace(name: "Installed Plugins")
         secondWorkspace.id = firstWorkspace.id
-        secondWorkspace.testInstalledPluginIDs = ["plugin-a", "plugin-b"]
-        secondWorkspace.testInstalledPluginVersions = ["2.0.0", "1.0.0"]
+        secondWorkspace.installedPluginIDs = ["plugin-a", "plugin-b"]
+        secondWorkspace.installedPluginVersions = ["2.0.0", "1.0.0"]
 
         let firstSignature = CapabilityRailSnapshotSignature(
             workspace: firstWorkspace,

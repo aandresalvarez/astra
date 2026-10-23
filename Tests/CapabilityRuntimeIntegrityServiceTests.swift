@@ -22,7 +22,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
         let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
 
         let workspace = Workspace(name: "Artifact With Jira Enabled", primaryPath: "/tmp/artifact-jira-enabled")
-        workspace.testEnabledCapabilityIDs = [jiraPackage.id]
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
         context.insert(workspace)
         let task = AgentTask(
             title: "Create an HTML demo",
@@ -55,7 +55,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
         let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
 
         let workspace = Workspace(name: "Relevant Jira Enabled", primaryPath: "/tmp/relevant-jira-enabled")
-        workspace.testEnabledCapabilityIDs = [jiraPackage.id]
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
         context.insert(workspace)
         let task = AgentTask(
             title: "Use Jira",
@@ -73,9 +73,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
         )
 
         #expect(issues.contains { $0.source == .enabledPackage && $0.resourceKind == .connector })
-        // The plugin's skill comes from its definition, so it can't be missing;
-        // the account it needs still blocks.
-        #expect(!issues.contains { $0.source == .enabledPackage && $0.resourceKind == .skill })
+        #expect(issues.contains { $0.source == .enabledPackage && $0.resourceKind == .skill })
     }
 
     @Test("runtime integrity accepts enabled shared Jira when stale local Jira credentials are missing")
@@ -85,7 +83,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
         let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
 
         let workspace = Workspace(name: "JSL Jira", primaryPath: "/tmp/jsl-jira")
-        workspace.testEnabledCapabilityIDs = [jiraPackage.id]
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
         context.insert(workspace)
 
         let jiraSkill = Skill(
@@ -149,7 +147,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
         let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
 
         let workspace = Workspace(name: "Unreadable Shared Jira", primaryPath: "/tmp/unreadable-shared-jira")
-        workspace.testEnabledCapabilityIDs = [jiraPackage.id]
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
         context.insert(workspace)
 
         let jiraSkill = Skill(
@@ -199,7 +197,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
         let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
 
         let workspace = Workspace(name: "Padded Shared Jira", primaryPath: "/tmp/padded-shared-jira")
-        workspace.testEnabledCapabilityIDs = [jiraPackage.id]
+        workspace.enabledCapabilityIDs = [jiraPackage.id]
         context.insert(workspace)
 
         let jiraSkill = Skill(
@@ -301,7 +299,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
             templates: [],
             governance: .localDraft()
         )
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         context.insert(workspace)
         let task = AgentTask(title: "Use draft", goal: "Run draft capability", workspace: workspace)
         context.insert(task)
@@ -351,7 +349,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
             governance: .builtInApproved()
         )
         let workspace = Workspace(name: "Runtime Pack Policy", primaryPath: "/tmp/runtime-pack-policy")
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         workspace.enabledPackIDs = ["astra.pack.policy-test"]
         context.insert(workspace)
         let task = AgentTask(title: "Use disabled package", goal: "Run disabled capability", workspace: workspace)
@@ -401,7 +399,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
             governance: .builtInApproved()
         )
         let workspace = Workspace(name: "Runtime Pack Review", primaryPath: "/tmp/runtime-pack-review")
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         context.insert(workspace)
         let task = AgentTask(title: "Use review-gated package", goal: "Run review-gated capability", workspace: workspace)
         context.insert(task)
@@ -454,7 +452,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
             governance: .builtInApproved()
         )
         let workspace = Workspace(name: "Runtime Auth", primaryPath: "/tmp/runtime-auth")
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         context.insert(workspace)
         let task = AgentTask(title: "Use auth package", goal: "Use GitHub", workspace: workspace)
         context.insert(task)
@@ -501,7 +499,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
             governance: .builtInApproved()
         )
         let workspace = Workspace(name: "Runtime Local Tool", primaryPath: "/tmp/runtime-local-tool")
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         context.insert(workspace)
 
         let globalTool = LocalTool(name: "Shared Helper", toolType: "cli", command: "shared-helper")
@@ -553,7 +551,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
             governance: .builtInApproved()
         )
         let workspace = Workspace(name: "Runtime Local Tool Executable", primaryPath: "/tmp/runtime-local-tool-executable")
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         context.insert(workspace)
 
         let directory = FileManager.default.temporaryDirectory
@@ -602,7 +600,7 @@ struct CapabilityRuntimeIntegrityServiceTests {
             browserAdapters: ["unknownAdapter"],
             governance: .builtInApproved(riskLevel: .high)
         )
-        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledCapabilityIDs = [package.id]
         context.insert(workspace)
         let task = AgentTask(title: "Use browser", goal: "Use unknown adapter", workspace: workspace)
         context.insert(task)

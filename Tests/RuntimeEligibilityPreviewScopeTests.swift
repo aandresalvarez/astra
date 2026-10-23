@@ -340,7 +340,7 @@ struct RuntimeEligibilityPreviewScopeTests {
         let snapshot = try #require(await request.evaluate(betweenRuntimes: {
             yields += 1
             if yields == 1 {
-                WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(PluginCatalog.builtInPackages[0].id) }
+                workspace.enabledCapabilityIDs.append(PluginCatalog.builtInPackages[0].id)
             }
             return true
         }))
@@ -368,7 +368,7 @@ struct RuntimeEligibilityPreviewScopeTests {
         var yields = 0
         let snapshot = try #require(await request.evaluate(betweenRuntimes: {
             yields += 1
-            WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability("astra-edit-\(yields)") }
+            workspace.enabledCapabilityIDs.append("astra-edit-\(yields)")
             return true
         }))
 

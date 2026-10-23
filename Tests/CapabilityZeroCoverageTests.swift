@@ -222,10 +222,8 @@ struct CapabilitySetupCopierZeroCoverageTests {
         connector.configValues = ["ABC,DEF"]
         connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
         workspace.connectors.append(connector)
-        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
         context.insert(workspace)
-        // The plugin is on, so the row is its account.
-        #expect(workspace.testBind(connector, toPlugin: "jira-workflow", component: makeJiraPackage().connectors[0]))
         try context.save()
 
         let store = MockSecretStore()
@@ -249,37 +247,6 @@ struct CapabilitySetupCopierZeroCoverageTests {
         #expect(summary.copiedCredentialCount == 2)
         // JIRA_PROJECTS config + base URL override
         #expect(summary.copiedConfigCount == 2)
-    }
-
-    @Test("A workspace with the plugin's activation is copied only from the accounts it binds")
-    func activationCopiesOnlyItsBoundAccounts() throws {
-        let container = try makeZeroCoverageContainer()
-        let context = container.mainContext
-        let workspace = Workspace(name: "Source", primaryPath: NSTemporaryDirectory())
-        // The bound account keeps the plugin's default URL and has no
-        // settings or credentials of its own.
-        let bound = Connector(name: "Jira", serviceType: "jira", baseURL: "https://your-domain.atlassian.net", authMethod: "basic")
-        let unbound = Connector(name: "Other Jira", serviceType: "jira", baseURL: "https://other.atlassian.net", authMethod: "basic")
-        unbound.configKeys = ["JIRA_PROJECTS"]
-        unbound.configValues = ["OTHER"]
-        unbound.credentialKeys = ["JIRA_API_TOKEN"]
-        workspace.connectors.append(contentsOf: [bound, unbound])
-        let danglingID = UUID()
-        workspace.enabledGlobalConnectorIDs = [danglingID.uuidString]
-        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
-        context.insert(workspace)
-        #expect(workspace.testBind(bound, toPlugin: "jira-workflow", component: makeJiraPackage().connectors[0]))
-        try context.save()
-
-        let store = MockSecretStore()
-        store.save(key: "JIRA_API_TOKEN", value: "other-token", entityID: KeychainSecretStore.connectorEntityID(for: unbound.id), label: nil)
-        store.save(key: "JIRA_EMAIL", value: "orphan@example.com", entityID: KeychainSecretStore.connectorEntityID(for: danglingID), label: nil)
-
-        let inputs = CapabilitySetupCopier(secretStore: store).installationInputs(for: makeJiraPackage(), from: workspace)
-        #expect(inputs.baseURLOverrides.isEmpty)
-        #expect(inputs.configInputs.isEmpty)
-        #expect(inputs.credentialInputs.isEmpty)
-        withExtendedLifetime(container) {}
     }
 
     @Test("Workspace with no matching setup copies nothing")

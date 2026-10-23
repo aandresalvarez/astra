@@ -32,10 +32,6 @@ struct SwiftDataDeletionPreparationTests {
             original.localTools = [tool]
             skill.connectors = [connector]
             skill.localTools = [tool]
-            let activation = PluginActivation(pluginID: "rollback-plugin")
-            seed.insert(activation)
-            activation.workspace = original
-            WorkspaceCapabilityActivation.bind(connector, toComponent: "connector:jira:account", of: activation)
             original.templates = [TaskTemplate(name: "Keep template", mainGoal: "goal", workspace: original)]
             original.schedules = [TaskSchedule(name: "Keep schedule", workspace: original)]
             seed.insert(task)
@@ -62,8 +58,6 @@ struct SwiftDataDeletionPreparationTests {
             #expect(workspace.localTools.count == expected)
             #expect(workspace.templates.count == expected)
             #expect(workspace.schedules.count == expected)
-            #expect(workspace.pluginActivations.count == expected)
-            #expect(workspace.pluginActivations.first?.bindings.count == (populated ? 1 : nil))
             if populated {
                 #expect(workspace.skills.first?.workspace === workspace)
                 #expect(workspace.connectors.first?.workspace === workspace)
@@ -89,8 +83,6 @@ struct SwiftDataDeletionPreparationTests {
         #expect(try durable.fetchCount(FetchDescriptor<AgentTask>()) == 0)
         #expect(try durable.fetchCount(FetchDescriptor<TaskTemplate>()) == 0)
         #expect(try durable.fetchCount(FetchDescriptor<TaskSchedule>()) == 0)
-        #expect(try durable.fetchCount(FetchDescriptor<PluginActivation>()) == 0)
-        #expect(try durable.fetchCount(FetchDescriptor<AccountBinding>()) == 0)
     }
 
     @Test("A failed task-only deletion preserves its owner and permits later saves", arguments: [false, true], [

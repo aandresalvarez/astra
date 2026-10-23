@@ -11,7 +11,7 @@ struct ComposerCapabilitySnapshotTests {
     @MainActor
     func snapshotBuilderUsesPreloadedPackageDefinitions() {
         let workspace = Workspace(name: "Composer", primaryPath: "/tmp/composer")
-        workspace.testEnabledCapabilityIDs = ["composer-pack"]
+        workspace.enabledCapabilityIDs = ["composer-pack"]
 
         let globalSkill = Skill(name: "Composer Agent", allowedTools: ["Read"])
         globalSkill.isGlobal = true
@@ -53,10 +53,7 @@ struct ComposerCapabilitySnapshotTests {
         )
 
         #expect(snapshot.availableSkills.map(\.name) == ["Composer Agent"])
-        // The plugin's skill is projected; the same-named shared row is not
-        // enabled here and is not what the composer offers.
-        #expect(snapshot.availableSkills.map(\.id) != [globalSkill.id])
-        #expect(snapshot.selectedSkills(excluding: Set(snapshot.availableSkills.map(\.id))).isEmpty)
+        #expect(snapshot.selectedSkills(excluding: [globalSkill.id]).isEmpty)
         #expect(snapshot.selectedSkills(excluding: []).map(\.name) == ["Composer Agent"])
     }
 

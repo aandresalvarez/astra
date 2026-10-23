@@ -19,7 +19,7 @@ struct AgentRuntimeCLIRelayAdapterTests {
         let container = try makeContainer()
         let modelContext = container.mainContext
         let workspace = Workspace(name: "Jira Host Control", primaryPath: root.path)
-        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
         let jiraSkill = Skill(
             name: "Jira Agent",
             allowedTools: ["Read", "Bash"],

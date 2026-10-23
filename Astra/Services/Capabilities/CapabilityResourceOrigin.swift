@@ -1,7 +1,6 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
-import ASTRAPersistence
 
 enum CapabilityResourceComponentKind: String {
     case skill
@@ -12,47 +11,15 @@ enum CapabilityResourceComponentKind: String {
 
 enum CapabilityResourceOrigin {
     static func componentID(for skill: PluginSkill) -> String {
-        "skill:\(normalized(skill.id ?? skill.name))"
+        "skill:\(normalized(skill.name))"
     }
 
     static func componentID(for connector: PluginConnector) -> String {
-        "connector:\(normalized(connector.serviceType)):\(normalized(connector.id ?? connector.name))"
-    }
-
-    /// The start every component ID of a connector of `serviceType` has.
-    static func connectorPrefix(serviceType: String) -> String {
-        "connector:\(normalized(serviceType)):"
+        "connector:\(normalized(connector.serviceType)):\(normalized(connector.name))"
     }
 
     static func componentID(for tool: PluginLocalTool) -> String {
-        if let id = tool.id { return "tool:\(normalized(id))" }
-        return "tool:\(normalized(tool.toolType)):\(normalized(tool.command)):\(normalized(tool.name))"
-    }
-
-    /// The component identities `replaces` names, in the same form as
-    /// `componentID(for:)`: a bare value is that kind's `id`.
-    static func replacedComponentIDs(for skill: PluginSkill) -> [String] {
-        (skill.replaces ?? []).map { $0.contains(":") ? canonical($0) : "skill:\(normalized($0))" }
-    }
-
-    static func replacedComponentIDs(for connector: PluginConnector) -> [String] {
-        (connector.replaces ?? []).map {
-            $0.contains(":") ? canonical($0) : "connector:\(normalized(connector.serviceType)):\(normalized($0))"
-        }
-    }
-
-    static func replacedComponentIDs(for tool: PluginLocalTool) -> [String] {
-        (tool.replaces ?? []).map { $0.contains(":") ? canonical($0) : "tool:\(normalized($0))" }
-    }
-
-    /// A full identity (`skill:Old Agent`, `connector:Jira:Old`) in the form
-    /// `componentID(for:)` produces: every part after the kind normalized,
-    /// so a predecessor is matched however its author spelled it.
-    static func canonical(_ identity: String) -> String {
-        let parts = identity.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
-        guard let kind = parts.first else { return identity }
-        return ([kind.trimmingCharacters(in: .whitespaces).lowercased()] + parts.dropFirst().map(normalized))
-            .joined(separator: ":")
+        "tool:\(normalized(tool.toolType)):\(normalized(tool.command)):\(normalized(tool.name))"
     }
 
     static func componentID(for template: PluginTemplate) -> String {
@@ -143,42 +110,6 @@ enum CapabilityResourceOrigin {
         !(template.originPackageID ?? "").isEmpty
     }
 
-    /// Clears a plugin's origin stamp from an account it leaves behind. The
-    /// stamp also names a shared Keychain namespace, so credentials only
-    /// there are first copied into the row's own (which loads first); one the
-    /// copy can't reach keeps the stamp rather than be stranded (false).
-    /// Another plugin's surviving binding also retains the creator policy.
-    @MainActor
-    @discardableResult
-    static func releaseProvenance(of account: Connector) -> Bool {
-        // A surviving binding still depends on its creator's field policy.
-        // Clearing this stamp would turn it into an unrestricted authored
-        // account, including when the creator definition has been removed.
-        if let creator = account.originPackageID, !creator.isEmpty,
-           account.accountBindings.contains(where: { binding in
-               guard !binding.isDeleted, let activation = binding.activation,
-                     !activation.isDeleted else { return false }
-               return activation.pluginID != creator
-           }) { return false }
-        // A published private generation is independent of provenance. Never
-        // backfill its values into historical shared aliases or the row ID.
-        if account.credentialNamespaceID == nil {
-            KeychainService.synchronizeConnectorCredentialNamespaces(connector: account)
-            let stranded = account.credentialKeys.contains { key in
-                KeychainService.load(key: key, connectorID: account.id) == nil
-                    && KeychainService.load(key: key, connector: account) != nil
-            }
-            guard !stranded else { return false }
-        }
-        account.originPackageID = nil
-        account.originPackageVersion = nil
-        account.originComponentID = nil
-        account.originComponentKind = nil
-        account.originSourceKind = nil
-        account.updatedAt = Date()
-        return true
-    }
-
     private struct OriginFields {
         var packageID: String
         var packageVersion: String
@@ -256,6 +187,10 @@ enum CapabilityResourceOrigin {
     }
 
     private static func normalized(_ value: String) -> String {
-        PluginComponent.defaultID(forName: value)
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9._-]+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     }
 }
