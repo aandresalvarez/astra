@@ -436,11 +436,13 @@ struct TaskMainView: View {
         return "count=\(itemCount)#last=\(lastItemID)#latest=\(latestOutputCount)#status=\(latestStatus)"
     }
 
-    var body: some View {
+    // Separate compiler boundaries keep the transcript, sheets and lifecycle
+    // modifiers from being inferred as one deeply nested SwiftUI expression.
+    private var taskPresentation: some View {
         let dockPresentation = taskDecisionDockPresentation
         let decisionDockVisible = dockPresentation != nil
 
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             mainContent(decisionDockVisible: decisionDockVisible)
                 .frame(maxHeight: .infinity, alignment: .top)
 
@@ -520,6 +522,10 @@ struct TaskMainView: View {
                 onCancel: { gitPublishProposal = nil }
             )
         }
+    }
+
+    private var taskReviewSurface: some View {
+        taskPresentation
         .taskGitHubReviewPublication(
             state: githubReviewPublication,
             task: task,
@@ -547,6 +553,10 @@ struct TaskMainView: View {
         } message: {
             Text(gitPublishPreparationError ?? "The draft pull request proposal could not be prepared.")
         }
+    }
+
+    var body: some View {
+        taskReviewSurface
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }

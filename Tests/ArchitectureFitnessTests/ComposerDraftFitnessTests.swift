@@ -33,7 +33,12 @@ struct ComposerDraftFitnessTests {
         let taskMainView = try source("Astra/Views/TaskMainView.swift")
         // Several structs in the file have a `body`; take the view's own.
         let mainView = try code(taskMainView, from: "struct TaskMainView: View {")
-        let body = try code(mainView, from: "    var body: some View {", to: "\n    }\n")
+        // Computed presentation builders still participate in body's read
+        // tracking, so check every compiler boundary for draft subscriptions.
+        let builders = ["body", "taskPresentation", "taskReviewSurface"]
+        let body = try builders.map { name in
+            try code(mainView, from: "var \(name): some View {", to: "\n    }\n")
+        }.joined(separator: "\n")
         #expect(body.contains("composerView(decisionDockPresentation: dockPresentation)"))
         #expect(body.contains(".sheet(isPresented: $showContextPreview)"))
 
