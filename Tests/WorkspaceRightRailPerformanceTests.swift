@@ -275,7 +275,27 @@ struct WorkspaceRightRailPerformanceTests {
         let invalidated = projection.record(olderInsertion, selectedTaskID: task.id)
         #expect(invalidated)
         #expect(projection.latestUserMessage(for: task.id, modelContext: context) == "newest durable context")
-        #expect(projection.revision(for: task) == olderInsertion.eventID.uuidString)
+        #expect(projection.revision(for: task).hasSuffix(olderInsertion.eventID.uuidString))
+        let previousRevision = projection.revision(for: task)
+        task.goal = "Updated request after the user event"
+        #expect(projection.revision(for: task) != previousRevision)
+    }
+
+    @Test("Browser policy ignores streaming updates but observes request and admission changes")
+    @MainActor
+    func browserPolicyRevisionTracksSemanticInputs() {
+        let task = AgentTask(title: "Review", goal: "Review local files")
+        task.status = .running
+        let initial = BrowserSessionPolicyContext.taskPolicyRevision(for: task)
+        task.updatedAt = Date().addingTimeInterval(10)
+        task.title = "Generated title"
+        task.status = .completed
+        #expect(BrowserSessionPolicyContext.taskPolicyRevision(for: task) == initial)
+        task.goal = "Review a different request"
+        let changedGoal = BrowserSessionPolicyContext.taskPolicyRevision(for: task)
+        #expect(changedGoal != initial)
+        task.status = .draft
+        #expect(BrowserSessionPolicyContext.taskPolicyRevision(for: task) != changedGoal)
     }
 
     @Test("Browser policy refresh gate fails closed and rejects stale results")
@@ -321,7 +341,6 @@ struct WorkspaceRightRailPerformanceTests {
             taskID: taskID,
             workspaceID: UUID(uuidString: "dddddddd-dddd-dddd-dddd-dddddddddddd")!,
             enabledCapabilityIDs: ["github"],
-            taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:1",
             environmentRevision: "environment:1"
@@ -331,7 +350,6 @@ struct WorkspaceRightRailPerformanceTests {
             taskID: taskID,
             workspaceID: stable.workspaceID,
             enabledCapabilityIDs: ["github"],
-            taskCanvasRevision: "canvas:1",
             taskRevision: "task:3",
             workspaceRevision: "workspace:1",
             environmentRevision: "environment:1"
@@ -340,7 +358,6 @@ struct WorkspaceRightRailPerformanceTests {
             taskID: taskID,
             workspaceID: stable.workspaceID,
             enabledCapabilityIDs: ["github", "jira"],
-            taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:1",
             environmentRevision: "environment:1"
@@ -349,7 +366,6 @@ struct WorkspaceRightRailPerformanceTests {
             taskID: taskID,
             workspaceID: UUID(uuidString: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")!,
             enabledCapabilityIDs: ["github"],
-            taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:2",
             environmentRevision: "environment:1"
@@ -358,7 +374,6 @@ struct WorkspaceRightRailPerformanceTests {
             taskID: taskID,
             workspaceID: stable.workspaceID,
             enabledCapabilityIDs: ["github"],
-            taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:1",
             environmentRevision: "environment:2"

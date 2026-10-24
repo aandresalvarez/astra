@@ -154,7 +154,9 @@ struct RuntimeProgressClassificationTests {
     func contentlessFramesStayLiveness() {
         // The widening must not swallow the distinction it is built on: a frame
         // that carries no work still has to look like idle chatter.
-        for type in ["assistant.turn_start", "assistant.idle", "system.status", "stream_event.content_block_delta"] {
+        for type in ["assistant.turn_start", "assistant.idle", "system.status", "stream_event.content_block_delta",
+                     "system.thinking_tokens", "rate_limit_event.allowed", "rate_limit_event.allowed_warning",
+                     "rate_limit_event.rejected"] {
             #expect(AgentRuntimeWorker.ProcessMonitor.progressKind(for: .control(type: type)) == .providerLiveness)
         }
     }

@@ -675,7 +675,10 @@ public final class HostControlToolDiagnosticsRecorder: @unchecked Sendable {
         self.fileManager = fileManager
     }
 
-    func record(toolName: String, summary: String, result: HostControlCommandResult?) {
+    func record(
+        toolName: String, summary: String, result: HostControlCommandResult?,
+        durationMilliseconds: Double? = nil, statusCode: Int? = nil
+    ) {
         let redactedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
         write(HostControlDiagnosticRecord(
             timestamp: Self.timestamp(),
@@ -686,7 +689,9 @@ public final class HostControlToolDiagnosticsRecorder: @unchecked Sendable {
             summary: redactedSummary.isEmpty ? nil : redactedSummary,
             exitCode: result?.exitCode,
             timedOut: result?.timedOut ?? false,
-            stderrTail: Self.tail(result?.stderr ?? "")
+            stderrTail: Self.tail(result?.stderr ?? ""),
+            durationMilliseconds: durationMilliseconds,
+            statusCode: statusCode
         ))
     }
 
@@ -733,6 +738,8 @@ private struct HostControlDiagnosticRecord: Codable {
     var exitCode: Int32?
     var timedOut: Bool
     var stderrTail: String?
+    var durationMilliseconds: Double?
+    var statusCode: Int?
 }
 
 public final class HostControlMCPServer {
@@ -777,7 +784,11 @@ public final class HostControlMCPServer {
             limits: processLimits,
             cancellationRegistry: cancellationRegistry
         )
-        self.diagnosticsRecorder = diagnosticsRecorder
+        // The in-app broker and standalone helper share this boundary, for
+        // every provider and transport. No destination means no disk writes.
+        self.diagnosticsRecorder = diagnosticsRecorder ?? (
+            configuration.diagnosticsHostPath.isEmpty ? nil : HostControlToolDiagnosticsRecorder(configuration: configuration)
+        )
         self.withholdingObserver = withholdingObserver
         self.processLimits = processLimits
     }
