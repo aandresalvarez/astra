@@ -2764,8 +2764,9 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             runtime: id,
             identifier: modelSettingsURL.standardizedFileURL.path
         )
+        let sharedStateLease: AgentRuntimeSharedStateLease
         do {
-            try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
+            sharedStateLease = try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
         } catch is CancellationError {
             return AgentUtilityRunResult(
                 exitCode: -1,
@@ -2816,7 +2817,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 timeoutSeconds: configuration.timeoutSeconds
             )
         )
-        await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
+        await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)
         return result
     }
 }

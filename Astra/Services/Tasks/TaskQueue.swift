@@ -27,6 +27,7 @@ final class TaskQueue {
 
     private var dispatchedRequestIDs: Set<UUID> = []
     private var storeSession: TaskQueueStoreSession?
+    let wedgedLeaseReclaimer: TaskWedgedWorkerLeaseReclaimer
     @MainActor
     init(
         poolSize: Int = 3,
@@ -34,7 +35,8 @@ final class TaskQueue {
         persistQueueCancellation: @escaping @MainActor (ModelContext) -> Bool = TaskQueueCancellationService.persist,
         sandboxEnforcementProvider: @escaping @MainActor () -> ExecutionSandboxEnforcement = {
             ExecutionSandboxSettings.resolve(permissionPolicy: .restricted).storedEnforcement
-        }
+        },
+        wedgedWorkerReleaseGrace: Duration = TaskWedgedWorkerLeaseReclaimer.defaultGrace
     ) {
         self.poolSize = poolSize
         self.workerFactory = workerFactory
@@ -42,6 +44,7 @@ final class TaskQueue {
         self.sandboxEnforcementProvider = sandboxEnforcementProvider
         self.workers = (0..<poolSize).map { _ in workerFactory() }
         self.requestTaskRegistry = ExecutionRequestTaskRegistry()
+        self.wedgedLeaseReclaimer = TaskWedgedWorkerLeaseReclaimer(grace: wedgedWorkerReleaseGrace)
     }
     /// Number of currently busy workers
     var activeCount: Int {
@@ -790,10 +793,7 @@ final class TaskQueue {
                 request,
                 to: .waitingForResource,
                 blockingTaskID: blockingTaskID,
-                blockerSummary: blockingTaskID == nil ? nil : TaskExecutionResourceBroker.blockerSummary(
-                    requested: pendingClaims,
-                    active: activeResourceLocks
-                ),
+                blockerSummary: blockingTaskID == nil ? nil : resourceBlockerSummary(pendingClaims, modelContext: modelContext),
                 modelContext: modelContext
             )
             guard let resourceLease = await waitForResourceLocks(
@@ -1461,10 +1461,7 @@ final class TaskQueue {
                         blockingTaskID: activeConflict?.holder.taskID,
                         blockerSummary: activeConflict == nil
                             ? "Waiting behind an earlier request for \(TaskExecutionResourceBroker.displayName(primary))."
-                            : TaskExecutionResourceBroker.blockerSummary(
-                                requested: claims,
-                                active: activeResourceLocks
-                            ),
+                            : resourceBlockerSummary(claims, modelContext: modelContext),
                         modelContext: modelContext
                     )
                     if !wasAlreadyWaiting {
@@ -1654,6 +1651,7 @@ final class TaskQueue {
 
     @MainActor
     func cancel(task: AgentTask, modelContext: ModelContext? = nil) {
+        scheduleWedgedLeaseRelease(for: task.id, modelContext: modelContext ?? storeSession?.modelContext)
         if let worker = taskWorkerMap[task.id] {
             worker.cancel()
             taskWorkerMap.removeValue(forKey: task.id)
@@ -1817,6 +1815,7 @@ final class TaskQueue {
             requestTaskRegistry.complete(requestID: requestID)
         }
         activeResourceLocks.removeAll { $0.runMode != TaskWorktreeResourceLease.runMode }
+        wedgedLeaseReclaimer.cancelAll()
         waitingResourceLocks.removeAll()
         isProcessingScheduled = false
         processingScheduleGeneration += 1
@@ -1917,55 +1916,33 @@ final class TaskQueue {
         return claims
     }
 
-    @MainActor
-    @discardableResult
-    func acquireResourceLockIfAvailable(
-        task: AgentTask,
-        resourceKey: String? = nil,
-        accessMode: TaskResourceAccessMode,
-        runMode: String,
-        modelContext: ModelContext? = nil
-    ) -> TaskResourceLockClaim? {
-        let claim = TaskResourceLockClaim(
-            taskID: task.id,
-            resourceKey: resourceKey ?? self.resourceKey(for: task),
-            accessMode: accessMode,
-            runMode: runMode
-        )
-        return acquireResourceLocksIfAvailable([claim], task: task, modelContext: modelContext)?.first
-    }
-
+    /// Idempotent per lease: only claims still held are removed and recorded,
+    /// so a worker returning after its lease was reclaimed releases nothing.
     @MainActor
     func releaseResourceLocks(
         _ claims: [TaskResourceLockClaim],
         task: AgentTask?,
-        modelContext: ModelContext? = nil
+        modelContext: ModelContext? = nil,
+        reason: String? = nil
     ) {
-        let released = Set(claims)
+        let held = Set(activeResourceLocks)
+        let released = claims.filter { held.contains($0) }
         activeResourceLocks.removeAll { released.contains($0) }
         defer { wakeAllTurnAdmissionWaiters(); wakeDispatchWaiters() }
-        guard let task else { return }
+        guard let task, !released.isEmpty else { return }
         waitingResourceLocks.removeValue(forKey: task.id)
-        for (index, claim) in claims.enumerated() {
+        for (index, claim) in released.enumerated() {
             recordResourceLockEvent(
                 type: TaskResourceLockEventTypes.released,
                 auditEvent: .resourceLockReleased,
                 task: task,
                 claim: claim,
                 status: "released",
+                reason: reason,
                 modelContext: modelContext,
-                autoExport: index == claims.count - 1
+                autoExport: index == released.count - 1
             )
         }
-    }
-
-    @MainActor
-    func releaseResourceLock(
-        _ claim: TaskResourceLockClaim,
-        task: AgentTask,
-        modelContext: ModelContext? = nil
-    ) {
-        releaseResourceLocks([claim], task: task, modelContext: modelContext)
     }
 
     @MainActor
@@ -1979,6 +1956,7 @@ final class TaskQueue {
         // A claimless (no-workspace) request leases nothing and admission accepts
         // it; only the worker's preflight can terminalize it. nil redispatches forever.
         guard !claims.isEmpty else { return [] }
+        let leaseID = UUID(), claims = claims.map { $0.leased(leaseID) }
         for claim in claims {
             recordResourceLockEvent(
                 type: TaskResourceLockEventTypes.requested,
@@ -2014,10 +1992,7 @@ final class TaskQueue {
                     task: task,
                     claim: primary,
                     status: "waiting",
-                    reason: TaskExecutionResourceBroker.blockerSummary(
-                        requested: claims,
-                        active: activeResourceLocks
-                    ),
+                    reason: resourceBlockerSummary(claims, modelContext: modelContext),
                     modelContext: modelContext,
                     autoExport: false
                 )
@@ -2058,30 +2033,6 @@ final class TaskQueue {
                 "operation": "git_conversation_fork_read_only_block",
                 "result": "blocked"
             ]
-        )
-    }
-
-    @MainActor
-    private func recordResourceLockEvent(
-        type: String,
-        auditEvent: AuditEvent,
-        task: AgentTask,
-        claim: TaskResourceLockClaim,
-        status: String,
-        reason: String? = nil,
-        modelContext: ModelContext?,
-        autoExport: Bool = true
-    ) {
-        TaskResourceLockEventRecorder.record(
-            type: type,
-            auditEvent: auditEvent,
-            task: task,
-            claim: claim,
-            status: status,
-            reason: reason,
-            modelContext: modelContext,
-            activeClaims: activeResourceLocks,
-            autoExport: autoExport
         )
     }
 
