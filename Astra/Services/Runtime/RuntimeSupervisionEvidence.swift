@@ -11,6 +11,9 @@ struct RuntimeSupervisionObservation: Codable, Sendable, Equatable {
     var activeTools: [String]
     var managedJobs: [String]
     var recentOutput: String
+    /// Positive OS evidence about our unreaped child. Nil means unconfirmed,
+    /// never proof that descendants or remote jobs stopped.
+    var ownedProcessSuspended: Bool? = nil
 }
 
 struct RuntimeSupervisionFiles: Codable, Sendable, Equatable {

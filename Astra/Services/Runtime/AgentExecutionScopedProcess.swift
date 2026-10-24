@@ -30,6 +30,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private var processID: pid_t = 0
     private var processGroupID: pid_t = 0
     private var running = false
+    private var reaped = false
+    private var stopRequested = false
     private var status: Int32 = 0
 
     let stdoutPipe = Pipe()
@@ -203,10 +205,34 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     /// stdin pipe cannot notice an EOF it was never sent.
     @discardableResult
     func requestGracefulStop() -> Bool {
-        closeStdinChannel()
+        lock.withLock { stopRequested = true }
+        return closeStdinChannel()
+    }
+
+    /// Only our unreaped child can be resumed. The reaper and signal share the
+    /// lock, so PID reuse cannot turn a late recovery into a signal to another
+    /// process. No group signal, new process, prompt replay or tool retry occurs.
+    var suspendedProcessIdentifier: Int32? {
+        lock.withLock { isSuspendedChild() ? processID : nil }
+    }
+
+    func resumeSuspendedProcess(expectedPID: Int32) -> Bool {
+        lock.withLock {
+            guard processID == expectedPID, isSuspendedChild() else { return false }
+            return kill(processID, SIGCONT) == 0
+        }
+    }
+
+    private func isSuspendedChild() -> Bool {
+        guard running, !reaped, !stopRequested, processID > 0 else { return false }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        return proc_pidinfo(processID, PROC_PIDTBSDINFO, 0, &info, size) == size
+            && info.pbi_ppid == UInt32(getpid()) && info.pbi_status == UInt32(SSTOP)
     }
 
     func terminate() {
+        lock.withLock { stopRequested = true }
         let ids = currentIDs()
         guard ids.isRunning else { return }
 
@@ -245,9 +271,18 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private func reapProcess(pid: pid_t) {
         var waitStatus: Int32 = 0
         var result: pid_t
-        repeat {
-            result = waitpid(pid, &waitStatus, 0)
-        } while result == -1 && errno == EINTR
+        // Keep the child waitable until signalling has finished. A blocking
+        // waitpid outside the lock could reap and recycle its PID just before
+        // a recovery signal. Polling is private to the reaper, never the UI.
+        while true {
+            lock.lock()
+            result = waitpid(pid, &waitStatus, WNOHANG)
+            let retry = result == 0 || (result == -1 && errno == EINTR)
+            if !retry { reaped = true }
+            lock.unlock()
+            if !retry { break }
+            usleep(50_000)
+        }
 
         let exitStatus: Int32
         if result == pid {

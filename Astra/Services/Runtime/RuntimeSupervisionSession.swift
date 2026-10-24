@@ -38,8 +38,16 @@ final class RuntimeSupervisionSession: @unchecked Sendable {
     private var decision = Decision.keepRunning
     private var stopEvidence: (RuntimeSupervisionAssessment, RuntimeSupervisionEvidence)?
     private var stopPublished = false
+    private var completedInvestigationRevision: Int?
     private let now: @Sendable () -> TimeInterval
     var tokenReservation: Int { lock.lock(); defer { lock.unlock() }; return reservedTokens }
+
+    /// Investigation informs the status; OS ownership authorizes resuming an
+    /// existing suspended child. Unknown remote work blocks replacement, not
+    /// continuation of that same process. New progress invalidates this cue.
+    func hasCompletedInvestigation(at revision: Int) -> Bool {
+        lock.withLock { !finished && pending == nil && completedInvestigationRevision == revision }
+    }
 
     init(goal: String, runtime: String, remoteCoverage: String, baseline: RuntimeSupervisionFiles,
          configuration: Configuration = .init(),
@@ -65,6 +73,7 @@ final class RuntimeSupervisionSession: @unchecked Sendable {
             investigations = 0
             stopEvidence = nil
             stopPublished = false
+            completedInvestigationRevision = nil
             if wasChecking { emit(.resumed, "The provider is producing new progress. ASTRA dismissed the earlier stall check.") }
         }
         latestRevision = observation.progressRevision
@@ -156,6 +165,7 @@ final class RuntimeSupervisionSession: @unchecked Sendable {
         }
         pending = nil; self.deadline = nil
         baseline = files
+        completedInvestigationRevision = evidence.observation.progressRevision
         var assessment = assessment
         if (assessment.assessment == .progressing && (!evidence.supportsProgress || !assessment.evidenceIDs.contains("files")))
             || (assessment.assessment == .waiting && (!evidence.supportsWaiting || !assessment.evidenceIDs.contains("runtime"))) {

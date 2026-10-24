@@ -15,6 +15,7 @@ struct RuntimeSupervisionContext {
     var collector: (@Sendable () async -> RuntimeSupervisionFiles)? = nil
     var workspacePath: String? = nil
     var tokenReservation = 16_384
+    var recovery: RuntimeRecoveryContext?
 
     func captureFiles() async -> RuntimeSupervisionFiles {
         if let collector { return await collector() }
@@ -40,6 +41,12 @@ struct RuntimeSupervisionContext {
             launchRuntime: configuration.runtime) != nil
         let sharedStateConflict = runtime == .antigravityCLI && configuration.runtime == .antigravityCLI
         let unsupportedInvestigator = ClaudeCodeUtilityLaunchPolicy.investigationUnavailableReason(for: configuration.runtime)
+        let authorizeRecovery: @MainActor @Sendable (RuntimeRecoveryReport) -> Bool = { report in
+            RuntimeRecoveryService.authorize(report, task: task, run: run, modelContext: modelContext)
+        }
+        let recordRecovery: @MainActor @Sendable (RuntimeRecoveryReport) -> Void = { report in
+            RuntimeRecoveryService.record(report, task: task, run: run, modelContext: modelContext)
+        }
         return Self(goal: RunSecretRedactionScope.redact(turnIntent?.activationText ?? task.goal, taskID: task.id), runtime: runtime.rawValue,
              taskFolder: TaskWorkspaceAccess(task: task).taskFolder,
              remoteCoverage: remoteRoute == nil
@@ -69,6 +76,12 @@ struct RuntimeSupervisionContext {
                          taskID: task.id, auditFields: ["operation": "runtime_supervision", "attempt_id": report.attemptID.uuidString])
                  }
              }, workspacePath: workspacePath,
-             tokenReservation: investigatorOverride == nil && (blocked || sharedStateConflict || unsupportedInvestigator != nil) ? 0 : 16_384)
+             tokenReservation: investigatorOverride == nil && (blocked || sharedStateConflict || unsupportedInvestigator != nil) ? 0 : 16_384,
+             recovery: .init(authorize: { report in
+                 await pendingEvents.drainAll()
+                 return await authorizeRecovery(report)
+             }, report: { report in
+                 pendingEvents.add { recordRecovery(report) }
+             }))
     }
 }

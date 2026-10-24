@@ -127,6 +127,7 @@ struct AppSemanticFitnessTests {
             "runtime.turn.settled": .system,
             "runtime.supervision": .system,
             "runtime.supervision.usage": .system,
+            "runtime.recovery": .system,
             "runtime.reconciliation.required": .system,
             "runtime.schedule_result.routed": .system,
             "schedule.result": .system,

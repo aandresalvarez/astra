@@ -8,7 +8,9 @@ the inactivity watchdog stops the provider. The provider keeps running while
 that bounded investigation runs. Existing budget, policy, cancellation, terminal
 reaping and wall-clock limits remain authoritative.
 
-This stage does **not** automatically restart a provider. Signalling a local
+This stage does **not** automatically restart a provider. The subsequent
+[safe recovery stage](2026-10-24-safe-runtime-recovery.md) can resume the same
+owned child when macOS confirms it is suspended. Signalling a local
 process group does not establish that escaped descendants or remote jobs have
 stopped. A model verdict is not permission to start a second writer.
 

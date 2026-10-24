@@ -1788,6 +1788,7 @@ final class AgentRuntimeWorker {
             .providerActiveToolStalled,
             .providerWorkspaceJobStalled,
             .providerSupervisorStalled,
+            .providerRecoveryFailed,
             .providerSupervisionInconclusive,
             .providerSupervisionBudgetUnavailable,
             .providerRunWallClockExceeded,
