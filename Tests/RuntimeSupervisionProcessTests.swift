@@ -121,13 +121,16 @@ struct RuntimeSupervisionProcessTests {
         #expect(!FileManager.default.fileExists(atPath: marker.path))
     }
 
-    @Test("The independent utility uses enforced isolation and rejects invalid output", arguments: [true, false])
-    func actualInvestigator(valid: Bool) async throws {
+    @Test("The independent utility accepts plain or fenced assessments and rejects invalid output",
+          arguments: ["plain", "fenced", "malformed"])
+    func actualInvestigator(format: String) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("supervision-model-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let executable = root.appendingPathComponent("claude")
-        let response = valid ? #"{"assessment":"waiting","explanation":"Known operation is open","evidenceIDs":["runtime"]}"# : "malformed"
+        let valid = format != "malformed"
+        let json = #"{"assessment":"waiting","explanation":"Known operation is open","evidenceIDs":["runtime"]}"#
+        let response = format == "fenced" ? "```json\n\(json)\n```" : (valid ? json : "malformed")
         try """
         #!/bin/sh
         tools_disabled=false

@@ -116,6 +116,12 @@ struct RuntimeSupervisionTests {
         for n in 1...2 {
             _ = session.tick(observation(), investigationDue: true)
             try await waitFor { state.reports.filter { $0.phase == .inconclusive }.count == n }
+            if n == 1 {
+                #expect(state.reports.last?.message.contains("check again in 10 seconds") == true)
+            } else {
+                #expect(state.reports.last?.message.contains("before stopping this attempt") == true)
+                #expect(state.reports.last?.message.contains("checking again") == false)
+            }
             state.advance(11)
         }
         guard case .stop = session.tick(observation(), investigationDue: true) else { Issue.record("Unbounded model extensions"); return }

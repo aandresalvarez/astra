@@ -24,6 +24,8 @@ stopped. A model verdict is not permission to start a second writer.
 3. The model returns a typed assessment: progressing, waiting, suspected stalled,
    or inconclusive. Progress extensions require recent file evidence; known-wait
    extensions require an open tool or managed job. Neither proves useful progress.
+   Responses may contain plain JSON or one complete JSON Markdown fence; prose,
+   multiple blocks, invalid fields and oversized responses remain rejected.
 4. The monitor rechecks the progress revision before accepting a stop. New parsed
    progress or a renewed managed-job heartbeat invalidates an older verdict.
    A suspected-stall result also rechecks file metadata within the same absolute
@@ -63,7 +65,8 @@ stopped. A model verdict is not permission to start a second writer.
   reservations still consume the same run budget. A quiet attempt gets a
   120-second interval after a non-stop verdict.
   Further silence after those bounded checks stops with an explicit inconclusive
-  reason; no indefinite timer extensions.
+  reason; no indefinite timer extensions. The final waiting update states that
+  the next deadline stops the attempt unless new provider progress arrives.
 - Each admitted investigation reserves 16,384 tokens against the run budget.
   The allocation is conservatively recorded separately as estimated usage because
   utility CLIs do not all expose exact billable usage. It is not an exact token or

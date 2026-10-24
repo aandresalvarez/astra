@@ -69,8 +69,17 @@ struct RuntimeSupervisionAssessment: Codable, Sendable, Equatable {
     }
 
     static func decode(_ output: String) -> Self? {
-        let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.utf8.count <= 4_096, let data = text.data(using: .utf8),
+        var text = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.utf8.count <= 4_096 else { return nil }
+        // Claude may fence its JSON even when asked for JSON only. Accept one
+        // complete wrapper, never search surrounding prose for a usable verdict.
+        if text.hasPrefix("```") {
+            let lines = text.components(separatedBy: .newlines)
+            guard lines.count >= 3, let first = lines.first,
+                  ["```json", "```"].contains(first), lines.last == "```" else { return nil }
+            text = lines.dropFirst().dropLast().joined(separator: "\n")
+        }
+        guard let data = text.data(using: .utf8),
               let value = try? JSONDecoder().decode(Self.self, from: data),
               !value.explanation.isEmpty, value.explanation.count <= 600,
               value.evidenceIDs.count <= 3,

@@ -161,14 +161,17 @@ final class RuntimeSupervisionSession: @unchecked Sendable {
             || (assessment.assessment == .waiting && (!evidence.supportsWaiting || !assessment.evidenceIDs.contains("runtime"))) {
             assessment = .inconclusive("The model's conclusion was not supported by the available observations.")
         }
+        let followUp = investigations < configuration.maximumInvestigations
+            ? "ASTRA will check again in \(Int(configuration.recheckSeconds)) seconds if the provider stays quiet."
+            : "ASTRA will allow \(Int(configuration.recheckSeconds)) more seconds for new provider progress before stopping this attempt."
         switch assessment.assessment {
         case .progressing, .waiting:
             nextCheck = now() + configuration.recheckSeconds
             emit(assessment.assessment == .progressing ? .progressing : .waiting,
-                 "Independent model assessment: \(assessment.explanation) ASTRA will check again in \(Int(configuration.recheckSeconds)) seconds if the provider stays quiet.", assessment: assessment, evidence: evidence)
+                 "Independent model assessment: \(assessment.explanation) \(followUp)", assessment: assessment, evidence: evidence)
         case .inconclusive:
             nextCheck = now() + configuration.recheckSeconds
-            emit(.inconclusive, "Progress is unverified: \(assessment.explanation) ASTRA will allow one bounded waiting interval before checking again.", assessment: assessment, evidence: evidence)
+            emit(.inconclusive, "Progress is unverified: \(assessment.explanation) \(followUp)", assessment: assessment, evidence: evidence)
         case .suspectedStalled:
             decision = .stop(reason: "provider_supervisor_stalled", message: "The independent check found a likely stall: \(assessment.explanation) ASTRA is stopping this attempt; partial work is preserved.")
             stopEvidence = (assessment, evidence)
