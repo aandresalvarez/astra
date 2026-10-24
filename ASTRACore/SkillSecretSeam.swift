@@ -42,6 +42,7 @@ public enum SkillSecretSeam {
 }
 
 public protocol SkillSecretPersisting: Sendable {
+    static func readSecretValue(key: String, skillID: UUID, store: SecretStore) -> SecretReadOutcome
     /// Matches `SecretStore.load(key:entityID:)`'s optional-return
     /// semantics; the caller falls back to the stored placeholder value.
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String?
@@ -56,6 +57,10 @@ public protocol SkillSecretPersisting: Sendable {
 }
 
 public extension SkillSecretPersisting {
+    static func readSecretValue(key: String, skillID: UUID, store: SecretStore) -> SecretReadOutcome {
+        loadSecretValue(key: key, skillID: skillID, store: store).map(SecretReadOutcome.value) ?? .missing
+    }
+
     /// `deleteAllSecrets` reporting whether the secrets were cleared.
     /// Defaulted to success so test fakes keep compiling.
     static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool {

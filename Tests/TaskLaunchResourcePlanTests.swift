@@ -260,7 +260,7 @@ struct TaskLaunchResourcePlanTests {
         try "[credential]\nhelper = osxkeychain\n".write(to: gitCredentialPath, atomically: true, encoding: .utf8)
 
         let workspace = Workspace(name: "GitHub Metadata", primaryPath: workspaceRoot.path)
-        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let task = AgentTask(
             title: "Review PR metadata",
             goal: "Use GitHub to inspect pull request metadata and checks",

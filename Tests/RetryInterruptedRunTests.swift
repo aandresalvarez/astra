@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -101,11 +102,507 @@ struct RetryInterruptedRunTests {
         })
     }
 
-    @Test("A run interrupted by an ASTRA restart or a queue stop resumes too")
+    @Test("A run interrupted by an ASTRA restart, a queue stop or an expired plugin sign-in resumes too")
     func restartAndQueueStopResume() async throws {
-        for reason in ["app_restarted", "queue_cancelled"] {
+        for reason in ["app_restarted", "queue_cancelled", "capability_session_expired"] {
             let submitted = try await retry(stopReason: reason)
             #expect(submitted.mode == .continuation, "\(reason)")
+        }
+    }
+
+    @Test("Resume after an expired sign-in waits for the repair's check to pass")
+    func resumeWaitsForTheRepairCheck() async throws {
+        for works in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Resume After Repair", primaryPath: env.root)
+            let task = AgentTask(title: "Expired", goal: "List projects", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            env.context.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.System.runtimeRepairRequired,
+                payload: CLISessionExpiryClassifier.googleCloud.repair.encoded(),
+                run: run
+            ))
+            try env.context.save()
+            env.coordinator.repairCheck = { _ in works }
+
+            #expect(env.coordinator.pendingRepair(for: task)?.command == "gcloud auth login")
+            await env.coordinator.resumeTask(task)?.value
+            let requests = try TaskTurnRequestRepository.requests(for: task, in: env.context)
+            if works {
+                #expect(requests.count == 1)
+                if let request = requests.last {
+                    env.queue.cancelTurnRequest(id: request.id, workspace: workspace, modelContext: env.context)
+                }
+            } else {
+                // No new run was started, so the stopped run keeps its repair.
+                #expect(requests.isEmpty)
+                #expect(task.events.contains { $0.type == TaskEventTypes.System.info.rawValue && $0.payload.contains("wasn't resumed") })
+                #expect(env.coordinator.pendingRepair(for: task) != nil)
+            }
+        }
+    }
+
+    @Test("A task closed, deleted or rerun while the repair check runs is not continued")
+    func repairCheckRevalidatesTheTask() async throws {
+        for change in ["close", "delete", "newer run"] {
+            for useRetry in [false, true] {
+                let env = try makeEnvironment()
+                defer { try? FileManager.default.removeItem(atPath: env.root) }
+                let workspace = Workspace(name: "Left During Check", primaryPath: env.root)
+                let task = AgentTask(title: "Expired", goal: "List projects", workspace: workspace, runtime: .claudeCode)
+                task.status = .failed
+                task.sessionId = "claude-session-1"
+                env.context.insert(workspace)
+                env.context.insert(task)
+                let run = TaskRun(task: task)
+                run.status = .failed
+                run.stopReason = "capability_session_expired"
+                run.completedAt = Date()
+                env.context.insert(run)
+                env.context.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.System.runtimeRepairRequired,
+                    payload: CLISessionExpiryClassifier.googleCloud.repair.encoded(),
+                    run: run
+                ))
+                try env.context.save()
+                // The person acts while the check is still running; then it passes.
+                let coordinator = env.coordinator
+                let context = env.context
+                let leave: @MainActor () -> Void = {
+                    switch change {
+                    case "close": coordinator.setDoneState(task, to: true)
+                    case "delete": context.delete(task)
+                    default:
+                        let newer = TaskRun(task: task)
+                        newer.startedAt = run.startedAt.addingTimeInterval(1)
+                        context.insert(newer)
+                    }
+                    try? context.save()
+                }
+                env.coordinator.repairCheck = { _ in
+                    await leave()
+                    return true
+                }
+
+                if useRetry {
+                    await env.coordinator.retryTask(task)?.value
+                } else {
+                    await env.coordinator.resumeTask(task)?.value
+                }
+                let requests = try env.context.fetch(FetchDescriptor<TaskTurnRequest>())
+                #expect(requests.isEmpty, "\(change), retry: \(useRetry)")
+            }
+        }
+    }
+
+    @Test("A rejected GH_TOKEN stop offers no sign-in, but Resume and Retry still wait for its check")
+    func tokenStopIsCheckedBeforeContinuing() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Token", primaryPath: env.root)
+            let task = AgentTask(title: "Token", goal: "Open a PR", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = CLISessionExpiryClassifier.gitHubEnvironmentToken
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
+            try env.context.save()
+            var checked: [String] = []
+            var directories: [String?] = []
+            env.coordinator.repairCheck = { repair in
+                checked.append(repair.checkBinary ?? "")
+                directories.append(repair.checkWorkingDirectory)
+                return false
+            }
+
+            #expect(env.coordinator.pendingRepair(for: task)?.checkBinary == "gh")
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(checked == ["gh"])
+            // A relative PATH entry is found from where the run starts.
+            #expect(directories == [TaskWorkspaceAccess(task: task).codeWorkingDirectory])
+            #expect(try TaskTurnRequestRepository.requests(for: task, in: env.context).isEmpty)
+            #expect(task.events.contains { $0.type == TaskEventTypes.System.info.rawValue && $0.payload.contains("still isn't working") })
+        }
+    }
+
+    @Test("A check-only stop is found by timestamp, whatever order the events come back in and whatever other error the run has")
+    func tokenStopIsFoundAmongOtherErrors() throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let workspace = Workspace(name: "Token Order", primaryPath: env.root)
+        let task = AgentTask(title: "Token", goal: "Open a PR", workspace: workspace, runtime: .claudeCode)
+        task.status = .failed
+        env.context.insert(workspace)
+        env.context.insert(task)
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "capability_session_expired"
+        env.context.insert(run)
+        let stop = TaskEvent(
+            task: task, eventType: TaskEventTypes.System.error,
+            payload: CLISessionExpiryClassifier.gitHubEnvironmentToken.stopMessage, run: run
+        )
+        env.context.insert(stop)
+        // Listed after the stop but older, as a reloaded store may list it.
+        let older = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "Provider exited with status 1", run: run)
+        older.timestamp = stop.timestamp.addingTimeInterval(-60)
+        env.context.insert(older)
+        #expect(env.coordinator.pendingRepair(for: task)?.checkBinary == "gh")
+        // Newer and unrelated: the stop message is still the one read.
+        older.timestamp = stop.timestamp.addingTimeInterval(60)
+        #expect(env.coordinator.pendingRepair(for: task)?.checkBinary == "gh")
+        withExtendedLifetime(env.container) {}
+    }
+
+    @Test("The GH_TOKEN check judges a token a detached skill snapshot still delivers")
+    func tokenCheckIncludesDetachedSnapshotToken() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Snapshot Token", primaryPath: env.root)
+            let task = AgentTask(title: "Token", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            // The skill that set this token was removed; only its snapshot
+            // remains, and the resumed turn's launch scope still includes it.
+            task.skillSnapshots = [SkillSnapshotConfig(
+                id: UUID().uuidString, name: "GitHub Agent", icon: "key", description: "GitHub pull requests",
+                allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+                environmentKeys: ["GH_TOKEN"], environmentValues: ["snapshot-token"], isGlobal: false,
+                connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+                createdAt: Date(), updatedAt: Date()
+            )]
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = CLISessionExpiryClassifier.gitHubEnvironmentToken
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
+            try env.context.save()
+            var environments: [[String: String]?] = []
+            env.coordinator.repairCheck = { repair in
+                environments.append(repair.checkEnvironment)
+                return false
+            }
+
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(environments == [["GH_TOKEN": "snapshot-token"]], "retry: \(useRetry)")
+        }
+    }
+
+    @Test("The GitHub check targets the enterprise host and token the resumed run gets")
+    func gitHubCheckUsesEnterpriseHost() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Enterprise", primaryPath: env.root)
+            let task = AgentTask(title: "Token", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            task.skillSnapshots = [SkillSnapshotConfig(
+                id: UUID().uuidString, name: "GitHub Agent", icon: "key", description: "GitHub pull requests",
+                allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+                environmentKeys: ["GH_HOST", "GH_ENTERPRISE_TOKEN", "UNRELATED"],
+                environmentValues: ["github.example.com", "enterprise-token", "x"], isGlobal: false,
+                connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+                createdAt: Date(), updatedAt: Date()
+            )]
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = CLISessionExpiryClassifier.gitHub
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
+            try env.context.save()
+            var checks: [(environment: [String: String]?, arguments: [String]?)] = []
+            env.coordinator.repairCheck = { repair in
+                checks.append((repair.checkEnvironment, repair.checkArguments))
+                return false
+            }
+
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(checks.map(\.environment) == [["GH_HOST": "github.example.com", "GH_ENTERPRISE_TOKEN": "enterprise-token"]])
+            #expect(checks.map(\.arguments) == [["auth", "status", "--active", "--hostname", "github.example.com"]], "retry: \(useRetry)")
+        }
+    }
+
+    @Test("The GitHub check targets the Enterprise host of the resumed run's GH_REPO")
+    func gitHubCheckUsesRepositoryHost() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let workspace = Workspace(name: "Enterprise Repo", primaryPath: env.root)
+        let task = AgentTask(title: "Token", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+        task.status = .failed
+        task.sessionId = "claude-session-1"
+        task.skillSnapshots = [SkillSnapshotConfig(
+            id: UUID().uuidString, name: "GitHub Agent", icon: "key", description: "GitHub pull requests",
+            allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+            environmentKeys: ["GH_REPO"], environmentValues: ["github.example.com/team/app"], isGlobal: false,
+            connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+            createdAt: Date(), updatedAt: Date()
+        )]
+        env.context.insert(workspace)
+        env.context.insert(task)
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.stopReason = "capability_session_expired"
+        run.completedAt = Date()
+        env.context.insert(run)
+        let family = CLISessionExpiryClassifier.gitHub
+        env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
+        try env.context.save()
+        var checks: [(environment: [String: String]?, arguments: [String]?)] = []
+        env.coordinator.repairCheck = { repair in
+            checks.append((repair.checkEnvironment, repair.checkArguments))
+            return false
+        }
+
+        await env.coordinator.resumeTask(task)?.value
+        #expect(checks.map(\.environment) == [["GH_REPO": "github.example.com/team/app"]])
+        #expect(checks.map(\.arguments) == [["auth", "status", "--active", "--hostname", "github.example.com"]])
+    }
+
+    @Test("The gh check reads the configuration directory and PATH the resumed run gets")
+    func gitHubCheckUsesProjectedConfigDirectory() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Config Dir", primaryPath: env.root)
+            let task = AgentTask(title: "Token", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            // The stopped `gh` read its login from this task-scoped store.
+            task.skillSnapshots = [SkillSnapshotConfig(
+                id: UUID().uuidString, name: "GitHub Agent", icon: "key", description: "GitHub pull requests",
+                allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+                environmentKeys: ["GH_CONFIG_DIR", "XDG_CONFIG_HOME", "PATH", "UNRELATED"],
+                environmentValues: ["/tmp/task-gh", "/tmp/task-xdg", "/tmp/task-bin", "x"], isGlobal: false,
+                connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+                createdAt: Date(), updatedAt: Date()
+            )]
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = CLISessionExpiryClassifier.gitHub
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
+            try env.context.save()
+            var environments: [[String: String]?] = []
+            env.coordinator.repairCheck = { repair in
+                environments.append(repair.checkEnvironment)
+                return false
+            }
+
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(environments == [[
+                "GH_CONFIG_DIR": "/tmp/task-gh", "XDG_CONFIG_HOME": "/tmp/task-xdg", "PATH": "/tmp/task-bin"
+            ]], "retry: \(useRetry)")
+        }
+    }
+
+    @Test("The gcloud check runs with the credential-selecting variables the resumed run gets")
+    func gcloudCheckUsesLaunchEnvironment() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Cloud Config", primaryPath: env.root)
+            let task = AgentTask(title: "Projects", goal: "List Google Cloud projects", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            // The stopped `gcloud` read this configuration, not ASTRA's own login.
+            task.skillSnapshots = [SkillSnapshotConfig(
+                id: UUID().uuidString, name: "Cloud Agent", icon: "cloud", description: "Google Cloud projects",
+                allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+                environmentKeys: ["CLOUDSDK_CONFIG"], environmentValues: ["/tmp/broken-gcloud-config"], isGlobal: false,
+                connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+                createdAt: Date(), updatedAt: Date()
+            )]
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = CLISessionExpiryClassifier.googleCloud
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
+            try env.context.save()
+            var environments: [[String: String]?] = []
+            env.coordinator.repairCheck = { repair in
+                environments.append(repair.checkEnvironment)
+                return false
+            }
+
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(environments == [["CLOUDSDK_CONFIG": "/tmp/broken-gcloud-config"]], "retry: \(useRetry)")
+        }
+    }
+
+    @Test("An empty projected variable reaches the check as the resumed run gets it, not as ASTRA's own")
+    func emptyProjectedVariablesReachTheCheck() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let workspace = Workspace(name: "Empty Values", primaryPath: env.root)
+        let task = AgentTask(title: "Token", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+        task.status = .failed
+        task.sessionId = "claude-session-1"
+        task.skillSnapshots = [SkillSnapshotConfig(
+            id: UUID().uuidString, name: "GitHub Agent", icon: "key", description: "GitHub pull requests",
+            allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+            environmentKeys: ["PATH", "GH_TOKEN", "CLOUDSDK_CONFIG", "HOME"], environmentValues: ["", "", "", "/tmp/task-selected-home"], isGlobal: false,
+            connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+            createdAt: Date(), updatedAt: Date()
+        )]
+        env.context.insert(workspace)
+        env.context.insert(task)
+        try env.context.save()
+        #expect(TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gh") == ["PATH": "", "GH_TOKEN": "", "HOME": "/tmp/task-selected-home"])
+        #expect(TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "/opt/sdk/bin/gcloud")?["CLOUDSDK_CONFIG"] == "")
+        // The resumed shell searches no directory, so it finds no `git`; nor
+        // does the check, though ASTRA's own PATH has one.
+        var repair = RepairAction(
+            strategy: .terminal, componentName: "Git", title: "Check", verb: "Check", detail: "",
+            checkBinary: "git", checkArguments: ["--version"]
+        )
+        repair.checkEnvironment = TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: "gh")
+        #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+        repair.checkEnvironment = nil
+        #expect(await PluginRepairCoordinator.liveCheck(repair))
+    }
+
+    @Test("Resume checks the Enterprise host the run's checkout names, and an ADC file the run selects without a sign-in")
+    func resumeChecksTheCheckoutHostAndCredentialFile() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            for arguments in [["init", "-q"], ["remote", "add", "origin", "https://ghe.example.com/team/app.git"]] {
+                let git = Process()
+                git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                git.arguments = ["-C", env.root] + arguments
+                try git.run()
+                git.waitUntilExit()
+            }
+            let workspace = Workspace(name: "Checkout", primaryPath: env.root)
+            let task = AgentTask(title: "Pulls", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            task.skillSnapshots = [SkillSnapshotConfig(
+                id: UUID().uuidString, name: "Cloud Agent", icon: "cloud", description: "GitHub pull requests and Google Cloud",
+                allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+                environmentKeys: ["GOOGLE_APPLICATION_CREDENTIALS"], environmentValues: ["/tmp/team-adc.json"], isGlobal: false,
+                connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+                createdAt: Date(), updatedAt: Date()
+            )]
+            env.context.insert(workspace)
+            env.context.insert(task)
+            var checked: [RepairAction] = []
+            env.coordinator.repairCheck = { repair in
+                checked.append(repair)
+                return false
+            }
+            for repair in [CLISessionExpiryClassifier.gitHub.repair, CLISessionExpiryClassifier.googleCloudApplicationDefault.repair] {
+                let run = TaskRun(task: task)
+                run.status = .failed
+                run.stopReason = "capability_session_expired"
+                run.completedAt = Date()
+                env.context.insert(run)
+                env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeRepairRequired, payload: repair.encoded(), run: run))
+                try env.context.save()
+                if useRetry {
+                    await env.coordinator.retryTask(task)?.value
+                } else {
+                    await env.coordinator.resumeTask(task)?.value
+                }
+            }
+            try #require(checked.count == 2, "retry: \(useRetry)")
+            #expect(checked[0].checkArguments == ["auth", "status", "--active", "--hostname", "ghe.example.com"], "retry: \(useRetry)")
+            #expect(checked[0].command == nil)
+            #expect(checked[0].verb == "Check")
+            #expect(checked[1].command == nil, "retry: \(useRetry)")
+            #expect(checked[1].detail.contains("`/tmp/team-adc.json`"))
+        }
+    }
+
+    @Test("Resume checks the credential store the failed call selected itself, over the launch's")
+    func resumeChecksTheCommandLocalStore() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Team Store", primaryPath: env.root)
+            let task = AgentTask(title: "Projects", goal: "List Google Cloud projects", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = try #require(CLISessionExpiryClassifier.family(
+                content: "ERROR: Reauthentication required.", command: "CLOUDSDK_CONFIG=/tmp/team gcloud projects list"
+            ))
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeRepairRequired, payload: family.repair.encoded(), run: run))
+            try env.context.save()
+            var environments: [[String: String]?] = []
+            env.coordinator.repairCheck = { repair in
+                environments.append(repair.checkEnvironment)
+                return false
+            }
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(environments.count == 1)
+            #expect(environments.first??["CLOUDSDK_CONFIG"] == "/tmp/team", "retry: \(useRetry)")
         }
     }
 
@@ -146,6 +643,13 @@ struct RetryInterruptedRunTests {
         #expect(scheduled.task.tokensUsed == 0)
         let chained = try await retry(stopReason: "cancelled", chainedFromID: UUID())
         #expect(chained.mode == .initial)
+    }
+
+    @Test("After an expired plugin sign-in a follow-up turn resumes instead of being resent")
+    func expiredFollowUpResumes() async throws {
+        let submitted = try await retry(stopReason: "capability_session_expired", followUp: "now also file the tickets")
+        #expect(submitted.mode == .continuation)
+        #expect(submitted.message != "now also file the tickets")
     }
 
     @Test("A pending user follow-up still wins over the generic resume message")

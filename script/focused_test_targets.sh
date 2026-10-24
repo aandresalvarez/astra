@@ -32,6 +32,12 @@ target_for_path() {
     Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
       ;;
+    Tests/TaskMainActorScalingGateTests.swift|Tests/TaskHistoryReadTests.swift|Astra/Models/TaskHistoryRead.swift|Astra/Services/Tasks/TaskConversationContinuationService.swift|Astra/Services/Tasks/TaskExecutionLaunchSnapshotApplicator.swift|Astra/Services/Runtime/TaskRuntimePermissionGrants.swift)
+      add_target "TaskMainActorScalingGateTests"
+      add_target "TaskHistoryReadTests"
+      add_target "TaskExecutionLaunchSnapshotApplicatorTests"
+      add_target "RuntimePermissionGrantRegressionTests"
+      ;;
     Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Astra/Services/Persistence/WorkspaceSavedExportSnapshot.swift|Astra/Services/Persistence/WorkspaceExportChangeScope.swift|Astra/Services/Persistence/WorkspaceSavedExportLease.swift|Astra/Services/Persistence/WorkspaceSnapshotDirectory.swift|Tests/WorkspaceSavedExportPendingTests.swift|Tests/WorkspaceSavedExportReplacementTests.swift|Tests/WorkspaceSnapshotDirectoryTests.swift|Tests/WorkspaceSavedExportSnapshotTests.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceSavedExportReviewTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
       add_target "RuntimeSettlementReviewRegressionTests"
       add_target "WorkspaceSavedAutoExportTests"
@@ -220,8 +226,21 @@ target_for_path() {
       add_target "AgentUtilityRuntimeTests"
       add_target "ProcessMonitorTests"
       ;;
-    Tests/RuntimeProgressSignalTests.swift)
+    ASTRACore/RuntimeProgressSignals.swift|Tests/RuntimeProgressSignalTests.swift)
       add_target "StreamVolumeAccountingTests"
+      add_target "RuntimeProgressClassificationTests"
+      add_target "WatchdogEscalationTests"
+      add_target "RuntimeStreamReplayTests"
+      add_target "CodexFileChangeProgressTests"
+      ;;
+    ASTRACore/CodexStreamEventParser.swift|Astra/Services/Runtime/CodexCLIRuntime.swift|Tests/CodexCLIRuntimeTests.swift|Tests/CodexFileChangeProgressTests.swift)
+      add_target "CodexCLIRuntimeTests"
+      add_target "ProviderMessageIdentityTests"
+      add_target "AgentEventRecorderTests"
+      add_target "ProviderTranscriptConformanceTests"
+      add_target "RuntimeProgressClassificationTests"
+      add_target "WatchdogEscalationTests"
+      add_target "CodexFileChangeProgressTests"
       ;;
     Astra/Services/Runtime/AgentPromptBuilder.swift|Astra/Services/Runtime/TaskInputManifest.swift|Astra/Services/Runtime/TaskInputsPromptSectionProvider.swift|Astra/Services/Tasks/PromptContextSectionProvider.swift|Astra/Views/PromptContextPreviewView.swift|Tests/TaskInputContinuityPromptTests.swift|Tests/AgentRuntimeWorkerTests.swift)
       add_target "TaskInputContinuityPromptTests"

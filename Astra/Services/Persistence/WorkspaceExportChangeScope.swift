@@ -51,9 +51,10 @@ struct WorkspaceExportChangeScope {
     func affects(_ workspace: Workspace?, id: UUID) -> Bool {
         if all || workspaces.contains(id) { return true }
         guard let workspace, !workspace.isDeleted else { return false }
-        return !globalSkills.isDisjoint(with: workspace.enabledGlobalSkillIDs.compactMap(UUID.init(uuidString:)))
-            || !globalConnectors.isDisjoint(with: workspace.enabledGlobalConnectorIDs.compactMap(UUID.init(uuidString:)))
-            || !globalTools.isDisjoint(with: workspace.enabledGlobalToolIDs.compactMap(UUID.init(uuidString:)))
+        let activation = WorkspaceCapabilityActivation.state(of: workspace)
+        return !globalSkills.isDisjoint(with: activation.globalSkillIDs.compactMap(UUID.init(uuidString:)))
+            || !globalConnectors.isDisjoint(with: activation.globalConnectorIDs.compactMap(UUID.init(uuidString:)))
+            || !globalTools.isDisjoint(with: activation.globalToolIDs.compactMap(UUID.init(uuidString:)))
     }
 
     private mutating func fetchPrevious<Model: PersistentModel>(_ models: [any PersistentModel],

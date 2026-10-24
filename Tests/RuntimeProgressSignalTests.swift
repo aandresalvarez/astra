@@ -114,14 +114,39 @@ struct RuntimeProgressClassificationTests {
         // item itself, and an item whose paths the parser cannot read.
         let lines = [
             #"{"type":"item.started","item":{"id":"item_6","type":"file_change","changes":[{"path":"/workspace/answer.md","kind":"add"}],"status":"in_progress"}}"#,
+            #"{"type":"item.started","item":{"id":"item_6","type":"file_change","status":"in_progress"}}"#,
             #"{"type":"item.completed","item":{"id":"item_6","type":"file_change","changes":[{"path":"/workspace/answer.md","kind":"add"}],"status":"completed"}}"#,
+            #"{"type":"item.completed","item":{"id":"item_6","type":"file_change","changes":[{"path":"a.md","kind":"add"},{"path":"b.md","kind":"update"}],"status":"completed"}}"#,
             #"{"type":"item.completed","item":{"type":"file_change","path":"answer.md","kind":"modified"}}"#,
-            #"{"type":"item.completed","item":{"id":"item_7","type":"file_change","status":"completed"}}"#
+            #"{"type":"item.completed","item":{"id":"item_7","type":"file_change","status":"completed"}}"#,
+            #"{"type":"item.completed","item":{"id":"item_7","type":"file_change","changes":[],"status":"completed"}}"#,
+            #"{"type":"item.completed","item":{"id":"item_7","type":"file_change","changes":[{"future_path":"answer.md"}],"status":"completed"}}"#
         ]
         for line in lines {
-            let kinds = CodexCLIRuntime.parseEvents(line: line, parsesJSONLines: true)
-                .map(AgentRuntimeWorker.ProcessMonitor.progressKind(for:))
+            let parsed = CodexCLIRuntimeAdapter().parseProcessEvents(line: line, parsesJSONLines: true)
+            let kinds = parsed.map(AgentRuntimeWorker.ProcessMonitor.progressKind(for:))
             #expect(kinds.contains(.actionableProgress), "\(line) is a patch the model composed in silence")
+            #expect(!kinds.contains(.terminal), "A patch does not end the turn")
+            #expect(parsed.allSatisfy { AgentRuntimeWorker.ProcessMonitor.repetitionSignature($0) == nil },
+                    "Separate patches must not be mistaken for repeated identical output")
+        }
+    }
+
+    @Test("Unsuccessful Codex patches retain their failure outcome")
+    func unsuccessfulCodexPatchesDoNotBecomeSuccessfulChanges() {
+        for status in ["failed", "declined", "rejected", "cancelled", "canceled", "error"] {
+            for idField in [#""id":"patch-1","#, ""] {
+                let line = #"{"type":"item.completed","item":{\#(idField)"type":"file_change","path":"answer.md","status":"\#(status)"}}"#
+                let events = CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true)
+                #expect(!events.contains { if case .fileChange = $0 { true } else { false } })
+                if !idField.isEmpty {
+                    #expect(events == [.toolResult(id: "patch-1", content: "file_change \(status)", isError: true)])
+                }
+                let parsed = CodexCLIRuntimeAdapter().parseProcessEvents(line: line, parsesJSONLines: true)
+                #expect(!parsed.isEmpty)
+                #expect(!parsed.contains { if case .control("codex.item.file_change") = $0 { true } else { false } })
+                #expect(!parsed.contains { if case .result = $0 { true } else { false } })
+            }
         }
     }
 
@@ -439,15 +464,17 @@ struct WatchdogEscalationTests {
     /// `apply_patch` while the model composed it, so every patch opened a
     /// breach, and the patch landing did not close it. The second patch's
     /// silence stopped a run that had been writing files the whole time.
-    @Test("A Codex patch landing between breaches restores the extension budget")
-    func codexFileChangeRestoresExtensionBudget() {
+    @Test("A Codex patch landing between breaches restores the extension budget", arguments: [
+        #"{"type":"item.completed","item":{"id":"item_6","type":"file_change","changes":[{"path":"/workspace/report.md","kind":"add"}],"status":"completed"}}"#,
+        #"{"type":"item.completed","item":{"id":"item_6","type":"file_change","status":"completed"}}"#
+    ])
+    func codexFileChangeRestoresExtensionBudget(patchLanded: String) {
         let monitor = makeMonitor()
         let process = ProgressSignalMockProcess()
 
         _ = monitor.processEvent(.text(text: "I'll write the report."), process: process)
         _ = monitor.evaluateWatchdogTimeoutForTesting(process: process)
-        let patchLanded = #"{"type":"item.completed","item":{"id":"item_6","type":"file_change","changes":[{"path":"/workspace/report.md","kind":"add"}],"status":"completed"}}"#
-        for event in CodexCLIRuntime.parseEvents(line: patchLanded, parsesJSONLines: true) {
+        for event in CodexCLIRuntimeAdapter().parseProcessEvents(line: patchLanded, parsesJSONLines: true) {
             _ = monitor.processEvent(event, process: process)
         }
 

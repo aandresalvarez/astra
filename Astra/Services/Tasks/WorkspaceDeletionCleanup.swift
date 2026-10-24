@@ -110,6 +110,22 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         )
     }
 
+    /// Secret plugin settings live under each activation's projected skill
+    /// IDs; they go with the workspace.
+    @MainActor
+    private static func activationSkillCleanups(_ workspace: Workspace) -> [SkillKeychainCleanup] {
+        let activations = WorkspaceCapabilityActivation.activations(of: workspace)
+        guard !activations.isEmpty else { return [] }
+        let packages = Dictionary(
+            CapabilityRuntimeResourceMatcher.packageDefinitions().map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return activations.flatMap { activation in
+            PluginRuntimeProjection.secretNamespaces(of: activation, package: packages[activation.pluginID])
+                .map { SkillKeychainCleanup(skillID: $0) }
+        }
+    }
+
     @MainActor
     init(_ workspace: Workspace) {
         workspaceID = workspace.id
@@ -119,7 +135,7 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         mirrorFileIDs = []
         connectors = workspace.connectors.map(\.keychainCleanup)
             + workspace.skills.flatMap { $0.connectors.map(\.keychainCleanup) }
-        skills = workspace.skills.map(\.keychainCleanup)
+        skills = workspace.skills.map(\.keychainCleanup) + Self.activationSkillCleanups(workspace)
         folderWasResolvedOnRead = false
     }
 }
@@ -402,9 +418,14 @@ enum WorkspaceDeletionCleanupService {
     static func settle(
         _ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext,
         retained: [ConnectorKeychainCleanup] = [], retainedSkillIDs: Set<UUID> = [], movedMirrors: [String] = [],
-        identity: (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:)
+        extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil,
+        identity: (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
+        cleanConnectors: (([ConnectorKeychainCleanup], ConnectorCredentialCleanup.Ownership) -> Bool)? = nil,
+        cleanSkill: ((SkillKeychainCleanup) -> Bool)? = nil
     ) -> Bool {
-        guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
+        guard PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext),
+              let requests = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+              let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
               let connectors = try? modelContext.fetch(FetchDescriptor<Connector>()),
               let skills = try? modelContext.fetch(FetchDescriptor<Skill>()) else { return false }
         // The mirror files pinned at deletion, compared with the ones each
@@ -469,16 +490,23 @@ enum WorkspaceDeletionCleanupService {
             ], level: .error)
             return false
         }
-        let liveSkills = Set(skills.map(\.id))
+        // Stored rows, and the namespaces live activations name: a workspace
+        // imported over this one under its ID projects into the same ones.
+        guard let liveProjected = PluginSecretCleanupOutbox.liveSkillIDs(modelContext: modelContext) else { return false }
+        let liveSkills = Set(skills.map(\.secretNamespaceID)).union(liveProjected)
+        guard let mirrored = PluginCredentialMirrorReferences.capture(modelContext: modelContext,
+            extraMirrors: extraMirrors, excludingWorkspaceIDs: excludingWorkspaceIDs ?? [record.workspaceID]) else { return false }
         // Every credential is attempted; any that couldn't be cleared keeps
         // the record for an idempotent retry. A recreated connector can share
         // a stable endpoint or package namespace under a new ID, so
         // connector ownership is per namespace.
-        var cleared = ConnectorCredentialCleanup.run(
-            record.connectors, ownership: ConnectorCredentialCleanup.Ownership(connectors, retained: retained)
-        )
+        let ready = record.connectors.filter { !requests.holdsAccount($0) && !mirrored.holdsAccount($0) }
+        let ownership = ConnectorCredentialCleanup.Ownership(connectors, retained: retained)
+        let attempted = cleanConnectors.map { $0(ready, ownership) } ?? ConnectorCredentialCleanup.run(ready, ownership: ownership)
+        var cleared = ready.count == record.connectors.count && attempted
         for skill in record.skills where !liveSkills.contains(skill.skillID) && !retainedSkillIDs.contains(skill.skillID) {
-            cleared = skill.run() && cleared
+            if requests.holdsSkill(skill.skillID) || mirrored.holdsSkill(skill.skillID) { cleared = false; continue }
+            cleared = (cleanSkill.map { $0(skill) } ?? skill.run()) && cleared
         }
         if !cleared {
             AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
@@ -539,7 +567,7 @@ enum WorkspaceDeletionCleanupService {
                     record, modelContext: ModelContext(modelContext.container),
                     retained: others.flatMap(\.connectors) + intentOwners,
                     retainedSkillIDs: Set(others.flatMap { $0.skills.map(\.skillID) }).union(mirrored.skillIDs),
-                    movedMirrors: movedMirrors
+                    movedMirrors: movedMirrors, extraMirrors: extraMirrors, excludingWorkspaceIDs: deleting
                 ) else { continue }
                 store.remove(record)
                 held = others

@@ -57,6 +57,9 @@ struct CapabilityGalleryInventoryTests {
         var approved = makeGalleryPackage(id: "jira-workflow", name: "Jira Workflow", category: "Integrations")
         approved.skills[0].name = "Jira Agent"
 
+        let activation = WorkspaceCapabilityActivation.updateActivation(for: approved.id, in: workspace) { $0 }
+        WorkspaceCapabilityActivation.setOverridden(true, componentID: CapabilityResourceOrigin.componentID(for: approved.skills[0]),
+            rowID: skill.id, on: activation)
         let packages = CapabilityGalleryInventory.managementPackages(
             catalogPackages: [approved],
             capabilities: WorkspaceCapabilities(workspace: workspace),
@@ -222,11 +225,6 @@ struct CapabilityGalleryInventoryTests {
         #expect(allowed.map(\.id) == ["clinical-only", "researcher-only"])
     }
 
-    @Test("gallery uses one column in every presentation")
-    func galleryUsesOneColumn() {
-        #expect(CapabilityGalleryLayout.columnCount(for: .embedded) == 1)
-        #expect(CapabilityGalleryLayout.columnCount(for: .modal) == 1)
-    }
 }
 
 private func makeGalleryPackage(

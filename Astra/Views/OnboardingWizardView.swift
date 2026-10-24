@@ -587,6 +587,7 @@ struct OnboardingWizardView: View {
         case .authorizationRequired(let detail, _): detail
         case .unresponsive(let detail): detail
         case .missingBinary: "Not installed on this Mac"
+        case .notChecked(let detail): detail
         case .none: "Not yet checked"
         }
     }

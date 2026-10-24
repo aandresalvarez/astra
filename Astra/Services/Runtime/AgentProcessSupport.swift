@@ -1,45 +1,5 @@
 import Foundation
 import ASTRACore
-protocol AgentRuntimeProcessControl: AnyObject {
-    var isRunning: Bool { get }
-    var terminationStatus: Int32 { get }
-    func terminate()
-    /// Asks the provider to wind down before it is signalled, and reports
-    /// whether there was a channel to ask through.
-    ///
-    /// A watchdog kill discards everything the run produced, so it is worth one
-    /// cheap attempt to let the provider notice the run is over and flush what
-    /// it already has. Returns false for process types with no such channel,
-    /// so the caller knows not to wait for an answer that cannot come.
-    @discardableResult
-    func requestGracefulStop() -> Bool
-}
-
-extension AgentRuntimeProcessControl {
-    @discardableResult
-    func requestGracefulStop() -> Bool { false }
-}
-
-extension Process: AgentRuntimeProcessControl {}
-
-final class AgentRuntimeProcessControlBox: @unchecked Sendable {
-    private let process: AgentRuntimeProcessControl
-
-    init(_ process: AgentRuntimeProcessControl) {
-        self.process = process
-    }
-
-    var isRunning: Bool { process.isRunning }
-
-    func terminate() {
-        process.terminate()
-    }
-
-    func requestGracefulStop() -> Bool {
-        process.requestGracefulStop()
-    }
-}
-
 final class AgentLockedBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var _value = ""
@@ -394,6 +354,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var _policyApprovalMessage: String?
     private var _runtimeStopReason: String?
     private var _runtimeStopMessage: String?
+    private var _runtimeRepairContext: RuntimeRepairContext?
     private var _sawAstraComplete: Bool = false
 
     private var browserToolUseIDs: Set<String> = []
@@ -509,6 +470,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var policyApprovalMessage: String? { lock.lock(); defer { lock.unlock() }; return _policyApprovalMessage }
     var runtimeStopReason: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason }
     var runtimeStopMessage: String? { lock.lock(); defer { lock.unlock() }; return _runtimeStopMessage }
+    var runtimeRepairContext: RuntimeRepairContext? { lock.lock(); defer { lock.unlock() }; return _runtimeRepairContext }
     var runtimeStopped: Bool { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason?.isEmpty == false }
     init(
         tokenBudget: Int,
@@ -673,6 +635,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             if Self.isSuccessfulGoogleDocsVisiblePageRead(content) {
                 sawGoogleDocsVisiblePageRead = true
             }
+            // A shell tool's command only (another tool's `command` input ran nothing); a failed one counts, a successful one when a later command masked the CLI's status (`gcloud … | cat`).
+            if !toolID.isEmpty, let context = toolUseContextsByID[toolID], CLISessionExpiryClassifier.isShellTool(context.name), let expiry = CLISessionExpiryClassifier.stop(content: content, command: context.summary, failed: isError) { return recordRuntimeStop(reason: expiry.reason, message: expiry.message, process: process, source: "tool_session_expired", repairContext: expiry.repairContext) }
             if let stop = Self.browserTerminalStop(content: content, isKnownBrowserTool: isKnownBrowserTool) {
                 if stop.reason == "google_docs_controlled_browser_required",
                    sawGoogleDocsVisiblePageRead,
@@ -1578,7 +1542,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         reason: String,
         message: String,
         process: AgentRuntimeProcessControl?,
-        source: String = "browser_terminal_error"
+        source: String = "browser_terminal_error",
+        repairContext: RuntimeRepairContext? = nil
     ) -> Bool {
         guard _runtimeStopReason == nil else { return false }
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
@@ -1588,6 +1553,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         ], level: .error, fieldMaxLength: 260)
         _runtimeStopReason = reason
         _runtimeStopMessage = message
+        _runtimeRepairContext = repairContext
         process?.terminate()
         return true
     }

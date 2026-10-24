@@ -270,6 +270,7 @@ struct TaskMainView: View {
     @State private var sensitiveDataSwitchPrompt = RuntimeSensitiveDataSwitchPrompt()
     @State private var isPreparingGitPublishProposal = false
     @State private var gitPublishPreparationError: String?
+    @StateObject private var repairActionPresentation = TaskRepairActionPresentation()
     @FocusState private var isComposerFocused: Bool
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -534,6 +535,7 @@ struct TaskMainView: View {
             onResolved: { threadViewModel.refreshSnapshot(for: task) }
         )
         .runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)
+        .taskRepairNotice(repairActionPresentation, taskID: task.id, runID: latestRun?.id)
         .alert("Couldn’t Fork Conversation", isPresented: isForkCreationErrorPresented) {
             Button("OK", role: .cancel) { forkCreationError = nil }
         } message: {
@@ -3463,16 +3465,6 @@ struct TaskMainView: View {
         currentThreadSnapshot.latestRun
     }
 
-    /// The structured launch-block payload for the latest run, if any was
-    /// recorded — scoped to that specific run via `TaskEventSnapshot.runID`,
-    /// not the whole thread's error history.
-    private var latestRunLaunchBlock: TaskRunLaunchBlockPayload? {
-        guard let runID = latestRun?.id else { return nil }
-        return sortedEvents
-            .last { $0.runID == runID && $0.type == TaskEventTypes.System.runtimeLaunchBlocked.rawValue }
-            .flatMap { TaskRunLaunchBlockPayload.decode(from: $0.payload) }
-    }
-
     private var taskReviewPresentation: TaskReviewPresentation {
         TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
     }
@@ -3516,7 +3508,8 @@ struct TaskMainView: View {
             canToggleDone: canToggleTaskDoneFromDecisionDock,
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
-            launchBlock: latestRunLaunchBlock,
+            launchBlock: TaskRunStopEvidence.launchBlock(events: sortedEvents, runID: latestRun?.id),
+            repair: TaskRunStopEvidence.presentationRepair(events: sortedEvents, runID: latestRun?.id, task: task),
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails
         ))
@@ -3883,6 +3876,8 @@ struct TaskMainView: View {
             onRetryTask?(task)
         case .resume:
             onResumeTask?(task)
+        case .runRepair:
+            repairActionPresentation.start(events: sortedEvents, runID: latestRun?.id, task: task)
         case .reportProblem:
             reportCurrentFailure()
         case .openArtifact:
@@ -4102,7 +4097,8 @@ struct TaskMainView: View {
             },
             onToggleSkill: { skill, enabled in
                 if enabled {
-                    if !task.skills.contains(where: { $0.id == skill.id }) {
+                    if !task.skills.contains(where: { $0.id == skill.id }),
+                       !AgentTask.storableSkills([skill], in: task.workspace).isEmpty {
                         task.skills.append(skill)
                     }
                 } else {
@@ -4231,6 +4227,7 @@ struct TaskMainView: View {
                         state: Bindable(composerDraft).eligibilityPreviewState
                     )
                 }
+
             }
             .background(composerFill)
             .clipShape(composerShape)
@@ -4601,7 +4598,9 @@ struct TaskMainView: View {
 
         // Attach skills by name
         if let skillNames = json["skills"] as? [String] {
-            let matchedIDs = workspace.skills.filter { skillNames.contains($0.name) }.map { $0.id.uuidString }
+            let globalSkills = (try? modelContext.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))) ?? []
+            let matchedIDs = WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills)
+                .filter { skillNames.contains($0.name) }.map { $0.id.uuidString }
             schedule.skillIDs = matchedIDs
         }
 
@@ -4800,46 +4799,19 @@ struct TaskMainView: View {
             ])
             onMoveToDraft?(task)
         } else if [.running, .pendingUser, .completed, .failed, .budgetExceeded, .cancelled].contains(task.status), let taskQueue {
-            // Persist the user's turn before waiting for a worker or the
-            // workspace lock. The runtime links this existing event to its run
-            // on admission instead of inserting a duplicate message.
-            let submission = TaskTurnSubmissionService.submit(
+            let continuation = TaskConversationContinuationService.continueConversation(
                 message: msg,
                 attachmentPaths: attachmentPaths,
-                for: task,
-                into: modelContext
-            )
-            guard case let .success(savedTurn) = submission else {
-                AppLogger.audit(.runtimePersistenceSummary, category: "UI", taskID: task.id, fields: [
-                    "operation": "turn_submission",
-                    "result": "failed"
-                ], level: .error)
-                return
-            }
-            composerDraft.text = ""
-            attachedFiles = []
-            if task.isDone { task.isDone = false } // reopen: sidebar review/unread predicates gate on !isDone
-            if task.status != .running {
-                let interruptionSummary = TaskRunLifecycleService.cancelTask(
-                    task,
-                    modelContext: modelContext,
-                    source: .supersededByNewRun
-                )
-                if interruptionSummary.runsUpdated > 0 {
-                    AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
-                        "source": TaskRunInterruptionSource.supersededByNewRun.auditSource,
-                        "running_runs_cancelled": String(interruptionSummary.runsUpdated),
-                        "next_action": "continue_session"
-                    ], level: .warning)
-                }
-            }
-            logTaskCapabilityContext(source: "task_continue_chat", traceID: traceID)
-            recordCurrentTaskPolicyIfNeeded(source: "task_continue_chat")
-            taskQueue.signalExecutionRequest(
-                id: savedTurn.requestID,
                 task: task,
+                policyLevel: currentTaskPolicyLevel,
+                source: "task_continue_chat",
+                traceID: traceID,
+                taskQueue: taskQueue,
                 modelContext: modelContext
             )
+            guard case .success = continuation else { return }
+            composerDraft.text = ""
+            attachedFiles = []
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             TaskEventInsertionService.insert(event, attachmentPaths: attachmentPaths, into: modelContext)
@@ -4933,14 +4905,16 @@ struct TaskMainView: View {
         taskSkipPermissions = level == .autonomous
     }
 
+    private var currentTaskPolicyLevel: AgentPolicyLevel {
+        taskSkipPermissions ? AgentPolicyLevel.autonomous : AgentPolicyLevel.normalized(taskPolicyLevelRaw)
+    }
+
     private func recordCurrentTaskPolicyIfNeeded(source: String) {
-        let level = taskSkipPermissions ? AgentPolicyLevel.autonomous : AgentPolicyLevel.normalized(taskPolicyLevelRaw)
-        guard TaskPolicyStore.latestSelectedLevel(for: task) != level else { return }
-        TaskPolicyStore.recordSelection(
-            level: level,
+        TaskConversationContinuationService.recordPolicyLevelIfChanged(
+            currentTaskPolicyLevel,
             task: task,
-            modelContext: modelContext,
-            source: source
+            source: source,
+            modelContext: modelContext
         )
     }
 

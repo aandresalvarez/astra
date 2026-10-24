@@ -128,7 +128,9 @@ public enum TaskWorktreeBinding {
         /// was verified against; a pin that can't be verified, even the
         /// configured repository folder itself, is invalid instead.
         case retargeted(pinned: String, commonDirectory: String)
-        case bound(TaskWorktreePayload, event: TaskEvent, pinned: String)
+        /// `eventID` names the binding `task.worktree.prepared` event;
+        /// `event(for:)` resolves it for the few callers that need the row.
+        case bound(TaskWorktreePayload, eventID: UUID, pinned: String)
     }
 
     public static func state(of task: AgentTask) -> State {
@@ -149,17 +151,19 @@ public enum TaskWorktreeBinding {
     public static func pinsPreparedWorktree(_ task: AgentTask) -> Bool {
         guard let pinned = task.executionRootPath, !pinned.isEmpty else { return false }
         let pin = WorkspacePathPresentation.standardizedPath(pinned)
-        return task.events.contains { event in
-            guard !event.isDeleted, event.hasType(TaskEventTypes.Task.worktreePrepared) else { return false }
-            guard case .success(let payload) = event.decodePayload(as: TaskWorktreePayload.self) else { return true }
+        return preparedRecords(for: task).contains { record in
+            guard case .success(let payload) = record.decodePayload(as: TaskWorktreePayload.self) else { return true }
             return WorkspacePathPresentation.standardizedPath(payload.worktreePath) == pin
         }
     }
 
+    /// Only this task's worktree evidence, read in its current context.
+    static func preparedRecords(for task: AgentTask) -> [TaskEventRecord] {
+        TaskHistoryRead.records(for: task, ofTypes: [TaskEventTypes.Task.worktreePrepared.rawValue]).reversed()
+    }
+
     private static func state(of task: AgentTask, pinned candidate: String?) -> State {
-        let events = task.events
-            .filter { !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreePrepared) }
-            .sorted { $0.timestamp > $1.timestamp }
+        let events = preparedRecords(for: task)
         guard let pinned = candidate, !pinned.isEmpty else {
             // A task that prepared a worktree but lost its pin must not fall
             // back to the workspace's default checkout.
@@ -174,7 +178,7 @@ public enum TaskWorktreeBinding {
             case .success(let payload):
                 if WorkspacePathPresentation.standardizedPath(payload.worktreePath) == pin {
                     if repositoryIsConfigured(payload.repositoryPath, for: task), gitCommonDirectory(for: payload) != nil {
-                        return .bound(payload, event: event, pinned: pinned)
+                        return .bound(payload, eventID: event.id, pinned: pinned)
                     }
                     // An older incarnation at the same path, which a mirror's
                     // whole-second timestamps can order first, is passed over
@@ -242,8 +246,14 @@ public enum TaskWorktreeBinding {
     }
 
     public static func event(for task: AgentTask) -> TaskEvent? {
-        guard case .bound(_, let event, _) = state(of: task) else { return nil }
-        return event
+        guard case .bound(_, let eventID, _) = state(of: task) else { return nil }
+        return preparedEvent(eventID, in: task)
+    }
+
+    /// The row behind a prepared record. Only inheritance and cleanup need
+    /// the row itself, and they are not per-frame paths.
+    public static func preparedEvent(_ eventID: UUID, in task: AgentTask) -> TaskEvent? {
+        TaskHistoryRead.event(id: eventID, in: task)
     }
 
     public static func payload(for task: AgentTask) -> TaskWorktreePayload? {
@@ -626,18 +636,16 @@ public enum TaskWorktreeBinding {
     /// newest event.
     public static func eventForInheritance(from task: AgentTask) -> TaskEvent? {
         if let bound = event(for: task) { return bound }
-        let prepared = task.events
-            .filter { !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreePrepared) }
-            .sorted { $0.timestamp > $1.timestamp }
+        let prepared = preparedRecords(for: task)
         if case .retargeted(let pinned, _) = state(of: task),
-           let verifying = prepared.first(where: { event in
-               guard case .success(let payload) = event.decodePayload(as: TaskWorktreePayload.self) else { return false }
+           let verifying = prepared.first(where: { record in
+               guard case .success(let payload) = record.decodePayload(as: TaskWorktreePayload.self) else { return false }
                return repositoryIsConfigured(payload.repositoryPath, for: task)
                    && verifiedCommonDirectory(checkout: pinned, repository: payload.repositoryPath) != nil
            }) {
-            return verifying
+            return preparedEvent(verifying.id, in: task)
         }
-        return prepared.first
+        return prepared.first.flatMap { preparedEvent($0.id, in: task) }
     }
 
     public enum PinInheritance {

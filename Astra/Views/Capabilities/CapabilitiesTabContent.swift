@@ -11,11 +11,9 @@ struct CapabilitiesTabContent: View {
     @State private var catalog = PluginCatalog()
 
     var body: some View {
-        PluginCatalogView(
+        PluginsSurfaceView(
             workspace: workspace,
             catalog: catalog,
-            focus: .all,
-            presentation: .embedded,
             selectedPackageID: $selectedPackageID,
             onCatalogChanged: onCatalogChanged,
             onEditElement: onEditElement

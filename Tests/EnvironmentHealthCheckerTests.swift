@@ -153,13 +153,13 @@ struct EnvironmentHealthCheckerTests {
     @Test("Unresponsive when liveness exits non-zero")
     func unresponsive_nonZeroExit() async {
         let stub = await makeStub(responses: [
-            ("/usr/bin/env which broken",
+            ("/usr/bin/env which node",
              RunResult(outcome: .exited(code: 0), stdout: "/opt/broken\n", stderr: "")),
             ("/opt/broken --version",
              RunResult(outcome: .exited(code: 2), stdout: "", stderr: "dylib not found: libfoo"))
         ])
         let checker = EnvironmentHealthChecker(runner: stub)
-        let status = await checker.check(binary: "broken")
+        let status = await checker.check(binary: "node")
         guard case .unresponsive(let detail) = status else {
             Issue.record("Expected .unresponsive, got \(status)")
             return
@@ -171,13 +171,13 @@ struct EnvironmentHealthCheckerTests {
     @Test("Unresponsive when liveness fails to launch")
     func unresponsive_launchFailed() async {
         let stub = await makeStub(responses: [
-            ("/usr/bin/env which ghost",
+            ("/usr/bin/env which jq",
              RunResult(outcome: .exited(code: 0), stdout: "/var/tmp/ghost\n", stderr: "")),
             ("/var/tmp/ghost --version",
              RunResult(outcome: .launchFailed("permission denied"), stdout: "", stderr: ""))
         ])
         let checker = EnvironmentHealthChecker(runner: stub)
-        let status = await checker.check(binary: "ghost")
+        let status = await checker.check(binary: "jq")
         guard case .unresponsive(let detail) = status else {
             Issue.record("Expected .unresponsive, got \(status)")
             return

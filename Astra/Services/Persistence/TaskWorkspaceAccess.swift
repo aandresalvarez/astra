@@ -209,8 +209,8 @@ public struct TaskWorkspaceAccess {
     /// worktree. Nil for legacy pins, retargeted drafts, and unreadable
     /// bindings.
     public var worktreeBindingEvent: TaskEvent? {
-        guard case .bound(_, let event, _) = worktreeBindingState else { return nil }
-        return event
+        guard case .bound(_, let eventID, _) = worktreeBindingState else { return nil }
+        return TaskWorktreeBinding.preparedEvent(eventID, in: task)
     }
 
     public var worktreeBinding: TaskWorktreePayload? {

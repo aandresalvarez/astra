@@ -8,12 +8,20 @@ struct CapabilityCatalogInventory {
         capabilities: WorkspaceCapabilities,
         policyContext: CapabilityCatalogPolicyContext? = nil
     ) -> [PluginPackage] {
-        let packagedSkillNames = Set(catalogPackages.flatMap { package in
-            package.skills.map { normalizedName($0.name) } + [normalizedName(package.name)]
-        })
-
+        let workspace = capabilities.workspace
+        let state = WorkspaceCapabilityActivation.state(of: workspace)
+        let overrides = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
+        let shared = Set(state.globalSkillIDs)
+        let ownedPluginIDs = Set(state.pluginIDs)
+            .union(WorkspaceCapabilityActivation.pendingLegacyInstallations(in: workspace).map(\.id))
+        let represented = ownedPluginIDs.intersection(catalogPackages.map(\.id))
         let standaloneSkillPackages = uniqueSkills(capabilities.workspaceSkills + capabilities.availableGlobalSkills)
-            .filter { !packagedSkillNames.contains(normalizedName($0.name)) }
+            .filter { skill in
+                guard !overrides.contains(skill.id) else { return false }
+                let origin = skill.originPackageID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let independentSharedChoice = skill.isGlobal && shared.contains(skill.id.uuidString)
+                return !represented.contains(origin) || independentSharedChoice
+            }
             .map(makePackage)
 
         return uniquePackages(catalogPackages + standaloneSkillPackages)
@@ -98,7 +106,4 @@ struct CapabilityCatalogInventory {
         return packages.filter { seen.insert($0.id).inserted }
     }
 
-    private static func normalizedName(_ name: String) -> String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
 }

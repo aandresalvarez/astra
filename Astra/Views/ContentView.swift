@@ -526,6 +526,7 @@ struct ContentView: View {
             workspaces: workspaces,
             selectedWorkspace: selectedWorkspaceBinding,
             onNewTask: { startComposingTask(in: $0) },
+            onOpenWorkspaceConfiguration: openWorkspaceConfiguration,
             onRunQueue: runQueue,
             onRunTask: runSingleTask,
             onToggleDone: toggleDone,
@@ -603,7 +604,8 @@ struct ContentView: View {
             effectiveWorkspace: sceneCoordinator.workspace(for: selectedWorkspaceApp) ?? effectiveWorkspace,
             isComposingTask: isComposingTask,
             selectedWorkspaceApp: selectedWorkspaceApp,
-            isComposingWorkspaceApp: isComposingWorkspaceApp
+            isComposingWorkspaceApp: isComposingWorkspaceApp,
+            isShowingWorkspaceConfiguration: sceneSelection.isShowingWorkspaceConfiguration
         )
     }
 
@@ -1213,10 +1215,7 @@ struct ContentView: View {
     }
 
     private func openCapabilitiesManager() {
-        configureInitialTab = .capabilities
-        configureFocusItemID = nil
-        configureFocusCapabilityPackageID = nil
-        showingConfigure = true
+        openConfigureTab(.capabilities, itemID: nil)
     }
 
     private func openSkillsManager() {
@@ -2036,11 +2035,17 @@ struct ContentView: View {
         if pinnedToTask { refreshMarkdownShelfAvailabilityForSelectedTask() }
     }
 
+    private func openWorkspaceConfiguration(_ workspace: Workspace) {
+        navigateWorkspace { sceneSelection.openWorkspaceConfiguration(workspace) }
+    }
+
     private func selectWorkspaceFromSidebar(_ workspace: Workspace?) {
+        navigateWorkspace { sceneSelection.openWorkspace(workspace) }
+    }
+
+    private func navigateWorkspace(_ intent: () -> Void) {
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
-        applySceneSelectionIntent {
-            sceneSelection.openWorkspace(workspace)
-        }
+        applySceneSelectionIntent(intent)
         clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
     }
 
@@ -2679,7 +2684,6 @@ struct ContentView: View {
         enterUITestComposerIfNeeded()
         sceneSelection.openLaunchComposerOnce()
         rightPanel.finishLaunchLanding()
-        runtime.startScheduler(modelContext: modelContext)
         runtime.loadPluginCatalog()
         refreshRunningTaskCount()
         handlePendingExternalRoute()
@@ -2701,6 +2705,7 @@ struct ContentView: View {
         // after this frame is presented. Run-once-guarded inside.
         Task { @MainActor in
             await ASTRAApp.recoverInterruptedWork(modelContext: modelContext, taskQueue: runtime.taskQueue)
+            runtime.startScheduler(modelContext: modelContext)
             runtime.taskQueue.replayRecoveredTurns(modelContext: modelContext)
             refreshRunningTaskCount()
             await ASTRAApp.runDeferredStartupMigrations(modelContext: modelContext)
@@ -4798,9 +4803,7 @@ struct WorkspaceSetupForm: View {
             return nil
         }
         switch status {
-        case .healthy:
-            return nil
-        case .unverified:
+        case .healthy, .unverified:
             return nil
         case .missingBinary:
             return "\(prerequisite.displayName) is not installed"
@@ -4810,7 +4813,7 @@ struct WorkspaceSetupForm: View {
             return "\(prerequisite.displayName) needs authorization (\(detail))"
         case .unresponsive(let detail):
             return "\(prerequisite.displayName) failed (\(detail))"
-        case .none:
+        case .notChecked, .none:
             return isProbingCapability(packageID)
                 ? "Checking \(prerequisite.displayName)"
                 : "\(prerequisite.displayName) not checked"
@@ -4834,6 +4837,7 @@ struct WorkspaceSetupForm: View {
             return "Authorize"
         case .unresponsive:
             return "Check CLI"
+        case .notChecked: return "Not checked"
         case .none:
             return "Check"
         }
@@ -4859,6 +4863,7 @@ struct WorkspaceSetupForm: View {
             return "\(prerequisite.displayName) needs authorization: \(detail). Open Manage Capabilities to approve access."
         case .unresponsive(let detail):
             return "\(prerequisite.displayName) did not respond: \(detail)"
+        case .notChecked(let detail): return "\(prerequisite.displayName): \(detail)."
         case .none:
             return "Re-check \(prerequisite.displayName)."
         }
