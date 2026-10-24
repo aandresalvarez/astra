@@ -2,7 +2,7 @@
 
 ## Safety boundary
 
-After an independent investigation identifies a likely stall, ASTRA can recover
+After an independent investigation completes, ASTRA can recover
 an OS-suspended provider by resuming **the same child process** once. This applies
 to the shared runner for all six task providers. It does not create another task,
 run, provider session, command or process, replay the prompt, or restart a tool.
@@ -16,8 +16,11 @@ automatic relaunch is blocked. No new provider capability is assumed.
 
 ## Admission and ownership
 
-1. Only `provider_supervisor_stalled` can trigger recovery. An inconclusive model
-   assessment, budget stop, cancellation, policy stop or wall-clock stop cannot.
+1. A completed investigation must still match the current progress revision.
+   The model may report uncertainty about remote work: resuming the original
+   child needs no claim that remote work stopped. An inconclusive assessment
+   without OS suspension keeps its ordinary grace period. A terminal budget,
+   cancellation, policy, investigation-deadline or wall-clock stop cannot recover.
 2. `AgentExecutionScopedProcess` checks macOS process information: the provider
    must be a suspended, unreaped child of this ASTRA process with no stop request.
    The independent investigator receives this positive OS observation, separately
@@ -33,7 +36,8 @@ automatic relaunch is blocked. No new provider capability is assumed.
 5. Admission is bounded to 10 seconds. After resuming, ASTRA allows 30 seconds
    for parsed runtime progress or a renewed managed-job heartbeat, checked at
    the existing watchdog cadence. Recovery progress does not mean the task
-   succeeded. Normal settlement still decides the task's outcome.
+   succeeded. Normal settlement still decides the task's outcome. Expiry stops
+   with `provider_recovery_failed` even if the model allowed a longer wait.
 6. New progress, cancellation and completion invalidate pending recovery. A late
    persistence result cannot act. Failed recovery stops normally; there is no
    retry loop. Original token, turn and wall-clock limits are not reset.

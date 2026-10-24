@@ -111,6 +111,30 @@ struct RuntimeRecoveryTests {
         session.finish(progressRevision: 1)
         #expect(state.snapshot.reports.last?.phase == .progress)
     }
+
+    @Test("An inconclusive investigation can safely resume the original suspended process, with its own deadline")
+    func inconclusiveRecovery() async throws {
+        let state = RecoveryTestState(), session = make(state), attempt = UUID()
+        #expect(!session.tick(observation(), decision: .keepRunning, attemptID: attempt))
+        #expect(state.snapshot.signals == 0)
+        #expect(session.tick(observation(), decision: .keepRunning, attemptID: attempt, investigationCompleted: true))
+        try await waitFor { state.snapshot.signals == 1 }
+        state.value.withLock { $0.time = 10 }
+        #expect(!session.tick(observation(), decision: .keepRunning, attemptID: attempt))
+        guard case .stop(let reason, _) = session.stopDecision else { Issue.record("Recovery must expire independently of the model's longer grace"); return }
+        #expect(reason == "provider_recovery_failed")
+        _ = session.tick(observation(1), decision: .keepRunning, attemptID: attempt)
+        #expect(session.stopDecision == nil)
+        #expect(state.snapshot.signals == 1)
+    }
+
+    @Test("An inconclusive assessment without OS suspension leaves the normal grace period intact")
+    func inconclusiveWithoutSuspension() {
+        let state = RecoveryTestState(), session = make(state, pid: nil)
+        #expect(!session.tick(observation(), decision: .keepRunning, attemptID: UUID(), investigationCompleted: true))
+        #expect(session.stopDecision == nil)
+        #expect(state.snapshot.admissions == 0 && state.snapshot.reports.isEmpty)
+    }
 }
 
 @Suite("Durable recovery admission", .serialized)

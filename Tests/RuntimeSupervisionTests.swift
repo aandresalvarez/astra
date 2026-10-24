@@ -54,8 +54,11 @@ struct RuntimeSupervisionTests {
         try await waitFor { if case .stop = session.tick(observation(), investigationDue: true) { return true }; return false }
         guard case .stop(let reason, _) = session.tick(observation(), investigationDue: true) else { Issue.record("Expected a supervised stop"); return }
         #expect(reason == "provider_supervisor_stalled")
+        #expect(session.hasCompletedInvestigation(at: 0))
+        #expect(!session.hasCompletedInvestigation(at: 1))
         #expect(session.tokenReservation == 100)
         session.finish()
+        #expect(!session.hasCompletedInvestigation(at: 0))
     }
 
     @Test("New progress and cancellation invalidate a late model verdict", arguments: [false, true])
@@ -297,7 +300,7 @@ struct RuntimeSupervisionTests {
 
     @Test("Every supervisor stop is terminal rather than an approval wait")
     @MainActor func terminalReasons() {
-        for reason in ["provider_supervisor_stalled", "provider_supervision_inconclusive", "provider_supervision_budget_unavailable"] {
+        for reason in ["provider_supervisor_stalled", "provider_recovery_failed", "provider_supervision_inconclusive", "provider_supervision_budget_unavailable"] {
             #expect(AgentRuntimeWorker.isTerminalRuntimeStop(reason))
         }
     }

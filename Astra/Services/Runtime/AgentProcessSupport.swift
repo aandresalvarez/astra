@@ -1889,8 +1889,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         if let supervision {
             let due = stalledManagedWorkspaceJob != nil || (!hasActiveManagedWorkspaceJob
                 && Double(supervisionObservation.quietSeconds) >= supervisionQuietLimit)
-            let decision = supervision.tick(supervisionObservation, investigationDue: due)
-            if recovery?.tick(supervisionObservation, decision: decision, attemptID: supervision.attemptID) == true { return false }
+            let assessmentDecision = supervision.tick(supervisionObservation, investigationDue: due)
+            if recovery?.tick(supervisionObservation, decision: assessmentDecision, attemptID: supervision.attemptID,
+                investigationCompleted: supervision.hasCompletedInvestigation(at: supervisionObservation.progressRevision)) == true { return false }
+            let decision = recovery?.stopDecision ?? assessmentDecision
             if case .stop(let reason, let message) = decision {
                 // Recovery admission takes its own lock before checking this
                 // monitor. Never acquire that lock while holding ours.

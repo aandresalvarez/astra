@@ -34,6 +34,7 @@ final class RuntimeRecoverySession: @unchecked Sendable {
     private var revision = 0
     private var deadline: TimeInterval = 0
     private var failure: String?
+    private var mustStop = false
 
     init(context: RuntimeRecoveryContext, graceSeconds: TimeInterval = 30,
          authorizationSeconds: TimeInterval = 10,
@@ -46,11 +47,20 @@ final class RuntimeRecoverySession: @unchecked Sendable {
     }
 
     var stopMessage: String? { lock.withLock { failure } }
+    var stopDecision: RuntimeSupervisionSession.Decision? {
+        lock.withLock { mustStop ? .stop(reason: "provider_recovery_failed", message: failure ?? "Recovery did not complete.") : nil }
+    }
 
     /// True holds the old stall verdict only for the bounded recovery window.
     func tick(_ observation: RuntimeSupervisionObservation, decision: RuntimeSupervisionSession.Decision,
-              attemptID: UUID) -> Bool {
+              attemptID: UUID, investigationCompleted: Bool = false) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        if mustStop, observation.progressRevision != revision {
+            // A response arriving between expiry and the monitor's atomic stop
+            // claim must invalidate that stale decision as well.
+            mustStop = false; failure = nil
+            emit(.progress, "New runtime progress arrived before the recovery stop was applied.")
+        }
         if state == .authorizing || state == .awaitingProgress {
             if observation.progressRevision != revision {
                 finishLocked(phase: state == .awaitingProgress ? .progress : .interrupted,
@@ -60,6 +70,7 @@ final class RuntimeRecoverySession: @unchecked Sendable {
                 return false
             }
             if now() >= deadline {
+                mustStop = true
                 failure = state == .authorizing
                     ? "Recovery admission did not finish in time. No recovery action was authorized."
                     : "No new runtime progress was observed during the \(Int(graceSeconds))-second recovery window. ASTRA will stop this attempt; automatic relaunch is blocked because other work may still be active."
@@ -68,10 +79,19 @@ final class RuntimeRecoverySession: @unchecked Sendable {
             }
             return true
         }
-        guard state == .unused, case .stop(let reason, _) = decision,
-              reason == "provider_supervisor_stalled" else { return false }
+        guard state == .unused else { return false }
+        switch decision {
+        case .stop(let reason, _):
+            guard reason == "provider_supervisor_stalled" else { return false }
+        case .keepRunning:
+            guard investigationCompleted else { return false }
+        }
         revision = observation.progressRevision
         let pid = suspendedPID()
+        // An inconclusive/waiting assessment may still safely resume the same
+        // suspended child. Without positive OS proof, leave its ordinary grace
+        // period alone; do not turn uncertainty into a new terminal decision.
+        if decision == .keepRunning && pid == nil { return false }
         request = .init(operationID: UUID(), attemptID: attemptID, processID: pid, phase: .intent,
             message: "macOS confirms the provider process is suspended. ASTRA is recording one recovery attempt before resuming that same process.")
         guard pid != nil else {
@@ -102,7 +122,9 @@ final class RuntimeRecoverySession: @unchecked Sendable {
     private func completeAuthorization(_ allowed: Bool) {
         lock.lock(); defer { lock.unlock() }
         guard state == .authorizing, !Task.isCancelled, let pid = request?.processID else { return }
-        guard allowed, now() < deadline, resume(pid, revision) else {
+        let expired = now() >= deadline
+        if expired { mustStop = true }
+        guard allowed, !expired, resume(pid, revision) else {
             failure = "Recovery was not applied: its durable admission, process ownership, suspension or current progress check no longer permits it. No replacement was launched."
             finishLocked(phase: .blocked, message: failure!)
             return

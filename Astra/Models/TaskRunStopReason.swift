@@ -65,6 +65,7 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
     public static let providerActiveToolStalled: TaskRunStopReason = "provider_active_tool_stalled"
     public static let providerWorkspaceJobStalled: TaskRunStopReason = "provider_workspace_job_stalled"
     public static let providerSupervisorStalled: TaskRunStopReason = "provider_supervisor_stalled"
+    public static let providerRecoveryFailed: TaskRunStopReason = "provider_recovery_failed"
     public static let providerSupervisionInconclusive: TaskRunStopReason = "provider_supervision_inconclusive"
     public static let providerSupervisionBudgetUnavailable: TaskRunStopReason = "provider_supervision_budget_unavailable"
     public static let providerPermissionDeniedAfterApproval: TaskRunStopReason = "provider_permission_denied_after_approval"

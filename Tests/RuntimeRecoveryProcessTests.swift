@@ -47,7 +47,7 @@ struct RuntimeRecoveryProcessTests {
         var context = RuntimeSupervisionContext(goal: "Synthetic", runtime: runtime.rawValue, taskFolder: root.path,
             remoteCoverage: "Unknown", investigator: { evidence in
                 #expect(evidence.observation.ownedProcessSuspended == true)
-                return .init(assessment: .suspectedStalled, explanation: "Synthetic stall", evidenceIDs: ["runtime"])
+                return .inconclusive("Remote activity is unknown, but our original process is suspended.")
             }, report: { _ in })
         context.recovery = .init(authorize: { _ in true }, report: { reports.append($0.phase.rawValue + "\n") })
         runner.configureSupervision(context)
