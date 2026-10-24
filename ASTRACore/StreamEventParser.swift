@@ -13,6 +13,11 @@ public struct StreamSystemEvent: Decodable {
     public let prompt: String?
     public let uuid: String?
     public let status: String?
+    public let rate_limit_info: StreamRateLimitInfo?
+}
+
+public struct StreamRateLimitInfo: Decodable {
+    public let status: String?
 }
 
 public struct StreamUsage: Decodable {
@@ -226,7 +231,8 @@ public enum StreamEventParser {
 
     private static let transientSystemSubtypes: Set<String> = [
         "post_turn_summary",
-        "status"
+        "status",
+        "thinking_tokens"
     ]
 
     public static func parse(line: String) -> ParsedEvent? {
@@ -249,6 +255,13 @@ public enum StreamEventParser {
         }
 
         switch baseEvent.type {
+        case "rate_limit_event":
+            // Quota telemetry is neither tool progress nor a run result.
+            guard let status = baseEvent.rate_limit_info?.status,
+                  ["allowed", "allowed_warning", "rejected"].contains(status) else {
+                return .recognized([.unknown(type: "rate_limit_event.unrecognized_status")])
+            }
+            return .recognized([.control(type: "rate_limit_event.\(status)")])
         case "system":
             let agentTaskTypes: Set<String> = ["in_process_teammate", "local_agent"]
             if baseEvent.subtype == "task_started",

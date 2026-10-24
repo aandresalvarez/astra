@@ -229,6 +229,7 @@ struct TaskMainView: View {
     /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
     @State var decisionArtifactPathsCache: [String] = []
     @State var decisionOutcomeCache = TaskDecisionOutcomeCache()
+    @State private var deliverableIntentMemo = TaskDeliverableIntentMemo()
     /// Not `private`: refreshed from `TaskMainViewMissionControl.swift`.
     @State var missionControlSnapshotCache = TaskMissionControlSnapshot.empty
     @State var missionControlStateRevision = 0
@@ -435,11 +436,13 @@ struct TaskMainView: View {
         return "count=\(itemCount)#last=\(lastItemID)#latest=\(latestOutputCount)#status=\(latestStatus)"
     }
 
-    var body: some View {
+    // Separate compiler boundaries keep the transcript, sheets and lifecycle
+    // modifiers from being inferred as one deeply nested SwiftUI expression.
+    private var taskPresentation: some View {
         let dockPresentation = taskDecisionDockPresentation
         let decisionDockVisible = dockPresentation != nil
 
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             mainContent(decisionDockVisible: decisionDockVisible)
                 .frame(maxHeight: .infinity, alignment: .top)
 
@@ -519,6 +522,10 @@ struct TaskMainView: View {
                 onCancel: { gitPublishProposal = nil }
             )
         }
+    }
+
+    private var taskReviewSurface: some View {
+        taskPresentation
         .taskGitHubReviewPublication(
             state: githubReviewPublication,
             task: task,
@@ -546,6 +553,10 @@ struct TaskMainView: View {
         } message: {
             Text(gitPublishPreparationError ?? "The draft pull request proposal could not be prepared.")
         }
+    }
+
+    var body: some View {
+        taskReviewSurface
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
@@ -602,6 +613,7 @@ struct TaskMainView: View {
                 loadSSHConnections()
             }
         }
+        .onChange(of: isPlanMode) { cancelComposerSubmission() }
         .onChange(of: claudeAvailableModels) {
             deferTaskViewMutation {
                 alignTaskModelWithRuntime()
@@ -3470,23 +3482,31 @@ struct TaskMainView: View {
     }
 
     private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
+        let permission = runtimePermissionState
         // A queued follow-up must not hide a LIVE permission request: the
         // provider is still waiting on an approve/deny decision, and that
         // dock's Approve/Deny/Stop controls are unreachable from the waiting
         // dock. Only prefer the waiting dock when no permission decision is
         // outstanding.
-        if !runtimePermissionState.hasOpenApprovalRequest,
+        if !permission.hasOpenApprovalRequest,
            let waitingPresentation = taskTurnWaitingDockPresentation {
             return waitingPresentation
         }
+        let reviewInput = PendingTaskReviewSnapshotInput(
+            task: task, snapshot: currentThreadSnapshot,
+            deliveredRequestFollowUpRunID: decisionOutcomeCache.deliveredRequestFollowUpRunID,
+            artifactRequirement: deliverableIntentMemo.requiresArtifact(for: task)
+        )
+        let pendingReview = permission.hasOpenApprovalRequest
+            ? PendingTaskReviewState.none : PendingTaskReviewPolicy.reviewState(for: reviewInput)
         return TaskDecisionDockContextBuilder.build(TaskDecisionDockContextBuilder.Input(
             status: task.status,
             isClosed: task.isDone,
             review: taskReviewPresentation,
             mission: missionControlPresentation,
             verification: currentVerificationPresentation,
-            pendingReviewState: pendingTaskReviewState,
-            runtimePermission: runtimePermissionState,
+            pendingReviewState: pendingReview,
+            runtimePermission: permission,
             hasApprovedPermissionContinuation: LegacyApprovedPermissionContinuation.isAvailable(task: task),
             hasGitPublishRequest: shouldOfferGitPublishReview,
             githubReviewPath: decisionOutcomeCache.githubReviewPath,
@@ -3497,8 +3517,8 @@ struct TaskMainView: View {
             canOpenPlan: onOpenPlan != nil,
             isPlanCanvasVisible: isPlanCanvasVisible,
             canRunApprovedPlan: taskQueue != nil,
-            latestRunHasNoUsableResult: latestRunHasNoUsableResult,
-            completedTaskNeedsArtifactAttention: completedTaskNeedsArtifactAttention,
+            latestRunHasNoUsableResult: pendingReview.dismissalReason == .noUsableResult || pendingReview.dismissalReason == .missingRequiredArtifact,
+            completedTaskNeedsArtifactAttention: PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(reviewInput),
             canCancel: onCancelTask != nil,
             canRun: onRunTask != nil,
             canApprove: onApproveTask != nil,
@@ -3714,30 +3734,6 @@ struct TaskMainView: View {
 
     private var canApproveSimilarRuntimePermissionForTask: Bool {
         runtimePermissionState.canApproveSimilarForTask
-    }
-
-    private var latestRunHasNoUsableResult: Bool {
-        pendingTaskDismissalReason == .noUsableResult ||
-            pendingTaskDismissalReason == .missingRequiredArtifact
-    }
-
-    private var pendingTaskDismissalReason: PendingTaskDismissalReason? {
-        pendingTaskReviewState.dismissalReason
-    }
-
-    private var pendingTaskReviewState: PendingTaskReviewState {
-        guard !hasOpenRuntimePermissionApprovalRequest else { return .none }
-        return PendingTaskReviewPolicy.reviewState(for: pendingTaskReviewSnapshotInput)
-    }
-
-    private var completedTaskNeedsArtifactAttention: Bool {
-        PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(
-            pendingTaskReviewSnapshotInput
-        )
-    }
-
-    private var pendingTaskReviewSnapshotInput: PendingTaskReviewSnapshotInput {
-        PendingTaskReviewSnapshotInput(task: task, snapshot: currentThreadSnapshot, deliveredRequestFollowUpRunID: decisionOutcomeCache.deliveredRequestFollowUpRunID)
     }
 
     private var composerPlaceholder: String {
@@ -4176,7 +4172,7 @@ struct TaskMainView: View {
                         .padding(.top, composerAttachments.isEmpty ? TaskComposerPresentation.inputTopPadding : TaskComposerPresentation.inputTopPaddingWithAttachments)
                         .padding(.bottom, TaskComposerPresentation.inputBottomPadding)
                         .focused(composerFocus)
-                        .onSubmit {
+                        .onComposerSubmit {
                             if showSlashMenu && !visibleSlashOptions.isEmpty {
                                 selectSlashOption()
                             } else {
@@ -4215,6 +4211,8 @@ struct TaskMainView: View {
                 Color.clear
                     .frame(height: 2)
 
+                ComposerSubmissionStatus(intent: composerDraft.submissionIntent)
+
                 TaskComposerTextReader(draft: composerDraft) { text in
                     let previewRequest = eligibilityPreviewRequest(text)
                     toolbar.composing(
@@ -4224,8 +4222,16 @@ struct TaskMainView: View {
                     )
                     .runtimeEligibilityPreview(
                         previewRequest,
-                        state: Bindable(composerDraft).eligibilityPreviewState
-                    )
+                        state: Bindable(composerDraft).eligibilityPreviewState,
+                        submissionIntent: composerDraft.submissionIntent
+                    ) { evaluatedRequest, allowed in
+                        guard composerDraft.submissionIntent.consume(
+                            evaluatedRequest: evaluatedRequest,
+                            currentRequest: runtimeEligibilityPreviewRequest,
+                            allowed: allowed
+                        ) else { return }
+                        sendMessage()
+                    }
                 }
 
             }
@@ -4658,6 +4664,10 @@ struct TaskMainView: View {
         onOpenPlan?(task)
     }
 
+    private func cancelComposerSubmission() {
+        composerDraft.submissionIntent.cancel()
+    }
+
     private func sendMessage() {
         let sendAction = TaskComposerCoordinator.sendAction(
             messageText: composerDraft.text,
@@ -4671,9 +4681,11 @@ struct TaskMainView: View {
             return
         }
         if sendAction.launchesProviderWork,
-           !selectedComposerRuntimeCanExecuteRequest {
-            return
-        }
+           !composerDraft.submissionIntent.canSubmitOrWait(
+                request: runtimeEligibilityPreviewRequest,
+                state: composerDraft.eligibilityPreviewState,
+                canExecute: selectedComposerRuntimeCanExecuteRequest
+           ) { return }
         shouldScrollAfterUserMessage = true
 
         switch sendAction {

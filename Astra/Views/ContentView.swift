@@ -327,16 +327,17 @@ struct ContentView: View {
     }
     private var browserSessionPolicyRefreshTriggerSignature: String {
         let workspace = selectedTask?.workspace ?? effectiveWorkspace
+        let catalogRevision = workspace.map {
+            BrowserSessionPolicyContext.CatalogPolicyInput(workspace: $0).signature
+        } ?? "no-policy"
         let environmentJSON = selectedTask?.executionEnvironmentSnapshotJSON
             ?? workspace?.activeExecutionEnvironmentJSON
             ?? "host"
         return BrowserSessionPolicyRefreshTrigger(
             taskID: selectedTask?.id, workspaceID: workspace?.id,
             enabledCapabilityIDs: normalizedEnabledCapabilityIDs(for: selectedTask),
-            taskCanvasRevision: selectedTaskCanvasSignature,
-            taskRevision: String(selectedTask?.updatedAt.timeIntervalSince1970 ?? 0),
-            workspaceRevision: [workspaceSelectionSignature, String(workspace?.updatedAt.timeIntervalSince1970 ?? 0)]
-                .joined(separator: ":"),
+            taskRevision: BrowserSessionPolicyContext.taskPolicyRevision(for: selectedTask),
+            workspaceRevision: [workspaceSelectionSignature, catalogRevision].joined(separator: ":"),
             environmentRevision: environmentJSON
         ).rawValue
     }

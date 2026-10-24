@@ -366,6 +366,38 @@ struct StreamParserTests {
         #expect(type == "system.future_lifecycle")
     }
 
+    @Test("Claude rate-limit and thinking telemetry are controls, not unknown frames")
+    func providerTelemetryIsControl() {
+        for status in ["allowed", "allowed_warning", "rejected"] {
+            let json = #"{"type":"rate_limit_event","rate_limit_info":{"status":"\#(status)"}}"#
+            guard case .control(let type) = StreamEventParser.parse(line: json) else {
+                Issue.record("Expected a rate-limit control for \(status)")
+                continue
+            }
+            #expect(type == "rate_limit_event.\(status)")
+        }
+        let thinking = #"{"type":"system","subtype":"thinking_tokens","estimated_tokens":12,"estimated_tokens_delta":4}"#
+        guard case .control(let type) = StreamEventParser.parse(line: thinking) else {
+            Issue.record("Expected a thinking telemetry control")
+            return
+        }
+        #expect(type == "system.thinking_tokens")
+    }
+
+    @Test("Unrecognized quota telemetry remains visible as unknown traffic")
+    func unrecognizedQuotaTelemetryIsNotSilenced() {
+        for json in [
+            #"{"type":"rate_limit_event"}"#,
+            #"{"type":"rate_limit_event","rate_limit_info":{"status":"new_status"}}"#
+        ] {
+            guard case .unknown(let type) = StreamEventParser.parse(line: json) else {
+                Issue.record("Expected unknown quota telemetry")
+                continue
+            }
+            #expect(type == "rate_limit_event.unrecognized_status")
+        }
+    }
+
     @Test("local_agent task_type also parsed as teammateStarted")
     func localAgentStarted() throws {
         let json = """
