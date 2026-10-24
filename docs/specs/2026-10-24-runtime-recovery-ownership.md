@@ -6,7 +6,7 @@ Recovery checks the existing execution before changing its provider session or l
 
 A protected journal beside the SwiftData store records the task, owner generation, run, execution, native session, process identity, remaining allowance, and termination receipt. A stable per-task kernel lock is held through worker settlement. The journal is written and synced before launching; a crash between launch intent and binding the child is an unknown execution, never an unused slot. Task events are an audit projection, not another source of launch authority. Workspace imports cannot supply a recovery receipt.
 
-Automatic recovery, Retry, direct worker admission, and startup reconciliation share this boundary. A competing worker is rejected before changing the saved provider session. An abandoned owner can be replaced only before launch, after verified termination, or after a durably completed turn with its matching process-exit receipt.
+Automatic recovery, Retry, Resume, direct worker admission, and startup reconciliation share this boundary. A competing worker is rejected before changing the saved provider session. An abandoned owner can be replaced only before launch, after verified termination, or after a durably completed turn with its matching process-exit receipt.
 
 ## Existing-session outcomes
 
@@ -34,9 +34,19 @@ A returned tool result does not prove that a detached command or remote job stop
 
 Retry of a verified unfinished execution submits a continuation instead of repeating the original command or clearing usage. The next owner inherits the native session when its provider still matches, original token ceiling, recorded consumption, remaining turns/time, cost, and automatic-retry count. Failed preflight and ASTRA restart do not refill these allowances. Enlarging task settings cannot enlarge a recovery allowance. Only a completed task can accept a new explicit user turn under its usual limits. Provider completion followed by failed or pending validation remains unfinished work. Every Retry of a tracked execution requires the full termination proof and retains its remaining allowance, including after a completed provider turn.
 
-A **new explicit user follow-up or permission approval** is not an automatic replay or Retry. It may continue an unfinished conversation after a matching receipt confirms the prior provider was reaped, its local process group was empty, and its process identity remains absent. It inherits the unfinished execution's remaining limits. It does not attest remote/tool cleanup and cannot grant automatic restart permission. Retry requests remain subject to the full proof gate, even when their stored prompt is a continuation. Startup never invents a new user turn.
+A **new explicit user follow-up, approved plan step, or permission approval** is not an automatic replay or Retry. It may continue an unfinished conversation after a matching receipt confirms the prior provider was reaped, its local process group was empty, and its process identity remains absent. It inherits the unfinished execution's remaining limits. It does not attest remote/tool cleanup and cannot grant automatic restart permission. Older tool uncertainty survives every owner handoff, so a later tool-free turn cannot erase it. Retry and Resume requests remain subject to the full proof gate, even when their stored prompt is a continuation. Admission derives authority from the durable source event and typed envelope, never the worker phase, request kind alone, or prompt wording. Startup never invents a new user turn.
 
-Legacy app-restart runs without receipts are blocked. Other historical terminal runs keep their prior manual Retry behavior; the stronger receipt boundary applies once a run has entered this ownership protocol.
+All existing tasks with execution history or a native session but no receipt are blocked, including historical failures, cancellations, timeouts and completions. A missing journal never grants a fresh allowance. Imported or legacy execution requires reconciliation; there is no unchecked Retry exception.
+
+## Settlement ownership
+
+Startup permission recovery, orphan-run reconciliation, pending-request recovery and result settlement all defer without changing task state when another app holds the kernel lease. A stale checkpoint for a superseded run cannot pause a newer owner. Uncertain settlement retains the lease through its reconciliation verdict.
+
+The same kernel lease covers result settlement and final plan validation. Before any validator can launch, the journal persists an in-progress barrier. A crash leaves that barrier in place even if the provider has stopped or a task completion was saved. Startup does not turn a validation result or a missing app process into termination proof.
+
+Test commands, syntax checks and AI utilities share process-group cleanup and reaping. A sealed settlement scope records whether all launched local children and groups stopped. New explicit user work can proceed after those local receipts; arbitrary validators may have detached or remote effects, so they never certify tool cleanup for automatic recovery or Retry. An interrupted validation remains blocked rather than replaying it.
+
+Input estimates are charged when the provider reports no usage; finalized run accounting reconciles the journal without double charging. Launch preparation and supervision baselines consume the remaining deadline. Zero remaining time blocks the replacement before spawning, rather than disabling the process timeout.
 
 ## Validation
 

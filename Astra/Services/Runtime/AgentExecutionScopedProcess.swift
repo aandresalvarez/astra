@@ -35,6 +35,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private var launchIdentity: RuntimeProcessIdentity?
     private var stopRequested = false
     private var status: Int32 = 0
+    private var settlementScope: RuntimeSettlementExecutionScope?
+    private let settlementChildID = UUID()
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
@@ -123,9 +125,12 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     }
 
     func run() throws {
+        settlementScope = RuntimeSettlementExecutionScope.current
+        try settlementScope?.begin(settlementChildID)
         var spawned = false
         defer {
             if !spawned {
+                settlementScope?.didNotLaunch(settlementChildID)
                 // No reaper will run after a launch failure. Release the
                 // caller's callbacks here, including captures of this process.
                 stdoutFileHandle.readabilityHandler = nil
@@ -315,6 +320,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
         // Completion is one-shot. Worker parsers capture this process, so
         // keeping the callback here retains the whole run's output forever.
+        settlementScope?.stopped(settlementChildID,
+            proof: stopProof(executionID: settlementChildID, toolsStopped: false, remoteWorkExcluded: false))
         let completion = terminationHandler
         terminationHandler = nil
         completion?(self)

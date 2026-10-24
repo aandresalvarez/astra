@@ -111,10 +111,44 @@ enum RuntimeTurnSettlementService {
     /// The only normal/restart settlement pipeline. Streaming transport has
     /// already ended; completion effects require its committed return value.
     static func settle(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
+                       executionOwner: RuntimeExecutionOwner? = nil,
                        permissionPromotionPersistence: (() throws -> Void)? = nil,
                        verdictPersistence: (() throws -> Void)? = nil,
                        sessionProjection: (() -> Bool)? = nil, autoExport: Bool = true) async -> Bool {
         if verdict(for: run, task: task) != nil { return true }
+        let admission = executionOwner.map(RuntimeExecutionOwner.SettlementAdmission.acquired)
+            ?? RuntimeExecutionOwner.acquireSettlement(task: task, run: run, context: modelContext)
+        if admission.mustDefer { return false }
+        defer { withExtendedLifetime(admission) {} }
+        let owner = admission.owner
+        defer { if executionOwner == nil { owner?.finish() } }
+        guard let owner else {
+            pauseForReconciliation(task: task, run: run, modelContext: modelContext,
+                reason: "runtime_settlement_uncertain",
+                message: "ASTRA could not verify exclusive ownership of validation. Existing work was preserved and recovery is blocked.")
+            return commit(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext,
+                persist: verdictPersistence, autoExport: autoExport)
+        }
+        do { try owner.beginSettlement() } catch {
+            reportPersistenceFailure(task: task, run: run, modelContext: modelContext)
+            return false
+        }
+        let scope = RuntimeSettlementExecutionScope(mayLaunch: owner.record.stopProof?.reaped == true
+            && owner.record.stopProof?.processGroupEmpty == true)
+        let result = await RuntimeSettlementExecutionScope.$current.withValue(scope) {
+            await settleOwned(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext,
+                permissionPromotionPersistence: permissionPromotionPersistence, verdictPersistence: verdictPersistence,
+                sessionProjection: sessionProjection, autoExport: autoExport)
+        }
+        scope.seal()
+        do { try owner.completeSettlement(localWorkStopped: scope.localWorkStopped, toolsStopped: scope.toolsStopped) }
+        catch { return false }
+        return result
+    }
+
+    private static func settleOwned(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
+                       permissionPromotionPersistence: (() throws -> Void)?, verdictPersistence: (() throws -> Void)?,
+                       sessionProjection: (() -> Bool)?, autoExport: Bool) async -> Bool {
         do {
             if let id = checkpoint.requestID {
                 guard let owner = try TaskTurnRequestRepository.request(id: id, in: modelContext),

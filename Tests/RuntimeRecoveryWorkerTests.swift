@@ -7,7 +7,7 @@ import ASTRAModels
 @Suite("Durable automatic recovery worker flow", .serialized)
 @MainActor
 struct RuntimeRecoveryWorkerTests {
-    @Test("Retry and another worker reconnect to a live execution without changing its context")
+    @Test("Retry and another worker defer to a live execution without changing its context")
     func competingWorkerDoesNotLaunch() async throws {
         let harness = try HeadlessChatHarness(persistentStore: true)
         defer { harness.cleanup() }
@@ -38,7 +38,7 @@ struct RuntimeRecoveryWorkerTests {
         #expect(task.runs.first?.status == .completed, "stop=\(task.runs.first?.stopReason ?? "nil") output=\(task.runs.first?.output ?? "nil")")
         let launches = try String(contentsOf: harness.workspaceURL.appendingPathComponent("launches"), encoding: .utf8).split(separator: "\n")
         #expect(launches.count == 1)
-        #expect(task.events.contains { $0.payload.contains("reconnected") })
+        #expect(task.events.contains { $0.payload.contains("existing execution owner is still active") })
     }
 
     @Test("A suspended worker finishes under the original run and saved recovery intent")

@@ -57,21 +57,39 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     var state: State
     var limits: RuntimeRecoveryLimits
     var stopProof: RuntimeExecutionStopProof?
+    var inheritedToolUncertainty: Bool? = nil
+    var settlementInProgress: Bool? = nil
+    var settlementLocalWorkStopped: Bool? = nil
+    var settlementToolsStopped: Bool? = nil
     var automaticRestarts = 0
     var updatedAt: Date
 
     /// A new user instruction is distinct from replaying unfinished work. It
     /// still cannot compete with the old provider or its local process group.
+    var hasUnverifiedTools: Bool {
+        inheritedToolUncertainty == true || stopProof?.toolsStopped == false
+            || stopProof?.remoteWorkExcluded == false || settlementToolsStopped == false
+    }
+
     var canAcceptUserTurn: Bool {
+        guard settlementInProgress != true, settlementLocalWorkStopped != false else { return false }
+        if state == .notStarted { return true }
         guard state == .finished || state == .stopped || state == .unverified else { return false }
         return stopProof?.executionID == executionID && stopProof?.process == providerProcess
             && stopProof?.reaped == true && stopProof?.processGroupEmpty == true
             && providerProcess?.presence == .absent
     }
 
+    var canRecoverPreparation: Bool {
+        state == .preparing && appProcess.presence == .absent
+            && settlementInProgress != true && settlementLocalWorkStopped != false
+    }
+
     var canBeginNewTurn: Bool { state == .finished && canAcceptUserTurn }
 
     var canReplace: Bool {
+        guard settlementInProgress != true, settlementLocalWorkStopped != false,
+              !hasUnverifiedTools else { return false }
         if state == .notStarted { return true }
         guard state == .stopped || state == .finished,
               let proof = stopProof, proof.executionID == executionID,

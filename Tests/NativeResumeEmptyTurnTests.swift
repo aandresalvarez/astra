@@ -142,7 +142,11 @@ struct NativeResumeEmptyTurnTests {
 
         configure(worker, task)
         DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: context)
-        await worker.continueSession(task: task, message: "What number did I give you?", modelContext: context) { _ in }
+        let submission = try ExecutionRequestSubmissionService.submitFollowUp(message: "What number did I give you?", for: task, into: context).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
+        await worker.continueSession(task: task, message: "What number did I give you?",
+            existingMessageEventID: submission.eventID, turnRequestID: submission.requestID, modelContext: context) { _ in }
         try? FileManager.default.removeItem(atPath: root)
         return (runner, task, container)
     }
@@ -163,6 +167,18 @@ struct NativeResumeEmptyTurnTests {
         #expect(latest.output.contains("4172"))
         #expect(task.sessionId == "chat-new")
         #expect(latest.stopReason != "no_usable_result")
+    }
+
+    @Test("Expired fallback time never launches a replacement with unlimited zero timeout")
+    func expiredFallbackDoesNotLaunch() async throws {
+        let (runner, task, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyTurn, delayAfterStop: 0.2),
+            .init(lines: Self.freshAnswerTurn)
+        ], configure: { worker, _ in worker.maxRunSeconds = 0.1 })
+        defer { withExtendedLifetime(container) {} }
+        #expect(runner.nativeSessionIDs.count == 2)
+        #expect(task.runs.max { $0.startedAt < $1.startedAt }?.stopReason == "recovery_limits_exhausted")
     }
 
     @Test("The re-run only gets the wall-clock allowance the first attempt left")
@@ -217,6 +233,25 @@ struct NativeResumeEmptyTurnTests {
 
         // initial launch and the resumed attempt happen; the oversized re-run does not
         #expect(runner.nativeSessionIDs == [nil, "chat-xyz"])
+    }
+
+    @Test("Fallback prompt counts unreported input already charged to the owner")
+    func fallbackPromptUsesOwnerConsumption() async throws {
+        let (measured, _, firstContainer) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn), .init(lines: Self.reasoningOnlyTurn), .init(lines: Self.freshAnswerTurn)
+        ])
+        defer { withExtendedLifetime(firstContainer) {} }
+        let full = AgentRuntimeProcessRunner.estimatedLaunchInputTokens(prompt: measured.prompts[2], runtime: .cursorCLI)
+        let (runner, task, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn), .init(lines: Self.reasoningOnlyTurn, chargedTokens: 500),
+            .init(lines: Self.freshAnswerTurn)
+        ], configure: { worker, task in
+            worker.budgetEnforcementModeOverride = .hardStop
+            task.tokenBudget = full + 100
+        })
+        defer { withExtendedLifetime(container) {} }
+        #expect(runner.nativeSessionIDs == [nil, "chat-xyz"])
+        #expect(task.runs.max { $0.startedAt < $1.startedAt }?.status == .budgetExceeded)
     }
 
     @Test("The re-run is told how many provider turns the empty attempt spent")
@@ -422,6 +457,8 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
         var lines: [String]
         var exitCode = 0
         var providesStopProof = true
+        var delayAfterStop: TimeInterval = 0
+        var chargedTokens = 0
     }
 
     @MainActor private var owner: RuntimeExecutionOwner?
@@ -491,7 +528,8 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
         }
         let proof = script.providesStopProof
             ? process.stopProof(executionID: executionID, toolsStopped: evidence.toolsStopped, remoteWorkExcluded: true) : nil
-        owner?.stopped(proof: proof, turns: 1, tokens: 0, seconds: 0.05)
+        owner?.stopped(proof: proof, turns: 1, tokens: script.chargedTokens, seconds: 0.05)
+        if script.delayAfterStop > 0 { try? await Task.sleep(for: .seconds(script.delayAfterStop)) }
         return AgentProcessResult(exitCode: script.exitCode)
     }
 }

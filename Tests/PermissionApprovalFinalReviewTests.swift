@@ -252,6 +252,7 @@ extension PermissionApprovalContinuationTests {
         await channel.recordAcknowledgements()
         #expect(channel.acknowledgedPermissionRequestIDs.isEmpty)
         let request = try #require(try TaskTurnRequestRepository.requests(for: fixture.task, in: fixture.context).first)
+        try RuntimeRecoveryTestReceipt.install(task: fixture.task, run: run, context: fixture.context)
         let tests = RuntimeTurnSettlementTests()
         let captured = tests.checkpoint(fixture, request: request)
         try RuntimeTurnSettlementService.capture(captured, task: fixture.task, run: run, modelContext: fixture.context)

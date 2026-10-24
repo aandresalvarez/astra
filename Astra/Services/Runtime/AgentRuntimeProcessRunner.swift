@@ -700,6 +700,7 @@ final class AgentRuntimeProcessRunner {
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
+        let launchPreparationStarted = ProcessInfo.processInfo.systemUptime
         let launchContext = AgentRuntimeProcessLaunchContext(
             prompt: prompt,
             task: task,
@@ -811,10 +812,12 @@ final class AgentRuntimeProcessRunner {
                 timeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 maxRunSeconds: maxRunSeconds,
+                preparationStartedAt: launchPreparationStarted,
                 maxTurns: remainingTurns,
                 tokenBudget: remainingTokenBudget,
                 nativeSessionID: nativeContinuationSessionID,
                 reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
+                estimatedInputTokens: Self.estimatedLaunchInputTokens(prompt: prompt, runtime: adapter.id),
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
@@ -839,10 +842,12 @@ final class AgentRuntimeProcessRunner {
             timeoutSeconds: timeoutSeconds,
             noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
             maxRunSeconds: maxRunSeconds,
+                preparationStartedAt: launchPreparationStarted,
             maxTurns: remainingTurns,
             tokenBudget: remainingTokenBudget,
             nativeSessionID: nativeContinuationSessionID,
             reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
+                estimatedInputTokens: Self.estimatedLaunchInputTokens(prompt: prompt, runtime: adapter.id),
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
@@ -859,10 +864,12 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
         maxRunSeconds: TimeInterval?,
+        preparationStartedAt: TimeInterval,
         maxTurns: Int,
         tokenBudget: Int,
         nativeSessionID: String?,
         reportedUsageBaseline: ProviderSessionUsageBaseline,
+        estimatedInputTokens: Int,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
@@ -893,6 +900,13 @@ final class AgentRuntimeProcessRunner {
         defer { RunSecretRedactionScope.endRun(taskID: taskID) }
 
         let owner = executionOwner
+        let preparationSeconds = max(0, ProcessInfo.processInfo.systemUptime - preparationStartedAt)
+        owner?.chargePreparation(seconds: preparationSeconds)
+        let maxRunSeconds = maxRunSeconds.map { max(0, $0 - preparationSeconds) }
+        if owner != nil, (maxRunSeconds ?? 0) <= 0 || owner?.record.limits.secondsRemaining == 0 {
+            return AgentProcessResult(exitCode: -1, runtimeStopReason: "recovery_limits_exhausted",
+                runtimeStopMessage: "The remaining execution time expired before launch.", budgetExceeded: true)
+        }
         do { try owner?.prepareLaunch(sessionID: nativeSessionID) }
         catch { return AgentProcessResult(exitCode: -1, runtimeStopReason: "runtime_recovery_blocked", runtimeStopMessage: "Recovery ownership could not authorize this launch.") }
         let executionID = owner?.record.executionID ?? UUID()
@@ -1153,7 +1167,7 @@ final class AgentRuntimeProcessRunner {
                 processResult.executionStopProof = proc.stopProof(executionID: executionID,
                     toolsStopped: processEvidence.toolsStopped, remoteWorkExcluded: remoteWorkExcluded)
                 processResult.executionTurnsSpent = max(1, monitor.turnCount)
-                processResult.executionTokensSpent = monitor.recoveryTokensConsumed
+                processResult.executionTokensSpent = monitor.recoveryTokensConsumed(estimatedInputTokens: estimatedInputTokens)
                 processResult.executionSecondsSpent = ProcessInfo.processInfo.systemUptime - processStartedAt
                 resumeOnce(processResult)
             }
@@ -1195,7 +1209,7 @@ final class AgentRuntimeProcessRunner {
         return acknowledgedResult
     }
 
-    private static func runScopedUtilityProcess(
+    static func runScopedUtilityProcess(
         _ plan: AgentRuntimeProcessLaunchPlan,
         timeoutSeconds: TimeInterval,
         stdoutLineHandler: (@Sendable (String) -> AgentUtilityRunResult?)?,

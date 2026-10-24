@@ -133,10 +133,13 @@ enum TaskRunLifecycleService {
         at recoveredAt: Date = Date(),
         autoExportWorkspaces: Bool = true
     ) -> TaskRunInterruptionSummary {
+        let ownership = RuntimeStartupRecoveryOwnership(context: modelContext)
+        defer { withExtendedLifetime(ownership) {} }
         let tasks = fetchOrphanRecoveryCandidates(modelContext: modelContext)
         var summary = TaskRunInterruptionSummary()
 
         for task in tasks {
+            guard ownership.claim(task.id) else { continue }
             // A captured provider result belongs to local settlement recovery,
             // which must run before orphan cancellation can destroy its verdict.
             if task.runs.contains(where: { RuntimeTurnSettlementService.hasUnsettledResult(task: task, run: $0) }) { continue }

@@ -36,6 +36,8 @@ enum TaskTurnRequestRecoveryService {
         }
         guard !requests.isEmpty else { return Summary() }
 
+        let ownership = RuntimeStartupRecoveryOwnership(context: modelContext)
+        defer { withExtendedLifetime(ownership) {} }
         var summary = Summary()
         var affectedWorkspaces: [UUID: Workspace] = [:]
         // Resolve the owning task via the scalar `taskID` (there is no
@@ -50,6 +52,7 @@ enum TaskTurnRequestRecoveryService {
             uniquingKeysWith: { first, _ in first }
         )
         for request in requests {
+            guard ownership.claim(request.taskID) else { continue }
             guard let task = tasksByID[request.taskID] else {
                 _ = TaskTurnRequestStateMachine.transition(
                     request,

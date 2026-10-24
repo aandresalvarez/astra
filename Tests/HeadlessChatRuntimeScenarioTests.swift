@@ -914,6 +914,7 @@ extension HeadlessChatScenarioTests {
         priorRun.stopReason = "completed"
         let priorArtifact = Artifact(task: task, type: "file", path: existingArtifact.path)
         harness.context.insert(priorRun)
+        try RuntimeRecoveryTestReceipt.install(task: task, run: priorRun, context: harness.context)
         harness.context.insert(priorArtifact)
         try harness.context.save()
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: priorRun))

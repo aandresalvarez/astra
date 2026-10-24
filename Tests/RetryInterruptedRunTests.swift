@@ -72,6 +72,7 @@ struct RetryInterruptedRunTests {
         run.stopReason = stopReason
         run.completedAt = Date()
         env.context.insert(run)
+        try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
         if let runtimeAfterInterruption { task.runtimeID = runtimeAfterInterruption.rawValue }
         if let followUp {
             env.context.insert(TaskEvent(
@@ -102,7 +103,7 @@ struct RetryInterruptedRunTests {
         })
     }
 
-    @Test("Legacy queue stops and expired plugin sign-ins keep their continuation behavior")
+    @Test("Verified queue stops and expired plugin sign-ins preserve continuation")
     func restartAndQueueStopResume() async throws {
         for reason in ["queue_cancelled", "capability_session_expired"] {
             let submitted = try await retry(stopReason: reason)
@@ -126,6 +127,7 @@ struct RetryInterruptedRunTests {
             run.stopReason = "capability_session_expired"
             run.completedAt = Date()
             env.context.insert(run)
+            try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
             env.context.insert(TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.System.runtimeRepairRequired,
@@ -169,6 +171,7 @@ struct RetryInterruptedRunTests {
                 run.stopReason = "capability_session_expired"
                 run.completedAt = Date()
                 env.context.insert(run)
+                try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
                 env.context.insert(TaskEvent(
                     task: task,
                     eventType: TaskEventTypes.System.runtimeRepairRequired,
@@ -222,6 +225,7 @@ struct RetryInterruptedRunTests {
             run.stopReason = "capability_session_expired"
             run.completedAt = Date()
             env.context.insert(run)
+            try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
             let family = CLISessionExpiryClassifier.gitHubEnvironmentToken
             env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
             try env.context.save()
@@ -260,6 +264,7 @@ struct RetryInterruptedRunTests {
         run.status = .failed
         run.stopReason = "capability_session_expired"
         env.context.insert(run)
+        try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
         let stop = TaskEvent(
             task: task, eventType: TaskEventTypes.System.error,
             payload: CLISessionExpiryClassifier.gitHubEnvironmentToken.stopMessage, run: run
@@ -301,6 +306,7 @@ struct RetryInterruptedRunTests {
             run.stopReason = "capability_session_expired"
             run.completedAt = Date()
             env.context.insert(run)
+            try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
             let family = CLISessionExpiryClassifier.gitHubEnvironmentToken
             env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
             try env.context.save()
@@ -343,6 +349,7 @@ struct RetryInterruptedRunTests {
             run.stopReason = "capability_session_expired"
             run.completedAt = Date()
             env.context.insert(run)
+            try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
             let family = CLISessionExpiryClassifier.gitHub
             env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
             try env.context.save()
@@ -384,6 +391,7 @@ struct RetryInterruptedRunTests {
         run.stopReason = "capability_session_expired"
         run.completedAt = Date()
         env.context.insert(run)
+        try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
         let family = CLISessionExpiryClassifier.gitHub
         env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
         try env.context.save()
@@ -423,6 +431,7 @@ struct RetryInterruptedRunTests {
             run.stopReason = "capability_session_expired"
             run.completedAt = Date()
             env.context.insert(run)
+            try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
             let family = CLISessionExpiryClassifier.gitHub
             env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
             try env.context.save()
@@ -467,6 +476,7 @@ struct RetryInterruptedRunTests {
             run.stopReason = "capability_session_expired"
             run.completedAt = Date()
             env.context.insert(run)
+            try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
             let family = CLISessionExpiryClassifier.googleCloud
             env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
             try env.context.save()
@@ -553,6 +563,7 @@ struct RetryInterruptedRunTests {
                 run.stopReason = "capability_session_expired"
                 run.completedAt = Date()
                 env.context.insert(run)
+                try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
                 env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeRepairRequired, payload: repair.encoded(), run: run))
                 try env.context.save()
                 if useRetry {
@@ -586,6 +597,7 @@ struct RetryInterruptedRunTests {
             run.stopReason = "capability_session_expired"
             run.completedAt = Date()
             env.context.insert(run)
+            try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: env.context)
             let family = try #require(CLISessionExpiryClassifier.family(
                 content: "ERROR: Reauthentication required.", command: "CLOUDSDK_CONFIG=/tmp/team gcloud projects list"
             ))
@@ -606,43 +618,43 @@ struct RetryInterruptedRunTests {
         }
     }
 
-    @Test("Without a provider session Retry still relaunches from scratch")
+    @Test("Without a native session verified Retry preserves history and limits")
     func noSessionRelaunches() async throws {
         let submitted = try await retry(sessionID: nil, stopReason: "cancelled")
-        #expect(submitted.mode == .initial)
-        #expect(submitted.message == nil)
-        #expect(submitted.task.tokensUsed == 0)
+        #expect(submitted.mode == .continuation)
+        #expect(submitted.message?.hasPrefix("Continue where you left off") == true)
+        #expect(submitted.task.tokensUsed == 500)
     }
 
-    @Test("A failed run keeps its from-scratch Retry; Resume is the continuation action")
+    @Test("A verified failed run continues without resetting its allowance")
     func failedRunStillRelaunches() async throws {
         let submitted = try await retry(stopReason: "failed")
-        #expect(submitted.mode == .initial)
+        #expect(submitted.mode == .continuation)
     }
 
-    @Test("A run that never learned a session does not resume an older run's")
+    @Test("A run without its own native session still uses context continuation")
     func runWithoutItsOwnSessionRelaunches() async throws {
         let submitted = try await retry(stopReason: "cancelled", runOwnsSession: false)
-        #expect(submitted.mode == .initial)
+        #expect(submitted.mode == .continuation)
     }
 
-    @Test("A run interrupted under another runtime is retried from scratch, with the usual reset")
+    @Test("A runtime change preserves the verified interrupted task allowance")
     func runtimeSwitchRelaunches() async throws {
         let submitted = try await retry(
             runtime: .claudeCode, stopReason: "cancelled", runtimeAfterInterruption: .codexCLI
         )
-        #expect(submitted.mode == .initial)
-        #expect(submitted.message == nil)
-        #expect(submitted.task.tokensUsed == 0)
+        #expect(submitted.mode == .continuation)
+        #expect(submitted.message?.hasPrefix("Continue where you left off") == true)
+        #expect(submitted.task.tokensUsed == 500)
     }
 
-    @Test("A scheduled or chained launch keeps its own from-scratch relaunch")
+    @Test("Verified scheduled and chained retries also preserve their allowance")
     func internalLaunchesRelaunch() async throws {
         let scheduled = try await retry(stopReason: "cancelled", scheduleID: UUID())
-        #expect(scheduled.mode == .initial)
-        #expect(scheduled.task.tokensUsed == 0)
+        #expect(scheduled.mode == .continuation)
+        #expect(scheduled.task.tokensUsed == 500)
         let chained = try await retry(stopReason: "cancelled", chainedFromID: UUID())
-        #expect(chained.mode == .initial)
+        #expect(chained.mode == .continuation)
     }
 
     @Test("After an expired plugin sign-in a follow-up turn resumes instead of being resent")
@@ -652,10 +664,10 @@ struct RetryInterruptedRunTests {
         #expect(submitted.message != "now also file the tickets")
     }
 
-    @Test("A pending user follow-up still wins over the generic resume message")
+    @Test("Recovery continues the saved context without replaying a prior user instruction")
     func followUpTakesPrecedence() async throws {
         let submitted = try await retry(stopReason: "cancelled", followUp: "now also add a chart")
         #expect(submitted.mode == .continuation)
-        #expect(submitted.message == "now also add a chart")
+        #expect(submitted.message?.hasPrefix("Continue where you left off") == true)
     }
 }

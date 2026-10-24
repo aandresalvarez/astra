@@ -503,6 +503,7 @@ final class TaskLifecycleCoordinator {
     }
 
     private func resumeVerifiedTask(_ task: AgentTask) -> Task<Void, Never>? {
+        if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: modelContext) { return nil }
         if LegacyApprovedPermissionContinuation.isAvailable(task: task) {
             guard let submission = LegacyApprovedPermissionContinuation.submit(task: task, modelContext: modelContext) else { return nil }
             return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)

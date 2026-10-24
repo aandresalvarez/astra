@@ -137,14 +137,37 @@ final class AgentRuntimeWorker {
         let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
-            guard await ApprovedPlanRuntimeSettlement.validateApprovedPlanContractForFinalCompletion(
+            let admission: RuntimeExecutionOwner.SettlementAdmission
+            if let lastRun = task.runs.max(by: { $0.startedAt < $1.startedAt }) {
+                admission = RuntimeExecutionOwner.acquireSettlement(task: task, run: lastRun, context: modelContext)
+            } else {
+                guard let owner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
+                    maxRunSeconds: maxRunSeconds, newUserTurn: true, launchTask: launchTask) else { return }
+                admission = .acquired(owner)
+            }
+            if admission.mustDefer { return }
+            defer { withExtendedLifetime(admission) {} }
+            guard let owner = admission.owner else {
+                RuntimeExecutionOwner.report("Final plan validation is blocked until the previous execution can be verified.",
+                    task: task, context: modelContext, pause: true)
+                return
+            }
+            defer { owner.finish() }
+            do { try owner.beginSettlement() } catch { return }
+            let scope = RuntimeSettlementExecutionScope(mayLaunch: true)
+            let valid = await RuntimeSettlementExecutionScope.$current.withValue(scope) {
+                await ApprovedPlanRuntimeSettlement.validateApprovedPlanContractForFinalCompletion(
                 task: task,
                 plan: currentPlan,
                 modelContext: modelContext,
                 verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
                     fallbackRuntime: runtimeConfiguration.selectedRuntime(for: launchTask),
-                    preferredModel: validationModel, modelContext: modelContext)
-            ) else {
+                    preferredModel: validationModel, modelContext: modelContext))
+            }
+            scope.seal()
+            do { try owner.completeSettlement(localWorkStopped: scope.localWorkStopped, toolsStopped: scope.toolsStopped) }
+            catch { return }
+            guard valid else {
                 WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                 return
             }
@@ -296,9 +319,7 @@ final class AgentRuntimeWorker {
             return
         }
         let request = turnRequestID.flatMap { try? TaskTurnRequestRepository.request(id: $0, in: modelContext) }
-        // Retry is a recovery action even when its prompt is a continuation.
-        // Only a new user follow-up/approval may use the narrower local-exit gate.
-        let newUserTurn = auditPhase == .resume && (turnRequestID == nil || request?.kind == .followUp)
+        let newUserTurn = RuntimeExecutionAdmission.resolve(request: request, task: task).permitsLocalExit
         guard let executionOwner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
             maxRunSeconds: maxRunSeconds, newUserTurn: newUserTurn, launchTask: launchTask) else { return }
         defer { executionOwner.finish() }
@@ -1116,7 +1137,8 @@ final class AgentRuntimeWorker {
                     phase: auditPhase,
                     runtime: selectedRuntime,
                     budgetEnforcementMode: budgetEnforcementMode,
-                    alreadyUsedTokens: recoveryTokensSpent + discardedUsage.totalTokens + supervisionReservations,
+                    alreadyUsedTokens: max(executionOwner.record.limits.tokensSpent,
+                        recoveryTokensSpent + discardedUsage.totalTokens + supervisionReservations),
                     tokenCeiling: executionOwner.record.limits.tokenCeiling
                 ) else {
                     // The run ends here, but the discarded attempt still spent what it spent.
@@ -1132,7 +1154,12 @@ final class AgentRuntimeWorker {
                 let remainingRunSeconds = min(executionOwner.record.limits.secondsRemaining,
                     max(0, launchMaxRunSeconds - Date().timeIntervalSince(firstAttemptStartedAt)))
                 // The empty attempt spent one provider turn of the run's maxTurns.
-                result = await launchProcess(prompt, nil, nil, remainingRunSeconds, 1, discardedUsage.totalTokens)
+                if remainingRunSeconds <= 0 {
+                    result = AgentProcessResult(exitCode: -1, runtimeStopReason: "recovery_limits_exhausted",
+                        runtimeStopMessage: "The remaining execution time expired before recovery.", budgetExceeded: true)
+                } else {
+                    result = await launchProcess(prompt, nil, nil, remainingRunSeconds, 1, discardedUsage.totalTokens)
+                }
                 supervisionReservations += result.supervisionReservedTokens ?? 0
             } else {
                 emptyTurnGate.flush(forward: handleLine)
@@ -1173,6 +1200,7 @@ final class AgentRuntimeWorker {
         )
         RuntimeSupervisionUsageRecorder.record(supervisionReservations,
             task: task, run: run, modelContext: modelContext)
+        executionOwner.reconcileUsage()
         let streamSnapshot = streamTelemetry?.snapshot()
 
         if let beforeGitStatus, let beforeDirtyFingerprints {
@@ -1323,7 +1351,8 @@ final class AgentRuntimeWorker {
             return
         }
         guard await RuntimeTurnSettlementService.settle(checkpoint: checkpoint, task: task, run: run,
-            modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence) else { return }
+            modelContext: modelContext, executionOwner: executionOwner,
+            permissionPromotionPersistence: permissionPromotionPersistence) else { return }
 
         RuntimeTurnSettlementService.dispatchChainedTask(task: task, run: run, modelContext: modelContext)
         if runtimeAdapter.performsPostRunFollowUps(phase: auditPhase) {

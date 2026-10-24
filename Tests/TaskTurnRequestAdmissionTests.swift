@@ -383,6 +383,7 @@ struct TaskTurnRequestAdmissionTests {
         newerRun.startedAt = Date().addingTimeInterval(60)
         newerRun.status = .failed
         context.insert(newerRun)
+        try RuntimeRecoveryTestReceipt.install(task: task, run: newerRun, context: context)
 
         let queue = TaskQueue(poolSize: 0)
         let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: queue)
