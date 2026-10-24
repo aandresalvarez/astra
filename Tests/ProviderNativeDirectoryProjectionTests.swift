@@ -139,7 +139,6 @@ struct ProviderNativeDirectoryProjectionTests {
             workspacePath: "/workspace",
             additionalPaths: [root.path, attachment],
             permissionPolicy: .restricted,
-            timeoutSeconds: 45,
             taskEnvironment: [:],
             pathPrefix: [],
             includeAstraToolsPath: false,

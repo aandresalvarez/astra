@@ -1072,6 +1072,19 @@ final class AgentRuntimeProcessRunner {
                         "exit_code": String(Int(proc.terminationStatus))
                     ], level: .warning)
                 }
+                // A provider can cut its own turn short and still exit 0 (agy's
+                // print timeout even sends a SUCCESS result frame), so a turn
+                // ASTRA did not stop is checked against what stderr says.
+                let selfStop = monitor.runtimeStopReason == nil && dockerFailure == nil
+                    ? adapter.providerSelfStop(stderr: error) : nil
+                if let selfStop {
+                    AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                        "runtime": plan.runtime.rawValue,
+                        "reason": selfStop.reason,
+                        "source": "provider_self_stop",
+                        "exit_code": String(Int(proc.terminationStatus))
+                    ], level: .error)
+                }
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
@@ -1082,8 +1095,8 @@ final class AgentRuntimeProcessRunner {
                     policyViolationMessage: monitor.policyViolationMessage,
                     policyApprovalRequired: monitor.policyApprovalRequired,
                     policyApprovalMessage: monitor.policyApprovalMessage,
-                    runtimeStopReason: dockerFailure?.stopReason ?? monitor.runtimeStopReason,
-                    runtimeStopMessage: dockerFailure?.message ?? monitor.runtimeStopMessage,
+                    runtimeStopReason: dockerFailure?.stopReason ?? monitor.runtimeStopReason ?? selfStop?.reason,
+                    runtimeStopMessage: dockerFailure?.message ?? monitor.runtimeStopMessage ?? selfStop?.message,
                     runtimeRepairContext: dockerFailure == nil ? monitor.runtimeRepairContext : nil,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,

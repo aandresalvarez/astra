@@ -123,6 +123,7 @@ protocol AgentRuntimeProcessLaunchPlanning {
 protocol AgentRuntimeProcessEventParsing {
     func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent]
     func blockingProcessPermissionMessage(line: String, parsesJSONLines: Bool) -> String?
+    func providerSelfStop(stderr: String) -> AgentRuntimeProviderSelfStop?
 }
 
 protocol AgentRuntimeWorkerEventRecording {
@@ -2528,8 +2529,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         // here rather than in the readiness preflight — a preflight that
         // starts the provider is exactly what "Provider was not started"
         // promises it will not do. Skipped entirely once cached for this
-        // binary; the launch path only ever reads the cached verdict, since it
-        // runs on the main actor and must not shell out.
+        // binary. A launch after agy updated itself re-asks off the main actor
+        // (`warmStructuredOutputSupportBeforeLaunch`), before the command.
         AntigravityCLIRuntime.refreshStructuredOutputSupport(
             executablePath: executable,
             authMode: configuration.antigravityAuthMode,
@@ -2628,7 +2629,6 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             workspacePath: context.workspacePath,
             additionalPaths: additionalPaths,
             permissionPolicy: effectivePermissionPolicy,
-            timeoutSeconds: context.timeoutSeconds,
             taskEnvironment: taskEnv,
             providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
@@ -2785,7 +2785,6 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             workspacePath: workspacePath,
             additionalPaths: [],
             permissionPolicy: .restricted,
-            timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
             providerHomeDirectory: providerHomeDirectory,
             permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),

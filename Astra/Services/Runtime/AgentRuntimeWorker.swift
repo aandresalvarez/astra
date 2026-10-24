@@ -9,6 +9,7 @@ final class AgentRuntimeWorker {
     private(set) var isRunning = false
     private var cancellationRequested = false
     private var capabilityPreparationTask: Task<CopilotCLICapabilities, Error>?
+    var antigravityLaunchPreparation: AntigravityLaunchPreparation
     private var runtimeConfiguration = AgentRuntimeConfiguration()
     private let processRunner: any AgentRuntimeProcessRunning
     private let providerSettingsSnapshotProvider: () -> ProviderSettingsSnapshot
@@ -66,11 +67,13 @@ final class AgentRuntimeWorker {
     var defaultAgentPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue
     @MainActor init(
         processRunner: any AgentRuntimeProcessRunning = AgentRuntimeProcessRunner(),
+        antigravityLaunchPreparation: AntigravityLaunchPreparation? = nil,
         providerSettingsSnapshotProvider: @escaping () -> ProviderSettingsSnapshot = {
             RuntimeSettingsSnapshotStore.providerSnapshot()
         }
     ) {
         self.processRunner = processRunner
+        self.antigravityLaunchPreparation = antigravityLaunchPreparation ?? AntigravityLaunchPreparation()
         self.providerSettingsSnapshotProvider = providerSettingsSnapshotProvider
         AppLogger.audit(.workerStarted, category: "Worker", fields: [
             "phase": "initialized",
@@ -491,6 +494,18 @@ final class AgentRuntimeWorker {
             readinessService: runtimeReadinessService,
             verdictCache: launchReadinessCache
         ) else {
+            return
+        }
+        if selectedRuntime == .antigravityCLI {
+            // agy updates itself in place; ask again before its command is built.
+            await antigravityLaunchPreparation.prepare(
+                executablePath: launchSettings.executablePath,
+                homeDirectory: launchSettings.homeDirectory,
+                taskID: task.id
+            )
+        }
+        guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
+            settlePrelaunchCancellation(task: task, modelContext: modelContext)
             return
         }
 
@@ -1289,6 +1304,7 @@ final class AgentRuntimeWorker {
     func cancel() {
         cancellationRequested = true
         capabilityPreparationTask?.cancel()
+        antigravityLaunchPreparation.cancel()
         processRunner.cancel()
     }
     @MainActor
@@ -1752,6 +1768,7 @@ final class AgentRuntimeWorker {
             .providerActiveToolStalled,
             .providerWorkspaceJobStalled,
             .providerRunWallClockExceeded,
+            .providerTurnTimeLimitReached,
             .capabilitySessionExpired
         ].contains(stopReason)
     }
