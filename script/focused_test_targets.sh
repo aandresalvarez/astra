@@ -20,7 +20,7 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
-    Astra/Services/Runtime/RuntimeRecovery*.swift|Tests/RuntimeRecovery*Tests.swift)
+    Astra/Services/Runtime/RuntimeRecovery*.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Tests/RuntimeRecovery*Tests.swift)
       add_target "RuntimeRecovery"
       add_target "RuntimeSupervision"
       return

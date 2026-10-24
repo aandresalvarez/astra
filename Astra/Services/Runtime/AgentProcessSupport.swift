@@ -470,6 +470,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     /// is a real stall; one is usually a provider about to produce output.
     static let maxSemanticProgressExtensions = 1
 
+    var recoveryTokensConsumed: Int { lock.withLock { max(_estimatedTokens, reportedTokensForSupervision) + supervisionTokens } }
     var estimatedTokens: Int { lock.lock(); defer { lock.unlock() }; return _estimatedTokens }
     var turnCount: Int { lock.lock(); defer { lock.unlock() }; return _turnCount }
     var providerFailureOutput: String? {

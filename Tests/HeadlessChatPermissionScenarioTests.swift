@@ -245,7 +245,7 @@ extension HeadlessChatScenarioTests {
         #expect(args.contains("write"))
         #expect(args.contains("create"))
         #expect(task.status == .completed)
-        #expect(runs[1].output == "Wrote the approved story")
+        #expect(runs.last?.output == "Wrote the approved story")
     }
 
     @Test("UI approval resumes a Copilot runtime permission pause")
@@ -1263,6 +1263,6 @@ extension HeadlessChatScenarioTests {
         #expect(!args.contains("--dangerously-skip-permissions"))
         #expect(args.contains("Agent"))
         #expect(task.status == .completed)
-        #expect(runs[1].output == "Claude continued after approval")
+        #expect(runs.last?.output == "Claude continued after approval")
     }
 }

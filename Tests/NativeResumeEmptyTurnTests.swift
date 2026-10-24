@@ -174,6 +174,7 @@ struct NativeResumeEmptyTurnTests {
         ], configure: { worker, _ in worker.maxRunSeconds = 600 })
         defer { withExtendedLifetime(container) {} }
 
+        try #require(runner.maxRunSeconds.count == 3)
         let resumed = try #require(runner.maxRunSeconds[1])
         let rerun = try #require(runner.maxRunSeconds[2])
         #expect(resumed == 600)
@@ -394,6 +395,17 @@ struct NativeResumeEmptyTurnTests {
         #expect(task.sessionId == "chat-xyz")
     }
 
+    @Test("A successful empty result without stop proof cannot launch a replacement")
+    func missingStopProofBlocksFallback() async throws {
+        let (runner, _, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyTurn, providesStopProof: false),
+            .init(lines: Self.freshAnswerTurn)
+        ])
+        defer { withExtendedLifetime(container) {} }
+        #expect(runner.nativeSessionIDs == [nil, "chat-xyz"])
+    }
+
     @Test("A resumed turn that fails is not re-run")
     func failedResumedTurnIsNotRetried() async throws {
         let (runner, _, container) = try await runFollowUp(scripts: [
@@ -409,8 +421,11 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
     struct Script {
         var lines: [String]
         var exitCode = 0
+        var providesStopProof = true
     }
 
+    @MainActor private var owner: RuntimeExecutionOwner?
+    @MainActor func configureExecutionOwner(_ owner: RuntimeExecutionOwner?) { self.owner = owner }
     private var scripts: [Script]
     private(set) var nativeSessionIDs: [String?] = []
     private(set) var maxRunSeconds: [TimeInterval?] = []
@@ -455,7 +470,28 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
         tokensAlreadyUsed.append(executionPolicy.providerTokensAlreadyUsed)
         prompts.append(prompt)
         let script = scripts.isEmpty ? Script(lines: []) : scripts.removeFirst()
-        for line in script.lines { onLine(line, true) }
+        // The fallback now needs an actual reaped child receipt. A scripted
+        // success alone is deliberately insufficient to authorize replacement.
+        let process = AgentExecutionScopedProcess(executablePath: "/bin/sh", arguments: ["-c", "exit 0"],
+            currentDirectory: NSTemporaryDirectory(), environment: [:])
+        let executionID: UUID
+        do { try owner?.prepareLaunch(); executionID = owner?.record.executionID ?? UUID() }
+        catch { return AgentProcessResult(exitCode: -1, error: "Fixture ownership failed") }
+        _ = await withCheckedContinuation { continuation in
+            process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
+            do { try process.run() }
+            catch { continuation.resume(returning: -1); return }
+            do { try owner?.launched(process) }
+            catch { process.terminate() }
+        }
+        let evidence = RuntimeExecutionProcessEvidence()
+        for line in script.lines {
+            for parsed in adapter.parseProcessEvents(line: line, parsesJSONLines: true) { evidence.observe(parsed) }
+            onLine(line, true)
+        }
+        let proof = script.providesStopProof
+            ? process.stopProof(executionID: executionID, toolsStopped: evidence.toolsStopped, remoteWorkExcluded: true) : nil
+        owner?.stopped(proof: proof, turns: 1, tokens: 0, seconds: 0.05)
         return AgentProcessResult(exitCode: script.exitCode)
     }
 }

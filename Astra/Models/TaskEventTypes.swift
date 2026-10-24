@@ -211,6 +211,7 @@ public enum TaskEventTypes {
         public static let runtimeSettlementStarted: TaskEventType = "runtime.settlement.started"
         public static let runtimeSupervision: TaskEventType = "runtime.supervision"
         public static let runtimeSupervisionUsage: TaskEventType = "runtime.supervision.usage"
+        public static let runtimeExecutionOwnership: TaskEventType = "runtime.execution_ownership"
         public static let runtimeRecovery: TaskEventType = "runtime.recovery"
         public static let runtimeOutcomePrepared: TaskEventType = "runtime.outcome.prepared"
         public static let runtimeChainedWorkDispatched: TaskEventType = "runtime.chained_work.dispatched"
@@ -338,6 +339,7 @@ public enum TaskEventTypes {
         System.runtimeSupervision,
         System.runtimeSupervisionUsage,
         System.runtimeRecovery,
+        System.runtimeExecutionOwnership,
         System.runtimeSettlementStarted,
         System.runtimeOutcomePrepared,
         System.runtimeChainedWorkDispatched,

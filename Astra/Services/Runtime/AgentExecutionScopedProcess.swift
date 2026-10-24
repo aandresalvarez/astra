@@ -31,6 +31,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private var processGroupID: pid_t = 0
     private var running = false
     private var reaped = false
+    private var reapedSuccessfully = false
+    private var launchIdentity: RuntimeProcessIdentity?
     private var stopRequested = false
     private var status: Int32 = 0
 
@@ -63,6 +65,16 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     }
 
     var processIdentifier: Int32 { lock.withLock { processID } }
+    var executionIdentity: RuntimeProcessIdentity? { lock.withLock { launchIdentity } }
+
+    func stopProof(executionID: UUID, toolsStopped: Bool, remoteWorkExcluded: Bool) -> RuntimeExecutionStopProof? {
+        lock.withLock {
+            guard let identity = launchIdentity else { return nil }
+            let empty = processGroupID > 0 && kill(-processGroupID, 0) == -1 && errno == ESRCH
+            return .init(executionID: executionID, process: identity, reaped: reapedSuccessfully && !running,
+                processGroupEmpty: empty, toolsStopped: toolsStopped, remoteWorkExcluded: remoteWorkExcluded, capturedAt: Date())
+        }
+    }
 
     init(
         executablePath: String,
@@ -191,6 +203,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         lock.lock()
         processID = childPID
         processGroupID = childPID
+        launchIdentity = RuntimeProcessIdentity.read(childPID)
         running = true
         lock.unlock()
 
@@ -278,7 +291,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
             lock.lock()
             result = waitpid(pid, &waitStatus, WNOHANG)
             let retry = result == 0 || (result == -1 && errno == EINTR)
-            if !retry { reaped = true }
+            if !retry { reaped = true; reapedSuccessfully = result == pid }
             lock.unlock()
             if !retry { break }
             usleep(50_000)

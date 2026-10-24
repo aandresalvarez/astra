@@ -36,13 +36,15 @@ struct RuntimeSupervisionContext {
                      pendingEvents: OrderedMainActorTaskQueue, remoteRoute: RemoteWorkspaceSSHRoute?,
                      turnIntent: TaskTurnIntentSnapshot? = nil,
                      workspacePath: String? = nil,
-                     investigatorOverride: RuntimeSupervisionSession.Investigator? = nil) -> Self {
+                     investigatorOverride: RuntimeSupervisionSession.Investigator? = nil,
+                     executionOwner: RuntimeExecutionOwner? = nil) -> Self {
         let blocked = RuntimeSensitiveDataLaunchGate.block(task: task, requestedRuntime: runtime,
             launchRuntime: configuration.runtime) != nil
         let sharedStateConflict = runtime == .antigravityCLI && configuration.runtime == .antigravityCLI
         let unsupportedInvestigator = ClaudeCodeUtilityLaunchPolicy.investigationUnavailableReason(for: configuration.runtime)
         let authorizeRecovery: @MainActor @Sendable (RuntimeRecoveryReport) -> Bool = { report in
-            RuntimeRecoveryService.authorize(report, task: task, run: run, modelContext: modelContext)
+            guard executionOwner?.permitsSuspendedRecovery(runID: run.id) ?? true else { return false }
+            return RuntimeRecoveryService.authorize(report, task: task, run: run, modelContext: modelContext)
         }
         let recordRecovery: @MainActor @Sendable (RuntimeRecoveryReport) -> Void = { report in
             RuntimeRecoveryService.record(report, task: task, run: run, modelContext: modelContext)

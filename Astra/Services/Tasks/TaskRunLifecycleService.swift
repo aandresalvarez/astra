@@ -140,6 +140,24 @@ enum TaskRunLifecycleService {
             // A captured provider result belongs to local settlement recovery,
             // which must run before orphan cancellation can destroy its verdict.
             if task.runs.contains(where: { RuntimeTurnSettlementService.hasUnsettledResult(task: task, run: $0) }) { continue }
+            if RuntimeExecutionOwner.preserveUnresolvedSession(task: task, context: modelContext, reportStatus: true, autoExport: autoExportWorkspaces) {
+                // The run describes ASTRA's connection, while the protected owner
+                // retains the unresolved execution. Failing this connection is
+                // not process/tool stop proof and cannot authorize a replacement.
+                let running = task.runs.filter { $0.status == .running }
+                for run in running {
+                    run.status = .failed
+                    run.typedStopReason = .runtimeConnectionLost
+                    run.completedAt = recoveredAt
+                }
+                if !running.isEmpty {
+                    modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Task.interrupted,
+                        payload: "ASTRA lost its connection to this execution. Recovery remains blocked until its termination can be verified.", run: running.last))
+                    summary.runsUpdated += running.count; summary.tasksUpdated += 1; summary.eventsInserted += 1
+                    summary.addAffectedWorkspace(task.workspace)
+                }
+                continue
+            }
             let hasRunningRun = task.runs.contains { $0.status == .running }
             // `pendingUser` is also the durable review state for completed
             // work that is waiting on an ASTRA-owned external outcome. Only

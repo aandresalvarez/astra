@@ -181,6 +181,11 @@ final class TaskLifecycleCoordinator {
     }
 
     private func retryVerifiedTask(_ task: AgentTask) -> Task<Void, Never>? {
+        let recoveryDecision = RuntimeExecutionOwner.retryDecision(task: task, context: modelContext)
+        if case .blocked = recoveryDecision { return nil }
+        let recoveryMessage: String? = if case .continuation = recoveryDecision {
+            Self.resumeContinuationMessage(for: task)
+        } else { nil }
         // A durable submission leaves the task's terminal status untouched
         // while it waits, so status-gated Retry surfaces can still fire.
         // Starting a second continuation here would race the pending
@@ -211,9 +216,9 @@ final class TaskLifecycleCoordinator {
         let interruptedResumeMessage = retryFollowUpMessage == nil || afterExpiry
             ? interruptedRunResumeMessage(for: task, retryTurn: retryTurn, acceptsFollowUp: afterExpiry)
             : nil
-        let launchMessage = afterExpiry
+        let launchMessage = recoveryMessage ?? (afterExpiry
             ? interruptedResumeMessage ?? retryFollowUpMessage
-            : retryFollowUpMessage ?? interruptedResumeMessage
+            : retryFollowUpMessage ?? interruptedResumeMessage)
         let retryMode = interruptedResumeMessage != nil
             ? "interrupted_resume"
             : (launchMessage == nil ? "initial_task" : "continuation")
