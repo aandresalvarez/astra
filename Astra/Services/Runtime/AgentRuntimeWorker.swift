@@ -780,10 +780,12 @@ final class AgentRuntimeWorker {
         // Resolved once, from the manifest this run launches with: the guard's
         // answer for the `ssh` command and the sandbox the process gets. The run
         // line, the broker refusal, the resource manifest and the signature read it.
-        executionPolicy = executionPolicy.withRemoteSSHRoute(RemoteWorkspaceSSHRoute.resolve(
+        // A native-shell route also gets the remote job helper, offered only once written.
+        executionPolicy = executionPolicy.withRemoteSSHRoute(RemoteWorkspaceJobShim.prepare(
+            task: executionTask, runID: run.id, route: RemoteWorkspaceSSHRoute.resolve(
             task: executionTask, manifest: manifest, requirements: appliedRuntime.requirements,
             environment: runEnvironment.runSnapshot, runtimeCapabilityProfile: runtimeCapabilityProfile,
-            hostControlHelperAvailable: processRunner.isHostControlBrokerAvailable()))
+            hostControlHelperAvailable: processRunner.isHostControlBrokerAvailable())))
         if let sshRoute = executionPolicy.remoteSSHRoute {
             launchResourcePlan.remoteSSHRoute = sshRoute
             TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)

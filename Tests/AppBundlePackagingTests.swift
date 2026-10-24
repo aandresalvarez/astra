@@ -6,6 +6,7 @@ struct AppBundlePackagingTests {
     private let swiftMailTools = [
         "astra-browser": "AstraBrowserTool",
         "astra-workspace": "AstraWorkspaceTool",
+        "astra-workspace-job": "AstraWorkspaceJobTool",
         "stanford-mail": "StanfordMailTool",
         "stanford-apple-mail": "StanfordAppleMailTool",
         "stanford-graph-mail": "StanfordGraphMailTool"
@@ -244,7 +245,7 @@ struct AppBundlePackagingTests {
             #expect(package.contains("name: \"\(target)\""))
             if command == "astra-browser" {
                 #expect(package.contains("dependencies: [\"ASTRACore\"]"))
-            } else if command == "astra-workspace" {
+            } else if command == "astra-workspace" || command == "astra-workspace-job" {
                 #expect(package.contains("dependencies: [\"WorkspaceToolSupport\"]"))
             } else {
                 #expect(package.contains("dependencies: [\"MailToolSupport\"]"))
