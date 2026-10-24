@@ -2586,6 +2586,11 @@ public enum WorkspaceConfigManager {
             modelContext.insert(run)
             importedRuns.append(run)
         }
+        if importedRuns.contains(where: { $0.runtimeID == AgentRuntimeID.codexCLI.rawValue && $0.providerSessionId != nil }) {
+            // An export from an older build can hold Codex's running thread totals as run usage;
+            // re-arm the startup correction so it reads these runs too.
+            UserDefaults.standard.removeObject(forKey: AppStorageKeys.completedCodexSessionUsageCorrectionBuild)
+        }
 
         for ec in config.events {
             let run = ec.runIndex.flatMap { index in
