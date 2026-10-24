@@ -47,6 +47,8 @@ struct RuntimeSupervisionEvidence: Codable, Sendable {
     let changedFiles: [FileDelta]
     let fileCoverage: String
     let remoteCoverage: String
+    var postAssessmentFileChanges: [String]? = nil
+    var postAssessmentFileCoverage: String? = nil
 
     var supportsProgress: Bool { changedFiles.contains { $0.changedSecondsAgo <= 120 } }
     var supportsWaiting: Bool {

@@ -1587,38 +1587,15 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty
             ? RuntimePathResolver.detectClaudePath()
             : configuredPath
-        var args = [
-            "-p",
-            prompt,
-            "--model",
-            AgentRuntimeProcessRunner.translatedModelForProvider(configuration.model)
-        ]
-        if toolMode == .readOnly {
-            args += [
-                "--allowedTools",
-                "Read,Glob,Grep",
-                "--disallowedTools",
-                "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
-            ]
+        let environment = ClaudeCodeUtilityLaunchPolicy.currentEnvironment()
+        if toolMode == .supervision,
+           let reason = ClaudeCodeUtilityLaunchPolicy.investigationUnavailableReason(for: id, environment: environment) {
+            return .init(exitCode: -1, output: "", error: reason)
         }
-        let plan = AgentRuntimeProcessLaunchPlan(
-            runtime: id,
-            executablePath: executable,
-            arguments: args,
-            currentDirectory: workspacePath,
-            environment: claudeUtilityEnvironment(),
-            browserShimDirectory: nil,
-            providerVersion: nil,
-            parsesJSONLines: false
-        )
-        return await AgentRuntimeProcessRunner().runUtilityProcess(
-            AgentUtilityLaunchPlan(
-                process: plan,
-                providerHomeDirectory: "",
-                permissionPolicy: .restricted,
-                timeoutSeconds: configuration.timeoutSeconds
-            )
-        )
+        let plan = ClaudeCodeUtilityLaunchPolicy.makePlan(prompt: prompt, workspacePath: workspacePath,
+            executable: executable, configuration: configuration, toolMode: toolMode,
+            environment: environment)
+        return await AgentRuntimeProcessRunner().runUtilityProcess(plan)
     }
 
     private func checkClaudeAuth(
@@ -1821,14 +1798,6 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func claudeUtilityEnvironment() -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-        for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
-            env[key] = value
-        }
-        return env
-    }
 }
 
 struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {

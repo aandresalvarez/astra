@@ -26,6 +26,9 @@ stopped. A model verdict is not permission to start a second writer.
    extensions require an open tool or managed job. Neither proves useful progress.
 4. The monitor rechecks the progress revision before accepting a stop. New parsed
    progress or a renewed managed-job heartbeat invalidates an older verdict.
+   A suspected-stall result also rechecks file metadata within the same absolute
+   deadline. New changes or degraded coverage invalidate that old verdict and
+   produce an inconclusive update rather than claiming verified progress.
    Cancellation and process completion cancel the investigation. A late result
    cannot change a later attempt or buy time after its absolute deadline.
 5. The event sink writes `runtime.supervision` plus a human-readable `system.info`
@@ -39,6 +42,8 @@ stopped. A model verdict is not permission to start a second writer.
 - Evidence: current user request, a redacted 1,200-character output tail, stream
   counts, unknown-frame count, up to eight open tools/jobs, and file size/time
   changes since the attempt baseline or last investigation.
+  Stdout and stderr retain separate bounded raw buffers privately so split
+  credentials can be redacted before truncation or persistence.
 - Local files: task-folder artifacts and dirty/untracked files under the active
   Git workspace. Small non-Git workspaces use a bounded metadata scan. No file
   contents are read. Hidden task-folder files are excluded; symlinks are not
@@ -50,7 +55,9 @@ stopped. A model verdict is not permission to start a second writer.
   authorized heartbeat/result evidence already consumed by the monitor are
   available. Missing remote coverage is unknown, never proof that work stopped.
 - Investigation deadline: 75 seconds including collection. Model utility:
-  at most 45 seconds, 32 KiB combined raw output, 4 KiB final assessment. At most
+  at most 45 seconds, one model turn, 2,048 generated tokens (including thinking),
+  32 KiB combined raw output, 4 KiB final assessment, and a short replacement
+  system prompt. At most
   two investigations per uninterrupted quiet episode and two concurrent model
   investigations app-wide. New provider progress resets the episode, while all
   reservations still consume the same run budget. A quiet attempt gets a
@@ -61,11 +68,30 @@ stopped. A model verdict is not permission to start a second writer.
   The allocation is conservatively recorded separately as estimated usage because
   utility CLIs do not all expose exact billable usage. It is not an exact token or
   dollar cap. Known sensitive-data admission failures and same-provider
-  Antigravity lock conflicts do not allocate model tokens.
-- The investigator uses an empty temporary working folder, read-only utility
-  mode and an enforced OS read boundary even when ordinary utility isolation is
-  disabled. It receives no task MCP/capability manifest. Evidence is treated as
-  untrusted data. Investigation is not recursively supervised.
+  Antigravity lock conflicts and unsupported verifier providers do not allocate
+  model tokens. Hard-stop budgets reject unaffordable reservations; warning-only
+  budgets record a warning and retain their configured continuation behavior.
+- All six **task** providers remain supervised. This version admits only Claude
+  Code as the **investigator**: the other CLIs lack a verified equivalent launch
+  contract here. Selecting another Verifier produces an explicit unavailable
+  explanation, without launching it or silently switching providers.
+- The investigator uses an empty temporary working folder and a dedicated
+  observation mode: empty built-in tools, empty strict MCP config plus MCP denial,
+  safe mode, no user/project settings, no skills or persisted session, and disabled
+  user hooks. The environment contains only authentication and transport inputs.
+  Explicit account directories and supported endpoint selectors are retained.
+  Unsupported authentication routes or user settings that would otherwise be
+  discarded fail admission before reservation, without falling back to a saved
+  account. Optional telemetry/error reporting is disabled for observation.
+  Claude's administrator-managed policy remains authoritative, including managed
+  hooks; this is not a guarantee of zero host side effects. ASTRA does not bypass
+  organizational policy or extract OAuth tokens to circumvent that boundary.
+  See the [Claude CLI reference](https://code.claude.com/docs/en/cli-reference).
+- An enforced OS read boundary applies even when ordinary utility isolation is
+  disabled, preserving explicit network denial. Narrow read-only Keychain and
+  Vertex ADC paths retain authentication access. No task MCP/capability manifest
+  is supplied. Evidence is untrusted data; investigation is not recursively
+  supervised. Older CLIs that reject the isolation flags fail closed.
 - An unavailable/malformed/overloaded investigator produces an inconclusive
   status. A same-provider Antigravity verifier is unavailable because it shares
   the main run's model-settings lock; select another Verifier provider.
@@ -92,9 +118,11 @@ work and settles the attempt with a clear error instead of auto-restarting.
 ## Verification
 
 `RuntimeSupervisionTests`, `RuntimeSupervisionProcessTests` and
-`RuntimeSupervisionWorkerTests` exercise deadlines, stale answers, fresh versus
+`RuntimeSupervisionWorkerTests` and `RuntimeSupervisionReviewRegressionTests`
+exercise deadlines, stale answers, fresh versus
 stale file evidence, renewed managed jobs, cancellation before launch, the shared
 six-provider process path, output limits, isolated model utility fixtures and
-durable worker settlement. These are controlled CLI tests, not authenticated
+durable worker settlement, stream redaction, network policy, warning budgets,
+auth projection and actual observation argv. These are controlled CLI tests, not authenticated
 live-provider acceptance tests. Required runtime/full-suite, hooks, native Dev
 startup and CI results are recorded on the PR.

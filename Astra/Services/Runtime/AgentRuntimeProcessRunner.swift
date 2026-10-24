@@ -592,9 +592,14 @@ final class AgentRuntimeProcessRunner {
     @MainActor
     func sandboxedUtilityPlan(_ utilityPlan: AgentUtilityLaunchPlan) -> SandboxedUtilityPlanOutcome {
         let plan = utilityPlan.process
-        let settings = AgentUtilityExecutionLimits.requiresIsolation
-            ? ExecutionSandboxSettings(enforcement: .strict, wrappedRuntimes: Set(AgentRuntimeAdapterRegistry.runtimeIDs), readScope: .enforce)
-            : sandboxSettingsProvider(utilityPlan.permissionPolicy)
+        var settings = sandboxSettingsProvider(utilityPlan.permissionPolicy)
+        if AgentUtilityExecutionLimits.requiresIsolation {
+            // Strengthen the existing policy without relaxing offline or
+            // fail-closed restrictions selected by the user.
+            settings.enforcement = .strict
+            settings.readScope = .enforce
+            settings.wrappedRuntimes.insert(plan.runtime)
+        }
         let decision = ExecutionSandbox.decide(
             plan: plan,
             providerHomeDirectory: utilityPlan.providerHomeDirectory,

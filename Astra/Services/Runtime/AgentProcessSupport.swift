@@ -1640,10 +1640,16 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     func reserveSupervisionTokens(_ tokens: Int) -> Bool {
         lock.lock(); defer { lock.unlock() }
         let used = max(_estimatedTokens, reportedTokensForSupervision)
-        guard tokens > 0, supervisionTokens <= tokenBudget,
-              used <= tokenBudget - supervisionTokens,
-              tokens <= tokenBudget - supervisionTokens - used else { return false }
-        supervisionTokens += tokens
+        let (reserved, overflow) = supervisionTokens.addingReportingOverflow(tokens)
+        guard tokens > 0, !overflow else { return false }
+        let fits = reserved <= tokenBudget && used <= tokenBudget - reserved
+        guard fits || budgetEnforcementMode == .warning else { return false }
+        supervisionTokens = reserved
+        if !fits {
+            _ = recordBudgetWarning(reason: "supervision_token_reservation", fields: [
+                "token_budget": String(tokenBudget), "supervision_reserved_tokens": String(reserved)
+            ], process: nil)
+        }
         return true
     }
 

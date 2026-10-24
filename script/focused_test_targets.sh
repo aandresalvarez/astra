@@ -20,7 +20,7 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
-    Astra/Services/Runtime/RuntimeSupervision*.swift|Astra/Services/Runtime/AgentUtilityExecutionLimits.swift|Astra/Services/Runtime/AgentProcessProgressClassification.swift|Astra/Services/Runtime/AgentProcessSupport.swift|Tests/RuntimeSupervision*Tests.swift)
+    Astra/Services/Runtime/RuntimeSupervision*.swift|Astra/Services/Runtime/ClaudeCodeUtilityLaunchPolicy.swift|Astra/Services/Runtime/ClaudeObservationAuthentication.swift|Astra/Services/Runtime/AgentUtilityRuntime.swift|Astra/Services/Runtime/AgentUtilityExecutionLimits.swift|Astra/Services/Runtime/AgentProcessProgressClassification.swift|Astra/Services/Runtime/AgentProcessSupport.swift|Tests/RuntimeSupervision*Tests.swift)
       add_target "RuntimeSupervision"
       add_target "ProcessMonitorTests"
       ;;

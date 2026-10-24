@@ -70,4 +70,35 @@ struct RuntimeSupervisionWorkerTests {
         #expect(result.assessment == .inconclusive)
         #expect(result.explanation.contains("different provider"))
     }
+
+    @Test("Unsupported verifier configurations allocate no model tokens", arguments: AgentRuntimeAdapterRegistry.runtimeIDs.filter { $0 != .claudeCode })
+    func unsupportedVerifier(runtime: AgentRuntimeID) throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Answer", model: "claude-sonnet-4-6")
+        let run = TaskRun(task: task)
+        harness.context.insert(run)
+        let context = RuntimeSupervisionContext.make(task: task, run: run, modelContext: harness.context,
+            runtime: .claudeCode, configuration: .init(runtime: runtime),
+            pendingEvents: OrderedMainActorTaskQueue(), remoteRoute: nil)
+        #expect(context.tokenReservation == 0)
+    }
+
+    @Test("Settings-based authentication rejection occurs before reserving model tokens")
+    func unsupportedSettingsAuthentication() throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+        let settings = harness.workspaceURL.appendingPathComponent(".claude/settings.json")
+        try FileManager.default.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try #"{"apiKeyHelper":"must-not-execute"}"#.write(to: settings, atomically: true, encoding: .utf8)
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Answer", model: "claude-sonnet-4-6")
+        let run = TaskRun(task: task)
+        harness.context.insert(run)
+        let context = AgentUtilityExecutionLimits.$supervisionEnvironment.withValue(["HOME": harness.workspaceURL.path]) {
+            RuntimeSupervisionContext.make(task: task, run: run, modelContext: harness.context,
+                runtime: .claudeCode, configuration: .init(runtime: .claudeCode),
+                pendingEvents: OrderedMainActorTaskQueue(), remoteRoute: nil)
+        }
+        #expect(context.tokenReservation == 0)
+    }
 }

@@ -5,6 +5,8 @@ import Foundation
 enum AgentUtilityExecutionLimits {
     @TaskLocal static var maximumOutputBytes: Int?
     @TaskLocal static var requiresIsolation = false
+    /// Immutable environment seam for isolated observation fixtures.
+    @TaskLocal static var supervisionEnvironment: [String: String]?
 }
 
 final class AgentUtilityOutputAllowance: @unchecked Sendable {

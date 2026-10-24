@@ -128,14 +128,39 @@ struct RuntimeSupervisionProcessTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let executable = root.appendingPathComponent("claude")
         let response = valid ? #"{"assessment":"waiting","explanation":"Known operation is open","evidenceIDs":["runtime"]}"# : "malformed"
-        try "#!/bin/sh\nprintf '%s\\n' '\(response)'\n".write(to: executable, atomically: true, encoding: .utf8)
+        try """
+        #!/bin/sh
+        tools_disabled=false
+        safe=false
+        strict=false
+        hooks=false
+        turns=false
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --tools) shift; [ "$1" = "" ] && tools_disabled=true ;;
+            --safe-mode) safe=true ;;
+            --strict-mcp-config) strict=true ;;
+            --settings) shift; [ "$1" = '{"disableAllHooks":true}' ] && hooks=true ;;
+            --max-turns) shift; [ "$1" = '1' ] && turns=true ;;
+          esac
+          shift
+        done
+        if $tools_disabled && $safe && $strict && $hooks && $turns && [ "$CLAUDE_CODE_MAX_OUTPUT_TOKENS" = 2048 ]; then
+          printf '%s\\n' '\(response)'
+        else
+          printf 'Investigator inherited tools or customization'
+          exit 1
+        fi
+        """.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         let evidence = RuntimeSupervisionEvidence(goal: "Synthetic", runtime: "claude_code",
             observation: .init(progressRevision: 0, quietSeconds: 600, stdoutBytes: 0, stderrBytes: 0,
                 unknownFrames: 0, activeTools: ["tool-1"], managedJobs: [], recentOutput: ""),
             changedFiles: [], fileCoverage: "Available", remoteCoverage: "Unknown")
-        let assessment = await RuntimeSupervisionInvestigator.assess(evidence,
-            configuration: .init(runtime: .claudeCode, claudePath: executable.path, timeoutSeconds: 5))
+        let assessment = await AgentUtilityExecutionLimits.$supervisionEnvironment.withValue(["HOME": root.path, "PATH": "/usr/bin:/bin"]) {
+            await RuntimeSupervisionInvestigator.assess(evidence,
+                configuration: .init(runtime: .claudeCode, claudePath: executable.path, timeoutSeconds: 5))
+        }
         #expect(assessment.assessment == (valid ? .waiting : .inconclusive))
     }
 }

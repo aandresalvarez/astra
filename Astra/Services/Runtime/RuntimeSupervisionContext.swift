@@ -39,6 +39,7 @@ struct RuntimeSupervisionContext {
         let blocked = RuntimeSensitiveDataLaunchGate.block(task: task, requestedRuntime: runtime,
             launchRuntime: configuration.runtime) != nil
         let sharedStateConflict = runtime == .antigravityCLI && configuration.runtime == .antigravityCLI
+        let unsupportedInvestigator = ClaudeCodeUtilityLaunchPolicy.investigationUnavailableReason(for: configuration.runtime)
         return Self(goal: RunSecretRedactionScope.redact(turnIntent?.activationText ?? task.goal, taskID: task.id), runtime: runtime.rawValue,
              taskFolder: TaskWorkspaceAccess(task: task).taskFolder,
              remoteCoverage: remoteRoute == nil
@@ -48,6 +49,7 @@ struct RuntimeSupervisionContext {
                  if let investigatorOverride { return await investigatorOverride(evidence) }
                  guard !blocked else { return .inconclusive("The configured investigator is not approved for this task's sensitive data.") }
                  guard !sharedStateConflict else { return .inconclusive("This verifier shares the running provider's model-settings lock. Choose a different provider for the Verifier role to enable independent investigation.") }
+                 if let unsupportedInvestigator { return .inconclusive(unsupportedInvestigator) }
                  return await RuntimeSupervisionInvestigator.assess(evidence, configuration: configuration)
              },
              report: { report in
@@ -67,6 +69,6 @@ struct RuntimeSupervisionContext {
                          taskID: task.id, auditFields: ["operation": "runtime_supervision", "attempt_id": report.attemptID.uuidString])
                  }
              }, workspacePath: workspacePath,
-             tokenReservation: investigatorOverride == nil && (blocked || sharedStateConflict) ? 0 : 16_384)
+             tokenReservation: investigatorOverride == nil && (blocked || sharedStateConflict || unsupportedInvestigator != nil) ? 0 : 16_384)
     }
 }

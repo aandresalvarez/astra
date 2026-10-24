@@ -18,6 +18,9 @@ final class RuntimeInvestigationCapacity: @unchecked Sendable {
 enum RuntimeSupervisionInvestigator {
     static func assess(_ evidence: RuntimeSupervisionEvidence,
                        configuration: AgentUtilityRuntimeConfiguration) async -> RuntimeSupervisionAssessment {
+        if let reason = ClaudeCodeUtilityLaunchPolicy.investigationUnavailableReason(for: configuration.runtime) {
+            return .inconclusive(reason)
+        }
         guard !Task.isCancelled, RuntimeInvestigationCapacity.shared.acquire() else {
             return .inconclusive("The independent investigator is unavailable or already at capacity.")
         }
@@ -51,7 +54,7 @@ enum RuntimeSupervisionInvestigator {
         let result = await AgentUtilityExecutionLimits.$maximumOutputBytes.withValue(32_768) {
             await AgentUtilityExecutionLimits.$requiresIsolation.withValue(true) {
                 await AgentUtilityRuntimeRunner.runPrompt(prompt, workspacePath: folder.path,
-                    configuration: configuration, toolMode: .readOnly)
+                    configuration: configuration, toolMode: .supervision)
             }
         }
         guard !Task.isCancelled, result.exitCode == 0,

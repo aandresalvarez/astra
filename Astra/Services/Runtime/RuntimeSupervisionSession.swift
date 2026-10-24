@@ -100,14 +100,31 @@ final class RuntimeSupervisionSession: @unchecked Sendable {
                     currentBytes: after.count > 2 ? Int64(after[2]) : nil,
                     changedSecondsAgo: max(0, Int(Date().timeIntervalSince1970 - changed)))
             }
-            let evidence = RuntimeSupervisionEvidence(
+            var evidence = RuntimeSupervisionEvidence(
                 goal: goal, runtime: runtime, observation: observation,
                 changedFiles: changes,
                 fileCoverage: ([files.unavailable, previousFiles.unavailable].compactMap { $0 }
                     + files.coverageNotes + ["Up to 20 metadata changes during the quiet interval; changes are not attributed to a specific writer."]).joined(separator: " "),
                 remoteCoverage: remoteCoverage)
-            let assessment = await investigate(evidence)
-            complete(assessment, evidence: evidence, files: files, generation: current)
+            var assessment = await investigate(evidence)
+            guard !Task.isCancelled else { return }
+            var finalFiles = files
+            if assessment.assessment == .suspectedStalled {
+                // A model may take tens of seconds. Revalidate the metadata it
+                // saw before accepting a negative verdict about a silent writer.
+                finalFiles = await collectFiles()
+                guard !Task.isCancelled else { return }
+                let changedPaths = finalFiles.changes(since: files)
+                evidence.postAssessmentFileChanges = changedPaths.prefix(20).map { String($0.prefix(300)) }
+                evidence.postAssessmentFileCoverage = ([finalFiles.unavailable].compactMap { $0 } + finalFiles.coverageNotes).joined(separator: " ")
+                if !changedPaths.isEmpty {
+                    assessment = .inconclusive("Files changed during the independent assessment. Its earlier stall verdict is no longer current; useful progress remains unverified.")
+                } else if finalFiles.unavailable != nil || finalFiles.unavailable != files.unavailable
+                            || finalFiles.coverageNotes != files.coverageNotes {
+                    assessment = .inconclusive("File coverage changed during the independent assessment. The earlier stall verdict could not be revalidated.")
+                }
+            }
+            complete(assessment, evidence: evidence, files: finalFiles, generation: current)
         }
         return .keepRunning
     }

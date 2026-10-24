@@ -73,6 +73,29 @@ struct RuntimeSupervisionTests {
         session.finish()
     }
 
+    @Test("Files or coverage changing during model assessment invalidate its earlier stall verdict", arguments: [false, true])
+    func filesChangeDuringAssessment(initiallyUnavailable: Bool) async throws {
+        let state = SupervisionTestState(), gate = SupervisionTestGate()
+        let changed = AgentLockedBuffer()
+        let session = RuntimeSupervisionSession(goal: "Create report", runtime: "fixture",
+            remoteCoverage: "Unknown", baseline: .init(),
+            collectFiles: {
+                changed.value.isEmpty ? .init(unavailable: initiallyUnavailable ? "Initial stat unavailable" : nil)
+                    : .init(metadata: ["report.md": "\(Date().timeIntervalSince1970)|0|10|1"])
+            }, investigate: { _ in await gate.wait() }, reserveTokens: { _ in true }, report: { state.record($0) })
+        _ = session.tick(observation(), investigationDue: true)
+        try await waitFor { await gate.started }
+        changed.append("yes")
+        await gate.finish(.init(assessment: .suspectedStalled, explanation: "Old file snapshot was empty", evidenceIDs: ["files"]))
+        try await waitFor {
+            state.reports.contains { $0.phase == .inconclusive } || session.tick(observation(), investigationDue: false) != .keepRunning
+        }
+        #expect(session.tick(observation(), investigationDue: false) == .keepRunning)
+        #expect(state.reports.contains { $0.phase == .inconclusive && $0.message.contains("changed during") })
+        #expect(state.reports.last?.evidence?.postAssessmentFileChanges == (initiallyUnavailable ? [] : ["report.md"]))
+        session.finish()
+    }
+
     @Test("A hung investigator cannot hold the watchdog past its deadline")
     func investigatorDeadline() async throws {
         let state = SupervisionTestState(), gate = SupervisionTestGate()
