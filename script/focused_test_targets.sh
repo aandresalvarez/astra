@@ -20,6 +20,11 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Runtime/RuntimeRecovery*.swift|Tests/RuntimeRecovery*Tests.swift)
+      add_target "RuntimeRecovery"
+      add_target "RuntimeSupervision"
+      return
+      ;;
     Astra/Services/Runtime/RuntimeSupervision*.swift|Astra/Services/Runtime/ClaudeCodeUtilityLaunchPolicy.swift|Astra/Services/Runtime/ClaudeObservationAuthentication.swift|Astra/Services/Runtime/AgentUtilityRuntime.swift|Astra/Services/Runtime/AgentUtilityExecutionLimits.swift|Astra/Services/Runtime/AgentProcessProgressClassification.swift|Astra/Services/Runtime/AgentProcessSupport.swift|Tests/RuntimeSupervision*Tests.swift)
       add_target "RuntimeSupervision"
       add_target "ProcessMonitorTests"
@@ -226,10 +231,11 @@ target_for_path() {
       add_target "SidebarTaskStoreSignalIntegrationTests"
       add_target "SidebarTaskSourceObservationTests"
       ;;
-    Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentProcessPipeReader.swift|Astra/Services/Runtime/AgentExecutionScopedProcess.swift|Tests/AgentRuntimePipeCompletionTests.swift|Tests/AgentExecutionScopedProcessTests.swift)
+    Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentUtilityScopedProcessRunState.swift|Astra/Services/Runtime/AgentProcessPipeReader.swift|Astra/Services/Runtime/AgentExecutionScopedProcess.swift|Tests/AgentRuntimePipeCompletionTests.swift|Tests/AgentExecutionScopedProcessTests.swift)
       add_target "AgentRuntimePipeCompletionTests"
       add_target "StreamVolumeAccountingTests"
       add_target "AgentExecutionScopedProcessTests"
+      add_target "RuntimeRecovery"
       add_target "AgentUtilityRuntimeTests"
       add_target "ProcessMonitorTests"
       ;;

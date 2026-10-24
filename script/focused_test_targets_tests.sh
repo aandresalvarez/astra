@@ -51,6 +51,11 @@ assert_targets $'RuntimeSupervision\nProcessMonitorTests' \
   "Astra/Services/Runtime/AgentProcessSupport.swift" \
   "Tests/RuntimeSupervisionWorkerTests.swift"
 
+assert_targets $'RuntimeRecovery\nRuntimeSupervision' \
+  "Astra/Services/Runtime/RuntimeRecoverySession.swift" \
+  "Astra/Services/Runtime/RuntimeRecoveryService.swift" \
+  "Tests/RuntimeRecoveryTests.swift"
+
 for path in \
   Tests/TaskMainActorScalingGateTests.swift \
   Tests/TaskHistoryReadTests.swift \
@@ -210,7 +215,7 @@ assert_targets "OrphanedV12StoreMigratorTests" \
   "Astra/Services/Persistence/OrphanedV12StoreMigrator.swift" \
   "Tests/OrphanedV12StoreMigratorTests.swift"
 
-assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nAgentExecutionScopedProcessTests\nAgentUtilityRuntimeTests\nProcessMonitorTests' \
+assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nAgentExecutionScopedProcessTests\nRuntimeRecovery\nAgentUtilityRuntimeTests\nProcessMonitorTests' \
   "Astra/Services/Runtime/AgentProcessPipeReader.swift" \
   "Astra/Services/Runtime/AgentExecutionScopedProcess.swift" \
   "Tests/AgentExecutionScopedProcessTests.swift" \

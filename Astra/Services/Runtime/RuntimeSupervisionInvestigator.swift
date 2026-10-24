@@ -36,10 +36,13 @@ enum RuntimeSupervisionInvestigator {
         File changes and live processes alone do not prove useful progress. Remote evidence that
         is unavailable is unknown, not evidence of a stall. A known active tool is not proof it
         will finish. Prefer inconclusive when observations are insufficient or contradictory.
+        ownedProcessSuspended=true is macOS confirmation that ASTRA's original provider child
+        cannot execute while suspended. It does not establish whether its tools or remote jobs
+        are still working. Distinguish that observation from an assumption based on silence.
         Return ONLY JSON: {"assessment":"progressing|waiting|suspectedStalled|inconclusive",
         "explanation":"a short factual explanation, at most 600 characters",
         "evidenceIDs":["runtime","files","remote"]}. Cite only evidence you actually used.
-        Do not claim the process was stopped or restarted; ASTRA owns those decisions.
+        Do not claim ASTRA stopped, resumed or restarted anything; ASTRA owns those decisions.
         EVIDENCE:
         \(json)
         """

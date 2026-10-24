@@ -16,49 +16,6 @@ struct AgentRuntimeBudgetProfile: Sendable, Equatable {
     }
 }
 
-private final class AgentUtilityScopedProcessRunState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var completed = false
-    private var forcedResult: AgentUtilityRunResult?
-    private var cancelled = false
-
-    /// Records a timeout or early-stream result that requires terminating the
-    /// process. The continuation must not resume yet: the process reaper still
-    /// owns final pipe drain and process-group cleanup.
-    func requestTermination(with result: AgentUtilityRunResult) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !completed, !cancelled, forcedResult == nil else { return false }
-        forcedResult = result
-        return true
-    }
-
-    func markCancelled() {
-        lock.lock()
-        cancelled = true
-        lock.unlock()
-    }
-
-    /// Completes only after AgentExecutionScopedProcess has reaped the child.
-    /// A timeout/early-stream result wins over the child's signal exit status.
-    func completeAfterProcessExit(naturalResult: AgentUtilityRunResult) -> AgentUtilityRunResult? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !completed else { return nil }
-        completed = true
-        return forcedResult ?? naturalResult
-    }
-
-    /// Launch failures have no child to reap, so they can complete directly.
-    func completeWithoutProcess(_ result: AgentUtilityRunResult) -> AgentUtilityRunResult? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !completed else { return nil }
-        completed = true
-        return result
-    }
-}
-
 protocol AgentRuntimeProcessRunning: AnyObject {
     func cancel()
     func isHostControlBrokerAvailable() -> Bool
@@ -104,6 +61,7 @@ final class AgentRuntimeProcessRunner {
     private var currentProcess: AgentRuntimeProcessControl?
     private var supervisionContext: RuntimeSupervisionContext?
     private var activeSupervision: RuntimeSupervisionSession?
+    private var activeRecovery: RuntimeRecoverySession?
     private var supervisionPreparation: Task<RuntimeSupervisionFiles, Never>?
     @MainActor func configureSupervision(_ context: RuntimeSupervisionContext?) { supervisionContext = context }
     let homeAccessCancellation = RuntimeHomeAccessCancellationGate()
@@ -136,6 +94,7 @@ final class AgentRuntimeProcessRunner {
     }
 
     func cancel() {
+        activeRecovery?.finish()
         supervisionPreparation?.cancel()
         activeSupervision?.finish()
         homeAccessCancellation.invalidate()
@@ -910,7 +869,10 @@ final class AgentRuntimeProcessRunner {
         guard !Task.isCancelled, task.status != .cancelled, homeAccessCancellation.isCurrent(preparationGeneration) else {
             return AgentProcessResult(exitCode: -1, error: "Cancelled before provider launch.")
         }
-        defer { activeSupervision?.finish(); activeSupervision = nil }
+        defer {
+            activeSupervision?.finish(); activeSupervision = nil
+            activeRecovery?.finish(); activeRecovery = nil
+        }
 
         // The one place that owns a live agent process, so the one place that
         // can say a redaction scope must not be evicted yet. A run that spends
@@ -998,6 +960,10 @@ final class AgentRuntimeProcessRunner {
             }
             activeSupervision = supervision
             monitor.supervision = supervision
+            let recovery = RuntimeRecoverySession.make(context: context?.recovery, process: process, monitor: monitor)
+            activeRecovery = recovery
+            monitor.recovery = recovery
+            monitor.supervisionProcessSuspension = { process.suspendedProcessIdentifier == nil ? nil : true }
 
             let handleLine: (String) -> Void = { line in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1087,6 +1053,7 @@ final class AgentRuntimeProcessRunner {
                 for filtered in eventPipeline.flushParsedEvents() {
                     _ = monitor.processEvent(filtered, process: process)
                 }
+                recovery?.finish(progressRevision: monitor.currentSupervisionProgressRevision)
                 let error = errorOutput.value
                 let dockerFailure = DockerRuntimeFailureDiagnostics.diagnose(
                     exitCode: Int(proc.terminationStatus),

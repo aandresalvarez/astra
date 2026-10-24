@@ -344,6 +344,20 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var supervisionProgressRevision = 0
     private var supervisionLastProgressTime = Date()
     var supervision: RuntimeSupervisionSession?
+    var recovery: RuntimeRecoverySession?
+    var supervisionProcessSuspension: (@Sendable () -> Bool?)?
+    var currentSupervisionProgressRevision: Int { lock.withLock { supervisionProgressRevision } }
+
+    /// Recovery cannot overtake cancellation/policy stops or new provider work.
+    /// Its signal is applied while this revision is still authoritative.
+    func resumeSuspendedProcess(_ process: AgentExecutionScopedProcess, pid: Int32, revision: Int) -> Bool {
+        lock.withLock {
+            guard supervisionProgressRevision == revision, _runtimeStopReason == nil,
+                  !_policyViolation, !_policyApprovalRequired, !_budgetExceeded,
+                  !_maxTurnsExceeded, !_repetitionKilled, !_timedOut, !_terminatedAfterTerminalProgress else { return false }
+            return process.resumeSuspendedProcess(expectedPID: pid)
+        }
+    }
     let supervisionTranscript = RuntimeSupervisionTranscript()
     private var _turnCount: Int = 0
     private var _providerFailureOutput = ""
@@ -1826,7 +1840,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             unknownFrames: unknownEventCount,
             activeTools: activeToolUseIDs.sorted().prefix(8).map { "\($0.prefix(80)): \((toolUseContextsByID[$0]?.name ?? "unknown tool").prefix(80))" },
             managedJobs: Array(activeManagedWorkspaceJobs.values.map { "\($0.id.prefix(80)): \($0.status.prefix(80)), last observed \(Int(now.timeIntervalSince($0.lastObservedAt)))s ago" }.sorted().prefix(8)),
-            recentOutput: supervisionTranscript.text)
+            recentOutput: supervisionTranscript.text,
+            ownedProcessSuspended: supervisionProcessSuspension?())
         let supervisionQuietLimit = hasActiveRuntimeWork ? activeToolIdleTimeoutSeconds
             : (hasSeenAnyActivity ? noSemanticProgressTimeoutSeconds : idleTimeoutSeconds)
         lock.unlock()
@@ -1874,11 +1889,16 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         if let supervision {
             let due = stalledManagedWorkspaceJob != nil || (!hasActiveManagedWorkspaceJob
                 && Double(supervisionObservation.quietSeconds) >= supervisionQuietLimit)
-            if case .stop(let reason, let message) = supervision.tick(supervisionObservation, investigationDue: due) {
+            let decision = supervision.tick(supervisionObservation, investigationDue: due)
+            if recovery?.tick(supervisionObservation, decision: decision, attemptID: supervision.attemptID) == true { return false }
+            if case .stop(let reason, let message) = decision {
+                // Recovery admission takes its own lock before checking this
+                // monitor. Never acquire that lock while holding ours.
+                let stopMessage = recovery?.stopMessage ?? message
                 lock.lock()
                 guard supervisionProgressRevision == supervisionObservation.progressRevision,
                       _runtimeStopReason == nil else { lock.unlock(); return false }
-                _runtimeStopReason = reason; _runtimeStopMessage = message
+                _runtimeStopReason = reason; _runtimeStopMessage = stopMessage
                 lock.unlock()
                 supervision.confirmStop()
                 Self.stopProvider(gracefulStop: gracefulStop, awaitGracefulExit: awaitGracefulExit, terminate: terminate)
