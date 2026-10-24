@@ -12,6 +12,8 @@ final class AgentRuntimeWorker {
     var antigravityLaunchPreparation: AntigravityLaunchPreparation
     private var runtimeConfiguration = AgentRuntimeConfiguration()
     private let processRunner: any AgentRuntimeProcessRunning
+    var supervisionEnabled = true
+    var supervisionInvestigatorOverride: RuntimeSupervisionSession.Investigator?
     private let providerSettingsSnapshotProvider: () -> ProviderSettingsSnapshot
     var budgetEnforcementModeOverride: BudgetEnforcementMode?
     var permissionPromotionPersistence: (() throws -> Void)?
@@ -937,6 +939,16 @@ final class AgentRuntimeWorker {
         )
         defer { HostControlBrokerSessionRegistry.shared.unbindExternalActions(taskID: task.id, runID: run.id) }
         let pendingEvents = OrderedMainActorTaskQueue()
+        if supervisionEnabled {
+            let investigator = utilityRuntimeConfiguration(for: .verifier, task: task,
+                fallbackRuntime: selectedRuntime, preferredModel: validationModel, modelContext: modelContext)
+            processRunner.configureSupervision(.make(task: task, run: run, modelContext: modelContext,
+                runtime: selectedRuntime, configuration: investigator, pendingEvents: pendingEvents,
+                remoteRoute: launchExecutionPolicy.remoteSSHRoute, turnIntent: launchExecutionPolicy.turnIntentSnapshot,
+                workspacePath: executionPath,
+                investigatorOverride: supervisionInvestigatorOverride))
+        }
+        defer { processRunner.configureSupervision(nil) }
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: runtimeAdapter.descriptor.supportsAstraRunProtocol
         )
@@ -1021,10 +1033,11 @@ final class AgentRuntimeWorker {
         let launchTimeoutSeconds = timeoutSeconds
         let launchLiveApprovalsEnabled = liveApprovalsEnabled
         let launchMaxRunSeconds = maxRunSeconds
+        var supervisionReservations = 0
         let launchProcess: (String, String?, NativeResumeEmptyTurnGate?, TimeInterval, Int, Int) async -> AgentProcessResult = { launchPrompt, nativeSessionID, gate, launchMaxRun, priorTurns, priorTokens in
             var attemptPolicy = launchExecutionPolicy
             attemptPolicy.providerTurnsAlreadyUsed = priorTurns
-            attemptPolicy.providerTokensAlreadyUsed = priorTokens
+            attemptPolicy.providerTokensAlreadyUsed = priorTokens + supervisionReservations
             attemptPolicy.providerSessionUsageBaseline = sessionUsageBaseline
             return await self.processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
@@ -1061,6 +1074,7 @@ final class AgentRuntimeWorker {
         }
         let firstAttemptStartedAt = Date()
         var result = await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate, launchMaxRunSeconds, 0, 0)
+        supervisionReservations += result.supervisionReservedTokens ?? 0
         if let emptyTurnGate {
             if emptyTurnGate.producedNothing, result.exitCode == 0, !result.stoppedByASTRA, !cancellationRequested {
                 // The resumed turn ended cleanly with reasoning only. Re-run it once without the resume.
@@ -1087,11 +1101,14 @@ final class AgentRuntimeWorker {
                     phase: auditPhase,
                     runtime: selectedRuntime,
                     budgetEnforcementMode: budgetEnforcementMode,
-                    alreadyUsedTokens: discardedUsage.totalTokens
+                    alreadyUsedTokens: discardedUsage.totalTokens + supervisionReservations
                 ) else {
                     // The run ends here, but the discarded attempt still spent what it spent.
                     for event in discardedUsage.unappliedEvents() { persistRecordedEvent(event) }
                     await pendingEvents.drainAll()
+                    RuntimeSupervisionUsageRecorder.record(supervisionReservations,
+                        task: task, run: run, modelContext: modelContext)
+                    WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                     return
                 }
                 prompt = promptWithoutResume
@@ -1099,6 +1116,7 @@ final class AgentRuntimeWorker {
                 let remainingRunSeconds = max(1, launchMaxRunSeconds - Date().timeIntervalSince(firstAttemptStartedAt))
                 // The empty attempt spent one provider turn of the run's maxTurns.
                 result = await launchProcess(prompt, nil, nil, remainingRunSeconds, 1, discardedUsage.totalTokens)
+                supervisionReservations += result.supervisionReservedTokens ?? 0
             } else {
                 emptyTurnGate.flush(forward: handleLine)
             }
@@ -1136,6 +1154,8 @@ final class AgentRuntimeWorker {
             run: run,
             modelContext: modelContext
         )
+        RuntimeSupervisionUsageRecorder.record(supervisionReservations,
+            task: task, run: run, modelContext: modelContext)
         let streamSnapshot = streamTelemetry?.snapshot()
 
         if let beforeGitStatus, let beforeDirtyFingerprints {
@@ -1767,6 +1787,9 @@ final class AgentRuntimeWorker {
             .providerSemanticProgressStalled,
             .providerActiveToolStalled,
             .providerWorkspaceJobStalled,
+            .providerSupervisorStalled,
+            .providerSupervisionInconclusive,
+            .providerSupervisionBudgetUnavailable,
             .providerRunWallClockExceeded,
             .providerTurnTimeLimitReached,
             .capabilitySessionExpired
