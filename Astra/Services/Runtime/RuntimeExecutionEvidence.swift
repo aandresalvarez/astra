@@ -102,7 +102,7 @@ struct RuntimeSessionInspection: Equatable {
         }
         if record.canReplace || record.canBeginNewTurn {
             return .init(state: record.state == .finished ? .finished : .stopped,
-                canReconnect: record.sessionID?.isEmpty == false, canReplace: true,
+                canReconnect: record.sessionID?.isEmpty == false, canReplace: record.canReplace,
                 message: record.state == .finished ? "The existing session has finished. Its result and context are preserved."
                     : "The previous execution and its relevant tools are confirmed stopped. The saved session can continue within its remaining limits.")
         }

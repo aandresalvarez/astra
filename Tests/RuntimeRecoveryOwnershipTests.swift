@@ -163,13 +163,13 @@ struct RuntimeRecoveryOwnershipTests {
         #expect(task.runs.count == 1)
     }
 
-    @Test("A proved retry inherits the original remaining limits and session")
-    func remainingLimitsSurviveNewOwner() throws {
+    @Test("A proved retry inherits the original remaining limits and session", arguments: [RuntimeExecutionOwnerRecord.State.stopped, .finished])
+    func remainingLimitsSurviveNewOwner(state: RuntimeExecutionOwnerRecord.State) throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
         let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "claude-sonnet-4-6")
         task.status = .running; task.tokensUsed = 600
-        let previous = try record(taskID: task.id)
+        let previous = try record(taskID: task.id, state: state)
         do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(previous) }
         let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 999))
         defer { owner.finish() }
@@ -231,6 +231,7 @@ struct RuntimeRecoveryOwnershipTests {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
         let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "claude-sonnet-4-6")
+        task.status = .completed
         let run = TaskRun(task: task); run.status = .completed; h.context.insert(run)
         var value = try record(taskID: task.id, state: .unverified)
         value.runID = run.id
@@ -271,6 +272,46 @@ struct RuntimeRecoveryOwnershipTests {
         #expect(!owner.authorizeAutomaticRestart())
         #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, newUserTurn: true) == nil)
         owner.finish()
+    }
+
+    @Test("A completed provider turn cannot grant Retry without tool termination proof")
+    func completedTurnRetryRequiresToolProof() throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "claude-sonnet-4-6")
+        task.status = .completed; task.tokensUsed = 600
+        var value = try record(taskID: task.id, state: .finished)
+        let proof = try #require(value.stopProof)
+        value.stopProof = .init(executionID: proof.executionID, process: proof.process, reaped: true,
+            processGroupEmpty: true, toolsStopped: false, remoteWorkExcluded: false, capturedAt: Date())
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
+        #expect(RuntimeSessionInspection.inspect(value, ownedHere: false).state == .finished)
+        #expect(!RuntimeSessionInspection.inspect(value, ownedHere: false).canReplace)
+        let coordinator = TaskLifecycleCoordinator(modelContext: h.context, taskQueue: TaskQueue(poolSize: 0))
+        #expect(coordinator.retryTask(task) == nil)
+        #expect(task.tokensUsed == 600)
+        #expect(try TaskTurnRequestRepository.requests(for: task, in: h.context).isEmpty)
+        #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60) == nil)
+        let explicitTurn = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context,
+            maxRunSeconds: 60, newUserTurn: true))
+        explicitTurn.finish()
+    }
+
+    @Test("A failed validation keeps the unfinished task's limits after its provider completed")
+    func providerCompletionIsNotTaskCompletion() throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "claude-sonnet-4-6")
+        task.status = .failed
+        let run = TaskRun(task: task); run.status = .completed; h.context.insert(run)
+        var value = try record(taskID: task.id, state: .stopped)
+        value.runID = run.id
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context)?.state == .stopped)
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context,
+            maxRunSeconds: 999, newUserTurn: true))
+        defer { owner.finish() }
+        #expect(owner.isRecovery && owner.record.limits == value.limits)
     }
 
     @Test("Losing a tracked task's journal never makes it a fresh unowned task")

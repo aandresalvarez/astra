@@ -43,7 +43,8 @@ final class RuntimeExecutionOwner {
     // Only the durable matching run plus the bound OS receipt may close that window.
     private static func reconciledCompletion(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask) -> RuntimeExecutionOwnerRecord {
         var record = saved
-        if let runID = record.runID, task.runs.contains(where: { $0.id == runID && $0.status == .completed }) {
+        if task.status == .completed, let runID = record.runID,
+           task.runs.contains(where: { $0.id == runID && $0.status == .completed }) {
             record.state = .finished
             if record.canBeginNewTurn { return record }
         }
@@ -76,10 +77,9 @@ final class RuntimeExecutionOwner {
                 return .legacy
             }
             let here = active.contains(key(taskID: task.id, context: context))
-            if !here && record.canBeginNewTurn { return .legacy }
             if !here && record.canReplace { return .continuation }
             let inspection = RuntimeSessionInspection.inspect(record, ownedHere: here)
-            report(inspection.message, task: task, context: context, pause: !here)
+            report(replacementBlockedMessage(record, inspection: inspection), task: task, context: context, pause: !here)
             return .blocked
         } catch {
             report("The saved recovery owner could not be read. Retry is blocked so it cannot compete with earlier work.", task: task, context: context, pause: true)
@@ -117,14 +117,14 @@ final class RuntimeExecutionOwner {
             }
             if let previous {
                 let abandonedBeforeLaunch = previous.state == .preparing && previous.appProcess.presence == .absent
-                guard previous.canReplace || previous.canBeginNewTurn || abandonedBeforeLaunch
+                guard previous.canReplace || abandonedBeforeLaunch
                     || (newUserTurn && previous.canAcceptUserTurn) else {
-                    report(RuntimeSessionInspection.inspect(previous, ownedHere: false).message, task: task, context: context, pause: true)
+                    report(replacementBlockedMessage(previous, inspection: .inspect(previous, ownedHere: false)), task: task, context: context, pause: true)
                     return nil
                 }
             }
             guard let app = RuntimeProcessIdentity.read(ProcessInfo.processInfo.processIdentifier) else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
-            let recovering = previous != nil && previous?.canBeginNewTurn != true
+            let recovering = previous != nil && !(newUserTurn && previous?.canBeginNewTurn == true)
             let configuration = launchTask ?? task
             let limits = recovering ? previous!.limits : RuntimeRecoveryLimits(
                 tokenCeiling: AgentRuntimeProcessRunner.effectiveTokenBudget(for: configuration),
@@ -215,8 +215,16 @@ final class RuntimeExecutionOwner {
         guard lease != nil else { return }
         record.limits.costSpent += run?.costUSD ?? 0
         if record.state == .preparing { record.state = .notStarted }
-        if run?.status == .completed, record.stopProof?.reaped == true, record.stopProof?.processGroupEmpty == true { record.state = .finished }
+        if task.status == .completed, run?.status == .completed,
+           record.stopProof?.reaped == true, record.stopProof?.processGroupEmpty == true { record.state = .finished }
         try? save(nil)
+    }
+
+    private static func replacementBlockedMessage(_ record: RuntimeExecutionOwnerRecord, inspection: RuntimeSessionInspection) -> String {
+        if record.canBeginNewTurn && !record.canReplace {
+            return "The provider turn finished, but ASTRA cannot verify that all relevant tools stopped. Recovery is blocked; the conversation and remaining limits are preserved."
+        }
+        return inspection.message
     }
 
     private func save(_ message: String?, audit: Bool = false) throws {
