@@ -31,8 +31,9 @@ automatic relaunch is blocked. No new provider capability is assumed.
    signalling share a lock. PID reuse cannot redirect a late recovery signal.
    Only the child PID receives SIGCONT, never its process group or remote jobs.
 5. Admission is bounded to 10 seconds. After resuming, ASTRA allows 30 seconds
-   for actual parsed progress. Success means a response was observed, not that
-   the task succeeded. Normal settlement still decides the task's outcome.
+   for parsed runtime progress or a renewed managed-job heartbeat, checked at
+   the existing watchdog cadence. Recovery progress does not mean the task
+   succeeded. Normal settlement still decides the task's outcome.
 6. New progress, cancellation and completion invalidate pending recovery. A late
    persistence result cannot act. Failed recovery stops normally; there is no
    retry loop. Original token, turn and wall-clock limits are not reset.

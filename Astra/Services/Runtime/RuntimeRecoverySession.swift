@@ -55,14 +55,14 @@ final class RuntimeRecoverySession: @unchecked Sendable {
             if observation.progressRevision != revision {
                 finishLocked(phase: state == .awaitingProgress ? .progress : .interrupted,
                     message: state == .awaitingProgress
-                        ? "The same provider process is responding again. ASTRA kept the original task, tools and remaining limits."
+                        ? "New runtime progress was observed after recovery. ASTRA kept the original task, tools and remaining limits."
                         : "Provider progress returned before recovery; ASTRA cancelled the pending recovery action.")
                 return false
             }
             if now() >= deadline {
                 failure = state == .authorizing
                     ? "Recovery admission did not finish in time. No recovery action was authorized."
-                    : "The provider did not respond within \(Int(graceSeconds)) seconds after resuming. ASTRA will stop this attempt; automatic relaunch is blocked because other work may still be active."
+                    : "No new runtime progress was observed during the \(Int(graceSeconds))-second recovery window. ASTRA will stop this attempt; automatic relaunch is blocked because other work may still be active."
                 finishLocked(phase: .expired, message: failure!)
                 return false
             }
@@ -93,7 +93,7 @@ final class RuntimeRecoverySession: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard state != .finished else { return }
         if state == .awaitingProgress, let progressRevision, progressRevision != revision {
-            finishLocked(phase: .progress, message: "The same provider process responded after recovery. The task outcome is reported below.")
+            finishLocked(phase: .progress, message: "New runtime progress was observed after recovery. The task outcome is reported below.")
         } else if state == .authorizing || state == .awaitingProgress {
             finishLocked(phase: .interrupted, message: "Recovery ended with the original process. No replacement task was started.")
         } else { state = .finished }
@@ -108,7 +108,7 @@ final class RuntimeRecoverySession: @unchecked Sendable {
             return
         }
         state = .awaitingProgress; deadline = now() + graceSeconds; pending = nil
-        emit(.resumed, "ASTRA resumed the existing suspended provider process. Waiting up to \(Int(graceSeconds)) seconds for a response; no new task or process was started.")
+        emit(.resumed, "ASTRA resumed the existing suspended provider process with a \(Int(graceSeconds))-second grace period for new progress. No replacement provider was started.")
     }
 
     private func finishLocked(phase: RuntimeRecoveryReport.Phase, message: String) {
