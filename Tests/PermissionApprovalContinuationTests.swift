@@ -268,9 +268,10 @@ struct PermissionApprovalContinuationTests {
             try context.save()
         }
 
-        func cleanup() {
-            try? FileManager.default.removeItem(at: root)
-            try? FileManager.default.removeItem(at: storeURL.deletingLastPathComponent())
+        @discardableResult
+        func cleanup() -> Task<Void, Never> {
+            TestWorkspaceStoreCleanup.schedule(context: context,
+                roots: [root, storeURL.deletingLastPathComponent()])
         }
 
         func payload(requestID: String, behavior: PermissionApprovalBehavior? = nil) -> String {

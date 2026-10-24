@@ -3,6 +3,7 @@ import SwiftData
 import Testing
 import ASTRAModels
 @testable import ASTRA
+@testable import ASTRAPersistence
 import ASTRACore
 
 @Suite("Headless Chat Scenarios", .serialized)
@@ -108,8 +109,14 @@ final class HeadlessChatHarness {
         context = container.mainContext
     }
 
-    func cleanup() {
-        try? FileManager.default.removeItem(at: rootURL)
+    private var cleanupTask: Task<Void, Never>?
+
+    @discardableResult
+    func cleanup(reader: WorkspaceSavedAutoExport = .shared) -> Task<Void, Never> {
+        if let cleanupTask { return cleanupTask }
+        let task = TestWorkspaceStoreCleanup.schedule(context: context, roots: [rootURL], reader: reader)
+        cleanupTask = task
+        return task
     }
 
     func writeExecutable(named name: String, script: String) throws -> String {
