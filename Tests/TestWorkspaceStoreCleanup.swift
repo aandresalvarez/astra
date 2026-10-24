@@ -9,13 +9,15 @@ import ASTRAModels
 @MainActor
 enum TestWorkspaceStoreCleanup {
     static func schedule(context: ModelContext, roots: [URL],
-                         reader: WorkspaceSavedAutoExport = .shared) -> Task<Void, Never> {
+                         reader: WorkspaceSavedAutoExport = .shared,
+                         onStart: (@MainActor () -> Void)? = nil) -> Task<Void, Never> {
         context.autosaveEnabled = false
         let container = context.container
         let workspaceIDs = ((try? context.fetch(FetchDescriptor<Workspace>())) ?? []).map(\.id)
         for id in workspaceIDs { WorkspaceAutoExportGate.shared.retire(workspaceID: id.uuidString) }
         return Task { @MainActor in
             defer { withExtendedLifetime(container) {} }
+            onStart?()
             await reader.removeTestFixtureFiles(roots)
         }
     }
