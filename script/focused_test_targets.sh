@@ -226,8 +226,21 @@ target_for_path() {
       add_target "AgentUtilityRuntimeTests"
       add_target "ProcessMonitorTests"
       ;;
-    Tests/RuntimeProgressSignalTests.swift)
+    ASTRACore/RuntimeProgressSignals.swift|Tests/RuntimeProgressSignalTests.swift)
       add_target "StreamVolumeAccountingTests"
+      add_target "RuntimeProgressClassificationTests"
+      add_target "WatchdogEscalationTests"
+      add_target "RuntimeStreamReplayTests"
+      add_target "CodexFileChangeProgressTests"
+      ;;
+    ASTRACore/CodexStreamEventParser.swift|Astra/Services/Runtime/CodexCLIRuntime.swift|Tests/CodexCLIRuntimeTests.swift|Tests/CodexFileChangeProgressTests.swift)
+      add_target "CodexCLIRuntimeTests"
+      add_target "ProviderMessageIdentityTests"
+      add_target "AgentEventRecorderTests"
+      add_target "ProviderTranscriptConformanceTests"
+      add_target "RuntimeProgressClassificationTests"
+      add_target "WatchdogEscalationTests"
+      add_target "CodexFileChangeProgressTests"
       ;;
     Astra/Services/Runtime/AgentPromptBuilder.swift|Astra/Services/Runtime/TaskInputManifest.swift|Astra/Services/Runtime/TaskInputsPromptSectionProvider.swift|Astra/Services/Tasks/PromptContextSectionProvider.swift|Astra/Views/PromptContextPreviewView.swift|Tests/TaskInputContinuityPromptTests.swift|Tests/AgentRuntimeWorkerTests.swift)
       add_target "TaskInputContinuityPromptTests"

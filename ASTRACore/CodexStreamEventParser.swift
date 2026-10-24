@@ -7,6 +7,15 @@ public enum CodexStreamEventParser {
     /// long before the answer exists.
     static let turnCompletedControlType = "turn.completed"
 
+    /// A `file_change` item, as the process monitor sees it. Codex streams
+    /// nothing while the model composes a patch, so the patch landing is the
+    /// only evidence of that stretch of work. Its paths go to the recorder as
+    /// `.fileChange` and its success to an empty tool result, and neither
+    /// counted as progress: a run that spent its time writing files read as
+    /// silent and was stopped. Registered in
+    /// `RuntimeProgressSignals.progressBearingControlTypes`.
+    static let fileChangeControlType = "codex.item.file_change"
+
     public static func parse(line: String) -> ParsedEvent? {
         parseAll(line: line).first
     }
@@ -107,7 +116,7 @@ public enum CodexStreamEventParser {
             // completion says whether the patch applied.
             let itemID = string(in: item, keys: ["id", "call_id", "callId"])
             let changes = fileChangeEvents(from: item, toolUseID: itemID)
-            return changes.isEmpty ? [.control(type: "item.started.file_change")] : changes
+            return changes.isEmpty ? [.control(type: fileChangeControlType)] : changes
         }
         if itemType == "agent_message" || itemType == "message" || itemType == "assistant_message" {
             return [.control(type: "item.started.\(itemType)")]
@@ -147,7 +156,7 @@ public enum CodexStreamEventParser {
                 return [.toolResult(id: itemID, content: "file_change \(status)", isError: true)]
             }
             let changes = fileChangeEvents(from: item, toolUseID: itemID)
-            guard !changes.isEmpty else { return [.control(type: "item.completed.file_change")] }
+            guard !changes.isEmpty else { return [.control(type: fileChangeControlType)] }
             guard let itemID else { return changes }
             // The changes again, for a completion with no start, then the
             // result that commits whatever the item holds; the recorder keeps
@@ -318,7 +327,9 @@ public enum CodexStreamEventParser {
         case .notice:
             return nil
         case .fileChange:
-            return nil
+            // Progress only. The policy guard reads no paths from a control
+            // frame, as it read none from the nil this replaced.
+            return .control(type: fileChangeControlType)
         case .teamEvent:
             return nil
         case .unknown:
