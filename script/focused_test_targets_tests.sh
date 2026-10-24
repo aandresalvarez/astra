@@ -46,6 +46,11 @@ assert_targets "" \
 assert_targets "AppSemanticFitnessTests" \
   "Tests/AppSemanticFitnessTests.swift"
 
+assert_targets $'RuntimeSupervision\nProcessMonitorTests' \
+  "Astra/Services/Runtime/RuntimeSupervisionSession.swift" \
+  "Astra/Services/Runtime/AgentProcessSupport.swift" \
+  "Tests/RuntimeSupervisionWorkerTests.swift"
+
 for path in \
   Tests/TaskMainActorScalingGateTests.swift \
   Tests/TaskHistoryReadTests.swift \

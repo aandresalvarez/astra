@@ -2,6 +2,8 @@ import Foundation
 import ASTRACore
 
 struct AgentProcessResult: Codable {
+    /// Conservative utility-token allocation, separately audited by supervision events.
+    var supervisionReservedTokens: Int?
     /// Successfully written approval responses followed by provider completion.
     /// Receipt-save failures must not erase this process-local evidence.
     var acknowledgedPermissionRequestIDs: Set<String> = []

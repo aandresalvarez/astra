@@ -108,6 +108,9 @@ extension AgentRuntimeWorker {
             processRunner: runner,
             providerSettingsSnapshotProvider: { .headlessScenario }
         )
+        // Supervision has its own real-process matrix with an injected investigator.
+        // Ordinary fake-provider scenarios must not launch an ambient verifier CLI.
+        worker.supervisionEnabled = false
         worker.runtimeReadinessService = RuntimeReadinessService(runner: InstantSuccessBinaryRunner())
         // Capability prerequisites (e.g. `gh auth status` for the GitHub
         // capability) go through a separate checker than the runtime

@@ -62,6 +62,7 @@ private final class AgentUtilityScopedProcessRunState: @unchecked Sendable {
 protocol AgentRuntimeProcessRunning: AnyObject {
     func cancel()
     func isHostControlBrokerAvailable() -> Bool
+    @MainActor func configureSupervision(_ context: RuntimeSupervisionContext?)
 
     @MainActor
     func runRuntimeProcess(
@@ -91,12 +92,20 @@ protocol AgentRuntimeProcessRunning: AnyObject {
     ) async -> AgentProcessResult
 }
 
+extension AgentRuntimeProcessRunning {
+    @MainActor func configureSupervision(_ context: RuntimeSupervisionContext?) {}
+}
+
 final class AgentRuntimeProcessRunner {
     typealias SandboxSettingsProvider = @MainActor (PermissionPolicy) -> ExecutionSandboxSettings
     typealias GitCredentialContextProvider = @MainActor (AgentRuntimeProcessLaunchContext) -> GitCredentialSandboxContext
     typealias DockerRuntimeProvider = @Sendable () -> DockerRuntimeResolution?
 
     private var currentProcess: AgentRuntimeProcessControl?
+    private var supervisionContext: RuntimeSupervisionContext?
+    private var activeSupervision: RuntimeSupervisionSession?
+    private var supervisionPreparation: Task<RuntimeSupervisionFiles, Never>?
+    @MainActor func configureSupervision(_ context: RuntimeSupervisionContext?) { supervisionContext = context }
     let homeAccessCancellation = RuntimeHomeAccessCancellationGate()
     private let sandboxSettingsProvider: SandboxSettingsProvider
     private let gitCredentialContextProvider: GitCredentialContextProvider
@@ -127,6 +136,8 @@ final class AgentRuntimeProcessRunner {
     }
 
     func cancel() {
+        supervisionPreparation?.cancel()
+        activeSupervision?.finish()
         homeAccessCancellation.invalidate()
         currentProcess?.terminate()
         currentProcess = nil
@@ -581,7 +592,14 @@ final class AgentRuntimeProcessRunner {
     @MainActor
     func sandboxedUtilityPlan(_ utilityPlan: AgentUtilityLaunchPlan) -> SandboxedUtilityPlanOutcome {
         let plan = utilityPlan.process
-        let settings = sandboxSettingsProvider(utilityPlan.permissionPolicy)
+        var settings = sandboxSettingsProvider(utilityPlan.permissionPolicy)
+        if AgentUtilityExecutionLimits.requiresIsolation {
+            // Strengthen the existing policy without relaxing offline or
+            // fail-closed restrictions selected by the user.
+            settings.enforcement = .strict
+            settings.readScope = .enforce
+            settings.wrappedRuntimes.insert(plan.runtime)
+        }
         let decision = ExecutionSandbox.decide(
             plan: plan,
             providerHomeDirectory: utilityPlan.providerHomeDirectory,
@@ -880,6 +898,19 @@ final class AgentRuntimeProcessRunner {
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let taskID = task.id
+        let preparationGeneration = homeAccessCancellation.snapshot()
+        let context = supervisionContext
+        var baseline: RuntimeSupervisionFiles?
+        if let context {
+            let preparation = Task { await context.captureFiles() }
+            supervisionPreparation = preparation
+            baseline = await withTaskCancellationHandler { await preparation.value } onCancel: { preparation.cancel() }
+            supervisionPreparation = nil
+        }
+        guard !Task.isCancelled, task.status != .cancelled, homeAccessCancellation.isCurrent(preparationGeneration) else {
+            return AgentProcessResult(exitCode: -1, error: "Cancelled before provider launch.")
+        }
+        defer { activeSupervision?.finish(); activeSupervision = nil }
 
         // The one place that owns a live agent process, so the one place that
         // can say a redaction scope must not be evicted yet. A run that spends
@@ -957,6 +988,16 @@ final class AgentRuntimeProcessRunner {
                 ),
                 readOnlyBoundaryReceipt: plan.readOnlyBoundaryReceipt
             )
+            let supervision = context.map { context in
+                RuntimeSupervisionSession(goal: context.goal, runtime: context.runtime,
+                    remoteCoverage: context.remoteCoverage, baseline: baseline ?? .init(unavailable: "No baseline"),
+                    configuration: .init(tokenReservation: context.tokenReservation),
+                    collectFiles: { await context.captureFiles() },
+                    investigate: context.investigator,
+                    reserveTokens: { [weak monitor] in monitor?.reserveSupervisionTokens($0) ?? false }, report: context.report)
+            }
+            activeSupervision = supervision
+            monitor.supervision = supervision
 
             let handleLine: (String) -> Void = { line in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1018,9 +1059,11 @@ final class AgentRuntimeProcessRunner {
             // descendant that outlives the reaped provider.
             let consumeStdout: (Data) -> Void = { data in
                 monitor.recordStreamVolume(bytes: data.count)
+                monitor.supervisionTranscript.append(String(decoding: data, as: UTF8.self), stderr: false, taskID: taskID)
                 lineBuffer.appendAndProcessLines(String(decoding: data, as: UTF8.self), handleLine)
             }
             let consumeStderr: (Data) -> Void = { data in
+                monitor.supervisionTranscript.append(String(decoding: data, as: UTF8.self), stderr: true, taskID: taskID)
                 errorOutput.append(String(decoding: data, as: UTF8.self))
             }
             process.stdoutFileHandle.readabilityHandler = { _ in
@@ -1031,6 +1074,7 @@ final class AgentRuntimeProcessRunner {
             }
 
             process.terminationHandler = { proc in
+                supervision?.finish()
                 InFlightPermissionCenter.shared.failAll(taskID: taskID)
                 proc.stdoutFileHandle.readabilityHandler = nil
                 proc.stderrFileHandle.readabilityHandler = nil
@@ -1134,6 +1178,7 @@ final class AgentRuntimeProcessRunner {
             monitor.startWatchdog(process: process)
         }
         var acknowledgedResult = result
+        acknowledgedResult.supervisionReservedTokens = activeSupervision?.tokenReservation
         acknowledgedResult.acknowledgedPermissionRequestIDs = deliveryChannel.acknowledgedPermissionRequestIDs
         acknowledgedResult.writtenPermissionRequestIDs = deliveryChannel.writtenPermissionRequestIDs
         return acknowledgedResult
@@ -1161,10 +1206,13 @@ final class AgentRuntimeProcessRunner {
         let stderrBuffer = AgentLockedBuffer()
         let stdoutLineBuffer = AgentLockedBuffer()
         let runState = AgentUtilityScopedProcessRunState()
+        let outputAllowance = AgentUtilityOutputAllowance(AgentUtilityExecutionLimits.maximumOutputBytes)
+        let outputLimitResult = AgentUtilityRunResult(exitCode: -1, output: "", error: "Utility output exceeded its configured limit.")
 
         // The pipe reader serializes read and delivery; the line buffer also
         // protects the final partial-line flush after the reader is sealed.
         let handleStdoutLocked: @Sendable (String) -> AgentUtilityRunResult? = { chunk in
+            guard outputAllowance.accept(chunk.utf8.count) else { return outputLimitResult }
             stdoutBuffer.append(chunk)
             guard let stdoutLineHandler else { return nil }
             for line in stdoutLineBuffer.appendAndDrainLinesLocked(chunk) {
@@ -1215,6 +1263,7 @@ final class AgentRuntimeProcessRunner {
                     if let result { requestTermination(result) }
                 }
                 let consumeStderr: (Data) -> Void = { data in
+                    guard outputAllowance.accept(data.count) else { requestTermination(outputLimitResult); return }
                     let chunk = String(decoding: data, as: UTF8.self)
                     stderrBuffer.append(chunk)
                     stderrChunkHandler?(chunk)
