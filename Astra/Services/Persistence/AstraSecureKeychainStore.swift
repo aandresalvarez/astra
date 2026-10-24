@@ -107,6 +107,10 @@ public enum AstraSecureKeychainStore {
         keychainPathOverride ?? channelKeychainPath
     }
 
+    static var oauthSessionLockDirectory: URL {
+        URL(fileURLWithPath: keychainPath + ".oauth-locks", isDirectory: true)
+    }
+
     private static var bootstrapService: String {
         bootstrapServiceOverride ?? channelBootstrapService
     }
@@ -207,6 +211,35 @@ public enum AstraSecureKeychainStore {
         // counter. Attributing a failure when it happens is worth more than
         // a hoarded count.
         return .failed(diagnosis: drainPendingKeychainFailureLocked(scope: "keychain_write")?.diagnosis)
+    }
+
+    /// Complete session bundles require an in-place item update: ordinary
+    /// credential saves intentionally replace ACLs through delete/add.
+    public static func saveAtomically(service: String, account: String, value: String,
+                                      label: String?, allowUserInteraction: Bool = false) -> Bool {
+        guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        let saved = AstraSecureKeychain.replaceSecretAtomically(value, forAccount: account, service: service,
+            label: label, keychainPath: keychainPath, bootstrapService: bootstrapService,
+            allowUserInteraction: allowUserInteraction)
+        if !saved { _ = drainPendingKeychainFailureLocked(scope: "oauth_session_write") }
+        return saved
+    }
+
+    /// A missing item is not an unreadable vault or bootstrap password.
+    /// The status belongs to this read, never a shared last-error slot.
+    public static func read(service: String, account: String, allowUserInteraction: Bool = false) -> SecretReadOutcome {
+        guard !shouldBlockUnscopedTestKeychainAccess else { return .unavailable }
+        var status: OSStatus = errSecNotAvailable
+        let value = AstraSecureKeychain.secret(forAccount: account, service: service,
+            keychainPath: keychainPath, bootstrapService: bootstrapService, status: &status,
+            allowUserInteraction: allowUserInteraction)
+        switch status {
+        case errSecSuccess: return value.map(SecretReadOutcome.value) ?? .unavailable
+        case errSecItemNotFound: return .missing
+        default: return .unavailable
+        }
     }
 
     public static func load(service: String, account: String) -> String? {

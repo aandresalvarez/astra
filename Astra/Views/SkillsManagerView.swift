@@ -25,6 +25,7 @@ struct SkillEditorView: View {
     @State private var showEnvValues = false
     @State private var isAddingSecret = false
     @State private var secretSaveErrorMessage: String?
+    @State private var secretRecoveryID: UUID?
     @State private var pendingDestruction: PendingSkillDestruction?
     @FocusState private var isNameFocused: Bool
 
@@ -125,15 +126,12 @@ struct SkillEditorView: View {
                                     // Detach from workspace so cascade delete won't remove it
                                     skill.workspace = nil
                                     if let ws = workspace {
-                                        let idString = skill.id.uuidString
-                                        if !ws.enabledGlobalSkillIDs.contains(idString) {
-                                            ws.enabledGlobalSkillIDs.append(idString)
-                                        }
+                                        WorkspaceCapabilityActivation.mutate(ws) { $0.enableGlobalSkill(skill.id.uuidString) }
                                         ws.updatedAt = Date()
                                     }
                                 } else if let ws = workspace {
                                     skill.workspace = ws
-                                    ws.enabledGlobalSkillIDs.removeAll { $0 == skill.id.uuidString }
+                                    WorkspaceCapabilityActivation.mutate(ws) { $0.globalSkillIDs.removeAll { $0 == skill.id.uuidString } }
                                     ws.updatedAt = Date()
                                 }
                                 skill.updatedAt = Date()
@@ -597,7 +595,7 @@ struct SkillEditorView: View {
                                                 .foregroundStyle(value.isEmpty ? .tertiary : .secondary)
                                                 .lineLimit(1)
                                         } else {
-                                            let inKeychain = KeychainService.exists(key: key, skillID: skill.id)
+                                            let inKeychain = KeychainService.exists(key: key, skillID: skill.secretNamespaceID)
                                             let hasValue = !skill.valueForEnvironmentKey(at: origIdx).isEmpty
                                             HStack(spacing: 4) {
                                                 Text(String(repeating: "\u{2022}", count: hasValue ? 12 : 0))
@@ -615,7 +613,7 @@ struct SkillEditorView: View {
                                         Spacer()
 
                                         Button {
-                                            skill.removeEnvironmentEntry(at: origIdx)
+                                            removeSecret(key)
                                         } label: {
                                             Image(systemName: "trash")
                                                 .font(Stanford.ui(12))
@@ -708,11 +706,6 @@ struct SkillEditorView: View {
                                 .buttonStyle(.plain)
                                 .foregroundStyle(Stanford.coolGrey)
                             }
-                            if let secretSaveErrorMessage {
-                                Text(secretSaveErrorMessage)
-                                    .font(Stanford.caption(11))
-                                    .foregroundStyle(.red)
-                            }
                         } else {
                             Button {
                                 isAddingSecret = true
@@ -722,6 +715,14 @@ struct SkillEditorView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
+                        }
+                        if let secretSaveErrorMessage {
+                            Text(secretSaveErrorMessage)
+                                .font(Stanford.caption(11))
+                                .foregroundStyle(.red)
+                        }
+                        if let secretRecoveryID {
+                            Button("Finish recovery") { finishSecretRecovery(secretRecoveryID) }
                         }
                     }
                     .padding(.vertical, 4)
@@ -752,7 +753,7 @@ struct SkillEditorView: View {
                     Button(role: .destructive) {
                         pendingDestruction = PendingSkillDestruction(
                             title: "Delete Skill",
-                            message: "Delete \u{201C}\(skill.name.isEmpty ? "this skill" : skill.name)\u{201D}? This permanently removes the skill and its stored secrets. This cannot be undone.",
+                            message: "Delete \u{201C}\(skill.name.isEmpty ? "this skill" : skill.name)\u{201D}? This removes the skill from future work. Saved tasks keep their accepted settings and secrets while they still need them.",
                             confirmTitle: "Delete",
                             perform: { onDelete() }
                         )
@@ -784,6 +785,7 @@ struct SkillEditorView: View {
         }
         .onAppear { if skill.name == "New Skill" { isNameFocused = true } }
         .onDisappear {
+            guard skill.modelContext === modelContext, !skill.isDeleted else { return }
             skill.updatedAt = Date()
             WorkspacePersistenceCoordinator.flushPendingExport(workspace: workspace ?? skill.workspace, modelContext: modelContext)
         }
@@ -792,11 +794,40 @@ struct SkillEditorView: View {
     private func addEnvVar() {
         let key = newEnvKey.trimmingCharacters(in: .whitespaces).uppercased()
         guard !key.isEmpty, !newEnvValue.isEmpty else { return }
-        guard skill.upsertEnvironmentEntry(key: key, value: newEnvValue, allowUserInteraction: true) else {
-            secretSaveErrorMessage = "Could not save \"\(key)\" to Keychain. Allow the permission prompt and try again."
-            return
+        do {
+            WorkspacePersistenceCoordinator.flushPendingExport(workspace: workspace ?? skill.workspace, modelContext: modelContext)
+            try SkillCredentialEditor.save(newEnvValue, forKey: key, on: skill, modelContext: modelContext)
+            secretRecoveryID = nil
+            cancelSecretEntry()
+        } catch { showSecretError(error) }
+    }
+
+    private func removeSecret(_ key: String) {
+        do {
+            WorkspacePersistenceCoordinator.flushPendingExport(workspace: workspace ?? skill.workspace, modelContext: modelContext)
+            try SkillCredentialEditor.remove(key, from: skill, modelContext: modelContext)
+            secretSaveErrorMessage = nil
+            secretRecoveryID = nil
+        } catch { showSecretError(error) }
+    }
+
+    private func finishSecretRecovery(_ id: UUID) {
+        do {
+            try SkillCredentialEditor.recover(id, modelContext: modelContext)
+            secretRecoveryID = nil
+            cancelSecretEntry()
+        } catch {
+            showSecretError(error)
+            secretRecoveryID = id
         }
-        cancelSecretEntry()
+    }
+
+    private func showSecretError(_ error: Error) {
+        secretRecoveryID = nil
+        if let problem = error as? PluginOperationProblem {
+            if case .savedRecoveryPending(let id) = problem { secretRecoveryID = id }
+            secretSaveErrorMessage = problem.localizedDescription
+        } else { secretSaveErrorMessage = error.localizedDescription }
     }
 
     private func addConfigItem(at envIdx: Int) {

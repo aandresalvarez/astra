@@ -25,7 +25,8 @@ public enum HostControlBrokeredServices {
     /// `HostControlToolServer.knownToolNames`.
     public static let toolNamesByServiceType: [String: String] = [
         "jira": "jira",
-        "redcap": "redcap"
+        "redcap": "redcap",
+        "stanford_outlook_mail": "mail"
     ]
 
     /// Every tool name that reads connector credentials in this process.
@@ -61,6 +62,13 @@ public enum HostControlBrokeredServices {
     /// that means exporting one study's subject data because the tool call was
     /// under-specified. An answer that is silently arbitrary is worse than an
     /// error the agent is told how to fix.
+    ///
+    /// A default is not arbitrary: the person picked it (Make default), and
+    /// the app marks it in the manifest (`isDefault`). So an omitted alias
+    /// resolves to the one connector of the service marked default; with no
+    /// default, or more than one, the call is still refused. A connector the
+    /// person enabled outside a plugin carries no mark and never resolves
+    /// implicitly.
     public static func resolveConnector(
         forServiceType serviceType: String,
         alias: String?,
@@ -73,9 +81,13 @@ public enum HostControlBrokeredServices {
         guard !connectors.isEmpty else { return .notProjected }
 
         guard let alias, !alias.isEmpty else {
-            // Omission is only unambiguous when there is one candidate.
+            // Omission is only unambiguous with one candidate, or one default.
             guard connectors.count == 1 else {
-                return .ambiguous(alias: nil, candidates: aliases(of: connectors))
+                let defaults = connectors.filter { $0.isDefault == true }
+                guard defaults.count == 1 else {
+                    return .ambiguous(alias: nil, candidates: aliases(of: connectors))
+                }
+                return .resolved(defaults[0])
             }
             return .resolved(connectors[0])
         }

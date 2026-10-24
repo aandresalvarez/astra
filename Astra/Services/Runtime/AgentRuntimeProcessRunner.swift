@@ -1097,6 +1097,7 @@ final class AgentRuntimeProcessRunner {
                     policyApprovalMessage: monitor.policyApprovalMessage,
                     runtimeStopReason: dockerFailure?.stopReason ?? monitor.runtimeStopReason ?? selfStop?.reason,
                     runtimeStopMessage: dockerFailure?.message ?? monitor.runtimeStopMessage ?? selfStop?.message,
+                    runtimeRepairContext: dockerFailure == nil ? monitor.runtimeRepairContext : nil,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
@@ -1757,15 +1758,6 @@ final class AgentRuntimeProcessRunner {
     ) -> [String: String] {
         var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
         BrokeredConnectorEnvironment.strip(from: &taskEnv, capabilityScope: capabilityScope)
-        if StanfordOutlookMailRuntimeAccess.isGranted(
-            for: task,
-            in: capabilityScope,
-            runtime: executionPolicy.launchSnapshot?.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)),
-            additionalGrants: executionPolicy.permissionGrantsOverride ?? []
-        ) {
-            taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
-            taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
-        }
         if capabilityScope.exposesBrowserBridge ||
             TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {

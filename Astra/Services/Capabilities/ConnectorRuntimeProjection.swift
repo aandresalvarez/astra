@@ -92,6 +92,10 @@ struct ConnectorRuntimeProjection {
         var env: [String: String]
         var credentials: [String: String]
         var config: [String: String]
+        /// True for the workspace's default account of its service, which the
+        /// broker uses when a call names no alias. Absent otherwise, so a
+        /// manifest without plugin defaults reads as before.
+        var isDefault: Bool?
     }
 
     enum BindingKind: String, Equatable {
@@ -113,15 +117,21 @@ struct ConnectorRuntimeProjection {
     private let connectors: [Connector]
     private let secretStore: SecretStore
     private let credentialExposurePolicy: CredentialExposurePolicy
+    /// Accounts the workspace's bindings mark as default
+    /// (`PluginRuntimeProjection.defaultAccountIDs`); empty for a caller with
+    /// no plugin projection, whose manifest then carries no default.
+    private let defaultConnectorIDs: Set<UUID>
 
     init(
         connectors: [Connector],
         secretStore: SecretStore = KeychainSecretStore(),
-        credentialExposurePolicy: CredentialExposurePolicy = .none
+        credentialExposurePolicy: CredentialExposurePolicy = .none,
+        defaultConnectorIDs: Set<UUID> = []
     ) {
         self.connectors = connectors
         self.secretStore = secretStore
         self.credentialExposurePolicy = credentialExposurePolicy
+        self.defaultConnectorIDs = defaultConnectorIDs
     }
 
     var aliasesByConnectorID: [UUID: String] {
@@ -373,7 +383,8 @@ struct ConnectorRuntimeProjection {
             authMethod: connector.authMethod,
             env: env,
             credentials: credentials,
-            config: config
+            config: config,
+            isDefault: defaultConnectorIDs.contains(connector.id) ? true : nil
         )
     }
 

@@ -62,7 +62,8 @@ enum CapabilityPackageSourceReader {
         }
 
         do {
-            let package = try JSONDecoder().decode(PluginPackage.self, from: data)
+            // A Plugins 2.0 manifest or a package, either way.
+            let package = try PluginManifestConverter.decodePackage(from: data)
             return CapabilityPackageSource(
                 package: package,
                 manifestURL: manifestURL,

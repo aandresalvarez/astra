@@ -95,6 +95,9 @@ struct AntigravityTurnTimeLimitTests {
         #expect(AgentRuntimeWorker.isTerminalRuntimeStop(stop.reason))
         #expect(stop.message.contains("after 10m0s"))
         #expect(stop.message.contains("did not count the turn as complete"))
+        #expect(stop.message.contains("Use Resume, when available"))
+        #expect(stop.message.contains("Retry can restart the original task and repeat work"))
+        #expect(!stop.message.contains("Retry or send a follow-up to continue from where it stopped"))
         #expect(!stop.message.contains("background task"))
     }
 

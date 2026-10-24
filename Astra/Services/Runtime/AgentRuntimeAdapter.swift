@@ -1288,7 +1288,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         // ${KEY} env indirection (the CLI expands from the task environment).
         var mcpServers = MCPRuntimeProjection.enabledServers(
             for: context.task.workspace,
-            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(for: context.task.workspace),
             approvalRecords: CapabilityApprovalStore().records()
         )
         if let workspaceServer = DockerWorkspaceMCPProjection.resolvedServer(

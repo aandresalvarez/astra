@@ -92,6 +92,61 @@ struct MCPInstallPackageBuilderTests {
         #expect(report.package?.mcpServers.first?.installSource?.identifier == "@acme/github-mcp")
     }
 
+    @Test("a docker run server checks the Docker daemon, not just the client")
+    func dockerServerChecksTheDaemon() async throws {
+        let json = """
+        {"mcpServers": {"github": {"type": "stdio", "command": "docker", "args": ["run", "-i", "--rm", "ghcr.io/github/github-mcp-server"]}}}
+        """
+        let intent = try #require(MCPInstallIntentParser.parse(json))
+        let package = try MCPInstallPackageBuilder.package(from: intent)
+        let prerequisite = try #require(package.prerequisites.first)
+        #expect(prerequisite.binary == "docker")
+        #expect(prerequisite.livenessArgs == CommonCLIPrerequisites.docker.livenessArgs)
+        #expect(prerequisite.semantic == .stderrNoDaemonError)
+        #expect(prerequisite.id == CommonCLIPrerequisites.docker.id)
+        #expect(HealthCheckPolicy.isReadOnly(binary: prerequisite.binary, arguments: prerequisite.livenessArgs))
+        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        #expect(report.blockers.isEmpty)
+        // With Docker Desktop stopped the client still answers; the check fails.
+        let stub = StubBinaryRunner()
+        await stub.setResponse(forKey: "/usr/bin/env which docker", result: .exited(code: 0, stdout: "/usr/local/bin/docker\n", stderr: ""))
+        await stub.setResponse(
+            forKey: "/usr/local/bin/docker version --format {{.Client.Version}}",
+            result: .exited(code: 0, stdout: "27.0.0\n", stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?")
+        )
+        let status = await EnvironmentHealthChecker(runner: stub, fallbackDirectories: []).check(
+            binary: prerequisite.binary, livenessArgs: prerequisite.livenessArgs, semantic: prerequisite.semantic
+        )
+        #expect(!status.isUsable)
+    }
+
+    @Test("an unknown server command is only found, never run; a missing one is a pending step")
+    func unknownServerCommandIsFoundNotRun() async throws {
+        let json = """
+        {"mcpServers": {"acme": {"type": "stdio", "command": "acme-mcp", "args": ["serve"]}}}
+        """
+        let intent = try #require(MCPInstallIntentParser.parse(json))
+        let package = try MCPInstallPackageBuilder.package(from: intent)
+        // `acme-mcp --version` would run unasked on every scan: no arguments, found only.
+        let prerequisite = try #require(package.prerequisites.first)
+        #expect(prerequisite.binary == "acme-mcp")
+        #expect(prerequisite.livenessArgs.isEmpty)
+        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        #expect(!report.blockers.contains { $0.title == "Unsafe health check" })
+        // Found: usable, and the binary never started. Missing: pending.
+        let stub = StubBinaryRunner()
+        await stub.setResponse(forKey: "/usr/bin/env which acme-mcp", result: .exited(code: 0, stdout: "/usr/local/bin/acme-mcp\n", stderr: ""))
+        let found = await EnvironmentHealthChecker(runner: stub, fallbackDirectories: []).check(binary: "acme-mcp", livenessArgs: [])
+        #expect(found.isUsable)
+        #expect(await stub.recordedCalls().map(\.args) == [["which", "acme-mcp"]])
+        let missing = await EnvironmentHealthChecker(runner: StubBinaryRunner(), fallbackDirectories: []).check(binary: "acme-mcp", livenessArgs: [])
+        #expect(missing == .missingBinary)
+        #expect(PluginsSurfacePresentation.pendingSetupChecks(for: package, statuses: [prerequisite.id: missing]) == 1)
+        // A relative path is neither found nor run.
+        #expect(!HealthCheckPolicy.isExistenceOnly(binary: "./acme-mcp", arguments: []))
+        #expect(!HealthCheckPolicy.isExistenceOnly(binary: "acme-mcp", arguments: ["serve"]))
+    }
+
     @Test("review package with imported env keys validates through capability validator")
     func reviewPackageWithImportedEnvKeysValidatesThroughCapabilityValidator() throws {
         let json = """

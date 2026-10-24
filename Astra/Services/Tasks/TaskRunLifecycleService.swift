@@ -206,7 +206,10 @@ enum TaskRunLifecycleService {
         at finishedAt: Date
     ) -> TaskRunInterruptionSummary {
         var summary = TaskRunInterruptionSummary()
-        let runningRuns = task.runs
+        // Only the task's open runs, not every run it ever had: see the note
+        // on the fetches below for why `completedAt == nil` stands in for the
+        // status. A send on a finished task pays for zero rows here.
+        let runningRuns = fetchIncompleteRuns(of: task, modelContext: modelContext)
             .filter { $0.status == .running }
             .sorted { $0.startedAt < $1.startedAt }
 
@@ -277,6 +280,18 @@ enum TaskRunLifecycleService {
             // Fall back to a full scan so recovery still works correctly.
             return (try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []
         }
+    }
+
+    private static func fetchIncompleteRuns(of task: AgentTask, modelContext: ModelContext) -> [TaskRun] {
+        let taskID = task.id
+        let descriptor = FetchDescriptor<TaskRun>(
+            predicate: #Predicate<TaskRun> { $0.task?.id == taskID && $0.completedAt == nil }
+        )
+        guard let runs = try? modelContext.fetch(descriptor) else {
+            return task.runs.filter { $0.completedAt == nil }
+        }
+        let owner = task.persistentModelID
+        return runs.filter { !$0.isDeleted && $0.task?.persistentModelID == owner }
     }
 
     private static func fetchIncompleteRuns(modelContext: ModelContext) -> [TaskRun] {

@@ -270,7 +270,9 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!taskMainView.contains("pendingMutations(task:"))
         #expect(taskMainView.contains(".task(id: decisionOutcomeInputSignature)"))
         #expect(outcomes.contains("threadViewModel.appliedSnapshotRevision"))
-        #expect(outcomes.contains("pendingMutations(taskID: task.id, in: modelContext)"))
+        #expect(outcomes.contains("pendingMutations(task: task)"))
+        let mutations = try source("Astra/Services/Tasks/ConnectorMutationRequirement.swift", root: root)
+        #expect(mutations.contains("TaskHistoryRead.records(for: task, ofTypes: resolutionEventTypes)"))
         #expect(!outcomes.contains("task.events"))
         #expect(!outcomes.contains("task.runs"))
     }
@@ -567,10 +569,14 @@ struct TaskThreadArchitectureFitnessTests {
         // queued behind a running provider that then raises a live
         // permission request leaves the user unable to approve, deny, or
         // stop without first cancelling every queued message.
-        #expect(dockSource.contains("!runtimePermissionState.hasOpenApprovalRequest"))
-        let guardRange = try #require(dockSource.range(of: "!runtimePermissionState.hasOpenApprovalRequest"))
+        // The dock captures one current permission state for this render;
+        // both the waiting guard and the action builder must use that value.
+        let stateRange = try #require(dockSource.range(of: "let permission = runtimePermissionState"))
+        let guardRange = try #require(dockSource.range(of: "!permission.hasOpenApprovalRequest"))
         let waitingReturnRange = try #require(dockSource.range(of: "return waitingPresentation"))
+        #expect(stateRange.lowerBound < guardRange.lowerBound)
         #expect(guardRange.lowerBound < waitingReturnRange.lowerBound)
+        #expect(dockSource.contains("runtimePermission: permission"))
     }
 
     /// `NSRegularExpression(pattern:)` compiles an ICU program every call, and

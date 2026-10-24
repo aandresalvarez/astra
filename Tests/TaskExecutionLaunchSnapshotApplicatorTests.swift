@@ -17,13 +17,20 @@ private func makeLaunchSnapshotContainer() throws -> ModelContainer {
 @MainActor
 @Suite("Task execution launch snapshot applicator")
 struct TaskExecutionLaunchSnapshotApplicatorTests {
-    @Test("Queued request uses a detached immutable configuration and preserves editable state")
-    func buildsDetachedCompleteSnapshot() throws {
+    @Test("Queued request uses a detached immutable configuration and preserves editable state", arguments: [false, true])
+    func buildsDetachedCompleteSnapshot(persisted: Bool) throws {
+        let container = persisted ? try makeLaunchSnapshotContainer() : nil
+        let context = container?.mainContext
+        context?.autosaveEnabled = false
         let workspace = Workspace(name: "Queued workspace", primaryPath: "/tmp/queued-workspace")
         let task = AgentTask(title: "Queued", goal: "Run", workspace: workspace)
         let priorRun = TaskRun(task: task)
         priorRun.status = .completed
-        let priorEvent = TaskEvent(task: task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "prior")
+        let priorEvent = TaskEvent(task: task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "prior", run: priorRun)
+        priorEvent.agentName = "Researcher"
+        priorEvent.agentId = "agent-1"
+        priorEvent.teamName = "Research"
+        priorEvent.category = "message"
         task.runs = [priorRun]
         task.events = [priorEvent]
         task.runtimeID = "codex_cli"
@@ -43,6 +50,12 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         task.skillSnapshotsJSON = "submitted-skills"
         task.runtimePermissionGrantsJSON = "submitted-grants"
         let request = TaskTurnRequest(task: task, messageEventID: .init(), sequence: 1)
+        if let context {
+            context.insert(workspace)
+            context.insert(task)
+            context.insert(request)
+            try context.save()
+        }
 
         task.runtimeID = "claude_code"
         task.model = "edited-model"
@@ -73,12 +86,26 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         #expect(launchTask.runtimePermissionGrantsJSON == "submitted-grants")
         #expect(launchTask.workspace?.primaryPath == workspace.primaryPath)
         #expect(launchTask.events.contains { $0.id == priorEvent.id })
+        let copiedEvent = try #require(launchTask.events.first { $0.id == priorEvent.id })
+        #expect(copiedEvent.payload == priorEvent.payload)
+        #expect(copiedEvent.timestamp == priorEvent.timestamp)
+        #expect(copiedEvent.agentName == priorEvent.agentName)
+        #expect(copiedEvent.agentId == priorEvent.agentId)
+        #expect(copiedEvent.teamName == priorEvent.teamName)
+        #expect(copiedEvent.category == priorEvent.category)
+        #expect(copiedEvent.run?.id == priorRun.id)
+        #expect(copiedEvent.run?.task === launchTask)
         #expect(launchTask.runs.contains { $0.id == priorRun.id })
         #expect(task.workspace === workspace)
         #expect(task.events.contains { $0.id == priorEvent.id })
         #expect(task.runs.contains { $0.id == priorRun.id })
         #expect(priorEvent.task === task)
         #expect(priorRun.task === task)
+        #expect(launchTask.modelContext == nil)
+        if let context {
+            try context.save()
+            #expect(try context.fetchCount(FetchDescriptor<AgentTask>()) == 1)
+        }
 
         #expect(task.runtimeID == "claude_code")
         #expect(task.model == "edited-model")
@@ -105,26 +132,8 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
             name: "Production retry",
             primaryPath: "/tmp/production-retry"
         )
-        workspace.enabledCapabilityIDs = [githubPackage.id, gcloudPackage.id]
+        workspace.testEnabledCapabilityIDs = [githubPackage.id, gcloudPackage.id]
         context.insert(workspace)
-
-        let githubSkill = Skill(
-            name: "GitHub Agent",
-            skillDescription: "Inspect GitHub through host control.",
-            allowedTools: ["Read", "Glob", "Grep"],
-            behaviorInstructions: "Use the GitHub host-control tool."
-        )
-        githubSkill.isGlobal = true
-        context.insert(githubSkill)
-
-        let gcloudSkill = Skill(
-            name: "GCloud Agent",
-            skillDescription: "Inspect Google Cloud.",
-            allowedTools: ["Read", "Bash"],
-            behaviorInstructions: "Use gcloud for cloud inspection."
-        )
-        gcloudSkill.isGlobal = true
-        context.insert(gcloudSkill)
 
         let gcloudConnector = Connector(
             name: "Google Cloud",
@@ -136,25 +145,12 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         gcloudConnector.isGlobal = true
         gcloudConnector.configKeys = ["GCP_PROJECT"]
         gcloudConnector.configValues = ["astra-test-project"]
-        gcloudConnector.skill = gcloudSkill
         context.insert(gcloudConnector)
-
-        let gcloudTools = gcloudPackage.localTools.map { definition in
-            let tool = LocalTool(
-                name: definition.name,
-                toolDescription: definition.description,
-                icon: definition.icon,
-                toolType: definition.toolType,
-                command: definition.command,
-                arguments: definition.arguments
-            )
-            tool.isGlobal = true
-            tool.skill = gcloudSkill
-            context.insert(tool)
-            return tool
-        }
-        let gcloudTool = try #require(
-            gcloudTools.first { $0.command == "gcloud" }
+        let gcloudActivation = try #require(WorkspaceCapabilityActivation.activation(for: gcloudPackage.id, in: workspace))
+        WorkspaceCapabilityActivation.bind(
+            gcloudConnector,
+            toComponent: CapabilityResourceOrigin.componentID(for: gcloudPackage.connectors[0]),
+            of: gcloudActivation
         )
 
         let unrelatedSkill = Skill(name: "Unrelated Agent")
@@ -170,13 +166,6 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         let unrelatedTool = LocalTool(name: "unrelated", command: "unrelated")
         unrelatedTool.isGlobal = true
         context.insert(unrelatedTool)
-
-        workspace.enabledGlobalSkillIDs = [
-            githubSkill.id.uuidString,
-            gcloudSkill.id.uuidString
-        ]
-        workspace.enabledGlobalConnectorIDs = [gcloudConnector.id.uuidString]
-        workspace.enabledGlobalToolIDs = gcloudTools.map { $0.id.uuidString }
 
         let task = AgentTask(
             title: "Inspect GitHub and Google Cloud",
@@ -210,73 +199,36 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         let detachedProviderScope = detachedResolver.resolvedScope(
             .providerLaunch(contextText: task.goal)
         )
-        let liveFullSkillIDs = Set(liveFullScope.behaviorSkills.map { $0.id })
-        let detachedFullSkillIDs = Set(detachedFullScope.behaviorSkills.map { $0.id })
-        let liveFullConnectorIDs = Set(liveFullScope.connectors.map { $0.id })
-        let detachedFullConnectorIDs = Set(detachedFullScope.connectors.map { $0.id })
-        let liveFullToolIDs = Set(liveFullScope.localTools.map { $0.id })
-        let detachedFullToolIDs = Set(detachedFullScope.localTools.map { $0.id })
-        let liveProviderSkillIDs = Set(liveProviderScope.behaviorSkills.map { $0.id })
-        let detachedProviderSkillIDs = Set(detachedProviderScope.behaviorSkills.map { $0.id })
-        let liveProviderConnectorIDs = Set(liveProviderScope.connectors.map { $0.id })
-        let detachedProviderConnectorIDs = Set(detachedProviderScope.connectors.map { $0.id })
-        let liveProviderToolIDs = Set(liveProviderScope.localTools.map { $0.id })
-        let detachedProviderToolIDs = Set(detachedProviderScope.localTools.map { $0.id })
 
         #expect(detached.modelContext == nil)
-        #expect(liveFullSkillIDs == detachedFullSkillIDs)
-        #expect(liveFullConnectorIDs == detachedFullConnectorIDs)
-        #expect(liveFullToolIDs == detachedFullToolIDs)
-        #expect(liveProviderSkillIDs == detachedProviderSkillIDs)
-        #expect(liveProviderConnectorIDs == detachedProviderConnectorIDs)
-        #expect(liveProviderToolIDs == detachedProviderToolIDs)
+        #expect(Set(liveFullScope.behaviorSkills.map(\.id)) == Set(detachedFullScope.behaviorSkills.map(\.id)))
+        #expect(Set(liveFullScope.connectors.map(\.id)) == Set(detachedFullScope.connectors.map(\.id)))
+        #expect(Set(liveFullScope.localTools.map(\.id)) == Set(detachedFullScope.localTools.map(\.id)))
+        #expect(Set(liveProviderScope.behaviorSkills.map(\.id)) == Set(detachedProviderScope.behaviorSkills.map(\.id)))
+        #expect(Set(liveProviderScope.connectors.map(\.id)) == Set(detachedProviderScope.connectors.map(\.id)))
+        #expect(Set(liveProviderScope.localTools.map(\.id)) == Set(detachedProviderScope.localTools.map(\.id)))
         #expect(
             liveProviderScope.resolver.resolvedEnvironmentVariables ==
                 detachedProviderScope.resolver.resolvedEnvironmentVariables
         )
 
-        let detachedWorkspace = try #require(detached.workspace)
-        let detachedGitHubSkill = try #require(
-            detachedWorkspace.skills.first { $0.id == githubSkill.id }
-        )
-        let detachedGCloudSkill = try #require(
-            detachedWorkspace.skills.first { $0.id == gcloudSkill.id }
-        )
-        let detachedConnector = try #require(
-            detachedWorkspace.connectors.first { $0.id == gcloudConnector.id }
-        )
-        let detachedTool = try #require(
-            detachedWorkspace.localTools.first { $0.id == gcloudTool.id }
-        )
-
-        #expect(detachedGitHubSkill !== githubSkill)
-        #expect(detachedGCloudSkill !== gcloudSkill)
+        // Both plugins' skills are projected, the bound shared account rides
+        // along, and the detached copies wire only to each other.
+        let liveSkillNames = Set(liveFullScope.behaviorSkills.map(\.name))
+        #expect(liveSkillNames.isSuperset(of: Set((githubPackage.skills + gcloudPackage.skills).map(\.name))))
+        let detachedConnector = try #require(detachedFullScope.connectors.first { $0.id == gcloudConnector.id })
         #expect(detachedConnector !== gcloudConnector)
-        #expect(detachedTool !== gcloudTool)
-        #expect(detachedConnector.skill === detachedGCloudSkill)
-        #expect(detachedTool.skill === detachedGCloudSkill)
-        #expect(detachedConnector.workspace === detachedWorkspace)
-        #expect(detachedTool.workspace === detachedWorkspace)
-        #expect(
-            detachedGCloudSkill.connectors.filter { $0.id == gcloudConnector.id }.count == 1
-        )
-        #expect(
-            detachedGCloudSkill.localTools.filter { $0.id == gcloudTool.id }.count == 1
-        )
-
-        #expect(githubSkill.workspace == nil)
-        #expect(gcloudSkill.workspace == nil)
+        #expect(detachedConnector.config["GCP_PROJECT"] == "astra-test-project")
+        let detachedGCloudTool = try #require(detachedFullScope.localTools.first { $0.command == "gcloud" })
+        #expect(detachedGCloudTool.skill?.name == gcloudPackage.skills[0].name)
+        #expect(detachedGCloudTool.skill?.modelContext == nil)
+        #expect(gcloudConnector.skill == nil)
         #expect(gcloudConnector.workspace == nil)
-        #expect(gcloudTools.allSatisfy { $0.workspace == nil })
-        #expect(gcloudConnector.skill === gcloudSkill)
-        #expect(gcloudTool.skill === gcloudSkill)
-        #expect(!workspace.skills.contains { $0.id == githubSkill.id || $0.id == gcloudSkill.id })
         #expect(!workspace.connectors.contains { $0.id == gcloudConnector.id })
-        #expect(!workspace.localTools.contains { $0.id == gcloudTool.id })
 
-        #expect(!detachedWorkspace.skills.contains { $0.id == unrelatedSkill.id })
-        #expect(!detachedWorkspace.connectors.contains { $0.id == unrelatedConnector.id })
-        #expect(!detachedWorkspace.localTools.contains { $0.id == unrelatedTool.id })
+        #expect(!detachedFullScope.behaviorSkills.contains { $0.id == unrelatedSkill.id })
+        #expect(!detachedFullScope.connectors.contains { $0.id == unrelatedConnector.id })
+        #expect(!detachedFullScope.localTools.contains { $0.id == unrelatedTool.id })
 
         let issues = CapabilityRuntimeIntegrityService.issues(
             for: detached,
@@ -288,5 +240,74 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
             .map { $0.resourceKind.rawValue }
             .filter { ["skill", "connector", "local_tool"].contains($0) }
         #expect(missingResourceKinds.isEmpty)
+    }
+
+    @Test("A row attached to an override after submission stays out of the launch, never as the workspace's own")
+    func lateOverrideAttachmentsStayOutOfTheLaunch() throws {
+        let fixture = try PluginMigrationFixture(authoredToolOnGCloudSkill: true)
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let override = try #require(try context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.gcloudSkillID })
+        let submittedToolID = try #require(fixture.authoredToolID)
+        // A's own connector, in its scope at submission on its own.
+        let standalone = Connector(name: "Standalone", serviceType: "standalone_service", authMethod: "none")
+        standalone.workspace = a
+        context.insert(standalone)
+        let acceptedStandaloneTool = LocalTool(name: "Already accepted", toolType: "cli", command: "echo", arguments: "accepted")
+        acceptedStandaloneTool.workspace = a
+        context.insert(acceptedStandaloneTool)
+        let task = AgentTask(title: "A", goal: "Manage GCP resources", workspace: a)
+        context.insert(task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, kind: .retry)
+        context.insert(request)
+        try context.save()
+
+        // Moving an already accepted standalone tool must not erase it.
+        acceptedStandaloneTool.skill = override
+        // While it waits, new rows are attached to the override.
+        let lateConnector = Connector(name: "Late", serviceType: "late_service", authMethod: "none")
+        lateConnector.workspace = a
+        lateConnector.skill = override
+        let lateTool = LocalTool(name: "Late tool", toolDescription: "Attached later", toolType: "cli", command: "echo", arguments: "late")
+        lateTool.workspace = a
+        lateTool.skill = override
+        context.insert(lateConnector)
+        context.insert(lateTool)
+        try context.save()
+        #expect(TaskCapabilityResolver(task: task).allLocalTools.contains { $0.id == lateTool.id })
+
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        #expect(snapshot.standaloneToolIDs?.contains(acceptedStandaloneTool.id) == true)
+        let persisted = try JSONDecoder().decode(AgentTaskLaunchSnapshot.self, from: JSONEncoder().encode(snapshot))
+        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(persisted, from: task)
+        let nested = TaskExecutionLaunchSnapshotApplicator.detachedTask(AgentTaskLaunchSnapshot(task: detached), from: detached)
+        #expect(TaskCapabilityResolver(task: nested).allLocalTools.contains { $0.id == acceptedStandaloneTool.id })
+        #expect(TaskExecutionPolicySnapshotV1(task: nested).standaloneToolIDs == snapshot.standaloneToolIDs)
+        #expect(!TaskCapabilityResolver(task: nested).allLocalTools.contains { $0.id == lateTool.id })
+        // Backward decoding must preserve unknown (nil), rather than
+        // recapturing live rows as accepted during nested launches.
+        let encoded = try JSONEncoder().encode(snapshot)
+        var legacyJSON = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacyJSON.removeValue(forKey: "standaloneToolIDs")
+        let legacy = try JSONDecoder().decode(AgentTaskLaunchSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: legacyJSON))
+        let legacyTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(legacy, from: task)
+        #expect(AgentTaskLaunchSnapshot(task: legacyTask).standaloneToolIDs == nil)
+        #expect(TaskExecutionPolicySnapshotV1(task: legacyTask).standaloneToolIDs == nil)
+        legacyJSON["standaloneToolIDs"] = [] as [String]
+        let empty = try JSONDecoder().decode(AgentTaskLaunchSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: legacyJSON))
+        let emptyTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(empty, from: task)
+        #expect(AgentTaskLaunchSnapshot(task: emptyTask).standaloneToolIDs == [])
+        let resolver = TaskCapabilityResolver(task: detached)
+        #expect(!resolver.allConnectors.contains { $0.id == lateConnector.id })
+        #expect(!resolver.allLocalTools.contains { $0.id == lateTool.id })
+        #expect(detached.workspace?.connectors.contains { $0.id == lateConnector.id } == false)
+        #expect(detached.workspace?.localTools.contains { $0.id == lateTool.id } == false)
+        // What was in scope at submission still is.
+        #expect(resolver.allLocalTools.contains { $0.id == acceptedStandaloneTool.id })
+        #expect(resolver.allLocalTools.contains { $0.id == submittedToolID })
+        #expect(resolver.allConnectors.contains { $0.id == standalone.id })
     }
 }

@@ -94,6 +94,7 @@ public struct ConnectorCredentialReuseSite: Sendable, Equatable {
 
 public enum ConnectorCredentialAdmissionVerdict: Sendable, Equatable {
     case admitted
+    case reservedInternalKey
     /// Empty once surrounding whitespace is trimmed.
     case empty
     /// A template/placeholder string rather than a real secret.
@@ -113,6 +114,7 @@ public enum ConnectorCredentialAdmissionVerdict: Sendable, Equatable {
     public var auditReason: String {
         switch self {
         case .admitted: return "admitted"
+        case .reservedInternalKey: return "reserved_internal_key"
         case .empty: return "empty"
         case .placeholder: return "placeholder"
         case .foreignVendor: return "foreign_vendor"
@@ -128,6 +130,8 @@ public enum ConnectorCredentialAdmissionVerdict: Sendable, Equatable {
         switch self {
         case .admitted:
             return nil
+        case .reservedInternalKey:
+            return "This credential is managed by Outlook sign-in. Use Connect or Reconnect instead."
         case .empty:
             return "\(key) cannot be empty."
         case .placeholder:
@@ -250,6 +254,8 @@ public enum ConnectorCredentialAdmission {
         func decide(_ verdict: ConnectorCredentialAdmissionVerdict) -> ConnectorCredentialAdmissionDecision {
             ConnectorCredentialAdmissionDecision(verdict: verdict, normalizedValue: value)
         }
+
+        if OutlookCredentialIdentity.isInternalKey(key) { return decide(.reservedInternalKey) }
 
         // Judged on the canonical form deliberately: a value made only of
         // spaces is not a password someone meant to set, even where spaces are

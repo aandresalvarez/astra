@@ -47,6 +47,16 @@ assert_targets "AppSemanticFitnessTests" \
   "Tests/AppSemanticFitnessTests.swift"
 
 for path in \
+  Tests/TaskMainActorScalingGateTests.swift \
+  Tests/TaskHistoryReadTests.swift \
+  Astra/Models/TaskHistoryRead.swift \
+  Astra/Services/Tasks/TaskConversationContinuationService.swift \
+  Astra/Services/Tasks/TaskExecutionLaunchSnapshotApplicator.swift \
+  Astra/Services/Runtime/TaskRuntimePermissionGrants.swift; do
+  assert_targets $'TaskMainActorScalingGateTests\nTaskHistoryReadTests\nTaskExecutionLaunchSnapshotApplicatorTests\nRuntimePermissionGrantRegressionTests' "$path"
+done
+
+for path in \
   Astra/Services/Persistence/SSHConnectionManager.swift \
   Astra/Services/Persistence/WorkspaceAutoExportWriter.swift \
   Astra/Services/Persistence/WorkspaceConfigManager.swift \
@@ -211,7 +221,19 @@ assert_targets $'UsageDashboardStoreTests\nUsageDashboardRenderingTests' \
   "Tests/UsageDashboardRenderingTests.swift" \
   "Tests/LargeHistoryResponsivenessTests.swift"
 
-assert_targets "StreamVolumeAccountingTests" "Tests/RuntimeProgressSignalTests.swift"
+for path in \
+  ASTRACore/RuntimeProgressSignals.swift \
+  Tests/RuntimeProgressSignalTests.swift; do
+  assert_targets $'StreamVolumeAccountingTests\nRuntimeProgressClassificationTests\nWatchdogEscalationTests\nRuntimeStreamReplayTests\nCodexFileChangeProgressTests' "$path"
+done
+
+for path in \
+  ASTRACore/CodexStreamEventParser.swift \
+  Astra/Services/Runtime/CodexCLIRuntime.swift \
+  Tests/CodexCLIRuntimeTests.swift \
+  Tests/CodexFileChangeProgressTests.swift; do
+  assert_targets $'CodexCLIRuntimeTests\nProviderMessageIdentityTests\nAgentEventRecorderTests\nProviderTranscriptConformanceTests\nRuntimeProgressClassificationTests\nWatchdogEscalationTests\nCodexFileChangeProgressTests' "$path"
+done
 
 assert_targets $'TaskTextOnlyDeliverableTests\nTaskDeliverableExpectationTests\nDeliverableExpectationCoverageTests\nTaskDeliverableVerificationServiceTests\nTaskDeliverableFollowUpTests\nTaskExecutionResourceClaimResolverTests' \
   "Astra/Services/Validation/TaskDeliverableExpectation.swift" \

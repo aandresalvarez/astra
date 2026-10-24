@@ -93,6 +93,7 @@ public enum REDCapHostControlPolicy {
 
         let isRecordBearing = recordBearingOperations.contains(operation)
         let byteLimit = isRecordBearing ? exportByteLimit : processLimits.outputByteLimit
+        let startedAt = DispatchTime.now().uptimeNanoseconds
         let response = REDCapHTTPClient(
             configuration: configuration,
             cancellationRegistry: cancellationRegistry
@@ -108,7 +109,9 @@ public enum REDCapHostControlPolicy {
         diagnostics?.record(
             toolName: toolName,
             summary: "redcap \(operation) \(connector.alias)",
-            result: response.diagnosticResult
+            result: response.diagnosticResult,
+            durationMilliseconds: Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000,
+            statusCode: response.statusCode
         )
 
         guard isRecordBearing else {
@@ -597,6 +600,7 @@ struct REDCapHTTPResponse {
     var body: String
     var errorMessage: String?
     var bodyTruncated: Bool = false
+    var timedOut: Bool = false
 
     var isError: Bool {
         if errorMessage != nil { return true }
@@ -618,7 +622,10 @@ struct REDCapHTTPResponse {
             arguments: ["request"],
             exitCode: isError ? 1 : 0,
             stdout: body,
-            stderr: errorMessage ?? "",
+            // Transport errors can contain URLs; keep study identifiers and
+            // echoed response content out of the diagnostic stream.
+            stderr: isError ? "REDCap request failed" : "",
+            timedOut: timedOut,
             stdoutTruncated: bodyTruncated
         )
     }
@@ -709,7 +716,7 @@ final class REDCapHTTPClient {
         if semaphore.wait(timeout: .now() + timeoutSeconds) == .timedOut {
             task.cancel()
             session.invalidateAndCancel()
-            return REDCapHTTPResponse(statusCode: 0, body: "", errorMessage: "Timed out after \(Int(timeoutSeconds))s")
+            return REDCapHTTPResponse(statusCode: 0, body: "", errorMessage: "Timed out after \(Int(timeoutSeconds))s", timedOut: true)
         }
         if cancelled.isSet {
             return REDCapHTTPResponse(statusCode: 0, body: "", errorMessage: "Cancelled by ASTRA.")
@@ -737,6 +744,7 @@ final class BoundedREDCapHTTPDelegate: NSObject, URLSessionDataDelegate, @unchec
     private let lock = NSLock()
     private var statusCode = 0
     private var errorMessage: String?
+    private var timedOut = false
 
     init(semaphore: DispatchSemaphore, outputByteLimit: Int) {
         self.semaphore = semaphore
@@ -751,7 +759,8 @@ final class BoundedREDCapHTTPDelegate: NSObject, URLSessionDataDelegate, @unchec
             statusCode: statusCode,
             body: snapshot.value,
             errorMessage: errorMessage,
-            bodyTruncated: snapshot.truncated || buffer.isTruncated
+            bodyTruncated: snapshot.truncated || buffer.isTruncated,
+            timedOut: timedOut
         )
     }
 
@@ -785,6 +794,7 @@ final class BoundedREDCapHTTPDelegate: NSObject, URLSessionDataDelegate, @unchec
         lock.lock()
         if let error, (error as NSError).code != NSURLErrorCancelled {
             errorMessage = error.localizedDescription
+            timedOut = (error as NSError).code == NSURLErrorTimedOut
         }
         lock.unlock()
         semaphore.signal()

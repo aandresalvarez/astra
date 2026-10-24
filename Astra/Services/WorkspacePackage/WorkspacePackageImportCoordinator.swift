@@ -420,7 +420,7 @@ struct WorkspacePackageImportCoordinator {
         // there is no window where a pending capability is live.
         let records = approvalRecords()
         let freshlyInstalledDrafts = Set(capabilitiesInstalledAsDraft)
-        workspace.enabledCapabilityIDs = workspace.enabledCapabilityIDs.filter { id in
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs = $0.capabilityIDs.filter { id in
             // A capability THIS import just installed as a draft must never be
             // auto-enabled — even if a stale digest-bound approval record from a
             // previously-approved-then-uninstalled copy still matches its bytes.
@@ -432,7 +432,7 @@ struct WorkspacePackageImportCoordinator {
             // a digest-bound approval record — the same source runtime exposure
             // uses. A raw `.approved` check would wrongly strip it here.
             return WorkspacePackageCapabilityApproval.isEffectivelyApproved(installed, records: records)
-        }
+        } }
 
         // Packs are referenced by ID only and are never embedded, so a share can
         // name a pack this machine does not have. Reconcile the enabled-pack set
@@ -442,7 +442,7 @@ struct WorkspacePackageImportCoordinator {
         // policy. Missing packs are surfaced in the pre-import review.
         let availablePackIDs = Set(AstraPackCatalog().load().entries.map { $0.manifest.id })
         let packsUnavailable = workspace.enabledPackIDs.filter { !availablePackIDs.contains($0) }
-        workspace.enabledPackIDs = workspace.enabledPackIDs.filter { availablePackIDs.contains($0) }
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.packIDs.removeAll { !availablePackIDs.contains($0) } }
 
         // Every enable-intent capability that the reconciliation stripped and that
         // isn't otherwise disclosed (freshly installed as a draft, or skipped for

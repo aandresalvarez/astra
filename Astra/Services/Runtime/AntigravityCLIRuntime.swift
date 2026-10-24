@@ -680,16 +680,18 @@ enum AntigravityCLIRuntime {
     /// text: no tool events and no session id, which left the idle and
     /// semantic-progress watchdogs killing agents that were still working.
     ///
-    /// Free on a stamp hit. On a miss the probe runs off the main actor and is
-    /// bounded by its own 8 s deadline; a probe that fails caches nothing, so
+    /// Free on a stamp hit. On a miss the async runner bounds process execution
+    /// and pipe draining to 8 s, with bounded termination cleanup. A failed probe caches nothing, so
     /// that launch runs in plain text and the next one asks again.
     @discardableResult
     static func warmStructuredOutputSupportBeforeLaunch(
         executablePath: String,
         providerHomeDirectory: String,
         taskID: UUID? = nil,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        timeoutSeconds: TimeInterval = 8
     ) async -> Bool {
+        guard !Task.isCancelled else { return false }
         let executable = executablePath.isEmpty ? detectPath() : executablePath
         if let verdict = cachedStructuredOutputVerdict(executablePath: executable, defaults: defaults) {
             return verdict
@@ -704,21 +706,27 @@ enum AntigravityCLIRuntime {
         let authMode = resolvedAuthMode(defaults: defaults)
         let adcProject = AntigravityADCProjectStore.load(defaults: defaults)
         let startedAt = Date()
-        let supported = await Task.detached(priority: .userInitiated) {
-            refreshStructuredOutputSupport(
-                executablePath: executable,
-                authMode: authMode,
-                adcProject: adcProject,
-                providerHomeDirectory: providerHomeDirectory,
-                defaults: defaults
-            )
-        }.value
+        let stamp = executableStamp(executable)
+        let result = await ProcessBinaryRunner().run(
+            path: executable, args: ["--help"], timeout: timeoutSeconds,
+            environment: probeEnvironment(mode: authMode, adcProject: adcProject,
+                providerHomeDirectory: providerHomeDirectory, extraVariables: ["NO_COLOR": "1"]),
+            currentDirectory: nil, maximumOutputBytes: 1_048_576, terminateProcessGroup: true
+        )
+        let valid = result.isSuccess && !Task.isCancelled && !result.stdoutTruncated
+            && !result.stderrTruncated && stamp == executableStamp(executable)
+        let supported = valid && parseStructuredOutputSupport(result.stdout + "\n" + result.stderr)
+        if valid {
+            cacheStructuredOutputSupport(supported, executablePath: executable, defaults: defaults)
+        }
         let cached = cachedStructuredOutputVerdict(executablePath: executable, defaults: defaults) != nil
         AppLogger.audit(.runtimeProviderDetected, category: "Worker", taskID: taskID, fields: [
             "runtime": AgentRuntimeID.antigravityCLI.rawValue,
             "source": "structured_output_launch_probe",
             "structured_output_supported": String(supported),
             "verdict_cached": String(cached),
+            "timed_out": String(result.timedOut),
+            "cancelled": String(result.cancelled || Task.isCancelled),
             "duration_ms": String(Int(Date().timeIntervalSince(startedAt) * 1000)),
             "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable)
         ], level: cached ? .info : .warning)
@@ -865,7 +873,7 @@ enum AntigravityCLIRuntime {
             return nil
         }
         let limit = Range(match.range(at: 1), in: stderr).map { " after \(stderr[$0])" } ?? ""
-        var message = "Antigravity stopped this turn itself\(limit), at its own print time limit, while the agent was still working, and returned only partial output. ASTRA did not count the turn as complete. Retry or send a follow-up to continue from where it stopped."
+        var message = "Antigravity stopped this turn itself\(limit), at its own print time limit, while the agent was still working, and returned only partial output. ASTRA did not count the turn as complete. Use Resume, when available, or send a follow-up to continue. Retry can restart the original task and repeat work already performed."
         if let background = try? NSRegularExpression(pattern: #"(?i)terminating\s+(\d+)\s+background task"#),
            let terminated = background.firstMatch(in: stderr, range: range),
            let count = Range(terminated.range(at: 1), in: stderr) {

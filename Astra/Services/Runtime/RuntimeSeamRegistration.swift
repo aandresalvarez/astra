@@ -35,6 +35,7 @@ enum RuntimeSeamRegistration {
         SkillSecretSeam.register(SkillSecretPersistence.self)
         ConnectorSecretSeam.register(ConnectorSecretPersistence.self)
         ConnectorDeclaredCredentialFormatSeam.register(ConnectorDeclaredCredentialFormatResolver.self)
+        ConnectorSettingStorageSeam.register(PluginConnectorFieldTrust.self)
         OutlookMailConnectionSeam.register(OutlookMailConnectionAdapter.self)
         ConnectorEnvironmentProjectionSeam.register(ConnectorEnvironmentProjectionAdapter.self)
         TaskForkStateInitializingSeam.register(TaskStateTransitionSeamAdapter.self)
@@ -45,6 +46,9 @@ enum RuntimeSeamRegistration {
         TaskPlanReconstructionSeam.register(TaskPlanService.self)
         TaskForkSourcePointerSeam.register(TaskForkManifestService.self)
         TaskGeneratedFileQuerySeam.register(TaskGeneratedFiles.self)
+        // Not `PluginSourceIdentitySeam`: it reads the person's plugin
+        // source store, so only the app's launch path registers it
+        // (`PluginSourceStore.launchedApp`); the test bootstrap runs this.
     }
 }
 
