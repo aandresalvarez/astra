@@ -36,6 +36,13 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
             // That projection cannot establish a tool-free execution.
             lock.withLock { toolsOrUnknownExecution = true }
         }
+        if let frame = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+           (frame["event"] as? String)?.lowercased() == "step_update",
+           !Self.isTypedAntigravityTextStep(frame) {
+            // Match the parser's case-insensitive dispatch before strict raw
+            // validation. A projected text delta cannot validate its envelope.
+            lock.withLock { toolsOrUnknownExecution = true }
+        }
         for event in events {
             if case .control(let type) = event, Self.isTypedTextBookkeeping(type, line: line) { continue }
             observe(event)
@@ -46,6 +53,11 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
     /// Cleanup evidence must inspect the original type before trusting that control.
     private static func isTypedTextBookkeeping(_ control: String, line: String) -> Bool {
         guard let frame = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return false }
+        if control == "agy.step.user_input" || control == "agy.step.agent_response" {
+            guard let step = frame["step_update"] as? [String: Any],
+                  let type = step["step_type"] as? String, control == "agy.step." + type else { return false }
+            return isTypedAntigravityTextStep(frame)
+        }
         if control == "assistant.block.text" || control == "assistant.final_copy", frame["type"] as? String == "assistant",
            let message = frame["message"] as? [String: Any], let blocks = message["content"] as? [[String: Any]], !blocks.isEmpty {
             return blocks.allSatisfy { block in
@@ -74,6 +86,21 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
             }
         }
         return false
+    }
+
+    private static func isTypedAntigravityTextStep(_ frame: [String: Any]) -> Bool {
+        guard frame["event"] as? String == "step_update",
+              let step = frame["step_update"] as? [String: Any],
+              let index = step["step_index"] as? Int, index >= 0,
+              step["tool_name"] == nil, step["tool_info"] == nil,
+              let state = step["state"] as? String else { return false }
+        switch step["step_type"] as? String {
+        case "user_input":
+            return state == "DONE" && (step["text_delta"] == nil || step["text_delta"] is String)
+        case "agent_response":
+            return ["ACTIVE", "DONE"].contains(state) && (step["text_delta"] == nil || step["text_delta"] is String)
+        default: return false
+        }
     }
     var toolsStopped: Bool { lock.withLock { terminalFrameSeen && !toolsOrUnknownExecution } }
 }

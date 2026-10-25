@@ -327,7 +327,9 @@ assert_targets 'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueue
   'Tests/RuntimeSettlementCancellationTests.swift'
 
 assert_targets 'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests' \
-  'Tests/Fixtures/ProviderStreams/claude/cancellation-tool-free.jsonl'
+  'Tests/Fixtures/ProviderStreams/claude/cancellation-tool-free.jsonl' \
+  'Tests/Fixtures/ProviderStreams/codex/cancellation-tool-free.jsonl' \
+  'Tests/Fixtures/ProviderStreams/antigravity/cancellation-tool-free.jsonl'
 
 assert_targets 'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests' \
   'Astra/Services/Runtime/RuntimeTemplateHookScope.swift' \
