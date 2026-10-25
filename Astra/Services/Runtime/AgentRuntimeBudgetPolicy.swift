@@ -41,11 +41,12 @@ enum AgentRuntimeBudgetPolicy {
         phase: RunPhase,
         runtime: AgentRuntimeID,
         budgetEnforcementMode: BudgetEnforcementMode,
-        alreadyUsedTokens: Int = 0
+        alreadyUsedTokens: Int = 0,
+        tokenCeiling: Int? = nil
     ) -> Bool {
         // `alreadyUsedTokens`: spent by an earlier attempt of the same run, so the prompt is judged against what is left.
         let tokenBudget = AgentRuntimeProcessRunner.remainingTokenBudget(
-            AgentRuntimeProcessRunner.effectiveTokenBudget(for: task), alreadyUsed: alreadyUsedTokens
+            min(AgentRuntimeProcessRunner.effectiveTokenBudget(for: task), tokenCeiling ?? Int.max), alreadyUsed: alreadyUsedTokens
         )
 
         let promptTokens = AgentProcessMonitor.estimatedTokenCount(for: prompt)

@@ -42,7 +42,7 @@ struct HostControlRequirementDerivationConsistencyTests {
             $0.id == HostControlPlaneMCPProjection.githubPackageID
         })
         let workspace = Workspace(name: "Cursor GitHub Metadata", primaryPath: "/tmp/astra-cursor-github-metadata-2")
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         let task = AgentTask(
             title: "Precomputed requirements authority check",
             goal: "Use GitHub to find the pull request and issue metadata for this task",
@@ -195,7 +195,7 @@ struct HostControlRequirementDerivationConsistencyTests {
             goal: "List my open PRs in the astra repo and summarize CI status",
             model: "composer-2.5-fast"
         )
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let githubSkill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read", "Glob", "Grep"],
@@ -325,7 +325,7 @@ struct HostControlRequirementDerivationConsistencyTests {
             goal: "List my open PRs in the astra repo and summarize CI status",
             model: "gpt-5"
         )
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let githubSkill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read", "Glob", "Grep"],
@@ -461,7 +461,7 @@ struct HostControlRequirementDerivationConsistencyTests {
             $0.id == HostControlPlaneMCPProjection.githubPackageID
         })
         let workspace = Workspace(name: "Copilot GitHub Metadata", primaryPath: "/tmp/astra-copilot-github-metadata")
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         let task = AgentTask(
             title: "Copilot launch-projection authority check",
             goal: "Use GitHub to find the pull request and issue metadata for this task",
@@ -541,7 +541,7 @@ struct HostControlRequirementDerivationConsistencyTests {
         // package) makes the resolver's independent derivation say "route
         // through host control" for this prompt/context.
         let workspace = Workspace(name: "GitHub Metadata Precomputed", primaryPath: workspaceRoot.path)
-        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let task = AgentTask(
             title: "Review PR metadata",
             goal: "Use GitHub to inspect pull request metadata and checks",
@@ -635,7 +635,7 @@ struct HostControlRequirementDerivationConsistencyTests {
             goal: "List my open PRs in the astra repo",
             model: "composer-2.5-fast"
         )
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let githubSkill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read", "Glob", "Grep"],
@@ -708,7 +708,7 @@ struct HostControlRequirementDerivationConsistencyTests {
             goal: "List my open PRs in the astra repo and summarize CI status",
             model: "composer-2.5-fast"
         )
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let githubSkill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read", "Glob", "Grep"],
@@ -750,6 +750,7 @@ struct HostControlRequirementDerivationConsistencyTests {
         )
         task.runtimeID = AgentRuntimeID.cursorCLI.rawValue
         task.runtimeExplicitlySelected = true
+        try RuntimeRecoveryTestReceipt.install(task: task, run: task.runs.max { $0.startedAt < $1.startedAt }, context: harness.context)
 
         _ = await harness.continueTask(
             task: task,

@@ -100,18 +100,13 @@ struct ComposerCapabilitySnapshotLoader: View {
             }
     }
 
-    /// The workspace, or `nil` once it has been deleted. Deleting a workspace
-    /// re-runs this view's body (its `@Query`s and the parent both move) while
-    /// `workspace` still points at the dead model, and reading a persisted
-    /// property that was not already faulted in off it traps inside SwiftData.
-    /// A persisted deletion can leave the model detached with `isDeleted` still
-    /// false, hence the context check as well.
+    /// The workspace, or `nil` once it has been deleted (see `isLive`).
     private var liveWorkspace: Workspace? {
         Self.live(workspace)
     }
 
     static func live(_ workspace: Workspace?) -> Workspace? {
-        guard let workspace, !workspace.isDeleted, workspace.modelContext != nil else { return nil }
+        guard let workspace, workspace.isLive else { return nil }
         return workspace
     }
 

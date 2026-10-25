@@ -64,7 +64,7 @@ enum RuntimeTurnOutcomeService {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: runtimeAdapter.maxTurnsPayload(phase: auditPhase, task: task), run: run)
             modelContext.insert(event)
-        } else if Self.applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
+        } else if RuntimeStopOutcome.apply(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
         } else if Self.applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
         } else if result.policyViolation {
             run.status = .failed
@@ -118,6 +118,7 @@ enum RuntimeTurnOutcomeService {
                 workspacePath: executionPath,
                 agentReportedError: checkpoint.agentReportedError
             )
+            guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return }
             if !blockedFromCompleting {
                 if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
                     // Frozen on launchTask, same as the budget above.
@@ -154,6 +155,7 @@ enum RuntimeTurnOutcomeService {
                                 sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement
                             )
                         )
+                        guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return }
                         switch testResult {
                         case .passed(let details):
                             _ = await TaskSuccessfulCompletionService.apply(
@@ -182,6 +184,7 @@ enum RuntimeTurnOutcomeService {
                             utilityRuntime: checkpoint.verifierRuntime,
                             workspacePath: executionPath
                         )
+                        guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return }
                         switch aiResult {
                         case .passed(let details):
                             _ = await TaskSuccessfulCompletionService.apply(
@@ -333,35 +336,6 @@ enum RuntimeTurnOutcomeService {
 
         Approve to continue this task with one-time expanded runtime permissions.\(detail)
         """
-    }
-
-    @MainActor
-    private static func applyRuntimeStopIfNeeded(
-        _ result: AgentProcessResult,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        phase: RunPhase
-    ) -> Bool {
-        guard let reason = result.runtimeStopReason, !reason.isEmpty else { return false }
-
-        run.status = .failed
-        run.typedStopReason = TaskRunStopReason.custom(reason)
-        if AgentRuntimeWorker.isTerminalRuntimeStop(reason) {
-            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
-        } else {
-            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
-        }
-
-        let payload = result.runtimeStopMessage
-            ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
-        modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run))
-        AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-            "phase": phase.rawValue,
-            "reason": reason,
-            "source": "runtime_stop"
-        ], level: .error)
-        return true
     }
 
     @MainActor

@@ -29,7 +29,6 @@ struct AntigravityADCProjectTests {
             workspacePath: "/workspace",
             additionalPaths: [],
             permissionPolicy: .restricted,
-            timeoutSeconds: 30,
             taskEnvironment: [:],
             permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
             defaults: defaults

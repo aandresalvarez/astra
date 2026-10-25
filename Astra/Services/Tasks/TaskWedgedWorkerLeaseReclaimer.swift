@@ -3,25 +3,11 @@ import SwiftData
 import ASTRACore
 import ASTRAModels
 
-/// Bounds how long a cancelled task can keep its resource lease.
-///
-/// Cancel stops the provider, and the queue releases a lease when the worker
-/// call that owns it returns. If that call never returns — a descendant that
-/// escaped the process group still holds stdout, a settlement hangs — the
-/// lease stays held until relaunch and every task that needs the workspace
-/// waits on it. Cancel therefore schedules one deadline per task: any lease
-/// the task held when it was cancelled and still holds after `grace` is
-/// released through `TaskQueue.releaseWedgedLeases`, which records a durable
-/// `resource.lock.released` event with reason `cancelled_wedged_worker`.
-///
-/// Leases are identified by id, and `TaskQueue.releaseResourceLocks` removes
-/// only claims still held, so a worker that does return later releases
-/// nothing and cannot free a hold another admission has taken since.
+/// Schedules one observable cancellation investigation. Time alone never
+/// releases resources; the protected execution owner supplies stop evidence.
 @MainActor
 final class TaskWedgedWorkerLeaseReclaimer {
-    nonisolated static let releaseReason = "cancelled_wedged_worker"
-    /// Well past the provider's SIGTERM→SIGKILL ladder (3 s) plus settlement,
-    /// so a worker that honors the cancel always releases its own lease.
+    /// Inspection delay, never termination or release evidence.
     nonisolated static let defaultGrace: Duration = .seconds(30)
 
     let grace: Duration
@@ -54,6 +40,8 @@ final class TaskWedgedWorkerLeaseReclaimer {
         deadlines[taskID] = (leaseIDs.union(previous?.leaseIDs ?? []), timer)
     }
 
+    func cancel(taskID: UUID) { deadlines.removeValue(forKey: taskID)?.timer.cancel() }
+
     func cancelAll() {
         deadlines.values.forEach { $0.timer.cancel() }
         deadlines.removeAll()
@@ -71,26 +59,21 @@ extension TaskQueue {
         }
     }
 
-    /// Releases whatever part of `leaseIDs` is still held. A no-op when the
-    /// worker returned and released its own lease within the grace period.
+    /// A timer may wake a verified, cancelled provider wait. The worker then
+    /// unwinds normally, restores hooks, and publishes release before the queue
+    /// admits any competitor. Unknown local/remote work retains the fence.
     @MainActor
     func releaseWedgedLeases(_ leaseIDs: Set<UUID>, taskID: UUID, modelContext: ModelContext?) {
-        let stranded = activeResourceLocks.filter { claim in claim.leaseID.map(leaseIDs.contains) ?? false }
+        guard let modelContext else { return }
+        refreshResourceOwnership(in: modelContext)
+        let stranded = activeResourceLocks.filter { $0.taskID == taskID && $0.leaseID.map(leaseIDs.contains) == true }
         guard !stranded.isEmpty else { return }
-        let task = modelContext.flatMap { context in
-            try? context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })).first
-        }.flatMap { $0.isDeleted ? nil : $0 }
-        AppLogger.audit(.resourceLockReleased, category: "Queue", taskID: taskID, fields: [
-            "reason": TaskWedgedWorkerLeaseReclaimer.releaseReason,
-            "claim_count": String(stranded.count),
-            "lease_count": String(Set(stranded.compactMap(\.leaseID)).count),
-            "durable_event": String(task != nil)
-        ], level: .warning)
-        releaseResourceLocks(
-            stranded,
-            task: task,
-            modelContext: modelContext,
-            reason: TaskWedgedWorkerLeaseReclaimer.releaseReason
-        )
+        if let worker = worker(forTaskID: taskID), let generation = worker.cancellationGeneration,
+           worker.retireCancelledExecution(generation: generation) { return }
+        guard let task = try? modelContext.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })).first else { return }
+        let message = "Cancellation is still being checked. ASTRA cannot confirm that the previous execution and its tools stopped; shared resources remain reserved. Other tasks using those resources will wait."
+        if !task.events.contains(where: { $0.type == "system.info" && $0.payload == message }) {
+            RuntimeExecutionOwner.report(message, task: task, context: modelContext)
+        }
     }
 }

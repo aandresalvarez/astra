@@ -23,6 +23,7 @@ final class TaskComposerDraft {
     /// every typing pause: as parent `@State` each verdict re-ran the
     /// transcript body as well.
     var eligibilityPreviewState = RuntimeEligibilityPreviewState.idle
+    let submissionIntent = ComposerSubmissionIntent()
 
     /// Typing resets the slash selection on each keystroke. Observation
     /// notifies on every assignment, equal or not, so the reset only writes

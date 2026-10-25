@@ -16,52 +16,11 @@ struct AgentRuntimeBudgetProfile: Sendable, Equatable {
     }
 }
 
-private final class AgentUtilityScopedProcessRunState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var completed = false
-    private var forcedResult: AgentUtilityRunResult?
-    private var cancelled = false
-
-    /// Records a timeout or early-stream result that requires terminating the
-    /// process. The continuation must not resume yet: the process reaper still
-    /// owns final pipe drain and process-group cleanup.
-    func requestTermination(with result: AgentUtilityRunResult) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !completed, !cancelled, forcedResult == nil else { return false }
-        forcedResult = result
-        return true
-    }
-
-    func markCancelled() {
-        lock.lock()
-        cancelled = true
-        lock.unlock()
-    }
-
-    /// Completes only after AgentExecutionScopedProcess has reaped the child.
-    /// A timeout/early-stream result wins over the child's signal exit status.
-    func completeAfterProcessExit(naturalResult: AgentUtilityRunResult) -> AgentUtilityRunResult? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !completed else { return nil }
-        completed = true
-        return forcedResult ?? naturalResult
-    }
-
-    /// Launch failures have no child to reap, so they can complete directly.
-    func completeWithoutProcess(_ result: AgentUtilityRunResult) -> AgentUtilityRunResult? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !completed else { return nil }
-        completed = true
-        return result
-    }
-}
-
 protocol AgentRuntimeProcessRunning: AnyObject {
     func cancel()
     func isHostControlBrokerAvailable() -> Bool
+    @MainActor func configureSupervision(_ context: RuntimeSupervisionContext?)
+    @MainActor func configureExecutionOwner(_ owner: RuntimeExecutionOwner?)
 
     @MainActor
     func runRuntimeProcess(
@@ -91,16 +50,39 @@ protocol AgentRuntimeProcessRunning: AnyObject {
     ) async -> AgentProcessResult
 }
 
+extension AgentRuntimeProcessRunning {
+    @MainActor func configureExecutionOwner(_ owner: RuntimeExecutionOwner?) {}
+    @MainActor func configureSupervision(_ context: RuntimeSupervisionContext?) {}
+}
+
 final class AgentRuntimeProcessRunner {
     typealias SandboxSettingsProvider = @MainActor (PermissionPolicy) -> ExecutionSandboxSettings
     typealias GitCredentialContextProvider = @MainActor (AgentRuntimeProcessLaunchContext) -> GitCredentialSandboxContext
     typealias DockerRuntimeProvider = @Sendable () -> DockerRuntimeResolution?
 
+    private var executionOwner: RuntimeExecutionOwner?
+    @MainActor func configureExecutionOwner(_ owner: RuntimeExecutionOwner?) {
+        let previous = executionOwner
+        executionOwner = owner
+        if owner == nil, let previous, let lease = sharedStateLease,
+           sharedStateOwnerID == previous.record.ownerID {
+            // Runs after the worker's synchronous finish/cleanup defers.
+            Task { @MainActor in
+                guard previous.persistedResourceRelease else { return }
+                await AgentRuntimeSharedStateGate.shared.release(lease)
+                if self.sharedStateLease == lease { self.sharedStateLease = nil }
+            }
+        }
+    }
     private var currentProcess: AgentRuntimeProcessControl?
-    /// Held while a provider that shares launch state (Antigravity's settings
-    /// file) runs; cancel bounds how long a wedged run can keep it.
+    /// Held until normal return or verified cancellation cleanup.
     private var sharedStateLease: AgentRuntimeSharedStateLease?
-    private let wedgedCancellationGrace: Duration
+    private var sharedStateOwnerID: UUID?
+    private var supervisionContext: RuntimeSupervisionContext?
+    private var activeSupervision: RuntimeSupervisionSession?
+    private var activeRecovery: RuntimeRecoverySession?
+    private var supervisionPreparation: Task<RuntimeSupervisionFiles, Never>?
+    @MainActor func configureSupervision(_ context: RuntimeSupervisionContext?) { supervisionContext = context }
     let homeAccessCancellation = RuntimeHomeAccessCancellationGate()
     private let sandboxSettingsProvider: SandboxSettingsProvider
     private let gitCredentialContextProvider: GitCredentialContextProvider
@@ -122,10 +104,8 @@ final class AgentRuntimeProcessRunner {
         dockerRuntimeProvider: @escaping DockerRuntimeProvider = {
             DockerRuntimeResolver.resolve()
         },
-        hostControlBrokerSessionManager: any HostControlBrokerSessionManaging = HostControlBrokerSessionManager(),
-        wedgedCancellationGrace: Duration = TaskWedgedWorkerLeaseReclaimer.defaultGrace
+        hostControlBrokerSessionManager: any HostControlBrokerSessionManaging = HostControlBrokerSessionManager()
     ) {
-        self.wedgedCancellationGrace = wedgedCancellationGrace
         self.sandboxSettingsProvider = sandboxSettingsProvider
         self.gitCredentialContextProvider = gitCredentialContextProvider
         self.dockerRuntimeProvider = dockerRuntimeProvider
@@ -133,29 +113,12 @@ final class AgentRuntimeProcessRunner {
     }
 
     func cancel() {
+        activeRecovery?.finish()
+        supervisionPreparation?.cancel()
+        activeSupervision?.finish()
         homeAccessCancellation.invalidate()
         currentProcess?.terminate()
         currentProcess = nil
-        if let sharedStateLease {
-            Self.releaseSharedStateIfWedged(sharedStateLease, after: wedgedCancellationGrace)
-        }
-    }
-
-    /// A cancelled run normally returns and releases its own lease. If it has
-    /// not after `grace` (its stdout never reached EOF), free the key so the
-    /// next Antigravity run is not queued behind it until relaunch. The lease
-    /// release is idempotent, so the run's own release when it finally returns
-    /// cannot free the key for the run that holds it by then.
-    static func releaseSharedStateIfWedged(_ lease: AgentRuntimeSharedStateLease, after grace: Duration) {
-        Task {
-            try? await Task.sleep(for: grace)
-            guard await AgentRuntimeSharedStateGate.shared.release(lease) else { return }
-            AppLogger.audit(.resourceLockReleased, category: "Worker", fields: [
-                "resource_kind": "provider_shared_state",
-                "resource_key": lease.key.rawValue,
-                "reason": TaskWedgedWorkerLeaseReclaimer.releaseReason
-            ], level: .warning)
-        }
     }
 
     func isHostControlBrokerAvailable() -> Bool {
@@ -607,7 +570,14 @@ final class AgentRuntimeProcessRunner {
     @MainActor
     func sandboxedUtilityPlan(_ utilityPlan: AgentUtilityLaunchPlan) -> SandboxedUtilityPlanOutcome {
         let plan = utilityPlan.process
-        let settings = sandboxSettingsProvider(utilityPlan.permissionPolicy)
+        var settings = sandboxSettingsProvider(utilityPlan.permissionPolicy)
+        if AgentUtilityExecutionLimits.requiresIsolation {
+            // Strengthen the existing policy without relaxing offline or
+            // fail-closed restrictions selected by the user.
+            settings.enforcement = .strict
+            settings.readScope = .enforce
+            settings.wrappedRuntimes.insert(plan.runtime)
+        }
         let decision = ExecutionSandbox.decide(
             plan: plan,
             providerHomeDirectory: utilityPlan.providerHomeDirectory,
@@ -745,6 +715,7 @@ final class AgentRuntimeProcessRunner {
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
+        let launchPreparationStarted = ProcessInfo.processInfo.systemUptime
         let launchContext = AgentRuntimeProcessLaunchContext(
             prompt: prompt,
             task: task,
@@ -818,14 +789,17 @@ final class AgentRuntimeProcessRunner {
                 hostControlBrokerSessionManager.stop(taskID: task.id, runID: runID)
             }
         }
-        let remainingTokenBudget = Self.remainingTokenBudget(
-            Self.effectiveTokenBudget(for: task), alreadyUsed: executionPolicy.providerTokensAlreadyUsed
-        )
-        let remainingTurns = Self.remainingTurns(maxTurns: task.maxTurns, alreadyUsed: executionPolicy.providerTurnsAlreadyUsed)
+        let allowance = Self.attemptAllowance(task: task, policy: executionPolicy)
+        guard allowance.tokens > 0, allowance.turns > 0, executionPolicy.recoveryAllowance?.secondsRemaining != 0 else {
+            return AgentProcessResult(exitCode: -1, runtimeStopReason: "recovery_limits_exhausted",
+                runtimeStopMessage: "Recovery did not reset the original execution limits.", budgetExceeded: true)
+        }
+        let remainingTokenBudget = allowance.tokens
+        let remainingTurns = allowance.turns
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             let sharedStateLease: AgentRuntimeSharedStateLease
             do {
-                sharedStateLease = try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
+                sharedStateLease = try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey, owner: executionOwner)
             } catch is CancellationError {
                 return AgentProcessResult(
                     exitCode: -1,
@@ -837,13 +811,16 @@ final class AgentRuntimeProcessRunner {
                 return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
             }
             self.sharedStateLease = sharedStateLease
-            defer { if self.sharedStateLease == sharedStateLease { self.sharedStateLease = nil } }
+            self.sharedStateOwnerID = executionOwner?.record.ownerID
             let plan: AgentRuntimeProcessLaunchPlan
             switch await guardedSandboxedPlan(adapter: adapter, context: launchContext) {
             case .plan(let resolvedPlan):
                 plan = resolvedPlan
             case .blocked(let blockedResult):
-                await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)
+                if executionOwner == nil || executionOwner?.releaseProviderSharedState() == true {
+                    await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)
+                    if self.sharedStateLease == sharedStateLease { self.sharedStateLease = nil }
+                }
                 return blockedResult
             }
             let result = await runProcess(
@@ -856,13 +833,19 @@ final class AgentRuntimeProcessRunner {
                 timeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 maxRunSeconds: maxRunSeconds,
+                preparationStartedAt: launchPreparationStarted,
                 maxTurns: remainingTurns,
                 tokenBudget: remainingTokenBudget,
+                nativeSessionID: nativeContinuationSessionID,
                 reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
+                estimatedInputTokens: Self.estimatedLaunchInputTokens(prompt: prompt, runtime: adapter.id),
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
-            await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)
+            if executionOwner == nil || executionOwner?.releaseProviderSharedState() == true {
+                await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)
+                if self.sharedStateLease == sharedStateLease { self.sharedStateLease = nil }
+            }
             return result
         }
 
@@ -883,9 +866,12 @@ final class AgentRuntimeProcessRunner {
             timeoutSeconds: timeoutSeconds,
             noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
             maxRunSeconds: maxRunSeconds,
+                preparationStartedAt: launchPreparationStarted,
             maxTurns: remainingTurns,
             tokenBudget: remainingTokenBudget,
+            nativeSessionID: nativeContinuationSessionID,
             reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
+                estimatedInputTokens: Self.estimatedLaunchInputTokens(prompt: prompt, runtime: adapter.id),
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
@@ -902,13 +888,32 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
         maxRunSeconds: TimeInterval?,
+        preparationStartedAt: TimeInterval,
         maxTurns: Int,
         tokenBudget: Int,
+        nativeSessionID: String?,
         reportedUsageBaseline: ProviderSessionUsageBaseline,
+        estimatedInputTokens: Int,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let taskID = task.id
+        let preparationGeneration = homeAccessCancellation.snapshot()
+        let context = supervisionContext
+        var baseline: RuntimeSupervisionFiles?
+        if let context {
+            let preparation = Task { await context.captureFiles() }
+            supervisionPreparation = preparation
+            baseline = await withTaskCancellationHandler { await preparation.value } onCancel: { preparation.cancel() }
+            supervisionPreparation = nil
+        }
+        guard !Task.isCancelled, task.status != .cancelled, homeAccessCancellation.isCurrent(preparationGeneration) else {
+            return AgentProcessResult(exitCode: -1, error: "Cancelled before provider launch.")
+        }
+        defer {
+            activeSupervision?.finish(); activeSupervision = nil
+            activeRecovery?.finish(); activeRecovery = nil
+        }
 
         // The one place that owns a live agent process, so the one place that
         // can say a redaction scope must not be evicted yet. A run that spends
@@ -918,6 +923,29 @@ final class AgentRuntimeProcessRunner {
         RunSecretRedactionScope.beginRun(taskID: taskID)
         defer { RunSecretRedactionScope.endRun(taskID: taskID) }
 
+        let owner = executionOwner
+        let preparationSeconds = max(0, ProcessInfo.processInfo.systemUptime - preparationStartedAt)
+        owner?.chargePreparation(seconds: preparationSeconds)
+        let maxRunSeconds = maxRunSeconds.map { max(0, $0 - preparationSeconds) }
+        if owner != nil, (maxRunSeconds ?? 0) <= 0 || owner?.record.limits.secondsRemaining == 0 {
+            return AgentProcessResult(exitCode: -1, runtimeStopReason: "recovery_limits_exhausted",
+                runtimeStopMessage: "The remaining execution time expired before launch.", budgetExceeded: true)
+        }
+        do { try owner?.prepareLaunch(sessionID: nativeSessionID) }
+        catch { return AgentProcessResult(exitCode: -1, runtimeStopReason: "runtime_recovery_blocked", runtimeStopMessage: "Recovery ownership could not authorize this launch.") }
+        let executionID = owner?.record.executionID ?? UUID()
+        let remoteWorkExcluded = owner?.remoteWorkExcluded ?? false
+        let ownershipEvents = OrderedMainActorTaskQueue()
+        let inspectedAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = onInteractiveAsk.map { ask in
+            { request in
+                await MainActor.run { owner?.waitingForInput(true) }
+                let result = await ask(request)
+                await MainActor.run { owner?.waitingForInput(false) }
+                return result
+            }
+        }
+        let processEvidence = RuntimeExecutionProcessEvidence()
+        let processStartedAt = ProcessInfo.processInfo.systemUptime
         let deliveryChannel = AgentLivePermissionDeliveryChannel()
         let result: AgentProcessResult = await withCheckedContinuation { continuation in
             let resumeLock = NSLock()
@@ -927,7 +955,11 @@ final class AgentRuntimeProcessRunner {
                 guard !hasResumed else { resumeLock.unlock(); return }
                 hasResumed = true
                 resumeLock.unlock()
-                continuation.resume(returning: result)
+                Task { @MainActor in
+                    owner?.stopped(proof: result.executionStopProof, turns: result.executionTurnsSpent ?? 1,
+                        tokens: result.executionTokensSpent ?? 0, seconds: result.executionSecondsSpent ?? 0)
+                    continuation.resume(returning: result)
+                }
             }
 
             AppLogger.audit(
@@ -986,6 +1018,20 @@ final class AgentRuntimeProcessRunner {
                 ),
                 readOnlyBoundaryReceipt: plan.readOnlyBoundaryReceipt
             )
+            let supervision = context.map { context in
+                RuntimeSupervisionSession(goal: context.goal, runtime: context.runtime,
+                    remoteCoverage: context.remoteCoverage, baseline: baseline ?? .init(unavailable: "No baseline"),
+                    configuration: .init(tokenReservation: context.tokenReservation),
+                    collectFiles: { await context.captureFiles() },
+                    investigate: context.investigator,
+                    reserveTokens: { [weak monitor] in monitor?.reserveSupervisionTokens($0) ?? false }, report: context.report)
+            }
+            activeSupervision = supervision
+            monitor.supervision = supervision
+            let recovery = RuntimeRecoverySession.make(context: context?.recovery, process: process, monitor: monitor)
+            activeRecovery = recovery
+            monitor.recovery = recovery
+            monitor.supervisionProcessSuspension = { process.suspendedProcessIdentifier == nil ? nil : true }
 
             let handleLine: (String) -> Void = { line in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1002,18 +1048,24 @@ final class AgentRuntimeProcessRunner {
                 }
                 if plan.interactiveAsk != nil,
                    let control = ClaudeControlProtocol.controlRequest(from: trimmed) {
+                    processEvidence.observe(.unknown(type: "interactive_tool_request"))
                     Self.answerControlRequest(
                         control,
                         process: process,
                         monitor: monitor,
                         taskID: taskID,
                         deliveryChannel: deliveryChannel,
-                        onInteractiveAsk: onInteractiveAsk
+                        onInteractiveAsk: inspectedAsk
                     )
                     return
                 }
                 onLine(line, plan.parsesJSONLines)
-                for parsed in adapter.parseProcessEvents(line: line, parsesJSONLines: plan.parsesJSONLines) {
+                let parsedEvents = adapter.parseProcessEvents(line: line, parsesJSONLines: plan.parsesJSONLines)
+                processEvidence.observeFrame(line, parsesJSONLines: plan.parsesJSONLines, events: parsedEvents)
+                for parsed in parsedEvents {
+                    if case .systemInit(_, let sessionID) = parsed {
+                        ownershipEvents.add { owner?.session(sessionID) }
+                    }
                     for filtered in eventPipeline.process(parsed) {
                         _ = monitor.processEvent(filtered, process: process)
                     }
@@ -1047,9 +1099,11 @@ final class AgentRuntimeProcessRunner {
             // descendant that outlives the reaped provider.
             let consumeStdout: (Data) -> Void = { data in
                 monitor.recordStreamVolume(bytes: data.count)
+                monitor.supervisionTranscript.append(String(decoding: data, as: UTF8.self), stderr: false, taskID: taskID)
                 lineBuffer.appendAndProcessLines(String(decoding: data, as: UTF8.self), handleLine)
             }
             let consumeStderr: (Data) -> Void = { data in
+                monitor.supervisionTranscript.append(String(decoding: data, as: UTF8.self), stderr: true, taskID: taskID)
                 errorOutput.append(String(decoding: data, as: UTF8.self))
             }
             process.stdoutFileHandle.readabilityHandler = { _ in
@@ -1060,6 +1114,7 @@ final class AgentRuntimeProcessRunner {
             }
 
             process.terminationHandler = { proc in
+                supervision?.finish()
                 InFlightPermissionCenter.shared.failAll(taskID: taskID)
                 proc.stdoutFileHandle.readabilityHandler = nil
                 proc.stderrFileHandle.readabilityHandler = nil
@@ -1072,6 +1127,7 @@ final class AgentRuntimeProcessRunner {
                 for filtered in eventPipeline.flushParsedEvents() {
                     _ = monitor.processEvent(filtered, process: process)
                 }
+                recovery?.finish(progressRevision: monitor.currentSupervisionProgressRevision)
                 let error = errorOutput.value
                 let dockerFailure = DockerRuntimeFailureDiagnostics.diagnose(
                     exitCode: Int(proc.terminationStatus),
@@ -1101,8 +1157,21 @@ final class AgentRuntimeProcessRunner {
                         "exit_code": String(Int(proc.terminationStatus))
                     ], level: .warning)
                 }
+                // A provider can cut its own turn short and still exit 0 (agy's
+                // print timeout even sends a SUCCESS result frame), so a turn
+                // ASTRA did not stop is checked against what stderr says.
+                let selfStop = monitor.runtimeStopReason == nil && dockerFailure == nil
+                    ? adapter.providerSelfStop(stderr: error) : nil
+                if let selfStop {
+                    AppLogger.audit(.workerTimeout, category: "Worker", taskID: taskID, fields: [
+                        "runtime": plan.runtime.rawValue,
+                        "reason": selfStop.reason,
+                        "source": "provider_self_stop",
+                        "exit_code": String(Int(proc.terminationStatus))
+                    ], level: .error)
+                }
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
-                resumeOnce(AgentProcessResult(
+                var processResult = AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
                     providerFailureOutput: monitor.providerFailureOutput,
@@ -1111,8 +1180,9 @@ final class AgentRuntimeProcessRunner {
                     policyViolationMessage: monitor.policyViolationMessage,
                     policyApprovalRequired: monitor.policyApprovalRequired,
                     policyApprovalMessage: monitor.policyApprovalMessage,
-                    runtimeStopReason: dockerFailure?.stopReason ?? monitor.runtimeStopReason,
-                    runtimeStopMessage: dockerFailure?.message ?? monitor.runtimeStopMessage,
+                    runtimeStopReason: dockerFailure?.stopReason ?? monitor.runtimeStopReason ?? selfStop?.reason,
+                    runtimeStopMessage: dockerFailure?.message ?? monitor.runtimeStopMessage ?? selfStop?.message,
+                    runtimeRepairContext: dockerFailure == nil ? monitor.runtimeRepairContext : nil,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
                     finalReportedBudgetExceededAfterCompletion: monitor.finalReportedBudgetExceededAfterCompletion,
@@ -1121,17 +1191,26 @@ final class AgentRuntimeProcessRunner {
                     repetitionKilled: monitor.repetitionKilled,
                     maxTurnsExceeded: monitor.maxTurnsExceeded,
                     readOnlyBoundaryEvidence: plan.readOnlyBoundaryReceipt?.evidence
-                ))
+                )
+                processResult.executionStopProof = proc.stopProof(executionID: executionID,
+                    toolsStopped: processEvidence.toolsStopped, remoteWorkExcluded: remoteWorkExcluded)
+                processResult.executionTurnsSpent = max(1, monitor.turnCount)
+                processResult.executionTokensSpent = monitor.recoveryTokensConsumed(estimatedInputTokens: estimatedInputTokens)
+                processResult.executionSecondsSpent = ProcessInfo.processInfo.systemUptime - processStartedAt
+                resumeOnce(processResult)
             }
 
             do {
                 try process.run()
+                do { try owner?.launched(process) }
+                catch { process.terminate() } // never return while the original child can still execute
                 hostControlBrokerSessionManager.registerProviderProcess(
                     taskID: taskID,
                     runID: runID,
                     processID: process.processIdentifier
                 )
             } catch {
+                owner?.didNotLaunch()
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(
                     exitCode: -1,
@@ -1148,13 +1227,15 @@ final class AgentRuntimeProcessRunner {
             currentProcess = process
             monitor.startWatchdog(process: process)
         }
+        await ownershipEvents.drainAll()
         var acknowledgedResult = result
+        acknowledgedResult.supervisionReservedTokens = activeSupervision?.tokenReservation
         acknowledgedResult.acknowledgedPermissionRequestIDs = deliveryChannel.acknowledgedPermissionRequestIDs
         acknowledgedResult.writtenPermissionRequestIDs = deliveryChannel.writtenPermissionRequestIDs
         return acknowledgedResult
     }
 
-    private static func runScopedUtilityProcess(
+    static func runScopedUtilityProcess(
         _ plan: AgentRuntimeProcessLaunchPlan,
         timeoutSeconds: TimeInterval,
         stdoutLineHandler: (@Sendable (String) -> AgentUtilityRunResult?)?,
@@ -1176,10 +1257,13 @@ final class AgentRuntimeProcessRunner {
         let stderrBuffer = AgentLockedBuffer()
         let stdoutLineBuffer = AgentLockedBuffer()
         let runState = AgentUtilityScopedProcessRunState()
+        let outputAllowance = AgentUtilityOutputAllowance(AgentUtilityExecutionLimits.maximumOutputBytes)
+        let outputLimitResult = AgentUtilityRunResult(exitCode: -1, output: "", error: "Utility output exceeded its configured limit.")
 
         // The pipe reader serializes read and delivery; the line buffer also
         // protects the final partial-line flush after the reader is sealed.
         let handleStdoutLocked: @Sendable (String) -> AgentUtilityRunResult? = { chunk in
+            guard outputAllowance.accept(chunk.utf8.count) else { return outputLimitResult }
             stdoutBuffer.append(chunk)
             guard let stdoutLineHandler else { return nil }
             for line in stdoutLineBuffer.appendAndDrainLinesLocked(chunk) {
@@ -1230,6 +1314,7 @@ final class AgentRuntimeProcessRunner {
                     if let result { requestTermination(result) }
                 }
                 let consumeStderr: (Data) -> Void = { data in
+                    guard outputAllowance.accept(data.count) else { requestTermination(outputLimitResult); return }
                     let chunk = String(decoding: data, as: UTF8.self)
                     stderrBuffer.append(chunk)
                     stderrChunkHandler?(chunk)
@@ -1361,45 +1446,6 @@ final class AgentRuntimeProcessRunner {
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
         })).sorted()
-    }
-
-    @MainActor
-    static func effectiveTokenBudget(for task: AgentTask) -> Int {
-        let baseBudget = task.tokenBudget
-        let tokenBudget = effectiveTokenBudget(
-            baseBudget: baseBudget,
-            usesAgentTeam: task.useAgentTeam,
-            teamSize: task.teamSize
-        )
-        if task.useAgentTeam, baseBudget != 0 {
-            AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
-                "event": "team_budget_scaled",
-                "base_budget": String(baseBudget),
-                "team_size": String(max(2, task.teamSize)),
-                "token_budget": String(tokenBudget)
-            ])
-        }
-        return tokenBudget
-    }
-
-    static func effectiveTokenBudget(baseBudget: Int, usesAgentTeam: Bool, teamSize: Int) -> Int {
-        // Zero is the persisted sentinel for Disabled. Resolve it before team
-        // scaling so an unlimited budget stays unlimited instead of overflowing
-        // when multiplied by the number of agents. A negative value is not a
-        // sentinel — it is a malformed persisted config (workspace imports
-        // assign budgets without normalizing) — so it keeps the pre-existing
-        // enforcement behaviour instead of silently becoming unlimited.
-        if baseBudget == 0 { return Int.max }
-        guard baseBudget > 0 else { return baseBudget }
-        return usesAgentTeam ? baseBudget * max(2, teamSize) : baseBudget
-    }
-
-    static func estimatedLaunchInputTokens(prompt: String, runtime: AgentRuntimeID) -> Int {
-        AgentRuntimeBudgetProfile.profile(for: runtime).estimatedLaunchInputTokens(prompt: prompt)
-    }
-
-    static func launchOverheadTokens(for runtime: AgentRuntimeID) -> Int {
-        AgentRuntimeBudgetProfile.profile(for: runtime).launchOverheadTokens
     }
 
     static func model(_ model: String, for runtime: AgentRuntimeID) -> String {
@@ -1773,15 +1819,6 @@ final class AgentRuntimeProcessRunner {
     ) -> [String: String] {
         var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
         BrokeredConnectorEnvironment.strip(from: &taskEnv, capabilityScope: capabilityScope)
-        if StanfordOutlookMailRuntimeAccess.isGranted(
-            for: task,
-            in: capabilityScope,
-            runtime: executionPolicy.launchSnapshot?.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)),
-            additionalGrants: executionPolicy.permissionGrantsOverride ?? []
-        ) {
-            taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
-            taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
-        }
         if capabilityScope.exposesBrowserBridge ||
             TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {
@@ -1860,108 +1897,7 @@ final class AgentRuntimeProcessRunner {
         }
     }
 
-    static func providerAllowedTools(
-        for runtime: AgentRuntimeID,
-        baseAllowedTools: [String],
-        permissionManifest: RunPermissionManifest?
-    ) -> [String] {
-        guard let permissionManifest,
-              permissionManifest.providerID == runtime else {
-            return baseAllowedTools
-        }
-        let manifestAllowedTools = permissionManifest.providerRender.allowedTools
-        guard !permissionManifest.approvalGrants.isEmpty else {
-            return manifestAllowedTools
-        }
-        let runtimeGrants = PermissionBroker.providerRuntimeGrantStrings(
-            for: permissionManifest.approvalGrants,
-            runtime: runtime
-        )
-        return Array(Set(manifestAllowedTools + runtimeGrants)).sorted()
-    }
 
-    static func providerRuntimeSupportToolPermissions(
-        for runtime: AgentRuntimeID,
-        permissionManifest: RunPermissionManifest?
-    ) -> [String] {
-        guard let permissionManifest,
-              permissionManifest.providerID == runtime else {
-            return []
-        }
-        return Array(Set(permissionManifest.providerRender.runtimeSupportTools.compactMap { descriptor in
-            let permission = descriptor.providerNativePermission?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return permission?.isEmpty == false ? permission : nil
-        })).sorted()
-    }
-
-    static func providerAskFirstToolPermissions(
-        for runtime: AgentRuntimeID,
-        permissionManifest: RunPermissionManifest?
-    ) -> [String] {
-        guard let permissionManifest,
-              permissionManifest.providerID == runtime,
-              permissionManifest.providerRender.permissionMode == .restricted else {
-            return []
-        }
-
-        switch runtime {
-        case .claudeCode:
-            return Array(Set(permissionManifest.providerRender.askFirstTools.compactMap(claudeProviderToolPermission))).sorted()
-        default:
-            return []
-        }
-    }
-
-    private static func claudeProviderToolPermission(_ tool: String) -> String? {
-        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        if let openParen = trimmed.firstIndex(of: "("),
-           trimmed.hasSuffix(")") {
-            let rawTool = String(trimmed[..<openParen])
-            guard let canonicalTool = canonicalClaudeToolName(rawTool) else { return nil }
-            let patternStart = trimmed.index(after: openParen)
-            let pattern = String(trimmed[patternStart..<trimmed.index(before: trimmed.endIndex)])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .replacingOccurrences(of: ":", with: " ")
-            return pattern.isEmpty ? canonicalTool : "\(canonicalTool)(\(pattern))"
-        }
-
-        return canonicalClaudeToolName(trimmed)
-    }
-
-    private static func canonicalClaudeToolName(_ tool: String) -> String? {
-        switch tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "read", "view": return "Read"
-        case "grep": return "Grep"
-        case "glob": return "Glob"
-        case "write", "create": return "Write"
-        case "edit": return "Edit"
-        case "multiedit", "multi_edit": return "MultiEdit"
-        case "bash", "shell": return "Bash"
-        case "webfetch": return "WebFetch"
-        case "websearch": return "WebSearch"
-        case "agent": return "Agent"
-        default: return nil
-        }
-    }
-
-    static func ensureSubAgentPermissions(
-        at workspacePath: String,
-        policy: PermissionPolicy,
-        allowedTools: [String]
-    ) {
-        if ClaudeSettingsStore.ensureSubAgentPermissions(
-            at: workspacePath,
-            policy: policy,
-            allowedTools: allowedTools
-        ) {
-            AppLogger.audit(.workerStarted, category: "Worker", fields: [
-                "event": "subagent_permissions_ensured",
-                "policy": policy.rawValue
-            ])
-        }
-    }
 }
 
 extension AgentRuntimeProcessRunner: AgentRuntimeProcessRunning {}

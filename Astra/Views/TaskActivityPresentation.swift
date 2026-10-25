@@ -108,7 +108,7 @@ struct TaskActivityPresentation: Equatable, Sendable {
             return "Your message is saved and will run when a worker is available."
         case .waitingForResource:
             if let blocker = request?.blockerSummary, !blocker.isEmpty {
-                return "Your message is saved. \(blocker) is using this workspace."
+                return "Your message is saved. \(blocker)"
             }
             return "Your message is saved and will run when this workspace is available."
         case .starting:

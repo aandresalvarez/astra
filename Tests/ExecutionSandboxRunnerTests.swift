@@ -1537,12 +1537,14 @@ struct ExecutionSandboxRunnerTests {
         if let acquired { await AgentRuntimeSharedStateGate.shared.release(acquired) }
     }
 
-    @Test("A cancelled run whose process never returns frees the shared-state key once, after the grace")
+    @Test("A held shared-state key cannot be reclaimed merely by elapsed time")
     func wedgedCancelReleasesSharedStateOnce() async throws {
         let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "wedged-\(UUID().uuidString)")
         let wedged = try await AgentRuntimeSharedStateGate.shared.acquire(key)
 
-        AgentRuntimeProcessRunner.releaseSharedStateIfWedged(wedged, after: .milliseconds(20))
+        #expect(await acquireWithin(key, seconds: 0.1) == nil)
+        #expect(await AgentRuntimeSharedStateGate.shared.isHeld(wedged))
+        #expect(await AgentRuntimeSharedStateGate.shared.release(wedged))
 
         // The next Antigravity run is admitted without waiting for the wedged one.
         let next = try #require(await acquireWithin(key, seconds: 2))
@@ -1563,11 +1565,11 @@ struct ExecutionSandboxRunnerTests {
     func returnedRunMakesWedgedReleaseNoOp() async throws {
         let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "returned-\(UUID().uuidString)")
         let first = try await AgentRuntimeSharedStateGate.shared.acquire(key)
-        AgentRuntimeProcessRunner.releaseSharedStateIfWedged(first, after: .milliseconds(50))
+
         #expect(await AgentRuntimeSharedStateGate.shared.release(first))
         let second = try #require(await acquireWithin(key, seconds: 2))
 
-        try await Task.sleep(for: .milliseconds(150))
+        #expect(await AgentRuntimeSharedStateGate.shared.release(first) == false)
         #expect(await AgentRuntimeSharedStateGate.shared.isHeld(second))
         await AgentRuntimeSharedStateGate.shared.release(second)
     }

@@ -696,7 +696,7 @@ extension HeadlessChatScenarioTests {
             goal: "list my open prs in the astra repo",
             model: "composer-2.5-fast"
         )
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let githubSkill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read", "Glob", "Grep"],
@@ -756,7 +756,7 @@ extension HeadlessChatScenarioTests {
             goal: "read Jira issue STAR-123",
             model: "composer-2.5-fast"
         )
-        task.workspace?.enabledCapabilityIDs = ["custom-jira-host-control"]
+        task.workspace?.testEnabledCapabilityIDs = ["custom-jira-host-control"]
         let jiraSkill = Skill(
             name: "Jira Host Control",
             allowedTools: ["Read", "Glob", "Grep"],
@@ -934,7 +934,7 @@ extension HeadlessChatScenarioTests {
         )
 
         let task = harness.makeTask(runtime: .cursorCLI, goal: "List my open PRs", model: "composer-2.5-fast")
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let skill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read"],
@@ -993,7 +993,7 @@ extension HeadlessChatScenarioTests {
         )
 
         let task = harness.makeTask(runtime: .cursorCLI, goal: "List my open PRs", model: "composer-2.5-fast")
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let skill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read"],
@@ -1044,7 +1044,7 @@ extension HeadlessChatScenarioTests {
             goal: "List my open PRs in the astra repo",
             model: "composer-2.5-fast"
         )
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let githubSkill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read", "Glob", "Grep"],
@@ -1124,7 +1124,7 @@ extension HeadlessChatScenarioTests {
         // Cursor CLI via ComposerToolbar's runtime picker before this task is
         // created/enqueued (quickRun / runApprovedPlan / createTaskFromSpec).
         task.runtimeExplicitlySelected = true
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let githubSkill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read", "Glob", "Grep"],

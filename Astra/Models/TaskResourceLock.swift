@@ -65,7 +65,7 @@ public struct TaskResourceLockPayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct TaskResourceLockClaim: Sendable, Equatable, Hashable {
+public struct TaskResourceLockClaim: Codable, Sendable, Equatable, Hashable {
     public init(
         taskID: UUID,
         resourceKey: String,

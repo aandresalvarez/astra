@@ -10,6 +10,18 @@ import Testing
 /// mechanism in a hosted view; this pins that `TaskMainView` keeps using it.
 @Suite("Composer draft fitness")
 struct ComposerDraftFitnessTests {
+    @Test("Plan and Run share the early Return gate before provider work")
+    func allNewTaskProviderPathsRememberEarlyReturn() throws {
+        let panel = try source("Astra/Views/ChatPanelView.swift")
+        let plan = try code(panel, from: "private func sendMessage()", to: "private func quickRun()")
+        let run = try code(panel, from: "private func quickRun()", to: "let traceID")
+        #expect(plan.contains("guard canSubmitComposerOrWait() else { return }"))
+        #expect(run.contains("guard canSubmitComposerOrWait() else { return }"))
+        let gate = try code(panel, from: "private func canSubmitComposerOrWait()", to: "private func submitComposer()")
+        #expect(gate.contains("submissionIntent.canSubmitOrWait("))
+        #expect(gate.contains("canExecute: selectedComposerRuntimeCanExecuteRequest"))
+    }
+
     private var root: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -33,7 +45,12 @@ struct ComposerDraftFitnessTests {
         let taskMainView = try source("Astra/Views/TaskMainView.swift")
         // Several structs in the file have a `body`; take the view's own.
         let mainView = try code(taskMainView, from: "struct TaskMainView: View {")
-        let body = try code(mainView, from: "    var body: some View {", to: "\n    }\n")
+        // Computed presentation builders still participate in body's read
+        // tracking, so check every compiler boundary for draft subscriptions.
+        let builders = ["body", "taskPresentation", "taskReviewSurface"]
+        let body = try builders.map { name in
+            try code(mainView, from: "var \(name): some View {", to: "\n    }\n")
+        }.joined(separator: "\n")
         #expect(body.contains("composerView(decisionDockPresentation: dockPresentation)"))
         #expect(body.contains(".sheet(isPresented: $showContextPreview)"))
 

@@ -343,6 +343,9 @@ private enum AstraHostControlBrokerCLI {
         let tool = rawTool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let remaining = Array(arguments.dropFirst())
         switch tool {
+        case "mail":
+            guard let args = MailReadRequest.arguments(fromCLI: remaining) else { throw HostControlBrokerCLIError.invalidArguments }
+            return Invocation(tool: tool, arguments: args)
         case "history":
             let values = try parsedOptions(remaining, allowed: ["--event-id", "--before-id", "--offset"])
             var args: [String: Any] = [:]
@@ -558,6 +561,7 @@ private enum AstraHostControlBrokerCLI {
     private static let usage = """
     Usage:
       astra-host-control history [--before-id UUID | --event-id UUID [--offset N]]
+      astra-host-control mail accounts|folders|search|get [--account ACCOUNT_ID] [--query TEXT] [--message-id ID] [--limit N]
       astra-host-control jira --operation status|search-jql|get-issue|get-comments|get-transitions [--alias NAME] [--jql JQL] [--issue-key KEY] [--max-results N] [--start-at N]
       astra-host-control jira --operation propose-issue|propose-comment|propose-update|propose-transition [--alias NAME] --arguments-file NAME.json
       astra-host-control redcap --operation status|project|metadata|user|record|report [--alias NAME] [--fields A,B] [--forms A,B] [--records 1,2] [--report-id N] [--raw-or-label raw|label]

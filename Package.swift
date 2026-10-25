@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "ASTRA", targets: ["ASTRAExecutable"]),
         .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
+        .executable(name: "astra-plugin-fetch", targets: ["AstraPluginFetchTool"]),
         .executable(name: "astra-mcp-gateway", targets: ["AstraMCPGatewayTool"]),
         .executable(name: "astra-host-control", targets: ["AstraHostControlTool"]),
         // Regression harness for abrupt HostControl-parent termination. It is
@@ -61,6 +62,10 @@ let package = Package(
             name: "MCPGatewaySupport",
             dependencies: ["MCPServerKit"],
             path: "Tools/MCPGatewaySupport"
+        ),
+        .executableTarget(
+            name: "AstraPluginFetchTool",
+            path: "Tools/AstraPluginFetchTool"
         ),
         .executableTarget(
             name: "AstraBrowserTool",

@@ -209,6 +209,10 @@ public enum TaskEventTypes {
 
     public enum System {
         public static let runtimeSettlementStarted: TaskEventType = "runtime.settlement.started"
+        public static let runtimeSupervision: TaskEventType = "runtime.supervision"
+        public static let runtimeSupervisionUsage: TaskEventType = "runtime.supervision.usage"
+        public static let runtimeExecutionOwnership: TaskEventType = "runtime.execution_ownership"
+        public static let runtimeRecovery: TaskEventType = "runtime.recovery"
         public static let runtimeOutcomePrepared: TaskEventType = "runtime.outcome.prepared"
         public static let runtimeChainedWorkDispatched: TaskEventType = "runtime.chained_work.dispatched"
         public static let runtimeResultCaptured: TaskEventType = "runtime.result.captured"
@@ -227,6 +231,12 @@ public enum TaskEventTypes {
         /// alongside the free-text `error` event whenever a run is blocked
         /// before or without launching a provider process.
         public static let runtimeLaunchBlocked: TaskEventType = "runtime.launch_blocked"
+        /// Structured `RepairAction` JSON, run-scoped, emitted when a run
+        /// stopped because a plugin component needs the person to repair it
+        /// (a CLI sign-in expired mid-task). The task view offers the repair.
+        public static let runtimeRepairRequired: TaskEventType = "runtime.repair_required"
+        /// Captured RuntimeRepairContext, including guidance with no automatic action.
+        public static let runtimeRepairContext: TaskEventType = "runtime.repair_context"
         /// The user switched an existing conversation from a runtime they
         /// marked approved for PHI to one they did not, and accepted the risk.
         /// Payload is `RuntimeSensitiveDataRiskAcknowledgement`.
@@ -326,6 +336,10 @@ public enum TaskEventTypes {
     ]
 
     private static let systemTypes: Set<TaskEventType> = [
+        System.runtimeSupervision,
+        System.runtimeSupervisionUsage,
+        System.runtimeRecovery,
+        System.runtimeExecutionOwnership,
         System.runtimeSettlementStarted,
         System.runtimeOutcomePrepared,
         System.runtimeChainedWorkDispatched,
@@ -346,6 +360,8 @@ public enum TaskEventTypes {
         System.recapResult,
         System.scheduleResult,
         System.runtimeLaunchBlocked,
+        System.runtimeRepairRequired,
+        System.runtimeRepairContext,
         System.sensitiveDataRiskAcknowledged
     ]
 

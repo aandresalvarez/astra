@@ -19,6 +19,24 @@ add_target() {
 target_for_path() {
   local path="$1"
 
+  case "$path" in
+    Astra/Services/Tasks/TaskQueue*.swift|Astra/Services/Tasks/TaskWedgedWorkerLeaseReclaimer.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Runtime/RuntimeResourceOwnership.swift|Astra/Services/Runtime/RuntimeProvider*.swift|Astra/Services/Runtime/RuntimeUtilitySharedStateLease.swift|Astra/Services/Runtime/ProviderSharedStateProcessLock.swift|Astra/Services/Runtime/RuntimeSettlement*.swift|Astra/Services/Runtime/RuntimeFinalPlanSettlement.swift|Astra/Services/Runtime/RuntimeTurnOutcomeService.swift|Astra/Services/Runtime/AgentRuntimeSharedStateGate.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentRuntimeAsyncWork.swift|Astra/Services/Runtime/AgentInteractivePermissionChannel.swift|Tests/Fixtures/ProviderStreams/claude/cancellation-tool-free.jsonl|Tests/RuntimeCancellation*Tests.swift|Tests/RuntimeSettlementCancellationTests.swift|Tests/TaskQueueWedgedWorkerReleaseTests.swift)
+      add_target "RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests"
+      ;;
+  esac
+
+  case "$path" in
+    Astra/Services/Runtime/RuntimeRecovery*.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Tests/RuntimeRecovery*Tests.swift)
+      add_target "RuntimeRecovery"
+      add_target "RuntimeSupervision"
+      return
+      ;;
+    Astra/Services/Runtime/RuntimeSupervision*.swift|Astra/Services/Runtime/ClaudeCodeUtilityLaunchPolicy.swift|Astra/Services/Runtime/ClaudeObservationAuthentication.swift|Astra/Services/Runtime/AgentUtilityRuntime.swift|Astra/Services/Runtime/AgentUtilityExecutionLimits.swift|Astra/Services/Runtime/AgentProcessProgressClassification.swift|Astra/Services/Runtime/AgentProcessSupport.swift|Tests/RuntimeSupervision*Tests.swift)
+      add_target "RuntimeSupervision"
+      add_target "ProcessMonitorTests"
+      ;;
+  esac
+
   if [[ "$path" == "Package.swift" ]]; then
     add_target "MCPGatewaySupportTests"
     add_target "MCPServerKitTests"
@@ -31,6 +49,12 @@ target_for_path() {
       ;;
     Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
+      ;;
+    Tests/TaskMainActorScalingGateTests.swift|Tests/TaskHistoryReadTests.swift|Astra/Models/TaskHistoryRead.swift|Astra/Services/Tasks/TaskConversationContinuationService.swift|Astra/Services/Tasks/TaskExecutionLaunchSnapshotApplicator.swift|Astra/Services/Runtime/TaskRuntimePermissionGrants.swift)
+      add_target "TaskMainActorScalingGateTests"
+      add_target "TaskHistoryReadTests"
+      add_target "TaskExecutionLaunchSnapshotApplicatorTests"
+      add_target "RuntimePermissionGrantRegressionTests"
       ;;
     Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Astra/Services/Persistence/WorkspaceSavedExportSnapshot.swift|Astra/Services/Persistence/WorkspaceExportChangeScope.swift|Astra/Services/Persistence/WorkspaceSavedExportLease.swift|Astra/Services/Persistence/WorkspaceSnapshotDirectory.swift|Tests/WorkspaceSavedExportPendingTests.swift|Tests/WorkspaceSavedExportReplacementTests.swift|Tests/WorkspaceSnapshotDirectoryTests.swift|Tests/WorkspaceSavedExportSnapshotTests.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceSavedExportReviewTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
       add_target "RuntimeSettlementReviewRegressionTests"
@@ -213,15 +237,29 @@ target_for_path() {
       add_target "SidebarTaskStoreSignalIntegrationTests"
       add_target "SidebarTaskSourceObservationTests"
       ;;
-    Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentProcessPipeReader.swift|Astra/Services/Runtime/AgentExecutionScopedProcess.swift|Tests/AgentRuntimePipeCompletionTests.swift|Tests/AgentExecutionScopedProcessTests.swift)
+    Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentUtilityScopedProcessRunState.swift|Astra/Services/Runtime/AgentProcessPipeReader.swift|Astra/Services/Runtime/AgentExecutionScopedProcess.swift|Tests/AgentRuntimePipeCompletionTests.swift|Tests/AgentExecutionScopedProcessTests.swift)
       add_target "AgentRuntimePipeCompletionTests"
       add_target "StreamVolumeAccountingTests"
       add_target "AgentExecutionScopedProcessTests"
+      add_target "RuntimeRecovery"
       add_target "AgentUtilityRuntimeTests"
       add_target "ProcessMonitorTests"
       ;;
-    Tests/RuntimeProgressSignalTests.swift)
+    ASTRACore/RuntimeProgressSignals.swift|Tests/RuntimeProgressSignalTests.swift)
       add_target "StreamVolumeAccountingTests"
+      add_target "RuntimeProgressClassificationTests"
+      add_target "WatchdogEscalationTests"
+      add_target "RuntimeStreamReplayTests"
+      add_target "CodexFileChangeProgressTests"
+      ;;
+    ASTRACore/CodexStreamEventParser.swift|Astra/Services/Runtime/CodexCLIRuntime.swift|Tests/CodexCLIRuntimeTests.swift|Tests/CodexFileChangeProgressTests.swift)
+      add_target "CodexCLIRuntimeTests"
+      add_target "ProviderMessageIdentityTests"
+      add_target "AgentEventRecorderTests"
+      add_target "ProviderTranscriptConformanceTests"
+      add_target "RuntimeProgressClassificationTests"
+      add_target "WatchdogEscalationTests"
+      add_target "CodexFileChangeProgressTests"
       ;;
     Astra/Services/Runtime/AgentPromptBuilder.swift|Astra/Services/Runtime/TaskInputManifest.swift|Astra/Services/Runtime/TaskInputsPromptSectionProvider.swift|Astra/Services/Tasks/PromptContextSectionProvider.swift|Astra/Views/PromptContextPreviewView.swift|Tests/TaskInputContinuityPromptTests.swift|Tests/AgentRuntimeWorkerTests.swift)
       add_target "TaskInputContinuityPromptTests"

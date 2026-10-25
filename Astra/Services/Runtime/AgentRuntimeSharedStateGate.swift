@@ -25,19 +25,37 @@ actor AgentRuntimeSharedStateGate {
         var continuation: CheckedContinuation<Bool, Never>
     }
 
+    private let processLockRoot: URL?
+    private let registeredStoreRoots: [URL]?
+    init(processLockRoot: URL? = nil, registeredStoreRoots: [URL]? = nil) {
+        self.processLockRoot = processLockRoot
+        self.registeredStoreRoots = registeredStoreRoots
+    }
+
+    private func checkAvailability(_ key: AgentRuntimeSharedStateKey, ownerID: UUID?) throws {
+        if let registeredStoreRoots {
+            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: ownerID, in: registeredStoreRoots)
+        } else {
+            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: ownerID)
+        }
+    }
+
+    private var processLocks: [UUID: ProviderSharedStateProcessLock] = [:]
     private var holders: [AgentRuntimeSharedStateKey: UUID] = [:]
     private var waiters: [AgentRuntimeSharedStateKey: [Waiter]] = [:]
 
     @discardableResult
-    func acquire(_ key: AgentRuntimeSharedStateKey) async throws -> AgentRuntimeSharedStateLease {
+    func acquire(_ key: AgentRuntimeSharedStateKey, owner: RuntimeExecutionOwner? = nil) async throws -> AgentRuntimeSharedStateLease {
+        let ownerReference = await owner?.providerOwnershipReference
         if Task.isCancelled {
             throw CancellationError()
         }
 
+        try checkAvailability(key, ownerID: ownerReference?.ownerID)
         let leaseID = UUID()
         if holders[key] == nil {
             holders[key] = leaseID
-            return AgentRuntimeSharedStateLease(key: key, id: leaseID)
+            return try await finishAcquisition(.init(key: key, id: leaseID), owner: owner, reference: ownerReference)
         }
 
         let acquired = await withTaskCancellationHandler {
@@ -55,7 +73,24 @@ actor AgentRuntimeSharedStateGate {
             release(lease)
             throw CancellationError()
         }
-        return lease
+        return try await finishAcquisition(lease, owner: owner, reference: ownerReference)
+    }
+
+    private func finishAcquisition(_ lease: AgentRuntimeSharedStateLease, owner: RuntimeExecutionOwner?, reference: RuntimeProviderOwnershipReference?) async throws -> AgentRuntimeSharedStateLease {
+        do {
+            let processLock = try await ProviderSharedStateProcessLock.acquire(lease.key, root: processLockRoot)
+            try Task.checkCancellation()
+            try checkAvailability(lease.key, ownerID: reference?.ownerID)
+            try await MainActor.run {
+                try Task.checkCancellation()
+                try processLock.handoff(lease.key, reference: reference) {
+                    try owner?.bindProviderSharedState(lease.key)
+                }
+            }
+            guard holders[lease.key] == lease.id else { throw CancellationError() }
+            processLocks[lease.id] = processLock
+            return lease
+        } catch { release(lease); throw error }
     }
 
     private func enqueueWaiter(id: UUID, key: AgentRuntimeSharedStateKey) async -> Bool {
@@ -83,6 +118,7 @@ actor AgentRuntimeSharedStateGate {
     @discardableResult
     func release(_ lease: AgentRuntimeSharedStateLease) -> Bool {
         guard holders[lease.key] == lease.id else { return false }
+        processLocks.removeValue(forKey: lease.id)
         guard var queued = waiters[lease.key], !queued.isEmpty else {
             holders.removeValue(forKey: lease.key)
             return true

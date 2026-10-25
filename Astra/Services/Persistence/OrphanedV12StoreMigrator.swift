@@ -212,7 +212,7 @@ public enum OrphanedV12StoreMigrator {
 
     return try tables.reduce(into: [:]) { counts, table in
       var statement: OpaquePointer?
-      let sql = "SELECT COUNT(*) FROM \"\(table)\""
+      let sql = "SELECT COUNT(*) FROM \"\(physicalTableName(table, in: database))\""
       let prepare = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
       guard prepare == SQLITE_OK, let statement else {
         if let statement { sqlite3_finalize(statement) }
@@ -224,6 +224,25 @@ public enum OrphanedV12StoreMigrator {
       }
       counts[table] = Int(sqlite3_column_int64(statement, 0))
     }
+  }
+
+  /// Core Data names a many-to-many join table after the entity number of
+  /// one side, and that number shifts when a later schema adds entities that
+  /// sort first (V20's `AccountBinding`). The task-skill join is counted
+  /// under its V12 name wherever the store numbers it.
+  private static func physicalTableName(_ table: String, in database: OpaquePointer) -> String {
+    guard table == "Z_1SKILLS" else { return table }
+    var statement: OpaquePointer?
+    let sql = "SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB 'Z_[0-9]*SKILLS'"
+    guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+      return table
+    }
+    defer { sqlite3_finalize(statement) }
+    var names: [String] = []
+    while sqlite3_step(statement) == SQLITE_ROW, let text = sqlite3_column_text(statement, 0) {
+      names.append(String(cString: text))
+    }
+    return names.count == 1 ? names[0] : table
   }
 
   private static func recoverableShape(

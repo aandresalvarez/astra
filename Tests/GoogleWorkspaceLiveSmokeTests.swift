@@ -10,7 +10,6 @@ struct GoogleWorkspaceLiveSmokeTests {
         .enabled(if: ProcessInfo.processInfo.environment["RUN_GOOGLE_WORKSPACE_LIVE_SMOKE"] == "1")
     )
     func liveGmailToolsListSmoke() throws {
-        _ = try GoogleOAuthConfiguration.load()
         let accessToken = try #require(ProcessInfo.processInfo.environment["ASTRA_GOOGLE_WORKSPACE_LIVE_ACCESS_TOKEN"])
         let product = try #require(GoogleWorkspaceRemoteMCPRegistry.product(.gmail))
         let client = RemoteMCPHTTPClient()

@@ -13,6 +13,10 @@ private final class WedgedProcessRunner: AgentRuntimeProcessRunning {
     private(set) var launchedTaskIDs: [UUID] = []
     private var pending: [UUID: CheckedContinuation<AgentProcessResult, Never>] = [:]
     private var draining = false
+    @MainActor private var owner: RuntimeExecutionOwner?
+    var toolsStopped = true
+    @MainActor func configureExecutionOwner(_ owner: RuntimeExecutionOwner?) { self.owner = owner }
+    private var lateLines: [UUID: (String, Bool) -> Void] = [:]
 
     func cancel() {}
 
@@ -44,8 +48,21 @@ private final class WedgedProcessRunner: AgentRuntimeProcessRunning {
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
-        launchedTaskIDs.append(task.id)
         guard !draining else { return Self.lateResult }
+        guard let owner else { return AgentProcessResult(exitCode: -1, error: "test owner missing") }
+        do {
+            try owner.prepareLaunch()
+            let child = AgentExecutionScopedProcess(executablePath: "/bin/sh", arguments: ["-c", "exit 0"],
+                currentDirectory: workspacePath, environment: ProcessInfo.processInfo.environment)
+            try child.run()
+            try owner.launched(child)
+            for _ in 0..<200 where child.isRunning { try? await Task.sleep(for: .milliseconds(5)) }
+            let proof = child.stopProof(executionID: owner.record.executionID,
+                toolsStopped: toolsStopped, remoteWorkExcluded: true)
+            owner.stopped(proof: proof, turns: 1, tokens: 100, seconds: 1)
+        } catch { return AgentProcessResult(exitCode: -1, error: "test process failed: \(error)") }
+        launchedTaskIDs.append(task.id)
+        lateLines[task.id] = onLine
         let taskID = task.id
         return await withCheckedContinuation { pending[taskID] = $0 }
     }
@@ -55,6 +72,7 @@ private final class WedgedProcessRunner: AgentRuntimeProcessRunning {
     /// The wedged run finally returns.
     @MainActor
     func finish(_ taskID: UUID) {
+        lateLines.removeValue(forKey: taskID)?("{\"type\":\"result\",\"result\":\"STALE_RESULT_MUST_NOT_APPEAR\"}", true)
         pending.removeValue(forKey: taskID)?.resume(returning: Self.lateResult)
     }
 
@@ -128,7 +146,10 @@ struct TaskQueueWedgedWorkerReleaseTests {
                 .compactMap { try? JSONDecoder().decode(TaskResourceLockPayload.self, from: Data($0.payload.utf8)) }
         }
 
-        func cleanup() { try? FileManager.default.removeItem(at: root) }
+        func cleanup() {
+            _ = TestWorkspaceStoreCleanup.schedule(context: context,
+                roots: [root, RuntimeExecutionOwner.store(in: context).root])
+        }
     }
 
     /// Polls rather than timing out on wall clock: a loaded suite stretches
@@ -174,7 +195,9 @@ struct TaskQueueWedgedWorkerReleaseTests {
         #expect(fixture.queue.wedgedLeaseReclaimer.pendingCount == 0)
         let released = fixture.releasedEvents(for: fixture.wedged)
         #expect(!released.isEmpty)
-        #expect(released.allSatisfy { $0.reason == TaskWedgedWorkerLeaseReclaimer.releaseReason })
+        #expect(released.allSatisfy { $0.reason == "cancelled_cleanup_verified" })
+        #expect(fixture.queue.hasAvailableWorker)
+        #expect(fixture.wedged.runs.allSatisfy { !$0.output.contains("STALE_RESULT_MUST_NOT_APPEAR") })
 
         fixture.runner.drain()
         _ = await run.wedged.value
@@ -197,6 +220,7 @@ struct TaskQueueWedgedWorkerReleaseTests {
 
         #expect(fixture.queue.activeResourceLocks.filter { $0.taskID == fixture.next.id } == successorClaims)
         #expect(fixture.releasedEvents(for: fixture.wedged).count == releasedBeforeReturn)
+        #expect(fixture.wedged.runs.allSatisfy { !$0.output.contains("STALE_RESULT_MUST_NOT_APPEAR") })
         #expect(!fixture.queue.canAcquireResourceLock(for: fixture.wedged, accessMode: .write))
 
         fixture.runner.drain()
@@ -225,9 +249,31 @@ struct TaskQueueWedgedWorkerReleaseTests {
         fixture.queue.releaseWedgedLeases(leaseIDs, taskID: fixture.wedged.id, modelContext: fixture.context)
 
         #expect(fixture.releasedEvents(for: fixture.wedged).count == released.count)
-        #expect(!released.contains { $0.reason == TaskWedgedWorkerLeaseReclaimer.releaseReason })
+        #expect(released.allSatisfy { $0.reason == "cancelled_cleanup_verified" })
         fixture.queue.cancelAll()
-        #expect(fixture.queue.wedgedLeaseReclaimer.pendingCount == 0)
+    }
+
+    @Test("Cancelled work with uncertain tools keeps its resource fence after return and Stop Queue")
+    func uncertainToolsKeepFence() async throws {
+        let fixture = try Fixture(grace: .seconds(600))
+        defer { fixture.cleanup() }
+        fixture.runner.toolsStopped = false
+        let run = try await wedgeThenCancel(fixture)
+        let leases = Set(fixture.queue.activeResourceLocks.filter { $0.taskID == fixture.wedged.id }.compactMap(\.leaseID))
+        fixture.queue.releaseWedgedLeases(leases, taskID: fixture.wedged.id, modelContext: fixture.context)
+        #expect(!fixture.runner.launchedTaskIDs.contains(fixture.next.id))
+        fixture.runner.finish(fixture.wedged.id)
+        _ = await run.wedged.value
+        #expect(fixture.queue.hasAvailableWorker)
+        #expect(fixture.queue.activeResourceLocks.contains { $0.taskID == fixture.wedged.id })
+        #expect(fixture.wedged.events.contains { $0.payload.contains("shared resources remain reserved") })
+        fixture.queue.cancelAll()
+        #expect(fixture.queue.activeResourceLocks.contains { $0.taskID == fixture.wedged.id })
+        let restarted = TaskQueue(poolSize: 1)
+        restarted.refreshResourceOwnership(in: fixture.context)
+        #expect(!restarted.canAcquireResourceLock(for: fixture.next, accessMode: .write))
+        fixture.runner.drain()
+        _ = await run.next.value
     }
 
     @Test("Releasing a lease twice frees only that lease, never a later identical claim of the same task")

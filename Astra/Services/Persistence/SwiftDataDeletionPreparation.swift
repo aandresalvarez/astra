@@ -14,6 +14,7 @@ public enum SwiftDataDeletionPreparation {
         // deletion, even though they are outside workspace.skills.
         let skills = workspace.skills + tasks.flatMap(\.skills)
             + connectors.compactMap(\.skill) + tools.compactMap(\.skill)
+        SwiftDataPluginRelationshipPreparation.prepare(workspace, additionalAccounts: skills.flatMap(\.connectors))
         for connector in connectors { _ = (connector.id, connector.workspace?.id, connector.skill?.id) }
         for tool in tools { _ = (tool.id, tool.workspace?.id, tool.skill?.id) }
         for template in workspace.templates { _ = (template.id, template.workspace?.id) }
@@ -28,6 +29,23 @@ public enum SwiftDataDeletionPreparation {
             for connector in skill.connectors { _ = connector.id }
             for tool in skill.localTools { _ = tool.id }
         }
+    }
+
+    /// Skill migration is a reversible deletion too. Resolve empty inverse
+    /// arrays before SwiftData snapshots them, then the surviving task owners.
+    public static func prepare(_ skill: Skill) {
+        if let workspace = skill.workspace { for related in workspace.skills { _ = related.id } }
+        for task in skill.tasks {
+            _ = task.id
+            for related in task.skills { _ = related.id }
+        }
+        for connector in skill.connectors { _ = (connector.id, connector.skill?.id) }
+        for tool in skill.localTools { _ = (tool.id, tool.skill?.id) }
+    }
+
+    public static func prepare(_ tool: LocalTool) {
+        if let workspace = tool.workspace { for related in workspace.localTools { _ = related.id } }
+        if let skill = tool.skill { for related in skill.localTools { _ = related.id } }
     }
 
     public static func prepare(_ task: AgentTask) {

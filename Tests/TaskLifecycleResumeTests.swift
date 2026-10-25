@@ -175,6 +175,7 @@ struct TaskLifecycleResumeTests {
         env.context.insert(workspace)
         env.context.insert(task)
 
+        try RuntimeRecoveryTestReceipt.install(task: task, run: task.runs.max { $0.startedAt < $1.startedAt }, context: env.context)
         let continuation = env.coordinator.resumeTask(task)
 
         // resumeTask records the user's resume request synchronously, but the
@@ -212,6 +213,7 @@ struct TaskLifecycleResumeTests {
         env.context.insert(workspace)
         env.context.insert(task)
 
+        try RuntimeRecoveryTestReceipt.install(task: task, run: task.runs.max { $0.startedAt < $1.startedAt }, context: env.context)
         let continuation = env.coordinator.resumeTask(task)
         await Task.yield()
         let request = try #require(try TaskTurnRequestRepository.requests(for: task, in: env.context).first)
@@ -539,6 +541,7 @@ struct TaskLifecycleResumeTests {
         env.context.insert(workspace)
         env.context.insert(task)
 
+        try RuntimeRecoveryTestReceipt.install(task: task, run: task.runs.max { $0.startedAt < $1.startedAt }, context: env.context)
         await coordinator.resumeTask(task)?.value
 
         // The queue's `.failed` must survive — not be overwritten back to
@@ -585,7 +588,7 @@ struct TaskLifecycleResumeTests {
         #expect(!TaskLifecycleCoordinator.resumeContinuationMessage(for: task).contains("original goal"))
     }
 
-    @Test("Retry replays the latest actionable follow-up instead of the original task seed")
+    @Test("Verified Retry continues the latest actionable objective without replaying its command")
     func retryReplaysLatestActionableFollowUpInsteadOfOriginalTaskSeed() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -644,11 +647,13 @@ struct TaskLifecycleResumeTests {
         // it still references and crashing the whole test process under suite
         // parallelism. Awaiting the handle also guarantees the fake provider has
         // written `argsFile` before we read it.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: task.runs.max { $0.startedAt < $1.startedAt }, context: harness.context)
         await coordinator.retryTask(task)?.value
 
         #expect(task.status == .completed)
         let rawArgs = try String(contentsOf: argsFile, encoding: .utf8)
-        #expect(rawArgs.contains("User's follow-up request:\ncheck my open prs in github"))
+        #expect(rawArgs.contains("check my open prs in github"))
+        #expect(rawArgs.contains("User's follow-up request:\nContinue where you left off"))
         #expect(!rawArgs.contains("User's follow-up request:\nhi , how are you ?"))
     }
 
@@ -676,6 +681,7 @@ struct TaskLifecycleResumeTests {
         ))
         try env.context.save()
 
+        try RuntimeRecoveryTestReceipt.install(task: task, run: task.runs.max { $0.startedAt < $1.startedAt }, context: env.context)
         let continuation = env.coordinator.retryTask(task)
         await Task.yield()
         let queuedRetry = try #require(
@@ -696,7 +702,8 @@ struct TaskLifecycleResumeTests {
         #expect(request.kind == .retry)
         #expect(sourceEvent.type == TaskEventTypes.ExecutionRequest.retry.rawValue)
         #expect(source.launchMode == .continuation)
-        #expect(source.message == "latest follow-up request")
+        #expect(source.message?.hasPrefix("Continue where you left off") == true)
+        #expect(task.events.contains { $0.payload == "latest follow-up request" })
         #expect(
             AppLogger.entries.contains {
                 $0.taskID == task.id && $0.message.contains("task.completed")
@@ -768,6 +775,7 @@ struct TaskLifecycleResumeTests {
         env.context.insert(laterRun)
         try env.context.save()
 
+        try RuntimeRecoveryTestReceipt.install(task: task, run: task.runs.max { $0.startedAt < $1.startedAt }, context: env.context)
         let continuation = env.coordinator.retryTask(task)
         await Task.yield()
         let newQueuedRequest = try #require(
@@ -777,16 +785,10 @@ struct TaskLifecycleResumeTests {
         env.queue.cancelAll()
         await continuation?.value
 
-        // The legacy fallback must not resurrect the stale durable message:
-        // retry falls back to the original task seed, recorded via the
-        // "Task re-queued for retry." wording — not "Latest follow-up
-        // re-queued for retry.", which would mean it replayed the stale
-        // "Stale queued follow-up" text instead. Asserted against the
-        // durable `task.retried` event rather than `AppLogger.entries`
-        // (a bounded, process-wide ring buffer that can evict this test's
-        // entries under full-suite parallel load).
+        // The old instruction remains history. Verified recovery continues the
+        // current objective and preserves its allowance, without replaying it.
         let retriedEvent = try #require(task.events.first { $0.type == "task.retried" })
-        #expect(retriedEvent.payload == "Task re-queued for retry.")
+        #expect(retriedEvent.payload == "Latest follow-up re-queued for retry.")
         #expect(task.status == .queued)
         let requests = try TaskTurnRequestRepository.requests(for: task, in: env.context)
         #expect(requests.count == 2)
@@ -799,8 +801,9 @@ struct TaskLifecycleResumeTests {
         #expect(newRequest.sequence == 2)
         let newSourceEvent = try #require(task.events.first { $0.id == newRequest.sourceEventID })
         let newSource = try #require(ExecutionRequestSubmissionService.decodeSourcePayload(newSourceEvent))
-        #expect(newSource.launchMode == .initial)
-        #expect(newSource.message == nil)
+        #expect(newSource.launchMode == .continuation)
+        #expect(newSource.message?.hasPrefix("Continue where you left off") == true)
+        #expect(newSource.message != "Stale queued follow-up")
     }
 
     @Test("Retry of a failed internal launch relaunches in initial mode, never as an envelope continuation")

@@ -245,7 +245,7 @@ extension HeadlessChatScenarioTests {
         #expect(args.contains("write"))
         #expect(args.contains("create"))
         #expect(task.status == .completed)
-        #expect(runs[1].output == "Wrote the approved story")
+        #expect(runs.last?.output == "Wrote the approved story")
     }
 
     @Test("UI approval resumes a Copilot runtime permission pause")
@@ -374,6 +374,8 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // This fixture models a reaped provider with an unresolved tool approval.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: false)
 
         let command = """
         set -euo pipefail
@@ -476,6 +478,8 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // This fixture models a reaped provider with an unresolved tool approval.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: false)
 
         let permissionEvent = TaskEvent(
             task: task,
@@ -552,6 +556,8 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // This fixture models a reaped provider with an unresolved tool approval.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: false)
 
         let command = """
         set -euo pipefail
@@ -701,6 +707,8 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // This fixture models a reaped provider with an unresolved tool approval.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: false)
         harness.context.insert(TaskEvent(
             task: task,
             type: "permission.approval.requested",
@@ -1006,6 +1014,8 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // This fixture models a reaped provider with an unresolved tool approval.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: false)
         harness.context.insert(TaskEvent(
             task: task,
             type: "permission.approval.requested",
@@ -1077,6 +1087,8 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // This fixture models a reaped provider with an unresolved tool approval.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: false)
         let request = PermissionRequest.shell(command: "curl https://redcap.stanford.edu/api/", toolName: "Bash")
         let grants = [PermissionGrant.shellCommand(executable: "curl", pattern: "*")]
         harness.context.insert(TaskEvent(
@@ -1168,6 +1180,8 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // This fixture models a reaped provider with an unresolved tool approval.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: false)
         let latestEvent = TaskEvent(
             task: task,
             type: "permission.approval.requested",
@@ -1263,6 +1277,6 @@ extension HeadlessChatScenarioTests {
         #expect(!args.contains("--dangerously-skip-permissions"))
         #expect(args.contains("Agent"))
         #expect(task.status == .completed)
-        #expect(runs[1].output == "Claude continued after approval")
+        #expect(runs.last?.output == "Claude continued after approval")
     }
 }

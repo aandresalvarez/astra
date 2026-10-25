@@ -5,7 +5,7 @@ import SwiftData
 /// declared by the production schema V19: the V18 snapshot plus
 /// `TaskSchedule.reasoningEffort`.
 ///
-/// V19 referenced the live model graph. V20 adds connector account fields, so
+/// V19 referenced the live model graph. V20 adds the plugin activation graph, so
 /// V19 now points here; `SchemaVersionTests` pins this graph to the digest of
 /// a real V19 store. Never edit these models in place.
 public enum ASTRASchemaV19Models {

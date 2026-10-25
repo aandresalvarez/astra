@@ -86,9 +86,10 @@ enum AgentRuntimeRunPersistence {
         // never runs on every turn even when the setting is on. Never awaited
         // here -- this must stay off the render/refresh path (INVARIANTS #2).
         if UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) {
-            Task { @MainActor in
-                await ObjectiveAssessmentService.assessIfNeeded(task: task)
-            }
+            // This independent, tool-free assessment is not task validation.
+            // It must not inherit a settlement scope that will be sealed before
+            // its asynchronous work finishes (or even starts).
+            ObjectiveAssessmentService.schedule(task: task)
         } else {
             // Setting is off: drop any stale assessment left over from when it
             // was previously enabled so follow-up framing reverts to Tier-1-only

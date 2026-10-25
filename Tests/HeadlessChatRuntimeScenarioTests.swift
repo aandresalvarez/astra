@@ -403,6 +403,11 @@ extension HeadlessChatScenarioTests {
             goal: "Use the second Antigravity model",
             model: "Gemini 3 Flash"
         )
+        // These workers compete for provider settings, not workspace writes.
+        // Direct worker admission now enforces the same workspace fence as the queue.
+        let secondRoot = harness.rootURL.appendingPathComponent("second-workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: secondRoot, withIntermediateDirectories: true)
+        secondTask.executionRootPath = secondRoot.path
         let firstWorker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
         let secondWorker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
 
@@ -914,6 +919,7 @@ extension HeadlessChatScenarioTests {
         priorRun.stopReason = "completed"
         let priorArtifact = Artifact(task: task, type: "file", path: existingArtifact.path)
         harness.context.insert(priorRun)
+        try RuntimeRecoveryTestReceipt.install(task: task, run: priorRun, context: harness.context)
         harness.context.insert(priorArtifact)
         try harness.context.save()
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: priorRun))

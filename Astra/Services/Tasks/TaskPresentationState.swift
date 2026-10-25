@@ -50,7 +50,8 @@ enum TaskPresentationState {
     /// answered. Calling it "Failed" makes a single approval read as a stack of
     /// failures.
     static func failedRunLabel(stopReason: String) -> String {
-        stopReason == TaskRunStopReason.permissionApprovalRequired.rawValue ? pausedForPermissionRunLabel : "Failed"
+        if stopReason == TaskRunStopReason.runtimeConnectionLost.rawValue { return "Connection lost" }
+        return stopReason == TaskRunStopReason.permissionApprovalRequired.rawValue ? pausedForPermissionRunLabel : "Failed"
     }
 
     static func statusColor(for status: TaskStatus) -> String {

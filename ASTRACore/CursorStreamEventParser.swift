@@ -110,6 +110,9 @@ public enum CursorStreamEventParser {
         case "tool_call":
             return .recognized(toolCallEvents(object))
         case "thinking":
+            if object["subtype"] as? String == "completed", object["text"] == nil {
+                return .recognized([.control(type: "thinking.completed")])
+            }
             guard let text = object["text"] as? String, !text.isEmpty else {
                 return .recognized([.unknown(type: type)])
             }
