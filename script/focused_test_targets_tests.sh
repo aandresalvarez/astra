@@ -145,7 +145,7 @@ assert_targets $'TaskAttachmentFilesReaderTests\nComposerAttachmentsTests' \
   "Astra/Services/Tasks/TaskAttachmentFilesReader.swift" \
   "Tests/TaskAttachmentFilesReaderTests.swift"
 
-assert_targets $'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests\nRuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nCopilotPostFailureHomeInspectionTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
+assert_targets $'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests\nRuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nCopilotPostFailureHomeInspectionTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
   "Astra/Services/Runtime/AgentRuntimeWorker.swift" \
   "Tests/HeadlessChatProcessScenarioTests.swift" \
   "Astra/Services/Diagnostics/AgentRuntimeDiagnostics.swift" \
@@ -215,7 +215,7 @@ assert_targets "OrphanedV12StoreMigratorTests" \
   "Astra/Services/Persistence/OrphanedV12StoreMigrator.swift" \
   "Tests/OrphanedV12StoreMigratorTests.swift"
 
-assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nAgentExecutionScopedProcessTests\nRuntimeRecovery\nAgentUtilityRuntimeTests\nProcessMonitorTests\nRuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests' \
+assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nAgentExecutionScopedProcessTests\nRuntimeRecovery\nAgentUtilityRuntimeTests\nProcessMonitorTests\nRuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests' \
   "Astra/Services/Runtime/AgentProcessPipeReader.swift" \
   "Astra/Services/Runtime/AgentExecutionScopedProcess.swift" \
   "Tests/AgentExecutionScopedProcessTests.swift" \
@@ -320,11 +320,17 @@ assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\n
 assert_targets $'AgentRuntimeAdapterTests\nNativeContinuationFallbackTests' \
   "Tests/AgentRuntimeAdapterCopilotFixture.swift"
 
-assert_targets 'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests' \
+assert_targets 'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests' \
   'Astra/Services/Tasks/TaskQueue.swift' \
   'Astra/Services/Runtime/RuntimeProviderOwnershipReference.swift' \
   'Tests/RuntimeCancellationReviewTests.swift' \
   'Tests/RuntimeSettlementCancellationTests.swift'
 
-assert_targets 'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests' \
+assert_targets 'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests' \
   'Tests/Fixtures/ProviderStreams/claude/cancellation-tool-free.jsonl'
+
+assert_targets 'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests' \
+  'Astra/Services/Runtime/RuntimeTemplateHookScope.swift' \
+  'Tests/LaunchSnapshotDisciplineTests.swift' \
+  'Tests/QueueLockTests.swift' \
+  'Tests/RuntimeSettlementRecoveryFollowupTests.swift'

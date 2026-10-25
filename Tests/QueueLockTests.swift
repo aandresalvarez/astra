@@ -36,16 +36,16 @@ struct QueueLockTests {
         #expect(queue.activeTasks.isEmpty)
     }
 
-    @Test("cancelAll clears active tasks")
+    @Test("cancelAll retains active tasks until their executions unwind")
     @MainActor
-    func cancelAllClearsActive() {
+    func cancelAllRetainsActiveOwners() {
         let queue = TaskQueue(poolSize: 2)
-        queue.activeTasks.insert(UUID())
-        queue.activeTasks.insert(UUID())
-        #expect(queue.activeTasks.count == 2)
+        let owners: Set<UUID> = [UUID(), UUID()]
+        queue.activeTasks = owners
 
-        queue.cancelAll()
-        #expect(queue.activeTasks.isEmpty)
+        #expect(queue.cancelAll())
+        #expect(queue.activeTasks == owners)
+        #expect(queue.isStopping)
     }
 
     @Test("Pool size initializes correct number of workers")
@@ -222,14 +222,24 @@ struct QueueLockTests {
         }
     }
 
-    @Test("cancelAll clears dispatched and active state")
+    @Test("cancelAll stops dispatch without admitting a competing writer")
     @MainActor
-    func cancelAllClearsAll() {
+    func cancelAllRetainsClaims() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Cancellation", primaryPath: root)
+        let owner = AgentTask(title: "Owner", goal: "Edit files", workspace: workspace)
+        let competitor = AgentTask(title: "Competitor", goal: "Edit files", workspace: workspace)
         let queue = TaskQueue(poolSize: 2)
-        queue.activeTasks.insert(UUID())
-        queue.cancelAll()
-        #expect(queue.activeTasks.isEmpty)
+        queue.activeTasks.insert(owner.id)
+        let claim = try #require(queue.acquireResourceLockIfAvailable(task: owner, accessMode: .write, runMode: "task"))
+
+        #expect(queue.cancelAll())
+        #expect(queue.activeTasks == [owner.id])
+        #expect(queue.activeResourceLocks == [claim])
+        #expect(queue.acquireResourceLockIfAvailable(task: competitor, accessMode: .write, runMode: "task") == nil)
         #expect(!queue.isProcessing)
+        #expect(queue.isStopping)
     }
 
     @Test("write locks serialize tasks for the same execution root")

@@ -83,10 +83,16 @@ struct RuntimeSettlementRecoveryFollowupTests {
         #expect(try TaskTurnRequestRepository.request(id: request.id, in: container.mainContext)?.state == .failed)
     }
 
-    @Test("Large mirrored checkpoints retain their request owners and settle in a fresh store")
-    func mirrorRoundTripRetainsRecovery() async throws {
+    @Test("Large mirrored checkpoints preserve context but require an independent receipt to settle", arguments: [false, true])
+    func mirrorRoundTripRetainsRecovery(hasVerifiedReceipt: Bool) async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
+        let counter = fixture.root.appendingPathComponent("mirrored-validation-count.txt")
+        fixture.task.validationStrategy = .runTests
+        fixture.task.executionRootPath = fixture.root.path
+        fixture.task.testCommand = "make test"
+        try ".PHONY: test\ntest:\n\t@echo ran >> mirrored-validation-count.txt\n".write(
+            to: fixture.root.appendingPathComponent("Makefile"), atomically: true, encoding: .utf8)
         let (run, request) = try helper.runningTurn(fixture)
         var checkpoint = helper.checkpoint(fixture, request: request,
             result: AgentProcessResult(exitCode: 0, error: String(repeating: "large stderr ", count: 1000)))
@@ -104,12 +110,29 @@ struct RuntimeSettlementRecoveryFollowupTests {
         let importedRun = try #require(task.runs.first)
         let restored = try #require(try RuntimeTurnSettlementService.checkpoint(for: importedRun, task: task))
         #expect(restored.result.error == checkpoint.result.error)
+        #expect(restored.sessionMessage == checkpoint.sessionMessage)
         #expect(try TaskTurnRequestRepository.request(id: request.id, in: container.mainContext)?.runID == run.id)
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: container.mainContext) == nil)
+        if hasVerifiedReceipt {
+            // Simulate a separately verified local receipt. A workspace mirror
+            // preserves context but cannot establish execution ownership itself.
+            try RuntimeRecoveryTestReceipt.install(task: task, run: importedRun, context: container.mainContext)
+        }
         let queue = TaskQueue(poolSize: 1)
         defer { queue.cancelAll() }
         await RuntimeTurnSettlementRecoveryService.resume(modelContext: container.mainContext, taskQueue: queue, autoExport: false)
-        #expect(task.status == .completed)
-        #expect(try TaskTurnRequestRepository.request(id: request.id, in: container.mainContext)?.state == .completed)
+        #expect(task.runs.count == 1)
+        #expect(importedRun.output == run.output)
+        if hasVerifiedReceipt {
+            #expect(task.status == .completed)
+            #expect(try TaskTurnRequestRepository.request(id: request.id, in: container.mainContext)?.state == .completed)
+            #expect(try String(contentsOf: counter, encoding: .utf8) == "ran\n")
+        } else {
+            #expect(task.status == .pendingUser)
+            #expect(try TaskTurnRequestRepository.request(id: request.id, in: container.mainContext)?.state == .failed)
+            #expect(!FileManager.default.fileExists(atPath: counter.path))
+            #expect(task.events.contains { $0.type == TaskEventTypes.System.runtimeReconciliationRequired.rawValue })
+        }
     }
 
     @Test("Settled checkpoints are pruned, while pending checkpoints remain recoverable")
