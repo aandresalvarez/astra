@@ -14,6 +14,7 @@ let package = Package(
         // built by SwiftPM tests but is not copied into either ASTRA app.
         .executable(name: "astra-host-control-crash-harness", targets: ["HostControlCrashHarness"]),
         .executable(name: "astra-workspace", targets: ["AstraWorkspaceTool"]),
+        .executable(name: "astra-workspace-job", targets: ["AstraWorkspaceJobTool"]),
         .executable(name: "stanford-mail", targets: ["StanfordMailTool"]),
         .executable(name: "stanford-apple-mail", targets: ["StanfordAppleMailTool"]),
         .executable(name: "stanford-graph-mail", targets: ["StanfordGraphMailTool"])
@@ -50,7 +51,7 @@ let package = Package(
         ),
         .target(
             name: "WorkspaceToolSupport",
-            dependencies: ["MCPServerKit"],
+            dependencies: ["MCPServerKit", "ASTRACore"],
             path: "Tools/WorkspaceToolSupport"
         ),
         .target(
@@ -93,6 +94,11 @@ let package = Package(
             path: "Tools/AstraWorkspaceTool"
         ),
         .executableTarget(
+            name: "AstraWorkspaceJobTool",
+            dependencies: ["WorkspaceToolSupport"],
+            path: "Tools/AstraWorkspaceJobTool"
+        ),
+        .executableTarget(
             name: "StanfordMailTool",
             dependencies: ["MailToolSupport"],
             path: "Tools/StanfordMailTool"
@@ -126,6 +132,7 @@ let package = Package(
                 "ASTRAModels",
                 "ASTRAPersistence",
                 "HostControlToolSupport",
+                "WorkspaceToolSupport",
                 .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")

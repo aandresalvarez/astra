@@ -443,6 +443,7 @@ struct TaskMainView: View {
         let decisionDockVisible = dockPresentation != nil
 
         return VStack(spacing: 0) {
+            RemoteWorkspaceJobsView(task: task)
             mainContent(decisionDockVisible: decisionDockVisible)
                 .frame(maxHeight: .infinity, alignment: .top)
 

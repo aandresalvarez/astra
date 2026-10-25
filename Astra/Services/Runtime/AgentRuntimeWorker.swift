@@ -341,7 +341,7 @@ final class AgentRuntimeWorker {
             maxRunSeconds: maxRunSeconds, newUserTurn: newUserTurn, launchTask: launchTask,
             resourceClaims: executionPolicy.admittedResourceClaims) else { return }
         currentExecutionOwner = executionOwner
-        defer { executionOwner.finish(); currentExecutionOwner = nil }
+        defer { RemoteWorkspaceJobLaunchPolicy.finish(taskID: executionOwner.record.taskID); executionOwner.finish(); currentExecutionOwner = nil }
         let wait = RuntimeProviderWait(owner: executionOwner)
         providerWait = wait
         defer { providerWait = nil }
@@ -826,17 +826,11 @@ final class AgentRuntimeWorker {
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
             return
         }
-        // Resolved once, from the manifest this run launches with: the guard's
-        // answer for the `ssh` command and the sandbox the process gets. The run
-        // line, the broker refusal, the resource manifest and the signature read it.
-        executionPolicy = executionPolicy.withRemoteSSHRoute(RemoteWorkspaceSSHRoute.resolve(
+        executionPolicy = executionPolicy.withRemoteSSHRoute(RemoteWorkspaceJobLaunchPolicy.prepare(
+            task: executionTask, runID: run.id, owner: executionOwner, context: modelContext, route: RemoteWorkspaceSSHRoute.resolve(
             task: executionTask, manifest: manifest, requirements: appliedRuntime.requirements,
             environment: runEnvironment.runSnapshot, runtimeCapabilityProfile: runtimeCapabilityProfile,
-            hostControlHelperAvailable: processRunner.isHostControlBrokerAvailable()))
-        if let sshRoute = executionPolicy.remoteSSHRoute {
-            launchResourcePlan.remoteSSHRoute = sshRoute
-            TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
-        }
+            hostControlHelperAvailable: processRunner.isHostControlBrokerAvailable()), resourcePlan: &launchResourcePlan))
         let launchSignature = ProviderLaunchSignatureService.make(
             for: task,
             manifest: manifest,

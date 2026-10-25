@@ -4,7 +4,7 @@ set -euo pipefail
 MODE="${1:-run}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PRODUCT_NAME="ASTRA"
-TOOL_PRODUCTS=("astra-browser" "astra-mcp-gateway" "astra-host-control" "astra-workspace" "stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
+TOOL_PRODUCTS=("astra-browser" "astra-mcp-gateway" "astra-host-control" "astra-workspace" "astra-workspace-job" "stanford-mail" "stanford-apple-mail" "stanford-graph-mail")
 ASTRA_CHANNEL="${ASTRA_CHANNEL:-dev}"
 MIN_SYSTEM_VERSION="14.0"
 BUILD_CONFIGURATION="${ASTRA_BUILD_CONFIGURATION:-debug}"
@@ -416,7 +416,15 @@ PRIVATE_HELPER="$APP_BUNDLE/Contents/Helpers/astra-plugin-fetch"
 mkdir -p "$(dirname "$PRIVATE_HELPER")"
 cp "$BUILD_DIR/astra-plugin-fetch" "$PRIVATE_HELPER"
 chmod +x "$PRIVATE_HELPER"
-BUNDLED_TOOLS_DIR="$APP_RESOURCES/ASTRA_ASTRA.bundle/Tools"
+bundled_tools_directory() {
+  local resource_bundle="$1"
+  if [[ -d "$resource_bundle/Contents/Resources" ]]; then
+    printf '%s\n' "$resource_bundle/Contents/Resources/Tools"
+  else
+    printf '%s\n' "$resource_bundle/Tools"
+  fi
+}
+BUNDLED_TOOLS_DIR="$(bundled_tools_directory "$APP_RESOURCES/ASTRA_ASTRA.bundle")"
 mkdir -p "$BUNDLED_TOOLS_DIR"
 for tool_product in "${TOOL_PRODUCTS[@]}"; do
   cp "$BUILD_DIR/$tool_product" "$BUNDLED_TOOLS_DIR/$tool_product"

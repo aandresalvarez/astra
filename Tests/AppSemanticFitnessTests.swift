@@ -142,6 +142,8 @@ struct AppSemanticFitnessTests {
             "task.interrupted": .lifecycle,
             "task.resumed": .lifecycle,
             "task.retried": .lifecycle,
+            "remote_job.observed": .system,
+            "remote_job.cancellation_requested": .system,
             "task.approved": .lifecycle,
             "task.started": .lifecycle,
             "task.stats": .system,

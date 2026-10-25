@@ -294,7 +294,9 @@ final class RuntimeExecutionOwner {
 
     func reconcileUsage() {
         guard isActive else { return }
-        record.limits.tokensSpent = max(record.limits.tokensSpent, RuntimeUsageArithmetic.adding(initialTokensSpent, run?.tokensUsed ?? 0))
+        if let run, run.isLive {
+            record.limits.tokensSpent = max(record.limits.tokensSpent, RuntimeUsageArithmetic.adding(initialTokensSpent, run.tokensUsed))
+        }
         try? save(nil)
     }
 
@@ -317,9 +319,9 @@ final class RuntimeExecutionOwner {
         defer { lease = nil; Self.active.remove(key) }
         guard lease != nil else { return }
         reconcileUsage()
-        record.limits.costSpent += run?.costUSD ?? 0
+        if let run, run.isLive { record.limits.costSpent += run.costUSD }
         if record.state == .preparing { record.state = .notStarted }
-        if task.status == .completed, run?.status == .completed,
+        if task.isLive, task.status == .completed, let run, run.isLive, run.status == .completed,
            record.stopProof?.reaped == true, record.stopProof?.processGroupEmpty == true { record.state = .finished }
         if !writeFailed && record.canReplace {
             record.resourcesReleased = true
@@ -377,7 +379,7 @@ final class RuntimeExecutionOwner {
             Self.report("ASTRA could not update the recovery record. The existing attempt retains ownership; further launches are blocked until its state can be verified.", task: task, context: context)
             throw error
         }
-        if audit || message != nil {
+        if task.isLive, task.modelContext === context, audit || message != nil {
             let payload = TaskEvent.payloadString(record, fallback: "{}")
             context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership, payload: payload, run: run))
             if let message { Self.report(message, task: task, context: context) }
@@ -386,6 +388,7 @@ final class RuntimeExecutionOwner {
     }
 
     static func report(_ message: String, task: AgentTask, context: ModelContext, pause: Bool = false, autoExport: Bool = true) {
+        guard task.isLive, task.modelContext === context else { return }
         if pause { TaskStateMachine.pauseForRuntimeReview(task, modelContext: context) }
         context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: message))
         if autoExport { WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: context) }

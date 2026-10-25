@@ -208,6 +208,8 @@ public enum TaskEventTypes {
     }
 
     public enum System {
+        public static let remoteJobObserved: TaskEventType = "remote_job.observed"
+        public static let remoteJobCancellation: TaskEventType = "remote_job.cancellation_requested"
         public static let runtimeSettlementStarted: TaskEventType = "runtime.settlement.started"
         public static let runtimeSupervision: TaskEventType = "runtime.supervision"
         public static let runtimeSupervisionUsage: TaskEventType = "runtime.supervision.usage"
@@ -336,6 +338,8 @@ public enum TaskEventTypes {
     ]
 
     private static let systemTypes: Set<TaskEventType> = [
+        System.remoteJobObserved,
+        System.remoteJobCancellation,
         System.runtimeSupervision,
         System.runtimeSupervisionUsage,
         System.runtimeRecovery,

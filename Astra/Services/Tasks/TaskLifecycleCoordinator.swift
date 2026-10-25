@@ -793,6 +793,9 @@ final class TaskLifecycleCoordinator {
     /// or nil when they can't be read: a failed lookup would otherwise stop
     /// workers with nothing cancelled and leave rows orphaned.
     private func cancelDurably(_ tasks: [AgentTask]) -> [TaskTurnRequest]? {
+        for task in tasks {
+            guard RemoteWorkspaceJobMonitor.shared.requestCancellation(task: task, context: modelContext) else { return nil }
+        }
         typealias Snapshot = (
             request: TaskTurnRequest, state: TaskTurnRequestState, blockingTaskID: UUID?,
             blockerSummary: String?, terminalAt: Date?, terminalReason: String?

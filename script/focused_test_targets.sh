@@ -308,6 +308,19 @@ target_for_path() {
     Tests/HostControlToolSupportTests.swift|Tools/AstraHostControlTool/*|Tools/HostControlToolSupport/*)
       add_target "HostControlToolSupportTests"
       ;;
+    ASTRACore/SSHKnownHostsOption.swift|Tests/BrowserToolShimTests.swift)
+      add_target "BrowserToolShimTests"
+      ;;
+    Tests/RemoteWorkspaceJob*.swift|Tools/WorkspaceToolSupport/RemoteWorkspaceJob*.swift|Tools/AstraWorkspaceJobTool/*|Astra/Services/Runtime/RemoteWorkspaceJob*.swift|Astra/Views/RemoteWorkspaceJob*.swift|Astra/Services/Runtime/RemoteWorkspaceSSHRoute.swift|Astra/Services/Runtime/RemoteWorkspacePromptGuidance.swift)
+      add_target "RemoteWorkspaceJobTests"
+      add_target "RemoteWorkspaceJobShimTests"
+      add_target "RemoteWorkspaceJobSafetyTests"
+      add_target "RemoteWorkspaceJobPersistenceTests"
+      add_target "RemoteWorkspaceJobBundlingTests"
+      add_target "RemoteWorkspaceJobOutputStateTests"
+      add_target "RemoteWorkspaceSSHRouteTests"
+      add_target "RemoteWorkspacePromptGuidanceTests"
+      ;;
     .github/workflows/release.yml|script/build_and_run.sh|Tests/ReleaseBuildNumberDerivationTests.swift)
       # These three paths co-derive/co-verify the release build-number
       # scheme (PR #253 review comment 3549627108): release.yml's

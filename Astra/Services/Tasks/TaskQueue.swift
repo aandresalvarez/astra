@@ -1658,6 +1658,9 @@ final class TaskQueue {
 
     @MainActor
     func cancel(task: AgentTask, modelContext: ModelContext? = nil) {
+        if let context = modelContext ?? storeSession?.modelContext {
+            RemoteWorkspaceJobMonitor.shared.requestCancellation(task: task, context: context)
+        }
         scheduleWedgedLeaseRelease(for: task.id, modelContext: modelContext ?? storeSession?.modelContext)
         if let worker = taskWorkerMap[task.id] {
             worker.cancel()

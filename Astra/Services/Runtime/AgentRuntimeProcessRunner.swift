@@ -935,7 +935,13 @@ final class AgentRuntimeProcessRunner {
             return AgentProcessResult(exitCode: -1, runtimeStopReason: "recovery_limits_exhausted",
                 runtimeStopMessage: "The remaining execution time expired before launch.", budgetExceeded: true)
         }
-        do { try owner?.prepareLaunch(sessionID: nativeSessionID) }
+        do {
+            try owner?.prepareLaunch(sessionID: nativeSessionID)
+            if let owner {
+                do { try RemoteWorkspaceJobLaunchPolicy.activate(owner: owner) }
+                catch { owner.didNotLaunch(); throw error }
+            }
+        }
         catch { return AgentProcessResult(exitCode: -1, runtimeStopReason: "runtime_recovery_blocked", runtimeStopMessage: "Recovery ownership could not authorize this launch.") }
         let executionID = owner?.record.executionID ?? UUID()
         let remoteWorkExcluded = owner?.remoteWorkExcluded ?? false
@@ -1645,7 +1651,7 @@ final class AgentRuntimeProcessRunner {
         let knownHostsPath = (stateDirectory as NSString).appendingPathComponent("known_hosts")
         let script = """
         #!/bin/sh
-        exec \(shellSingleQuoted(realSSHPath)) -o UserKnownHostsFile=\(shellSingleQuoted(knownHostsPath)) -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o CheckHostIP=no "$@"
+        exec \(shellSingleQuoted(realSSHPath)) -o \(shellSingleQuoted(SSHKnownHostsOption.value(path: knownHostsPath))) -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o CheckHostIP=no "$@"
         """
 
         do {
