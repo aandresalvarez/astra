@@ -17,7 +17,13 @@ struct RuntimeProviderResourceBlockTests {
         record.resourcesReleased = false
         record.resourceClaims = missingClaims ? nil : [.init(taskID: task.id, resourceKey: h.workspaceURL.path,
             accessMode: .write, runMode: "task")]
-        let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        // Missing legacy claims intentionally fence every provider-settings
+        // key. This fixture has its own explicit registry namespace; remove
+        // its global scan hint before publishing that ambiguous record so
+        // parallel tests do not inherit its quarantine.
+        if missingClaims { RuntimeProviderResourceRegistry.unregister(store.root) }
+        let lease = try store.acquire(taskID: task.id)
         try lease.save(record)
         return record
     }
@@ -29,8 +35,8 @@ struct RuntimeProviderResourceBlockTests {
         defer { h.cleanup() }
         let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
             identifier: h.rootURL.appendingPathComponent("shared-settings.json").path)
-        let record = try retainedOwner(h, key: key, missingClaims: lookup == "legacy")
         let store = RuntimeExecutionOwner.store(in: h.context)
+        let record = try retainedOwner(h, key: key, missingClaims: lookup == "legacy")
         let gate = AgentRuntimeSharedStateGate(processLockRoot: h.rootURL.appendingPathComponent("leases"),
             registeredStoreRoots: [store.root])
         var block: RuntimeProviderResourceRegistry.Block?
