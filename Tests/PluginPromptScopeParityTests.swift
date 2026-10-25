@@ -91,7 +91,8 @@ struct PluginPromptScopeParityTests {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-parity-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let installer = CapabilityInstaller(library: CapabilityLibrary(directory: root))
+        let library = CapabilityLibrary(directory: root)
+        let installer = CapabilityInstaller(library: library)
         _ = try installer.install(package, into: workspace, modelContext: context, announceCatalogMutation: false)
 
         // R1: Add stores no row for a plugin's skills or tools, and every
@@ -108,7 +109,11 @@ struct PluginPromptScopeParityTests {
             workspace: workspace
         )
         context.insert(task)
-        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: task.goal)
+        let inputs = CapabilityResolutionTestSupport.inputs(
+            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(library: library))
+        let scope = CapabilityResolutionInputs.$pinned.withValue(inputs) {
+            TaskCapabilityResolver(task: task).promptScope(contextText: task.goal)
+        }
         return ScopeSummary(
             behaviorSkills: scope.behaviorSkills.map(\.name).sorted(),
             behaviorInstructionsDigest: scope.behaviorSkills

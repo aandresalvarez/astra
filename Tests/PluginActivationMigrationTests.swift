@@ -12,7 +12,7 @@ import ASTRACore
 /// Jira accounts in one workspace, a third workspace's own Jira account, a
 /// shared Google Cloud account with a project ID, an unedited shared GCloud
 /// skill with a setting, and an edited built-in Jira skill.
-@Suite("Plugin activation migration")
+@Suite("Plugin activation migration", BuiltInCapabilityFixture())
 @MainActor
 struct PluginActivationMigrationTests {
     @Test("A V19 store migrates to activations, accounts and authored overrides")

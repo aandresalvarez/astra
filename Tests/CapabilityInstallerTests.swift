@@ -19,17 +19,9 @@ private func makeCapabilityInstallerLibrary() -> (CapabilityLibrary, URL) {
 }
 
 private func installerResolutionInputs(library: CapabilityLibrary) -> CapabilityResolutionInputs {
-    let packs = AstraPackCatalog()
     // Resolver defaults must use this fixture's installed packages, not a
     // different version in the user's library or their approval records.
-    return CapabilityResolutionInputs(
-        libraryDirectory: CapabilityLibrary().directory.standardizedFileURL,
-        packageDefinitions: library.installedPackages(),
-        approvalsDirectory: CapabilityApprovalStore().directory.standardizedFileURL,
-        approvalRecords: [],
-        packBuiltInDirectory: packs.builtInDirectory?.standardizedFileURL,
-        packLocalStorageRoot: packs.localStorageRoot?.standardizedFileURL,
-        packCatalog: .init(entries: [], diagnostics: []))
+    return CapabilityResolutionTestSupport.inputs(packages: library.installedPackages())
 }
 
 private func makeAnalystCapabilityPackage() -> PluginPackage {

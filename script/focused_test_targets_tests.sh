@@ -336,3 +336,11 @@ assert_targets 'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueue
   'Tests/LaunchSnapshotDisciplineTests.swift' \
   'Tests/QueueLockTests.swift' \
   'Tests/RuntimeSettlementRecoveryFollowupTests.swift'
+
+assert_targets 'CapabilityInstallerTests|CapabilityResolutionInputsTests|PluginActivationMigrationTests|PluginActivationOwnershipTests|PluginPromptScopeParityTests|RoutineSkillSelectionTests' \
+  'Tests/CapabilityResolutionTestSupport.swift' \
+  'Tests/CapabilityInstallerTests.swift' \
+  'Tests/PluginActivationMigrationTests.swift' \
+  'Tests/PluginActivationOwnershipTests.swift' \
+  'Tests/PluginPromptScopeParityTests.swift' \
+  'Tests/RoutineSkillSelectionTests.swift'

@@ -45,6 +45,9 @@ target_for_path() {
   fi
 
   case "$path" in
+    Tests/CapabilityResolutionTestSupport.swift|Tests/CapabilityInstallerTests.swift|Tests/PluginActivationMigrationTests.swift|Tests/PluginActivationOwnershipTests.swift|Tests/PluginPromptScopeParityTests.swift|Tests/RoutineSkillSelectionTests.swift)
+      add_target "CapabilityInstallerTests|CapabilityResolutionInputsTests|PluginActivationMigrationTests|PluginActivationOwnershipTests|PluginPromptScopeParityTests|RoutineSkillSelectionTests"
+      ;;
     Tests/ArchitectureFitnessTests/*)
       ;;
     Tests/AppSemanticFitnessTests.swift)
