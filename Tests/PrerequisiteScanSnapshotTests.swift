@@ -33,4 +33,22 @@ struct PrerequisiteScanSnapshotTests {
         #expect(scan.statuses["auth"]?.isUsable == false)
         #expect(scan.statuses["auth"] == .unauthenticated(detail: "Signed out"))
     }
+
+    @Test("A rescan replaces a prior login failure with the new unverified evidence")
+    func rescanClearsStaleLoginFailure() {
+        let prerequisite = CommonCLIPrerequisites.gcloudAuth
+        let package = PluginPackage(id: "gcloud-qa", name: "GCloud", icon: "cloud", description: "Test",
+            author: "Tests", category: "Tests", tags: [], version: "1", skills: [], connectors: [],
+            localTools: [], templates: [], prerequisites: [prerequisite], governance: .builtInApproved())
+        var scan = PrerequisiteScanSnapshot()
+        let previous = scan.begin()
+        scan.complete([prerequisite.id: .unauthenticated(detail: "No active account")], generation: previous)
+        #expect(CapabilityRailRepair.readiness(for: package, stateReadiness: .ready, prerequisiteStatuses: scan.statuses).level == .needsAttention)
+        let current = scan.begin()
+        #expect(scan.statuses.isEmpty)
+        scan.complete([prerequisite.id: .unverified(path: "/opt/homebrew/bin/gcloud", detail: "No answer within 20s")], generation: current)
+        scan.complete([prerequisite.id: .unauthenticated(detail: "Old response")], generation: previous)
+        #expect(CapabilityRailRepair.readiness(for: package, stateReadiness: .ready, prerequisiteStatuses: scan.statuses) == .ready)
+        #expect(CapabilityRailRepair.repair(for: package, statuses: scan.statuses) == nil)
+    }
 }

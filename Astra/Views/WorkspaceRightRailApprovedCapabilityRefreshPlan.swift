@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 struct WorkspaceRightRailApprovedCapabilityRefreshPlan: Equatable {
     let shouldRebuildSnapshot: Bool
@@ -29,4 +30,11 @@ struct WorkspaceRightRailApprovedCapabilityRefreshPlan: Equatable {
             .filter { !$0.isEmpty }
             .sorted()
     }
+}
+
+/// Immutable catalog inputs used by the rail refresh plan.
+struct ApprovedCapabilitiesSnapshot: Sendable {
+    var packages: [PluginPackage]
+    var records: [CapabilityApprovalRecord]
+    var packPolicy: PackResolvedPolicy
 }

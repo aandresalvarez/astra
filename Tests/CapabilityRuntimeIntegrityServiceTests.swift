@@ -472,6 +472,71 @@ struct CapabilityRuntimeIntegrityServiceTests {
         #expect(issues.first?.message.contains("Run `gh auth login`.") == true)
     }
 
+    /// Prod task 7900335C: a cold `gcloud --version` outlasted its 3s probe and
+    /// failed the launch with `capability_runtime_resources_missing`, telling a
+    /// signed-in user to run `gcloud auth login`.
+    @Test("Google Cloud probes that get no answer do not block launch; a signed-out account still does")
+    func gcloudProbeTimeoutDoesNotBlockButSignedOutAccountDoes() async throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let package = PluginPackage(
+            id: "runtime-gcloud-prereq",
+            name: "Google Cloud",
+            icon: "cloud",
+            description: "Package requiring gcloud",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            prerequisites: [CommonCLIPrerequisites.gcloud, CommonCLIPrerequisites.gcloudAuth],
+            governance: .builtInApproved()
+        )
+        let workspace = Workspace(name: "Runtime GCloud", primaryPath: "/tmp/runtime-gcloud")
+        workspace.testEnabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+        let task = AgentTask(title: "Use gcloud package", goal: "Query BigQuery", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        func launchIssues(authList: RunResult) async -> [CapabilityRuntimeIntegrityIssue] {
+            let runner = StubBinaryRunner()
+            await runner.setResponse(
+                forKey: "/usr/bin/env which gcloud",
+                result: RunResult(outcome: .exited(code: 0), stdout: "/opt/homebrew/bin/gcloud\n", stderr: "")
+            )
+            await runner.setResponse(
+                forKey: "/opt/homebrew/bin/gcloud --version",
+                result: RunResult(outcome: .timedOut, stdout: "", stderr: "")
+            )
+            await runner.setResponse(
+                forKey: "/opt/homebrew/bin/gcloud config config-helper --format=value(credential.token_expiry)",
+                result: authList
+            )
+            let statuses = await CapabilityHealthService.prerequisiteStatuses(
+                for: package,
+                cache: PreflightCache(checker: EnvironmentHealthChecker(runner: runner))
+            )
+            return CapabilityRuntimeIntegrityService.issues(
+                for: task,
+                packages: [package],
+                checkExecutables: false,
+                prerequisiteStatuses: statuses
+            )
+        }
+
+        let silent = await launchIssues(authList: RunResult(outcome: .timedOut, stdout: "", stderr: ""))
+        #expect(silent.isEmpty, "No answer is not evidence of a broken or signed-out gcloud: \(silent.map(\.message))")
+
+        let signedOut = await launchIssues(authList: RunResult(outcome: .exited(code: 0), stdout: "\n", stderr: ""))
+        #expect(signedOut.map(\.resourceKind) == [.credential])
+        #expect(signedOut.first?.resourceName == "Google Cloud login")
+        #expect(signedOut.first?.message.contains("Run `gcloud auth login` to sign in.") == true)
+    }
+
     @Test("inactive matching local tool reports active workspace wording")
     func inactiveMatchingLocalToolReportsActiveWorkspaceWording() throws {
         let container = try makeRuntimeIntegrityContainer()

@@ -95,7 +95,9 @@ enum CLISessionExpiryClassifier {
                 checkBinary: checks ? checkBinary : nil,
                 checkArguments: checks ? checkArguments : nil,
                 checkExpect: checks && (checkBinary as NSString).lastPathComponent == "gcloud" && !readsApplicationDefault
-                    ? SemanticCheck.stdoutNonEmpty.rawValue : nil
+                    ? SemanticCheck.stdoutNonEmpty.rawValue : nil,
+                checkTimeout: checks && (checkBinary as NSString).lastPathComponent == "gcloud"
+                    ? CommonCLIPrerequisites.gcloudSlowStartTimeout : nil
             )
             repair.checkSelectors = storeSelectors.isEmpty ? nil : storeSelectors
             return repair.targetingCredentialStore(storeSelectors)

@@ -625,6 +625,7 @@ struct ContentView: View {
             querySession: querySession,
             queryUtilityRuntime: queryUtilityRuntime,
             sshReloadTrigger: sshReloadTrigger,
+            isConfigurationPresented: showingConfigure,
             isRightRailPresented: rightRailInspectorBinding,
             activeCanvasItem: workspaceCanvasItemBinding,
             isPlanCanvasVisible: activeWorkspaceCanvasItem == .plan,
@@ -2904,6 +2905,7 @@ private struct ContentDetailAreaView: View {
     @ObservedObject var querySession: ShelfQuerySession
     let queryUtilityRuntime: AgentUtilityRuntimeConfiguration
     let sshReloadTrigger: Int
+    var isConfigurationPresented: Bool = false
     @Binding var isRightRailPresented: Bool
     @Binding var activeCanvasItem: WorkspaceCanvasItem?
     let isPlanCanvasVisible: Bool
@@ -3107,6 +3109,7 @@ private struct ContentDetailAreaView: View {
             onNewSSHConnection: onNewSSHConnection,
             onEditSSHConnection: onEditSSHConnection,
             sshReloadTrigger: sshReloadTrigger,
+            isConfigurationPresented: isConfigurationPresented,
             isCompact: isOverlay || width <= PanelLayoutGeometry.inspectorMinColumnWidth + 8,
             onDismiss: isOverlay ? { isRightRailPresented = false } : nil
         )
@@ -4321,7 +4324,7 @@ struct WorkspaceSetupForm: View {
         if draft.selectedCapabilityIDs.contains(packageID) {
             if capabilityIssue(for: packageID) != nil { return "Setup needed" }
             if let (prerequisite, status) = firstUnreadyPrerequisite(for: packageID) {
-                return prerequisiteStatusLabel(prerequisite, status: status)
+                return CapabilityPrerequisitePresentation.label(prerequisite, status: status)
             }
             switch capabilityValidationState(for: packageID) {
             case .unchecked:
@@ -4818,29 +4821,6 @@ struct WorkspaceSetupForm: View {
             return isProbingCapability(packageID)
                 ? "Checking \(prerequisite.displayName)"
                 : "\(prerequisite.displayName) not checked"
-        }
-    }
-
-    private func prerequisiteStatusLabel(
-        _ prerequisite: CLIPrerequisite,
-        status: HealthStatus?
-    ) -> String {
-        switch status {
-        case .healthy:
-            return "Ready"
-        case .unverified:
-            return "Repository unverified"
-        case .missingBinary:
-            return "Needs \(prerequisite.binary)"
-        case .unauthenticated:
-            return "Needs login"
-        case .authorizationRequired:
-            return "Authorize"
-        case .unresponsive:
-            return "Check CLI"
-        case .notChecked: return "Not checked"
-        case .none:
-            return "Check"
         }
     }
 

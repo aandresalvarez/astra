@@ -161,6 +161,7 @@ struct PluginRepairTests {
         #expect(signIn?.command == "gcloud auth login")
         #expect(signIn?.checkArguments == ["config", "config-helper", "--format=value(credential.token_expiry)"])
         #expect(signIn?.checkExpect == "stdoutNonEmpty")
+        #expect(signIn?.checkTimeout == 20)
 
         let working = CapabilityRailRepair.repair(for: package, statuses: [
             cli.id: .healthy(path: "/usr/bin/gcloud", version: "512.0"),

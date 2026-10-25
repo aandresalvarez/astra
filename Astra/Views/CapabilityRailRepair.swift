@@ -36,11 +36,7 @@ enum CapabilityRailRepair {
             // Repository access (SSO, an org grant) is repaired by the
             // contextual GitHub flow, not by signing in again.
             if GitHubRepositoryAccessRepairButton.supports(prerequisite, status: status) { continue }
-            if case .missingBinary = status {
-                if let install = RepairAction.from(component, needsInstall: true) { return install }
-                continue
-            }
-            if let repair = RepairAction.from(component) { return repair }
+            if let repair = RepairAction.from(component, status: status) { return repair }
         }
         return nil
     }

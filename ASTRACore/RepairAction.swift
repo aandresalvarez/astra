@@ -34,6 +34,8 @@ public struct RepairAction: Codable, Sendable, Equatable {
     public var checkArguments: [String]?
     /// The check's semantic test (`SemanticCheck` raw value), if any.
     public var checkExpect: String?
+    /// Extended probe budget only; a repair always needs a successful response.
+    public var checkTimeout: TimeInterval?
     /// Variables the stopped run gave the CLI (a projected `GH_TOKEN` or
     /// `CLOUDSDK_CONFIG`), so the check sees what the resumed run will. Set
     /// when checking, not stored with the repair.
@@ -52,7 +54,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
     /// `checkEnvironment` can hold a token: it is never encoded, nor is
     /// `checkWorkingDirectory`, which belongs with it.
     private enum CodingKeys: String, CodingKey {
-        case strategy, componentName, title, verb, detail, command, url, checkBinary, checkArguments, checkExpect, checkSelectors
+        case strategy, componentName, title, verb, detail, command, url, checkBinary, checkArguments, checkExpect, checkTimeout, checkSelectors
     }
 
     /// This repair checking with `environment` (the resumed run's
@@ -75,7 +77,8 @@ public struct RepairAction: Codable, Sendable, Equatable {
         url: URL? = nil,
         checkBinary: String? = nil,
         checkArguments: [String]? = nil,
-        checkExpect: String? = nil
+        checkExpect: String? = nil,
+        checkTimeout: TimeInterval? = nil
     ) {
         self.strategy = strategy
         self.componentName = componentName
@@ -87,6 +90,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
         self.checkBinary = checkBinary
         self.checkArguments = checkArguments
         self.checkExpect = checkExpect
+        self.checkTimeout = checkTimeout
     }
 
     /// Package managers an install step may run besides the component's CLI.
@@ -244,6 +248,21 @@ public struct RepairAction: Codable, Sendable, Equatable {
         return String(plain.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(600))
     }
 
+    /// Choose the action using the observed failure. An unanswered or failed
+    /// probe is not proof that signing in again would fix the component.
+    public static func from(_ component: PluginComponent, status: HealthStatus) -> RepairAction? {
+        guard !status.isUsable, !status.isNotChecked else { return nil }
+        if case .missingBinary = status { return from(component, needsInstall: true) }
+        guard var repair = from(component) else { return nil }
+        if case .unresponsive(let detail) = status, repair.verb == "Sign in" {
+            repair.command = nil
+            repair.verb = "Check"
+            repair.title = "Check \(component.name)"
+            repair.detail = "The CLI check failed: \(guidance(detail)). Check the CLI or connection, then try again."
+        }
+        return repair
+    }
+
     /// The repair a component's setup contract offers: its `repair` step,
     /// else `connect`, else `install`; or `install` first when the component's
     /// binary is missing. Nil when none can be acted on.
@@ -264,7 +283,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
                     return RepairAction(
                         strategy: .terminal, componentName: component.name, title: component.name, verb: "Check",
                         detail: step.hint.map(Self.guidance) ?? "Fix \(component.name), then ASTRA checks again.",
-                        checkBinary: binary, checkArguments: check?.arguments, checkExpect: check?.expect
+                        checkBinary: binary, checkArguments: check?.arguments, checkExpect: check?.expect, checkTimeout: check?.slowStartTimeout
                     )
                 }
                 guard let command = step.command else { continue }
@@ -276,7 +295,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
                     guard let hint = step.hint, let binary = check?.binary else { continue }
                     return RepairAction(
                         strategy: .terminal, componentName: component.name, title: component.name, verb: "Check",
-                        detail: Self.guidance(hint), checkBinary: binary, checkArguments: check?.arguments, checkExpect: check?.expect
+                        detail: Self.guidance(hint), checkBinary: binary, checkArguments: check?.arguments, checkExpect: check?.expect, checkTimeout: check?.slowStartTimeout
                     )
                 }
                 return RepairAction(
@@ -284,14 +303,14 @@ public struct RepairAction: Codable, Sendable, Equatable {
                     title: component.name, verb: verb == "Install" ? verb : "Sign in",
                     detail: "Run `\(command)`, then ASTRA checks again.",
                     command: command, checkBinary: check?.binary, checkArguments: check?.arguments,
-                    checkExpect: check?.expect
+                    checkExpect: check?.expect, checkTimeout: check?.slowStartTimeout
                 ).enforcingTerminalPolicy()
             case .url:
                 if needsInstall, step.url == nil, let hint = step.hint, let binary = check?.binary {
                     return RepairAction(
                         strategy: .terminal, componentName: component.name, title: component.name, verb: "Check",
                         detail: Self.guidance(hint), checkBinary: binary,
-                        checkArguments: check?.arguments, checkExpect: check?.expect
+                        checkArguments: check?.arguments, checkExpect: check?.expect, checkTimeout: check?.slowStartTimeout
                     )
                 }
                 // Only a web page: a package's install link must not open a
@@ -301,7 +320,7 @@ public struct RepairAction: Codable, Sendable, Equatable {
                     strategy: .url, componentName: component.name, title: component.name, verb: verb,
                     detail: step.hint.map(Self.guidance) ?? "Open the page, then come back to ASTRA.",
                     url: url, checkBinary: check?.binary, checkArguments: check?.arguments,
-                    checkExpect: check?.expect
+                    checkExpect: check?.expect, checkTimeout: check?.slowStartTimeout
                 )
             case .credentialForm:
                 return RepairAction(

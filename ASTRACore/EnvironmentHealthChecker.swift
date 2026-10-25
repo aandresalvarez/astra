@@ -6,8 +6,9 @@ import Foundation
 /// Cases, in rough "pain" order:
 ///   - `healthy`       — binary resolves, liveness probe exits 0, and any
 ///                       semantic check passed. User can run the skill.
-///   - `unverified`    — the CLI and identity are usable, but no contextual
-///                       target was available to prove target-specific access.
+///   - `unverified`    — the CLI is usable but not proven: no contextual
+///                       target was available to prove target-specific access,
+///                       or a slow-start CLI gave no answer within its budget.
 ///   - `unauthenticated` — binary resolves and runs but a semantic probe
 ///                       (e.g. `gcloud auth list`) says no active identity.
 ///                       User needs to log in; the app can link to the fix.
@@ -88,8 +89,20 @@ public enum SemanticCheck: String, Codable, Sendable, Equatable {
 ///     doesn't, the machine is broken at a level we can't recover from.
 ///   - Liveness timeout default is short (3s). A binary that can't answer
 ///     `--version` in 3s is effectively unresponsive for interactive use.
+///     A prerequisite with a `slowStartTimeout` gets that budget instead.
 public struct EnvironmentHealthChecker: Sendable {
+    /// What a liveness probe that gets no answer within its timeout means.
+    public enum TimeoutOutcome: Sendable, Equatable {
+        /// No answer is a failure: `.unresponsive`.
+        case unresponsive
+        /// No answer leaves the resolved binary usable but unproven:
+        /// `.unverified`. For CLIs whose cold start can outlast any
+        /// reasonable budget while they are installed and signed in.
+        case unverified
+    }
+
     public static let defaultEnvPath = "/usr/bin/env"
+    public static let defaultLivenessTimeout: TimeInterval = 3
     public static var defaultFallbackDirectories: [String] {
         [
             "\(NSHomeDirectory())/.local/bin",
@@ -127,14 +140,34 @@ public struct EnvironmentHealthChecker: Sendable {
         self.isInstalled = isInstalled
     }
 
+    /// Check a prerequisite with the probe it declares. A prerequisite with a
+    /// `slowStartTimeout` gets that budget, and comes back `.unverified` —
+    /// never `.unresponsive` — when its probe still gets no answer.
+    public func check(_ prerequisite: CLIPrerequisite) async -> HealthStatus {
+        guard prerequisite.hasValidSlowStartTimeout else {
+            return .notChecked(detail: "Invalid slow-start timeout; use a finite value from 3 to 60 seconds.")
+        }
+        return await check(
+            binary: prerequisite.binary,
+            livenessArgs: prerequisite.livenessArgs,
+            semantic: prerequisite.semantic,
+            timeout: prerequisite.slowStartTimeout ?? Self.defaultLivenessTimeout,
+            onTimeout: prerequisite.slowStartTimeout == nil ? .unresponsive : .unverified
+        )
+    }
+
     /// Check a single binary. Order: resolve → liveness → semantic.
     /// Any failure short-circuits and maps to the most specific status.
     public func check(
         binary: String,
         livenessArgs: [String] = ["--version"],
         semantic: SemanticCheck? = nil,
-        timeout: TimeInterval = 3
+        timeout: TimeInterval = EnvironmentHealthChecker.defaultLivenessTimeout,
+        onTimeout: TimeoutOutcome = .unresponsive
     ) async -> HealthStatus {
+        guard timeout.isFinite, timeout > 0, timeout <= CLIPrerequisite.slowStartTimeoutRange.upperBound else {
+            return .notChecked(detail: "Invalid probe timeout; use a positive, finite value no greater than 60 seconds.")
+        }
         // Step 1: resolve path via `env which <binary>`.
         let whichEnv: [String: String]? = overridePath.map { ["PATH": $0] }
         let whichResult = await runner.run(
@@ -187,10 +220,25 @@ public struct EnvironmentHealthChecker: Sendable {
             // possible with broken symlinks or permission changes.
             return .unresponsive(detail: reason)
         case .timedOut:
-            return .unresponsive(detail: "timed out after \(Int(timeout))s")
+            switch onTimeout {
+            case .unresponsive:
+                return .unresponsive(detail: "timed out after \(Int(timeout))s")
+            case .unverified:
+                // The semantic check needs output it never got, so a timed-out
+                // auth probe proves nothing either way: not signed out.
+                return .unverified(
+                    path: resolved,
+                    detail: "No answer within \(Int(timeout))s; not verified"
+                )
+            }
         case .cancelled:
             return .unresponsive(detail: "cancelled")
         case .exited(let code) where code != 0:
+            if let detail = GCloudCredentialProbe.authenticationFailure(
+                binary: binary, arguments: livenessArgs, stderr: liveness.stderr
+            ) {
+                return .unauthenticated(detail: detail)
+            }
             let tail = liveness.stderr.isEmpty ? liveness.stdout : liveness.stderr
             return .unresponsive(detail: "exit \(code): \(tail.trimmed(max: 120))")
         case .exited:

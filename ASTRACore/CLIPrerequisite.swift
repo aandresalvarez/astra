@@ -13,7 +13,7 @@ import Foundation
 /// for the same reason.
 public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
     /// Stable identity: the whole check contract (binary, arguments,
-    /// semantic test, context), not the label. Health results are keyed by
+    /// semantic test, context, timeout policy), not the label. Health results are keyed by
     /// it (`PreflightCache`, the Plugins surface), so two specs share a
     /// result only when they check the same thing: an identical `docker
     /// version` probe that also requires a reachable daemon is a different
@@ -24,6 +24,7 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
         var id = "\(Self.idField(binary)):\(livenessArgs.map(Self.idArgument).joined(separator: " "))"
         if let semantic { id += ":semantic=\(semantic.rawValue)" }
         if let contextualCheck { id += ":context=\(contextualCheck.rawValue)" }
+        if let slowStartTimeout { id += ":slowStart=\(slowStartTimeout)" }
         return id
     }
 
@@ -76,6 +77,23 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
     /// `nil` = no specific fix beyond install.
     public var authHint: String?
 
+    /// Probe budget for a CLI with a slow cold start. When set, the liveness
+    /// probe may run this long, and a probe that still gets no answer leaves
+    /// the prerequisite usable but unverified instead of failing it: silence
+    /// from a slow CLI is not evidence that it is broken or signed out.
+    /// `nil` keeps the checker's short default, where no answer is a failure.
+    public var slowStartTimeout: TimeInterval?
+
+    /// Bound imported probe budgets before starting a process. A slow-start
+    /// opt-in must allow at least the normal probe budget, and cannot hold a
+    /// readiness scan indefinitely. Nil retains the strict default policy.
+    public static let slowStartTimeoutRange: ClosedRange<TimeInterval> = 3...60
+
+    public var hasValidSlowStartTimeout: Bool {
+        guard let slowStartTimeout else { return true }
+        return slowStartTimeout.isFinite && Self.slowStartTimeoutRange.contains(slowStartTimeout)
+    }
+
     public init(
         binary: String,
         livenessArgs: [String] = ["--version"],
@@ -85,7 +103,8 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
         purpose: String,
         installURL: URL? = nil,
         installHint: String = "",
-        authHint: String? = nil
+        authHint: String? = nil,
+        slowStartTimeout: TimeInterval? = nil
     ) {
         self.binary = binary
         self.livenessArgs = livenessArgs
@@ -96,6 +115,7 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
         self.installURL = installURL
         self.installHint = installHint
         self.authHint = authHint
+        self.slowStartTimeout = slowStartTimeout
     }
 }
 
@@ -189,6 +209,11 @@ public enum CommonCLIPrerequisites {
         authHint: "Run `gh auth login`."
     )
 
+    /// gcloud starts a Python runtime, so its first call after a while can
+    /// take 10 s or more even when it is installed and signed in (a cold
+    /// `gcloud --version` measured 12 s; warm calls take about 1 s).
+    public static let gcloudSlowStartTimeout: TimeInterval = 20
+
     public static let gcloud = CLIPrerequisite(
         binary: "gcloud",
         livenessArgs: ["--version"],
@@ -197,7 +222,8 @@ public enum CommonCLIPrerequisites {
         purpose: "Invokes GCP APIs for the Google Cloud skill.",
         installURL: URL(string: "https://cloud.google.com/sdk/docs/install"),
         installHint: "Install via Homebrew: `brew install --cask google-cloud-sdk`",
-        authHint: "Run `gcloud auth login` to sign in."
+        authHint: "Run `gcloud auth login` to sign in.",
+        slowStartTimeout: gcloudSlowStartTimeout
     )
 
     /// Second spec for the auth state — separate entry so the catalog
@@ -216,7 +242,8 @@ public enum CommonCLIPrerequisites {
         purpose: "A signed-in account whose credentials still refresh is required for API calls.",
         installURL: nil,
         installHint: "",
-        authHint: "Run `gcloud auth login` to sign in."
+        authHint: "Run `gcloud auth login` to sign in.",
+        slowStartTimeout: gcloudSlowStartTimeout
     )
 
     public static let docker = CLIPrerequisite(

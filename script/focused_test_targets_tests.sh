@@ -54,6 +54,10 @@ assert_targets "" \
 assert_targets "" \
   "ASTRAGitContracts/Sources/ASTRAGitContracts/GitStatusContracts.swift"
 
+assert_targets "CLIPrerequisiteSlowStartTests|EnvironmentHealthCheckerTests|PreflightCacheTests|PluginManifestTests|PluginPackagePrereqTests|CapabilityHealthServiceTests|CapabilityRuntimeIntegrityServiceTests|PluginRepair|CLISessionExpiryTests" \
+  "ASTRACore/GCloudCredentialProbe.swift" \
+  "Tests/CLIPrerequisiteSlowStartTests.swift"
+
 assert_targets "AppSemanticFitnessTests" \
   "Tests/AppSemanticFitnessTests.swift"
 

@@ -421,3 +421,12 @@ setup component with a read-only `exec` check for the required executable; an
 empty argument list checks that the executable exists without starting it. The
 pasted MCP install flow already creates executable prerequisites. Actual MCP
 server startup happens when the task uses that server.
+
+CLI prerequisites and manifest `exec` setup checks may declare `slowStartTimeout`
+as a finite number from 3 to 60 seconds. Omit it to retain the strict 3-second
+default. Opting in both extends the probe budget and treats silence as usable
+but **not verified**; it does not turn an explicit failure into success. The
+Google Cloud version and credential-refresh checks use 20 seconds. A contextual
+workspace-access requirement still blocks when its base probe is not verified.
+The budget is part of the check identity and survives manifest import/export,
+so checks with different admission policies never share cached results.

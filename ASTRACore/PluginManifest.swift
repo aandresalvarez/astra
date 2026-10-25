@@ -248,6 +248,7 @@ public struct PluginSetupStep: Codable, Sendable, Equatable {
     public var arguments: [String]?
     public var expect: String?
     public var context: String?
+    public var slowStartTimeout: TimeInterval?
     public var command: String?
     public var url: URL?
     public var path: String?
@@ -261,6 +262,7 @@ public struct PluginSetupStep: Codable, Sendable, Equatable {
         arguments: [String]? = nil,
         expect: String? = nil,
         context: String? = nil,
+        slowStartTimeout: TimeInterval? = nil,
         command: String? = nil,
         url: URL? = nil,
         path: String? = nil,
@@ -272,6 +274,7 @@ public struct PluginSetupStep: Codable, Sendable, Equatable {
         self.arguments = arguments
         self.expect = expect
         self.context = context
+        self.slowStartTimeout = slowStartTimeout
         self.command = command
         self.url = url
         self.path = path
@@ -622,7 +625,8 @@ public enum PluginManifestConverter {
                     binary: prerequisite.binary,
                     arguments: prerequisite.livenessArgs,
                     expect: prerequisite.semantic?.rawValue,
-                    context: prerequisite.contextualCheck?.rawValue
+                    context: prerequisite.contextualCheck?.rawValue,
+                    slowStartTimeout: prerequisite.slowStartTimeout
                 ),
                 connect: prerequisite.authHint.map { PluginSetupStep(kind: .terminal, command: fix, hint: $0) },
                 repair: prerequisite.authHint.map { PluginSetupStep(kind: .terminal, command: fix, hint: $0) },
@@ -667,7 +671,8 @@ public enum PluginManifestConverter {
             purpose: component.summary,
             installURL: component.setup.install?.url,
             installHint: component.setup.install?.hint ?? "",
-            authHint: component.setup.connect?.hint
+            authHint: component.setup.connect?.hint,
+            slowStartTimeout: check.slowStartTimeout
         )
     }
 

@@ -124,7 +124,7 @@ struct PreflightCacheTests {
         // Ordinary checks keep the ids they always had.
         #expect(CommonCLIPrerequisites.githubAuth.id == "gh:auth status --hostname github.com:context=githubRepositoryAccess")
         #expect(CommonCLIPrerequisites.docker.id == "docker:version --format {{.Client.Version}}:semantic=stderrNoDaemonError")
-        #expect(CommonCLIPrerequisites.gcloudAuth.id == "gcloud:config config-helper --format=value(credential.token_expiry):semantic=stdoutNonEmpty")
+        #expect(CommonCLIPrerequisites.gcloudAuth.id == "gcloud:config config-helper --format=value(credential.token_expiry):semantic=stdoutNonEmpty:slowStart=20.0")
         // The two colliding checks get their own results, and a binary with
         // a delimiter in it is still invalidated by name.
         let cache = PreflightCache(checker: EnvironmentHealthChecker(runner: CountingRunner()))
@@ -171,7 +171,7 @@ struct PreflightCacheTests {
         let cache = PreflightCache(checker: checker)
 
         _ = await cache.status(for: CommonCLIPrerequisites.gcloud)       // --version
-        _ = await cache.status(for: CommonCLIPrerequisites.gcloudAuth)   // auth list
+        _ = await cache.status(for: CommonCLIPrerequisites.gcloudAuth)   // credential refresh
         #expect(await cache.cachedCount() == 2, "Different liveness args = different cache slots")
     }
 
@@ -188,6 +188,31 @@ struct PreflightCacheTests {
             return
         }
         #expect(detail.contains("not logged in"))
+    }
+
+    /// The cache turns an auth probe that fails into "needs login". A
+    /// slow-start auth probe that only got no answer must not take that path:
+    /// it blocked launches right after the user had run `gcloud auth login`.
+    @Test("slow-start auth probe with no answer stays usable, not unauthenticated")
+    func slowStartAuthTimeoutIsNotClassifiedAsUnauthenticated() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/usr/bin/env which gcloud",
+            result: RunResult(outcome: .exited(code: 0), stdout: "/opt/homebrew/bin/gcloud\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/homebrew/bin/gcloud config config-helper --format=value(credential.token_expiry)",
+            result: RunResult(outcome: .timedOut, stdout: "", stderr: "")
+        )
+        let cache = PreflightCache(checker: EnvironmentHealthChecker(runner: runner))
+
+        let status = await cache.status(for: CommonCLIPrerequisites.gcloudAuth)
+
+        guard case .unverified = status else {
+            Issue.record("Expected unverified, got \(status)")
+            return
+        }
+        #expect(status.isUsable)
     }
 }
 

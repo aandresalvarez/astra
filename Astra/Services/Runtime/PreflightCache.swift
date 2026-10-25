@@ -7,12 +7,10 @@ import ASTRACore
 /// `--version` calls can be slow for some tools (java, gcloud first-run).
 ///
 /// Keys are the `CLIPrerequisite.id` (binary, arguments, semantic test,
-/// context) so two packages sharing the same check share a single cache
+/// context, timeout policy) so two packages sharing the same check share a single cache
 /// slot, and a stricter check of the same probe gets its own.
 ///
-/// Thread-safe: the cache is a plain dictionary guarded by an NSLock.
-/// Using a real `actor` would force every call site to `await`, which is
-/// noisy in SwiftUI bodies. The lock holds for O(1) dictionary ops only.
+/// Actor isolation protects the cached entries across concurrent consumers.
 public actor PreflightCache {
     public typealias ContextualHealthProbe = @Sendable (
         _ check: CLIContextualCheck,
@@ -67,12 +65,11 @@ public actor PreflightCache {
            now().timeIntervalSince(cached.checkedAt) < ttl {
             return cached.status
         }
-        let checked = await checker.check(
-            binary: prereq.binary,
-            livenessArgs: prereq.livenessArgs,
-            semantic: prereq.semantic
-        )
+        let checked = await checker.check(prereq)
         var fresh = normalizedStatus(checked, for: prereq)
+        if case .unverified = fresh, prereq.contextualCheck != nil {
+            fresh = .notChecked(detail: "The CLI did not answer. Workspace access has not been verified; check again before starting.")
+        }
         if case .healthy(let executablePath, _) = fresh,
            let contextualCheck = prereq.contextualCheck,
            let workingDirectory = normalizedWorkingDirectory(workingDirectory) {

@@ -101,7 +101,8 @@
       "livenessArgs" : [
         "--version"
       ],
-      "purpose" : "Invokes GCP APIs for the Google Cloud skill."
+      "purpose" : "Invokes GCP APIs for the Google Cloud skill.",
+      "slowStartTimeout" : 20
     },
     {
       "authHint" : "Run `gcloud auth login` to sign in.",
@@ -114,7 +115,8 @@
         "--format=value(credential.token_expiry)"
       ],
       "purpose" : "A signed-in account whose credentials still refresh is required for API calls.",
-      "semantic" : "stdoutNonEmpty"
+      "semantic" : "stdoutNonEmpty",
+      "slowStartTimeout" : 20
     }
   ],
   "setupGuide" : "Connect your workspace to Google Cloud Platform using the gcloud CLI. Requires gcloud to be installed and authenticated on your machine (run `gcloud auth login` first).\n\nWhat you can do:\n• Query BigQuery datasets and tables\n• Manage Cloud Run services and deployments\n• List and manage GCS buckets and objects\n• Check IAM permissions and service accounts\n• Monitor logs and resource usage\n• Deploy and manage Cloud Functions\n\nSetup:\n• Install gcloud CLI: https:\/\/cloud.google.com\/sdk\/docs\/install\n• Authenticate: `gcloud auth login`\n• Set project: configure your default GCP project ID",

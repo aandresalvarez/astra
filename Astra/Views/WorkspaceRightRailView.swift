@@ -231,6 +231,7 @@ struct WorkspaceRightRailView: View {
     var onNewSSHConnection: (() -> Void)?
     var onEditSSHConnection: ((SSHConnection) -> Void)?
     var sshReloadTrigger: Int = 0
+    var isConfigurationPresented: Bool = false
     var isCompact = false
     var onDismiss: (() -> Void)?
 
@@ -539,6 +540,9 @@ struct WorkspaceRightRailView: View {
         }
         .task(id: signature) { rebuildCapabilityRailSnapshot(for: signature) }
         .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshCapabilityPrerequisiteStatuses() } // one checkout's repairs
+        .onChange(of: isConfigurationPresented) { _, presented in
+            if !presented { refreshCapabilityPrerequisiteStatuses() }
+        }
         .rescansPrerequisitesOnActivation { refreshCapabilityPrerequisiteStatuses() } // CLI state changed outside ASTRA
         .onChange(of: workspace.primaryPath) {
             loadSSHConnections()
@@ -2390,10 +2394,4 @@ private struct PendingRailDeletion: Identifiable {
     let message: String
     let confirmTitle: String
     let perform: () -> Void
-}
-
-private struct ApprovedCapabilitiesSnapshot: Sendable {
-    var packages: [PluginPackage]
-    var records: [CapabilityApprovalRecord]
-    var packPolicy: PackResolvedPolicy
 }

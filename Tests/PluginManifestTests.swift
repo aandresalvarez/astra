@@ -119,7 +119,7 @@ struct PluginManifestTests {
         let manifest = PluginManifestConverter.manifest(from: try builtIn("gcloud-workflow"))
         let setup = manifest.components.filter { $0.kind == .setup }
         let cli = try #require(setup.first { $0.name == "Google Cloud CLI" })
-        #expect(cli.setup.check == PluginSetupStep(kind: .exec, binary: "gcloud", arguments: ["--version"]))
+        #expect(cli.setup.check == PluginSetupStep(kind: .exec, binary: "gcloud", arguments: ["--version"], slowStartTimeout: 20))
         #expect(cli.setup.install?.url?.absoluteString == "https://cloud.google.com/sdk/docs/install")
 
         let login = try #require(setup.first { $0.name == "Google Cloud login" })

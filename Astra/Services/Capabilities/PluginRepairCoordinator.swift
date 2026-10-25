@@ -61,7 +61,8 @@ final class PluginRepairCoordinator: ObservableObject {
             repair.url?.absoluteString ?? "",
             repair.checkBinary ?? "",
             (repair.checkArguments ?? []).joined(separator: "\u{1E}"),
-            repair.checkExpect ?? ""
+            repair.checkExpect ?? "",
+            repair.checkTimeout.map(String.init(describing:)) ?? ""
         ].joined(separator: "\u{1F}")
     }
 
@@ -133,9 +134,13 @@ final class PluginRepairCoordinator: ObservableObject {
     /// tests); one ASTRA's own lookup finds by name must be absolute.
     nonisolated static func liveCheck(
         _ repair: RepairAction,
+        runner: any BinaryRunner = ProcessBinaryRunner(),
         isInstalled: @escaping @Sendable (String) -> Bool = { TrustedExecutablePath.isInstalled($0) }
     ) async -> Bool {
         guard let binary = repair.checkBinary else { return true }
+        if let timeout = repair.checkTimeout {
+            guard timeout.isFinite, CLIPrerequisite.slowStartTimeoutRange.contains(timeout) else { return false }
+        }
         // Only a read-only status check is run (`HealthCheckPolicy`).
         let arguments = repair.checkArguments ?? ["--version"]
         let existenceOnly = HealthCheckPolicy.isExistenceOnly(binary: binary, arguments: arguments)
@@ -149,8 +154,8 @@ final class PluginRepairCoordinator: ObservableObject {
             if existenceOnly { return path.hasPrefix("/") }
             guard searchedByASTRA ? path.hasPrefix("/") : isInstalled(path) else { return false }
             let merged = ProcessInfo.processInfo.environment.merging(environment) { _, projected in projected }
-            let result = await ProcessBinaryRunner().run(
-                path: path, args: repair.checkArguments ?? ["--version"], timeout: 10, environment: merged
+            let result = await runner.run(
+                path: path, args: repair.checkArguments ?? ["--version"], timeout: repair.checkTimeout ?? 10, environment: merged
             )
             guard result.exitCode == 0 else { return false }
             // Every declared semantic test, on stdout and stderr, as the
@@ -159,10 +164,11 @@ final class PluginRepairCoordinator: ObservableObject {
             let semantic = repair.checkExpect.flatMap(SemanticCheck.init(rawValue:))
             return semantic?.passes(stdout: result.stdout, stderr: result.stderr) ?? true
         }
-        let status = await EnvironmentHealthChecker(isInstalled: isInstalled).check(
+        let status = await EnvironmentHealthChecker(runner: runner, isInstalled: isInstalled).check(
             binary: binary,
             livenessArgs: repair.checkArguments ?? ["--version"],
-            semantic: repair.checkExpect.flatMap(SemanticCheck.init(rawValue:))
+            semantic: repair.checkExpect.flatMap(SemanticCheck.init(rawValue:)),
+            timeout: repair.checkTimeout ?? EnvironmentHealthChecker.defaultLivenessTimeout
         )
         return status.isUsable
     }

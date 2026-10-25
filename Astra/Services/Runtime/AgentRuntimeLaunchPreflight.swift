@@ -1109,6 +1109,15 @@ enum AgentRuntimeLaunchPreflight {
         for (key, value) in CapabilityRuntimeIntegrityService.summaryFields(for: issues) {
             fields[key] = value
         }
+        // Usable but unproven — e.g. a slow-start CLI that gave no answer in
+        // its budget. The launch goes ahead; the audit says what it skipped.
+        let unverifiedPrerequisiteIDs = prerequisiteStatuses.compactMap { id, status -> String? in
+            guard case .unverified = status else { return nil }
+            return id
+        }
+        if !unverifiedPrerequisiteIDs.isEmpty {
+            fields["unverified_prerequisites"] = CapabilityAudit.compactNames(unverifiedPrerequisiteIDs.sorted())
+        }
 
         // MCP servers are materialized only for runtimes that support them;
         // for those, a stdio server whose command can't be resolved would

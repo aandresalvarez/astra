@@ -489,6 +489,11 @@ struct PluginsSurfaceView: View {
             } else if isEnabled, let checkID, statuses[checkID]?.isNotChecked == true {
                 // A check that is not a read-only status command never runs.
                 Text("Not checked").font(Stanford.caption(11)).foregroundStyle(.secondary)
+            } else if isEnabled, let checkID, case .unverified(_, let detail)? = statuses[checkID] {
+                Text("Not verified")
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.orange)
+                    .help(detail)
             } else if isEnabled, component.kind == .setup, isUsable(component, package: package) {
                 ConfiguredStatusDot()
             }
@@ -527,12 +532,11 @@ struct PluginsSurfaceView: View {
         PluginManifestConverter.setupComponents(of: package).enumerated().compactMap { position, pair in
             let (prerequisite, component) = pair
             guard let status = statuses[prerequisite.id], !status.isUsable, !status.isNotChecked else { return nil }
-            let needsInstall: Bool = { if case .missingBinary = status { return true } else { return false } }()
             return FailingSetup(
                 position: position,
                 prerequisite: prerequisite,
                 component: component,
-                repair: RepairAction.from(component, needsInstall: needsInstall)
+                repair: RepairAction.from(component, status: status)
             )
         }
     }

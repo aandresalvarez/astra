@@ -752,6 +752,16 @@ enum CapabilityPackageValidator {
         issues: inout [CapabilityPackageValidationIssue]
     ) {
         for prerequisite in prerequisites {
+            guard prerequisite.hasValidSlowStartTimeout else {
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Invalid probe timeout",
+                    "\(prerequisite.displayName) must use a finite slow-start timeout from 3 to 60 seconds.",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
             if let reason = LocalToolSecurityPolicy.unsafeInvocationReason(
                 command: prerequisite.binary,
                 arguments: prerequisite.livenessArgs.joined(separator: " ")
