@@ -651,6 +651,8 @@ struct TaskLifecycleResumeTests {
         await coordinator.retryTask(task)?.value
 
         #expect(task.status == .completed)
+        #expect(task.runs.count == 3)
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: harness.context)?.canReplace == true)
         let rawArgs = try String(contentsOf: argsFile, encoding: .utf8)
         #expect(rawArgs.contains("check my open prs in github"))
         #expect(rawArgs.contains("User's follow-up request:\nContinue where you left off"))
@@ -946,12 +948,12 @@ struct TaskLifecycleResumeTests {
         """
         #!/bin/sh
         if [ "$1" = "--version" ]; then
-          echo "opencode fake 1.0"
+          echo "opencode fake 1.19.4"
           exit 0
         fi
         printf '%s\\n' "$@" > \(HeadlessChatScenarioTests.shQuote(argsFile.path))
-        printf '%s\\n' '{"type":"text","sessionID":"retry-session","part":{"type":"text","text":"Retried latest follow-up."}}'
-        printf '%s\\n' '{"type":"step_finish","sessionID":"retry-session","part":{"type":"step-finish","reason":"stop","tokens":{"total":4,"input":3,"output":1,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}'
+        printf '%s\\n' '{"type":"text","sessionID":"retry-session","part":{"type":"text","sessionID":"retry-session","messageID":"retry-message","id":"retry-text","text":"Retried latest follow-up."}}'
+        printf '%s\\n' '{"type":"step_finish","sessionID":"retry-session","part":{"type":"step-finish","sessionID":"retry-session","messageID":"retry-message","id":"retry-finish","reason":"stop","tokens":{"total":4,"input":3,"output":1,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}'
         exit 0
         """
     }

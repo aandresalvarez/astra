@@ -117,11 +117,11 @@ struct RuntimeRecoveryOwnershipTests {
         #expect(owner.record.limits.turnsRemaining == 2)
     }
 
-    @Test("Two contexts, Retry and automatic recovery share one execution owner")
-    func competingOwners() throws {
+    @Test("Two contexts, Retry and automatic recovery share one execution owner", arguments: AgentRuntimeAdapterRegistry.runtimeIDs)
+    func competingOwners(runtime: AgentRuntimeID) throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
-        let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "claude-sonnet-4-6")
+        let task = h.makeTask(runtime: runtime, goal: "Synthetic", model: "claude-sonnet-4-6")
         task.status = .running
         let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60))
         defer { owner.finish() }
@@ -135,11 +135,11 @@ struct RuntimeRecoveryOwnershipTests {
         #expect(!owner.authorizeAutomaticRestart())
     }
 
-    @Test("ASTRA restart preserves an uncertain launch and blocks retry without resetting usage")
-    func startupDoesNotInventTermination() throws {
+    @Test("ASTRA restart preserves an uncertain launch and blocks retry without resetting usage", arguments: AgentRuntimeAdapterRegistry.runtimeIDs)
+    func startupDoesNotInventTermination(runtime: AgentRuntimeID) throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
-        let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "claude-sonnet-4-6")
+        let task = h.makeTask(runtime: runtime, goal: "Synthetic", model: "claude-sonnet-4-6")
         task.status = .running; task.tokensUsed = 600
         let run = TaskRun(task: task); h.context.insert(run); try h.context.save()
         let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, state: .running)
@@ -147,7 +147,7 @@ struct RuntimeRecoveryOwnershipTests {
         h.context.insert(request); try h.context.save()
         #expect(TaskActivityPresentation.resolve(taskID: task.id, taskStatus: task.status, requests: [request.snapshot]).isRunning)
         var value = try record(taskID: task.id, state: .launching)
-        value.runID = run.id; value.providerProcess = nil; value.stopProof = nil
+        value.runtime = runtime.rawValue; value.runID = run.id; value.providerProcess = nil; value.stopProof = nil
         do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
         _ = TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: h.context, autoExportWorkspaces: false)
         _ = TaskTurnRequestRecoveryService.recoverInterruptedRequests(modelContext: h.context, autoExportWorkspaces: false)
@@ -255,7 +255,7 @@ struct RuntimeRecoveryOwnershipTests {
         #expect(task.tokensUsed == 600 && task.runs.count == 1)
     }
 
-    @Test("An explicit user turn needs local exit proof; Retry still needs tool cleanup")
+    @Test("Explicit turns and Retry both require tool cleanup proof")
     func userTurnCannotBypassLiveExecutionOrRetryProof() throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
@@ -267,11 +267,11 @@ struct RuntimeRecoveryOwnershipTests {
         do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
         if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: h.context) {} else { Issue.record("Retry bypassed missing tool proof") }
         #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60) == nil)
-        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 999, newUserTurn: true))
-        #expect(owner.record.limits == value.limits)
-        #expect(!owner.authorizeAutomaticRestart())
-        #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, newUserTurn: true) == nil)
-        owner.finish()
+        #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 999, newUserTurn: true) == nil)
+        let preserved = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(preserved.limits == value.limits)
+        #expect(preserved.executionID == value.executionID)
+
     }
 
     @Test("A completed provider turn cannot grant Retry without tool termination proof")
@@ -285,16 +285,15 @@ struct RuntimeRecoveryOwnershipTests {
         value.stopProof = .init(executionID: proof.executionID, process: proof.process, reaped: true,
             processGroupEmpty: true, toolsStopped: false, remoteWorkExcluded: false, capturedAt: Date())
         do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
-        #expect(RuntimeSessionInspection.inspect(value, ownedHere: false).state == .finished)
+        #expect(RuntimeSessionInspection.inspect(value, ownedHere: false).state == .unknown)
         #expect(!RuntimeSessionInspection.inspect(value, ownedHere: false).canReplace)
         let coordinator = TaskLifecycleCoordinator(modelContext: h.context, taskQueue: TaskQueue(poolSize: 0))
         #expect(coordinator.retryTask(task) == nil)
         #expect(task.tokensUsed == 600)
         #expect(try TaskTurnRequestRepository.requests(for: task, in: h.context).isEmpty)
         #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60) == nil)
-        let explicitTurn = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context,
-            maxRunSeconds: 60, newUserTurn: true))
-        explicitTurn.finish()
+        #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context,
+            maxRunSeconds: 60, newUserTurn: true) == nil)
     }
 
     @Test("A failed validation keeps the unfinished task's limits after its provider completed")

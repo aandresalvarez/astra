@@ -3483,13 +3483,14 @@ struct TaskMainView: View {
 
     private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
         let permission = runtimePermissionState
-        // A queued follow-up must not hide a LIVE permission request: the
-        // provider is still waiting on an approve/deny decision, and that
-        // dock's Approve/Deny/Stop controls are unreachable from the waiting
-        // dock. Only prefer the waiting dock when no permission decision is
-        // outstanding.
-        if !permission.hasOpenApprovalRequest,
-           let waitingPresentation = taskTurnWaitingDockPresentation {
+        let recoveryBlockMessage = RuntimeRecoveryPresentation.blockedMessage(task: task, context: modelContext)
+        // Preserve a live permission decision, but keep Cancel request
+        // reachable when an older disconnected execution blocks this message.
+        if let waitingPresentation = RuntimeRecoveryPresentation.queuedRequestDock(
+            taskTurnWaitingDockPresentation,
+            hasOpenApprovalRequest: permission.hasOpenApprovalRequest,
+            blockedMessage: recoveryBlockMessage
+        ) {
             return waitingPresentation
         }
         let reviewInput = PendingTaskReviewSnapshotInput(
@@ -3531,7 +3532,8 @@ struct TaskMainView: View {
             launchBlock: TaskRunStopEvidence.launchBlock(events: sortedEvents, runID: latestRun?.id),
             repair: TaskRunStopEvidence.presentationRepair(events: sortedEvents, runID: latestRun?.id, task: task),
             artifactPaths: taskDecisionArtifactPaths,
-            extraDetails: taskDecisionExtraDetails
+            extraDetails: taskDecisionExtraDetails,
+            recoveryBlockMessage: recoveryBlockMessage
         ))
     }
 

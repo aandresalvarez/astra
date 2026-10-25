@@ -68,19 +68,13 @@ struct RuntimeRecoveryReviewRegressionTests {
             guard case .success(let submitted) = submission else { Issue.record("Submission failed"); continue }
             let request = try #require(try TaskTurnRequestRepository.request(id: submitted.requestID, in: h.context))
             let intent = RuntimeExecutionAdmission.resolve(request: request, task: task)
-            #expect(intent.permitsLocalExit == permitted)
+            #expect(intent.isNewUserTurn == permitted)
             let owner = RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 999,
-                newUserTurn: intent.permitsLocalExit)
-            if permitted {
-                let owner = try #require(owner)
-                #expect(owner.record.limits == prior.limits)
-                owner.finish()
-                // Restore the exact prior turn for the next independent admission case.
-                let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id)
-                try lease.save(prior)
-            } else { #expect(owner == nil) }
+                newUserTurn: intent.isNewUserTurn)
+            #expect(owner == nil)
+            #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context)?.limits == prior.limits)
         }
-        #expect(!RuntimeExecutionAdmission.resolve(request: nil, task: task).permitsLocalExit)
+        #expect(!RuntimeExecutionAdmission.resolve(request: nil, task: task).isNewUserTurn)
     }
 
     @Test("All legacy execution outcomes without a receipt block competing admission", arguments: ["failed", "cancelled", "timeout", "completed", "app_restarted"])
@@ -140,23 +134,18 @@ struct RuntimeRecoveryReviewRegressionTests {
         defer { h.cleanup() }
         let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "claude-sonnet-4-6")
         let previous = try RuntimeRecoveryTestReceipt.install(task: task, run: nil, context: h.context, toolsStopped: false)
-        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, newUserTurn: true))
-        let run = TaskRun(task: task); h.context.insert(run); try owner.bind(run: run)
-        // A preparation failure before spawning retains both budget and old uncertainty.
-        owner.finish()
-        let resumed = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 999, newUserTurn: true))
-        #expect(resumed.record.limits == previous.limits)
-        try resumed.bind(run: run)
-        // Use a saved matched receipt to model a later, known tool-free turn.
-        var finished = resumed.record
-        resumed.finish()
+        #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, newUserTurn: true) == nil)
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context)?.limits == previous.limits)
+        // A historical handoff's newer receipt cannot erase inherited tool uncertainty.
+        var finished = previous
         finished.state = .finished
-        finished.providerProcess = previous.providerProcess
+        finished.inheritedToolUncertainty = true
         finished.stopProof = .init(executionID: finished.executionID, process: previous.providerProcess!,
             reaped: true, processGroupEmpty: true, toolsStopped: true, remoteWorkExcluded: true, capturedAt: Date())
         do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(finished) }
-        #expect(finished.canAcceptUserTurn && !finished.canReplace)
+        #expect(!finished.canAcceptUserTurn && !finished.canReplace)
         if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: h.context) {} else { Issue.record("Old tools were forgotten") }
+
     }
 
     @Test("A no-provider record cannot bypass unverified settlement work", arguments: [RuntimeExecutionOwnerRecord.State.notStarted, .preparing])
@@ -171,6 +160,44 @@ struct RuntimeRecoveryReviewRegressionTests {
         #expect(!saved.canRecoverPreparation && !saved.canAcceptUserTurn && !saved.canReplace)
         #expect(RuntimeExecutionOwner.acquireSettlement(task: task, run: run, context: h.context).owner == nil)
         #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, newUserTurn: true) == nil)
+    }
+
+    @Test("Legacy interrupted preparations retain inherited work", arguments: ["inherited", "settlement", "provider"])
+    func legacyPreparationCannotForgetWork(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "test")
+        var saved = try RuntimeRecoveryTestReceipt.install(task: task, run: nil, context: h.context)
+        saved.state = .preparing
+        if fault != "provider" { saved.providerProcess = nil }
+        saved.stopProof = nil
+        saved.inheritedToolUncertainty = fault == "inherited"
+        saved.settlementToolsStopped = fault == "settlement" ? false : nil
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(saved) }
+        #expect(!saved.canRecoverPreparation)
+        #expect(RuntimeResourceOwnership.retainsResources(saved))
+        #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60) == nil)
+        #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, newUserTurn: true) == nil)
+        if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: h.context) {} else { Issue.record("Uncertain preparation admitted Retry") }
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context)?.limits == saved.limits)
+    }
+
+    @Test("Recovery accounting saturates across attempts without refilling limits")
+    func extremeRecoveryUsage() throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let task = h.makeTask(runtime: .openCodeCLI, goal: "Synthetic", model: "test")
+        _ = try RuntimeRecoveryTestReceipt.install(task: task, run: nil, context: h.context)
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60))
+        defer { owner.finish() }
+        owner.stopped(proof: nil, turns: 1, tokens: Int.max, seconds: 1)
+        #expect(owner.record.limits.tokensSpent == Int.max)
+        #expect(owner.record.limits.tokensRemaining == 0)
+        #expect(!owner.authorizeAutomaticRestart())
+        let run = TaskRun(task: task); h.context.insert(run); try owner.bind(run: run)
+        run.tokensUsed = Int.max
+        owner.finish()
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context)?.limits.tokensSpent == Int.max)
     }
 
     @Test("Background objective assessment never inherits the closing validation scope")

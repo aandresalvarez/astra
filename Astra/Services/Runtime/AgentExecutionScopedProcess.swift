@@ -32,6 +32,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private var running = false
     private var reaped = false
     private var reapedSuccessfully = false
+    private var reapedNaturallyWithSuccess = false
     private var launchIdentity: RuntimeProcessIdentity?
     private var stopRequested = false
     private var status: Int32 = 0
@@ -68,6 +69,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
     var processIdentifier: Int32 { lock.withLock { processID } }
     var executionIdentity: RuntimeProcessIdentity? { lock.withLock { launchIdentity } }
+    /// Captured at waitpid, before a late cancellation can change stopRequested.
+    var naturalSuccessfulExit: Bool { lock.withLock { reapedNaturallyWithSuccess } }
 
     func stopProof(executionID: UUID, toolsStopped: Bool, remoteWorkExcluded: Bool) -> RuntimeExecutionStopProof? {
         lock.withLock {
@@ -298,7 +301,11 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
             lock.lock()
             result = waitpid(pid, &waitStatus, WNOHANG)
             let retry = result == 0 || (result == -1 && errno == EINTR)
-            if !retry { reaped = true; reapedSuccessfully = result == pid }
+            if !retry {
+                reaped = true
+                reapedSuccessfully = result == pid
+                reapedNaturallyWithSuccess = result == pid && Self.exitCode(from: waitStatus) == 0 && !stopRequested
+            }
             lock.unlock()
             if !retry { break }
             usleep(50_000)

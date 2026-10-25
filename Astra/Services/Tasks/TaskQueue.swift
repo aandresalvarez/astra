@@ -551,7 +551,7 @@ final class TaskQueue {
             copiedRun.stopReason = latestRun.stopReason
             modelContext.insert(copiedRun)
 
-            sourceTask.tokensUsed += latestRun.tokensUsed
+            sourceTask.tokensUsed = RuntimeUsageArithmetic.adding(sourceTask.tokensUsed, latestRun.tokensUsed)
             sourceTask.costUSD += latestRun.costUSD
             sourceTask.completedAt = latestRun.completedAt
             sourceTask.updatedAt = latestRun.completedAt ?? Date()

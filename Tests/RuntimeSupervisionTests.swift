@@ -168,6 +168,7 @@ struct RuntimeSupervisionTests {
         #expect(unlimited.reserveSupervisionTokens(100))
         #expect(unlimited.processEvent(.usage(totalInputTokens: Int.max, totalOutputTokens: 0), process: nil))
         #expect(unlimited.budgetExceeded)
+        #expect(unlimited.recoveryTokensConsumed(estimatedInputTokens: 100) == Int.max)
     }
 
     @Test("Hard budget and wall-clock limits win while an investigation is pending", arguments: [false, true])

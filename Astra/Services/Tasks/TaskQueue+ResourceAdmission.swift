@@ -152,6 +152,7 @@ extension TaskQueue {
         let holder = try? resourceOwnershipStore?.read(taskID: conflict.holder.taskID)
         let awaitingCleanup = holder == nil || holder?.cancellationRequested == true
             || holder?.state == .unverified || holder?.appProcess.presence != .present
+            || (holder?.state == .finished && holder?.canReplace != true)
         return summary + (awaitingCleanup ? " Previous execution cleanup is not yet confirmed." : "")
     }
 

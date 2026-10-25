@@ -6,7 +6,7 @@ import ASTRAModels
 /// proof. Only its durable source distinguishes new work from replaying work.
 enum RuntimeExecutionAdmission {
     case recovery, userInstruction, approvedContinuation
-    var permitsLocalExit: Bool { self != .recovery }
+    var isNewUserTurn: Bool { self != .recovery }
 
     @MainActor
     static func resolve(request: TaskTurnRequest?, task: AgentTask) -> Self {

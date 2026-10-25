@@ -12,7 +12,7 @@ Automatic recovery, Retry, Resume, direct worker admission, and startup reconcil
 
 - **Working:** keep the existing in-process connection. The suspended-child recovery from #548 can resume that exact child under the same owner.
 - **Waiting for input:** keep the existing request; do not restart it. Interactive asks record this state.
-- **Finished:** preserve the result and native session. A new user turn can proceed after the matching provider child has been reaped and its process group is empty. Startup can reconcile a result settled after the old app crashed.
+- **Finished:** preserve the result and native session. A new user turn requires the same full execution and tool termination proof as Retry. Startup can reconcile a result settled after the old app crashed without authorizing uncertain new work.
 - **Stopped:** continue with the saved context and remaining limits only when the termination receipt allows it.
 - **Unknown:** preserve the task and explain that replacement is blocked.
 
@@ -34,7 +34,7 @@ A returned tool result does not prove that a detached command or remote job stop
 
 Retry of a verified unfinished execution submits a continuation instead of repeating the original command or clearing usage. The next owner inherits the native session when its provider still matches, original token ceiling, recorded consumption, remaining turns/time, cost, and automatic-retry count. Failed preflight and ASTRA restart do not refill these allowances. Enlarging task settings cannot enlarge a recovery allowance. Only a completed task can accept a new explicit user turn under its usual limits. Provider completion followed by failed or pending validation remains unfinished work. Every Retry of a tracked execution requires the full termination proof and retains its remaining allowance, including after a completed provider turn.
 
-A **new explicit user follow-up, approved plan step, or permission approval** is not an automatic replay or Retry. It may continue an unfinished conversation after a matching receipt confirms the prior provider was reaped, its local process group was empty, and its process identity remains absent. It inherits the unfinished execution's remaining limits. It does not attest remote/tool cleanup and cannot grant automatic restart permission. Older tool uncertainty survives every owner handoff, so a later tool-free turn cannot erase it. Retry and Resume requests remain subject to the full proof gate, even when their stored prompt is a continuation. Admission derives authority from the durable source event and typed envelope, never the worker phase, request kind alone, or prompt wording. Startup never invents a new user turn.
+A **new explicit user follow-up, approved plan step, or permission approval** remains distinct from replay for context and limits, but requires the same full cleanup proof. It inherits the unfinished execution's remaining limits. Older tool uncertainty survives every owner handoff, including an interrupted preparation from an older app version. Retry and Resume remain subject to this gate even when their stored prompt is a continuation. Admission derives intent from the durable source event and typed envelope, never the worker phase, request kind alone, or prompt wording. Startup never invents a new user turn.
 
 All existing tasks with execution history or a native session but no receipt are blocked, including historical failures, cancellations, timeouts and completions. A missing journal never grants a fresh allowance. Imported or legacy execution requires reconciliation; there is no unchecked Retry exception.
 
@@ -44,7 +44,9 @@ Startup permission recovery, orphan-run reconciliation, pending-request recovery
 
 The same kernel lease covers result settlement and final plan validation. Before any validator can launch, the journal persists an in-progress barrier. A crash leaves that barrier in place even if the provider has stopped or a task completion was saved. Startup does not turn a validation result or a missing app process into termination proof.
 
-Test commands, syntax checks and AI utilities share process-group cleanup and reaping. A sealed settlement scope records whether all launched local children and groups stopped. New explicit user work can proceed after those local receipts; arbitrary validators may have detached or remote effects, so they never certify tool cleanup for automatic recovery or Retry. An interrupted validation remains blocked rather than replaying it.
+Test commands, syntax checks and AI utilities share process-group cleanup and reaping. A sealed settlement scope records whether all launched local children and groups stopped. Arbitrary validators may have detached or remote effects, so local receipts alone never certify tool cleanup for new work or recovery. An interrupted validation remains blocked rather than replaying it. New validation cannot start while the provider's own cleanup remains uncertain.
+
+Already persisted resource releases from older versions remain historical decisions; this change does not retroactively claim that they carried the stronger proof. Unreleased legacy ownership remains fenced.
 
 Input estimates are charged when the provider reports no usage; finalized run accounting reconciles the journal without double charging. Launch preparation and supervision baselines consume the remaining deadline. Zero remaining time blocks the replacement before spawning, rather than disabling the process timeout.
 
