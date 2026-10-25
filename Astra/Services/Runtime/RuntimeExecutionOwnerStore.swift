@@ -44,6 +44,25 @@ final class RuntimeExecutionOwnerStore {
         return Lease(descriptor: fd, recordURL: recordURL(taskID))
     }
 
+    /// Serializes conflict inspection and journal publication across app instances.
+    /// This lease is short lived; the per-task lease remains held during work.
+    func acquireAdmission() throws -> Lease {
+        try acquire(taskID: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!)
+    }
+
+    func records() throws -> [RuntimeExecutionOwnerRecord] {
+        let entries: [URL]
+        do { entries = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+        // Only an absent scan root is empty. Missing or corrupt enumerated
+        // receipts still fail closed, as do protected provider references.
+        return try entries.filter { $0.pathExtension == "json" }.map { url in
+                guard let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
+                      let record = try Self.read(url), record.taskID == id else { throw Failure.unreadable }
+                return record
+            }
+    }
+
     func read(taskID: UUID) throws -> RuntimeExecutionOwnerRecord? { try Self.read(recordURL(taskID)) }
     private func recordURL(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString + ".json") }
     private static func read(_ url: URL) throws -> RuntimeExecutionOwnerRecord? {

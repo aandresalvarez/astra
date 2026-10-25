@@ -9,6 +9,7 @@ import ASTRAPersistence
 @MainActor
 final class RuntimeExecutionOwner {
     private static var active: Set<String> = []
+    private static let memoryStores = NSMapTable<ModelContainer, NSURL>.weakToStrongObjects()
     private let key: String
     private var lease: RuntimeExecutionOwnerStore.Lease?
     private(set) var record: RuntimeExecutionOwnerRecord
@@ -17,6 +18,7 @@ final class RuntimeExecutionOwner {
     private let task: AgentTask
     private let context: ModelContext
     private var run: TaskRun?
+    var settlementScope: RuntimeSettlementExecutionScope?
     private var writeFailed = false
     private let initialTokensSpent: Int
 
@@ -29,9 +31,14 @@ final class RuntimeExecutionOwner {
 
     static func store(in context: ModelContext) -> RuntimeExecutionOwnerStore {
         let configuration = context.container.configurations.first!
-        let root = configuration.isStoredInMemoryOnly
-            ? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("astra-test-execution-owners")
-            : configuration.url.deletingLastPathComponent().appendingPathComponent("runtime-owners")
+        if configuration.isStoredInMemoryOnly {
+            if let root = memoryStores.object(forKey: context.container) { return .init(root: root as URL) }
+            let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("astra-test-execution-owners-" + UUID().uuidString)
+            memoryStores.setObject(root as NSURL, forKey: context.container)
+            return .init(root: root)
+        }
+        let root = configuration.url.deletingLastPathComponent().appendingPathComponent("runtime-owners")
+        RuntimeProviderResourceRegistry.register(root)
         return .init(root: root)
     }
 
@@ -110,11 +117,23 @@ final class RuntimeExecutionOwner {
     }
 
     static func acquire(task: AgentTask, context: ModelContext, maxRunSeconds: TimeInterval,
-                        newUserTurn: Bool = false, launchTask: AgentTask? = nil) -> RuntimeExecutionOwner? {
+                        newUserTurn: Bool = false, launchTask: AgentTask? = nil,
+                        resourceClaims: [TaskResourceLockClaim]? = nil) -> RuntimeExecutionOwner? {
         let key = key(taskID: task.id, context: context)
         do {
             guard !active.contains(key) else { throw RuntimeExecutionOwnerStore.Failure.busy }
-            let lease = try store(in: context).acquire(taskID: task.id)
+            let store = store(in: context)
+            let admission = try store.acquireAdmission()
+            defer { withExtendedLifetime(admission) {} }
+            let claims = resourceClaims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(
+                for: nil, task: task, runMode: "runtime", fallbackAccess: .write, sandboxEnforcement: .off)
+            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id)
+            guard TaskExecutionResourceBroker.canAcquire(claims, active: held) else {
+                report(TaskExecutionResourceBroker.blockerSummary(requested: claims, active: held)
+                    + " Previous execution cleanup is not yet confirmed.", task: task, context: context, pause: true)
+                return nil
+            }
+            let lease = try store.acquire(taskID: task.id)
             let previous = try lease.read().map { reconciledCompletion($0, task: task) }
             guard previous == nil || previous?.taskID == task.id else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
             if previous == nil, requiresExistingReceipt(task) {
@@ -122,6 +141,12 @@ final class RuntimeExecutionOwner {
                 return nil
             }
             if let previous {
+                if previous.cancellationRequested == true, previous.resourcesReleased != true,
+                   !previous.canReplace, !previous.canRecoverPreparation {
+                    report("The cancelled execution still owns resources because its tools have not been confirmed stopped.",
+                        task: task, context: context, pause: true)
+                    return nil
+                }
                 let abandonedBeforeLaunch = previous.canRecoverPreparation
                 guard previous.canReplace || abandonedBeforeLaunch
                     || (newUserTurn && previous.canAcceptUserTurn) else {
@@ -141,6 +166,8 @@ final class RuntimeExecutionOwner {
                 appProcess: app, runtime: recovering ? previous!.runtime : task.resolvedRuntimeID.rawValue, sessionID: recovering ? previous?.sessionID : nil,
                 state: .preparing, limits: limits, automaticRestarts: recovering ? previous!.automaticRestarts : 0, updatedAt: Date())
             record.inheritedToolUncertainty = previous?.hasUnverifiedTools
+            record.resourceClaims = claims
+            record.resourcesReleased = false
             try lease.save(record) // fail closed before any worker/provider side effect
             active.insert(key)
             return .init(key: key, lease: lease, record: record, isRecovery: recovering, task: task, context: context)
@@ -162,22 +189,35 @@ final class RuntimeExecutionOwner {
         }
     }
 
-    static func acquireSettlement(task: AgentTask, run: TaskRun, context: ModelContext) -> SettlementAdmission {
+    static func acquireSettlement(task: AgentTask, run: TaskRun, context: ModelContext,
+                                  resourceClaims: [TaskResourceLockClaim]? = nil) -> SettlementAdmission {
         let key = key(taskID: task.id, context: context)
         do {
             guard !active.contains(key) else { throw RuntimeExecutionOwnerStore.Failure.busy }
-            let lease = try store(in: context).acquire(taskID: task.id)
+            let store = store(in: context)
+            let admission = try store.acquireAdmission()
+            defer { withExtendedLifetime(admission) {} }
+            let lease = try store.acquire(taskID: task.id)
             let saved: RuntimeExecutionOwnerRecord?
             do { saved = try lease.read() } catch { return .unresolved(lease) }
             if let saved, saved.taskID != task.id || saved.runID != run.id { return .deferred }
-            guard let saved, saved.settlementInProgress != true,
-                  saved.canAcceptUserTurn else { return .unresolved(lease) }
+            guard var saved, saved.settlementInProgress != true,
+                  saved.canAcceptUserTurn,
+                  saved.cancellationRequested != true || saved.canReplace else { return .unresolved(lease) }
+            let claims = resourceClaims ?? saved.resourceClaims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(
+                for: nil, task: task, runMode: "settlement", fallbackAccess: .write, sandboxEnforcement: .off)
+            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id)
+            guard TaskExecutionResourceBroker.canAcquire(claims, active: held) else { return .deferred }
+            saved.resourceClaims = claims
+            saved.resourcesReleased = false
+            try lease.save(saved)
             active.insert(key)
             return .acquired(.init(key: key, lease: lease, record: saved, isRecovery: true, task: task, context: context))
         } catch { return .deferred }
     }
 
     func restoreSession(for runtime: AgentRuntimeID) {
+        guard isActive else { return }
         if isRecovery, record.runtime == runtime.rawValue, let session = record.sessionID { task.sessionId = session }
     }
 
@@ -190,7 +230,8 @@ final class RuntimeExecutionOwner {
     }
 
     func prepareLaunch(sessionID: String? = nil) throws {
-        guard !writeFailed, lease != nil, record.state == .preparing || record.canReplace else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        guard !writeFailed, lease != nil, record.cancellationRequested != true,
+              record.state == .preparing || record.canReplace else { throw RuntimeExecutionOwnerStore.Failure.busy }
         record.executionID = UUID(); record.providerProcess = nil; record.stopProof = nil
         record.sessionID = sessionID
         record.state = .launching
@@ -206,17 +247,20 @@ final class RuntimeExecutionOwner {
     func didNotLaunch() { record.state = .notStarted; try? save(nil) }
 
     func session(_ sessionID: String?) {
+        guard isActive else { return }
         guard let sessionID, !sessionID.isEmpty, record.sessionID != sessionID else { return }
         record.sessionID = sessionID; try? save(nil)
     }
 
     func waitingForInput(_ waiting: Bool) {
+        guard isActive else { return }
         guard record.state == .working || record.state == .waitingForInput else { return }
         record.state = waiting ? .waitingForInput : .working
         try? save(waiting ? "The existing provider session is waiting for input. Automatic restart is paused." : nil)
     }
 
     func stopped(proof: RuntimeExecutionStopProof?, turns: Int, tokens: Int, seconds: TimeInterval) {
+        guard isActive else { return }
         guard record.state != .notStarted else { return }
         record.stopProof = proof
         record.limits.tokensSpent += max(0, tokens)
@@ -243,17 +287,20 @@ final class RuntimeExecutionOwner {
     }
 
     func chargePreparation(seconds: TimeInterval) {
+        guard isActive else { return }
         record.limits.secondsRemaining = max(0, record.limits.secondsRemaining - max(0, seconds))
         try? save(nil)
     }
 
     func reconcileUsage() {
+        guard isActive else { return }
         record.limits.tokensSpent = max(record.limits.tokensSpent, initialTokensSpent + max(0, run?.tokensUsed ?? 0))
         try? save(nil)
     }
 
     func beginSettlement() throws {
         guard record.settlementInProgress != true else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        record.resourcesReleased = false
         record.settlementInProgress = true
         record.settlementLocalWorkStopped = false
         try save(nil, audit: true)
@@ -274,7 +321,40 @@ final class RuntimeExecutionOwner {
         if record.state == .preparing { record.state = .notStarted }
         if task.status == .completed, run?.status == .completed,
            record.stopProof?.reaped == true, record.stopProof?.processGroupEmpty == true { record.state = .finished }
+        if !writeFailed && (record.cancellationRequested == true ? record.canReplace : record.canAcceptUserTurn) {
+            record.resourcesReleased = true
+            record.providerSharedStateReleased = true
+        }
         try? save(nil)
+    }
+
+    var isActive: Bool { lease != nil && !writeFailed }
+    var persistedResourceRelease: Bool { !writeFailed && record.resourcesReleased == true }
+
+    func releaseProviderSharedState() -> Bool {
+        guard isActive, record.cancellationRequested != true || record.canReplace else { return false }
+        record.providerSharedStateReleased = true
+        do { try save(nil); return true } catch { return false }
+    }
+
+    func requestCancellation() {
+        guard isActive, record.cancellationRequested != true else { return }
+        record.cancellationRequested = true
+        settlementScope?.cancel()
+        try? save("Stopping the provider. ASTRA will keep its resources reserved until cleanup is confirmed.", audit: true)
+    }
+
+    var providerOwnershipReference: RuntimeProviderOwnershipReference {
+        .init(journalRoot: Self.store(in: context).root.path, taskID: record.taskID, ownerID: record.ownerID)
+    }
+
+    func bindProviderSharedState(_ key: AgentRuntimeSharedStateKey) throws {
+        guard isActive, record.cancellationRequested != true,
+              record.providerSharedStateReleased == true || record.providerSharedStateKey == nil
+                || record.providerSharedStateKey == key.rawValue else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        record.providerSharedStateKey = key.rawValue
+        record.providerSharedStateReleased = false
+        try save(nil)
     }
 
     private static func replacementBlockedMessage(_ record: RuntimeExecutionOwnerRecord, inspection: RuntimeSessionInspection) -> String {

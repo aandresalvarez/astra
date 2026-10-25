@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Runtime/RuntimeTemplateHookScope.swift|Tests/QueueLockTests.swift|Tests/RuntimeSettlementRecoveryFollowupTests.swift|Tests/LaunchSnapshotDisciplineTests.swift|Astra/Services/Tasks/TaskQueue*.swift|Astra/Services/Tasks/TaskWedgedWorkerLeaseReclaimer.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Runtime/RuntimeResourceOwnership.swift|Astra/Services/Runtime/RuntimeProvider*.swift|Astra/Services/Runtime/RuntimeUtilitySharedStateLease.swift|Astra/Services/Runtime/ProviderSharedStateProcessLock.swift|Astra/Services/Runtime/RuntimeSettlement*.swift|Astra/Services/Runtime/RuntimeFinalPlanSettlement.swift|Astra/Services/Runtime/RuntimeTurnOutcomeService.swift|Astra/Services/Runtime/AgentRuntimeSharedStateGate.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentRuntimeAsyncWork.swift|Astra/Services/Runtime/AgentInteractivePermissionChannel.swift|Tests/Fixtures/ProviderStreams/*/cancellation-tool-free.jsonl|Tests/RuntimeCancellation*Tests.swift|Tests/RuntimeSettlementCancellationTests.swift|Tests/TaskQueueWedgedWorkerReleaseTests.swift)
+      add_target "RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Runtime/RuntimeRecovery*.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Tests/RuntimeRecovery*Tests.swift)
       add_target "RuntimeRecovery"
       add_target "RuntimeSupervision"
@@ -39,6 +45,9 @@ target_for_path() {
   fi
 
   case "$path" in
+    Tests/CapabilityResolutionTestSupport.swift|Tests/CapabilityInstallerTests.swift|Tests/PluginActivationMigrationTests.swift|Tests/PluginActivationOwnershipTests.swift|Tests/PluginPromptScopeParityTests.swift|Tests/RoutineSkillSelectionTests.swift)
+      add_target "CapabilityInstallerTests|CapabilityResolutionInputsTests|PluginActivationMigrationTests|PluginActivationOwnershipTests|PluginPromptScopeParityTests|RoutineSkillSelectionTests"
+      ;;
     Tests/ArchitectureFitnessTests/*)
       ;;
     Tests/AppSemanticFitnessTests.swift)

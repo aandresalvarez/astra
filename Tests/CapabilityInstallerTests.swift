@@ -18,6 +18,12 @@ private func makeCapabilityInstallerLibrary() -> (CapabilityLibrary, URL) {
     return (CapabilityLibrary(directory: root), root)
 }
 
+private func installerResolutionInputs(library: CapabilityLibrary) -> CapabilityResolutionInputs {
+    // Resolver defaults must use this fixture's installed packages, not a
+    // different version in the user's library or their approval records.
+    return CapabilityResolutionTestSupport.inputs(packages: library.installedPackages())
+}
+
 private func makeAnalystCapabilityPackage() -> PluginPackage {
     PluginPackage(
         id: "stanford.bigquery.analyst",
@@ -354,11 +360,13 @@ struct CapabilityInstallerTests {
         #expect(!connector.configKeys.contains("JIRA_BASE_URL"))
 
         let task = AgentTask(title: "Use Jira", goal: "List tickets", workspace: workspace)
-        let resolver = TaskCapabilityResolver(task: task).resolver
-        #expect(TaskCapabilityResolver(task: task).allConnectors.first { $0.id == connector.id }?.baseURL == baseURL)
-        #expect(resolver.resolvedEnvironmentVariables["JIRA_JIRA_PROJECTS"] == "ENG, OPS")
-        #expect(resolver.resolvedEnvironmentVariables["JIRA_BASE_URL"] == "")
-        #expect(resolver.resolvedEnvironmentVariables["JIRA_PROJECTS"] == nil)
+        CapabilityResolutionInputs.$pinned.withValue(installerResolutionInputs(library: library)) {
+            let resolver = TaskCapabilityResolver(task: task).resolver
+            #expect(TaskCapabilityResolver(task: task).allConnectors.first { $0.id == connector.id }?.baseURL == baseURL)
+            #expect(resolver.resolvedEnvironmentVariables["JIRA_JIRA_PROJECTS"] == "ENG, OPS")
+            #expect(resolver.resolvedEnvironmentVariables["JIRA_BASE_URL"] == "")
+            #expect(resolver.resolvedEnvironmentVariables["JIRA_PROJECTS"] == nil)
+        }
     }
 
     @Test("two same-named connectors of one service with distinct IDs each get their own account")
@@ -604,16 +612,18 @@ struct CapabilityInstallerTests {
 
         let firstTask = AgentTask(title: "First", goal: "List tickets", workspace: firstWorkspace)
         let secondTask = AgentTask(title: "Second", goal: "List tickets", workspace: secondWorkspace)
-        let firstEnv = TaskCapabilityResolver(task: firstTask).resolver.resolvedEnvironmentVariables
-        let secondEnv = TaskCapabilityResolver(task: secondTask).resolver.resolvedEnvironmentVariables
-        #expect(TaskCapabilityResolver(task: firstTask).allConnectors.first?.baseURL == "https://first.atlassian.net")
-        #expect(firstEnv["JIRA_JIRA_PROJECTS"] == "ONE")
-        #expect(TaskCapabilityResolver(task: secondTask).allConnectors.first?.baseURL == "https://second.atlassian.net")
-        #expect(secondEnv["JIRA_JIRA_PROJECTS"] == "TWO")
-        #expect(firstEnv["JIRA_PROJECTS"] == nil)
-        #expect(secondEnv["JIRA_PROJECTS"] == nil)
-        #expect(Set(TaskCapabilityResolver(task: firstTask).allConnectors.map(\.id)) == [firstConnector.id])
-        #expect(Set(TaskCapabilityResolver(task: secondTask).allConnectors.map(\.id)) == [secondConnector.id])
+        CapabilityResolutionInputs.$pinned.withValue(installerResolutionInputs(library: library)) {
+            let firstEnv = TaskCapabilityResolver(task: firstTask).resolver.resolvedEnvironmentVariables
+            let secondEnv = TaskCapabilityResolver(task: secondTask).resolver.resolvedEnvironmentVariables
+            #expect(TaskCapabilityResolver(task: firstTask).allConnectors.first?.baseURL == "https://first.atlassian.net")
+            #expect(firstEnv["JIRA_JIRA_PROJECTS"] == "ONE")
+            #expect(TaskCapabilityResolver(task: secondTask).allConnectors.first?.baseURL == "https://second.atlassian.net")
+            #expect(secondEnv["JIRA_JIRA_PROJECTS"] == "TWO")
+            #expect(firstEnv["JIRA_PROJECTS"] == nil)
+            #expect(secondEnv["JIRA_PROJECTS"] == nil)
+            #expect(Set(TaskCapabilityResolver(task: firstTask).allConnectors.map(\.id)) == [firstConnector.id])
+            #expect(Set(TaskCapabilityResolver(task: secondTask).allConnectors.map(\.id)) == [secondConnector.id])
+        }
     }
 
     @Test("one library entry serves every workspace, each with its own activation")
@@ -741,9 +751,12 @@ struct CapabilityInstallerTests {
         #expect(!active.contains(own.id))
         let task = AgentTask(title: "Query", goal: "Run a BigQuery query", workspace: workspace)
         context.insert(task)
-        let runtime = Set(TaskCapabilityResolver(task: task).allConnectors.map(\.id))
-        #expect(runtime.contains(listed.id))
-        #expect(!runtime.contains(bindingOnly.id))
+        CapabilityResolutionInputs.$pinned.withValue(installerResolutionInputs(library: library)) {
+            let runtime = Set(TaskCapabilityResolver(task: task).allConnectors.map(\.id))
+            #expect(runtime.contains(listed.id))
+            #expect(!runtime.contains(bindingOnly.id))
+            #expect(!runtime.contains(own.id))
+        }
     }
 
     @Test("Add ignores legacy plugin rows instead of rewriting them")

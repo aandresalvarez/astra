@@ -21,7 +21,7 @@ enum RuntimeRecoveryTestReceipt {
             limits: .init(tokenCeiling: AgentRuntimeProcessRunner.effectiveTokenBudget(for: task),
                 turnsRemaining: 4, secondsRemaining: 60, tokensSpent: max(400, task.tokensUsed), costSpent: 0.1),
             stopProof: .init(executionID: executionID, process: dead, reaped: true, processGroupEmpty: true,
-                toolsStopped: toolsStopped, remoteWorkExcluded: true, capturedAt: Date()), updatedAt: Date())
+                toolsStopped: toolsStopped, remoteWorkExcluded: true, capturedAt: Date()), resourceClaims: [], updatedAt: Date())
         let lease = try RuntimeExecutionOwner.store(in: context).acquire(taskID: task.id)
         try lease.save(value)
         return value

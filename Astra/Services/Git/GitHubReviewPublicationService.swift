@@ -409,6 +409,7 @@ enum GitHubReviewPublicationRequirement {
         } else {
             origin = nil
         }
+        guard !RuntimeSettlementCancellation.isCancelled(task) else { return false }
         let repository = origin.flatMap(GitService.githubRepositoryArgument(from:))
         guard let repository, repository.hasPrefix("github.com/") else {
             guard !hasUnresolvedTarget(task: task, request: request) else { return false }

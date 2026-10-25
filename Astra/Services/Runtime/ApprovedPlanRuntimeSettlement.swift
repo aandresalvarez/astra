@@ -199,6 +199,7 @@ enum ApprovedPlanRuntimeSettlement {
                 sandboxEnforcementSnapshot: sandboxEnforcementSnapshot
             )
         )
+        guard !Task.isCancelled, RuntimeSettlementExecutionScope.current?.isCancelled != true else { return false }
         let decision = TaskCompletionPolicy.decide(validationContract: contractEvaluation)
         guard decision.canComplete else {
             let run = task.runs.sorted { $0.startedAt < $1.startedAt }.last

@@ -29,6 +29,8 @@ final class PendingTaskCollector: @unchecked Sendable {
 /// enqueue work immediately from background pipe callbacks.
 final class OrderedMainActorTaskQueue: @unchecked Sendable {
     private let lock = NSLock()
+    private let permitsCommit: @MainActor () -> Bool
+    init(permitsCommit: @escaping @MainActor () -> Bool = { true }) { self.permitsCommit = permitsCommit }
     // Ordering is maintained by chaining each task off `tail`; we only need a
     // running count, not the full handle array (which grew per stream event and
     // was never drained).
@@ -42,10 +44,11 @@ final class OrderedMainActorTaskQueue: @unchecked Sendable {
     func add(_ operation: @escaping @MainActor () -> Void) {
         lock.lock()
         let previous = tail
-        let task = Task { @MainActor in
+        let task = Task { @MainActor [permitsCommit] in
             if let previous {
                 await previous.value
             }
+            guard permitsCommit() else { return }
             operation()
         }
         enqueuedCount += 1

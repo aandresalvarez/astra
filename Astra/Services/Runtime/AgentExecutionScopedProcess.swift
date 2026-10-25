@@ -126,7 +126,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
     func run() throws {
         settlementScope = RuntimeSettlementExecutionScope.current
-        try settlementScope?.begin(settlementChildID)
+        try settlementScope?.begin(settlementChildID, cancel: { [weak self] in self?.terminate() })
         var spawned = false
         defer {
             if !spawned {
@@ -210,7 +210,9 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         processGroupID = childPID
         launchIdentity = RuntimeProcessIdentity.read(childPID)
         running = true
+        let cancelledDuringLaunch = stopRequested
         lock.unlock()
+        if cancelledDuringLaunch { terminate() }
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             self?.reapProcess(pid: childPID)

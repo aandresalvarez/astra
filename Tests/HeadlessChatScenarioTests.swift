@@ -114,6 +114,7 @@ final class HeadlessChatHarness {
     @discardableResult
     func cleanup(reader: WorkspaceSavedAutoExport = .shared) -> Task<Void, Never> {
         if let cleanupTask { return cleanupTask }
+        RuntimeProviderResourceRegistry.unregister(rootURL.appendingPathComponent("runtime-owners"))
         let task = TestWorkspaceStoreCleanup.schedule(context: context, roots: [rootURL], reader: reader)
         cleanupTask = task
         return task

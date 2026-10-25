@@ -47,6 +47,7 @@ struct RuntimeSupervisionContext {
             return RuntimeRecoveryService.authorize(report, task: task, run: run, modelContext: modelContext)
         }
         let recordRecovery: @MainActor @Sendable (RuntimeRecoveryReport) -> Void = { report in
+            guard executionOwner?.isActive != false, executionOwner?.record.cancellationRequested != true else { return }
             RuntimeRecoveryService.record(report, task: task, run: run, modelContext: modelContext)
         }
         return Self(goal: RunSecretRedactionScope.redact(turnIntent?.activationText ?? task.goal, taskID: task.id), runtime: runtime.rawValue,
@@ -63,7 +64,8 @@ struct RuntimeSupervisionContext {
              },
              report: { report in
                  pendingEvents.add {
-                     guard run.task?.id == task.id else { return }
+                     guard run.task?.id == task.id, executionOwner?.isActive != false,
+                           executionOwner?.record.cancellationRequested != true else { return }
                      var report = report
                      report.investigatorRuntime = configuration.runtime.rawValue
                      report.investigatorModel = configuration.model

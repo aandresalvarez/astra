@@ -1808,6 +1808,8 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": ["run", "run?"],
             "Astra/Services/Runtime/RuntimeTurnOutcomeService.swift": ["run"],
+            // This helper normalizes TaskRun only; AgentTask still uses TaskStateMachine.
+            "Astra/Services/Runtime/RuntimeSettlementCancellation.swift": ["run"],
             // Extracted run outcome; AgentTask transitions still use TaskStateMachine.
             "Astra/Services/Runtime/RuntimeStopOutcome.swift": ["run"],
             "Astra/Services/Runtime/RuntimeTurnSettlementService.swift": ["run"],
@@ -2054,7 +2056,11 @@ struct ArchitectureFitnessTests {
             // claimless request must lease nothing rather than redispatch, and
             // an approved plan that completed without ever running has to step
             // through `.running` because `.admitted` has no edge to `.completed`.
-            "Astra/Services/Tasks/TaskQueue.swift": .init(2_125, .owner("Durable request and worker orchestration")),
+            // 2_125 -> 2_080 on 2026-10-21: the single-claim lock wrappers, the
+            // lock-event recorder shim, and the blocker-summary call moved to
+            // TaskQueue+ResourceAdmission; the wedged-cancel lease release
+            // lives in TaskWedgedWorkerLeaseReclaimer.
+            "Astra/Services/Tasks/TaskQueue.swift": .init(2_080, .owner("Durable request and worker orchestration")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             // 2_250 -> 2_280 on 2026-08-10: a get_comments route, and a field allowlist split into list vs detail so one ticket can carry its body.
             // Tools/HostControlToolSupport/HostControlToolSupport.swift held

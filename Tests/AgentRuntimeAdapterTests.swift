@@ -118,8 +118,8 @@ struct AgentRuntimeAdapterTests {
             .appendingPathComponent("AgentRuntimeProcessRunner.swift")
         let source = try String(contentsOf: runnerURL, encoding: .utf8)
 
-        #expect(source.contains("await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)"))
-        #expect(!source.contains("Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateKey) }"))
+        #expect(source.contains("await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)"))
+        #expect(!source.contains("Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateLease) }"))
     }
 
     @Test("SSH launch presence helper avoids loading full connection payloads")

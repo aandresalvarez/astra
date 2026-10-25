@@ -8,6 +8,34 @@ import ASTRAPersistence
 final class AgentRuntimeWorker {
     private(set) var isRunning = false
     private var cancellationRequested = false
+    private var currentExecutionOwner: RuntimeExecutionOwner?
+    private var providerWait: RuntimeProviderWait?
+    private(set) var requiresReplacement = false
+    @MainActor var cancellationGeneration: UUID? { currentExecutionOwner?.record.ownerID }
+
+    @MainActor
+    func retireCancelledExecution(generation: UUID) -> Bool {
+        guard cancellationRequested, let providerWait, providerWait.retire(generation: generation) else { return false }
+        requiresReplacement = true
+        processRunner.cancel()
+        return true
+    }
+
+    func copyConfiguration(to other: AgentRuntimeWorker) {
+        other.runtimeConfiguration = runtimeConfiguration
+        other.defaultAgentPolicyLevelRaw = defaultAgentPolicyLevelRaw
+        other.timeoutSeconds = timeoutSeconds
+        other.maxRunSeconds = maxRunSeconds
+        other.validationModel = validationModel
+        other.skipPermissions = skipPermissions
+        other.permissionPolicy = permissionPolicy
+        other.liveApprovalsEnabled = liveApprovalsEnabled
+        other.runtimeReadinessService = runtimeReadinessService
+        other.supervisionEnabled = supervisionEnabled
+        other.supervisionInvestigatorOverride = supervisionInvestigatorOverride
+        other.budgetEnforcementModeOverride = budgetEnforcementModeOverride
+        other.providerSessionStoreHome = providerSessionStoreHome
+    }
     private var capabilityPreparationTask: Task<CopilotCLICapabilities, Error>?
     var antigravityLaunchPreparation: AntigravityLaunchPreparation
     private var runtimeConfiguration = AgentRuntimeConfiguration()
@@ -139,10 +167,12 @@ final class AgentRuntimeWorker {
         if mode == .nextStep, approvedStep == nil {
             let admission: RuntimeExecutionOwner.SettlementAdmission
             if let lastRun = task.runs.max(by: { $0.startedAt < $1.startedAt }) {
-                admission = RuntimeExecutionOwner.acquireSettlement(task: task, run: lastRun, context: modelContext)
+                admission = RuntimeExecutionOwner.acquireSettlement(task: task, run: lastRun, context: modelContext,
+                    resourceClaims: executionPolicy.admittedResourceClaims)
             } else {
                 guard let owner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
-                    maxRunSeconds: maxRunSeconds, newUserTurn: true, launchTask: launchTask) else { return }
+                    maxRunSeconds: maxRunSeconds, newUserTurn: true, launchTask: launchTask,
+                    resourceClaims: executionPolicy.admittedResourceClaims) else { return }
                 admission = .acquired(owner)
             }
             if admission.mustDefer { return }
@@ -152,28 +182,15 @@ final class AgentRuntimeWorker {
                     task: task, context: modelContext, pause: true)
                 return
             }
-            defer { owner.finish() }
-            do { try owner.beginSettlement() } catch { return }
-            let scope = RuntimeSettlementExecutionScope(mayLaunch: true)
-            let valid = await RuntimeSettlementExecutionScope.$current.withValue(scope) {
-                await ApprovedPlanRuntimeSettlement.validateApprovedPlanContractForFinalCompletion(
-                task: task,
-                plan: currentPlan,
-                modelContext: modelContext,
-                verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
+            guard !isRunning, !requiresReplacement else { owner.finish(); return }
+            currentExecutionOwner = owner
+            isRunning = true
+            cancellationRequested = false
+            defer { owner.settlementScope = nil; owner.finish(); currentExecutionOwner = nil; isRunning = false }
+            await RuntimeFinalPlanSettlement.validate(task: task, plan: currentPlan, owner: owner,
+                modelContext: modelContext, verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
                     fallbackRuntime: runtimeConfiguration.selectedRuntime(for: launchTask),
                     preferredModel: validationModel, modelContext: modelContext))
-            }
-            scope.seal()
-            do { try owner.completeSettlement(localWorkStopped: scope.localWorkStopped, toolsStopped: scope.toolsStopped) }
-            catch { return }
-            guard valid else {
-                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-                return
-            }
-            TaskPlanService.recordExecutionCompleted(planID: currentPlan.planID, task: task, modelContext: modelContext)
-            TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             return
         }
 
@@ -312,7 +329,7 @@ final class AgentRuntimeWorker {
                 "workspace_id": task.workspace?.id.uuidString ?? "none"
             ])
         }
-        guard !isRunning else {
+        guard !isRunning, !requiresReplacement else {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
                 "reason": "worker_already_running"
             ], level: .warning)
@@ -321,8 +338,13 @@ final class AgentRuntimeWorker {
         let request = turnRequestID.flatMap { try? TaskTurnRequestRepository.request(id: $0, in: modelContext) }
         let newUserTurn = RuntimeExecutionAdmission.resolve(request: request, task: task).permitsLocalExit
         guard let executionOwner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
-            maxRunSeconds: maxRunSeconds, newUserTurn: newUserTurn, launchTask: launchTask) else { return }
-        defer { executionOwner.finish() }
+            maxRunSeconds: maxRunSeconds, newUserTurn: newUserTurn, launchTask: launchTask,
+            resourceClaims: executionPolicy.admittedResourceClaims) else { return }
+        currentExecutionOwner = executionOwner
+        defer { executionOwner.finish(); currentExecutionOwner = nil }
+        let wait = RuntimeProviderWait(owner: executionOwner)
+        providerWait = wait
+        defer { providerWait = nil }
         processRunner.configureExecutionOwner(executionOwner)
         defer { processRunner.configureExecutionOwner(nil) }
         // Reject competing owners before changing the live provider session or settings.
@@ -348,6 +370,9 @@ final class AgentRuntimeWorker {
         isRunning = true
         defer { isRunning = false }
         cancellationRequested = false
+        let hooks = auditPhase == .run ? RuntimeTemplateHookScope(task: launchTask,
+            path: TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory) : nil
+        defer { hooks?.restore() }
 
         // Settle executionEnvironmentSnapshotJSON before resolving
         // requirements, not the whole TaskRun: the resolver's own
@@ -962,7 +987,7 @@ final class AgentRuntimeWorker {
             runID: run.id
         )
         defer { HostControlBrokerSessionRegistry.shared.unbindExternalActions(taskID: task.id, runID: run.id) }
-        let pendingEvents = OrderedMainActorTaskQueue()
+        let pendingEvents = OrderedMainActorTaskQueue { executionOwner.isActive && !wait.retired }
         executionOwner.remoteWorkExcluded = launchExecutionPolicy.remoteSSHRoute == nil
             && !runEnvironment.runSnapshot.providerRunsInsideContainer
         if supervisionEnabled {
@@ -997,7 +1022,7 @@ final class AgentRuntimeWorker {
             : ProviderSessionUsageEpoch.baseline(for: run, in: task)
         let persistRecordedEvent: (AgentRuntimeRecordedEvent) -> Void = { event in
             pendingEvents.add { [weak self] in
-                guard self != nil else { return }
+                guard self != nil, !wait.retired else { return }
                 PerformanceSignposts.persistProviderEvent {
                     runtimeAdapter.recordWorkerStreamEvent(
                         event,
@@ -1030,7 +1055,7 @@ final class AgentRuntimeWorker {
                 emittedBatch.recordEmitted(to: streamDebugCapture)
                 for filtered in emittedEvents {
                     pendingEvents.add { [weak self] in
-                        guard self != nil else { return }
+                        guard self != nil, !wait.retired else { return }
                         PerformanceSignposts.persistProviderEvent {
                             runtimeAdapter.recordWorkerStreamEvent(
                                 filtered,
@@ -1090,11 +1115,20 @@ final class AgentRuntimeWorker {
             liveApprovalsEnabled: launchLiveApprovalsEnabled,
             noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
             maxRunSeconds: launchMaxRun,
-            onInteractiveAsk: Self.interactiveAskHandler(
-                runtime: selectedRuntime, task: task, run: run,
-                permissionPolicy: runPermissionPolicy, manifest: manifest,
-                modelContext: modelContext, pendingEvents: pendingEvents
-            ),
+            onInteractiveAsk: { ask in
+                guard await MainActor.run(body: { !wait.retired && executionOwner.isActive && !self.cancellationRequested }) else {
+                    return .deny(message: "This execution was cancelled; late permission requests are refused.")
+                }
+                let outcome = await Self.interactiveAskHandler(
+                    runtime: selectedRuntime, task: task, run: run,
+                    permissionPolicy: runPermissionPolicy, manifest: manifest,
+                    modelContext: modelContext, pendingEvents: pendingEvents,
+                    isCurrent: { !wait.retired && executionOwner.isActive && executionOwner.record.cancellationRequested != true })(ask)
+                guard await MainActor.run(body: { !wait.retired && executionOwner.isActive && !self.cancellationRequested }) else {
+                    return .deny(message: "This execution was cancelled while waiting for approval.")
+                }
+                return outcome
+            },
             onLine: { line, parsesJSONLines in
                 guard let gate else { return handleLine(line, parsesJSONLines) }
                 gate.accept(line, parsesJSONLines, forward: handleLine)
@@ -1108,7 +1142,14 @@ final class AgentRuntimeWorker {
             return
         }
         let firstAttemptStartedAt = Date()
-        var result = await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate, launchMaxRunSeconds, 0, 0)
+        var result = await wait.run {
+            await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate, launchMaxRunSeconds, 0, 0)
+        }
+        if wait.retired {
+            let cancellation = TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
+            TaskRunLifecycleService.persist(summary: cancellation, modelContext: modelContext)
+            return
+        }
         supervisionReservations += result.supervisionReservedTokens ?? 0
         if let emptyTurnGate {
             if emptyTurnGate.producedNothing, result.exitCode == 0, !result.stoppedByASTRA, !cancellationRequested,
@@ -1158,7 +1199,12 @@ final class AgentRuntimeWorker {
                     result = AgentProcessResult(exitCode: -1, runtimeStopReason: "recovery_limits_exhausted",
                         runtimeStopMessage: "The remaining execution time expired before recovery.", budgetExceeded: true)
                 } else {
-                    result = await launchProcess(prompt, nil, nil, remainingRunSeconds, 1, discardedUsage.totalTokens)
+                    result = await wait.run { await launchProcess(prompt, nil, nil, remainingRunSeconds, 1, discardedUsage.totalTokens) }
+                    if wait.retired {
+                        let cancellation = TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
+                        TaskRunLifecycleService.persist(summary: cancellation, modelContext: modelContext)
+                        return
+                    }
                 }
                 supervisionReservations += result.supervisionReservedTokens ?? 0
             } else {
@@ -1368,6 +1414,8 @@ final class AgentRuntimeWorker {
     }
     @MainActor
     func cancel() {
+        currentExecutionOwner?.requestCancellation()
+        providerWait?.cancelProducer()
         cancellationRequested = true
         capabilityPreparationTask?.cancel()
         antigravityLaunchPreparation.cancel()

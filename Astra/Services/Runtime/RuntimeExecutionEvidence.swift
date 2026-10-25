@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ASTRAModels
 
 /// OS identities, not bare PIDs or a model's judgment, fence recovered work.
 struct RuntimeProcessIdentity: Codable, Equatable, Sendable {
@@ -61,6 +62,11 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     var settlementInProgress: Bool? = nil
     var settlementLocalWorkStopped: Bool? = nil
     var settlementToolsStopped: Bool? = nil
+    var resourceClaims: [TaskResourceLockClaim]? = nil
+    var providerSharedStateKey: String? = nil
+    var providerSharedStateReleased: Bool? = nil
+    var resourcesReleased: Bool? = nil
+    var cancellationRequested: Bool? = nil
     var automaticRestarts = 0
     var updatedAt: Date
 

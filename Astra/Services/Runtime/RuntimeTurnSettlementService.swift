@@ -135,6 +135,10 @@ enum RuntimeTurnSettlementService {
         }
         let scope = RuntimeSettlementExecutionScope(mayLaunch: owner.record.stopProof?.reaped == true
             && owner.record.stopProof?.processGroupEmpty == true)
+        owner.settlementScope = scope
+        scope.executionOwner = owner
+        defer { owner.settlementScope = nil }
+        if owner.record.cancellationRequested == true { scope.cancel() }
         let result = await RuntimeSettlementExecutionScope.$current.withValue(scope) {
             await settleOwned(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext,
                 permissionPromotionPersistence: permissionPromotionPersistence, verdictPersistence: verdictPersistence,
@@ -171,6 +175,7 @@ enum RuntimeTurnSettlementService {
                     autoExport: autoExport)
                 try await RuntimeTurnOutcomeService.apply(checkpoint: checkpoint, task: task, run: run,
                     modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence)
+                RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext)
                 await validatePlan(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext)
                 // Validation effects are durable before writing derived files.
                 // Projection I/O failures can retry without re-executing work.
@@ -191,6 +196,7 @@ enum RuntimeTurnSettlementService {
             guard await AgentRuntimeRunPersistence.finalizeAndPersist(task: task, run: run,
                 modelContext: modelContext, phase: checkpoint.phase, autoExport: autoExport,
                 persist: {
+                    RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext)
                     RuntimeSettlementProgress.stagePrepared(task: task, run: run, modelContext: modelContext)
                     do {
                         try save(task: task, modelContext: modelContext, operation: "runtime_outcome_prepared", persist: nil,
@@ -291,6 +297,7 @@ enum RuntimeTurnSettlementService {
     static func commit(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
                        persist: (() throws -> Void)? = nil, autoExport: Bool = true) -> Bool {
         if verdict(for: run, task: task) != nil { return true }
+        RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext)
         var transitionedRequest: TaskTurnRequest?
         var priorRequest: TaskTurnRequestSnapshot?
         do {

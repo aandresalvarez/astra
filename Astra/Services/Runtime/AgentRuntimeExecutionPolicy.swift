@@ -17,6 +17,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// value keeps runtime mounts and grants aligned with the acquired lease
     /// when an explicitly disabled sandbox upgrades a legacy shared claim to
     /// exclusive serialization.
+    var admittedResourceClaims: [TaskResourceLockClaim]?
     var workspaceAccessOverride: TaskExecutionResourceAccess?
     /// The persisted sandbox setting observed when the queue began resource
     /// admission. A run must use the same value at launch so a concurrent
@@ -101,6 +102,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         )
         // The adapters read it again at the real launch to withhold the
         // Write bootstrap; dropping it here re-granted Write.
+        rendered.admittedResourceClaims = admittedResourceClaims
         rendered.copilotCapabilityResolution = copilotCapabilityResolution
         rendered.followsUpDeliveredRequest = followsUpDeliveredRequest
         rendered.remoteSSHRoute = remoteSSHRoute
@@ -133,9 +135,11 @@ struct AgentRuntimeExecutionPolicy: Equatable {
 
     func withResourceAdmission(
         workspaceAccess: TaskExecutionResourceAccess?,
-        sandboxEnforcement: ExecutionSandboxEnforcement?
+        sandboxEnforcement: ExecutionSandboxEnforcement?,
+        claims: [TaskResourceLockClaim]? = nil
     ) -> AgentRuntimeExecutionPolicy {
         var copy = self
+        copy.admittedResourceClaims = claims
         copy.workspaceAccessOverride = workspaceAccess
         copy.sandboxEnforcementSnapshot = sandboxEnforcement
         return copy
@@ -146,7 +150,8 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     ) -> AgentRuntimeExecutionPolicy {
         withResourceAdmission(
             workspaceAccess: source.workspaceAccessOverride,
-            sandboxEnforcement: source.sandboxEnforcementSnapshot
+            sandboxEnforcement: source.sandboxEnforcementSnapshot,
+            claims: source.admittedResourceClaims
         )
     }
 

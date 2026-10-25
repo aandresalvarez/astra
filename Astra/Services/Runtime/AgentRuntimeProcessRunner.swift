@@ -61,8 +61,23 @@ final class AgentRuntimeProcessRunner {
     typealias DockerRuntimeProvider = @Sendable () -> DockerRuntimeResolution?
 
     private var executionOwner: RuntimeExecutionOwner?
-    @MainActor func configureExecutionOwner(_ owner: RuntimeExecutionOwner?) { executionOwner = owner }
+    @MainActor func configureExecutionOwner(_ owner: RuntimeExecutionOwner?) {
+        let previous = executionOwner
+        executionOwner = owner
+        if owner == nil, let previous, let lease = sharedStateLease,
+           sharedStateOwnerID == previous.record.ownerID {
+            // Runs after the worker's synchronous finish/cleanup defers.
+            Task { @MainActor in
+                guard previous.persistedResourceRelease else { return }
+                await AgentRuntimeSharedStateGate.shared.release(lease)
+                if self.sharedStateLease == lease { self.sharedStateLease = nil }
+            }
+        }
+    }
     private var currentProcess: AgentRuntimeProcessControl?
+    /// Held until normal return or verified cancellation cleanup.
+    private var sharedStateLease: AgentRuntimeSharedStateLease?
+    private var sharedStateOwnerID: UUID?
     private var supervisionContext: RuntimeSupervisionContext?
     private var activeSupervision: RuntimeSupervisionSession?
     private var activeRecovery: RuntimeRecoverySession?
@@ -782,8 +797,9 @@ final class AgentRuntimeProcessRunner {
         let remainingTokenBudget = allowance.tokens
         let remainingTurns = allowance.turns
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
+            let sharedStateLease: AgentRuntimeSharedStateLease
             do {
-                try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
+                sharedStateLease = try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey, owner: executionOwner)
             } catch is CancellationError {
                 return AgentProcessResult(
                     exitCode: -1,
@@ -794,12 +810,17 @@ final class AgentRuntimeProcessRunner {
             } catch {
                 return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
             }
+            self.sharedStateLease = sharedStateLease
+            self.sharedStateOwnerID = executionOwner?.record.ownerID
             let plan: AgentRuntimeProcessLaunchPlan
             switch await guardedSandboxedPlan(adapter: adapter, context: launchContext) {
             case .plan(let resolvedPlan):
                 plan = resolvedPlan
             case .blocked(let blockedResult):
-                await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
+                if executionOwner == nil || executionOwner?.releaseProviderSharedState() == true {
+                    await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)
+                    if self.sharedStateLease == sharedStateLease { self.sharedStateLease = nil }
+                }
                 return blockedResult
             }
             let result = await runProcess(
@@ -821,7 +842,10 @@ final class AgentRuntimeProcessRunner {
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
-            await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
+            if executionOwner == nil || executionOwner?.releaseProviderSharedState() == true {
+                await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)
+                if self.sharedStateLease == sharedStateLease { self.sharedStateLease = nil }
+            }
             return result
         }
 
@@ -931,7 +955,11 @@ final class AgentRuntimeProcessRunner {
                 guard !hasResumed else { resumeLock.unlock(); return }
                 hasResumed = true
                 resumeLock.unlock()
-                continuation.resume(returning: result)
+                Task { @MainActor in
+                    owner?.stopped(proof: result.executionStopProof, turns: result.executionTurnsSpent ?? 1,
+                        tokens: result.executionTokensSpent ?? 0, seconds: result.executionSecondsSpent ?? 0)
+                    continuation.resume(returning: result)
+                }
             }
 
             AppLogger.audit(
@@ -1200,8 +1228,6 @@ final class AgentRuntimeProcessRunner {
             monitor.startWatchdog(process: process)
         }
         await ownershipEvents.drainAll()
-        owner?.stopped(proof: result.executionStopProof, turns: result.executionTurnsSpent ?? 1,
-            tokens: result.executionTokensSpent ?? 0, seconds: result.executionSecondsSpent ?? 0)
         var acknowledgedResult = result
         acknowledgedResult.supervisionReservedTokens = activeSupervision?.tokenReservation
         acknowledgedResult.acknowledgedPermissionRequestIDs = deliveryChannel.acknowledgedPermissionRequestIDs
@@ -1871,108 +1897,7 @@ final class AgentRuntimeProcessRunner {
         }
     }
 
-    static func providerAllowedTools(
-        for runtime: AgentRuntimeID,
-        baseAllowedTools: [String],
-        permissionManifest: RunPermissionManifest?
-    ) -> [String] {
-        guard let permissionManifest,
-              permissionManifest.providerID == runtime else {
-            return baseAllowedTools
-        }
-        let manifestAllowedTools = permissionManifest.providerRender.allowedTools
-        guard !permissionManifest.approvalGrants.isEmpty else {
-            return manifestAllowedTools
-        }
-        let runtimeGrants = PermissionBroker.providerRuntimeGrantStrings(
-            for: permissionManifest.approvalGrants,
-            runtime: runtime
-        )
-        return Array(Set(manifestAllowedTools + runtimeGrants)).sorted()
-    }
 
-    static func providerRuntimeSupportToolPermissions(
-        for runtime: AgentRuntimeID,
-        permissionManifest: RunPermissionManifest?
-    ) -> [String] {
-        guard let permissionManifest,
-              permissionManifest.providerID == runtime else {
-            return []
-        }
-        return Array(Set(permissionManifest.providerRender.runtimeSupportTools.compactMap { descriptor in
-            let permission = descriptor.providerNativePermission?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return permission?.isEmpty == false ? permission : nil
-        })).sorted()
-    }
-
-    static func providerAskFirstToolPermissions(
-        for runtime: AgentRuntimeID,
-        permissionManifest: RunPermissionManifest?
-    ) -> [String] {
-        guard let permissionManifest,
-              permissionManifest.providerID == runtime,
-              permissionManifest.providerRender.permissionMode == .restricted else {
-            return []
-        }
-
-        switch runtime {
-        case .claudeCode:
-            return Array(Set(permissionManifest.providerRender.askFirstTools.compactMap(claudeProviderToolPermission))).sorted()
-        default:
-            return []
-        }
-    }
-
-    private static func claudeProviderToolPermission(_ tool: String) -> String? {
-        let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        if let openParen = trimmed.firstIndex(of: "("),
-           trimmed.hasSuffix(")") {
-            let rawTool = String(trimmed[..<openParen])
-            guard let canonicalTool = canonicalClaudeToolName(rawTool) else { return nil }
-            let patternStart = trimmed.index(after: openParen)
-            let pattern = String(trimmed[patternStart..<trimmed.index(before: trimmed.endIndex)])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .replacingOccurrences(of: ":", with: " ")
-            return pattern.isEmpty ? canonicalTool : "\(canonicalTool)(\(pattern))"
-        }
-
-        return canonicalClaudeToolName(trimmed)
-    }
-
-    private static func canonicalClaudeToolName(_ tool: String) -> String? {
-        switch tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "read", "view": return "Read"
-        case "grep": return "Grep"
-        case "glob": return "Glob"
-        case "write", "create": return "Write"
-        case "edit": return "Edit"
-        case "multiedit", "multi_edit": return "MultiEdit"
-        case "bash", "shell": return "Bash"
-        case "webfetch": return "WebFetch"
-        case "websearch": return "WebSearch"
-        case "agent": return "Agent"
-        default: return nil
-        }
-    }
-
-    static func ensureSubAgentPermissions(
-        at workspacePath: String,
-        policy: PermissionPolicy,
-        allowedTools: [String]
-    ) {
-        if ClaudeSettingsStore.ensureSubAgentPermissions(
-            at: workspacePath,
-            policy: policy,
-            allowedTools: allowedTools
-        ) {
-            AppLogger.audit(.workerStarted, category: "Worker", fields: [
-                "event": "subagent_permissions_ensured",
-                "policy": policy.rawValue
-            ])
-        }
-    }
 }
 
 extension AgentRuntimeProcessRunner: AgentRuntimeProcessRunning {}

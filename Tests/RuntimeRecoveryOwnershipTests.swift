@@ -17,7 +17,7 @@ struct RuntimeRecoveryOwnershipTests {
             providerProcess: dead, runtime: AgentRuntimeID.claudeCode.rawValue, sessionID: "original-session",
             state: state, limits: .init(tokenCeiling: 10000, turnsRemaining: 3, secondsRemaining: 45, tokensSpent: 600, costSpent: 0.2),
             stopProof: .init(executionID: id, process: dead, reaped: true, processGroupEmpty: true,
-                toolsStopped: true, remoteWorkExcluded: true, capturedAt: Date()), updatedAt: Date())
+                toolsStopped: true, remoteWorkExcluded: true, capturedAt: Date()), resourceClaims: [], updatedAt: Date())
     }
 
     @Test("One kernel lease serializes different store objects and restores its journal")

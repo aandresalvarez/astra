@@ -118,6 +118,7 @@ enum RuntimeTurnOutcomeService {
                 workspacePath: executionPath,
                 agentReportedError: checkpoint.agentReportedError
             )
+            guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return }
             if !blockedFromCompleting {
                 if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
                     // Frozen on launchTask, same as the budget above.
@@ -154,6 +155,7 @@ enum RuntimeTurnOutcomeService {
                                 sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement
                             )
                         )
+                        guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return }
                         switch testResult {
                         case .passed(let details):
                             _ = await TaskSuccessfulCompletionService.apply(
@@ -182,6 +184,7 @@ enum RuntimeTurnOutcomeService {
                             utilityRuntime: checkpoint.verifierRuntime,
                             workspacePath: executionPath
                         )
+                        guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return }
                         switch aiResult {
                         case .passed(let details):
                             _ = await TaskSuccessfulCompletionService.apply(

@@ -10,7 +10,7 @@ import ASTRACore
 /// resolves when it fires: after the V20 migration deletes an unedited
 /// plugin skill's row, the skill lives only in the plugin's projection, and
 /// the editors and the slash-command path must still offer it.
-@Suite("Routine skill selection")
+@Suite("Routine skill selection", BuiltInCapabilityFixture())
 @MainActor
 struct RoutineSkillSelectionTests {
     @Test("A migrated plugin skill with no stored row is offered to routines and resolves when one fires")

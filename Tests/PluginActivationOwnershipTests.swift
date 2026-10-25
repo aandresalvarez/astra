@@ -10,7 +10,7 @@ import ASTRACore
 /// V20 migration: the activation, through its projection, and nothing that
 /// lists a row beside it. Pinned against the V19 fixture store
 /// (`PluginMigrationFixture`).
-@Suite("Plugin activation ownership")
+@Suite("Plugin activation ownership", BuiltInCapabilityFixture())
 @MainActor
 struct PluginActivationOwnershipTests {
     private static var retained: [ModelContainer] = []

@@ -487,6 +487,10 @@ enum ValidationService {
         finalPayloads.reserveCapacity(contract.assertions.count)
 
         for assertion in contract.assertions {
+            guard !Task.isCancelled, RuntimeSettlementExecutionScope.current?.isCancelled != true else {
+                return .init(didRun: true, outcome: .failed, canComplete: false,
+                    summary: "Validation cancelled.", failedRequiredAssertionIDs: [])
+            }
             recordAssertionEvent(
                 type: TaskValidationEventTypes.assertionStarted,
                 planID: plan.planID,
@@ -508,6 +512,10 @@ enum ValidationService {
                 verifierRuntime: verifierRuntime,
                 commandRunner: commandRunner
             )
+            guard !Task.isCancelled, RuntimeSettlementExecutionScope.current?.isCancelled != true else {
+                return .init(didRun: true, outcome: .failed, canComplete: false,
+                    summary: "Validation cancelled.", failedRequiredAssertionIDs: [])
+            }
             let payload = assertionResult.payload
             finalPayloads.append(payload)
             let eventType = switch payload.status {
