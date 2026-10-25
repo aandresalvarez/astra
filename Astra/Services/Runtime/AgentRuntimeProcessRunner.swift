@@ -1651,7 +1651,7 @@ final class AgentRuntimeProcessRunner {
         let knownHostsPath = (stateDirectory as NSString).appendingPathComponent("known_hosts")
         let script = """
         #!/bin/sh
-        exec \(shellSingleQuoted(realSSHPath)) -o UserKnownHostsFile=\(shellSingleQuoted(knownHostsPath)) -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o CheckHostIP=no "$@"
+        exec \(shellSingleQuoted(realSSHPath)) -o \(shellSingleQuoted(SSHKnownHostsOption.value(path: knownHostsPath))) -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o CheckHostIP=no "$@"
         """
 
         do {

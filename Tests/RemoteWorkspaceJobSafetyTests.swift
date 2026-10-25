@@ -46,7 +46,7 @@ private final class CountingRemoteTransport: RemoteWorkspaceJobTransport {
     var launches = 0
     func run(connection: RemoteWorkspaceJobConnection, script: String, timeoutSeconds: TimeInterval) -> RemoteWorkspaceJobTransportResult {
         if script.contains("astra_clock") {
-            return .init(exitCode: 0, stdout: "{\"astra_clock\":1,\"boot_id\":\"qa-boot\",\"monotonic\":1234}", stderr: "")
+            return .init(exitCode: 0, stdout: "{\"astra_clock\":2,\"clock_domain\":\"posix-clock-monotonic-v1\",\"boot_id\":\"qa-boot\",\"monotonic\":1234}", stderr: "")
         }
         if script.contains("command.sh") { launches += 1 }
         return .init(exitCode: 255, stdout: "", stderr: "connection lost")

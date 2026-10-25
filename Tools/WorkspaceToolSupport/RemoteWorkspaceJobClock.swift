@@ -4,20 +4,34 @@ import Foundation
 /// Adding the LOCAL allowance remaining after receiving this sample to the
 /// earlier remote instant is conservative: transit can only shorten the job.
 public enum RemoteWorkspaceJobClock {
+    static let domain = "posix-clock-monotonic-v1"
+
+    // Python <3.10 on macOS makes time.monotonic() process-relative. The
+    // explicitly selected POSIX clock has one epoch across SSH processes.
+    static let pythonSource = """
+    def monotonic_now():
+        return time.clock_gettime(time.CLOCK_MONOTONIC)
+    """
+
     public struct Reference: Codable, Equatable, Sendable {
         public let bootID: String
         public let deadline: TimeInterval
-        public init(bootID: String, deadline: TimeInterval) { self.bootID = bootID; self.deadline = deadline }
+        public let clockDomain: String?
+        public init(bootID: String, deadline: TimeInterval) {
+            self.bootID = bootID; self.deadline = deadline
+            self.clockDomain = RemoteWorkspaceJobClock.domain
+        }
     }
 
     static let script = #"""
 python3 - <<'ASTRA_CLOCK_PY'
 import json, pathlib, subprocess, time
+"""# + "\n" + pythonSource + "\n" + #"""
 try:
     boot = pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 except OSError:
     boot = subprocess.check_output(['sysctl', '-n', 'kern.boottime'], text=True).strip()
-print(json.dumps({'astra_clock': 1, 'boot_id': boot, 'monotonic': time.monotonic()}))
+print(json.dumps({'astra_clock': 2, 'clock_domain': '\#(domain)', 'boot_id': boot, 'monotonic': monotonic_now()}))
 ASTRA_CLOCK_PY
 """#
 
@@ -25,7 +39,7 @@ ASTRA_CLOCK_PY
         let result = transport.run(connection: connection, script: script, timeoutSeconds: 30)
         guard !result.timedOut, result.exitCode == 0, result.stdout.utf8.count < 8192,
               let object = try? JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any],
-              object["astra_clock"] as? Int == 1,
+              object["astra_clock"] as? Int == 2, object["clock_domain"] as? String == domain,
               let boot = object["boot_id"] as? String, !boot.isEmpty, boot.count < 4096,
               let clock = object["monotonic"] as? Double, clock.isFinite, clock > 0 else {
             throw RemoteWorkspaceJobError.invalidArgument("The SSH host's monotonic clock and boot identity could not be verified. No command was launched.")

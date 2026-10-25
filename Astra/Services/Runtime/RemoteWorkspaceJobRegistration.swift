@@ -73,7 +73,7 @@ enum RemoteWorkspaceJobRegistration {
     }
 
     static func observationOptions(knownHostsPath path: String) -> [String] {
-        ["-o", "UserKnownHostsFile=\"\(path)\"", "-o", "GlobalKnownHostsFile=/dev/null",
+        ["-o", SSHKnownHostsOption.value(path: path), "-o", "GlobalKnownHostsFile=/dev/null",
                 "-o", "UpdateHostKeys=no", "-o", "CheckHostIP=no", "-o", "StrictHostKeyChecking=yes"]
     }
 

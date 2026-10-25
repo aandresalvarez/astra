@@ -6,6 +6,7 @@ import Foundation
 enum RemoteWorkspaceJobSupervisor {
     static let source = #"""
 import base64, datetime, json, os, pathlib, signal, subprocess, sys, time
+"""# + "\n" + RemoteWorkspaceJobClock.pythonSource + "\n" + #"""
 
 root = pathlib.Path(sys.argv[1])
 nonce = sys.argv[2]
@@ -81,11 +82,11 @@ def scope():
     if requested():
         write('scope-result.json', {'status': 'cancelled', 'exit_code': 130, 'command_started': False})
         return
-    if clock.get('bootID') != boot_id():
+    if clock.get('clockDomain') != '\#(RemoteWorkspaceJobClock.domain)' or clock.get('bootID') != boot_id():
         write('scope-result.json', {'status': 'failed', 'exit_code': 125, 'command_started': False})
         return
-    deadline = min(clock['deadline'], time.monotonic() + timeout) if timeout else clock['deadline']
-    remaining = deadline - time.monotonic()
+    deadline = min(clock['deadline'], monotonic_now() + timeout) if timeout else clock['deadline']
+    remaining = deadline - monotonic_now()
     if remaining <= 0:
         write('scope-result.json', {'status': 'timed_out', 'exit_code': 124, 'command_started': False})
         return
@@ -97,10 +98,10 @@ def scope():
         while True:
             code = command.poll()
             active = members()
-            if stopping_at is None and (requested() or (deadline is not None and time.monotonic() >= deadline)):
+            if stopping_at is None and (requested() or (deadline is not None and monotonic_now() >= deadline)):
                 stopping_reason = 'cancelled' if requested() else 'timed_out'
                 write('stop-request.json', {'status': stopping_reason, 'nonce': nonce})
-                stopping_at = time.monotonic()
+                stopping_at = monotonic_now()
                 # This process is a live member/leader of this exact group.
                 # No stale PID lookup can redirect the signal elsewhere.
                 os.killpg(os.getpgrp(), signal.SIGTERM)
@@ -108,7 +109,7 @@ def scope():
                 status = stopping_reason or ('succeeded' if code == 0 else 'failed')
                 write('scope-result.json', {'status': status, 'exit_code': code, 'command_started': True})
                 return
-            if stopping_at is not None and time.monotonic() - stopping_at >= 3:
+            if stopping_at is not None and monotonic_now() - stopping_at >= 3:
                 # Includes this anchor. The outer supervisor reaps it and
                 # records the outcome. Escaped work remains unverified.
                 os.killpg(os.getpgrp(), signal.SIGKILL)

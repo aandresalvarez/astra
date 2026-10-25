@@ -294,8 +294,8 @@ struct RemoteWorkspaceJobTests {
         let injected = """
         def launch_after_delay(*args, **kwargs):
             child = subprocess.Popen(*args, **kwargs)
-            original_clock = time.monotonic
-            time.monotonic = lambda: original_clock() + 120
+            original_clock = time.clock_gettime
+            time.clock_gettime = lambda identifier: original_clock(identifier) + 120
             return child
         root = pathlib.Path(sys.argv[1])
         """
@@ -309,6 +309,47 @@ struct RemoteWorkspaceJobTests {
     }
 
     // MARK: - Record and derivation
+
+    @Test("Separate system Python processes share the admitted clock and expired work never starts")
+    func systemPythonClockAcrossProcesses() async throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let transport = SystemPythonSSHTransport(ssh: host.ssh.path)
+        let manager = RemoteWorkspaceJobManager(configuration: host.configuration, transport: transport)
+        let first = try RemoteWorkspaceJobClock.sample(transport, connection: host.connections[0])
+        let job = try manager.register(connectionTarget: "pcornet-backup", command: "touch clock-extended", timeoutSeconds: 1).record
+        try await Task.sleep(nanoseconds: 1_300_000_000)
+        let second = try RemoteWorkspaceJobClock.sample(transport, connection: host.connections[0])
+        #expect(second.bootID == first.bootID)
+        #expect(second.monotonic - first.monotonic >= 1.0)
+        _ = transport.run(connection: host.connections[0], script: RemoteWorkspaceJobScripts.start(
+            jobID: job.jobID, command: job.command, timeoutSeconds: 30, nonce: try #require(job.launchNonce),
+            clock: try #require(job.remoteClock)), timeoutSeconds: 20)
+        #expect(try await settled(manager, job.jobID).status == .timedOut)
+        #expect(!FileManager.default.fileExists(atPath: host.home.appendingPathComponent("clock-extended").path))
+    }
+
+    @Test("Missing or incompatible persisted clock domains never authorize launch", arguments: [false, true])
+    func incompatibleClockDomain(unknownDomain: Bool) async throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let manager = host.manager()
+        let job = try manager.register(connectionTarget: "pcornet-backup", command: "touch incompatible-clock", timeoutSeconds: 30).record
+        let original = try #require(job.remoteClock)
+        var value: [String: Any] = ["bootID": original.bootID, "deadline": original.deadline]
+        if unknownDomain { value["clockDomain"] = "unknown-clock" }
+        let incompatible = try JSONDecoder().decode(RemoteWorkspaceJobClock.Reference.self,
+            from: JSONSerialization.data(withJSONObject: value))
+        #expect(incompatible.clockDomain != RemoteWorkspaceJobClock.domain)
+        _ = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path).run(connection: host.connections[0],
+            script: RemoteWorkspaceJobScripts.start(jobID: job.jobID, command: job.command, timeoutSeconds: 30,
+                nonce: try #require(job.launchNonce), clock: incompatible), timeoutSeconds: 20)
+        let result = try await settled(manager, job.jobID)
+        #expect(result.status == .failed)
+        #expect(!result.cleanupVerified)
+        #expect(!FileManager.default.fileExists(atPath: host.home.appendingPathComponent("incompatible-clock").path))
+        #expect(try manager.register(connectionTarget: "pcornet-backup", command: job.command, timeoutSeconds: 30).created == false)
+    }
 
     @Test("Older observations are dropped; new evidence can correct a terminal observation")
     func observationsAreMonotonic() throws {
@@ -464,6 +505,16 @@ struct RemoteWorkspaceJobTests {
         }
         Issue.record("job \(jobID) never settled")
         return try manager.store.load(jobID: jobID)
+    }
+}
+
+private struct SystemPythonSSHTransport: RemoteWorkspaceJobTransport {
+    let ssh: String
+    func run(connection: RemoteWorkspaceJobConnection, script: String, timeoutSeconds: TimeInterval) -> RemoteWorkspaceJobTransportResult {
+        // macOS ships Python 3.9 on the QA host: its time.monotonic epoch is
+        // process-local. Do not silently exercise a newer Homebrew Python.
+        SSHRemoteWorkspaceJobTransport(sshExecutable: ssh).run(connection: connection,
+            script: script.replacingOccurrences(of: "python3", with: "/usr/bin/python3"), timeoutSeconds: timeoutSeconds)
     }
 }
 

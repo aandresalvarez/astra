@@ -43,7 +43,7 @@ are captured from the owner, never reset from edited task settings.
 
 ## Remote execution and cancellation
 
-The host requires Python 3.9 or later and a usable POSIX process table. It creates
+The host requires Python 3.9 or later, `clock_gettime(CLOCK_MONOTONIC)`, and a usable POSIX process table. It creates
 `~/.astra/jobs/<uuid>` exclusively, binds metadata to a fresh nonce, and starts
 an outer supervisor plus an anchored process group. The supervisor tracks the
 command and ordinary children even when the original shell exits first.
@@ -73,6 +73,12 @@ the same boot identity and a positive monotonic allowance. Missing/invalid
 clock evidence refuses launch. No comparison of the two hosts' wall clocks
 is used, and uncertainty never grants release or restart authority.
 The admitted deadline also remains fixed across process creation and log I/O.
+The clock domain is persisted explicitly and sampled with protocol version 2.
+Python 3.9 on macOS gives `time.monotonic()` a process-relative epoch
+([Python time documentation](https://docs.python.org/3/library/time.html#time.monotonic)), so both
+the sampler and supervisor instead use the same explicit POSIX clock. Missing
+or incompatible clock domains refuse command launch; existing jobs can still
+be observed and cancelled, and their intents are never recalibrated.
 
 A process group is not containment. A command can detach with a new session,
 submit work elsewhere, or mutate its own metadata. Consequently every SSH job
@@ -95,6 +101,9 @@ The app uses `/usr/bin/ssh` directly with the task's explicit host-key options;
 it never executes an agent-editable wrapper. It revalidates the saved connection
 against the workspace before contacting the host. A changed connection blocks
 observation/cancellation and explains how to restore the original connection.
+The initial SSH shim and app observations share the same quoted known-host file
+argument, preserving spaces, quotes, and backslashes through OpenSSH's separate
+filename-list parser.
 
 A queue-store-owned monitor refreshes asynchronously every 15 seconds. Its
 only side effects are observations and delivery of saved cancellation intent.

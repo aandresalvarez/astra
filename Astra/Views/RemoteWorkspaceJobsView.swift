@@ -8,7 +8,7 @@ struct RemoteWorkspaceJobsView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var monitor = RemoteWorkspaceJobMonitor.shared
     @State private var expanded = false
-    @State private var log: String?
+    @State private var output = RemoteWorkspaceJobOutputState()
 
     var body: some View {
         let state = monitor.presentation(task: task, context: modelContext)
@@ -33,6 +33,8 @@ struct RemoteWorkspaceJobsView: View {
                             if !job.status.isTerminal {
                                 Button("Cancel job") { monitor.requestCancellation(task: task, jobID: job.jobID, context: modelContext) }
                                     .disabled(job.cancellationRequestedAt != nil)
+                                    .accessibilityLabel("Cancel \(job.label ?? job.jobID)")
+                                    .accessibilityIdentifier("RemoteJobCancel_\(job.jobID)")
                             }
                         }
                         if let verified = job.lastVerifiedAt {
@@ -42,14 +44,29 @@ struct RemoteWorkspaceJobsView: View {
                         if let error = job.lastObservation?.error { Text(error).font(.caption).foregroundStyle(.secondary) }
                         if expanded {
                             Text(job.command).font(.caption.monospaced()).lineLimit(3).textSelection(.enabled)
-                            Button("Read output") { Task { log = await monitor.tail(task: task, jobID: job.jobID, context: modelContext) } }
+                            Button("Read output") {
+                                let requestID = output.begin(taskID: task.id, jobID: job.jobID, label: job.label ?? job.jobID)
+                                Task {
+                                    let text = await monitor.tail(task: task, jobID: job.jobID, context: modelContext)
+                                    output.complete(requestID: requestID, text: text)
+                                }
+                            }
+                                .accessibilityLabel("Read output for \(job.label ?? job.jobID)")
+                                .accessibilityIdentifier("RemoteJobOutput_\(job.jobID)")
                         }
                     }
                 }
                 Text("ASTRA keeps the workspace reserved: SSH job results cannot confirm that detached or external tools have stopped.")
                     .font(.caption).foregroundStyle(.secondary)
                 if let error = state.error { Text(error).font(.caption).foregroundStyle(.orange) }
-                if expanded, let log { ScrollView { Text(log).font(.caption.monospaced()).textSelection(.enabled) }.frame(maxHeight: 140) }
+                if expanded, let selection = output.visible(for: task.id) {
+                    Text("Output for \(selection.label)").font(.caption.bold())
+                    ScrollView {
+                        Text(selection.text.map { $0.isEmpty ? "No output yet." : $0 } ?? "Loading output…")
+                            .font(.caption.monospaced()).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(height: 140)
+                }
             }
             .padding(12)
             .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
