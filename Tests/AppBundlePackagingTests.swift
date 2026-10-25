@@ -12,6 +12,32 @@ struct AppBundlePackagingTests {
         "stanford-graph-mail": "StanfordGraphMailTool"
     ]
 
+    @Test("Packaged tools are discoverable by Foundation in macOS and flat resource bundles", arguments: [true, false])
+    func toolsRespectResourceBundleLayout(macOSLayout: Bool) throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+        let function = try extractFunction(named: "bundled_tools_directory", from: script)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".bundle")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resources = macOSLayout ? root.appendingPathComponent("Contents/Resources") : root
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        let info = macOSLayout ? root.appendingPathComponent("Contents/Info.plist") : root.appendingPathComponent("Info.plist")
+        try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "test.package." + UUID().uuidString,
+            "CFBundleVersion": "1", "CFBundlePackageType": "BNDL"], format: .xml, options: 0).write(to: info)
+        let process = Process(); let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", function + "\nbundled_tools_directory \"$1\"", "qa", root.path]
+        process.standardOutput = pipe
+        try process.run(); process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        let path = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let tools = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: tools, withIntermediateDirectories: true)
+        try Data("fixture".utf8).write(to: tools.appendingPathComponent("astra-workspace-job"))
+        let bundle = try #require(Bundle(url: root))
+        #expect(bundle.url(forResource: "astra-workspace-job", withExtension: nil, subdirectory: "Tools")?.resolvingSymlinksInPath()
+            == tools.appendingPathComponent("astra-workspace-job").resolvingSymlinksInPath())
+    }
+
     @Test("build launcher serializes process replacement immediately before opening the verified bundle")
     func launcherDoesNotCreateParallelAppInstances() throws {
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)

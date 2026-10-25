@@ -160,10 +160,38 @@ struct RemoteWorkspaceJobShimTests {
         #expect(equivalent("echo astra-workspace-job-start -- x") == nil)
     }
 
+    @Test("Cursor shell events enforce the same SSH deny and approval rules as Bash")
+    func cursorShellEventPolicy() throws {
+        let command = "astra-workspace-job start --connection box -- 'echo ok'"
+        let frame: [String: Any] = ["type": "tool_call", "subtype": "started", "call_id": "cursor-shell",
+            "tool_call": ["shellToolCall": ["args": ["command": command, "closeStdin": true]]]]
+        let line = try #require(String(data: JSONSerialization.data(withJSONObject: frame), encoding: .utf8))
+        let parsed = try #require(CursorStreamEventParser.parse(line: line))
+        var manifest = Self.manifest(policy: .preset(.review), runtime: .cursorCLI)
+        let ask = AgentRuntimePolicyGuard(manifest: manifest)
+        let request = try #require(ask.violation(for: parsed))
+        #expect(request.requiresApproval)
+        #expect(request.permissionRequest == .shell(command: command, toolName: "shellToolCall"))
+        #expect(!request.approvalGrants.isEmpty)
+        #expect(ask.disposition(toolName: "shellToolCall", command: nil) == .denied)
+        manifest.approvalGrants = request.approvalGrants
+        let approved = AgentRuntimePolicyGuard(manifest: manifest)
+        #expect(approved.violation(for: parsed) == nil)
+        #expect(approved.disposition(toolName: "shellToolCall", command: "astra-workspace-job start --connection other -- 'echo ok'") != .allowed)
+        for policy in [
+            AgentPolicy(level: .custom, allowedTools: ["Bash"], allowedShellPatterns: ["*"], deniedShellPatterns: ["ssh:*"]),
+            AgentPolicy(level: .custom, allowedTools: ["Bash"], deniedTools: ["Bash(ssh:*)"], allowedShellPatterns: ["*"])
+        ] {
+            let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(policy: policy, runtime: .cursorCLI))
+            #expect(guardrail.disposition(toolName: "shellToolCall", command: command) == .denied)
+        }
+        #expect(ProviderToolSemantics.normalizedName("shellToolCall") == "bash")
+        #expect(!ProviderToolSemantics.isShellTool("unknownToolCall"))
+    }
+
     // MARK: - Fixtures
 
-    private static func manifest(policy: AgentPolicy) -> RunPermissionManifest {
-        let runtime = AgentRuntimeID.claudeCode
+    private static func manifest(policy: AgentPolicy, runtime: AgentRuntimeID = .claudeCode) -> RunPermissionManifest {
         let adapter = ProviderPolicyAdapterRegistry.adapter(for: runtime)
         let context = PolicyRenderContext(
             runtimeID: runtime,

@@ -18,7 +18,21 @@ enum RemoteWorkspaceJobShim {
     nonisolated static let commandName = "astra-workspace-job"
 
     nonisolated static var helperPath: String {
-        (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent(commandName)
+        resolvedHelperPath() ?? ""
+    }
+
+    nonisolated static func resolvedHelperPath(resourceBundle: Bundle = AstraResourceBundle.current,
+        applicationBundleURL: URL = Bundle.main.bundleURL,
+        fallbackDirectory: String = RuntimePathResolver.astraToolsPath) -> String? {
+        if let url = resourceBundle.url(forResource: commandName, withExtension: nil, subdirectory: "Tools"),
+           FileManager.default.isExecutableFile(atPath: url.path) {
+            return url.resolvingSymlinksInPath().path
+        }
+        // A packaged app must use its own protocol/version. Never silently
+        // pick up a stale helper installed by another channel or worktree.
+        guard applicationBundleURL.pathExtension != "app" else { return nil }
+        let fallback = URL(fileURLWithPath: fallbackDirectory).appendingPathComponent(commandName)
+        return FileManager.default.isExecutableFile(atPath: fallback.path) ? fallback.resolvingSymlinksInPath().path : nil
     }
 
     /// The route as the run will use it: `remoteJobs` is true only when the

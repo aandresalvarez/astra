@@ -313,6 +313,7 @@ target_for_path() {
       add_target "RemoteWorkspaceJobShimTests"
       add_target "RemoteWorkspaceJobSafetyTests"
       add_target "RemoteWorkspaceJobPersistenceTests"
+      add_target "RemoteWorkspaceJobBundlingTests"
       add_target "RemoteWorkspaceSSHRouteTests"
       add_target "RemoteWorkspacePromptGuidanceTests"
       ;;

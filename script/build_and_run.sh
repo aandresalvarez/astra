@@ -416,7 +416,15 @@ PRIVATE_HELPER="$APP_BUNDLE/Contents/Helpers/astra-plugin-fetch"
 mkdir -p "$(dirname "$PRIVATE_HELPER")"
 cp "$BUILD_DIR/astra-plugin-fetch" "$PRIVATE_HELPER"
 chmod +x "$PRIVATE_HELPER"
-BUNDLED_TOOLS_DIR="$APP_RESOURCES/ASTRA_ASTRA.bundle/Tools"
+bundled_tools_directory() {
+  local resource_bundle="$1"
+  if [[ -d "$resource_bundle/Contents/Resources" ]]; then
+    printf '%s\n' "$resource_bundle/Contents/Resources/Tools"
+  else
+    printf '%s\n' "$resource_bundle/Tools"
+  fi
+}
+BUNDLED_TOOLS_DIR="$(bundled_tools_directory "$APP_RESOURCES/ASTRA_ASTRA.bundle")"
 mkdir -p "$BUNDLED_TOOLS_DIR"
 for tool_product in "${TOOL_PRODUCTS[@]}"; do
   cp "$BUILD_DIR/$tool_product" "$BUNDLED_TOOLS_DIR/$tool_product"

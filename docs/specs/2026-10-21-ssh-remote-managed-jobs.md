@@ -13,6 +13,16 @@ registers it. Explicit `--connection` is required so a denied destination or
 remote command cannot disappear from policy evaluation. Quoted executable paths
 and every helper invocation in compound commands are checked. An ambiguous
 helper invocation is denied. Ask and Auto keep their existing behavior.
+Cursor's `shellToolCall` is classified by the shared tool semantics as a shell
+request, so SSH deny rules and exact command approvals also apply to its native
+frames. Runtimes without live approval need a new run after an Ask checkpoint;
+approval alone cannot bypass the previous owner's stop-proof requirements.
+
+Packaged apps resolve the helper from their own resource bundle and refuse a
+missing bundled helper rather than falling back to a stale shared executable.
+The launch grants read-only access to that exact helper and owner receipt.
+An isolated development App Support override also isolates installed tool
+copies; production ignores that override.
 
 ## One owner and one launch intent
 

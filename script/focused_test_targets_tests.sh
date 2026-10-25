@@ -34,7 +34,7 @@ assert_targets "HostControlToolSupportTests" \
   "Tools/AstraHostControlTool/main.swift" \
   "Tests/HostControlToolSupportTests.swift"
 
-assert_targets $'RemoteWorkspaceJobTests\nRemoteWorkspaceJobShimTests\nRemoteWorkspaceJobSafetyTests\nRemoteWorkspaceJobPersistenceTests\nRemoteWorkspaceSSHRouteTests\nRemoteWorkspacePromptGuidanceTests' \
+assert_targets $'RemoteWorkspaceJobTests\nRemoteWorkspaceJobShimTests\nRemoteWorkspaceJobSafetyTests\nRemoteWorkspaceJobPersistenceTests\nRemoteWorkspaceJobBundlingTests\nRemoteWorkspaceSSHRouteTests\nRemoteWorkspacePromptGuidanceTests' \
   "Tools/WorkspaceToolSupport/RemoteWorkspaceJobManager.swift" \
   "Tools/AstraWorkspaceJobTool/main.swift" \
   "Astra/Services/Runtime/RemoteWorkspaceJobShim.swift" \
