@@ -276,11 +276,16 @@ struct AgentRuntimePolicyGuard: Sendable {
             return nil
         }
 
-        if isShellTool(toolName),
-           let command = observed.command,
-           let equivalent = RemoteWorkspaceJobPolicyEquivalence.sshEquivalent(of: command),
-           let violation = validateDeniedSSHEquivalent(equivalent, toolName: toolName, summary: observed.summary) {
-            return violation
+        if isShellTool(toolName), let command = observed.command {
+            guard let equivalents = RemoteWorkspaceJobPolicyEquivalence.sshEquivalents(of: command) else {
+                return AgentRuntimePolicyViolation(reason: "The remote job command could not be checked safely",
+                    toolName: toolName, detail: observed.summary)
+            }
+            for equivalent in equivalents {
+                if let violation = validateDeniedSSHEquivalent(equivalent, toolName: toolName, summary: observed.summary) {
+                    return violation
+                }
+            }
         }
 
         if toolMatches(toolName, command: observed.command, candidates: manifest.providerRender.deniedTools) {

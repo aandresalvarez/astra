@@ -181,10 +181,11 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
     /// What the helper is for, said where the route is: the turn ends after
     /// the launch, and nothing claims ASTRA resumes the task on its own yet.
     private var remoteJobGuidance: String {
-        let example = targets.first ?? "<target>"
-        return "For a remote command that may run longer than about two minutes (scans, loads, syncs, builds), start it with `\(RemoteWorkspaceJobShim.commandName) start --connection \(example) --label '<short label>' -- '<command>'` instead of `ssh`: it runs detached on the host exactly as `ssh \(example) '<command>'` would, keeps running after this turn ends, and is recorded in the task folder."
+        let target = targets.first ?? "<target>"
+        let example = target.contains(" ") ? "'" + target.replacingOccurrences(of: "'", with: "'\\''") + "'" : target
+        return "For a remote command that may run longer than about two minutes (scans, loads, syncs, builds), start it with `\(RemoteWorkspaceJobShim.commandName) start --connection \(example) --label '<short label>' -- '<command>'` instead of `ssh`: it runs detached on the host exactly as `ssh \(example) '<command>'` would, keeps running after this turn ends, and is registered by ASTRA under this execution owner."
             + " Then end your turn and give the user its remote_job_id; do not wait, sleep, or poll for it."
-            + " A later turn checks it with one `\(RemoteWorkspaceJobShim.commandName) status <remote_job_id>` and reads its log with `\(RemoteWorkspaceJobShim.commandName) tail <remote_job_id>`."
+            + " ASTRA follows the existing job in the Remote jobs panel, where the user can check status, read output, and request cancellation. Remote results do not prove detached tools stopped, so the workspace reservation stays protected."
             + " ASTRA does not resume this task by itself when the job finishes."
     }
 

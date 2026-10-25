@@ -22,8 +22,10 @@ public enum TaskCorrectiveWorkQueries {
     @MainActor
     public static func latestCorrectiveSteps(for task: AgentTask) -> [TaskCorrectiveWorkRecord] {
         var latestByID: [String: TaskCorrectiveWorkRecord] = [:]
-        for event in task.events
-            .filter({ isCorrectiveStepEvent($0.type) })
+        for event in TaskHistoryRead.events(for: task, ofTypes: [
+            TaskCorrectiveEventTypes.stepCreated, TaskCorrectiveEventTypes.stepApproved,
+            TaskCorrectiveEventTypes.stepDismissed, TaskCorrectiveEventTypes.taskCreated
+        ])
             .sorted(by: { $0.timestamp > $1.timestamp }) {
             guard let payload = decode(event.payload) else { continue }
             let stepID = normalizedCorrectiveStepID(payload)
@@ -53,10 +55,4 @@ public enum TaskCorrectiveWorkQueries {
         return try? JSONDecoder().decode(TaskCorrectiveStepPayload.self, from: data)
     }
 
-    private static func isCorrectiveStepEvent(_ type: String) -> Bool {
-        type == TaskCorrectiveEventTypes.stepCreated ||
-            type == TaskCorrectiveEventTypes.stepApproved ||
-            type == TaskCorrectiveEventTypes.stepDismissed ||
-            type == TaskCorrectiveEventTypes.taskCreated
-    }
 }

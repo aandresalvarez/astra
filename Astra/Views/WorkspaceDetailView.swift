@@ -25,6 +25,12 @@ struct WorkspaceDetailView: View {
     ]
 
     var body: some View {
+        // Its own Delete button deletes the workspace before dismissing, so
+        // this sheet re-runs once against the dead model.
+        if workspace.isLive { liveBody } else { Color.clear }
+    }
+
+    private var liveBody: some View {
         VStack(spacing: 0) {
             // Header
             HStack {

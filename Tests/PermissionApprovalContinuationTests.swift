@@ -254,7 +254,10 @@ struct PermissionApprovalContinuationTests {
         init(runtime: AgentRuntimeID = .codexCLI, disk: Bool = false) throws {
             root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("permission-continuation-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            storeURL = root.appendingPathComponent("test.store")
+            // App Support is separate from workspace artifacts, as in the app.
+            let support = root.appendingPathExtension("support")
+            try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+            storeURL = support.appendingPathComponent("test.store")
             container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
                 configurations: [disk ? ModelConfiguration(url: storeURL) : ModelConfiguration(isStoredInMemoryOnly: true)])
             context = container.mainContext
@@ -265,7 +268,11 @@ struct PermissionApprovalContinuationTests {
             try context.save()
         }
 
-        func cleanup() { try? FileManager.default.removeItem(at: root) }
+        @discardableResult
+        func cleanup() -> Task<Void, Never> {
+            TestWorkspaceStoreCleanup.schedule(context: context,
+                roots: [root, storeURL.deletingLastPathComponent()])
+        }
 
         func payload(requestID: String, behavior: PermissionApprovalBehavior? = nil) -> String {
             let request = PermissionRequest.connectorCredentials(connectorID: connectorID, displayName: "Jira", labels: [label])

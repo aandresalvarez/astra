@@ -1,4 +1,6 @@
 import Foundation
+import SwiftData
+import ASTRACore
 import ASTRAModels
 
 /// Applies the immutable launch configuration captured by a durable request.
@@ -37,7 +39,16 @@ enum TaskExecutionLaunchSnapshotApplicator {
             executionEnvironmentSnapshotJSON: policy.executionEnvironmentSnapshotJSON,
             templateHooksJSON: policy.templateHooksJSON,
             skillSnapshotsJSON: policy.skillSnapshotsJSON,
-            runtimePermissionGrantsJSON: policy.runtimePermissionGrantsJSON
+            runtimePermissionGrantsJSON: policy.runtimePermissionGrantsJSON,
+            pluginActivations: policy.pluginActivations,
+            pluginDefinitions: policy.pluginDefinitions,
+            pluginAccounts: policy.pluginAccounts,
+            accountInventory: policy.accountInventory,
+            standaloneToolIDs: policy.standaloneToolIDs,
+            pluginOverrides: policy.pluginOverrides,
+            authoredSkills: policy.authoredSkills,
+            pendingLegacyPluginState: policy.pendingLegacyPluginState,
+            retiredPluginActivations: policy.retiredPluginActivations
         )
     }
 
@@ -45,12 +56,58 @@ enum TaskExecutionLaunchSnapshotApplicator {
     /// task-shaped interface without giving them a writable SwiftData object.
     static func detachedTask(_ snapshot: AgentTaskLaunchSnapshot, from source: AgentTask) -> AgentTask {
         let resolvedInventory = TaskCapabilityResolver(task: source).resourceInventory
-        let cloneSources = capabilityCloneSources(source: source, resolvedInventory: resolvedInventory)
+        let cloneSources = capabilityCloneSources(
+            source: source,
+            resolvedInventory: resolvedInventory,
+            frozen: frozenRows(of: snapshot, source: source),
+            unfrozenAccountIDs: unfrozenAccountIDs(of: snapshot, source: source)
+        )
         let workspace = source.workspace.map(detachedWorkspace)
         let capabilityGraph = detachedCapabilityGraph(
             sources: cloneSources,
             workspace: workspace
         )
+        if let workspace, let live = source.workspace {
+            workspace.launchStandaloneToolRoles = snapshot.standaloneToolIDs.map {
+                TaskStandaloneToolRoles.LaunchEvidence.accepted($0)
+            } ?? .legacy
+            WorkspaceCapabilityActivation.applyFrozenPendingLegacy(snapshot.pendingLegacyPluginState, to: workspace)
+            // The accounts and definitions frozen with them: an account
+            // edited or deleted, or a plugin updated, while the request
+            // waited does not change the run either.
+            applyFrozenAccounts(snapshot.pluginAccounts, to: workspace)
+            // So are the override rows' contents: an override edited or
+            // deleted while it waited runs as submitted.
+            var lateAttachments = LateAttachments()
+            let accountParents = snapshot.accountInventory?.entries.compactMap(\.parentSkill) ?? []
+            let authoredRecords = snapshot.authoredSkills.map { $0 + accountParents }
+                ?? (accountParents.isEmpty ? nil : accountParents)
+            let authoredRowIDs = applyFrozenOverrides(
+                authoredRecords.map { PluginOverrideRecords(skills: $0) },
+                to: workspace, skillsByID: capabilityGraph.skillsByID, unlinked: &lateAttachments
+            )
+            let frozenRowIDs = applyFrozenOverrides(
+                snapshot.pluginOverrides, to: workspace, skillsByID: capabilityGraph.skillsByID, unlinked: &lateAttachments
+            )
+            pruneLateAttachments(lateAttachments, of: snapshot, from: workspace, keeping: frozenRowIDs.union(authoredRowIDs))
+            applyAccountInventory(snapshot.accountInventory, to: workspace, skillsByID: capabilityGraph.skillsByID)
+            workspace.launchPluginDefinitions = snapshot.pluginDefinitions
+            // The activations frozen at submission, when the request has
+            // them: a plugin turned off, on or reconfigured while it waited
+            // does not change the run. Frozen with its definitions, each
+            // keeps the acceptance it had with them.
+            WorkspaceCapabilityActivation.copyActivations(
+                snapshot.pluginActivations ?? WorkspaceCapabilityActivation.activations(of: live).map(PluginActivationRecord.init),
+                of: live,
+                to: workspace,
+                accountsByID: Dictionary(workspace.connectors.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+                definitionsFrozen: snapshot.pluginActivations != nil && snapshot.pluginDefinitions != nil,
+                frozenRowIDs: frozenRowIDs
+            )
+            // With the record of removed ones: the rows a Remove kept out of
+            // scope at submission stay out, even if the plugin was added back.
+            WorkspaceCapabilityActivation.applyFrozenRetired(snapshot.retiredPluginActivations, to: workspace)
+        }
         let task = AgentTask(title: source.title, goal: source.goal, workspace: workspace)
         task.id = source.id
         task.inputs = source.inputs
@@ -95,10 +152,20 @@ enum TaskExecutionLaunchSnapshotApplicator {
         let detachedRuns = source.runs.map { detachedRun($0, task: task) }
         let runByID = Dictionary(uniqueKeysWithValues: detachedRuns.map { ($0.id, $0) })
         task.runs = detachedRuns
-        task.events = source.events.map { detachedEvent($0, task: task, runs: runByID) }
+        task.events = TaskHistoryRead.events(for: source).map { detachedEvent($0, task: task, runs: runByID) }
         task.artifacts = source.artifacts.map { detachedArtifact($0, task: task) }
-        task.skills = source.skills.map {
-            capabilityGraph.skillsByID[$0.id] ?? detachedSkill($0)
+        if let accepted = snapshot.authoredSkills {
+            task.skills = accepted.map { record in
+                workspace?.skills.first { $0.id == record.id } ?? record.makeSkill()
+            }
+        } else {
+            // Older policies have only environment references and keep their
+            // historical live-row behavior, without inferring a deleted owner.
+            task.skills = source.skills.map {
+                capabilityGraph.skillsByID[$0.id] ?? detachedSkill($0)
+            }
+            TaskAuthoredSkillLaunchProjection.apply(task.skillSnapshots, to: task.skills,
+                excluding: workspace.map(WorkspaceCapabilityActivation.overridingRowIDs(of:)) ?? [])
         }
         return task
     }
@@ -166,31 +233,220 @@ enum TaskExecutionLaunchSnapshotApplicator {
         let skillsByID: [UUID: Skill]
     }
 
-    /// The live workspace remains authoritative for capability enablement. At
-    /// dispatch, project exactly its resolved inventory into the unmanaged
-    /// launch graph so later planners do not need a SwiftData ModelContext.
+    /// Rows the frozen activations name: the accounts they bind and the
+    /// authored rows that replaced a component.
+    private struct FrozenActivationRows {
+        var accounts: [Connector] = []
+        var skills: [Skill] = []
+        var localTools: [LocalTool] = []
+    }
+
+    /// The rows the frozen activations name that the live inventory may no
+    /// longer reach (a shared account or edited shared skill of a plugin
+    /// turned off since), so the launch copy resolves them as submitted. A
+    /// request that froze its override rows' contents never reads them live.
+    private static func frozenRows(of snapshot: AgentTaskLaunchSnapshot, source: AgentTask) -> FrozenActivationRows {
+        guard let records = snapshot.pluginActivations?.filter(\.isEnabled),
+              let context = source.modelContext ?? source.workspace?.modelContext else { return FrozenActivationRows() }
+        let accountIDs = Array(Set(records.flatMap(\.bindings).compactMap(\.accountID)))
+        let rowIDs = Array(Set(records.flatMap(\.overridingRowIDs).compactMap(UUID.init(uuidString:))))
+        var rows = FrozenActivationRows()
+        if !accountIDs.isEmpty {
+            let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { accountIDs.contains($0.id) })
+            rows.accounts = ((try? context.fetch(descriptor)) ?? []).filter { !$0.isDeleted }
+        }
+        if !rowIDs.isEmpty, snapshot.pluginOverrides == nil {
+            let skills = FetchDescriptor<Skill>(predicate: #Predicate { rowIDs.contains($0.id) })
+            rows.skills = ((try? context.fetch(skills)) ?? []).filter { !$0.isDeleted }
+            let tools = FetchDescriptor<LocalTool>(predicate: #Predicate { rowIDs.contains($0.id) })
+            rows.localTools = ((try? context.fetch(tools)) ?? []).filter { !$0.isDeleted }
+        }
+        return rows
+    }
+
+    /// The accounts the live workspace's activations bind that no frozen
+    /// activation does: a plugin added, or an account bound, while the
+    /// request waited. Who owns an account is frozen with the activations,
+    /// so these stay out of the launch copy, where nothing would bind them
+    /// and they would read as the workspace's own (`TaskCapabilityResolver`
+    /// scopes an unbound workspace account). Empty for a request that froze
+    /// no activations: its launch copy binds the live ones.
+    private static func unfrozenAccountIDs(of snapshot: AgentTaskLaunchSnapshot, source: AgentTask) -> Set<UUID> {
+        guard let records = snapshot.pluginActivations, let live = source.workspace else { return [] }
+        let frozen = Set(records.flatMap(\.bindings).compactMap(\.accountID))
+        let bound = WorkspaceCapabilityActivation.activations(of: live)
+            .flatMap(\.bindings)
+            .filter { !$0.isDeleted }
+            .compactMap { $0.account?.id }
+        return Set(bound).subtracting(frozen)
+    }
+
+    /// The bound accounts' copies take the contents frozen at submission;
+    /// one deleted since is brought back as a copy of what was submitted.
+    /// Credentials are still read from the Keychain by the account's ID.
+    private static func applyFrozenAccounts(_ records: [PluginAccountRecord]?, to workspace: Workspace) {
+        for record in records ?? [] {
+            if let copy = workspace.connectors.first(where: { $0.id == record.id }) {
+                record.apply(to: copy)
+            } else {
+                workspace.connectors.append(record.makeAccount())
+            }
+        }
+    }
+
+    /// The override rows' copies take the contents frozen at submission; one
+    /// deleted since, or out of the live inventory, is brought back as a copy
+    /// of what was submitted. Secret settings are still read from the
+    /// Keychain by the row's ID. Returns the frozen rows' IDs.
+    private static func applyFrozenOverrides(
+        _ records: PluginOverrideRecords?,
+        to workspace: Workspace,
+        skillsByID: [UUID: Skill],
+        unlinked: inout LateAttachments
+    ) -> Set<UUID> {
+        guard let records else { return [] }
+        var skills = skillsByID
+        for record in records.skills {
+            let copy = workspace.skills.first { $0.id == record.id } ?? skills[record.id] ?? record.makeSkill()
+            record.apply(to: copy)
+            if !workspace.skills.contains(where: { $0 === copy }) { workspace.skills.append(copy) }
+            skills[record.id] = copy
+            applyFrozenAttachments(of: record, to: copy, in: workspace, unlinked: &unlinked)
+        }
+        for record in records.localTools {
+            let copy = workspace.localTools.first { $0.id == record.id }
+                ?? skills.values.lazy.flatMap(\.localTools).first { $0.id == record.id }
+                ?? record.makeTool()
+            record.apply(to: copy)
+            copy.skill = record.skillID.flatMap { skills[$0] }
+            if !workspace.localTools.contains(where: { $0 === copy }) { workspace.localTools.append(copy) }
+        }
+        return records.rowIDs
+    }
+
+    /// An override skill's copy carries exactly the attachments frozen with
+    /// it, as submitted: one edited since takes its submitted contents, one
+    /// deleted since is brought back, one attached since is left off. A
+    /// request recorded before attachments were frozen keeps the live ones.
+    private static func applyFrozenAttachments(
+        of record: PluginOverrideRecords.SkillRecord,
+        to skill: Skill,
+        in workspace: Workspace,
+        unlinked: inout LateAttachments
+    ) {
+        if let connectorRecords = record.attachedConnectors {
+            let frozenIDs = Set(connectorRecords.map(\.id))
+            unlinked.connectorIDs.formUnion(skill.connectors.map(\.id).filter { !frozenIDs.contains($0) })
+            skill.connectors = connectorRecords.map { attached in
+                let existing = skill.connectors.first { $0.id == attached.id }
+                    ?? workspace.connectors.first { $0.id == attached.id }
+                let copy = existing ?? attached.makeAccount()
+                attached.apply(to: copy)
+                if existing == nil, !attached.isGlobal { copy.workspace = workspace }
+                copy.skill = skill
+                return copy
+            }
+        }
+        if let toolRecords = record.attachedTools {
+            let frozenIDs = Set(toolRecords.map(\.id))
+            unlinked.toolIDs.formUnion(skill.localTools.map(\.id).filter { !frozenIDs.contains($0) })
+            skill.localTools = toolRecords.map { attached in
+                let existing = skill.localTools.first { $0.id == attached.id }
+                    ?? workspace.localTools.first { $0.id == attached.id }
+                let copy = existing ?? attached.makeTool()
+                attached.apply(to: copy)
+                if existing == nil, !attached.isGlobal { copy.workspace = workspace }
+                copy.skill = skill
+                return copy
+            }
+        }
+    }
+
+    /// Drops from the launch workspace the copies of rows `unlinked` names:
+    /// attached to an override skill live but not in its frozen attachments
+    /// (attached after submission). A connector or tool belongs to one skill,
+    /// so the live store had it only as that skill's attachment; left in the
+    /// copy unlinked, it would read as the workspace's own. Kept: an account
+    /// a frozen activation binds, an override row itself, and a shared row
+    /// the workspace lists on its own.
+    private static func pruneLateAttachments(
+        _ unlinked: LateAttachments,
+        of snapshot: AgentTaskLaunchSnapshot,
+        from workspace: Workspace,
+        keeping frozenRowIDs: Set<UUID>
+    ) {
+        guard !unlinked.connectorIDs.isEmpty || !unlinked.toolIDs.isEmpty else { return }
+        // One another frozen override still has attached is its row there.
+        let records = (snapshot.pluginOverrides?.skills ?? []) + (snapshot.authoredSkills ?? [])
+        let frozenConnectors = Set(records.flatMap { $0.attachedConnectors?.map(\.id) ?? [] })
+        let frozenTools = Set(records.flatMap { $0.attachedTools?.map(\.id) ?? [] })
+        let bound = Set((snapshot.pluginActivations ?? []).flatMap(\.bindings).compactMap(\.accountID))
+            .union((snapshot.pluginAccounts ?? []).map(\.id))
+            .union(frozenConnectors)
+        let state = WorkspaceCapabilityActivation.state(of: workspace)
+        let listedConnectors = Set(state.globalConnectorIDs)
+        let listedTools = Set(state.globalToolIDs)
+        workspace.connectors.removeAll { connector in
+            unlinked.connectorIDs.contains(connector.id) && !bound.contains(connector.id)
+                && !frozenRowIDs.contains(connector.id)
+                && !(connector.isGlobal && listedConnectors.contains(connector.id.uuidString))
+        }
+        let acceptedStandalone = Set(snapshot.standaloneToolIDs ?? [])
+        workspace.localTools.removeAll { tool in
+            unlinked.toolIDs.contains(tool.id) && !acceptedStandalone.contains(tool.id) && !frozenRowIDs.contains(tool.id) && !frozenTools.contains(tool.id)
+                && !(tool.isGlobal && listedTools.contains(tool.id.uuidString))
+        }
+    }
+
+    /// The live attachments the frozen override records left off.
+    private struct LateAttachments {
+        var connectorIDs = Set<UUID>()
+        var toolIDs = Set<UUID>()
+    }
+
+    /// The definitions a request should freeze for `task`: a launch copy's
+    /// own frozen ones, else the library's for the plugins its workspace has
+    /// on. The run's policy gates still apply at launch.
+    static func pluginDefinitions(for task: AgentTask) -> [PluginPackage]? {
+        guard let workspace = task.workspace else { return nil }
+        if let frozen = workspace.launchPluginDefinitions { return frozen }
+        let enabled = Set(WorkspaceCapabilityActivation.enabledPluginIDs(of: workspace))
+        guard !enabled.isEmpty else { return [] }
+        return CapabilityRuntimeResourceMatcher.packageDefinitions().filter { enabled.contains($0.id) }
+    }
+
+    /// The live workspace remains authoritative for capability enablement
+    /// other than plugin activations, which a request freezes at submission.
+    /// At dispatch, project exactly its resolved inventory (and the frozen
+    /// activations' accounts) into the unmanaged launch graph so later
+    /// planners do not need a SwiftData ModelContext.
     private static func capabilityCloneSources(
         source: AgentTask,
-        resolvedInventory: TaskCapabilityResolver.ResourceInventory
+        resolvedInventory: TaskCapabilityResolver.ResourceInventory,
+        frozen: FrozenActivationRows = FrozenActivationRows(),
+        unfrozenAccountIDs: Set<UUID> = []
     ) -> CapabilityCloneSources {
         let workspaceSkills = source.workspace?.skills ?? []
         let workspaceConnectors = source.workspace?.connectors ?? []
         let workspaceLocalTools = source.workspace?.localTools ?? []
 
         var skills = uniqueSkills(
-            workspaceSkills + source.skills + resolvedInventory.behaviorSkills
+            workspaceSkills + source.skills + resolvedInventory.behaviorSkills + frozen.skills
         )
         var connectors = uniqueConnectors(
             workspaceConnectors +
                 (workspaceSkills + source.skills).flatMap(\.connectors) +
-                resolvedInventory.connectors
+                resolvedInventory.connectors +
+                frozen.accounts
         )
         var localTools = uniqueLocalTools(
             workspaceLocalTools +
                 (workspaceSkills + source.skills).flatMap(\.localTools) +
-                resolvedInventory.localTools
+                resolvedInventory.localTools +
+                frozen.localTools
         )
 
+        connectors.removeAll { unfrozenAccountIDs.contains($0.id) }
         skills = uniqueSkills(
             skills + connectors.compactMap(\.skill) + localTools.compactMap(\.skill)
         )
@@ -202,13 +458,13 @@ enum TaskExecutionLaunchSnapshotApplicator {
             connectors: connectors,
             localTools: localTools,
             workspaceSkillIDs: Set(
-                (workspaceSkills + resolvedInventory.behaviorSkills).map(\.id)
+                (workspaceSkills + resolvedInventory.behaviorSkills + frozen.skills).map(\.id)
             ),
             workspaceConnectorIDs: Set(
-                (workspaceConnectors + resolvedInventory.connectors).map(\.id)
+                (workspaceConnectors + resolvedInventory.connectors + frozen.accounts).map(\.id)
             ),
             workspaceLocalToolIDs: Set(
-                (workspaceLocalTools + resolvedInventory.localTools).map(\.id)
+                (workspaceLocalTools + resolvedInventory.localTools + frozen.localTools).map(\.id)
             )
         )
     }
@@ -252,16 +508,18 @@ enum TaskExecutionLaunchSnapshotApplicator {
         )
         workspace.id = source.id
         workspace.lastUsedSkillNames = source.lastUsedSkillNames
-        workspace.enabledGlobalSkillIDs = source.enabledGlobalSkillIDs
-        workspace.enabledGlobalConnectorIDs = source.enabledGlobalConnectorIDs
-        workspace.enabledGlobalToolIDs = source.enabledGlobalToolIDs
-        workspace.enabledCapabilityIDs = source.enabledCapabilityIDs
-        workspace.enabledPackIDs = source.enabledPackIDs
+        // Plugin activations are copied whole once the launch graph exists,
+        // so their bindings can point at its account copies.
+        var state = WorkspaceCapabilityActivation.state(of: source)
+        state.capabilityIDs = []
+        state.pluginIDs = []
+        state.pluginVersions = []
+        WorkspaceCapabilityActivation.apply(state, to: workspace)
+        WorkspaceCapabilityActivation.copyRetired(from: source, to: workspace)
+        WorkspaceCapabilityActivation.copyPendingLegacyEnablement(from: source, to: workspace)
         workspace.shelfVisibilityOverrideIDs = source.shelfVisibilityOverrideIDs
         workspace.shelfVisibilityOverrideValues = source.shelfVisibilityOverrideValues
         workspace.memories = source.memories
-        workspace.installedPluginIDs = source.installedPluginIDs
-        workspace.installedPluginVersions = source.installedPluginVersions
         workspace.isStarred = source.isStarred
         workspace.activeWorkingPath = source.activeWorkingPath
         workspace.activeExecutionEnvironmentJSON = source.activeExecutionEnvironmentJSON
@@ -335,7 +593,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return artifact
     }
 
-    private static func detachedSkill(_ source: Skill) -> Skill {
+    nonisolated static func detachedSkill(_ source: Skill) -> Skill {
         let skill = Skill(
             name: source.name,
             icon: source.icon,
@@ -346,6 +604,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             behaviorInstructions: source.behaviorInstructions
         )
         skill.id = source.id
+        skill.credentialNamespaceID = source.credentialNamespaceID
         skill.environmentKeys = source.environmentKeys
         skill.environmentValues = source.environmentValues
         skill.originPackageID = source.originPackageID
@@ -360,7 +619,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return skill
     }
 
-    private static func detachedConnector(
+    nonisolated static func detachedConnector(
         _ source: Connector,
         workspace: Workspace? = nil,
         skill: Skill? = nil
@@ -374,6 +633,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             authMethod: source.authMethod
         )
         connector.id = source.id
+        connector.credentialNamespaceID = source.credentialNamespaceID
         connector.credentialKeys = source.credentialKeys
         connector.credentialValues = source.credentialValues
         connector.configKeys = source.configKeys
@@ -393,7 +653,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return connector
     }
 
-    private static func detachedLocalTool(
+    nonisolated static func detachedLocalTool(
         _ source: LocalTool,
         workspace: Workspace? = nil,
         skill: Skill? = nil

@@ -30,9 +30,10 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"planID\\":\\"\(plan.planID)\\",\\"stepID\\":\\"step-1\\",\\"status\\":\\"done\\",\\"summary\\":\\"Wrote the report\\"}"}}'
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Report written."}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"checkpoint-1","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"planID\\":\\"\(plan.planID)\\",\\"stepID\\":\\"step-1\\",\\"status\\":\\"done\\",\\"summary\\":\\"Wrote the report\\"}"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"checkpoint-2","content":"Report written."}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":9,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"checkpoint-session","exitCode":0}'
             exit 0
             """)
         )
@@ -53,6 +54,7 @@ extension HeadlessChatScenarioTests {
         })
         #expect(!task.events.contains { $0.type == "plan.execution.completed" })
 
+        try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context)?.canReplace == true)
         // Once the output actually exists, re-approving the step verifies it.
         let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
         try "report body".write(toFile: taskFolder + "/report.md", atomically: true, encoding: .utf8)
@@ -84,8 +86,9 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.blocked\\",\\"planID\\":\\"\(plan.planID)\\",\\"stepID\\":\\"step-1\\",\\"status\\":\\"blocked\\",\\"reason\\":\\"Need approval to push the report upstream.\\"}"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"checkpoint-3","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.blocked\\",\\"planID\\":\\"\(plan.planID)\\",\\"stepID\\":\\"step-1\\",\\"status\\":\\"blocked\\",\\"reason\\":\\"Need approval to push the report upstream.\\"}"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":9,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"checkpoint-session","exitCode":0}'
             exit 0
             """)
         )
@@ -131,8 +134,9 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Worked on the report."}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"checkpoint-4","content":"Worked on the report."}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":9,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"checkpoint-session","exitCode":0}'
             exit 0
             """)
         )
@@ -144,6 +148,7 @@ extension HeadlessChatScenarioTests {
 
         _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker, mode: .nextStep)
         #expect(TaskPlanService.reconstruct(for: task).plan?.steps.first?.status == .blocked)
+        try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context)?.canReplace == true)
 
         let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
         try "report body".write(toFile: taskFolder + "/report.md", atomically: true, encoding: .utf8)
@@ -177,8 +182,9 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.skipped\\",\\"planID\\":\\"\(plan.planID)\\",\\"stepID\\":\\"step-1\\",\\"status\\":\\"skipped\\",\\"reason\\":\\"Report already exists upstream.\\"}"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"checkpoint-5","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.skipped\\",\\"planID\\":\\"\(plan.planID)\\",\\"stepID\\":\\"step-1\\",\\"status\\":\\"skipped\\",\\"reason\\":\\"Report already exists upstream.\\"}"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":9,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"checkpoint-session","exitCode":0}'
             exit 0
             """)
         )
@@ -216,8 +222,9 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"All steps done."}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"checkpoint-6","content":"All steps done."}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":9,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"checkpoint-session","exitCode":0}'
             exit 0
             """)
         )
@@ -263,8 +270,9 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"All steps done."}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"checkpoint-7","content":"All steps done."}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":9,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"checkpoint-session","exitCode":0}'
             exit 0
             """)
         )
@@ -285,6 +293,7 @@ extension HeadlessChatScenarioTests {
         // provider reported as successful: the turn stays retryable.
         #expect(rejectedTask.status == .pendingUser)
         #expect(rejectedRequest.state == .failed)
+        try #require(try RuntimeExecutionOwner.existing(task: rejectedTask, context: harness.context)?.canReplace == true)
 
         let acceptedTask = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
         TaskPlanService.recordCreated(plan, task: acceptedTask, modelContext: harness.context)

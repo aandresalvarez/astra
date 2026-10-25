@@ -18,15 +18,17 @@ public enum RemoteWorkspaceJobStatus: String, Codable, Equatable, Sendable {
     case succeeded
     case failed
     case timedOut = "timed_out"
+    case cancelled
+    case unverified
     /// Ended without recording an exit code: the host rebooted, the job and its
     /// supervisor were killed, the launch never ran, or its directory is gone.
     case lost
 
     public var isTerminal: Bool {
         switch self {
-        case .starting, .running:
+        case .starting, .running, .lost, .unverified:
             return false
-        case .succeeded, .failed, .timedOut, .lost:
+        case .succeeded, .failed, .timedOut, .cancelled:
             return true
         }
     }
@@ -101,7 +103,7 @@ public struct RemoteWorkspaceJobObservation: Codable, Equatable, Sendable {
 }
 
 public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
 
     public var schemaVersion: Int
     public var jobID: String
@@ -127,6 +129,18 @@ public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
     public var stderrBytes: Int64?
     public var lastOutputAt: Date?
     public var message: String?
+    public var launchIntentKey: String?
+    public var launchNonce: String?
+    public var ownerID: String?
+    public var executionID: String?
+    public var connectionArguments: [String]?
+    public var cancellationRequestedAt: Date?
+    public var remoteClock: RemoteWorkspaceJobClock.Reference?
+    public var pendingTransitions: [RemoteWorkspaceJobTransition]?
+
+    /// POSIX process groups cannot contain tools which detach or start work on
+    /// another host. Observations never grant the execution owner's stop proof.
+    public var cleanupVerified: Bool { false }
 
     public init(
         jobID: String,
@@ -150,6 +164,8 @@ public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
         self.timeoutSeconds = timeoutSeconds
         self.createdAt = createdAt
         self.status = .starting
+        self.launchNonce = UUID().uuidString.lowercased()
+        self.connectionArguments = connection.arguments
     }
 
     /// The remote job directory, relative to the host user's home.
@@ -158,9 +174,8 @@ public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
     }
 
     /// The only way a record's state changes. Monotonic: an observation older
-    /// than the last one is dropped, and a terminal status is never replaced,
-    /// so the helper and a later watcher can both write without either one
-    /// undoing the other.
+    /// than the last one is dropped. A later complete probe may correct an
+    /// earlier result; neither observation is authority to release resources.
     public mutating func apply(_ result: RemoteWorkspaceJobObservationResult) {
         if let last = lastObservation, last.at > result.at { return }
         switch result {
@@ -175,9 +190,8 @@ public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
             if let latest = [snapshot.stdoutModifiedAt, snapshot.stderrModifiedAt].compactMap({ $0 }).max() {
                 lastOutputAt = latest
             }
-            guard !status.isTerminal else { return }
             status = derived.status
-            exitCode = derived.exitCode ?? exitCode
+            exitCode = derived.exitCode
             completedAt = derived.completedAt ?? (derived.status.isTerminal ? at : nil)
             message = derived.message
         }
@@ -222,6 +236,8 @@ public struct RemoteWorkspaceJobDerivedState: Equatable, Sendable {
 
 /// What one probe printed about a job, parsed from its `key=value` lines.
 public struct RemoteWorkspaceJobHostSnapshot: Equatable, Sendable {
+    public var jobID: String? = nil
+    public var nonce: String? = nil
     public var directoryPresent: Bool
     public var hostBootID: String?
     public var evidence: RemoteWorkspaceJobLaunchEvidence?
@@ -244,7 +260,7 @@ public struct RemoteWorkspaceJobHostSnapshot: Equatable, Sendable {
         var sawMarker = false
         for rawLine in output.split(separator: "\n", omittingEmptySubsequences: true) {
             let line = String(rawLine)
-            if line == "\(RemoteWorkspaceJobScripts.probeMarker)=1" {
+            if line == "\(RemoteWorkspaceJobScripts.probeMarker)=2" {
                 sawMarker = true
                 fields = [:]
                 continue
@@ -252,11 +268,20 @@ public struct RemoteWorkspaceJobHostSnapshot: Equatable, Sendable {
             guard sawMarker, let separator = line.firstIndex(of: "=") else { continue }
             let key = String(line[..<separator])
             let value = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespaces)
+            guard fields[key] == nil else { return nil }
             fields[key] = value
         }
-        guard sawMarker else { return nil }
+        guard sawMarker, let jobID = fields["job_id"], let nonce = fields["nonce"],
+              UUID(uuidString: jobID) != nil, UUID(uuidString: nonce) != nil,
+              fields["astra_probe_end"] == "\(jobID):\(nonce)",
+              output.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("astra_probe_end=\(jobID):\(nonce)"),
+              nonEmpty(fields["host_boot_id"]) != nil,
+              ["present", "missing"].contains(fields["state"] ?? ""),
+              ["0", "1"].contains(fields["pid_alive"] ?? ""),
+              ["0", "1"].contains(fields["supervisor_alive"] ?? "") else { return nil }
 
         var snapshot = RemoteWorkspaceJobHostSnapshot(
+            jobID: jobID, nonce: nonce,
             directoryPresent: fields["state"] == "present",
             hostBootID: nonEmpty(fields["host_boot_id"]),
             evidence: nil,
@@ -284,9 +309,18 @@ public struct RemoteWorkspaceJobHostSnapshot: Equatable, Sendable {
         if let resultJSON = fields["result"],
            let data = resultJSON.data(using: .utf8),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            snapshot.resultStatus = object["status"] as? String
-            snapshot.resultExitCode = (object["exit_code"] as? NSNumber)?.int32Value
-            snapshot.resultCompletedAt = (object["completed_at"] as? String).flatMap(isoDate)
+            guard object["job_id"] as? String == jobID, object["nonce"] as? String == nonce,
+                  let status = object["status"] as? String,
+                  ["succeeded", "failed", "timed_out", "cancelled"].contains(status),
+                  let code = object["exit_code"] as? NSNumber,
+                  String(cString: code.objCType) != "c", code.doubleValue.isFinite,
+                  code.doubleValue == Double(code.int32Value),
+                  let completed = (object["completed_at"] as? String).flatMap(isoDate) else { return nil }
+            snapshot.resultStatus = status
+            snapshot.resultExitCode = code.int32Value
+            snapshot.resultCompletedAt = completed
+        } else if fields["result"] != nil {
+            return nil
         }
         return snapshot
     }
@@ -307,7 +341,7 @@ public struct RemoteWorkspaceJobHostSnapshot: Equatable, Sendable {
 
 /// The status table from the spec, in one place.
 public enum RemoteWorkspaceJobStatusDerivation {
-    /// How long a job may have no launch evidence before it counts as lost.
+    /// When a missing launch becomes visibly unverified, never restartable.
     public static let launchGraceSeconds: TimeInterval = 60
 
     public static func derive(
@@ -318,18 +352,23 @@ public enum RemoteWorkspaceJobStatusDerivation {
         let withinLaunchGrace = now.timeIntervalSince(record.createdAt) < launchGraceSeconds
         guard snapshot.directoryPresent else {
             guard record.launch == nil else {
-                return lost("The job's directory (~/\(record.remoteDirectory)) is not on the host: it was deleted, or a different host answered.")
+                return unverified("The job directory is missing. Earlier work may still be running; its reservation is preserved.")
             }
             // A start still in flight has not made its directory yet.
             return withinLaunchGrace
                 ? RemoteWorkspaceJobDerivedState(status: .starting, message: "The host has not confirmed the launch yet.")
-                : lost("The launch never reached the host: its job directory was never created.")
+                : unverified("The launch is not confirmed. A delayed launch remains possible; ASTRA will inspect the same job again.")
+        }
+        if let evidence = record.launch ?? snapshot.evidence,
+           snapshot.hostBootID != evidence.bootID {
+            return unverified("The host identity changed or rebooted. Remote tool cleanup is not confirmed.")
         }
         if let status = snapshot.resultStatus {
             let mapped: RemoteWorkspaceJobStatus
             switch status {
             case "succeeded": mapped = .succeeded
             case "timed_out": mapped = .timedOut
+            case "cancelled": mapped = .cancelled
             default: mapped = .failed
             }
             return RemoteWorkspaceJobDerivedState(
@@ -343,10 +382,10 @@ public enum RemoteWorkspaceJobStatusDerivation {
             if withinLaunchGrace {
                 return RemoteWorkspaceJobDerivedState(status: .starting, message: "The host has not confirmed the launch yet.")
             }
-            return lost("The launcher never recorded the command starting.")
+            return unverified("The launcher has not confirmed the command starting. Do not launch another attempt.")
         }
         if let hostBootID = snapshot.hostBootID, !evidence.bootID.isEmpty, hostBootID != evidence.bootID {
-            return lost("The host rebooted after the job started, and the job recorded no exit code.")
+            return unverified("The host rebooted after the job started. Tool cleanup remains unverified.")
         }
         if snapshot.pidAlive, markersMatch(evidence.startMarker, snapshot.pidStartMarker) {
             return RemoteWorkspaceJobDerivedState(status: .running)
@@ -355,13 +394,12 @@ public enum RemoteWorkspaceJobStatusDerivation {
             // The command is gone; its supervisor is writing the result.
             return RemoteWorkspaceJobDerivedState(status: .running)
         }
-        return lost("The job and its supervisor are gone and no exit code was recorded (killed, out of memory, or cleaned up on the host).")
+        return unverified("The managed processes are not observed and no exit code was recorded. Detached tools may still be running.")
     }
 
-    /// A marker the launcher could not read (empty) is not a mismatch; a
-    /// different one means the PID now belongs to another process.
+    /// A missing or different identity is never evidence of this execution.
     static func markersMatch(_ recorded: String?, _ current: String?) -> Bool {
-        guard let recorded = normalized(recorded) else { return true }
+        guard let recorded = normalized(recorded) else { return false }
         return recorded == normalized(current)
     }
 
@@ -370,169 +408,7 @@ public enum RemoteWorkspaceJobStatusDerivation {
         return words.isEmpty ? nil : words.joined(separator: " ")
     }
 
-    private static func lost(_ message: String) -> RemoteWorkspaceJobDerivedState {
-        RemoteWorkspaceJobDerivedState(status: .lost, message: message)
-    }
-}
-
-public enum RemoteWorkspaceJobStoreError: LocalizedError, Equatable, Sendable {
-    case invalidJobID(String)
-    case notFound(String)
-    case alreadyExists(String)
-    case unsafePath(String)
-    case unreadable(String)
-
-    public var errorDescription: String? {
-        switch self {
-        case .invalidJobID(let value):
-            return "Invalid remote job id: \(value). Use the remote_job_id that `astra-workspace-job start` printed."
-        case .notFound(let jobID):
-            return "No remote job \(jobID) is recorded for this task."
-        case .alreadyExists(let jobID):
-            return "Remote job \(jobID) is already recorded."
-        case .unsafePath(let path):
-            return "The remote job record path is not a plain file or directory: \(path)"
-        case .unreadable(let path):
-            return "The remote job record could not be read: \(path)"
-        }
-    }
-}
-
-/// `<task folder>/remote-jobs/<job_id>.json`, one JSON file per job, each
-/// change made under an exclusive lock and written by atomic replace.
-public final class RemoteWorkspaceJobStore {
-    public let rootURL: URL
-    private let fileManager: FileManager
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
-
-    public init(rootPath: String, fileManager: FileManager = .default) {
-        self.rootURL = URL(fileURLWithPath: rootPath, isDirectory: true).standardizedFileURL
-        self.fileManager = fileManager
-        self.encoder = JSONEncoder()
-        self.encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        self.decoder = JSONDecoder()
-        // Fractional seconds, so a record read back equals the one written and
-        // "is this observation older than the last" is not decided by rounding.
-        self.encoder.dateEncodingStrategy = .custom { date, encoder in
-            var container = encoder.singleValueContainer()
-            try container.encode(Self.fractionalFormatter().string(from: date))
-        }
-        self.decoder.dateDecodingStrategy = .custom { decoder in
-            let text = try decoder.singleValueContainer().decode(String.self)
-            guard let date = Self.fractionalFormatter().date(from: text) ?? ISO8601DateFormatter().date(from: text) else {
-                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Not an ISO 8601 date: \(text)"))
-            }
-            return date
-        }
-    }
-
-    private static func fractionalFormatter() -> ISO8601DateFormatter {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }
-
-    /// A lowercase UUID, the only shape a job id ever has. Everything that
-    /// becomes a path, local or remote, goes through this first.
-    public static func canonicalJobID(_ raw: String) throws -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let uuid = UUID(uuidString: trimmed), uuid.uuidString.lowercased() == trimmed.lowercased() else {
-            throw RemoteWorkspaceJobStoreError.invalidJobID(trimmed)
-        }
-        return uuid.uuidString.lowercased()
-    }
-
-    public func recordURL(jobID: String) throws -> URL {
-        rootURL.appendingPathComponent("\(try Self.canonicalJobID(jobID)).json", isDirectory: false)
-    }
-
-    public func create(_ record: RemoteWorkspaceJobRecord) throws {
-        let url = try recordURL(jobID: record.jobID)
-        try withLock(jobID: record.jobID) {
-            guard try existingRegularFile(at: url) == false else {
-                throw RemoteWorkspaceJobStoreError.alreadyExists(record.jobID)
-            }
-            try write(record, to: url)
-        }
-    }
-
-    public func load(jobID: String) throws -> RemoteWorkspaceJobRecord {
-        let url = try recordURL(jobID: jobID)
-        return try withLock(jobID: jobID) { try read(at: url, jobID: jobID) }
-    }
-
-    @discardableResult
-    public func update(
-        jobID: String,
-        _ body: (inout RemoteWorkspaceJobRecord) throws -> Void
-    ) throws -> RemoteWorkspaceJobRecord {
-        let url = try recordURL(jobID: jobID)
-        return try withLock(jobID: jobID) {
-            var record = try read(at: url, jobID: jobID)
-            try body(&record)
-            try write(record, to: url)
-            return try read(at: url, jobID: jobID)
-        }
-    }
-
-    private func read(at url: URL, jobID: String) throws -> RemoteWorkspaceJobRecord {
-        guard try existingRegularFile(at: url) else {
-            throw RemoteWorkspaceJobStoreError.notFound(try Self.canonicalJobID(jobID))
-        }
-        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw RemoteWorkspaceJobStoreError.unreadable(url.path) }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        guard let data = try? handle.readToEnd(), !data.isEmpty,
-              let record = try? decoder.decode(RemoteWorkspaceJobRecord.self, from: data),
-              (try? Self.canonicalJobID(record.jobID)) == (try Self.canonicalJobID(jobID)) else {
-            throw RemoteWorkspaceJobStoreError.unreadable(url.path)
-        }
-        return record
-    }
-
-    private func write(_ record: RemoteWorkspaceJobRecord, to url: URL) throws {
-        let data = try encoder.encode(record)
-        try data.write(to: url, options: [.atomic])
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-    }
-
-    /// `true` for a regular file, `false` when nothing is there, and a throw
-    /// for anything else (a symlink, a directory), so a planted link is never
-    /// followed or replaced.
-    private func existingRegularFile(at url: URL) throws -> Bool {
-        var info = stat()
-        if lstat(url.path, &info) != 0 {
-            guard errno == ENOENT else { throw RemoteWorkspaceJobStoreError.unreadable(url.path) }
-            return false
-        }
-        guard (info.st_mode & S_IFMT) == S_IFREG else {
-            throw RemoteWorkspaceJobStoreError.unsafePath(url.path)
-        }
-        return true
-    }
-
-    private func prepareRoot() throws {
-        var info = stat()
-        if lstat(rootURL.path, &info) == 0 {
-            guard (info.st_mode & S_IFMT) == S_IFDIR else {
-                throw RemoteWorkspaceJobStoreError.unsafePath(rootURL.path)
-            }
-            return
-        }
-        try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    }
-
-    private func withLock<T>(jobID: String, _ body: () throws -> T) throws -> T {
-        try prepareRoot()
-        let lockPath = rootURL.appendingPathComponent(".\(try Self.canonicalJobID(jobID)).lock").path
-        let fd = open(lockPath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { throw RemoteWorkspaceJobStoreError.unsafePath(lockPath) }
-        defer { close(fd) }
-        while flock(fd, LOCK_EX) != 0 {
-            guard errno == EINTR else { throw RemoteWorkspaceJobStoreError.unreadable(lockPath) }
-        }
-        defer { flock(fd, LOCK_UN) }
-        return try body()
+    private static func unverified(_ message: String) -> RemoteWorkspaceJobDerivedState {
+        RemoteWorkspaceJobDerivedState(status: .unverified, message: message)
     }
 }

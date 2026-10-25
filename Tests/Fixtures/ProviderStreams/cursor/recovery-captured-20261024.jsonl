@@ -1,0 +1,12 @@
+{"type":"system","subtype":"init","model":"fixture","session_id":"fixture-session"}
+{"type":"user","session_id":"fixture-session","message":{"role":"user","content":[{"type":"text","text":"fixture"}]}}
+{"type":"thinking","subtype":"delta","text":"fixture","session_id":"fixture-session"}
+{"type":"thinking","subtype":"delta","text":"fixture","session_id":"fixture-session"}
+{"type":"thinking","subtype":"delta","text":"fixture","session_id":"fixture-session"}
+{"type":"thinking","subtype":"delta","text":"fixture","session_id":"fixture-session"}
+{"type":"thinking","subtype":"delta","text":"fixture","session_id":"fixture-session"}
+{"type":"thinking","subtype":"delta","text":"fixture","session_id":"fixture-session"}
+{"type":"thinking","subtype":"delta","text":"fixture","session_id":"fixture-session"}
+{"type":"thinking","subtype":"completed","session_id":"fixture-session"}
+{"type":"assistant","session_id":"fixture-session","message":{"role":"assistant","content":[{"type":"text","text":"fixture"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"fixture","session_id":"fixture-session","usage":{"inputTokens":5297,"outputTokens":40}}

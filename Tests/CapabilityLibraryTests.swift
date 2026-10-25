@@ -330,7 +330,7 @@ struct CapabilityLibraryTests {
         let disabledLocal = makeTestPackage(id: "local.test/disabled", name: "Disabled Local")
 
         let workspace = Workspace(name: "Matcher", primaryPath: "/tmp/matcher")
-        workspace.enabledCapabilityIDs = [enabledLocal.id, builtInID]
+        workspace.testEnabledCapabilityIDs = [enabledLocal.id, builtInID]
 
         // The list intentionally repeats `enabledLocal` to exercise de-dupe and
         // omits the built-in entirely so it can only appear via the merge.
@@ -362,7 +362,7 @@ struct CapabilityLibraryTests {
         let allowed = makeTestPackage(id: "local.test/allowed", name: "Allowed")
         let disabled = makeTestPackage(id: "local.test/disabled", name: "Disabled")
         let workspace = Workspace(name: "Policy", primaryPath: "/tmp/policy")
-        workspace.enabledCapabilityIDs = [allowed.id, disabled.id]
+        workspace.testEnabledCapabilityIDs = [allowed.id, disabled.id]
         let packPolicy = Self.policy(restrictions: [
             AstraPackPolicyRestriction(
                 id: "disable-local",
@@ -385,7 +385,7 @@ struct CapabilityLibraryTests {
     func inMemoryEnabledPackagesAppliesOnlySuppliedPackPolicy() {
         let disabled = makeTestPackage(id: "local.test/disabled", name: "Disabled")
         let workspace = Workspace(name: "Policy", primaryPath: "/tmp/policy")
-        workspace.enabledCapabilityIDs = [disabled.id]
+        workspace.testEnabledCapabilityIDs = [disabled.id]
         workspace.enabledPackIDs = ["astra.pack.policy-test"]
         let packPolicy = Self.policy(restrictions: [
             AstraPackPolicyRestriction(
@@ -415,7 +415,7 @@ struct CapabilityLibraryTests {
     func enabledPackagesAvoidsApprovalStoreReadsWithoutPackReviewGates() {
         let disabled = makeTestPackage(id: "local.test/disabled", name: "Disabled")
         let workspace = Workspace(name: "Policy", primaryPath: "/tmp/policy")
-        workspace.enabledCapabilityIDs = [disabled.id]
+        workspace.testEnabledCapabilityIDs = [disabled.id]
         let disabledPolicy = Self.policy(restrictions: [
             AstraPackPolicyRestriction(
                 id: "disable-local",
@@ -440,7 +440,7 @@ struct CapabilityLibraryTests {
             #expect(approvalLoadCount == 0)
 
             let gated = makeTestPackage(id: "local.test/gated", name: "Gated")
-            workspace.enabledCapabilityIDs = [gated.id]
+            workspace.testEnabledCapabilityIDs = [gated.id]
             let gatedPolicy = Self.policy(restrictions: [
                 AstraPackPolicyRestriction(
                     id: "review-gated",
@@ -465,7 +465,7 @@ struct CapabilityLibraryTests {
     func enabledPackagesHonorsPackReviewGateApprovals() throws {
         let gated = makeTestPackage(id: "local.test/gated", name: "Gated")
         let workspace = Workspace(name: "Review Gate", primaryPath: "/tmp/review-gate")
-        workspace.enabledCapabilityIDs = [gated.id]
+        workspace.testEnabledCapabilityIDs = [gated.id]
         let packPolicy = Self.policy(restrictions: [
             AstraPackPolicyRestriction(
                 id: "review-gated",

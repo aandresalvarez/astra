@@ -23,12 +23,12 @@ extension PendingTaskReviewSnapshotInput {
     /// `deliveredRequestFollowUpRunID` names the latest run when it follows up
     /// a request already met. `recomputeDecisionOutcomes` reads it from the
     /// store, so evidence older than the transcript window still counts.
-    init(task: AgentTask, snapshot: TaskThreadSnapshot, deliveredRequestFollowUpRunID: UUID?) {
+    init(task: AgentTask, snapshot: TaskThreadSnapshot, deliveredRequestFollowUpRunID: UUID?, artifactRequirement: Bool? = nil) {
         let latestRun = snapshot.latestRun
         let latestRunSnapshot = latestRun.map(PendingTaskReviewRunSnapshot.init)
         let runSnapshots = snapshot.sortedRuns.map(PendingTaskReviewRunSnapshot.init)
         let eventSnapshots = snapshot.sortedEvents.map(PendingTaskReviewEventSnapshot.init)
-        let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
+        let requiresDeliverableArtifact = (artifactRequirement ?? TaskDeliverableExpectation.requiresDeliverableArtifact(task))
             && (latestRun == nil || latestRun?.id != deliveredRequestFollowUpRunID)
         let requiresScopedArtifactEvidence = PendingTaskReviewPolicy.requiresScopedArtifactEvidence(
             taskStatus: task.status,

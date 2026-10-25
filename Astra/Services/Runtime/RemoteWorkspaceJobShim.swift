@@ -2,6 +2,8 @@ import Foundation
 import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
+import SwiftData
+import WorkspaceToolSupport
 
 /// Puts `astra-workspace-job` on a native-shell SSH run's PATH, next to the
 /// task's `ssh` wrapper (docs/specs/2026-10-21-ssh-remote-managed-jobs.md).
@@ -25,6 +27,8 @@ enum RemoteWorkspaceJobShim {
         task: AgentTask,
         runID: UUID,
         route: RemoteWorkspaceSSHRoute?,
+        configuration: RemoteWorkspaceJobConfiguration? = nil,
+        brokerDirectory: String? = nil, brokerToken: String? = nil,
         fileManager: FileManager = .default,
         helperPath: String = helperPath
     ) -> RemoteWorkspaceSSHRoute? {
@@ -37,6 +41,9 @@ enum RemoteWorkspaceJobShim {
         guard route.route == .nativeShell,
               !taskFolder.isEmpty,
               !connections.isEmpty,
+              let configuration, configuration.taskID == task.id.uuidString,
+              configuration.runID == runID.uuidString, configuration.ownerBinding != nil,
+              let brokerDirectory, let brokerToken, !brokerToken.isEmpty,
               fileManager.isExecutableFile(atPath: helperPath),
               helperPath.rangeOfCharacter(from: .newlines) == nil else {
             remove(taskFolder: taskFolder, fileManager: fileManager)
@@ -47,11 +54,14 @@ enum RemoteWorkspaceJobShim {
         let shimPath = (binDirectory as NSString).appendingPathComponent(commandName)
         let script = shimScript(
             helperPath: helperPath,
-            recordRoot: (taskFolder as NSString).appendingPathComponent("remote-jobs"),
+            recordRoot: configuration.recordRootPath,
             sshWrapper: (binDirectory as NSString).appendingPathComponent("ssh"),
             connections: connections,
             taskID: task.id,
-            runID: runID
+            runID: runID,
+            ownerBinding: configuration.ownerBinding,
+            maximumSeconds: configuration.maximumJobSeconds ?? 0,
+            brokerDirectory: brokerDirectory, brokerToken: brokerToken
         )
         do {
             try fileManager.createDirectory(atPath: binDirectory, withIntermediateDirectories: true)
@@ -100,15 +110,23 @@ enum RemoteWorkspaceJobShim {
         sshWrapper: String,
         connections: [RemoteWorkspaceJobShimConnection],
         taskID: UUID,
-        runID: UUID
+        runID: UUID,
+        ownerBinding: RemoteWorkspaceJobOwnerBinding? = nil,
+        maximumSeconds: Int = 0,
+        brokerDirectory: String = "", brokerToken: String = ""
     ) -> String {
-        """
+        let ownerJSON = (try? JSONEncoder().encode(ownerBinding)).map { String(decoding: $0, as: UTF8.self) } ?? "null"
+        return """
         #!/bin/sh
         export ASTRA_REMOTE_JOB_ROOT=\(shellQuoted(recordRoot))
         export ASTRA_REMOTE_JOB_SSH=\(shellQuoted(sshWrapper))
         export ASTRA_REMOTE_JOB_CONNECTIONS=\(shellQuoted(connectionsJSON(connections)))
         export ASTRA_REMOTE_JOB_TASK_ID=\(shellQuoted(taskID.uuidString))
         export ASTRA_REMOTE_JOB_RUN_ID=\(shellQuoted(runID.uuidString))
+        export ASTRA_REMOTE_JOB_OWNER=\(shellQuoted(ownerJSON))
+        export ASTRA_REMOTE_JOB_MAX_SECONDS=\(shellQuoted(String(maximumSeconds)))
+        export ASTRA_REMOTE_JOB_BROKER_DROP=\(shellQuoted(brokerDirectory))
+        export ASTRA_REMOTE_JOB_BROKER_TOKEN=\(shellQuoted(brokerToken))
         exec \(shellQuoted(helperPath)) "$@"
         """
     }
@@ -133,37 +151,28 @@ enum RemoteWorkspaceJobShim {
     }
 }
 
-/// The app's copy of `RemoteWorkspaceJobConnection` (the helper's module is
-/// not linked into the app); `RemoteWorkspaceJobShimTests` pins the two to
-/// one wire format.
-struct RemoteWorkspaceJobShimConnection: Codable, Equatable, Sendable {
-    var id: String
-    var name: String
-    var target: String
-    var arguments: [String]
-}
+/// Shared wire type; there is no independently maintained app copy.
+typealias RemoteWorkspaceJobShimConnection = RemoteWorkspaceJobConnection
 
 /// What the policy guard reads an `astra-workspace-job start` as.
 enum RemoteWorkspaceJobPolicyEquivalence {
-    /// `ssh <connection> <everything after -->` for a command that starts a
-    /// remote job anywhere in it, or `nil`. Deliberately loose: it only feeds
-    /// an extra denial check, so reading too much as a job start can deny
-    /// more, never allow more.
-    static func sshEquivalent(of command: String) -> String? {
-        guard let start = command.range(
-            of: #"(^|[\s;&|(/`])astra-workspace-job\s+start(\s|$)"#,
-            options: .regularExpression
-        ) else { return nil }
-        let arguments = command[start.upperBound...]
-        guard let separator = arguments.range(of: #"(^|\s)--(\s|$)"#, options: .regularExpression) else { return nil }
-        let options = arguments[..<separator.lowerBound]
-        let remote = arguments[separator.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-        var target = ""
-        if let match = options.range(of: #"--connection(=|\s+)\S+"#, options: .regularExpression) {
-            target = String(options[match])
-                .replacingOccurrences(of: #"^--connection(=|\s+)"#, with: "", options: .regularExpression)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+    /// Nil means a helper invocation could not be interpreted safely. Every
+    /// invocation in a compound command must pass the same SSH denial checks.
+    static func sshEquivalents(of command: String) -> [String]? {
+        guard command.contains("astra-workspace-job") else { return [] }
+        guard let commands = LocalShellCommands.simpleCommands(command) else { return nil }
+        var equivalents: [String] = []
+        var found = false
+        for words in commands {
+            guard let index = words.firstIndex(where: { ($0 as NSString).lastPathComponent == "astra-workspace-job" }) else { continue }
+            found = true
+            guard let parsed = try? RemoteWorkspaceJobCLI.parse(Array(words.dropFirst(index + 1))) else { return nil }
+            if case .start(let target, _, _, let remote) = parsed {
+                equivalents.append(["ssh", target ?? "", remote].filter { !$0.isEmpty }.joined(separator: " "))
+            }
         }
-        return (["ssh", target, remote].filter { !$0.isEmpty }).joined(separator: " ")
+        return found ? equivalents : nil
     }
+
+    static func sshEquivalent(of command: String) -> String? { sshEquivalents(of: command)?.first }
 }

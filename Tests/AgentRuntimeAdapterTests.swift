@@ -118,8 +118,8 @@ struct AgentRuntimeAdapterTests {
             .appendingPathComponent("AgentRuntimeProcessRunner.swift")
         let source = try String(contentsOf: runnerURL, encoding: .utf8)
 
-        #expect(source.contains("await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)"))
-        #expect(!source.contains("Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateKey) }"))
+        #expect(source.contains("await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)"))
+        #expect(!source.contains("Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateLease) }"))
     }
 
     @Test("SSH launch presence helper avoids loading full connection payloads")
@@ -874,8 +874,9 @@ struct AgentRuntimeAdapterTests {
         #expect(antigravityPlan.executablePath == "/bin/agy-not-present")
         // This binary was never probed for `--output-format`, and an
         // unprobed agy stays on plain text rather than risking a flag an
-        // older build would reject.
-        #expect(antigravityPlan.arguments.starts(with: ["--print", "hello", "--print-timeout", "30s"]))
+        // older build would reject. The context's 30 s idle timeout never
+        // becomes agy's whole-turn limit.
+        #expect(antigravityPlan.arguments.starts(with: ["--print", "hello", "--print-timeout", "0s"]))
         #expect(antigravityPlan.arguments.contains("--sandbox"))
         #expect(antigravityPlan.parsesJSONLines == false)
         #expect(antigravityPlan.environment["HOME"] == "/tmp/astra-antigravity-home")
@@ -3060,7 +3061,7 @@ struct AgentRuntimeAdapterTests {
         let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: root, supportsAdditionalMCPConfig: false)
 
         let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
-        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let task = AgentTask(
             title: "Review PR",
             goal: "Use GitHub to inspect pull requests",
@@ -3117,7 +3118,7 @@ struct AgentRuntimeAdapterTests {
         let copilotPath = try await CopilotAdapterFixture.writeExecutable(in: root, supportsAdditionalMCPConfig: true)
 
         let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
-        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let task = AgentTask(
             title: "Review PR",
             goal: "Use GitHub to inspect pull requests",

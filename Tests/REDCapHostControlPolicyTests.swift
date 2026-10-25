@@ -83,6 +83,53 @@ struct REDCapHostControlPolicyTests {
 
     // MARK: - Subject data stays out of the transcript
 
+    @Test("The default broker records HTTP timing without credentials or response bodies")
+    func defaultBrokerRecordsSafeHTTPDiagnostics() throws {
+        let directory = try temporaryDirectory()
+        defer { Self.endCapture(); try? FileManager.default.removeItem(at: directory) }
+        Self.beginCapture()
+        REDCapCaptureURLProtocol.body = #"{"project_title":"private-study-title","token":"\#(Self.token)"}"#
+        let broker = server(diagnosticsPath: directory.path)
+        _ = try call(broker, id: 1, arguments: ["operation": "project"])
+        REDCapCaptureURLProtocol.statusCode = 403
+        _ = try call(broker, id: 2, arguments: ["operation": "project"])
+        _ = try call(broker, id: 3, arguments: ["operation": "metadata", "fields": ["private-field-id"]])
+        let log = try String(contentsOf: directory.appendingPathComponent("host_control_tool_activity.jsonl"), encoding: .utf8)
+        let records = try log.split(separator: "\n").map {
+            try #require(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+        }
+        #expect(records.count == 3)
+        #expect(records.compactMap { $0["statusCode"] as? Int } == [200, 403, 403])
+        #expect(records.compactMap { $0["exitCode"] as? Int } == [0, 1, 1])
+        for record in records {
+            #expect(try #require(record["durationMilliseconds"] as? Double) > 0)
+            #expect(record["timedOut"] as? Bool == false)
+        }
+        #expect(!log.contains(Self.token))
+        #expect(!log.contains("private-study-title"))
+        #expect(!log.contains("private-field-id"))
+    }
+
+    @Test("Transport timeout telemetry reports failure without leaking the URL")
+    func defaultBrokerRecordsTransportTimeout() throws {
+        let directory = try temporaryDirectory()
+        defer { Self.endCapture(); try? FileManager.default.removeItem(at: directory) }
+        Self.beginCapture()
+        REDCapCaptureURLProtocol.transportError = URLError(.timedOut, userInfo: [
+            NSLocalizedDescriptionKey: "Timeout for https://private-study.example/\(Self.token)"
+        ])
+        let reply = try call(server(diagnosticsPath: directory.path), id: 1, arguments: ["operation": "project"])
+        #expect(try isError(reply))
+        let log = try String(contentsOf: directory.appendingPathComponent("host_control_tool_activity.jsonl"), encoding: .utf8)
+        let record = try #require(JSONSerialization.jsonObject(with: Data(log.utf8)) as? [String: Any])
+        #expect(record["timedOut"] as? Bool == true)
+        #expect(record["statusCode"] as? Int == 0)
+        #expect(record["exitCode"] as? Int == 1)
+        #expect(try #require(record["durationMilliseconds"] as? Double) > 0)
+        #expect(!log.contains(Self.token))
+        #expect(!log.contains("private-study.example"))
+    }
+
     @Test("Record exports write rows to a file and return only a receipt")
     func recordExportsWriteRowsToAFile() throws {
         let directory = try temporaryDirectory()
@@ -472,6 +519,7 @@ struct REDCapHostControlPolicyTests {
     private func server(
         environment: [String: String]? = nil,
         taskFolder: String = "",
+        diagnosticsPath: String = "",
         runID: String = "unknown-run",
         processLimits: HostControlProcessLimits = .standard
     ) -> HostControlMCPServer {
@@ -487,6 +535,7 @@ struct REDCapHostControlPolicyTests {
             configuration: HostControlToolConfiguration(
                 currentDirectory: "/tmp/not-the-export-destination",
                 taskFolder: taskFolder,
+                diagnosticsHostPath: diagnosticsPath,
                 runID: runID,
                 connectorsJSON: connectors,
                 environment: resolved
@@ -592,6 +641,7 @@ private final class REDCapCaptureURLProtocol: URLProtocol {
     private static var captured: [Request] = []
     private static var responseBody = "{}"
     private static var responseStatusCode = 200
+    private static var responseError: URLError?
     private static var chunks = 1
     private static var delivered = 0
     private var stopped = false
@@ -628,6 +678,19 @@ private final class REDCapCaptureURLProtocol: URLProtocol {
         }
     }
 
+    static var transportError: URLError? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return responseError
+        }
+        set {
+            lock.lock()
+            responseError = newValue
+            lock.unlock()
+        }
+    }
+
     /// Delivers the body in this many pieces, pausing between them so a cancel
     /// has somewhere to land. One piece — the default — is the single `didLoad`
     /// every other test expects.
@@ -656,6 +719,7 @@ private final class REDCapCaptureURLProtocol: URLProtocol {
         captured = []
         responseBody = "{}"
         responseStatusCode = 200
+        responseError = nil
         chunks = 1
         delivered = 0
         lock.unlock()
@@ -683,7 +747,13 @@ private final class REDCapCaptureURLProtocol: URLProtocol {
         let payload = Self.responseBody
         let status = Self.responseStatusCode
         let pieces = Self.chunks
+        let transportError = Self.responseError
         Self.lock.unlock()
+
+        if let transportError {
+            client?.urlProtocol(self, didFailWithError: transportError)
+            return
+        }
 
         let response = HTTPURLResponse(
             url: url,

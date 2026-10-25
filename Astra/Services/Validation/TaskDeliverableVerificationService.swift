@@ -240,24 +240,11 @@ enum TaskDeliverableVerificationService {
             let sourceURL = directory.appendingPathComponent("check.js")
             try source.write(to: sourceURL, atomically: true, encoding: .utf8)
 
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["node", "--check", sourceURL.path]
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-            process.environment = env
-
-            let stdoutURL = directory.appendingPathComponent("stdout.txt")
-            let stderrURL = directory.appendingPathComponent("stderr.txt")
-            _ = FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
-            _ = FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
-            let output = await runSyntaxProcess(
-                process,
-                stdoutURL: stdoutURL,
-                stderrURL: stderrURL,
-                timeoutSeconds: 5,
-                sourceLabel: sourceLabel
-            )
+            let output = await RuntimeValidationCommandRunner.run(path: "/usr/bin/env",
+                arguments: ["node", "--check", sourceURL.path], environment: env,
+                directory: directory.path, timeout: 5)
             if output.exitCode == 0 {
                 return .passed
             }
@@ -274,103 +261,6 @@ enum TaskDeliverableVerificationService {
         } catch {
             return .unavailable("Could not run JavaScript syntax check for \(sourceLabel): \(error.localizedDescription)")
         }
-    }
-
-    private struct SyntaxProcessOutput: Sendable {
-        var exitCode: Int
-        var stdout: String
-        var stderr: String
-    }
-
-    private final class SyntaxProcessState: @unchecked Sendable {
-        private let lock = NSLock()
-        private var completed = false
-
-        func finish() -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            guard !completed else { return false }
-            completed = true
-            return true
-        }
-    }
-
-    private static func runSyntaxProcess(
-        _ process: Process,
-        stdoutURL: URL,
-        stderrURL: URL,
-        timeoutSeconds: TimeInterval,
-        sourceLabel: String
-    ) async -> SyntaxProcessOutput {
-        let state = SyntaxProcessState()
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                let stdoutHandle: FileHandle
-                let stderrHandle: FileHandle
-                do {
-                    stdoutHandle = try FileHandle(forWritingTo: stdoutURL)
-                    stderrHandle = try FileHandle(forWritingTo: stderrURL)
-                } catch {
-                    continuation.resume(returning: SyntaxProcessOutput(
-                        exitCode: -1,
-                        stdout: "",
-                        stderr: "Could not create JavaScript syntax check output files for \(sourceLabel): \(error.localizedDescription)"
-                    ))
-                    return
-                }
-
-                process.standardOutput = stdoutHandle
-                process.standardError = stderrHandle
-                process.terminationHandler = { proc in
-                    guard state.finish() else { return }
-                    try? stdoutHandle.close()
-                    try? stderrHandle.close()
-                    continuation.resume(returning: SyntaxProcessOutput(
-                        exitCode: Int(proc.terminationStatus),
-                        stdout: readSyntaxOutput(stdoutURL),
-                        stderr: readSyntaxOutput(stderrURL)
-                    ))
-                }
-
-                do {
-                    try process.run()
-                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
-                        guard state.finish() else { return }
-                        AsyncProcessRunner.terminateProcessTree(process)
-                        try? stdoutHandle.close()
-                        try? stderrHandle.close()
-                        continuation.resume(returning: SyntaxProcessOutput(
-                            exitCode: -1,
-                            stdout: readSyntaxOutput(stdoutURL),
-                            stderr: "JavaScript syntax check timed out for \(sourceLabel)."
-                        ))
-                    }
-                } catch {
-                    guard state.finish() else { return }
-                    try? stdoutHandle.close()
-                    try? stderrHandle.close()
-                    continuation.resume(returning: SyntaxProcessOutput(
-                        exitCode: -1,
-                        stdout: "",
-                        stderr: error.localizedDescription
-                    ))
-                }
-            }
-        } onCancel: {
-            AsyncProcessRunner.terminateProcessTree(process)
-        }
-    }
-
-    private static func readSyntaxOutput(_ url: URL) -> String {
-        let hostFileAccess = HostFileAccessBroker()
-        guard let data = try? hostFileAccess.readData(
-            at: url,
-            intent: .astraManagedStorage(root: url.deletingLastPathComponent())
-        ),
-              let text = String(data: data, encoding: .utf8) else {
-            return ""
-        }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func result(

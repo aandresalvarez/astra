@@ -11,17 +11,21 @@ import Foundation
 public enum RemoteWorkspaceJobCLI {
     public static let commandName = "astra-workspace-job"
 
-    public enum Command: Equatable, Sendable {
+    public enum Command: Codable, Equatable, Sendable {
         case start(connection: String?, label: String?, timeoutSeconds: Int?, command: String)
         case status(jobID: String)
+        case cancel(jobID: String)
         case tail(jobID: String, stream: String, lines: Int)
         case help
     }
 
-    public struct Output: Equatable, Sendable {
+    public struct Output: Codable, Equatable, Sendable {
         public var exitCode: Int32
         public var stdout: String
         public var stderr: String
+        public init(exitCode: Int32, stdout: String, stderr: String) {
+            self.exitCode = exitCode; self.stdout = stdout; self.stderr = stderr
+        }
     }
 
     public static func run(arguments: [String], environment: [String: String]) -> Output {
@@ -40,7 +44,7 @@ public enum RemoteWorkspaceJobCLI {
         } catch {
             return Output(exitCode: 1, stdout: "", stderr: error.localizedDescription + "\n")
         }
-        return run(command, manager: RemoteWorkspaceJobManager(configuration: configuration))
+        return RemoteWorkspaceJobBrokerClient.run(command, configuration: configuration, environment: environment)
     }
 
     public static func run(_ command: Command, manager: RemoteWorkspaceJobManager) -> Output {
@@ -56,6 +60,8 @@ public enum RemoteWorkspaceJobCLI {
             ), store: manager.store)
         case .status(let jobID):
             return output(manager.status(jobID: jobID), store: manager.store)
+        case .cancel(let jobID):
+            return output(manager.cancel(jobID: jobID), store: manager.store)
         case .tail(let jobID, let stream, let lines):
             switch manager.tail(jobID: jobID, stream: stream, lines: lines) {
             case .text(let jobID, let stream, let text):
@@ -83,6 +89,10 @@ public enum RemoteWorkspaceJobCLI {
             let (positionals, _) = try options(rest, allowed: [])
             guard positionals.count == 1 else { throw usageError("status takes exactly one remote_job_id.") }
             return .status(jobID: positionals[0])
+        case "cancel":
+            let (positionals, _) = try options(rest, allowed: [])
+            guard positionals.count == 1 else { throw usageError("cancel takes exactly one remote_job_id.") }
+            return .cancel(jobID: positionals[0])
         case "tail":
             let (positionals, values) = try options(rest, allowed: ["--stream", "--lines"])
             guard positionals.count == 1 else { throw usageError("tail takes exactly one remote_job_id.") }
@@ -110,6 +120,9 @@ public enum RemoteWorkspaceJobCLI {
         let (positionals, values) = try options(Array(arguments[..<separator]), allowed: ["--connection", "--label", "--timeout"])
         guard positionals.isEmpty else {
             throw usageError("Unexpected argument `\(positionals[0])` before `--`.")
+        }
+        guard let connection = values["--connection"], !connection.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw usageError("start requires --connection <target> so the runtime can check the SSH destination.")
         }
         let remoteCommand = arguments[arguments.index(after: separator)...].joined(separator: " ")
         var timeout: Int?
@@ -156,12 +169,13 @@ public enum RemoteWorkspaceJobCLI {
 
     public static let usage = """
     Usage:
-      \(commandName) start [--connection <target>] [--label <text>] [--timeout <seconds>] -- '<command>'
+      \(commandName) start --connection <target> [--label <text>] [--timeout <seconds>] -- '<command>'
       \(commandName) status <remote_job_id>
+      \(commandName) cancel <remote_job_id>
       \(commandName) tail <remote_job_id> [--stream stdout|stderr] [--lines N]
 
     start runs <command> detached on the SSH host, the way `ssh <target> '<command>'` would run it, and returns at once.
-    <target> is what follows `ssh` for the connection; it can be left out when the run offers one.
+    <target> is exactly the connection target offered by ASTRA; quote it when it contains spaces.
     """
 
     // MARK: - Output
@@ -188,6 +202,8 @@ public enum RemoteWorkspaceJobCLI {
             "command: \(record.command.replacingOccurrences(of: "\n", with: "\\n"))"
         ]
         if let label = record.label { lines.append("label: \(label)") }
+        lines.append("cleanup_verified: false (detached or external tools are not contained)")
+        if let requested = record.cancellationRequestedAt { lines.append("cancellation_requested_at: \(iso(requested))") }
         if let launch = record.launch {
             lines.append("remote_pid: \(launch.pid)")
             lines.append("isolation: \(launch.isolation)")
@@ -212,7 +228,7 @@ public enum RemoteWorkspaceJobCLI {
 
     static func nextStep(for record: RemoteWorkspaceJobRecord) -> String {
         let status = "`\(commandName) status \(record.jobID)`"
-        if record.lastObservation?.outcome == .unreachable, !record.status.isTerminal {
+        if record.lastObservation?.outcome == .unreachable {
             return "ASTRA could not reach the host, so the status above is the last one it verified. Do not start the job again; check it with \(status) later."
         }
         switch record.status {
@@ -220,10 +236,10 @@ public enum RemoteWorkspaceJobCLI {
             return "The host has not confirmed the launch yet. Run \(status) once before starting it again."
         case .running:
             return "The job runs on the host without this turn. End your turn now and tell the user the remote_job_id; a later turn checks it with one \(status) call, never a polling loop."
-        case .succeeded, .failed, .timedOut:
+        case .succeeded, .failed, .timedOut, .cancelled:
             return "Read its output with `\(commandName) tail \(record.jobID)` (add `--stream stderr` for errors)."
-        case .lost:
-            return "The job ended without an exit code. Read `\(commandName) tail \(record.jobID)` and tell the user before starting it again."
+        case .lost, .unverified:
+            return "The job's state is unverified. Do not start another attempt. ASTRA will inspect the existing job and preserve its reservation."
         }
     }
 

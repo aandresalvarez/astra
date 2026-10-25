@@ -348,10 +348,12 @@ extension AgentRuntimeWorker {
         permissionPolicy: PermissionPolicy,
         manifest: RunPermissionManifest?,
         modelContext: ModelContext,
-        pendingEvents: OrderedMainActorTaskQueue
+        pendingEvents: OrderedMainActorTaskQueue,
+        isCurrent: @escaping @MainActor () -> Bool = { true }
     ) -> ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome) {
         let taskID = task.id
         return { ask in
+            guard isCurrent() else { return .deny(message: "This execution ended before the permission request.") }
             // Classify the ask against ASTRA policy before deciding whether to
             // interrupt the user. Auto auto-approves inside the envelope and
             // denies the deny-list; Ask forwards. No manifest → forward (the
@@ -374,6 +376,7 @@ extension AgentRuntimeWorker {
             switch decision {
             case .autoApprove:
                 pendingEvents.add {
+                    guard isCurrent() else { return }
                     TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: ask.requestID, task: task)
                     modelContext.insert(TaskEvent(
                         task: task,
@@ -394,6 +397,7 @@ extension AgentRuntimeWorker {
                 return .allow
             case .deny(let reason):
                 pendingEvents.add {
+                    guard isCurrent() else { return }
                     TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: ask.requestID, task: task)
                     modelContext.insert(TaskEvent(
                         task: task,
@@ -441,10 +445,12 @@ extension AgentRuntimeWorker {
             // actor yield in between that could turn a live approval into a
             // relaunch or expose a waiter without an approvable request.
             await pendingEvents.drainAll()
+            guard isCurrent() else { return .deny(message: "This execution ended while waiting for permission.") }
             let approved = await InFlightPermissionCenter.shared.awaitDecision(
                 taskID: taskID,
                 ask: .init(requestID: ask.requestID, toolName: ask.toolName, inputSummary: ask.inputSummary),
                 persistRequest: {
+                    guard isCurrent() else { return false }
                     let snapshot = ExecutionMutationSnapshot(task)
                     TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
                     let event = TaskEvent(
@@ -460,6 +466,7 @@ extension AgentRuntimeWorker {
                     return saved
             })
             pendingEvents.add {
+                    guard isCurrent() else { return }
                 // The provider continues after allow AND deny alike, so the
                 // pause always lifts; the run-status guard keeps this from
                 // resurrecting a task whose run already finished.

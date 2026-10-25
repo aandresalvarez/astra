@@ -17,7 +17,7 @@ struct RemoteWorkspaceJobTests {
         let manager = host.manager()
 
         let started = try #require(record(manager.start(
-            connectionTarget: nil,
+            connectionTarget: "pcornet-backup",
             command: "printf 'hello\\n'; printf 'oops\\n' >&2; exit 3",
             label: "scan"
         )))
@@ -58,17 +58,17 @@ struct RemoteWorkspaceJobTests {
         let launch = try #require(started.launch)
         #expect(launch.pid > 1)
         #expect(!launch.bootID.isEmpty)
-        #expect(["setsid", "nohup"].contains(launch.isolation))
+        #expect(launch.isolation == "managed_process_group")
         #expect(launch.shell == "/bin/sh")
 
         let finished = try await settled(manager, started.jobID)
         #expect(finished.status == .succeeded)
         #expect(finished.exitCode == 0)
         #expect(finished.stdoutBytes == 5)
-        // Terminal records are final and answered without reaching the host.
+        // Even a terminal result is rechecked; it is not cleanup authority.
         let probes = try host.invocations().count
         #expect(record(manager.status(jobID: started.jobID))?.status == .succeeded)
-        #expect(try host.invocations().count == probes)
+        #expect(try host.invocations().count == probes + 1)
     }
 
     @Test("An unreachable host keeps the last verified status; a killed job and supervisor become lost")
@@ -76,7 +76,7 @@ struct RemoteWorkspaceJobTests {
         let host = try FakeSSHHost()
         defer { host.cleanup() }
         let manager = host.manager()
-        let started = try #require(record(manager.start(connectionTarget: nil, command: "sleep 30")))
+        let started = try #require(record(manager.start(connectionTarget: "pcornet-backup", command: "sleep 30")))
         let launch = try #require(started.launch)
         defer { host.kill(launch) }
         #expect(started.status == .running)
@@ -94,8 +94,8 @@ struct RemoteWorkspaceJobTests {
 
         try host.setUnreachable(false)
         host.kill(launch)
-        let lost = try await settled(manager, started.jobID)
-        #expect(lost.status == .lost)
+        let lost = try #require(record(manager.status(jobID: started.jobID)))
+        #expect(lost.status == .unverified)
         #expect(lost.exitCode == nil)
         #expect(lost.message?.contains("no exit code was recorded") == true)
     }
@@ -106,22 +106,22 @@ struct RemoteWorkspaceJobTests {
         defer { host.cleanup() }
         let manager = host.manager()
 
-        let rebooted = try #require(record(manager.start(connectionTarget: nil, command: "sleep 30")))
+        let rebooted = try #require(record(manager.start(connectionTarget: "pcornet-backup", command: "sleep 30")))
         let rebootedLaunch = try #require(rebooted.launch)
         defer { host.kill(rebootedLaunch) }
         // The evidence came from an earlier boot of this host.
         try manager.store.update(jobID: rebooted.jobID) { $0.launch?.bootID = "an-earlier-boot" }
         let afterReboot = try #require(record(manager.status(jobID: rebooted.jobID)))
-        #expect(afterReboot.status == .lost)
+        #expect(afterReboot.status == .unverified)
         #expect(afterReboot.message?.contains("rebooted") == true)
 
-        let vanished = try #require(record(manager.start(connectionTarget: nil, command: "sleep 30")))
+        let vanished = try #require(record(manager.start(connectionTarget: "pcornet-backup", command: "sleep 31")))
         let vanishedLaunch = try #require(vanished.launch)
         defer { host.kill(vanishedLaunch) }
         try FileManager.default.removeItem(at: host.home.appendingPathComponent(".astra/jobs/\(vanished.jobID)"))
         let afterRemoval = try #require(record(manager.status(jobID: vanished.jobID)))
-        #expect(afterRemoval.status == .lost)
-        #expect(afterRemoval.message?.contains("not on the host") == true)
+        #expect(afterRemoval.status == .unverified)
+        #expect(afterRemoval.message?.contains("missing") == true)
     }
 
     @Test("An existing job directory refuses the launch and runs nothing")
@@ -133,7 +133,7 @@ struct RemoteWorkspaceJobTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let manager = host.manager(makeJobID: { jobID })
 
-        let outcome = manager.start(connectionTarget: nil, command: "touch should-not-exist")
+        let outcome = manager.start(connectionTarget: "pcornet-backup", command: "touch should-not-exist")
         guard case .failure(let message, let failed) = outcome else {
             Issue.record("expected a refused launch, got \(outcome)")
             return
@@ -149,14 +149,13 @@ struct RemoteWorkspaceJobTests {
         let host = try FakeSSHHost()
         defer { host.cleanup() }
         try host.setUnreachable(true)
-        let outcome = host.manager().start(connectionTarget: nil, command: "true")
+        let outcome = host.manager().start(connectionTarget: "pcornet-backup", command: "true")
         guard case .failure(let message, let pending) = outcome, let pending else {
             Issue.record("expected an unconfirmed launch with a record, got \(outcome)")
             return
         }
         #expect(pending.status == .starting)
-        #expect(message.contains("may or may not have started"))
-        #expect(message.contains("astra-workspace-job status \(pending.jobID)"))
+        #expect(message.contains("No command was launched"))
 
         // Back online: a start that never made its directory is still
         // `starting` inside the grace window, and `lost` once it has passed.
@@ -166,8 +165,8 @@ struct RemoteWorkspaceJobTests {
         #expect(record(manager.status(jobID: pending.jobID))?.status == .starting)
         clock = clock.addingTimeInterval(RemoteWorkspaceJobStatusDerivation.launchGraceSeconds + 1)
         let lost = try #require(record(manager.status(jobID: pending.jobID)))
-        #expect(lost.status == .lost)
-        #expect(lost.message?.contains("never reached the host") == true)
+        #expect(lost.status == .unverified)
+        #expect(lost.message?.contains("delayed launch") == true)
     }
 
     @Test("Tail is capped at 500 lines however many are asked for")
@@ -175,7 +174,7 @@ struct RemoteWorkspaceJobTests {
         let host = try FakeSSHHost()
         defer { host.cleanup() }
         let manager = host.manager()
-        let started = try #require(record(manager.start(connectionTarget: nil, command: "i=0; while [ $i -lt 1200 ]; do echo line-$i; i=$((i+1)); done")))
+        let started = try #require(record(manager.start(connectionTarget: "pcornet-backup", command: "i=0; while [ $i -lt 1200 ]; do echo line-$i; i=$((i+1)); done")))
         _ = try await settled(manager, started.jobID)
 
         guard case .text(_, _, let text) = manager.tail(jobID: started.jobID, stream: "stdout", lines: 5_000) else {
@@ -199,9 +198,119 @@ struct RemoteWorkspaceJobTests {
         #expect(throws: RemoteWorkspaceJobError.self) { try manager.connection(target: "other-host") }
     }
 
+    @Test("Cancellation survives disconnect and a reopened manager")
+    func cancelAfterReconnect() async throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let manager = host.manager()
+        let started = try #require(record(manager.start(connectionTarget: "pcornet-backup", command: "trap '' TERM; while :; do sleep 1; done")))
+        defer { if let launch = started.launch { host.kill(launch) } }
+        try host.setUnreachable(true)
+        _ = manager.cancel(jobID: started.jobID)
+        #expect(try manager.store.load(jobID: started.jobID).cancellationRequestedAt != nil)
+        try host.setUnreachable(false)
+        let reopened = host.manager()
+        let finished = try await settled(reopened, started.jobID)
+        #expect(finished.status == .cancelled)
+        #expect(!finished.cleanupVerified)
+        let repeated = try #require(record(reopened.start(connectionTarget: "pcornet-backup", command: started.command)))
+        #expect(repeated.jobID == started.jobID)
+    }
+
+    @Test("Timeout still kills an ignoring child after its parent shell exits")
+    func timeoutAfterParentExit() async throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let manager = host.manager()
+        let started = try #require(record(manager.start(connectionTarget: "pcornet-backup",
+            command: "(trap '' TERM; while :; do sleep 1; done) & echo $! > child.pid; exit 0", timeoutSeconds: 2)))
+        defer { if let launch = started.launch { host.kill(launch) } }
+        let finished = try await settled(manager, started.jobID)
+        #expect(finished.status == .timedOut)
+        #expect(!finished.cleanupVerified)
+        let pid = try #require(Int32(String(contentsOf: host.home.appendingPathComponent("child.pid"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        // A zombie may await the OS reaper but cannot perform work.
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        #expect(proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) != size || info.pbi_status == SZOMB)
+    }
+
+    @Test("A delayed launch is observed again after the grace period without another start")
+    func delayedLaunchReconciles() throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let manager = host.manager()
+        let admitted = try manager.register(connectionTarget: "pcornet-backup", command: "sleep 10")
+        var observedAt = admitted.record.createdAt.addingTimeInterval(120)
+        let late = host.manager(now: { observedAt })
+        #expect(record(late.status(jobID: admitted.record.jobID))?.status == .unverified)
+        let nonce = try #require(admitted.record.launchNonce)
+        _ = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path).run(connection: host.connections[0],
+            script: RemoteWorkspaceJobScripts.start(jobID: admitted.record.jobID, command: "sleep 10", timeoutSeconds: 15, nonce: nonce, clock: try #require(admitted.record.remoteClock)), timeoutSeconds: 20)
+        // This is a later check, not another reply at the same fixed instant
+        // (the journal serializes dates at millisecond precision).
+        observedAt = observedAt.addingTimeInterval(1)
+        let observed = try #require(record(late.status(jobID: admitted.record.jobID)))
+        defer { if let launch = observed.launch { host.kill(launch) } }
+        #expect(observed.status == .running, "\(observed.message ?? "") \(observed.lastObservation?.error ?? "")")
+        #expect(try manager.register(connectionTarget: "pcornet-backup", command: "sleep 10").created == false)
+    }
+
+    @Test("An admission that expires during SSH connection never starts its command")
+    func expiredRemoteAdmission() async throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let manager = host.manager()
+        let job = try manager.register(connectionTarget: "pcornet-backup", command: "touch expired-command-ran", timeoutSeconds: 30).record
+        _ = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path).run(connection: host.connections[0],
+            script: RemoteWorkspaceJobScripts.start(jobID: job.jobID, command: job.command, timeoutSeconds: 30,
+                nonce: try #require(job.launchNonce), clock: .init(bootID: try #require(job.remoteClock).bootID, deadline: try #require(job.remoteClock).deadline - 60)), timeoutSeconds: 20)
+        let finished = try await settled(manager, job.jobID)
+        #expect(finished.status == .timedOut)
+        #expect(!FileManager.default.fileExists(atPath: host.home.appendingPathComponent("expired-command-ran").path))
+    }
+
+    @Test("A remote wall clock behind the Mac cannot extend a monotonic deadline")
+    func clockSkewDoesNotExtend() async throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let manager = host.manager()
+        let job = try manager.register(connectionTarget: "pcornet-backup", command: "sleep 30", timeoutSeconds: 2).record
+        let script = RemoteWorkspaceJobScripts.start(jobID: job.jobID, command: job.command, timeoutSeconds: 30,
+            nonce: try #require(job.launchNonce), clock: try #require(job.remoteClock))
+            .replacingOccurrences(of: "root = pathlib.Path(sys.argv[1])", with: "time.time = lambda: -999999999\nroot = pathlib.Path(sys.argv[1])")
+        _ = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path).run(connection: host.connections[0], script: script, timeoutSeconds: 20)
+        let finished = try await settled(manager, job.jobID)
+        #expect(finished.status == .timedOut)
+        #expect(!finished.cleanupVerified)
+    }
+
+    @Test("Time spent starting a command cannot move its admitted deadline")
+    func slowProcessCreationKeepsDeadline() async throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let manager = host.manager()
+        let job = try manager.register(connectionTarget: "pcornet-backup", command: "sleep 1; touch extended-deadline", timeoutSeconds: 30).record
+        let injected = """
+        def launch_after_delay(*args, **kwargs):
+            child = subprocess.Popen(*args, **kwargs)
+            original_clock = time.monotonic
+            time.monotonic = lambda: original_clock() + 120
+            return child
+        root = pathlib.Path(sys.argv[1])
+        """
+        let script = RemoteWorkspaceJobScripts.start(jobID: job.jobID, command: job.command, timeoutSeconds: 30,
+            nonce: try #require(job.launchNonce), clock: try #require(job.remoteClock))
+            .replacingOccurrences(of: "root = pathlib.Path(sys.argv[1])", with: injected)
+            .replacingOccurrences(of: "command = subprocess.Popen(", with: "command = launch_after_delay(")
+        _ = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path).run(connection: host.connections[0], script: script, timeoutSeconds: 20)
+        #expect(try await settled(manager, job.jobID).status == .timedOut)
+        #expect(!FileManager.default.fileExists(atPath: host.home.appendingPathComponent("extended-deadline").path))
+    }
+
     // MARK: - Record and derivation
 
-    @Test("Observations are monotonic: older ones are dropped and a terminal status stays")
+    @Test("Older observations are dropped; new evidence can correct a terminal observation")
     func observationsAreMonotonic() throws {
         let created = Date(timeIntervalSince1970: 1_000)
         var job = RemoteWorkspaceJobRecord(jobID: UUID().uuidString.lowercased(), connection: Self.connection, command: "x", createdAt: created)
@@ -213,10 +322,10 @@ struct RemoteWorkspaceJobTests {
         job.apply(.reachable(at: created.addingTimeInterval(10), snapshot: running, derived: .init(status: .running)))
         #expect(job.lastObservation?.at == created.addingTimeInterval(20))
         job.apply(.reachable(at: created.addingTimeInterval(30), snapshot: running, derived: .init(status: .running)))
-        #expect(job.status == .succeeded)
-        #expect(job.exitCode == 0)
+        #expect(job.status == .running)
+        #expect(job.exitCode == nil)
         job.apply(.unreachable(at: created.addingTimeInterval(40), error: "down"))
-        #expect(job.status == .succeeded)
+        #expect(job.status == .running)
         #expect(job.lastVerifiedAt == created.addingTimeInterval(30))
     }
 
@@ -229,16 +338,16 @@ struct RemoteWorkspaceJobTests {
             return RemoteWorkspaceJobStatusDerivation.derive(snapshot: snapshot, record: job, now: created.addingTimeInterval(seconds)).status
         }
         #expect(try derive(Self.probe(pidAlive: true)) == .running)
-        #expect(try derive(Self.probe(pidAlive: true, pidMarker: "Mon Oct 20 09:00:00 2026")) == .lost, "a reused pid is not the job")
+        #expect(try derive(Self.probe(pidAlive: true, pidMarker: "Mon Oct 20 09:00:00 2026")) == .unverified, "a reused pid is not the job")
         #expect(try derive(Self.probe(pidAlive: false, supervisorAlive: true)) == .running, "the supervisor is writing the result")
-        #expect(try derive(Self.probe(pidAlive: false)) == .lost)
-        #expect(try derive(Self.probe(pidAlive: true, hostBoot: "boot-2")) == .lost)
+        #expect(try derive(Self.probe(pidAlive: false)) == .unverified)
+        #expect(try derive(Self.probe(pidAlive: true, hostBoot: "boot-2")) == .unverified)
         #expect(try derive(Self.probe(pidAlive: false, result: #"{"status":"timed_out","exit_code":124,"completed_at":"2026-10-21T12:00:00Z"}"#)) == .timedOut)
         #expect(try derive(Self.probe(pidAlive: false, result: #"{"status":"failed","exit_code":2,"completed_at":"2026-10-21T12:00:00Z"}"#)) == .failed)
-        #expect(try derive("astra_probe=1\nhost_boot_id=boot-1\nstate=present\npid_alive=0\nsupervisor_alive=0") == .starting)
-        #expect(try derive("astra_probe=1\nhost_boot_id=boot-1\nstate=present\npid_alive=0\nsupervisor_alive=0", at: 61) == .lost)
-        #expect(try derive("astra_probe=1\nhost_boot_id=boot-1\nstate=missing") == .starting, "a start still in flight")
-        #expect(try derive("astra_probe=1\nhost_boot_id=boot-1\nstate=missing", at: 61) == .lost)
+        #expect(try derive(Self.emptyProbe(state: "present")) == .starting)
+        #expect(try derive(Self.emptyProbe(state: "present"), at: 61) == .unverified)
+        #expect(try derive(Self.emptyProbe(state: "missing")) == .starting, "a start still in flight")
+        #expect(try derive(Self.emptyProbe(state: "missing"), at: 61) == .unverified)
         // A login banner is not evidence about the job.
         #expect(RemoteWorkspaceJobHostSnapshot.parse("Welcome to Ubuntu\nstate=present\n") == nil)
     }
@@ -288,10 +397,7 @@ struct RemoteWorkspaceJobTests {
     func cliOutputKeys() throws {
         let host = try FakeSSHHost()
         defer { host.cleanup() }
-        let output = RemoteWorkspaceJobCLI.run(
-            arguments: ["start", "--label", "quick", "--", "echo ok"],
-            environment: host.environment
-        )
+        let output = RemoteWorkspaceJobCLI.run(.start(connection: "pcornet-backup", label: "quick", timeoutSeconds: nil, command: "echo ok"), manager: host.manager())
         #expect(output.exitCode == 0, "\(output.stderr)")
         let keys = output.stdout.split(separator: "\n").compactMap { $0.split(separator: ":", maxSplits: 1).first.map(String.init) }
         #expect(keys.first == "remote_job_id")
@@ -305,6 +411,12 @@ struct RemoteWorkspaceJobTests {
 
     private static let connection = RemoteWorkspaceJobConnection(id: "c1", name: "backup", target: "pcornet-backup", arguments: ["pcornet-backup"])
 
+    private static let probeID = "11111111-1111-1111-1111-111111111111"
+    private static let probeNonce = "22222222-2222-2222-2222-222222222222"
+    private static func emptyProbe(state: String) -> String {
+        "astra_probe=2\njob_id=\(probeID)\nnonce=\(probeNonce)\nhost_boot_id=boot-1\nstate=\(state)\npid_alive=0\nsupervisor_alive=0\nastra_probe_end=\(probeID):\(probeNonce)"
+    }
+
     private static func probe(
         pidAlive: Bool,
         pidMarker: String = "Tue Oct 21 11:00:00 2026",
@@ -313,7 +425,9 @@ struct RemoteWorkspaceJobTests {
         result: String? = nil
     ) -> String {
         var lines = [
-            "astra_probe=1",
+            "astra_probe=2",
+            "job_id=\(probeID)",
+            "nonce=\(probeNonce)",
             "host_boot_id=\(hostBoot)",
             "state=present",
             "evidence.pid=4242",
@@ -327,7 +441,11 @@ struct RemoteWorkspaceJobTests {
         ]
         if pidAlive { lines.append("pid_start_marker=\(pidMarker)") }
         if supervisorAlive { lines.append("supervisor_start_marker=Tue Oct 21 10:59:59 2026") }
-        if let result { lines.append("result=\(result)") }
+        if let result {
+            let bound = result.replacingOccurrences(of: "{", with: "{\"job_id\":\"\(probeID)\",\"nonce\":\"\(probeNonce)\",", range: result.startIndex..<result.index(after: result.startIndex))
+            lines.append("result=\(bound)")
+        }
+        lines.append("astra_probe_end=\(probeID):\(probeNonce)")
         return lines.joined(separator: "\n")
     }
 
@@ -352,7 +470,7 @@ struct RemoteWorkspaceJobTests {
 /// A scratch "host": `$HOME`, a task folder for records, and an `ssh` that
 /// logs its arguments, fails like ssh when asked to, and otherwise runs the
 /// trailing `sh -s` locally.
-private struct FakeSSHHost {
+struct FakeSSHHost {
     let root: URL
     let home: URL
     let records: URL
@@ -431,7 +549,7 @@ private struct FakeSSHHost {
     /// SIGKILL, so the supervisor cannot write a result on its way out.
     func kill(_ launch: RemoteWorkspaceJobLaunchEvidence) {
         if let supervisor = launch.supervisorPID { _ = Darwin.kill(supervisor, SIGKILL) }
-        _ = Darwin.kill(launch.pid, SIGKILL)
+        _ = Darwin.kill(-launch.pid, SIGKILL)
     }
 
     func cleanup() {

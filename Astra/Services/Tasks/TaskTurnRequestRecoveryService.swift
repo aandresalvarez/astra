@@ -4,8 +4,8 @@ import ASTRAModels
 import ASTRAPersistence
 
 /// Reconciles durable turn admissions after an app restart. Worker and
-/// resource-lock ownership are process-local, so no request may remain
-/// admitted or running once a new process owns the store.
+/// resource-lock ownership are process-local. An execution with a durable
+/// unresolved owner is preserved until its termination can be established.
 @MainActor
 enum TaskTurnRequestRecoveryService {
     struct Summary: Equatable {
@@ -36,6 +36,8 @@ enum TaskTurnRequestRecoveryService {
         }
         guard !requests.isEmpty else { return Summary() }
 
+        let ownership = RuntimeStartupRecoveryOwnership(context: modelContext)
+        defer { withExtendedLifetime(ownership) {} }
         var summary = Summary()
         var affectedWorkspaces: [UUID: Workspace] = [:]
         // Resolve the owning task via the scalar `taskID` (there is no
@@ -50,6 +52,7 @@ enum TaskTurnRequestRecoveryService {
             uniquingKeysWith: { first, _ in first }
         )
         for request in requests {
+            guard ownership.claim(request.taskID) else { continue }
             guard let task = tasksByID[request.taskID] else {
                 _ = TaskTurnRequestStateMachine.transition(
                     request,
@@ -122,6 +125,15 @@ enum TaskTurnRequestRecoveryService {
                     )
                     if requeued.changed { summary.returnedToWaiting += 1 }
                 }
+            } else if RuntimeExecutionOwner.preserveUnresolvedSession(task: task, context: modelContext, reportStatus: false) {
+                // The app's connection ended; the execution itself is still unverified.
+                // Keeping this admission "running" would show a false spinner and
+                // consume a queue slot forever. The protected execution owner still
+                // blocks every replacement, independently of this request outcome.
+                let transition = TaskTurnRequestStateMachine.transition(
+                    request, to: .failed, terminalReason: "runtime_connection_lost",
+                    at: recoveredAt)
+                if transition.changed { summary.terminalized += 1 }
             } else if request.state == .running {
                 // No terminal run to mirror — the run (if any) never finished.
                 // Worker ownership is process-local, so a running turn cannot

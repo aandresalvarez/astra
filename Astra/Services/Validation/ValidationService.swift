@@ -267,37 +267,11 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
         environment: [String: String],
         workingDirectory: String
     ) async -> ValidationCommandResult {
-        let result = await ProcessBinaryRunner().run(
-            path: executablePath,
-            args: arguments,
-            timeout: 300,
-            environment: environment,
-            currentDirectory: workingDirectory
-        )
-        return ValidationCommandResult(
-            exitCode: Int(result.exitCode ?? -1),
-            stdout: result.stdout.trimmingCharacters(in: .whitespacesAndNewlines),
-            stderr: validationStderr(from: result),
-            launchError: result.launchError,
-            timedOut: result.timedOut,
-            cancelled: result.cancelled,
-            elapsedTime: result.elapsedTime
-        )
+        await RuntimeValidationCommandRunner.run(path: executablePath, arguments: arguments,
+            environment: environment, directory: workingDirectory, timeout: 300)
     }
 
-    private func validationStderr(from result: RunResult) -> String {
-        let trimmed = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-        if result.timedOut {
-            return trimmed.isEmpty ? "Validation command timed out." : trimmed
-        }
-        if let launchError = result.launchError, trimmed.isEmpty {
-            return launchError
-        }
-        if result.cancelled, trimmed.isEmpty {
-            return "Validation command cancelled."
-        }
-        return trimmed
-    }
+
 }
 
 struct TaskValidationContractEvaluation: Sendable, Equatable {
@@ -513,6 +487,10 @@ enum ValidationService {
         finalPayloads.reserveCapacity(contract.assertions.count)
 
         for assertion in contract.assertions {
+            guard !Task.isCancelled, RuntimeSettlementExecutionScope.current?.isCancelled != true else {
+                return .init(didRun: true, outcome: .failed, canComplete: false,
+                    summary: "Validation cancelled.", failedRequiredAssertionIDs: [])
+            }
             recordAssertionEvent(
                 type: TaskValidationEventTypes.assertionStarted,
                 planID: plan.planID,
@@ -534,6 +512,10 @@ enum ValidationService {
                 verifierRuntime: verifierRuntime,
                 commandRunner: commandRunner
             )
+            guard !Task.isCancelled, RuntimeSettlementExecutionScope.current?.isCancelled != true else {
+                return .init(didRun: true, outcome: .failed, canComplete: false,
+                    summary: "Validation cancelled.", failedRequiredAssertionIDs: [])
+            }
             let payload = assertionResult.payload
             finalPayloads.append(payload)
             let eventType = switch payload.status {

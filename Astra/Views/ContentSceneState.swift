@@ -9,8 +9,15 @@ struct ContentWorkspaceSelectionPersistence: Equatable {
 }
 
 enum ContentSelectionResolver {
+    /// Every workspace-scoped surface (rail, home, Configure and Workspace
+    /// sheets) mounts behind this value, so a deleted or detached workspace
+    /// resolves to `nil` here rather than being handed to a view that would
+    /// trap reading it (see `isLive`).
     static func effectiveWorkspace(selectedTask: AgentTask?, selectedWorkspace: Workspace?) -> Workspace? {
-        selectedTask?.workspace ?? selectedWorkspace
+        let liveTask = selectedTask.flatMap { $0.isLive ? $0 : nil }
+        let workspace = liveTask?.workspace ?? selectedWorkspace
+        guard let workspace, workspace.isLive else { return nil }
+        return workspace
     }
 
     static func workspace(for app: WorkspaceApp?, in workspaces: [Workspace]) -> Workspace? {
@@ -58,7 +65,8 @@ enum ContentDetailPresentation: Equatable {
         effectiveWorkspace: Workspace?,
         isComposingTask: Bool,
         selectedWorkspaceApp: WorkspaceApp? = nil,
-        isComposingWorkspaceApp: Bool = false
+        isComposingWorkspaceApp: Bool = false,
+        isShowingWorkspaceConfiguration: Bool = false
     ) -> ContentDetailPresentation {
         if let selectedTask {
             return selectedTask.status == .draft ? .draftTask : .existingTask
@@ -80,7 +88,7 @@ enum ContentDetailPresentation: Equatable {
             return selectedWorkspaceApp.lifecycleStatus == .draft ? .workspaceAppStudio : .workspaceApp
         }
 
-        if effectiveWorkspace.tasks.isEmpty {
+        if !isShowingWorkspaceConfiguration && effectiveWorkspace.tasks.isEmpty {
             return .newTaskComposer
         }
 

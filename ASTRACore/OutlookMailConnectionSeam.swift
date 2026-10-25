@@ -1,32 +1,12 @@
 import Foundation
 import os
 
-// Added as part of Track A2.5 (finishing A2's Models cycle-break) so
-// `Astra/Models/Connector.swift` can test/refresh a Stanford Outlook mail
-// connection without depending on
-// `Astra/Services/Capabilities/StanfordOutlookMail.swift`'s
-// `StanfordOutlookMailGraphService`/`StanfordOutlookMailAuthService`/
-// `StanfordOutlookMailRegistry` (OAuth token exchange, Keychain-backed
-// refresh-token storage, and a JSON-file account registry - all
-// deliberately app-side).
-//
-// Unlike the other Track A2.x seams, the concrete implementation registered
-// for this one does NOT hand-translate the existing OAuth/Graph flow into
-// primitives - that flow is deeply nested (`validAccessToken` ->
-// `refreshAccessToken` -> `saveTokenResponse`, each reading/writing several
-// `Connector` config keys) and re-deriving it field-by-field would be far
-// more error-prone than reusing it unchanged. Instead, the registered
-// implementation reconstructs a throwaway, never-persisted `Connector`
-// from `ConnectorOutlookFacts`, runs the real, existing
-// `StanfordOutlookMailGraphService.testConnection(connector:)` on it
-// unchanged, and reports back the resulting config. This is safe because
-// Keychain entries are addressed by a computed entity-ID string (derived
-// from `id`/`serviceType`/`baseURL`/origin fields - see
-// `KeychainSecretStore.connectorEntityIDs(for:)`), not by Swift object
-// identity, so the throwaway connector resolves to the exact same
-// Keychain-stored tokens as the real one.
-public struct ConnectorOutlookFacts: Sendable {
+// Value boundary for an explicit connection check. The adapter receives the
+// exact captured generation and first-match configuration, never a live row.
+public struct ConnectorOutlookFacts: Sendable, Equatable {
     public let id: UUID
+    public let credentialNamespaceID: UUID?
+    public let outlookCredentialFormat: String?
     public let name: String
     public let serviceType: String
     /// `configKeys`/`configValues` as `Connector` itself stores them -
@@ -41,8 +21,10 @@ public struct ConnectorOutlookFacts: Sendable {
     public let configKeys: [String]
     public let configValues: [String]
 
-    public init(id: UUID, name: String, serviceType: String, configKeys: [String], configValues: [String]) {
+    public init(id: UUID, name: String, serviceType: String, configKeys: [String], configValues: [String], credentialNamespaceID: UUID? = nil, outlookCredentialFormat: String? = nil) {
         self.id = id
+        self.credentialNamespaceID = credentialNamespaceID
+        self.outlookCredentialFormat = outlookCredentialFormat ?? OutlookCredentialIdentity.format(keys: configKeys, values: configValues)
         self.name = name
         self.serviceType = serviceType
         self.configKeys = configKeys

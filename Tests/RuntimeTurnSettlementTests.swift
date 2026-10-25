@@ -29,6 +29,7 @@ struct RuntimeTurnSettlementTests {
         fixture.task.events.first { $0.id == source.eventID }?.run = run
         run.setOutput("You have two open tickets.")
         try fixture.context.save()
+        try RuntimeRecoveryTestReceipt.install(task: fixture.task, run: run, context: fixture.context)
         return (run, request)
     }
 
@@ -80,7 +81,7 @@ struct RuntimeTurnSettlementTests {
         let queue = TaskQueue(poolSize: 1)
         defer { queue.cancelAll() }
         await RuntimeTurnSettlementRecoveryService.resume(modelContext: savedContainer.mainContext, taskQueue: queue, autoExport: false)
-        #expect(savedTask.status == .completed)
+        #expect(savedTask.status == .completed, Comment(rawValue: savedTask.events.filter { $0.type.contains("error") || $0.type.contains("reconciliation") }.map(\.payload).joined(separator: " | ")))
         #expect(savedTask.runs.count == 1)
         #expect(RuntimeTurnSettlementService.verdict(for: savedRun, task: savedTask)?.requestState == .completed)
         #expect(try TaskTurnRequestRepository.request(id: request.id, in: savedContainer.mainContext)?.state == .completed)

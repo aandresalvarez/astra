@@ -15,6 +15,29 @@ private func makeTaskRunLifecycleContainer() throws -> ModelContainer {
 @Suite("Task Run Lifecycle")
 @MainActor
 struct TaskRunLifecycleServiceTests {
+    @Test("Cancelling a duplicated task id never cancels the other owner's runs")
+    func duplicateTaskIDsKeepCancellationScoped() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Original", goal: "g")
+        let copy = AgentTask(title: "Imported copy", goal: "g")
+        copy.id = task.id
+        context.insert(task)
+        context.insert(copy)
+        let run = TaskRun(task: task)
+        let copyRun = TaskRun(task: copy)
+        context.insert(run)
+        context.insert(copyRun)
+        try context.save()
+
+        let summary = TaskRunLifecycleService.cancelTask(task, modelContext: context, source: .userAction)
+
+        #expect(summary.runsUpdated == 1)
+        #expect(run.status == .cancelled)
+        #expect(copyRun.status == .running)
+        #expect(copyRun.completedAt == nil)
+    }
+
     @Test("User cancellation finalizes running runs for any runtime")
     func userCancellationFinalizesRunningRunsForAnyRuntime() throws {
         let now = Date(timeIntervalSince1970: 1_000)

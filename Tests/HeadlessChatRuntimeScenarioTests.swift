@@ -376,7 +376,11 @@ extension HeadlessChatScenarioTests {
             script: """
             #!/bin/sh
             if [ "$1" = "--version" ]; then
-              printf '%s\\n' '1.0.3'
+              printf '%s\\n' '1.4.7'
+              exit 0
+            fi
+            if [ "$1" = "--help" ]; then
+              printf '%s\\n' '  --output-format  Output format for print mode (text, json, stream-json)'
               exit 0
             fi
             /usr/bin/python3 -u - <<'PY'
@@ -387,11 +391,16 @@ extension HeadlessChatScenarioTests {
             settings_path = os.path.join(os.environ["HOME"], ".gemini", "antigravity-cli", "settings.json")
             with open(settings_path, "r", encoding="utf-8") as handle:
                 model = json.load(handle).get("model", "")
-            print(f"model={model}", flush=True)
+            print(json.dumps({"event": "init", "conversation_id": f"model-isolation-{os.getpid()}", "init": {"model": model}}), flush=True)
+            print(json.dumps({"event": "result", "result": {
+                "status": "SUCCESS", "response": f"model={model}", "num_turns": 1
+            }}), flush=True)
             PY
             exit 0
             """
         )
+        let restoreStructuredOutput = Self.enableContinuationFixtureStructuredOutput(executablePath: antigravityPath)
+        defer { restoreStructuredOutput() }
 
         let firstTask = harness.makeTask(
             runtime: .antigravityCLI,
@@ -403,6 +412,11 @@ extension HeadlessChatScenarioTests {
             goal: "Use the second Antigravity model",
             model: "Gemini 3 Flash"
         )
+        // These workers compete for provider settings, not workspace writes.
+        // Direct worker admission now enforces the same workspace fence as the queue.
+        let secondRoot = harness.rootURL.appendingPathComponent("second-workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: secondRoot, withIntermediateDirectories: true)
+        secondTask.executionRootPath = secondRoot.path
         let firstWorker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
         let secondWorker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
 
@@ -412,6 +426,17 @@ extension HeadlessChatScenarioTests {
         let secondRun = Task { @MainActor in
             await harness.execute(task: secondTask, worker: secondWorker)
         }
+        // A regressed terminal fixture must fail instead of parking the second
+        // worker forever on the retained provider-settings lease.
+        let timeout = Task { @MainActor in
+            do { try await Task.sleep(for: .seconds(20)) } catch { return }
+            Issue.record("Concurrent Antigravity runs did not finish within 20 seconds")
+            firstWorker.cancel()
+            secondWorker.cancel()
+            firstRun.cancel()
+            secondRun.cancel()
+        }
+        defer { timeout.cancel() }
         _ = await (firstRun.value, secondRun.value)
 
         let firstOutput = try #require(firstTask.runs.first?.output)
@@ -420,6 +445,12 @@ extension HeadlessChatScenarioTests {
         #expect(secondTask.status == .completed)
         #expect(firstOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "model=Gemini 3.5 Flash")
         #expect(secondOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "model=Gemini 3 Flash")
+        for task in [firstTask, secondTask] {
+            #expect(task.runs.count == 1)
+            let owner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+            #expect(owner.canReplace)
+            #expect(owner.resourcesReleased == true && owner.providerSharedStateReleased == true)
+        }
     }
 
     @Test("Standalone artifact task without created files stays pending review")
@@ -914,6 +945,7 @@ extension HeadlessChatScenarioTests {
         priorRun.stopReason = "completed"
         let priorArtifact = Artifact(task: task, type: "file", path: existingArtifact.path)
         harness.context.insert(priorRun)
+        try RuntimeRecoveryTestReceipt.install(task: task, run: priorRun, context: harness.context)
         harness.context.insert(priorArtifact)
         try harness.context.save()
         #expect(TaskDeliverableExpectation.hasArtifact(for: task, run: priorRun))

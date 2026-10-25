@@ -397,6 +397,7 @@ struct NativeContinuationFallbackTests {
         priorRun.status = .completed
         priorRun.stopReason = "completed"
         context.insert(priorRun)
+        try RuntimeRecoveryTestReceipt.install(task: task, run: priorRun, context: context)
         try context.save()
 
         let runner = ContinuationRecordingRunner()

@@ -22,12 +22,12 @@ struct RemoteWorkspaceJobShimTests {
         let route = RemoteWorkspaceSSHRoute(targets: ["pcornet-backup"], route: .nativeShell)
 
         let prepared = try #require(RemoteWorkspaceJobShim.prepare(
-            task: fixture.task, runID: fixture.runID, route: route, helperPath: fixture.helper.path
+            task: fixture.task, runID: fixture.runID, route: route, configuration: fixture.configuration, brokerDirectory: "/tmp/qa-drop", brokerToken: "qa-token", helperPath: fixture.helper.path
         ))
         #expect(prepared.remoteJobs)
         #expect(FileManager.default.isExecutableFile(atPath: fixture.shimPath))
         let script = try String(contentsOfFile: fixture.shimPath, encoding: .utf8)
-        #expect(script.contains("export ASTRA_REMOTE_JOB_ROOT='\(fixture.taskFolder)/remote-jobs'"))
+        #expect(script.contains("export ASTRA_REMOTE_JOB_ROOT='\(fixture.root.path)/protected-jobs'"))
         #expect(script.contains("export ASTRA_REMOTE_JOB_SSH='\(fixture.taskFolder)/.runtime-bin/ssh'"))
         #expect(script.contains("export ASTRA_REMOTE_JOB_RUN_ID='\(fixture.runID.uuidString)'"))
         #expect(script.contains("exec '\(fixture.helper.path)' \"$@\""))
@@ -54,6 +54,7 @@ struct RemoteWorkspaceJobShimTests {
         _ = RemoteWorkspaceJobShim.prepare(
             task: fixture.task, runID: fixture.runID,
             route: RemoteWorkspaceSSHRoute(targets: ["pcornet-backup"], route: .nativeShell),
+            configuration: fixture.configuration, brokerDirectory: "/tmp/qa-drop", brokerToken: "qa-token",
             helperPath: fixture.helper.path
         )
         #expect(FileManager.default.fileExists(atPath: fixture.shimPath))
@@ -61,6 +62,7 @@ struct RemoteWorkspaceJobShimTests {
         let prepared = try #require(RemoteWorkspaceJobShim.prepare(
             task: fixture.task, runID: fixture.runID,
             route: RemoteWorkspaceSSHRoute(targets: ["pcornet-backup"], route: route),
+            configuration: fixture.configuration, brokerDirectory: "/tmp/qa-drop", brokerToken: "qa-token",
             helperPath: fixture.helper.path
         ))
         #expect(!prepared.remoteJobs)
@@ -81,6 +83,7 @@ struct RemoteWorkspaceJobShimTests {
         let unknownTarget = RemoteWorkspaceJobShim.prepare(
             task: fixture.task, runID: fixture.runID,
             route: RemoteWorkspaceSSHRoute(targets: ["some-other-host"], route: .nativeShell),
+            configuration: fixture.configuration, brokerDirectory: "/tmp/qa-drop", brokerToken: "qa-token",
             helperPath: fixture.helper.path
         )
         #expect(unknownTarget?.remoteJobs == false)
@@ -96,7 +99,11 @@ struct RemoteWorkspaceJobShimTests {
         let configuration = try RemoteWorkspaceJobConfiguration.fromEnvironment([
             RemoteWorkspaceJobConfiguration.recordRootKey: "/tmp/records",
             RemoteWorkspaceJobConfiguration.sshExecutableKey: "/tmp/ssh",
-            RemoteWorkspaceJobConfiguration.connectionsKey: RemoteWorkspaceJobShim.connectionsJSON(offered)
+            RemoteWorkspaceJobConfiguration.connectionsKey: RemoteWorkspaceJobShim.connectionsJSON(offered),
+            RemoteWorkspaceJobConfiguration.taskIDKey: fixture.task.id.uuidString,
+            RemoteWorkspaceJobConfiguration.runIDKey: fixture.runID.uuidString,
+            RemoteWorkspaceJobConfiguration.maximumSecondsKey: "60",
+            RemoteWorkspaceJobConfiguration.ownerKey: String(decoding: try JSONEncoder().encode(fixture.configuration.ownerBinding), as: UTF8.self)
         ])
         let connection = try #require(configuration.connections.first)
         #expect(configuration.connections.count == 1)
@@ -142,11 +149,14 @@ struct RemoteWorkspaceJobShimTests {
     @Test("The guard reads any job start as its ssh form, wherever it sits in the command")
     func sshEquivalentParsing() {
         let equivalent = RemoteWorkspaceJobPolicyEquivalence.sshEquivalent
-        #expect(equivalent("astra-workspace-job start --connection box -- 'sudo rm -rf /data'") == "ssh box 'sudo rm -rf /data'")
+        #expect(equivalent("astra-workspace-job start --connection box -- 'sudo rm -rf /data'") == "ssh box sudo rm -rf /data")
         #expect(equivalent("astra-workspace-job start --connection=box --timeout 60 -- ls -la") == "ssh box ls -la")
-        #expect(equivalent("astra-workspace-job start -- 'bq load x'") == "ssh 'bq load x'")
-        #expect(equivalent("cd /tmp && ./.runtime-bin/astra-workspace-job start --label x -- 'gsutil rsync a b'") == "ssh 'gsutil rsync a b'")
+        #expect(equivalent("astra-workspace-job start --connection box -- 'bq load x'") == "ssh box bq load x")
+        #expect(equivalent("cd /tmp && ./.runtime-bin/astra-workspace-job start --connection box --label x -- 'gsutil rsync a b'") == "ssh box gsutil rsync a b")
         #expect(equivalent("astra-workspace-job status 123") == nil)
+        #expect(equivalent("\"/tmp/a path/astra-workspace-job\" start --connection '-p 22440 a@host' -- 'echo ok'") == "ssh -p 22440 a@host echo ok")
+        #expect(RemoteWorkspaceJobPolicyEquivalence.sshEquivalents(of: "astra-workspace-job start --connection box -- echo first; astra-workspace-job start --connection box -- echo second")?.count == 2)
+        #expect(RemoteWorkspaceJobPolicyEquivalence.sshEquivalents(of: "astra-workspace-job start -- 'unterminated") == nil)
         #expect(equivalent("echo astra-workspace-job-start -- x") == nil)
     }
 
@@ -217,6 +227,15 @@ struct RemoteWorkspaceJobShimTests {
             task = AgentTask(title: "Remote job", goal: "Run the SAS scan on the VM", workspace: workspace)
             context.insert(task)
             try context.save()
+        }
+
+        var configuration: RemoteWorkspaceJobConfiguration {
+            .init(recordRootPath: root.appendingPathComponent("protected-jobs").path, sshExecutable: "/usr/bin/ssh",
+                connections: RemoteWorkspaceJobShim.offeredConnections(task: task, targets: ["pcornet-backup"]),
+                taskID: task.id.uuidString, runID: runID.uuidString,
+                ownerBinding: .init(receiptPath: root.appendingPathComponent("owner.json").path,
+                    taskID: task.id.uuidString, runID: runID.uuidString, ownerID: UUID().uuidString, executionID: UUID().uuidString),
+                maximumJobSeconds: 60)
         }
 
         var taskFolder: String { TaskWorkspaceAccess(task: task).taskFolder }

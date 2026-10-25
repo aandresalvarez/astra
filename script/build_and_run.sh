@@ -20,7 +20,6 @@ else
 fi
 REQUIRE_ARM64="${ASTRA_REQUIRE_ARM64:-1}"
 SPARKLE_PUBLIC_ED_KEY="${ASTRA_SPARKLE_PUBLIC_ED_KEY:-${SPARKLE_PUBLIC_ED_KEY:-}}"
-GOOGLE_MANAGED_OAUTH_CLIENT_ID="${ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID:-}"
 SIGN_IDENTITY_RAW="${ASTRA_SIGN_IDENTITY:-}"
 # Trim leading/trailing whitespace (including a leading/trailing newline from
 # copy-pasting into the GitHub secret field). codesign matches -s against the
@@ -196,11 +195,6 @@ validate_sparkle_public_ed_key() {
   [[ "$decoded_length" == "32" ]]
 }
 
-validate_google_managed_oauth_client_id() {
-  local client_id="$1"
-  [[ "$client_id" =~ ^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$ ]]
-}
-
 find_local_team_signing_identity() {
   local identities candidate
   identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
@@ -309,11 +303,6 @@ if [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]] && ! validate_sparkle_public_ed_key "$SPARK
   exit 2
 fi
 
-if [[ -n "$GOOGLE_MANAGED_OAUTH_CLIENT_ID" ]] && ! validate_google_managed_oauth_client_id "$GOOGLE_MANAGED_OAUTH_CLIENT_ID"; then
-  echo "Invalid ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID: expected a Google OAuth client ID ending in .apps.googleusercontent.com." >&2
-  exit 2
-fi
-
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
@@ -397,6 +386,7 @@ if [[ "$APP_INTENTS_ENABLED" == "1" ]]; then
 fi
 
 swift build "${SWIFT_BUILD_ARGS[@]}"
+swift build "${SWIFT_BUILD_ARGS[@]}" --product astra-plugin-fetch
 for tool_product in "${TOOL_PRODUCTS[@]}"; do
   swift build "${SWIFT_BUILD_ARGS[@]}" --product "$tool_product"
 done
@@ -405,6 +395,7 @@ BUILD_BINARY="$BUILD_DIR/$PRODUCT_NAME"
 
 if [[ "$REQUIRE_ARM64" == "1" ]]; then
   verify_arm64_binary "$BUILD_BINARY"
+  verify_arm64_binary "$BUILD_DIR/astra-plugin-fetch"
   for tool_product in "${TOOL_PRODUCTS[@]}"; do
     verify_arm64_binary "$BUILD_DIR/$tool_product"
   done
@@ -421,6 +412,10 @@ if [ -d "$BUILD_DIR/ASTRA_ASTRA.bundle" ]; then
   cp -R "$BUILD_DIR/ASTRA_ASTRA.bundle" "$APP_RESOURCES/"
 fi
 
+PRIVATE_HELPER="$APP_BUNDLE/Contents/Helpers/astra-plugin-fetch"
+mkdir -p "$(dirname "$PRIVATE_HELPER")"
+cp "$BUILD_DIR/astra-plugin-fetch" "$PRIVATE_HELPER"
+chmod +x "$PRIVATE_HELPER"
 BUNDLED_TOOLS_DIR="$APP_RESOURCES/ASTRA_ASTRA.bundle/Tools"
 mkdir -p "$BUNDLED_TOOLS_DIR"
 for tool_product in "${TOOL_PRODUCTS[@]}"; do
@@ -458,7 +453,7 @@ strip_bundled_binaries() {
   # -T/-x trim local symbol-table entries. Must run before codesign so the
   # signature covers the stripped bytes.
   local target
-  for target in "$APP_BINARY" "$BUNDLED_TOOLS_DIR"/*; do
+  for target in "$APP_BINARY" "$PRIVATE_HELPER" "$BUNDLED_TOOLS_DIR"/*; do
     [[ -f "$target" ]] || continue
     local before after
     before="$(stat -f%z "$target" 2>/dev/null || echo 0)"
@@ -541,13 +536,6 @@ if [[ -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
 PLIST
 fi
 
-if [[ -n "$GOOGLE_MANAGED_OAUTH_CLIENT_ID" ]]; then
-  cat >>"$INFO_PLIST" <<PLIST
-  <key>ASTRAGoogleOAuthClientID</key>
-  <string>$GOOGLE_MANAGED_OAUTH_CLIENT_ID</string>
-PLIST
-fi
-
 cat >>"$INFO_PLIST" <<PLIST
 </dict>
 </plist>
@@ -598,6 +586,7 @@ sign_developer_id() {
 }
 
 sign_bundled_tools_for_notarization() {
+  sign_developer_id "$PRIVATE_HELPER"
   local tool_product
   for tool_product in "${TOOL_PRODUCTS[@]}"; do
     sign_developer_id "$BUNDLED_TOOLS_DIR/$tool_product"
@@ -672,6 +661,10 @@ else
 fi
 
 verify_app_bundle() {
+  if [[ ! -x "$PRIVATE_HELPER" ]]; then
+    echo "FAIL: private plugin fetch helper missing" >&2
+    return 1
+  fi
   local errors=0
 
   if [[ ! -x "$APP_BINARY" ]]; then

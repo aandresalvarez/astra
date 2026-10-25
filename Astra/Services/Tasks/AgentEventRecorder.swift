@@ -594,6 +594,7 @@ enum AgentEventRecorder {
         to task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
+        recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
         recordProviderAgentEvent(
@@ -604,6 +605,7 @@ enum AgentEventRecorder {
             to: task,
             run: run,
             modelContext: modelContext,
+            recordingMode: recordingMode,
             recordingState: recordingState
         )
     }
@@ -614,6 +616,7 @@ enum AgentEventRecorder {
         to task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
+        recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
         recordProviderAgentEvent(
@@ -624,6 +627,7 @@ enum AgentEventRecorder {
             to: task,
             run: run,
             modelContext: modelContext,
+            recordingMode: recordingMode,
             recordingState: recordingState
         )
     }
@@ -814,7 +818,7 @@ enum AgentEventRecorder {
             let sessionBaseline = ProviderSessionUsageEpoch.baseline(
                 forReport: input, output: output, run: run, task: task, modelContext: modelContext
             )
-            let total = input + output
+            let total = RuntimeUsageArithmetic.adding(input, output)
             if total > 0 {
                 recordUsageTotals(
                     sessionShare: sessionBaseline.runShare(input: input, output: output),
@@ -829,9 +833,9 @@ enum AgentEventRecorder {
                 case .initial:
                     task.costUSD = cost
                 case .followUp:
-                    task.costUSD += cost
+                    task.costUSD += max(0, cost - run.costUSD)
                 }
-                run.costUSD = cost
+                run.costUSD = max(run.costUSD, cost)
             }
             let details = [
                 total > 0 ? "tokens: \(total) (in: \(input), out: \(output))" : nil,
@@ -1062,7 +1066,7 @@ enum AgentEventRecorder {
         recordingMode: AgentRuntimeRecordingMode
     ) {
         let (inputTokens, outputTokens) = sessionShare
-        let totalTokens = inputTokens + outputTokens
+        let totalTokens = RuntimeUsageArithmetic.adding(inputTokens, outputTokens)
         switch recordingMode {
         case .initial:
             task.tokensUsed = totalTokens
@@ -1074,7 +1078,7 @@ enum AgentEventRecorder {
             run.tokensUsed = max(run.tokensUsed, totalTokens)
             run.inputTokens = max(run.inputTokens, inputTokens)
             run.outputTokens = max(run.outputTokens, outputTokens)
-            task.tokensUsed += max(0, run.tokensUsed - previousRunTokens)
+            task.tokensUsed = RuntimeUsageArithmetic.adding(task.tokensUsed, max(0, run.tokensUsed - previousRunTokens))
         }
     }
 
