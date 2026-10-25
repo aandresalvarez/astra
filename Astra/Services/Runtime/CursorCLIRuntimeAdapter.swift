@@ -303,7 +303,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
     @MainActor
     func recordWorkerStreamEvent(
         _ event: AgentRuntimeRecordedEvent,
-        mode _: AgentRuntimeRecordingMode,
+        mode: AgentRuntimeRecordingMode,
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
@@ -315,6 +315,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
             to: task,
             run: run,
             modelContext: modelContext,
+            recordingMode: mode,
             recordingState: recordingState
         )
     }

@@ -114,7 +114,7 @@ final class DiscardedAttemptUsage: @unchecked Sendable {
     var totalTokens: Int {
         lock.lock()
         defer { lock.unlock() }
-        return input + output
+        return RuntimeUsageArithmetic.adding(input, output)
     }
 
     /// Takes the attempt's final usage, which is cumulative within its process.
@@ -134,15 +134,15 @@ final class DiscardedAttemptUsage: @unchecked Sendable {
     func apply(to events: [AgentRuntimeRecordedEvent]) -> [AgentRuntimeRecordedEvent] {
         lock.lock()
         defer { lock.unlock() }
-        guard input + output > 0 || cost != nil else { return events }
+        guard RuntimeUsageArithmetic.adding(input, output) > 0 || cost != nil else { return events }
         return events.map { recorded in
             guard case .agent(.stats(let eventInput, let eventOutput, let eventCost, let duration, let turns)) = recorded else {
                 return recorded
             }
             applied = true
             return .agent(.stats(
-                inputTokens: eventInput + input,
-                outputTokens: eventOutput + output,
+                inputTokens: RuntimeUsageArithmetic.adding(eventInput, input),
+                outputTokens: RuntimeUsageArithmetic.adding(eventOutput, output),
                 costUSD: eventCost.map { $0 + (cost ?? 0) } ?? cost,
                 durationMs: duration,
                 turns: turns
@@ -154,7 +154,7 @@ final class DiscardedAttemptUsage: @unchecked Sendable {
     func unappliedEvents() -> [AgentRuntimeRecordedEvent] {
         lock.lock()
         defer { lock.unlock() }
-        guard !applied, input + output > 0 || cost != nil else { return [] }
+        guard !applied, RuntimeUsageArithmetic.adding(input, output) > 0 || cost != nil else { return [] }
         applied = true
         return [.agent(.stats(inputTokens: input, outputTokens: output, costUSD: cost, durationMs: nil, turns: nil))]
     }

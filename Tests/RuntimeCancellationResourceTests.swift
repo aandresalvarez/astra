@@ -30,11 +30,11 @@ struct RuntimeCancellationResourceTests {
         return record
     }
 
-    @Test("A second queue and a reopened disk store retain the exact cancelled resource claims")
-    func diskRestartRetainsClaims() throws {
+    @Test("A second queue and a reopened disk store retain the exact cancelled resource claims", arguments: AgentRuntimeAdapterRegistry.runtimeIDs)
+    func diskRestartRetainsClaims(runtime: AgentRuntimeID) throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
-        let task = h.makeTask(runtime: .claudeCode, goal: "Owner", model: "claude-sonnet-4-6")
+        let task = h.makeTask(runtime: runtime, goal: "Owner", model: "test")
         var record = try saved(h, task: task)
         record.resourceClaims?.append(.init(taskID: task.id, resourceKey: h.workspaceURL.appendingPathComponent("other").path,
             accessMode: .readOnly, runMode: "task", leaseID: UUID()))
@@ -116,6 +116,11 @@ struct RuntimeCancellationResourceTests {
         do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
         #expect(throws: (any Error).self) { try RuntimeResourceOwnership.claims(in: store) }
         record.state = .finished
+        do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
+        #expect(throws: (any Error).self) { try RuntimeResourceOwnership.claims(in: store) }
+        let prior = try #require(record.stopProof)
+        record.stopProof = .init(executionID: prior.executionID, process: prior.process, reaped: true,
+            processGroupEmpty: true, toolsStopped: true, remoteWorkExcluded: true, capturedAt: Date())
         do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
         #expect(try RuntimeResourceOwnership.claims(in: store).isEmpty)
     }

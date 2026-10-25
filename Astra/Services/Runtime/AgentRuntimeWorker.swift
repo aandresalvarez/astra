@@ -336,7 +336,7 @@ final class AgentRuntimeWorker {
             return
         }
         let request = turnRequestID.flatMap { try? TaskTurnRequestRepository.request(id: $0, in: modelContext) }
-        let newUserTurn = RuntimeExecutionAdmission.resolve(request: request, task: task).permitsLocalExit
+        let newUserTurn = RuntimeExecutionAdmission.resolve(request: request, task: task).isNewUserTurn
         guard let executionOwner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
             maxRunSeconds: maxRunSeconds, newUserTurn: newUserTurn, launchTask: launchTask,
             resourceClaims: executionPolicy.admittedResourceClaims) else { return }
@@ -1091,7 +1091,7 @@ final class AgentRuntimeWorker {
             var attemptPolicy = launchExecutionPolicy
             attemptPolicy.recoveryAllowance = executionOwner.record.limits
             attemptPolicy.providerTurnsAlreadyUsed = priorTurns + recoveryTurnsSpent
-            attemptPolicy.providerTokensAlreadyUsed = priorTokens + supervisionReservations + recoveryTokensSpent
+            attemptPolicy.providerTokensAlreadyUsed = RuntimeUsageArithmetic.adding(RuntimeUsageArithmetic.adding(priorTokens, supervisionReservations), recoveryTokensSpent)
             attemptPolicy.providerSessionUsageBaseline = sessionUsageBaseline
             return await self.processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
@@ -1150,7 +1150,7 @@ final class AgentRuntimeWorker {
             TaskRunLifecycleService.persist(summary: cancellation, modelContext: modelContext)
             return
         }
-        supervisionReservations += result.supervisionReservedTokens ?? 0
+        supervisionReservations = RuntimeUsageArithmetic.adding(supervisionReservations, result.supervisionReservedTokens ?? 0)
         if let emptyTurnGate {
             if emptyTurnGate.producedNothing, result.exitCode == 0, !result.stoppedByASTRA, !cancellationRequested,
                executionOwner.authorizeAutomaticRestart() {
@@ -1179,7 +1179,7 @@ final class AgentRuntimeWorker {
                     runtime: selectedRuntime,
                     budgetEnforcementMode: budgetEnforcementMode,
                     alreadyUsedTokens: max(executionOwner.record.limits.tokensSpent,
-                        recoveryTokensSpent + discardedUsage.totalTokens + supervisionReservations),
+                        RuntimeUsageArithmetic.adding(RuntimeUsageArithmetic.adding(recoveryTokensSpent, discardedUsage.totalTokens), supervisionReservations)),
                     tokenCeiling: executionOwner.record.limits.tokenCeiling
                 ) else {
                     // The run ends here, but the discarded attempt still spent what it spent.
@@ -1206,7 +1206,7 @@ final class AgentRuntimeWorker {
                         return
                     }
                 }
-                supervisionReservations += result.supervisionReservedTokens ?? 0
+                supervisionReservations = RuntimeUsageArithmetic.adding(supervisionReservations, result.supervisionReservedTokens ?? 0)
             } else {
                 emptyTurnGate.flush(forward: handleLine)
             }
@@ -1242,7 +1242,8 @@ final class AgentRuntimeWorker {
             prompt: prompt,
             task: task,
             run: run,
-            modelContext: modelContext
+            modelContext: modelContext,
+            runtimeStopReason: result.runtimeStopReason
         )
         RuntimeSupervisionUsageRecorder.record(supervisionReservations,
             task: task, run: run, modelContext: modelContext)
@@ -1481,15 +1482,17 @@ final class AgentRuntimeWorker {
     }
 
     @MainActor
-    private static func recordEstimatedUsageIfProviderDidNotReport(
+    static func recordEstimatedUsageIfProviderDidNotReport(
         runtimeAdapter: any AgentRuntimeWorkerEventRecording,
         selectedRuntime: AgentRuntimeID,
         prompt: String,
         task: AgentTask,
         run: TaskRun,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        runtimeStopReason: String? = nil
     ) {
-        guard runtimeAdapter.recordsEstimatedUsageWhenProviderUsageMissing,
+        guard runtimeStopReason != RuntimeProviderResourceRegistry.Block.stopReason,
+              runtimeAdapter.recordsEstimatedUsageWhenProviderUsageMissing,
               run.tokensUsed == 0 else {
             return
         }
@@ -1499,13 +1502,13 @@ final class AgentRuntimeWorker {
             runtime: selectedRuntime
         )
         let estimatedOutput = AgentProcessMonitor.estimatedTokenCount(for: run.output)
-        let estimatedTotal = estimatedInput + estimatedOutput
+        let estimatedTotal = RuntimeUsageArithmetic.adding(estimatedInput, estimatedOutput)
         guard estimatedTotal > 0 else { return }
 
         run.tokensUsed = estimatedTotal
         run.inputTokens = estimatedInput
         run.outputTokens = estimatedOutput
-        task.tokensUsed += estimatedTotal
+        task.tokensUsed = RuntimeUsageArithmetic.adding(task.tokensUsed, estimatedTotal)
 
         let detail = "estimated tokens: \(estimatedTotal) (in: \(estimatedInput), out: \(estimatedOutput)) | provider usage unavailable"
         modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Task.stats, payload: detail, run: run))

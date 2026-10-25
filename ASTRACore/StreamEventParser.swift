@@ -232,7 +232,8 @@ public enum StreamEventParser {
     private static let transientSystemSubtypes: Set<String> = [
         "post_turn_summary",
         "status",
-        "thinking_tokens"
+        "thinking_tokens",
+        "commands_changed"
     ]
 
     public static func parse(line: String) -> ParsedEvent? {

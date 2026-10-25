@@ -560,22 +560,20 @@ struct TaskThreadArchitectureFitnessTests {
         )
         let dockSource = String(taskMainView[dockStart.lowerBound..<dockEnd.lowerBound])
 
-        // `TaskMainView` is a SwiftUI view and not directly instantiable in
-        // headless tests, so — matching the source-scan style already used
-        // above for this same property — assert the queued-follow-up
-        // waiting dock only preempts `TaskDecisionDockContextBuilder.build`
-        // (which is what actually renders Approve/Deny/Stop) when no
-        // permission request is open. Without this guard, a follow-up
-        // queued behind a running provider that then raises a live
-        // permission request leaves the user unable to approve, deny, or
-        // stop without first cancelling every queued message.
-        // The dock captures one current permission state for this render;
-        // both the waiting guard and the action builder must use that value.
+        // The view delegates queued-message priority to the tested recovery
+        // policy. Live permissions retain Approve/Deny/Stop; a stale permission
+        // on a disconnected, blocked owner must retain Cancel request instead.
+        // Behavioral coverage lives in TaskDecisionDockPresentationTests and
+        // RuntimeCleanupAuthorizationTests. Here verify the SwiftUI wiring uses
+        // the same current permission and recovery state before returning early.
         let stateRange = try #require(dockSource.range(of: "let permission = runtimePermissionState"))
-        let guardRange = try #require(dockSource.range(of: "!permission.hasOpenApprovalRequest"))
+        let guardRange = try #require(dockSource.range(of: "RuntimeRecoveryPresentation.queuedRequestDock("))
         let waitingReturnRange = try #require(dockSource.range(of: "return waitingPresentation"))
         #expect(stateRange.lowerBound < guardRange.lowerBound)
         #expect(guardRange.lowerBound < waitingReturnRange.lowerBound)
+        let selection = dockSource[guardRange.lowerBound..<waitingReturnRange.lowerBound]
+        #expect(selection.contains("hasOpenApprovalRequest: permission.hasOpenApprovalRequest"))
+        #expect(selection.contains("blockedMessage: recoveryBlockMessage"))
         #expect(dockSource.contains("runtimePermission: permission"))
     }
 

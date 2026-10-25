@@ -128,6 +128,7 @@ struct TaskDecisionDockPresentation: Equatable {
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail] = []
         var visibleThreadAffordances: Set<TaskThreadAffordance> = []
+        var recoveryBlockMessage: String? = nil
 
         /// Auto allows a connector's credentials for the task without asking, so
         /// a credential card reaches an Auto task only when that grant could not
@@ -187,6 +188,18 @@ struct TaskDecisionDockPresentation: Equatable {
     static func build(_ context: Context) -> TaskDecisionDockPresentation? {
         if context.isClosed {
             return closedPresentation(context)
+        }
+
+        if let message = context.recoveryBlockMessage {
+            return TaskDecisionDockPresentation(
+                id: "recovery-blocked", icon: "lock.fill", tone: .attention,
+                title: "Recovery blocked", summary: message,
+                metrics: metrics(context), details: details(context),
+                primaryAction: context.canRetry
+                    ? action(.retry, title: "Check again", systemImage: "arrow.clockwise") : nil,
+                secondaryActions: [], overflowActions: closeOverflowActions(context, closeTitle: nil),
+                prefersExpandedDetails: false
+            )
         }
 
         if context.hasRuntimePermissionRequest {

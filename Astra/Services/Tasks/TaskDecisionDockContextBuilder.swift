@@ -91,6 +91,7 @@ enum TaskDecisionDockContextBuilder {
         var repair: RepairAction? = nil
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail]
+        var recoveryBlockMessage: String? = nil
     }
 
     struct ExtraDetailsInput {
@@ -169,7 +170,8 @@ enum TaskDecisionDockContextBuilder {
                 artifactPaths: input.artifactPaths,
                 mission: input.mission,
                 isPlanCanvasVisible: input.isPlanCanvasVisible
-            )
+            ),
+            recoveryBlockMessage: input.recoveryBlockMessage
         )
     }
 

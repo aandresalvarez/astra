@@ -807,6 +807,10 @@ final class AgentRuntimeProcessRunner {
                     runtimeStopReason: "cancelled",
                     runtimeStopMessage: "Task cancelled before acquiring provider shared state."
                 )
+            } catch let block as RuntimeProviderResourceRegistry.Block {
+                return AgentProcessResult(exitCode: -1, error: block.message,
+                    runtimeStopReason: RuntimeProviderResourceRegistry.Block.stopReason,
+                    runtimeStopMessage: block.message)
             } catch {
                 return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
             }
@@ -944,7 +948,8 @@ final class AgentRuntimeProcessRunner {
                 return result
             }
         }
-        let processEvidence = RuntimeExecutionProcessEvidence()
+        let processEvidence = RuntimeExecutionProcessEvidence(runtime: plan.runtime)
+        let openCodeAccounting = plan.runtime == .openCodeCLI ? OpenCodeStreamAccounting() : nil
         let processStartedAt = ProcessInfo.processInfo.systemUptime
         let deliveryChannel = AgentLivePermissionDeliveryChannel()
         let result: AgentProcessResult = await withCheckedContinuation { continuation in
@@ -1059,9 +1064,17 @@ final class AgentRuntimeProcessRunner {
                     )
                     return
                 }
-                onLine(line, plan.parsesJSONLines)
-                let parsedEvents = adapter.parseProcessEvents(line: line, parsesJSONLines: plan.parsesJSONLines)
-                processEvidence.observeFrame(line, parsesJSONLines: plan.parsesJSONLines, events: parsedEvents)
+                let nativeEvents = adapter.parseProcessEvents(line: line, parsesJSONLines: plan.parsesJSONLines)
+                processEvidence.observeFrame(line, parsesJSONLines: plan.parsesJSONLines, events: nativeEvents)
+                let accounting = openCodeAccounting?.normalize(line)
+                if accounting?.invalidUsage == true {
+                    processEvidence.observe(.unknown(type: "opencode.invalid_usage"))
+                    errorOutput.append("OpenCode reported invalid step usage. ASTRA stopped the run to preserve its remaining limits.")
+                    process.terminate()
+                }
+                let deliveredLine = accounting?.line ?? line
+                onLine(deliveredLine, plan.parsesJSONLines)
+                let parsedEvents = accounting == nil ? nativeEvents : adapter.parseProcessEvents(line: deliveredLine, parsesJSONLines: plan.parsesJSONLines)
                 for parsed in parsedEvents {
                     if case .systemInit(_, let sessionID) = parsed {
                         ownershipEvents.add { owner?.session(sessionID) }
@@ -1118,7 +1131,7 @@ final class AgentRuntimeProcessRunner {
                 InFlightPermissionCenter.shared.failAll(taskID: taskID)
                 proc.stdoutFileHandle.readabilityHandler = nil
                 proc.stderrFileHandle.readabilityHandler = nil
-                stdoutReader.finish(consume: consumeStdout)
+                let stdoutEOF = stdoutReader.finish(consume: consumeStdout)
                 // EOF flush only: an empty remainder must not synthesize a
                 // paragraph break for plain-text providers.
                 let remainder = lineBuffer.drainRemaining()
@@ -1171,6 +1184,7 @@ final class AgentRuntimeProcessRunner {
                     ], level: .error)
                 }
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
+                let invalidAccounting = openCodeAccounting?.hasInvalidUsage == true
                 var processResult = AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
@@ -1180,8 +1194,8 @@ final class AgentRuntimeProcessRunner {
                     policyViolationMessage: monitor.policyViolationMessage,
                     policyApprovalRequired: monitor.policyApprovalRequired,
                     policyApprovalMessage: monitor.policyApprovalMessage,
-                    runtimeStopReason: dockerFailure?.stopReason ?? monitor.runtimeStopReason ?? selfStop?.reason,
-                    runtimeStopMessage: dockerFailure?.message ?? monitor.runtimeStopMessage ?? selfStop?.message,
+                    runtimeStopReason: invalidAccounting ? "runtime_accounting_invalid" : dockerFailure?.stopReason ?? monitor.runtimeStopReason ?? selfStop?.reason,
+                    runtimeStopMessage: invalidAccounting ? "OpenCode usage could not be verified. ASTRA preserved the remaining limits and blocked recovery." : dockerFailure?.message ?? monitor.runtimeStopMessage ?? selfStop?.message,
                     runtimeRepairContext: dockerFailure == nil ? monitor.runtimeRepairContext : nil,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
@@ -1192,6 +1206,7 @@ final class AgentRuntimeProcessRunner {
                     maxTurnsExceeded: monitor.maxTurnsExceeded,
                     readOnlyBoundaryEvidence: plan.readOnlyBoundaryReceipt?.evidence
                 )
+                processEvidence.processExited(naturally: proc.naturalSuccessfulExit, stdoutEOF: stdoutEOF)
                 processResult.executionStopProof = proc.stopProof(executionID: executionID,
                     toolsStopped: processEvidence.toolsStopped, remoteWorkExcluded: remoteWorkExcluded)
                 processResult.executionTurnsSpent = max(1, monitor.turnCount)
@@ -1256,14 +1271,31 @@ final class AgentRuntimeProcessRunner {
         let stdoutBuffer = AgentLockedBuffer()
         let stderrBuffer = AgentLockedBuffer()
         let stdoutLineBuffer = AgentLockedBuffer()
+        let openCodeAccounting = plan.runtime == .openCodeCLI ? OpenCodeStreamAccounting() : nil
         let runState = AgentUtilityScopedProcessRunState()
         let outputAllowance = AgentUtilityOutputAllowance(AgentUtilityExecutionLimits.maximumOutputBytes)
         let outputLimitResult = AgentUtilityRunResult(exitCode: -1, output: "", error: "Utility output exceeded its configured limit.")
+
+        let deliverAccountedLine: @Sendable (String, Bool) -> AgentUtilityRunResult? = { line, newline in
+            let normalized = openCodeAccounting?.normalize(line)
+            let delivered = normalized?.line ?? line
+            stdoutBuffer.append(delivered + (newline ? "\n" : ""))
+            if normalized?.invalidUsage == true {
+                return AgentUtilityRunResult(exitCode: -1, output: "", error: "OpenCode reported invalid step usage.")
+            }
+            return stdoutLineHandler?(delivered)
+        }
 
         // The pipe reader serializes read and delivery; the line buffer also
         // protects the final partial-line flush after the reader is sealed.
         let handleStdoutLocked: @Sendable (String) -> AgentUtilityRunResult? = { chunk in
             guard outputAllowance.accept(chunk.utf8.count) else { return outputLimitResult }
+            if openCodeAccounting != nil {
+                for line in stdoutLineBuffer.appendAndDrainLinesLocked(chunk) {
+                    if let result = deliverAccountedLine(line, true) { return result }
+                }
+                return nil
+            }
             stdoutBuffer.append(chunk)
             guard let stdoutLineHandler else { return nil }
             for line in stdoutLineBuffer.appendAndDrainLinesLocked(chunk) {
@@ -1275,11 +1307,11 @@ final class AgentRuntimeProcessRunner {
         }
 
         let handleRemainingStdoutLineLocked: @Sendable () -> AgentUtilityRunResult? = {
-            guard let stdoutLineHandler else { return nil }
             let remaining = stdoutLineBuffer.drainRemainingLocked()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !remaining.isEmpty else { return nil }
-            return stdoutLineHandler(remaining)
+            if openCodeAccounting != nil { return deliverAccountedLine(remaining, false) }
+            return stdoutLineHandler?(remaining)
         }
 
         return await withTaskCancellationHandler {

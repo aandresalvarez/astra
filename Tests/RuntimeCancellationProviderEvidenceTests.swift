@@ -17,7 +17,7 @@ struct RuntimeCancellationProviderEvidenceTests {
         let url = try #require(Bundle.module.url(forResource: "cancellation-tool-free", withExtension: "jsonl",
             subdirectory: "ProviderStreams/\(provider)"))
         let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map(String.init)
-        let evidence = RuntimeExecutionProcessEvidence()
+        let evidence = RuntimeExecutionProcessEvidence(runtime: runtime)
         for line in lines.dropLast() {
             observe(line, runtime: runtime, in: evidence)
             #expect(!evidence.toolsStopped, "An intermediate response cannot prove the turn finished")
@@ -26,7 +26,7 @@ struct RuntimeCancellationProviderEvidenceTests {
         observe(terminal, runtime: runtime, in: evidence)
         #expect(evidence.toolsStopped)
         for (index, line) in lines.enumerated() {
-            let single = RuntimeExecutionProcessEvidence()
+            let single = RuntimeExecutionProcessEvidence(runtime: runtime)
             observe(line, runtime: runtime, in: single)
             observe(terminal, runtime: runtime, in: single)
             #expect(single.toolsStopped, "Captured \(provider) frame \(index) rejected")
@@ -38,7 +38,7 @@ struct RuntimeCancellationProviderEvidenceTests {
         #"{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":""}}"#
     ])
     func emptyTextSteps(line: String) {
-        let evidence = RuntimeExecutionProcessEvidence()
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .antigravityCLI)
         observe(line, runtime: .antigravityCLI, in: evidence)
         #expect(!evidence.toolsStopped)
         observe(agyTerminal, runtime: .antigravityCLI, in: evidence)
@@ -59,7 +59,7 @@ struct RuntimeCancellationProviderEvidenceTests {
         #"{"event":"step_update","step_update":{"step_index":-1,"state":"DONE","step_type":"agent_response","text_delta":"done"}}"#
     ])
     func uncertainSteps(line: String) {
-        let evidence = RuntimeExecutionProcessEvidence()
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .antigravityCLI)
         observe(line, runtime: .antigravityCLI, in: evidence)
         observe(agyTerminal, runtime: .antigravityCLI, in: evidence)
         #expect(!evidence.toolsStopped)
@@ -67,7 +67,7 @@ struct RuntimeCancellationProviderEvidenceTests {
 
     @Test("Text bookkeeping never hides a second parsed tool event")
     func mixedFrame() {
-        let evidence = RuntimeExecutionProcessEvidence()
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .antigravityCLI)
         evidence.observeFrame(#"{"event":"step_update","step_update":{"step_index":0,"state":"DONE","step_type":"user_input"}}"#,
             parsesJSONLines: true, events: [.control(type: "agy.step.user_input"), .toolUse(name: "run_command", id: "1", input: nil)])
         observe(agyTerminal, runtime: .antigravityCLI, in: evidence)
@@ -76,7 +76,7 @@ struct RuntimeCancellationProviderEvidenceTests {
 
     @Test("Codex tool completion still cannot prove detached work stopped")
     func codexTool() {
-        let evidence = RuntimeExecutionProcessEvidence()
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .codexCLI)
         observe(#"{"type":"item.completed","item":{"id":"tool","type":"command_execution","exit_code":0,"status":"completed"}}"#,
             runtime: .codexCLI, in: evidence)
         observe(#"{"type":"turn.completed"}"#, runtime: .codexCLI, in: evidence)

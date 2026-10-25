@@ -60,7 +60,7 @@ final class RuntimeExecutionOwner {
         return saved
     }
 
-    private static func requiresExistingReceipt(_ task: AgentTask) -> Bool {
+    static func requiresExistingReceipt(_ task: AgentTask) -> Bool {
         // An audit event can require verification, but can never grant a lease.
         // A restored database must not treat a missing sidecar as a fresh task.
         if task.events.contains(where: { $0.type == TaskEventTypes.System.runtimeExecutionOwnership.rawValue }) { return true }
@@ -263,7 +263,7 @@ final class RuntimeExecutionOwner {
         guard isActive else { return }
         guard record.state != .notStarted else { return }
         record.stopProof = proof
-        record.limits.tokensSpent += max(0, tokens)
+        record.limits.tokensSpent = RuntimeUsageArithmetic.adding(record.limits.tokensSpent, tokens)
         record.limits.turnsRemaining = max(0, record.limits.turnsRemaining - max(1, turns))
         record.limits.secondsRemaining = max(0, record.limits.secondsRemaining - max(0, seconds))
         record.state = proof?.permitsReplacement == true ? .stopped : .unverified
@@ -294,7 +294,7 @@ final class RuntimeExecutionOwner {
 
     func reconcileUsage() {
         guard isActive else { return }
-        record.limits.tokensSpent = max(record.limits.tokensSpent, initialTokensSpent + max(0, run?.tokensUsed ?? 0))
+        record.limits.tokensSpent = max(record.limits.tokensSpent, RuntimeUsageArithmetic.adding(initialTokensSpent, run?.tokensUsed ?? 0))
         try? save(nil)
     }
 
@@ -321,18 +321,22 @@ final class RuntimeExecutionOwner {
         if record.state == .preparing { record.state = .notStarted }
         if task.status == .completed, run?.status == .completed,
            record.stopProof?.reaped == true, record.stopProof?.processGroupEmpty == true { record.state = .finished }
-        if !writeFailed && (record.cancellationRequested == true ? record.canReplace : record.canAcceptUserTurn) {
+        if !writeFailed && record.canReplace {
             record.resourcesReleased = true
             record.providerSharedStateReleased = true
         }
-        try? save(nil)
+        let unresolved = record.resourcesReleased != true && record.providerProcess != nil
+        try? save(unresolved ? "The provider exited, but ASTRA cannot confirm that its execution and tools stopped. Its resources remain reserved; new work and recovery must wait. The result, context and remaining limits are preserved." : nil)
     }
 
     var isActive: Bool { lease != nil && !writeFailed }
     var persistedResourceRelease: Bool { !writeFailed && record.resourcesReleased == true }
 
     func releaseProviderSharedState() -> Bool {
-        guard isActive, record.cancellationRequested != true || record.canReplace else { return false }
+        let neverLaunched = record.state == .preparing && record.providerProcess == nil
+            && !record.hasUnverifiedTools && record.settlementInProgress != true
+            && record.settlementLocalWorkStopped != false
+        guard isActive, record.canReplace || neverLaunched else { return false }
         record.providerSharedStateReleased = true
         do { try save(nil); return true } catch { return false }
     }

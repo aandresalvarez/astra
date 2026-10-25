@@ -29,7 +29,7 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
 
             guard sameJournalOwner || record.resourcesReleased == true
                     || record.providerSharedStateReleased == true || record.canRecoverPreparation else {
-                throw RuntimeExecutionOwnerStore.Failure.busy
+                throw RuntimeProviderResourceRegistry.Block(key: key, record: record)
             }
         }
         try prepare()

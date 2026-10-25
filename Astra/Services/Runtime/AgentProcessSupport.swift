@@ -472,8 +472,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     func recoveryTokensConsumed(estimatedInputTokens: Int) -> Int {
         lock.withLock {
-            let estimated = _estimatedTokens + (reportedTokensForSupervision > 0 ? 0 : max(0, estimatedInputTokens))
-            return max(estimated, reportedTokensForSupervision) + supervisionTokens
+            let estimated = RuntimeUsageArithmetic.adding(_estimatedTokens, reportedTokensForSupervision > 0 ? 0 : estimatedInputTokens)
+            return RuntimeUsageArithmetic.adding(max(estimated, reportedTokensForSupervision), supervisionTokens)
         }
     }
     var estimatedTokens: Int { lock.lock(); defer { lock.unlock() }; return _estimatedTokens }
@@ -544,8 +544,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private func reportedRunShare(input: Int, output: Int) -> Int {
         if reportedUsageBaseline.isReset(input: input, output: output) { reportedUsageBaseline = .zero }
         let share = reportedUsageBaseline.runShare(input: input, output: output)
-        reportedTokensForSupervision = max(reportedTokensForSupervision, share.input + share.output)
-        return share.input + share.output
+        let total = RuntimeUsageArithmetic.adding(share.input, share.output)
+        reportedTokensForSupervision = max(reportedTokensForSupervision, total)
+        return total
     }
 
     func processEvent(_ parsed: ParsedEvent, process: AgentRuntimeProcessControl?) -> Bool {
@@ -723,7 +724,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         if case .usage(let totalInput, let totalOutput) = parsed {
-            let totalTokens = totalInput + totalOutput
+            let totalTokens = RuntimeUsageArithmetic.adding(totalInput, totalOutput)
             if reportedRunShare(input: totalInput, output: totalOutput) > tokenBudget - supervisionTokens {
                 if budgetEnforcementMode == .warning {
                     return recordBudgetWarning(
@@ -745,7 +746,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 )
             }
         } else if case .result(_, _, let totalInput, let totalOutput, _, _, let isError) = parsed {
-            let totalTokens = totalInput + totalOutput
+            let totalTokens = RuntimeUsageArithmetic.adding(totalInput, totalOutput)
             if reportedRunShare(input: totalInput, output: totalOutput) > tokenBudget - supervisionTokens {
                 if budgetEnforcementMode == .warning {
                     return recordBudgetWarning(

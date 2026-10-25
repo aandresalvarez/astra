@@ -77,17 +77,11 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
             || stopProof?.remoteWorkExcluded == false || settlementToolsStopped == false
     }
 
-    var canAcceptUserTurn: Bool {
-        guard settlementInProgress != true, settlementLocalWorkStopped != false else { return false }
-        if state == .notStarted { return true }
-        guard state == .finished || state == .stopped || state == .unverified else { return false }
-        return stopProof?.executionID == executionID && stopProof?.process == providerProcess
-            && stopProof?.reaped == true && stopProof?.processGroupEmpty == true
-            && providerProcess?.presence == .absent
-    }
+    // A new instruction cannot bypass cleanup required of an automatic retry.
+    var canAcceptUserTurn: Bool { canReplace }
 
     var canRecoverPreparation: Bool {
-        state == .preparing && appProcess.presence == .absent
+        state == .preparing && providerProcess == nil && !hasUnverifiedTools && appProcess.presence == .absent
             && settlementInProgress != true && settlementLocalWorkStopped != false
     }
 

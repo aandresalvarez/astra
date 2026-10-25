@@ -70,8 +70,9 @@ struct CopilotLaunchDiscoveryTests {
             \(helpBody)
               exit 0
             fi
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\(answer)"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"content":"\(answer)"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":\(inputTokens),"output_tokens":1},"duration_ms":1,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"fixture-session","exitCode":0}'
             exit 0
             """
         }

@@ -129,12 +129,12 @@ enum RuntimeTurnSettlementService {
             return commit(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext,
                 persist: verdictPersistence, autoExport: autoExport)
         }
+        let mayLaunchValidation = owner.record.canReplace
         do { try owner.beginSettlement() } catch {
             reportPersistenceFailure(task: task, run: run, modelContext: modelContext)
             return false
         }
-        let scope = RuntimeSettlementExecutionScope(mayLaunch: owner.record.stopProof?.reaped == true
-            && owner.record.stopProof?.processGroupEmpty == true)
+        let scope = RuntimeSettlementExecutionScope(mayLaunch: mayLaunchValidation)
         owner.settlementScope = scope
         scope.executionOwner = owner
         defer { owner.settlementScope = nil }
