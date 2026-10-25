@@ -52,7 +52,7 @@ public enum CopilotStreamEventParser {
                 emittedMergedResult = true
             case .control(let type):
                 parsed.append(.control(type: type))
-            case .stats where hasCompletion:
+            case .stats where isResultFrame && hasCompletion:
                 if let stats, !emittedMergedResult {
                     parsed.append(.result(
                         text: completionSummary,
@@ -190,7 +190,7 @@ public enum CopilotStreamEventParser {
         // `model.call_failure` above, so these carry nothing the run's outcome
         // needs; left unhandled they were logged as unknown provider shapes at
         // warning level on every run.
-        if normalized == "model.call_start" || normalized == "model.call_finished" {
+        if normalized == "model.call_start" || normalized == "model.call_finished" || normalized == "model.call_final_result" {
             return [.control(type: normalized)]
         }
 
@@ -354,7 +354,7 @@ public enum CopilotStreamEventParser {
             // that ends the run — from the `assistant.message` kind, which
             // carries the same case but can land mid-run. A pure usage frame
             // (no completion at all) stays non-terminal.
-            if events.contains(where: { if case .completed = $0 { true } else { false } }) {
+            if normalized == "result" {
                 events.append(.control(type: resultFrameControlType))
             }
             return events.isEmpty ? [.unknown(provider: "copilot", type: type, raw: raw)] : session + events
@@ -386,8 +386,8 @@ public enum CopilotStreamEventParser {
             return .toolResult(toolId: id, content: content, isError: isError)
         case .permissionRequested(let tool, let reason):
             return .permissionDenied(tool: tool, reason: reason)
-        case .stats(let input, let output, let cost, let duration, let turns):
-            return .result(text: nil, costUSD: cost, totalInputTokens: input, totalOutputTokens: output, durationMs: duration, numTurns: turns, isError: false)
+        case .stats(let input, let output, _, _, _):
+            return .usage(totalInputTokens: input, totalOutputTokens: output)
         case .astraProtocol(let event):
             return .astraProtocol(event)
         case .completed(let summary):

@@ -14,7 +14,15 @@ enum RuntimeTurnOutcomeService {
         let selectedRuntime = checkpoint.runtime
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
         let auditPhase = checkpoint.phase
-        let executionTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(checkpoint.launchSnapshot, from: task)
+        // Frozen before the first await, like the rest of the launch view: a
+        // snapshot without an executionRootPath follows the live workspace,
+        // which can change while validation yields. Built only for the
+        // run-tests branch that reads it — it copies every run and event of
+        // the task, which on a long task cost more than the rest of the
+        // outcome.
+        let validationTask = checkpoint.launchSnapshot.validationStrategy == .runTests
+            ? TaskExecutionLaunchSnapshotApplicator.detachedTask(checkpoint.launchSnapshot, from: task)
+            : nil
         let executionPath = checkpoint.executionPath
         let launchPermissionPolicy = checkpoint.permissionPolicy
         let timeoutSeconds = checkpoint.timeoutSeconds
@@ -56,7 +64,7 @@ enum RuntimeTurnOutcomeService {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: runtimeAdapter.maxTurnsPayload(phase: auditPhase, task: task), run: run)
             modelContext.insert(event)
-        } else if Self.applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
+        } else if RuntimeStopOutcome.apply(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
         } else if Self.applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
         } else if result.policyViolation {
             run.status = .failed
@@ -110,10 +118,11 @@ enum RuntimeTurnOutcomeService {
                 workspacePath: executionPath,
                 agentReportedError: checkpoint.agentReportedError
             )
+            guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return }
             if !blockedFromCompleting {
                 if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
                     // Frozen on launchTask, same as the budget above.
-                    switch executionTask.validationStrategy {
+                    switch checkpoint.launchSnapshot.validationStrategy {
                     case .manual:
                         let completed = await TaskSuccessfulCompletionService.apply(
                             task: task,
@@ -134,17 +143,19 @@ enum RuntimeTurnOutcomeService {
                     case .runTests:
                         let testEvent = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Running validation tests...", run: run)
                         modelContext.insert(testEvent)
-                        // Frozen on executionTask like the strategy switch above:
-                        // testCommand is part of AgentTaskLaunchSnapshot, so a
-                        // command edited after admission must not be what grades
-                        // this run. executionTask also carries the executionRootPath
-                        // the run actually used, so tests execute where it ran.
+                        // Frozen like the strategy switch above: testCommand is
+                        // part of AgentTaskLaunchSnapshot, so a command edited
+                        // after admission must not be what grades this run. The
+                        // detached task also carries the executionRootPath the
+                        // run actually used, so tests execute where it ran.
                         let testResult = await ValidationService.runTests(
-                            task: executionTask,
+                            task: validationTask
+                                ?? TaskExecutionLaunchSnapshotApplicator.detachedTask(checkpoint.launchSnapshot, from: task),
                             commandRunner: ShellValidationCommandRunner(
                                 sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement
                             )
                         )
+                        guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return }
                         switch testResult {
                         case .passed(let details):
                             _ = await TaskSuccessfulCompletionService.apply(
@@ -173,6 +184,7 @@ enum RuntimeTurnOutcomeService {
                             utilityRuntime: checkpoint.verifierRuntime,
                             workspacePath: executionPath
                         )
+                        guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return }
                         switch aiResult {
                         case .passed(let details):
                             _ = await TaskSuccessfulCompletionService.apply(
@@ -324,35 +336,6 @@ enum RuntimeTurnOutcomeService {
 
         Approve to continue this task with one-time expanded runtime permissions.\(detail)
         """
-    }
-
-    @MainActor
-    private static func applyRuntimeStopIfNeeded(
-        _ result: AgentProcessResult,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        phase: RunPhase
-    ) -> Bool {
-        guard let reason = result.runtimeStopReason, !reason.isEmpty else { return false }
-
-        run.status = .failed
-        run.typedStopReason = TaskRunStopReason.custom(reason)
-        if AgentRuntimeWorker.isTerminalRuntimeStop(reason) {
-            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
-        } else {
-            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
-        }
-
-        let payload = result.runtimeStopMessage
-            ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
-        modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run))
-        AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-            "phase": phase.rawValue,
-            "reason": reason,
-            "source": "runtime_stop"
-        ], level: .error)
-        return true
     }
 
     @MainActor

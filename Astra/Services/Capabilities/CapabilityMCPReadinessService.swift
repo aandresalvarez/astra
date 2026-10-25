@@ -38,6 +38,8 @@ enum CapabilityMCPReadinessService {
             return "\(name): command \(command) needs authorization. \(detail)"
         case .unresponsive(let detail):
             return "\(name): command \(command) did not respond. \(detail)"
+        case .notChecked(let detail):
+            return "\(name): command \(command) is \(detail)."
         }
     }
 
@@ -65,7 +67,7 @@ enum CapabilityMCPReadinessService {
             return 1
         case .authorizationRequired:
             return 2
-        case .unresponsive:
+        case .unresponsive, .notChecked:
             return 3
         case .unverified:
             return 4

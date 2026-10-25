@@ -186,7 +186,7 @@ enum WorkspaceCommandService {
         TaskStateMachine.enqueueFromWorkspaceCommand(mainTask, modelContext: modelContext)
         mainTask.templateID = template.id
         mainTask.templateHooksJSON = template.hooksJSON
-        mainTask.skills = skills(for: template, selectedSkills: selectedSkills)
+        mainTask.skills = AgentTask.storableSkills(skills(for: template, selectedSkills: selectedSkills), in: mainTask.workspace)
         TaskCapabilitySnapshotter.capture(for: mainTask)
 
         if template.hasAfterPhase {

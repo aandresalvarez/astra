@@ -113,6 +113,8 @@ enum RuntimeEligibilitySubmissionPolicy {
 @MainActor
 struct RuntimeEligibilityPreviewRequest {
     let signature: String
+    /// User-authored choices; history and runtime probes only invalidate admission.
+    let submissionSignature: String
     let hasAcceptedTurn: Bool
     let taskID: UUID?
     let acceptedTurnCharacterCount: Int
@@ -168,19 +170,23 @@ struct RuntimeEligibilityPreviewRequest {
             attachedFiles: attachedFiles
         )
         let readiness = readinessSignature(readinessStates)
-        let signature = ([
+        let submissionSignature = ([
             task.id.uuidString,
             task.resolvedRuntimeID.rawValue,
             String(task.runtimeExplicitlySelected),
+            task.model,
+            String(task.tokenBudget),
+            task.reasoningEffort ?? "",
             selectedPolicyLevelRaw,
             String(skipPermissions),
             acceptedTurn,
-            providerSettings.signature,
-            String(eventRevision)
-        ] + task.skills.map(\.id.uuidString).sorted() + readiness).joined(separator: "|")
+            providerSettings.signature
+        ] + task.skills.map(\.id.uuidString).sorted()).joined(separator: "|")
+        let signature = ([submissionSignature, String(eventRevision)] + readiness).joined(separator: "|")
 
         return RuntimeEligibilityPreviewRequest(
             signature: signature,
+            submissionSignature: submissionSignature,
             hasAcceptedTurn: !acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             taskID: task.id,
             acceptedTurnCharacterCount: acceptedTurn.count,
@@ -213,11 +219,12 @@ struct RuntimeEligibilityPreviewRequest {
         skipPermissions: Bool,
         defaultModel: String,
         defaultBudget: Int,
+        reasoningEffort: String? = nil,
         providerSettings: ProviderSettingsSnapshot,
         readinessStates: [AgentRuntimeID: RuntimeReadinessState]
     ) -> RuntimeEligibilityPreviewRequest {
         let readiness = readinessSignature(readinessStates)
-        let signature = ([
+        let submissionSignature = ([
             draftTask?.id.uuidString ?? "new",
             // A switched composer keeps its draft and skills but not its workspace,
             // and a Replace import gives the same id a new model (path, environment).
@@ -225,17 +232,21 @@ struct RuntimeEligibilityPreviewRequest {
             workspace.map { String(describing: $0.persistentModelID) } ?? "none",
             requestedRuntime.rawValue,
             String(runtimeExplicitlySelected),
+            defaultModel,
+            String(defaultBudget),
+            reasoningEffort ?? "",
             selectedPolicyLevelRaw,
             String(skipPermissions),
             acceptedTurn,
             providerSettings.signature
         ]
             + attachedFiles
-            + selectedSkills.map(\.id.uuidString).sorted()
-            + readiness).joined(separator: "|")
+            + selectedSkills.map(\.id.uuidString).sorted()).joined(separator: "|")
+        let signature = ([submissionSignature] + readiness).joined(separator: "|")
 
         return RuntimeEligibilityPreviewRequest(
             signature: signature,
+            submissionSignature: submissionSignature,
             hasAcceptedTurn: !acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             taskID: draftTask?.id,
             acceptedTurnCharacterCount: acceptedTurn.count,
@@ -269,6 +280,7 @@ struct RuntimeEligibilityPreviewRequest {
                 ?? workspace?.id
                 ?? Self.unanchoredComposerPreviewID
             previewTask.runtimeExplicitlySelected = runtimeExplicitlySelected
+            previewTask.reasoningEffort = reasoningEffort
             // Mirror the policy selection `quickRun` records, otherwise a workspace-level
             // default would outrank the composer's current pick (TaskPolicyStore.resolve
             // consults task events before workspace and global defaults).
@@ -378,17 +390,29 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
 
     let request: RuntimeEligibilityPreviewRequest
     @Binding var state: RuntimeEligibilityPreviewState
+    let submissionIntent: ComposerSubmissionIntent?
+    let onSubmissionEvaluation: (RuntimeEligibilityPreviewRequest, Bool) -> Void
+
+    private struct WorkID: Equatable {
+        let signature: String
+        let submitRequested: Bool
+    }
 
     func body(content: Content) -> some View {
-        content.task(id: request.signature) {
+        content.task(id: WorkID(signature: request.signature,
+                               submitRequested: submissionIntent?.matches(request.submissionSignature) == true)) {
+            submissionIntent?.invalidate(unless: request.submissionSignature)
             guard request.hasAcceptedTurn else {
+                submissionIntent?.cancel()
                 state = .idle
                 return
             }
             // Nothing is written until the debounce elapses: a keystroke that
             // is followed by another one within 350 ms costs no state change and
             // therefore no extra body pass of the 6,000-line composer view.
-            try? await Task.sleep(for: Self.debounce)
+            if submissionIntent?.matches(request.submissionSignature) != true {
+                try? await Task.sleep(for: Self.debounce)
+            }
             guard !Task.isCancelled else { return }
             let previous = state.lastResolvedSnapshot
             state = .pending(signature: request.signature, previous: previous)
@@ -399,8 +423,13 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
             // the main actor; both passes below then resolve against them
             // without touching the disk.
             let inputsStartedAt = DispatchTime.now().uptimeNanoseconds
-            guard let inputs = await CapabilityResolutionInputs.loadDetached(),
-                  !Task.isCancelled else { return }
+            let loadedInputs = await CapabilityResolutionInputs.loadDetached()
+            guard !Task.isCancelled else { return }
+            guard let inputs = loadedInputs else {
+                state = .evaluated(signature: request.signature, snapshot: nil)
+                onSubmissionEvaluation(request, false)
+                return
+            }
             let inputsMilliseconds = PerformanceTelemetry.elapsedMilliseconds(since: inputsStartedAt)
 
             // Score the selected runtime alone first. Send only consults that
@@ -423,6 +452,12 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
                 snapshot: selected,
                 inputsMilliseconds: inputsMilliseconds
             )
+
+            if submissionIntent?.matches(request.submissionSignature) == true {
+                state = .evaluated(signature: request.signature, snapshot: selected)
+                onSubmissionEvaluation(request, selectionIsEligible)
+                return
+            }
 
             if let selected, selectionIsEligible {
                 state = .evaluated(
@@ -461,6 +496,8 @@ private struct RuntimeEligibilityPreviewModifier: ViewModifier {
             )
             state = .evaluated(signature: request.signature, snapshot: full)
         }
+        .onChange(of: request.submissionSignature) { submissionIntent?.invalidate(unless: request.submissionSignature) }
+        .onDisappear { submissionIntent?.cancel() }
     }
 
     private func logEvaluation(
@@ -511,9 +548,12 @@ final class MainActorSliceMeter {
 extension View {
     func runtimeEligibilityPreview(
         _ request: RuntimeEligibilityPreviewRequest,
-        state: Binding<RuntimeEligibilityPreviewState>
+        state: Binding<RuntimeEligibilityPreviewState>,
+        submissionIntent: ComposerSubmissionIntent? = nil,
+        onSubmissionEvaluation: @escaping (RuntimeEligibilityPreviewRequest, Bool) -> Void = { _, _ in }
     ) -> some View {
-        modifier(RuntimeEligibilityPreviewModifier(request: request, state: state))
+        modifier(RuntimeEligibilityPreviewModifier(request: request, state: state,
+                                                  submissionIntent: submissionIntent, onSubmissionEvaluation: onSubmissionEvaluation))
     }
 }
 
@@ -549,6 +589,7 @@ extension ChatPanelView {
             skipPermissions: composerSkipPermissions,
             defaultModel: defaultModel,
             defaultBudget: defaultBudget,
+            reasoningEffort: composerReasoningEffort,
             providerSettings: providerSettingsSnapshot,
             readinessStates: runtimeReadinessStates
         )

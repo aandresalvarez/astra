@@ -9,10 +9,13 @@ enum RuntimeTurnSettlementRecoveryService {
     /// cannot prove whether the process used it; preserve authority and require
     /// reconciliation rather than automatically executing external work again.
     static func prepare(modelContext: ModelContext, autoExport: Bool = true) {
+        let ownership = RuntimeStartupRecoveryOwnership(context: modelContext)
+        defer { withExtendedLifetime(ownership) {} }
         let type = TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue
         guard let events = try? modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.type == type })) else { return }
+        var changed = false
         for event in events {
-            guard let task = event.task, let run = event.run, !task.isDone,
+            guard let task = event.task, let run = event.run, ownership.claim(task.id), !task.isDone,
                   task.status != .cancelled,
                   RuntimeTurnSettlementService.verdict(for: run, task: task) == nil,
                   !RuntimeTurnSettlementService.hasUnsettledResult(task: task, run: run),
@@ -21,7 +24,9 @@ enum RuntimeTurnSettlementRecoveryService {
                   run.status == .running || !LivePermissionApprovalRecovery.hasDeliveryReceipt(requestID: commit.requestID, task: task, run: run)
             else { continue }
             RuntimeTurnSettlementService.pauseForReconciliation(task: task, run: run, modelContext: modelContext)
+            changed = true
         }
+        guard changed else { return }
         if autoExport {
             for workspace in Dictionary(events.compactMap { $0.task?.workspace }.map { ($0.id, $0) },
                                         uniquingKeysWith: { first, _ in first }).values {
@@ -48,10 +53,29 @@ enum RuntimeTurnSettlementRecoveryService {
                     guard await RuntimeTurnSettlementService.settle(checkpoint: checkpoint, task: task,
                         run: run, modelContext: modelContext, autoExport: autoExport) else { continue }
                 } catch {
+                    let ownership = RuntimeStartupRecoveryOwnership(context: modelContext)
+                    guard ownership.claim(task.id) else { continue }
+                    defer { withExtendedLifetime(ownership) {} }
+                    let snapshot = ExecutionMutationSnapshot(task)
                     RuntimeTurnSettlementService.reportPersistenceFailure(task: task, run: run, modelContext: modelContext)
+                    do {
+                        if autoExport {
+                            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: task.workspace,
+                                modelContext: modelContext, taskID: task.id)
+                        } else {
+                            try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
+                                modelContext: modelContext, taskID: task.id)
+                        }
+                    } catch {
+                        snapshot.restore(task, in: modelContext)
+                        AppLogger.error("Checkpoint recovery failed to save its error outcome; existing state was preserved.", category: "Persistence")
+                    }
                     continue
                 }
             }
+            let ownership = RuntimeStartupRecoveryOwnership(context: modelContext)
+            guard ownership.claim(task.id) else { continue }
+            defer { withExtendedLifetime(ownership) {} }
             if RuntimeSettlementProgress.pruneSettledCaptures(task: task, modelContext: modelContext) {
                 do {
                     if autoExport {

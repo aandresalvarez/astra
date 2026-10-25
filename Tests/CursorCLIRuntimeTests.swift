@@ -309,6 +309,10 @@ struct CursorCLIRuntimeTests {
             )
         )
         #expect(render.diagnostics.contains { $0.id == "cursor_cli.ask-checkpoints-brokered" })
+        #expect(render.diagnostics.contains {
+            $0.id == "cursor_cli.ask-checkpoints-brokered"
+                && $0.message.contains("prove the previous execution and its tools stopped")
+        })
     }
 
     @Test("Cursor utility text extraction does not double the result event echo")

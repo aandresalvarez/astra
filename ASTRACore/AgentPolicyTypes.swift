@@ -1105,17 +1105,23 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         public var effectiveEnforcement: String
         public var effectiveReadScope: String
         public var resolutionReason: String?
+        /// False when ASTRA wraps this runtime in a Seatbelt profile that
+        /// denies network, so nothing the provider's shell runs can connect.
+        /// Optional: manifests recorded before it existed decode as unknown.
+        public var shellNetworkAllowed: Bool?
 
         public init(
             storedEnforcement: String,
             effectiveEnforcement: String,
             effectiveReadScope: String,
-            resolutionReason: String? = nil
+            resolutionReason: String? = nil,
+            shellNetworkAllowed: Bool? = nil
         ) {
             self.storedEnforcement = storedEnforcement
             self.effectiveEnforcement = effectiveEnforcement
             self.effectiveReadScope = effectiveReadScope
             self.resolutionReason = resolutionReason
+            self.shellNetworkAllowed = shellNetworkAllowed
         }
     }
 

@@ -486,10 +486,13 @@ public enum TaskContextStateManager {
 
     /// The model-reading half of `refresh`. See `refreshLoadingOffMainActor`.
     @MainActor @discardableResult
-    static func applyRefresh(existing: TaskContextState?, folder: String, task: AgentTask, followUpMessage: String) -> Bool {
+    static func applyRefresh(
+        existing: TaskContextState?, folder: String, task: AgentTask, followUpMessage: String,
+        outputObservation: TaskOutputObservation? = nil
+    ) -> Bool {
         var state = existing ?? initialState(for: task)
         TaskObjectiveAssessmentEventStore.reconcileProjection(&state, task: task)
-        updateDerivedFields(&state, task: task, latestRun: latestRun(for: task))
+        updateDerivedFields(&state, task: task, latestRun: latestRun(for: task), outputObservation: outputObservation)
         reconcileObjectiveAssessmentProjection(&state, task: task, followUpMessage: followUpMessage)
         // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
         guard existing != state else { return false }
@@ -826,14 +829,15 @@ public enum TaskContextStateManager {
     }
 
     @MainActor
-    private static func updateDerivedFields(_ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?) {
+    private static func updateDerivedFields(
+        _ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?,
+        outputObservation: TaskOutputObservation? = nil
+    ) {
         let planState = TaskPlanReconstructionSeam.required.reconstruct(for: task)
-        // Enumerates the task folder and resolves every file in it, here at
-        // the moment the result is used. Hoisting this off the actor was tried
-        // and reverted: validating the hoisted result costs a stat per
-        // traversed directory on the actor, which is the same freeze. See
-        // `refreshLoadingOffMainActor`.
-        let discoveredTaskOutputFiles = TaskOutputDiscovery.files(for: task)
+        // Every filesystem question below goes through here. See
+        // `TaskOutputObservation` for when it is answered off the actor.
+        let outputs = TaskOutputPathResolver(task: task, observation: outputObservation)
+        let discoveredTaskOutputFiles = outputs.discoveredFiles
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
             firstConversationRequest(for: task),
@@ -878,20 +882,15 @@ public enum TaskContextStateManager {
         let eventBlockerMessages = eventBlockers.map { boundedInline($0.payload, maxCharacters: 220) }
         state.blockers = dedupeKeepingOrder(planBlockers + eventBlockerMessages, limit: maxListItems)
 
-        // One scope for the whole pass. Every `isUserFacingOutputPath` below
-        // resolves symlinks on the path it is handed; resolving the two roots
-        // alongside them, once per call, is what turned a large task folder
-        // into an unrecoverable main-thread spin.
-        let visibility = TaskOutputVisibilityScope(access: TaskWorkspaceAccess(task: task))
         let changedFiles = task.runs
             .sorted { $0.startedAt < $1.startedAt }
             .flatMap(\.fileChanges)
             .map(\.path)
-            .filter { isUserFacingOutputPath($0, task: task, scope: visibility) }
+            .filter(outputs.isUserFacing)
         let discoveredChangedFiles = discoveredTaskOutputFiles.map(\.path)
         state.filesChanged = dedupeKeepingOrder(
             (state.filesChanged + changedFiles + discoveredChangedFiles)
-                .filter { isUserFacingOutputPath($0, task: task, scope: visibility) },
+                .filter(outputs.isUserFacing),
             limit: 50
         )
         state.openQuestions = dedupeKeepingOrder(state.openQuestions + recentQuestions(for: task), limit: 10)
@@ -908,8 +907,8 @@ public enum TaskContextStateManager {
         state.testCommand = normalizedTestCommand(task)
         state.decisionFacts = decisionFacts(for: state, task: task, planState: planState)
         state.blockerFacts = blockerFacts(for: task, planBlockers: planBlockers, eventBlockers: eventBlockers)
-        state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, scope: visibility)
-        state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, scope: visibility)
+        state.changedFiles = changedFileReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, outputs: outputs)
+        state.artifacts = artifactReferences(for: task, discoveredFiles: discoveredTaskOutputFiles, outputs: outputs)
         state.verification = verificationState(task: task, latestRun: latestRun, artifacts: state.artifacts)
         state.validationContract = validationContractState(task: task, planState: planState)
         state.latestHandoff = latestHandoffState(task: task)
@@ -1106,9 +1105,8 @@ public enum TaskContextStateManager {
         task: AgentTask,
         taskFolder: String
     ) -> TaskContextState.Turn {
-        let runBlockers = task.events
+        let runBlockers = TaskHistoryRead.events(for: task, ofTypes: ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"])
             .filter { $0.run?.id == run.id }
-            .filter { ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"].contains($0.type) }
             .map { boundedInline($0.payload, maxCharacters: 220) }
         let discoveredRunFiles = TaskOutputDiscovery.filesChanged(
             during: run,
@@ -1210,8 +1208,7 @@ public enum TaskContextStateManager {
     ) -> [TaskEvent] {
         guard mode == .blocked else { return [] }
         let blockingTypes = ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"]
-        let events = task.events
-            .filter { blockingTypes.contains($0.type) }
+        let events = TaskHistoryRead.events(for: task, ofTypes: Set(blockingTypes))
             .sorted { $0.timestamp > $1.timestamp }
         guard let latestRun else {
             return Array(events.prefix(6))
@@ -1224,7 +1221,7 @@ public enum TaskContextStateManager {
     private static func changedFileReferences(
         for task: AgentTask,
         discoveredFiles: [TaskOutputDiscoveredFile],
-        scope: TaskOutputVisibilityScope
+        outputs: TaskOutputPathResolver
     ) -> [TaskContextState.ChangedFile] {
         let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
         var output: [TaskContextState.ChangedFile] = []
@@ -1232,7 +1229,7 @@ public enum TaskContextStateManager {
 
         for run in sortedRuns {
             for change in run.fileChanges {
-                guard isUserFacingOutputPath(change.path, task: task, scope: scope) else { continue }
+                guard outputs.isUserFacing(change.path) else { continue }
                 let pointers = [
                     sourcePointer(kind: "run", id: run.id.uuidString, summary: "Provider run"),
                     sourcePointer(kind: "file_change", id: change.id.uuidString, path: change.path, summary: "\(change.changeType) file change")
@@ -1274,14 +1271,14 @@ public enum TaskContextStateManager {
     private static func artifactReferences(
         for task: AgentTask,
         discoveredFiles: [TaskOutputDiscoveredFile],
-        scope: TaskOutputVisibilityScope
+        outputs: TaskOutputPathResolver
     ) -> [TaskContextState.ArtifactReference] {
         var references: [TaskContextState.ArtifactReference] = []
         var indexByPath: [String: Int] = [:]
 
         for artifact in task.artifacts.sorted(by: { $0.createdAt < $1.createdAt }) {
-            let path = TaskArtifactPathNormalizer.normalizedPath(artifact.path, task: task)
-            guard isUserFacingOutputPath(path, task: task, scope: scope) else { continue }
+            let path = outputs.normalizedPath(artifact.path)
+            guard outputs.isUserFacingNormalized(path) else { continue }
             let key = artifactReferenceKey(path)
             guard !key.isEmpty else { continue }
 
@@ -1295,7 +1292,7 @@ public enum TaskContextStateManager {
                 type: ArtifactKind(rawValue: artifact.type).rawValue,
                 path: path,
                 version: artifact.version,
-                isStale: !FileManager.default.fileExists(atPath: path),
+                isStale: !outputs.fileExists(normalizedPath: path),
                 sourcePointers: [pointer]
             )
 
@@ -1400,13 +1397,8 @@ public enum TaskContextStateManager {
             )
         }
 
-        let contractEvents = task.events.filter { event in
-            guard [TaskValidationEventTypes.contractCreated,
-                   TaskValidationEventTypes.contractUpdated,
-                   TaskValidationEventTypes.contractPassed,
-                   TaskValidationEventTypes.contractFailed,
-                   TaskValidationEventTypes.contractOverridden].contains(event.type),
-                  let payload = decodeContractPayload(event.payload) else {
+        let contractEvents = TaskHistoryRead.events(for: task, ofTypes: validationContractEventTypes).filter { event in
+            guard let payload = decodeContractPayload(event.payload) else {
                 return false
             }
             return payload.planID == plan.planID
@@ -1464,13 +1456,8 @@ public enum TaskContextStateManager {
     private static func validationContractStateFromEvents(
         task: AgentTask
     ) -> TaskContextState.ValidationContractSummary? {
-        let contractEvents = task.events.compactMap { event -> (event: TaskEvent, payload: TaskValidationContractEventPayload)? in
-            guard [TaskValidationEventTypes.contractCreated,
-                   TaskValidationEventTypes.contractUpdated,
-                   TaskValidationEventTypes.contractPassed,
-                   TaskValidationEventTypes.contractFailed,
-                   TaskValidationEventTypes.contractOverridden].contains(event.type),
-                  let payload = decodeContractPayload(event.payload) else {
+        let contractEvents = TaskHistoryRead.events(for: task, ofTypes: validationContractEventTypes).compactMap { event -> (event: TaskEvent, payload: TaskValidationContractEventPayload)? in
+            guard let payload = decodeContractPayload(event.payload) else {
                 return nil
             }
             return (event, payload)
@@ -1543,8 +1530,7 @@ public enum TaskContextStateManager {
             TaskValidationEventTypes.assertionSkipped,
             TaskValidationEventTypes.assertionReviewed
         ]
-        for event in task.events
-            .filter({ validationEventTypes.contains($0.type) })
+        for event in TaskHistoryRead.events(for: task, ofTypes: Set(validationEventTypes))
             .sorted(by: { $0.timestamp > $1.timestamp }) {
             guard let payload = decodeAssertionPayload(event.payload),
                   payload.planID == planID,
@@ -1558,8 +1544,7 @@ public enum TaskContextStateManager {
 
     @MainActor
     private static func latestHandoffState(task: AgentTask) -> TaskContextState.HandoffSummary? {
-        guard let event = task.events
-            .filter({ $0.type == TaskHandoffEventTypes.created || $0.type == TaskHandoffEventTypes.updated })
+        guard let event = TaskHistoryRead.events(for: task, ofTypes: [TaskHandoffEventTypes.created, TaskHandoffEventTypes.updated])
             .sorted(by: { $0.timestamp > $1.timestamp })
             .first,
             let payload = TaskWorkerHandoffCodec.decode(event.payload) else {
@@ -1605,11 +1590,17 @@ public enum TaskContextStateManager {
     ) -> TaskContextState.Verification {
         let command = normalizedTestCommand(task)
         let artifactStatus = artifactVerificationStatus(for: artifacts)
-        let latestValidation = task.events
+        let latestValidation = TaskHistoryRead.events(for: task, ofTypes: [
+            TaskValidationEventTypes.contractPassed, TaskValidationEventTypes.contractFailed,
+            TaskValidationEventTypes.contractOverridden, "task.completed", "error"
+        ])
             .filter(isValidationEvent)
             .sorted { $0.timestamp > $1.timestamp }
             .first
-        let latestDeliverableVerification = task.events
+        let latestDeliverableVerification = TaskHistoryRead.events(for: task, ofTypes: [
+            TaskDeliverableVerificationEventTypes.passed, TaskDeliverableVerificationEventTypes.reviewNeeded,
+            TaskDeliverableVerificationEventTypes.failed
+        ])
             .filter(isDeliverableVerificationEvent)
             .sorted { $0.timestamp > $1.timestamp }
             .first
@@ -1777,8 +1768,7 @@ public enum TaskContextStateManager {
 
     @MainActor
     private static func recentQuestions(for task: AgentTask) -> [String] {
-        task.events
-            .filter { $0.type == TaskPlanConversationEventTypes.assistantMessage || $0.type == "agent.response" }
+        TaskHistoryRead.events(for: task, ofTypes: [TaskPlanConversationEventTypes.assistantMessage, "agent.response"])
             .sorted { $0.timestamp > $1.timestamp }
             .prefix(6)
             .flatMap { questionSentences(in: $0.payload) }
@@ -1791,8 +1781,7 @@ public enum TaskContextStateManager {
     @MainActor
     private static func standingUserInstructions(for task: AgentTask) -> [TaskContextState.ContextFact] {
         let pendingTurnMessageIDs = TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
-        let userMessages = task.events
-            .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
+        let userMessages = TaskHistoryRead.events(for: task, ofTypes: ["user.message", TaskPlanConversationEventTypes.userMessage])
             .filter { !pendingTurnMessageIDs.contains($0.id) }
             .sorted { $0.timestamp < $1.timestamp }
         guard userMessages.count > 1 else { return [] }
@@ -1986,6 +1975,12 @@ public enum TaskContextStateManager {
         let command = task.testCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         return command.isEmpty ? nil : command
     }
+
+    private static let validationContractEventTypes: Set<String> = [
+        TaskValidationEventTypes.contractCreated, TaskValidationEventTypes.contractUpdated,
+        TaskValidationEventTypes.contractPassed, TaskValidationEventTypes.contractFailed,
+        TaskValidationEventTypes.contractOverridden
+    ]
 
     private static func isValidationEvent(_ event: TaskEvent) -> Bool {
         if event.type == TaskValidationEventTypes.contractPassed ||

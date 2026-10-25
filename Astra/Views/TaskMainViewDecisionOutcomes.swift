@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import SwiftData
 import ASTRAModels
 
 /// Decision-dock inputs that are answered from the task's event history.
@@ -55,35 +56,60 @@ extension TaskMainView {
     /// a single typed fetch that faults only mutation rows.
     func recomputeDecisionOutcomes() {
         let snapshot = threadViewModel.snapshot
-        var outcomes = TaskDecisionOutcomeCache()
-        if let latestRun = snapshot?.latestRun,
-           (try? TaskDeliverableExpectation.followsUpDeliveredRequest(
-            taskID: task.id,
-            runID: latestRun.id,
-            startedAt: latestRun.startedAt,
-            in: modelContext
-           )) == true {
-            outcomes.deliveredRequestFollowUpRunID = latestRun.id
-        }
-        if let latestRunID = snapshot?.latestRun?.id {
-            let events = (snapshot?.sortedEvents ?? []).map {
+        decisionOutcomeCache = TaskDecisionOutcomeResolver.outcomes(
+            task: task,
+            latestRun: snapshot?.latestRun.map { .init(id: $0.id, startedAt: $0.startedAt) },
+            windowEvents: (snapshot?.sortedEvents ?? []).map {
                 TaskOutcomeEventRecord(id: $0.id, runID: $0.runID, type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
-            }
+            },
+            decisionArtifactPaths: decisionArtifactPathsCache,
+            modelContext: modelContext
+        )
+    }
+}
+
+/// The decision dock's history-backed answers, as one function of the task,
+/// its latest run, the transcript window the view already holds, and the
+/// artifact paths it already cached. Kept apart from the view so
+/// `TaskMainActorScalingGateTests` can bound the complete read cost
+/// on disk-backed long histories.
+@MainActor
+enum TaskDecisionOutcomeResolver {
+    struct LatestRun: Equatable {
+        let id: UUID
+        let startedAt: Date
+    }
+
+    static func outcomes(
+        task: AgentTask,
+        latestRun: LatestRun?,
+        windowEvents: [TaskOutcomeEventRecord],
+        decisionArtifactPaths: [String],
+        modelContext: ModelContext
+    ) -> TaskDecisionOutcomeCache {
+        var outcomes = TaskDecisionOutcomeCache()
+        if let latestRun {
+            let follows = (try? TaskDeliverableExpectation.followsUpDeliveredRequest(
+                taskID: task.id, runID: latestRun.id, startedAt: latestRun.startedAt, in: modelContext
+            )) == true
+            if follows { outcomes.deliveredRequestFollowUpRunID = latestRun.id }
+        }
+        if let latestRunID = latestRun?.id {
             outcomes.hasGitPublishRequest = TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
                 task: task,
                 targetRunID: latestRunID,
-                events: events
+                events: windowEvents
             ) != nil
         }
-        let pendingMutations = try? ConnectorMutationRequirementResolver.pendingMutations(taskID: task.id, in: modelContext)
+        let pendingMutations = ConnectorMutationRequirementResolver.pendingMutations(task: task)
         outcomes.pendingConnectorMutationTargets = ConnectorMutationCoordinator
-            .reviewable(pendingMutations ?? []).map(\.target)
+            .reviewable(pendingMutations).map(\.target)
         if task.status != .running, task.status != .queued,
            let reviewPath = GitHubReviewPublicationService.pendingCandidatePath(
-            task: task, filePaths: decisionArtifactPathsCache
+            task: task, filePaths: decisionArtifactPaths
            ) {
             outcomes.githubReviewPath = reviewPath
         }
-        decisionOutcomeCache = outcomes
+        return outcomes
     }
 }

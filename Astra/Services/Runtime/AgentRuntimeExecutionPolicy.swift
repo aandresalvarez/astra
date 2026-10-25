@@ -17,6 +17,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// value keeps runtime mounts and grants aligned with the acquired lease
     /// when an explicitly disabled sandbox upgrades a legacy shared claim to
     /// exclusive serialization.
+    var admittedResourceClaims: [TaskResourceLockClaim]?
     var workspaceAccessOverride: TaskExecutionResourceAccess?
     /// The persisted sandbox setting observed when the queue began resource
     /// admission. A run must use the same value at launch so a concurrent
@@ -37,6 +38,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// local: a re-run's monitor starts its turn counter at zero, so the task's
     /// turn ceiling is reduced by this much to keep it a ceiling on the whole run.
     var providerTurnsAlreadyUsed = 0
+    var recoveryAllowance: RuntimeRecoveryLimits?
     /// Provider tokens an earlier attempt of the same run already spent, taken off the
     /// token budget the re-run's monitor enforces for the same reason.
     var providerTokensAlreadyUsed = 0
@@ -49,6 +51,10 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// the prompt and the restricted-mode Write bootstrap read it so the
     /// provider is not told or authorized to rewrite a delivered file.
     var followsUpDeliveredRequest = false
+    /// The SSH route the launch resolved once (`RemoteWorkspaceSSHRoute`).
+    /// Process local: the prompt, the broker environment, and the run
+    /// resource manifest all read it from here instead of deciding again.
+    var remoteSSHRoute: RemoteWorkspaceSSHRoute?
 
     static let `default` = AgentRuntimeExecutionPolicy()
 
@@ -96,8 +102,10 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         )
         // The adapters read it again at the real launch to withhold the
         // Write bootstrap; dropping it here re-granted Write.
+        rendered.admittedResourceClaims = admittedResourceClaims
         rendered.copilotCapabilityResolution = copilotCapabilityResolution
         rendered.followsUpDeliveredRequest = followsUpDeliveredRequest
+        rendered.remoteSSHRoute = remoteSSHRoute
         return rendered
     }
 
@@ -113,6 +121,12 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         return copy
     }
 
+    func withRemoteSSHRoute(_ route: RemoteWorkspaceSSHRoute?) -> AgentRuntimeExecutionPolicy {
+        var copy = self
+        copy.remoteSSHRoute = route
+        return copy
+    }
+
     func withTurnIntentSnapshot(_ snapshot: TaskTurnIntentSnapshot?) -> AgentRuntimeExecutionPolicy {
         var copy = self
         copy.turnIntentSnapshot = snapshot
@@ -121,9 +135,11 @@ struct AgentRuntimeExecutionPolicy: Equatable {
 
     func withResourceAdmission(
         workspaceAccess: TaskExecutionResourceAccess?,
-        sandboxEnforcement: ExecutionSandboxEnforcement?
+        sandboxEnforcement: ExecutionSandboxEnforcement?,
+        claims: [TaskResourceLockClaim]? = nil
     ) -> AgentRuntimeExecutionPolicy {
         var copy = self
+        copy.admittedResourceClaims = claims
         copy.workspaceAccessOverride = workspaceAccess
         copy.sandboxEnforcementSnapshot = sandboxEnforcement
         return copy
@@ -134,7 +150,8 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     ) -> AgentRuntimeExecutionPolicy {
         withResourceAdmission(
             workspaceAccess: source.workspaceAccessOverride,
-            sandboxEnforcement: source.sandboxEnforcementSnapshot
+            sandboxEnforcement: source.sandboxEnforcementSnapshot,
+            claims: source.admittedResourceClaims
         )
     }
 

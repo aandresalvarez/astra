@@ -16,6 +16,7 @@ enum TaskSuccessfulCompletionService {
             await GitService.shared.getRemoteOriginURL(at: path)
         }
     ) async -> Bool {
+        guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return false }
         do {
             if try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: task, run: run, modelContext: modelContext) {
                 return false
@@ -27,6 +28,7 @@ enum TaskSuccessfulCompletionService {
             modelContext: modelContext,
             originURL: reviewOriginURL
         )
+        guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return false }
         if ExternalActionPolicy.asksUser(for: .gitPullRequestPublication, level: permissionPolicy.agentPolicyLevel) {
             TaskRuntimeOutcomeTransition.queueGitHubPullRequestIfNeeded(
                 task: task,

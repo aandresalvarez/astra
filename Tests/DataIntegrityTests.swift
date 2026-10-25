@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftData
 @testable import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
@@ -123,19 +124,26 @@ struct CredentialKeyCaseTests {
         #expect(connector.credentialValues == [""])
     }
 
+    @MainActor
     @Test("Failed Keychain migration preserves the legacy plaintext value")
-    func failedMigrationPreservesLegacyValue() {
+    func failedMigrationPreservesLegacyValue() throws {
+        let container = try ModelContainer(for: ASTRASchema.current, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
         let connector = Connector(name: "Test")
         connector.credentialKeys = ["API_TOKEN"]
         connector.credentialValues = ["legacy-secret"]
-
-        // No temp-keychain override is installed, so the real dedicated-keychain
-        // path is blocked in this test process — deterministically simulating a
-        // Keychain write failure during migration.
-        connector.migrateToKeychain()
-
+        context.insert(connector)
+        try context.save()
+        // The unscoped test vault is deliberately blocked. The actual durable
+        // service must retain both the original row and its migration debt.
+        #expect(throws: ConnectorCredentialGenerationTransaction.Failure.self) {
+            _ = try ConnectorCredentialMigration.migrate(connector, mirroredBy: [], modelContext: context)
+        }
         #expect(connector.credentialValues == ["legacy-secret"])
+        let saved = try #require(try ModelContext(container).fetch(FetchDescriptor<Connector>()).first)
+        #expect(saved.credentialValues == ["legacy-secret"])
     }
+
 }
 
 // MARK: - Phase 4B: AgentTask default status

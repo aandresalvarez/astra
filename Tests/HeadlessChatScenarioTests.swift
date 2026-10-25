@@ -3,6 +3,7 @@ import SwiftData
 import Testing
 import ASTRAModels
 @testable import ASTRA
+@testable import ASTRAPersistence
 import ASTRACore
 
 @Suite("Headless Chat Scenarios", .serialized)
@@ -89,13 +90,17 @@ final class HeadlessChatHarness {
     let container: ModelContainer
     let context: ModelContext
 
-    init() throws {
+    /// `persistentStore` backs the container with a file under `rootURL`, for
+    /// measurements that must pay real SQLite saves and faults.
+    init(persistentStore: Bool = false) throws {
         rootURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-headless-chat-\(UUID().uuidString)", isDirectory: true)
         workspaceURL = rootURL.appendingPathComponent("workspace", isDirectory: true)
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
 
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let config = persistentStore
+            ? ModelConfiguration(url: rootURL.appendingPathComponent("headless.store"))
+            : ModelConfiguration(isStoredInMemoryOnly: true)
         container = try ModelContainer(
             for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,
@@ -104,8 +109,15 @@ final class HeadlessChatHarness {
         context = container.mainContext
     }
 
-    func cleanup() {
-        try? FileManager.default.removeItem(at: rootURL)
+    private var cleanupTask: Task<Void, Never>?
+
+    @discardableResult
+    func cleanup(reader: WorkspaceSavedAutoExport = .shared) -> Task<Void, Never> {
+        if let cleanupTask { return cleanupTask }
+        RuntimeProviderResourceRegistry.unregister(rootURL.appendingPathComponent("runtime-owners"))
+        let task = TestWorkspaceStoreCleanup.schedule(context: context, roots: [rootURL], reader: reader)
+        cleanupTask = task
+        return task
     }
 
     func writeExecutable(named name: String, script: String) throws -> String {
@@ -281,10 +293,17 @@ final class HeadlessChatHarness {
         executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
+        guard case .success(let submitted) = ExecutionRequestSubmissionService.submitFollowUp(
+            message: message, for: task, into: context),
+            let request = try? TaskTurnRequestRepository.request(id: submitted.requestID, in: context) else {
+            Issue.record("Could not submit the user follow-up"); return []
+        }
+        _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
         DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: context)
         await worker.continueSession(
             task: task,
             message: message,
+            existingMessageEventID: submitted.eventID, turnRequestID: submitted.requestID,
             modelContext: context,
             executionPolicy: executionPolicy
         ) { event in
@@ -302,6 +321,16 @@ final class HeadlessChatHarness {
         executionRequestID: UUID? = nil
     ) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
+        var executionRequestID = executionRequestID
+        if executionRequestID == nil {
+            guard case .success(let submitted) = ExecutionRequestSubmissionService.submitPlan(plan: plan,
+                mode: mode, mutation: .existingTask, for: task, into: context),
+                let request = try? TaskTurnRequestRepository.request(id: submitted.requestID, in: context) else {
+                Issue.record("Could not submit the approved plan"); return []
+            }
+            _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
+            executionRequestID = submitted.requestID
+        }
         DirectWorkerLaunchAdmission.admitApprovedPlanRun(task, modelContext: context)
         await worker.executeApprovedPlan(
             task: task,

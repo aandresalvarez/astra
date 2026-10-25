@@ -52,27 +52,27 @@ enum RuntimeTurnSettlementService {
     }
 
     static func checkpoint(for run: TaskRun, task: AgentTask) throws -> Checkpoint? {
-        guard let event = task.events.first(where: {
-            !$0.isDeleted && $0.run?.id == run.id && $0.type == TaskEventTypes.System.runtimeResultCaptured.rawValue
-        }) else { return nil }
+        guard let event = TaskEventTypeLookup.first(
+            ofType: TaskEventTypes.System.runtimeResultCaptured.rawValue, task: task, run: run
+        ) else { return nil }
         let value = try JSONDecoder().decode(Checkpoint.self, from: Data(event.payload.utf8))
         guard value.version == 1 else { throw Failure.incompatibleCheckpoint }
         return value
     }
 
     static func verdict(for run: TaskRun, task: AgentTask) -> Verdict? {
-        task.events.first {
-            !$0.isDeleted && $0.run?.id == run.id && $0.type == TaskEventTypes.System.runtimeTurnSettled.rawValue
-        }.flatMap { event in
+        TaskEventTypeLookup.first(
+            ofType: TaskEventTypes.System.runtimeTurnSettled.rawValue, task: task, run: run
+        ).flatMap { event in
             guard let value = try? JSONDecoder().decode(Verdict.self, from: Data(event.payload.utf8)), value.version == 1 else { return nil }
             return value
         }
     }
 
     static func hasUnsettledResult(task: AgentTask, run: TaskRun) -> Bool {
-        task.events.contains {
-            !$0.isDeleted && $0.run?.id == run.id && $0.type == TaskEventTypes.System.runtimeResultCaptured.rawValue
-        } && verdict(for: run, task: task) == nil
+        TaskEventTypeLookup.first(
+            ofType: TaskEventTypes.System.runtimeResultCaptured.rawValue, task: task, run: run
+        ) != nil && verdict(for: run, task: task) == nil
     }
 
     /// Whether a run's provider finished its work. Auto allows a connector the
@@ -111,10 +111,48 @@ enum RuntimeTurnSettlementService {
     /// The only normal/restart settlement pipeline. Streaming transport has
     /// already ended; completion effects require its committed return value.
     static func settle(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
+                       executionOwner: RuntimeExecutionOwner? = nil,
                        permissionPromotionPersistence: (() throws -> Void)? = nil,
                        verdictPersistence: (() throws -> Void)? = nil,
                        sessionProjection: (() -> Bool)? = nil, autoExport: Bool = true) async -> Bool {
         if verdict(for: run, task: task) != nil { return true }
+        let admission = executionOwner.map(RuntimeExecutionOwner.SettlementAdmission.acquired)
+            ?? RuntimeExecutionOwner.acquireSettlement(task: task, run: run, context: modelContext)
+        if admission.mustDefer { return false }
+        defer { withExtendedLifetime(admission) {} }
+        let owner = admission.owner
+        defer { if executionOwner == nil { owner?.finish() } }
+        guard let owner else {
+            pauseForReconciliation(task: task, run: run, modelContext: modelContext,
+                reason: "runtime_settlement_uncertain",
+                message: "ASTRA could not verify exclusive ownership of validation. Existing work was preserved and recovery is blocked.")
+            return commit(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext,
+                persist: verdictPersistence, autoExport: autoExport)
+        }
+        let mayLaunchValidation = owner.record.canReplace
+        do { try owner.beginSettlement() } catch {
+            reportPersistenceFailure(task: task, run: run, modelContext: modelContext)
+            return false
+        }
+        let scope = RuntimeSettlementExecutionScope(mayLaunch: mayLaunchValidation)
+        owner.settlementScope = scope
+        scope.executionOwner = owner
+        defer { owner.settlementScope = nil }
+        if owner.record.cancellationRequested == true { scope.cancel() }
+        let result = await RuntimeSettlementExecutionScope.$current.withValue(scope) {
+            await settleOwned(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext,
+                permissionPromotionPersistence: permissionPromotionPersistence, verdictPersistence: verdictPersistence,
+                sessionProjection: sessionProjection, autoExport: autoExport)
+        }
+        scope.seal()
+        do { try owner.completeSettlement(localWorkStopped: scope.localWorkStopped, toolsStopped: scope.toolsStopped) }
+        catch { return false }
+        return result
+    }
+
+    private static func settleOwned(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
+                       permissionPromotionPersistence: (() throws -> Void)?, verdictPersistence: (() throws -> Void)?,
+                       sessionProjection: (() -> Bool)?, autoExport: Bool) async -> Bool {
         do {
             if let id = checkpoint.requestID {
                 guard let owner = try TaskTurnRequestRepository.request(id: id, in: modelContext),
@@ -137,6 +175,7 @@ enum RuntimeTurnSettlementService {
                     autoExport: autoExport)
                 try await RuntimeTurnOutcomeService.apply(checkpoint: checkpoint, task: task, run: run,
                     modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence)
+                RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext)
                 await validatePlan(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext)
                 // Validation effects are durable before writing derived files.
                 // Projection I/O failures can retry without re-executing work.
@@ -157,6 +196,7 @@ enum RuntimeTurnSettlementService {
             guard await AgentRuntimeRunPersistence.finalizeAndPersist(task: task, run: run,
                 modelContext: modelContext, phase: checkpoint.phase, autoExport: autoExport,
                 persist: {
+                    RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext)
                     RuntimeSettlementProgress.stagePrepared(task: task, run: run, modelContext: modelContext)
                     do {
                         try save(task: task, modelContext: modelContext, operation: "runtime_outcome_prepared", persist: nil,
@@ -257,6 +297,7 @@ enum RuntimeTurnSettlementService {
     static func commit(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
                        persist: (() throws -> Void)? = nil, autoExport: Bool = true) -> Bool {
         if verdict(for: run, task: task) != nil { return true }
+        RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext)
         var transitionedRequest: TaskTurnRequest?
         var priorRequest: TaskTurnRequestSnapshot?
         do {

@@ -157,6 +157,48 @@ extension HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("137") })
     }
 
+    /// agy's own print timeout exits 0 with partial output. Before, that was a
+    /// completed turn: prod task 7900335C recorded twelve of them.
+    @Test("Antigravity cutting its own turn short is not recorded as completed")
+    func antigravityPrintTimeoutIsNotACompletedTurn() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let antigravityPath = try harness.writeExecutable(
+            named: "agy",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              printf '%s\\n' '1.0.3'
+              exit 0
+            fi
+            printf '%s\\n' 'Partial findings so far'
+            printf '%s\\n' '[agy] print timeout after 10m0s with turn in progress; returning partial output' >&2
+            printf '%s\\n' 'terminating 1 background task(s) on exit' >&2
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .antigravityCLI,
+            goal: "Task that outlives agy's own limit",
+            model: "Gemini 3.5 Flash"
+        )
+        let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == TaskRunStopReason.providerTurnTimeLimitReached.rawValue)
+        #expect(task.status == .failed)
+        #expect(!worker.isRunning)
+        #expect(task.events.contains {
+            $0.type == "error" && $0.payload.contains("print time limit")
+                && $0.payload.contains("terminated 1 background task(s)")
+        })
+    }
+
     /// Copilot emits a real `agent_message_chunk` before it hangs, so this is a
     /// provider that produced work and then stopped advancing — the semantic
     /// branch, not a bare idle timeout. It used to be reported as the latter

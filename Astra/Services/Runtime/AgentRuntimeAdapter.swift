@@ -123,6 +123,7 @@ protocol AgentRuntimeProcessLaunchPlanning {
 protocol AgentRuntimeProcessEventParsing {
     func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent]
     func blockingProcessPermissionMessage(line: String, parsesJSONLines: Bool) -> String?
+    func providerSelfStop(stderr: String) -> AgentRuntimeProviderSelfStop?
 }
 
 protocol AgentRuntimeWorkerEventRecording {
@@ -1287,7 +1288,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         // ${KEY} env indirection (the CLI expands from the task environment).
         var mcpServers = MCPRuntimeProjection.enabledServers(
             for: context.task.workspace,
-            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+            packages: CapabilityRuntimeResourceMatcher.packageDefinitions(for: context.task.workspace),
             approvalRecords: CapabilityApprovalStore().records()
         )
         if let workspaceServer = DockerWorkspaceMCPProjection.resolvedServer(
@@ -1306,7 +1307,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             contextText: context.contextText,
             capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
-            precomputedRuntimeRequirements: context.runtimeRequirements
+            precomputedRuntimeRequirements: context.runtimeRequirements,
+            sshRoute: context.executionPolicy.remoteSSHRoute
         )
         if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
             task: context.task,
@@ -1585,38 +1587,15 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty
             ? RuntimePathResolver.detectClaudePath()
             : configuredPath
-        var args = [
-            "-p",
-            prompt,
-            "--model",
-            AgentRuntimeProcessRunner.translatedModelForProvider(configuration.model)
-        ]
-        if toolMode == .readOnly {
-            args += [
-                "--allowedTools",
-                "Read,Glob,Grep",
-                "--disallowedTools",
-                "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
-            ]
+        let environment = ClaudeCodeUtilityLaunchPolicy.currentEnvironment()
+        if toolMode == .supervision,
+           let reason = ClaudeCodeUtilityLaunchPolicy.investigationUnavailableReason(for: id, environment: environment) {
+            return .init(exitCode: -1, output: "", error: reason)
         }
-        let plan = AgentRuntimeProcessLaunchPlan(
-            runtime: id,
-            executablePath: executable,
-            arguments: args,
-            currentDirectory: workspacePath,
-            environment: claudeUtilityEnvironment(),
-            browserShimDirectory: nil,
-            providerVersion: nil,
-            parsesJSONLines: false
-        )
-        return await AgentRuntimeProcessRunner().runUtilityProcess(
-            AgentUtilityLaunchPlan(
-                process: plan,
-                providerHomeDirectory: "",
-                permissionPolicy: .restricted,
-                timeoutSeconds: configuration.timeoutSeconds
-            )
-        )
+        let plan = ClaudeCodeUtilityLaunchPolicy.makePlan(prompt: prompt, workspacePath: workspacePath,
+            executable: executable, configuration: configuration, toolMode: toolMode,
+            environment: environment)
+        return await AgentRuntimeProcessRunner().runUtilityProcess(plan)
     }
 
     private func checkClaudeAuth(
@@ -1819,14 +1798,6 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func claudeUtilityEnvironment() -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-        for (key, value) in AgentRuntimeProcessRunner.claudeProviderEnvironment() {
-            env[key] = value
-        }
-        return env
-    }
 }
 
 struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
@@ -1957,7 +1928,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             capabilities: capabilities,
             workspaceAccess: context.launchResourcePlan?.workspaceAccess ?? .exclusive,
-            runtimeRequirements: context.runtimeRequirements
+            runtimeRequirements: context.runtimeRequirements,
+            sshRoute: context.executionPolicy.remoteSSHRoute
         )
         let hostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: mcpProjection.hostControlEnvironment)
         // The attached list above includes offered routes. Shell denial follows
@@ -2526,8 +2498,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         // here rather than in the readiness preflight — a preflight that
         // starts the provider is exactly what "Provider was not started"
         // promises it will not do. Skipped entirely once cached for this
-        // binary; the launch path only ever reads the cached verdict, since it
-        // runs on the main actor and must not shell out.
+        // binary. A launch after agy updated itself re-asks off the main actor
+        // (`warmStructuredOutputSupportBeforeLaunch`), before the command.
         AntigravityCLIRuntime.refreshStructuredOutputSupport(
             executablePath: executable,
             authMode: configuration.antigravityAuthMode,
@@ -2626,7 +2598,6 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             workspacePath: context.workspacePath,
             additionalPaths: additionalPaths,
             permissionPolicy: effectivePermissionPolicy,
-            timeoutSeconds: context.timeoutSeconds,
             taskEnvironment: taskEnv,
             providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
@@ -2762,8 +2733,9 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             runtime: id,
             identifier: modelSettingsURL.standardizedFileURL.path
         )
+        let sharedStateLease: RuntimeUtilitySharedStateLease
         do {
-            try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
+            sharedStateLease = try await RuntimeUtilitySharedStateLease.acquire(sharedStateKey)
         } catch is CancellationError {
             return AgentUtilityRunResult(
                 exitCode: -1,
@@ -2783,7 +2755,6 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             workspacePath: workspacePath,
             additionalPaths: [],
             permissionPolicy: .restricted,
-            timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
             providerHomeDirectory: providerHomeDirectory,
             permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
@@ -2815,7 +2786,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 timeoutSeconds: configuration.timeoutSeconds
             )
         )
-        await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
+        await sharedStateLease.release()
         return result
     }
 }

@@ -135,6 +135,21 @@ struct CapabilityPackageValidatorTests {
         }
     }
 
+    @Test("a setting name containing the setting-key delimiter is blocked")
+    func settingNameWithDelimiterIsBlocked() {
+        var package = makePackage(governance: .localDraft())
+        package.skills[0].environmentKeys = ["TOKEN#ALT"]
+        package.skills[0].environmentValues = ["value"]
+
+        let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains { $0.code == .invalidComponentIdentity && $0.message.contains("TOKEN#ALT") })
+        // An ordinary name is fine.
+        package.skills[0].environmentKeys = ["TOKEN_ALT"]
+        #expect(CapabilityPackageValidator.validate(package: package, checkPrerequisites: false).canInstall)
+    }
+
     @Test("unsafe local tool is blocked")
     func unsafeLocalToolIsBlocked() {
         var package = makePackage(governance: .localDraft())
@@ -444,7 +459,8 @@ struct CapabilityPackageValidatorTests {
         var package = makePackage(governance: .localDraft())
         package.prerequisites = [
             CLIPrerequisite(
-                binary: "astra-missing-binary-\(UUID().uuidString)",
+                // A known CLI (`HealthCheckPolicy.versionForms`), not installed here.
+                binary: "terraform",
                 displayName: "Missing CLI",
                 purpose: "Test warning",
                 installHint: "Install it."

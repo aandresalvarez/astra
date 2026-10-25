@@ -29,7 +29,12 @@ public enum RuntimeProgressSignals {
         // Copilot CLI: live stdout from a tool that is still running. This is
         // the most direct evidence of work there is.
         "tool.execution_partial_result",
-        "tool.execution_progress"
+        "tool.execution_progress",
+        // Codex CLI: a `file_change` item, the patch the model spent the
+        // preceding silence composing. Its success arrives as an empty tool
+        // result, which is diagnostic, so without this a run writing one large
+        // file after another never refreshed the clock (run 5642).
+        "codex.item.file_change"
     ]
 
     public static func isProgressBearingControl(_ type: String) -> Bool {

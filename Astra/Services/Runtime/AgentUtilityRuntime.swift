@@ -72,6 +72,7 @@ struct AgentUtilityRuntimeConfiguration: Codable, Equatable {
 enum AgentUtilityToolMode: Equatable {
     case none
     case readOnly
+    case supervision
 }
 
 struct AgentUtilityRunResult: Equatable {
@@ -116,7 +117,11 @@ enum AgentUtilityRuntimeRunner {
         configuration: AgentUtilityRuntimeConfiguration,
         toolMode: AgentUtilityToolMode = .none
     ) async -> AgentUtilityRunResult {
-        await AgentRuntimeAdapterRegistry
+        if toolMode == .supervision,
+           let reason = ClaudeCodeUtilityLaunchPolicy.investigationUnavailableReason(for: configuration.runtime) {
+            return .init(exitCode: -1, output: "", error: reason)
+        }
+        return await AgentRuntimeAdapterRegistry
             .adapter(for: configuration.runtime)
             .runUtilityPrompt(
                 prompt,

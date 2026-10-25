@@ -88,10 +88,10 @@ enum LivePermissionApprovalRecovery {
                                       modelContext: ModelContext) -> Bool {
         var staged = false
         for id in requestIDs {
-            guard let commitEvent = task.events.filter({
-                !$0.isDeleted && $0.run?.id == run.id
-                    && $0.type == TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue
-                    && (try? JSONDecoder().decode(Commit.self, from: Data($0.payload.utf8)))?.requestID == id
+            guard let commitEvent = TaskEventTypeLookup.events(
+                ofType: TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue, task: task, run: run
+            ).filter({
+                (try? JSONDecoder().decode(Commit.self, from: Data($0.payload.utf8)))?.requestID == id
             }).max(by: { $0.timestamp < $1.timestamp }),
                 !hasDeliveryReceipt(requestID: id, task: task, run: run, after: commitEvent.timestamp) else { continue }
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionApprovalDelivered,
@@ -102,9 +102,10 @@ enum LivePermissionApprovalRecovery {
     }
 
     static func hasDeliveryReceipt(requestID: String, task: AgentTask, run: TaskRun, after: Date = .distantPast) -> Bool {
-        task.events.contains {
-            guard !$0.isDeleted, $0.run?.id == run.id, $0.timestamp >= after,
-                  $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue,
+        TaskEventTypeLookup.events(
+            ofType: TaskEventTypes.Tool.permissionApprovalDelivered.rawValue, task: task, run: run
+        ).contains {
+            guard $0.timestamp >= after,
                   case .success(let receipt) = $0.decodePayload(as: DeliveryReceipt.self) else { return false }
             return receipt.version == 1 && receipt.evidence == "provider_turn_completed"
                 && receipt.approved && receipt.requestID == requestID
@@ -113,9 +114,11 @@ enum LivePermissionApprovalRecovery {
 
     static func unacknowledgedCommits(task: AgentTask, run: TaskRun, acknowledgedRequestIDs: Set<String>,
                                       modelContext: ModelContext) throws -> [Commit] {
-        try task.events.compactMap { event in
-            guard !event.isDeleted, event.run?.id == run.id,
-                  event.type == TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue else { return nil }
+        // Read at every settlement, where almost no turn has a live approval:
+        // only the run's commit rows, not every event of the task.
+        try TaskEventTypeLookup.events(
+            ofType: TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue, task: task, run: run
+        ).compactMap { event in
             let commit = try JSONDecoder().decode(Commit.self, from: Data(event.payload.utf8))
             guard TaskPermissionContinuation.runtime(forRunID: commit.binding.runID, task: task) == commit.runtime,
                   try TaskPermissionContinuation.isCurrent(commit.binding, task: task, modelContext: modelContext),
@@ -130,9 +133,9 @@ enum LivePermissionApprovalRecovery {
     /// silently losing its required continuation.
     static func recoverForSettlement(task: AgentTask, run: TaskRun, modelContext: ModelContext,
                                       acknowledgedRequestIDs: Set<String>, persist: @escaping () throws -> Void) throws -> Int {
-        let events = task.events.filter {
-            $0.type == TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue && $0.run?.id == run.id
-        }
+        let events = TaskEventTypeLookup.events(
+            ofType: TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue, task: task, run: run
+        )
         return try recover(events: events, modelContext: modelContext, autoExportWorkspaces: true,
             recoveringRestart: false, acknowledgedPermissionRequestIDs: acknowledgedRequestIDs, persist: persist)
     }
@@ -160,9 +163,9 @@ enum LivePermissionApprovalRecovery {
                                   acknowledgedPermissionRequestIDs: Set<String> = [],
                                   autoExportWorkspaces: Bool = true) -> Int {
         guard !task.isDeleted, !run.isDeleted, run.status != .running else { return 0 }
-        let events = task.events.filter {
-            $0.type == TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue && $0.run?.id == run.id
-        }
+        let events = TaskEventTypeLookup.events(
+            ofType: TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue, task: task, run: run
+        )
         return (try? recover(events: events, modelContext: modelContext,
             autoExportWorkspaces: autoExportWorkspaces, recoveringRestart: false,
             acknowledgedPermissionRequestIDs: acknowledgedPermissionRequestIDs)) ?? 0
@@ -174,9 +177,12 @@ enum LivePermissionApprovalRecovery {
                                 persist: (() throws -> Void)? = nil) throws -> Int {
         // Validate every commit before creating any newer turn request. Recovery
         // itself must not make another approval of the same binding look stale.
+        let ownership = recoveringRestart ? RuntimeStartupRecoveryOwnership(context: modelContext) : nil
+        defer { withExtendedLifetime(ownership) {} }
         var groups: [BindingKey: [PendingApproval]] = [:]
         for event in events.sorted(by: { $0.timestamp < $1.timestamp }) {
             guard !event.isDeleted, let task = event.task,
+                  ownership?.claim(task.id) ?? true,
                   !task.events.contains(where: { $0.run?.id == event.run?.id
                       && $0.type == TaskEventTypes.System.runtimeReconciliationRequired.rawValue }),
                   !(recoveringRestart && event.run.map { RuntimeTurnSettlementService.hasUnsettledResult(task: task, run: $0) } == true),

@@ -118,6 +118,11 @@ enum AgentRuntimeCapabilityLaunchAudit {
             fields["auth_result"] = "not_checked"
             fields["result"] = "executable_missing"
             level = .warning
+        case .notChecked(let detail):
+            fields["status_summary"] = detail
+            fields["auth_result"] = "not_checked"
+            fields["result"] = "check_not_read_only"
+            level = .warning
         }
         AppLogger.audit(
             .localToolTested,

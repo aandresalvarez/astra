@@ -231,6 +231,7 @@ struct WorkspaceRightRailView: View {
     var onNewSSHConnection: (() -> Void)?
     var onEditSSHConnection: ((SSHConnection) -> Void)?
     var sshReloadTrigger: Int = 0
+    var isConfigurationPresented: Bool = false
     var isCompact = false
     var onDismiss: (() -> Void)?
 
@@ -269,7 +270,9 @@ struct WorkspaceRightRailView: View {
     @State private var capabilityRailSnapshotCache = CapabilityRailSnapshotCache()
     @State private var capabilityError: String?
     @State private var folderRefusal: String?
-    @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
+    @State private var prerequisiteScan = PrerequisiteScanSnapshot()
+    private var capabilityPrerequisiteStatuses: [String: HealthStatus] { prerequisiteScan.statuses }
+    @StateObject private var repairs = PluginRepairCoordinator()
     @State private var showsTopRailScrollShadow = false
     @State private var showsBottomRailScrollShadow = false
     @State private var isReadyCapabilitiesExpanded = false
@@ -325,6 +328,10 @@ struct WorkspaceRightRailView: View {
     }
 
     var body: some View {
+        if workspace.isLive { liveBody } else { Color.clear }
+    }
+
+    private var liveBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
 
@@ -521,6 +528,7 @@ struct WorkspaceRightRailView: View {
             }
         }
         .tint(Stanford.lagunita)
+        .onDisappear { repairs.cancelAll() }
         .onAppear {
             loadSSHConnections()
             refreshApprovedCapabilities()
@@ -530,9 +538,12 @@ struct WorkspaceRightRailView: View {
             checkGitRepositories()
             checkDockerEnvironments()
         }
-        .task(id: signature) {
-            rebuildCapabilityRailSnapshot(for: signature)
+        .task(id: signature) { rebuildCapabilityRailSnapshot(for: signature) }
+        .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshCapabilityPrerequisiteStatuses() } // one checkout's repairs
+        .onChange(of: isConfigurationPresented) { _, presented in
+            if !presented { refreshCapabilityPrerequisiteStatuses() }
         }
+        .rescansPrerequisitesOnActivation { refreshCapabilityPrerequisiteStatuses() } // CLI state changed outside ASTRA
         .onChange(of: workspace.primaryPath) {
             loadSSHConnections()
             checkGitRepositories()
@@ -904,6 +915,7 @@ struct WorkspaceRightRailView: View {
 
     private func capabilityRow(_ item: RailCapabilityItem) -> some View {
         let isHighlighted = item.readiness.level == .needsAttention
+        let repairPhase = item.repair.flatMap { repairs.phase(for: $0, owner: item.id) }
 
         return CapabilityRailRow(
             icon: WorkspaceContextIconography.capabilityIcon(name: item.name, fallback: item.icon),
@@ -916,6 +928,12 @@ struct WorkspaceRightRailView: View {
             statusColor: capabilityBadgeColor(for: item),
             isEnabled: item.isEnabled,
             isCompact: isCompact,
+            repairVerb: item.repair?.verb,
+            repairGuidance: CapabilityRailRow.repairGuidance(for: item.repair),
+            repairStatus: item.repair.flatMap { repairs.statusText(for: $0, owner: item.id) },
+            repairIsChecking: repairPhase == .waiting,
+            onRepair: { if let repair = item.repair { repairs.start(repair, owner: item.id) { refreshCapabilityPrerequisiteStatuses() } } },
+            contextualRepair: contextualRepair(for: item),
             onOpen: { openCapabilityConfiguration(item) }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1111,6 +1129,15 @@ struct WorkspaceRightRailView: View {
         return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
     }
 
+    private func contextualRepair(for item: RailCapabilityItem) -> AnyView? {
+        guard case .package(let package) = item.source,
+              CapabilityRailRepair.needsRepositoryAccessRepair(for: package, statuses: capabilityPrerequisiteStatuses)
+        else { return nil }
+        return AnyView(GitHubRepositoryAccessRepairButton(workingDirectory: workspace.resolvedWorkingPath) {
+            refreshCapabilityPrerequisiteStatuses()
+        })
+    }
+
     private func railCapabilityPriority(_ item: RailCapabilityItem) -> Int {
         let normalizedID: String? = {
             if case .package(let package) = item.source {
@@ -1143,10 +1170,8 @@ struct WorkspaceRightRailView: View {
         let workspaceResourceCount = state.linkedSkills.filter { !$0.isGlobal }.count
             + state.linkedConnectors.filter { !$0.isGlobal }.count
             + state.linkedTools.filter { !$0.isGlobal }.count
-        let readiness = readiness(
-            for: package,
-            stateReadiness: state.readiness,
-            prerequisiteStatuses: prerequisiteStatuses
+        let readiness = CapabilityRailRepair.readiness(
+            for: package, stateReadiness: state.readiness, prerequisiteStatuses: prerequisiteStatuses
         )
         let presentation = CapabilityRailPackagePresentation.make(
             isEnabled: state.isEnabled,
@@ -1174,25 +1199,8 @@ struct WorkspaceRightRailView: View {
             mcpServerNames: packageSummary.mcpServerNames,
             browserAdapterNames: RailStringList.uniqueSorted(package.browserAdapters.map(browserAdapterDisplayName)),
             templateNames: RailStringList.uniqueSorted(package.templates.map(\.name)),
-            requirementNames: RailStringList.uniqueSorted(package.prerequisites.map(\.displayName))
-        )
-    }
-
-    private func readiness(
-        for package: PluginPackage,
-        stateReadiness: CapabilityReadiness,
-        prerequisiteStatuses: [String: HealthStatus]
-    ) -> CapabilityReadiness {
-        guard stateReadiness.level != .inactive else { return stateReadiness }
-        let prerequisiteMessages = CapabilityHealthService.readinessMessages(
-            for: package,
-            statuses: prerequisiteStatuses
-        )
-        guard !prerequisiteMessages.isEmpty else { return stateReadiness }
-        let existingMessages = stateReadiness.level == .ready ? [] : stateReadiness.messages
-        return CapabilityReadiness(
-            level: .needsAttention,
-            messages: existingMessages + prerequisiteMessages
+            requirementNames: RailStringList.uniqueSorted(package.prerequisites.map(\.displayName)),
+            repair: CapabilityRailRepair.repair(for: package, statuses: prerequisiteStatuses)
         )
     }
 
@@ -1284,6 +1292,7 @@ struct WorkspaceRightRailView: View {
                 capabilities: currentCapabilities
             ).isEnabled
         }
+        let generation = prerequisiteScan.begin()
         Task { @MainActor in
             let cache = PreflightCache()
             var statuses: [String: HealthStatus] = [:]
@@ -1295,7 +1304,7 @@ struct WorkspaceRightRailView: View {
                 )
                 statuses.merge(packageStatuses) { _, new in new }
             }
-            capabilityPrerequisiteStatuses = statuses
+            prerequisiteScan.complete(statuses, generation: generation)
         }
     }
 
@@ -2385,10 +2394,4 @@ private struct PendingRailDeletion: Identifiable {
     let message: String
     let confirmTitle: String
     let perform: () -> Void
-}
-
-private struct ApprovedCapabilitiesSnapshot: Sendable {
-    var packages: [PluginPackage]
-    var records: [CapabilityApprovalRecord]
-    var packPolicy: PackResolvedPolicy
 }

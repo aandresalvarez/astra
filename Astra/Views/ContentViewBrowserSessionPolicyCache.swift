@@ -243,7 +243,6 @@ struct BrowserSessionPolicyRefreshTrigger: Equatable {
     var taskID: UUID?
     var workspaceID: UUID?
     var enabledCapabilityIDs: [String]
-    var taskCanvasRevision: String
     var taskRevision: String
     var workspaceRevision: String
     var environmentRevision: String
@@ -253,7 +252,6 @@ struct BrowserSessionPolicyRefreshTrigger: Equatable {
             taskID?.uuidString ?? "no-task",
             workspaceID?.uuidString ?? "no-workspace",
             enabledCapabilityIDs.joined(separator: ","),
-            taskCanvasRevision,
             taskRevision,
             workspaceRevision,
             environmentRevision
@@ -369,11 +367,15 @@ enum BrowserSessionPolicyContext {
         return UserMessage(payload: event.payload, timestamp: event.timestamp, eventID: event.id)
     }
 
-    static func taskEventRevision(for task: AgentTask?) -> String {
+    static func taskPolicyRevision(for task: AgentTask?) -> String {
         guard let task else { return "no-task" }
         return [
             task.id.uuidString,
-            String(task.updatedAt.timeIntervalSince1970)
+            // Output, usage, title, unread and lifecycle timestamps do not
+            // change browser policy. User messages invalidate via the typed
+            // event projection; package/approval edits via notifications.
+            task.goal,
+            task.status == .draft ? "draft" : "accepted"
         ].joined(separator: "|")
     }
 
@@ -401,9 +403,11 @@ struct BrowserSessionPolicyTaskProjection {
     }
 
     func revision(for task: AgentTask?) -> String {
-        guard let task else { return BrowserSessionPolicyContext.taskEventRevision(for: nil) }
-        return eventRevisionByTask[task.id]?.uuidString
-            ?? BrowserSessionPolicyContext.taskEventRevision(for: task)
+        guard let task else { return BrowserSessionPolicyContext.taskPolicyRevision(for: nil) }
+        return [
+            BrowserSessionPolicyContext.taskPolicyRevision(for: task),
+            eventRevisionByTask[task.id]?.uuidString ?? "no-user-event"
+        ].joined(separator: "|")
     }
 
     mutating func record(_ insertion: DurableTaskEventInsertion, selectedTaskID: UUID?) -> Bool {

@@ -437,13 +437,13 @@ struct E2ELiveProviderGateTests {
     @Test("Shared runtime state gate removes cancelled waiters")
     func sharedRuntimeStateGateRemovesCancelledWaiters() async throws {
         let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: UUID().uuidString)
-        try await AgentRuntimeSharedStateGate.shared.acquire(key)
+        let holder = try await AgentRuntimeSharedStateGate.shared.acquire(key)
         let waiterRan = AsyncTestFlag()
 
         let waiter = Task {
-            try await AgentRuntimeSharedStateGate.shared.acquire(key)
+            let lease = try await AgentRuntimeSharedStateGate.shared.acquire(key)
             await waiterRan.set()
-            await AgentRuntimeSharedStateGate.shared.release(key)
+            await AgentRuntimeSharedStateGate.shared.release(lease)
         }
         try await Task.sleep(nanoseconds: 50_000_000)
         waiter.cancel()
@@ -452,9 +452,9 @@ struct E2ELiveProviderGateTests {
         #expect(waiterFinished)
         #expect(await waiterRan.value == false)
 
-        await AgentRuntimeSharedStateGate.shared.release(key)
-        try await AgentRuntimeSharedStateGate.shared.acquire(key)
-        await AgentRuntimeSharedStateGate.shared.release(key)
+        await AgentRuntimeSharedStateGate.shared.release(holder)
+        let reacquired = try await AgentRuntimeSharedStateGate.shared.acquire(key)
+        await AgentRuntimeSharedStateGate.shared.release(reacquired)
     }
 }
 

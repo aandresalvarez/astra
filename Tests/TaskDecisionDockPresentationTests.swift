@@ -6,6 +6,56 @@ import ASTRAModels
 
 @Suite("Task decision dock presentation")
 struct TaskDecisionDockPresentationTests {
+    @Test("Ordinary waiting keeps its presentation when recovery is verified")
+    func waitingWithoutRecoveryBlockIsUnchanged() {
+        let cancel = TaskDecisionDockAction(kind: .cancelTurnRequest, title: "Cancel request", systemImage: "xmark.circle",
+            payload: UUID().uuidString, help: nil)
+        let waiting = TaskDecisionDockPresentation(id: "waiting", icon: "clock", tone: .attention,
+            title: "Waiting for a worker", summary: "Your message is saved.", metrics: [], details: [],
+            primaryAction: nil, secondaryActions: [cancel], overflowActions: [], prefersExpandedDetails: false)
+        #expect(RuntimeRecoveryPresentation.waitingDock(waiting, blockedMessage: nil) == waiting)
+        #expect(RuntimeRecoveryPresentation.queuedRequestDock(waiting,
+            hasOpenApprovalRequest: false, blockedMessage: nil) == waiting)
+    }
+
+    @Test("A live permission keeps priority over a queued message")
+    func livePermissionKeepsPriorityOverQueuedRequest() throws {
+        let cancel = TaskDecisionDockAction(kind: .cancelTurnRequest, title: "Cancel request", systemImage: "xmark.circle",
+            payload: UUID().uuidString, help: nil)
+        let waiting = TaskDecisionDockPresentation(id: "waiting", icon: "clock", tone: .attention,
+            title: "Waiting for the current turn", summary: "Your message is saved.", metrics: [], details: [],
+            primaryAction: nil, secondaryActions: [cancel], overflowActions: [], prefersExpandedDetails: false)
+        var input = context(status: .pendingUser)
+        input.hasRuntimePermissionRequest = true
+        input.runtimePermissionTitle = "Shell permission needed"
+        input.canApprove = true
+        // A connected request has no recovery block; the view must fall
+        // through to its permission dock instead of hiding that decision.
+        let queued = RuntimeRecoveryPresentation.queuedRequestDock(waiting,
+            hasOpenApprovalRequest: input.hasRuntimePermissionRequest, blockedMessage: input.recoveryBlockMessage)
+        #expect(queued == nil)
+        let presentation = try #require(queued ?? TaskDecisionDockPresentation.build(input))
+        #expect(presentation.id == "runtime-permission")
+        #expect(presentation.primaryAction?.kind == .allowOnce)
+        #expect(presentation.title == "Shell permission needed")
+    }
+
+    @Test("Unverified recovery explains the fence without suggesting approval can release it")
+    func recoveryBlockOverridesApproval() throws {
+        var input = context(status: .pendingUser)
+        input.recoveryBlockMessage = "The previous tools are not confirmed stopped."
+        input.canRetry = true
+        input.canApprove = true
+        input.hasExecutableApprovedPlan = true
+        let presentation = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(presentation.title == "Recovery blocked")
+        #expect(presentation.summary == input.recoveryBlockMessage)
+        #expect(presentation.primaryAction?.kind == .retry)
+        #expect(presentation.primaryAction?.title == "Check again")
+        #expect(!actionTitles(presentation).contains("Approve result"))
+        #expect(!actionTitles(presentation).contains("Run remaining plan"))
+    }
+
     @Test("Git publish request takes priority over generic pending review")
     func gitPublishRequestUsesTypedReviewAction() throws {
         var input = context(status: .pendingUser)
@@ -764,7 +814,8 @@ struct TaskDecisionDockPresentationTests {
         launchBlock: TaskRunLaunchBlockPayload? = nil,
         executableApprovedPlan: TaskPlanPayload? = nil,
         canResume: Bool = false,
-        hasProviderSession: Bool = false
+        hasProviderSession: Bool = false,
+        repair: RepairAction? = nil
     ) -> TaskDecisionDockPresentation.Context {
         let affordances = visibleThreadAffordances ?? defaultVisibleThreadAffordances(
             mission: mission,
@@ -803,9 +854,29 @@ struct TaskDecisionDockPresentationTests {
             hasProviderSession: hasProviderSession,
             failureReason: nil,
             launchBlock: launchBlock,
+            repair: repair,
             artifactPaths: artifactPaths,
             visibleThreadAffordances: affordances
         )
+    }
+
+    @Test("A run stopped for an expired plugin sign-in leads with the sign-in, then Resume")
+    func repairRequiredLeadsWithSignInThenResume() throws {
+        let repair = CLISessionExpiryClassifier.googleCloud.repair
+        let presentation = try #require(TaskDecisionDockPresentation.build(context(
+            status: .failed, canResume: true, hasProviderSession: true, repair: repair
+        )))
+        #expect(presentation.id == "repair-required")
+        #expect(presentation.title == "Sign in to Google Cloud")
+        #expect(presentation.summary.contains("gcloud auth login"))
+        #expect(presentation.primaryAction?.kind == .runRepair)
+        #expect(presentation.primaryAction?.title == "Sign in")
+        #expect(presentation.secondaryActions.map(\.kind) == [.resume, .retry])
+
+        let noSession = try #require(TaskDecisionDockPresentation.build(context(status: .failed, repair: repair)))
+        #expect(noSession.secondaryActions.map(\.kind) == [.retry])
+        let ordinary = try #require(TaskDecisionDockPresentation.build(context(status: .failed)))
+        #expect(ordinary.id == "failed")
     }
 
     private func missionNeedingCorrection() -> MissionControlPresentation {

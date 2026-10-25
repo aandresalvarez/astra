@@ -40,6 +40,7 @@ enum CodexSessionUsageCorrectionService {
         var recorded: Report
         /// Nil when the run recorded no provider report.
         var report: Report?
+        var recordedTotal: Int? = nil
     }
 
     /// What the fixed recorder stores for one run of the session.
@@ -80,7 +81,7 @@ enum CodexSessionUsageCorrectionService {
         guard defaults.string(forKey: key) != currentBuild else { return false }
         // The pass yields, and an import in the meantime clears the gate. Completion is recorded
         // only over this pass's own pending mark, so that clearing is never overwritten.
-        let pending = "\(currentBuild):pending"
+        let pending = "\(currentBuild):pending:\(UUID().uuidString)"
         defaults.set(pending, forKey: key)
         guard await correct(modelContext: modelContext).completed,
               defaults.string(forKey: key) == pending else { return false }
@@ -104,6 +105,7 @@ enum CodexSessionUsageCorrectionService {
         modelContext: ModelContext,
         batchSize: Int = CodexSessionUsageCorrectionService.batchSize
     ) async -> Outcome {
+        guard batchSize > 0 else { return Outcome() }
         // Keyset paging on `startedAt`: an offset would skip or repeat rows when the context
         // holds unsaved changes, which a fetch merges in ahead of the stored rows. Runs added
         // during the pass start after the cursor.
@@ -179,39 +181,13 @@ enum CodexSessionUsageCorrectionService {
         return outcome
     }
 
-    /// Replays the fixed recorder over one session's reports, in run order. A run with no
-    /// report and no recorded usage (a launch that failed before Codex answered) adds
-    /// nothing to the session's totals, so it is left out of the replay.
-    nonisolated static func replay(_ runs: [SessionRun]) -> SessionReplay {
-        var corrected: [CorrectedRun] = []
-        var epoch = ProviderSessionUsageBaseline.zero
-        for run in runs {
-            guard let report = run.report else {
-                guard run.recorded.input + run.recorded.output == 0 else { return .unreconstructable(runID: run.id) }
-                continue
-            }
-            let isReset = epoch.isReset(input: report.input, output: report.output)
-            let share = epoch.runShare(input: report.input, output: report.output)
-            epoch = isReset ? .zero : epoch
-            epoch.input += share.input
-            epoch.output += share.output
-            corrected.append(CorrectedRun(
-                id: run.id, share: Report(input: share.input, output: share.output), isReset: isReset
-            ))
+    /// Import is an explicit repair boundary, scoped to the imported workspace.
+    /// Startup still covers restored stores and previously deferred tasks.
+    static func correct(workspace: Workspace, modelContext: ModelContext) {
+        for task in workspace.tasks {
+            do { _ = try correct(task: task, modelContext: modelContext) }
+            catch { log(stage: "import_task_failed", outcome: Outcome(), error: error) }
         }
-        return .corrected(corrected)
-    }
-
-    /// The report a `task.stats` payload records, as the recorder writes it:
-    /// `tokens: <total> (in: <input>, out: <output>) | …`. An estimate is not a report.
-    nonisolated static func report(fromStatsPayload payload: String) -> Report? {
-        guard payload.hasPrefix("tokens: "),
-              let open = payload.range(of: "(in: "),
-              let separator = payload.range(of: ", out: ", range: open.upperBound..<payload.endIndex),
-              let close = payload.range(of: ")", range: separator.upperBound..<payload.endIndex),
-              let input = Int(payload[open.upperBound..<separator.lowerBound]),
-              let output = Int(payload[separator.upperBound..<close.lowerBound]) else { return nil }
-        return Report(input: input, output: output)
     }
 
     private struct TaskResult {
@@ -270,6 +246,21 @@ enum CodexSessionUsageCorrectionService {
             $0.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         }.filter { !$0.key.isEmpty && $0.value.count > 1 }
         guard !sessions.isEmpty else { return TaskResult() }
+        guard Set(codexRuns.map(\.id)).count == codexRuns.count else {
+            logSkip(task: task, sessionPrefix: "", reason: "duplicate_run_identity", runID: nil)
+            return TaskResult(sessionsSkipped: sessions.count)
+        }
+        if task.events.contains(where: { $0.type == CodexUsageHistory.incompleteEventType }) {
+            logSkip(task: task, sessionPrefix: "", reason: "history_incomplete", runID: nil)
+            return TaskResult(sessionsSkipped: sessions.count)
+        }
+        let lease: RuntimeExecutionOwnerStore.Lease
+        do { lease = try CodexSessionUsageCorrectionAdmission.acquire(task: task, context: modelContext) }
+        catch {
+            logSkip(task: task, sessionPrefix: "", reason: "execution_unverified_or_active", runID: nil)
+            return TaskResult(sessionsDeferred: sessions.count)
+        }
+        defer { withExtendedLifetime(lease) {} }
 
         let taskID = task.id
         let stats = TaskEventTypes.Task.stats.rawValue
@@ -278,15 +269,13 @@ enum CodexSessionUsageCorrectionService {
             predicate: #Predicate<TaskEvent> { $0.task?.id == taskID && ($0.type == stats || $0.type == reset) },
             sortBy: [SortDescriptor(\TaskEvent.timestamp)]
         ))
-        // The last report of a run is its final cumulative total.
-        var reports: [UUID: Report] = [:]
+        let evidence = reportEvidence(events)
+        let reports = evidence.reports
         var resetMarkers: [UUID: [TaskEvent]] = [:]
         for event in events {
             guard let runID = event.run?.id else { continue }
             if event.type == reset {
                 resetMarkers[runID, default: []].append(event)
-            } else if let parsed = report(fromStatsPayload: event.payload) {
-                reports[runID] = parsed
             }
         }
 
@@ -295,9 +284,11 @@ enum CodexSessionUsageCorrectionService {
         var journal = Journal(taskTokensUsed: task.tokensUsed, taskUpdatedAt: task.updatedAt)
         for (session, runs) in sessions.sorted(by: { $0.key < $1.key }) {
             let prefix = String(session.prefix(8))
-            guard !runs.contains(where: { $0.status == .running }) else {
-                result.sessionsDeferred += 1
-                logSkip(task: task, sessionPrefix: prefix, reason: "run_in_progress", runID: nil)
+            guard Set(runs.map(\.id)).count == runs.count,
+                  Set(runs.map(\.startedAt)).count == runs.count,
+                  !runs.contains(where: { evidence.invalid.contains($0.id) }) else {
+                result.sessionsSkipped += 1
+                logSkip(task: task, sessionPrefix: prefix, reason: "history_ambiguous_or_invalid", runID: nil)
                 continue
             }
             let ordered = runs.sorted { ($0.startedAt, $0.id.uuidString) < ($1.startedAt, $1.id.uuidString) }
@@ -305,7 +296,7 @@ enum CodexSessionUsageCorrectionService {
                 SessionRun(
                     id: run.id,
                     recorded: Report(input: run.inputTokens, output: run.outputTokens),
-                    report: reports[run.id]
+                    report: reports[run.id], recordedTotal: run.tokensUsed
                 )
             })
             guard case .corrected(let corrected) = replayed else {
@@ -316,21 +307,22 @@ enum CodexSessionUsageCorrectionService {
                 continue
             }
             let runsByID = Dictionary(uniqueKeysWithValues: ordered.map { ($0.id, $0) })
+            guard let totals = sessionTotals(runs: runsByID, corrected: corrected, taskTokens: task.tokensUsed) else {
+                result.sessionsSkipped += 1
+                logSkip(task: task, sessionPrefix: prefix, reason: "usage_totals_invalid", runID: nil)
+                continue
+            }
             var change = SessionChange(
                 sessionIDPrefix: prefix, runsCorrected: 0,
-                inputBefore: 0, inputAfter: 0, outputBefore: 0, outputAfter: 0,
+                inputBefore: totals.inputBefore, inputAfter: totals.inputAfter,
+                outputBefore: totals.outputBefore, outputAfter: totals.outputAfter,
                 resetMarkersAdded: 0, resetMarkersRemoved: 0
             )
             for entry in corrected {
                 guard let run = runsByID[entry.id] else { continue }
-                change.inputBefore += run.inputTokens
-                change.outputBefore += run.outputTokens
-                change.inputAfter += entry.share.input
-                change.outputAfter += entry.share.output
                 let total = entry.share.input + entry.share.output
                 if run.inputTokens != entry.share.input || run.outputTokens != entry.share.output || run.tokensUsed != total {
                     journal.runs.append((run, run.inputTokens, run.outputTokens, run.tokensUsed))
-                    task.tokensUsed = max(0, task.tokensUsed + total - run.tokensUsed)
                     run.inputTokens = entry.share.input
                     run.outputTokens = entry.share.output
                     run.tokensUsed = total
@@ -350,6 +342,7 @@ enum CodexSessionUsageCorrectionService {
                     change.resetMarkersRemoved += markers.count
                 }
             }
+            task.tokensUsed = totals.taskAfter
             guard change.runsCorrected > 0 || change.resetMarkersAdded > 0 || change.resetMarkersRemoved > 0 else {
                 continue
             }

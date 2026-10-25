@@ -1,4 +1,6 @@
+import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum GoogleWorkspaceCapability {
     static let packageID = "google-workspace"

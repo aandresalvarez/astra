@@ -721,6 +721,42 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("GitHub") })
     }
 
+    @Test("Capability preflight launches past an unverified prerequisite and records it")
+    func capabilityPreflightRecordsUnverifiedPrerequisites() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Google Cloud", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(title: "Query BigQuery", goal: "Count the rows", workspace: workspace)
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let result = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            prerequisiteStatuses: [
+                CommonCLIPrerequisites.gcloud.id: .unverified(
+                    path: "/opt/homebrew/bin/gcloud",
+                    detail: "No answer within 20s; not verified"
+                ),
+                CommonCLIPrerequisites.gcloudAuth.id: .healthy(
+                    path: "/opt/homebrew/bin/gcloud",
+                    version: "user@example.invalid"
+                )
+            ]
+        )
+
+        #expect(result.status == .capabilityRuntimeResourcesPassed)
+        #expect(result.auditFields["unverified_prerequisites"] == CommonCLIPrerequisites.gcloud.id)
+        #expect(task.status == .running)
+        #expect(run.stopReason.isEmpty)
+    }
+
     @Test("Only a required host tool blocks the launch when its helper is missing")
     func onlyRequiredHostControlToolBlocksLaunchWhenHelperMissing() throws {
         let container = try makeRuntimeComponentContainer()

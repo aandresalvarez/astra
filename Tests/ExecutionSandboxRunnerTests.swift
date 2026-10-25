@@ -131,19 +131,18 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
-    /// Acquire `key` within `seconds`, returning whether it succeeded. Implemented
-    /// via cancellation so a never-released gate can't hang the suite.
-    private func acquireWithin(_ key: AgentRuntimeSharedStateKey, seconds: Double) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
+    /// Acquire `key` within `seconds`, returning the lease if it succeeded.
+    /// Implemented via cancellation so a never-released gate can't hang the suite.
+    private func acquireWithin(_ key: AgentRuntimeSharedStateKey, seconds: Double) async -> AgentRuntimeSharedStateLease? {
+        await withTaskGroup(of: AgentRuntimeSharedStateLease?.self) { group in
             group.addTask {
-                do { try await AgentRuntimeSharedStateGate.shared.acquire(key); return true }
-                catch { return false }
+                try? await AgentRuntimeSharedStateGate.shared.acquire(key)
             }
             group.addTask {
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                return false
+                return nil
             }
-            let first = await group.next() ?? false
+            let first = await group.next() ?? nil
             group.cancelAll()
             return first
         }
@@ -1534,7 +1533,44 @@ struct ExecutionSandboxRunnerTests {
         // ...and the gate it acquired must have been released, so a fresh acquire
         // succeeds promptly rather than hanging on a leaked hold.
         let acquired = await acquireWithin(key, seconds: 2)
-        #expect(acquired)
-        if acquired { await AgentRuntimeSharedStateGate.shared.release(key) }
+        #expect(acquired != nil)
+        if let acquired { await AgentRuntimeSharedStateGate.shared.release(acquired) }
+    }
+
+    @Test("A held shared-state key cannot be reclaimed merely by elapsed time")
+    func wedgedCancelReleasesSharedStateOnce() async throws {
+        let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "wedged-\(UUID().uuidString)")
+        let wedged = try await AgentRuntimeSharedStateGate.shared.acquire(key)
+
+        #expect(await acquireWithin(key, seconds: 0.1) == nil)
+        #expect(await AgentRuntimeSharedStateGate.shared.isHeld(wedged))
+        #expect(await AgentRuntimeSharedStateGate.shared.release(wedged))
+
+        // The next Antigravity run is admitted without waiting for the wedged one.
+        let next = try #require(await acquireWithin(key, seconds: 2))
+        #expect(await AgentRuntimeSharedStateGate.shared.isHeld(next))
+
+        // When the wedged run finally returns, its own release is a no-op and
+        // cannot free the key the next run now holds.
+        #expect(await AgentRuntimeSharedStateGate.shared.release(wedged) == false)
+        #expect(await AgentRuntimeSharedStateGate.shared.isHeld(next))
+        #expect(await acquireWithin(key, seconds: 0.1) == nil)
+
+        #expect(await AgentRuntimeSharedStateGate.shared.release(next))
+        let free = try #require(await acquireWithin(key, seconds: 2))
+        await AgentRuntimeSharedStateGate.shared.release(free)
+    }
+
+    @Test("A cancelled run that returns within the grace keeps the key with its successor")
+    func returnedRunMakesWedgedReleaseNoOp() async throws {
+        let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "returned-\(UUID().uuidString)")
+        let first = try await AgentRuntimeSharedStateGate.shared.acquire(key)
+
+        #expect(await AgentRuntimeSharedStateGate.shared.release(first))
+        let second = try #require(await acquireWithin(key, seconds: 2))
+
+        #expect(await AgentRuntimeSharedStateGate.shared.release(first) == false)
+        #expect(await AgentRuntimeSharedStateGate.shared.isHeld(second))
+        await AgentRuntimeSharedStateGate.shared.release(second)
     }
 }

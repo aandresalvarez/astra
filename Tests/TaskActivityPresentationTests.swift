@@ -54,6 +54,7 @@ struct TaskActivityPresentationTests {
         #expect(waitingOnly.kind == .waitingForResource)
         #expect(waitingOnly.sidebarSubtitle == "Build task is using this workspace")
         #expect(waitingOnly.dockTitle == "Waiting for resource")
+        #expect(waitingOnly.dockSummary == "Your message is saved. Build task is using this workspace")
     }
 
     @Test("A queued follow-up behind a running task stays individually retractable")

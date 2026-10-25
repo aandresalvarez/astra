@@ -260,6 +260,7 @@ struct CodexSessionUsageCorrectionServiceTests {
         let first = fixture.legacyRun("thread-1", at: 0, input: 1_000, output: 10)
         let failed = fixture.makeRun("thread-1", at: 60)
         failed.status = .failed
+        failed.typedStopReason = .workspaceNotFound
         let third = fixture.legacyRun("thread-1", at: 120, input: 2_500, output: 25)
 
         await Service.correct(modelContext: fixture.context)
@@ -374,11 +375,11 @@ struct CodexSessionUsageCorrectionServiceTests {
         let key = AppStorageKeys.completedCodexSessionUsageCorrectionBuild
         let pass = Task { await Service.correctIfNeeded(modelContext: fixture.context, currentBuild: "42", defaults: defaults) }
         var polls = 0
-        while defaults.string(forKey: key) != "42:pending", polls < 1_000 {
+        while defaults.string(forKey: key)?.hasPrefix("42:pending:") != true, polls < 1_000 {
             await Task.yield()
             polls += 1
         }
-        #expect(defaults.string(forKey: key) == "42:pending")
+        #expect(defaults.string(forKey: key)?.hasPrefix("42:pending:") == true)
         defaults.removeObject(forKey: key) // what WorkspaceConfigManager does on import
 
         let recorded = await pass.value

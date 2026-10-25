@@ -15,7 +15,8 @@ extension WorkspaceConfigManager {
     /// Worktree events are the task's durable checkout binding; dropping them
     /// would turn a worktree pin into a legacy pin on recovery.
     static func isTaskRecoveryEvent(_ type: String) -> Bool {
-        ["runtime.", "execution.request.", "permission.", "plan.", "validation.", "task.worktree."]
+        if type.hasPrefix("astra.provider_session_usage_") { return true }
+        return ["runtime.", "execution.request.", "permission.", "plan.", "validation.", "task.worktree."]
             .contains { type.hasPrefix($0) }
     }
 
@@ -108,7 +109,7 @@ extension WorkspaceConfigManager {
     }
 
     private static func redactedLaunchPolicy(_ source: [String: Any]) throws -> [String: Any] {
-        var policy = source
+        var policy = try PluginLaunchPolicyRedactor.redact(source)
         if let value = policy["skillSnapshotsJSON"] as? String, !value.isEmpty {
             let snapshots = try JSONDecoder().decode([SkillSnapshotConfig].self, from: Data(value.utf8))
             policy["skillSnapshotsJSON"] = String(data: try JSONEncoder().encode(snapshots.map(redactedSkillSnapshot)), encoding: .utf8)

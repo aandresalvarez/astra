@@ -72,6 +72,7 @@ enum AgentRuntimeCompletionValidation {
             modelContext: modelContext,
             workspacePath: workspacePath
         )
+        guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext) else { return true }
         guard let eventType = TaskDeliverableVerificationService.eventType(for: result) else {
             return false
         }
@@ -131,7 +132,7 @@ enum AgentRuntimeCompletionValidation {
                 sandboxEnforcementSnapshot: sandboxEnforcementSnapshot
             )
         )
-        guard result.didRun else { return }
+        guard !RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext), result.didRun else { return }
 
         AppLogger.audit(
             result.canComplete ? .validationContractPassed : .validationContractFailed,
