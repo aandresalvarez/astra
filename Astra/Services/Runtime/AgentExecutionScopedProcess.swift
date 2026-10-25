@@ -31,8 +31,12 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private var processGroupID: pid_t = 0
     private var running = false
     private var reaped = false
+    private var reapedSuccessfully = false
+    private var launchIdentity: RuntimeProcessIdentity?
     private var stopRequested = false
     private var status: Int32 = 0
+    private var settlementScope: RuntimeSettlementExecutionScope?
+    private let settlementChildID = UUID()
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
@@ -63,6 +67,16 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     }
 
     var processIdentifier: Int32 { lock.withLock { processID } }
+    var executionIdentity: RuntimeProcessIdentity? { lock.withLock { launchIdentity } }
+
+    func stopProof(executionID: UUID, toolsStopped: Bool, remoteWorkExcluded: Bool) -> RuntimeExecutionStopProof? {
+        lock.withLock {
+            guard let identity = launchIdentity else { return nil }
+            let empty = processGroupID > 0 && kill(-processGroupID, 0) == -1 && errno == ESRCH
+            return .init(executionID: executionID, process: identity, reaped: reapedSuccessfully && !running,
+                processGroupEmpty: empty, toolsStopped: toolsStopped, remoteWorkExcluded: remoteWorkExcluded, capturedAt: Date())
+        }
+    }
 
     init(
         executablePath: String,
@@ -111,9 +125,12 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     }
 
     func run() throws {
+        settlementScope = RuntimeSettlementExecutionScope.current
+        try settlementScope?.begin(settlementChildID)
         var spawned = false
         defer {
             if !spawned {
+                settlementScope?.didNotLaunch(settlementChildID)
                 // No reaper will run after a launch failure. Release the
                 // caller's callbacks here, including captures of this process.
                 stdoutFileHandle.readabilityHandler = nil
@@ -191,6 +208,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         lock.lock()
         processID = childPID
         processGroupID = childPID
+        launchIdentity = RuntimeProcessIdentity.read(childPID)
         running = true
         lock.unlock()
 
@@ -278,7 +296,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
             lock.lock()
             result = waitpid(pid, &waitStatus, WNOHANG)
             let retry = result == 0 || (result == -1 && errno == EINTR)
-            if !retry { reaped = true }
+            if !retry { reaped = true; reapedSuccessfully = result == pid }
             lock.unlock()
             if !retry { break }
             usleep(50_000)
@@ -302,6 +320,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
         // Completion is one-shot. Worker parsers capture this process, so
         // keeping the callback here retains the whole run's output forever.
+        settlementScope?.stopped(settlementChildID,
+            proof: stopProof(executionID: settlementChildID, toolsStopped: false, remoteWorkExcluded: false))
         let completion = terminationHandler
         terminationHandler = nil
         completion?(self)

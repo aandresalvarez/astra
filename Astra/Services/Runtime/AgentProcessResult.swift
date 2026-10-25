@@ -2,6 +2,10 @@ import Foundation
 import ASTRACore
 
 struct AgentProcessResult: Codable {
+    var executionStopProof: RuntimeExecutionStopProof?
+    var executionTurnsSpent: Int?
+    var executionTokensSpent: Int?
+    var executionSecondsSpent: TimeInterval?
     /// Conservative utility-token allocation, separately audited by supervision events.
     var supervisionReservedTokens: Int?
     /// Successfully written approval responses followed by provider completion.

@@ -750,6 +750,7 @@ struct HostControlRequirementDerivationConsistencyTests {
         )
         task.runtimeID = AgentRuntimeID.cursorCLI.rawValue
         task.runtimeExplicitlySelected = true
+        try RuntimeRecoveryTestReceipt.install(task: task, run: task.runs.max { $0.startedAt < $1.startedAt }, context: harness.context)
 
         _ = await harness.continueTask(
             task: task,

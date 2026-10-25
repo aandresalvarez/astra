@@ -101,19 +101,6 @@ final class AgentRuntimeWorker {
     ) async -> AgentRuntimeExecutionContext? {
         let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: launchTask)
-        AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
-            task: launchTask, selectedRuntime: selectedRuntime, phase: "run")
-        alignTaskModelWithSelectedRuntime(launchTask, selectedRuntime: selectedRuntime, phase: "run")
-        // Clear on the LIVE task, not the frozen copy: sessionId is durable
-        // state (`detachedTask` copies it from source, not from the snapshot),
-        // and both consumers read the live task — `TaskRun.init` captures
-        // `task.sessionId` into `run.providerSessionId`, and
-        // `nativeContinuationSessionID(for: task,)` decides continuation from
-        // it. Clearing the detached copy would let a rerouted run inherit the
-        // previous runtime's session, which is exactly what the ordering
-        // comment below this call site promises cannot happen.
-        clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "run")
-        TaskCapabilitySnapshotter.refreshForFreshRun(task: launchTask)
         var executionContext: AgentRuntimeExecutionContext?
         await executeRuntimeSession(
             task: task,
@@ -150,14 +137,37 @@ final class AgentRuntimeWorker {
         let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
-            guard await ApprovedPlanRuntimeSettlement.validateApprovedPlanContractForFinalCompletion(
+            let admission: RuntimeExecutionOwner.SettlementAdmission
+            if let lastRun = task.runs.max(by: { $0.startedAt < $1.startedAt }) {
+                admission = RuntimeExecutionOwner.acquireSettlement(task: task, run: lastRun, context: modelContext)
+            } else {
+                guard let owner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
+                    maxRunSeconds: maxRunSeconds, newUserTurn: true, launchTask: launchTask) else { return }
+                admission = .acquired(owner)
+            }
+            if admission.mustDefer { return }
+            defer { withExtendedLifetime(admission) {} }
+            guard let owner = admission.owner else {
+                RuntimeExecutionOwner.report("Final plan validation is blocked until the previous execution can be verified.",
+                    task: task, context: modelContext, pause: true)
+                return
+            }
+            defer { owner.finish() }
+            do { try owner.beginSettlement() } catch { return }
+            let scope = RuntimeSettlementExecutionScope(mayLaunch: true)
+            let valid = await RuntimeSettlementExecutionScope.$current.withValue(scope) {
+                await ApprovedPlanRuntimeSettlement.validateApprovedPlanContractForFinalCompletion(
                 task: task,
                 plan: currentPlan,
                 modelContext: modelContext,
                 verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
                     fallbackRuntime: runtimeConfiguration.selectedRuntime(for: launchTask),
-                    preferredModel: validationModel, modelContext: modelContext)
-            ) else {
+                    preferredModel: validationModel, modelContext: modelContext))
+            }
+            scope.seal()
+            do { try owner.completeSettlement(localWorkStopped: scope.localWorkStopped, toolsStopped: scope.toolsStopped) }
+            catch { return }
+            guard valid else {
                 WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                 return
             }
@@ -234,14 +244,6 @@ final class AgentRuntimeWorker {
     ) async {
         let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: launchTask)
-        AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
-            task: launchTask,
-            selectedRuntime: selectedRuntime,
-            phase: "resume"
-        )
-        alignTaskModelWithSelectedRuntime(launchTask, selectedRuntime: selectedRuntime, phase: "resume")
-        // Live task — see the note at the "run" phase call site.
-        clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "resume")
         await executeRuntimeSession(
             task: task,
             launchTask: launchTask,
@@ -316,6 +318,19 @@ final class AgentRuntimeWorker {
             ], level: .warning)
             return
         }
+        let request = turnRequestID.flatMap { try? TaskTurnRequestRepository.request(id: $0, in: modelContext) }
+        let newUserTurn = RuntimeExecutionAdmission.resolve(request: request, task: task).permitsLocalExit
+        guard let executionOwner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
+            maxRunSeconds: maxRunSeconds, newUserTurn: newUserTurn, launchTask: launchTask) else { return }
+        defer { executionOwner.finish() }
+        processRunner.configureExecutionOwner(executionOwner)
+        defer { processRunner.configureExecutionOwner(nil) }
+        // Reject competing owners before changing the live provider session or settings.
+        AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
+            task: launchTask, selectedRuntime: selectedRuntime, phase: auditPhase)
+        alignTaskModelWithSelectedRuntime(launchTask, selectedRuntime: selectedRuntime, phase: auditPhase)
+        clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: auditPhase)
+        if auditPhase == .run { TaskCapabilitySnapshotter.refreshForFreshRun(task: launchTask) }
         guard AgentRuntimeStartAdmission.confirmRuntimeSessionStarted(
             task: task,
             modelContext: modelContext,
@@ -414,11 +429,18 @@ final class AgentRuntimeWorker {
         )
         executionPolicy = executionPolicy.withRuntimeCapabilityProfile(runtimeCapabilityProfile)
 
+        executionOwner.restoreSession(for: selectedRuntime)
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
         // A new attempt does not yet own the task's previous provider session.
         run.providerSessionId = nil
         modelContext.insert(run)
+        do { try executionOwner.bind(run: run) }
+        catch {
+            run.status = .failed; run.completedAt = Date(); run.stopReason = "runtime_recovery_blocked"
+            RuntimeExecutionOwner.report("Execution ownership could not be persisted. The provider was not started.", task: task, context: modelContext, pause: true)
+            return
+        }
         // Link the event to its run BEFORE the running-state save below, so
         // the same save durably persists both facts together. No later save
         // in this launch path is guaranteed to run before the provider
@@ -857,7 +879,9 @@ final class AgentRuntimeWorker {
             modelContext: modelContext,
             phase: auditPhase,
             runtime: selectedRuntime,
-            budgetEnforcementMode: budgetEnforcementMode
+            budgetEnforcementMode: budgetEnforcementMode,
+            alreadyUsedTokens: executionOwner.isRecovery ? executionOwner.record.limits.tokensSpent : 0,
+            tokenCeiling: executionOwner.record.limits.tokenCeiling
         ) else {
             return
         }
@@ -939,6 +963,8 @@ final class AgentRuntimeWorker {
         )
         defer { HostControlBrokerSessionRegistry.shared.unbindExternalActions(taskID: task.id, runID: run.id) }
         let pendingEvents = OrderedMainActorTaskQueue()
+        executionOwner.remoteWorkExcluded = launchExecutionPolicy.remoteSSHRoute == nil
+            && !runEnvironment.runSnapshot.providerRunsInsideContainer
         if supervisionEnabled {
             let investigator = utilityRuntimeConfiguration(for: .verifier, task: task,
                 fallbackRuntime: selectedRuntime, preferredModel: validationModel, modelContext: modelContext)
@@ -946,7 +972,7 @@ final class AgentRuntimeWorker {
                 runtime: selectedRuntime, configuration: investigator, pendingEvents: pendingEvents,
                 remoteRoute: launchExecutionPolicy.remoteSSHRoute, turnIntent: launchExecutionPolicy.turnIntentSnapshot,
                 workspacePath: executionPath,
-                investigatorOverride: supervisionInvestigatorOverride))
+                investigatorOverride: supervisionInvestigatorOverride, executionOwner: executionOwner))
         }
         defer { processRunner.configureSupervision(nil) }
         let eventPipeline = AgentRuntimeEventPipelineBox(
@@ -1032,12 +1058,15 @@ final class AgentRuntimeWorker {
             : nil
         let launchTimeoutSeconds = timeoutSeconds
         let launchLiveApprovalsEnabled = liveApprovalsEnabled
-        let launchMaxRunSeconds = maxRunSeconds
+        let launchMaxRunSeconds = min(maxRunSeconds > 0 ? maxRunSeconds : .greatestFiniteMagnitude, executionOwner.record.limits.secondsRemaining)
+        let recoveryTokensSpent = executionOwner.isRecovery ? executionOwner.record.limits.tokensSpent : 0
+        let recoveryTurnsSpent = executionOwner.isRecovery ? max(0, executionTask.maxTurns - executionOwner.record.limits.turnsRemaining) : 0
         var supervisionReservations = 0
         let launchProcess: (String, String?, NativeResumeEmptyTurnGate?, TimeInterval, Int, Int) async -> AgentProcessResult = { launchPrompt, nativeSessionID, gate, launchMaxRun, priorTurns, priorTokens in
             var attemptPolicy = launchExecutionPolicy
-            attemptPolicy.providerTurnsAlreadyUsed = priorTurns
-            attemptPolicy.providerTokensAlreadyUsed = priorTokens + supervisionReservations
+            attemptPolicy.recoveryAllowance = executionOwner.record.limits
+            attemptPolicy.providerTurnsAlreadyUsed = priorTurns + recoveryTurnsSpent
+            attemptPolicy.providerTokensAlreadyUsed = priorTokens + supervisionReservations + recoveryTokensSpent
             attemptPolicy.providerSessionUsageBaseline = sessionUsageBaseline
             return await self.processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
@@ -1072,11 +1101,18 @@ final class AgentRuntimeWorker {
             }
             )
         }
+        guard launchMaxRunSeconds > 0, executionOwner.record.limits.turnsRemaining > 0,
+              recoveryTokensSpent < executionOwner.record.limits.tokenCeiling else {
+            run.status = .budgetExceeded; run.completedAt = Date(); run.stopReason = "recovery_limits_exhausted"
+            RuntimeExecutionOwner.report("The interrupted task has no remaining execution allowance. Recovery did not reset its limits.", task: task, context: modelContext, pause: true)
+            return
+        }
         let firstAttemptStartedAt = Date()
         var result = await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate, launchMaxRunSeconds, 0, 0)
         supervisionReservations += result.supervisionReservedTokens ?? 0
         if let emptyTurnGate {
-            if emptyTurnGate.producedNothing, result.exitCode == 0, !result.stoppedByASTRA, !cancellationRequested {
+            if emptyTurnGate.producedNothing, result.exitCode == 0, !result.stoppedByASTRA, !cancellationRequested,
+               executionOwner.authorizeAutomaticRestart() {
                 // The resumed turn ended cleanly with reasoning only. Re-run it once without the resume.
                 AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
                     "continuation_retry": "empty_resumed_turn",
@@ -1101,7 +1137,9 @@ final class AgentRuntimeWorker {
                     phase: auditPhase,
                     runtime: selectedRuntime,
                     budgetEnforcementMode: budgetEnforcementMode,
-                    alreadyUsedTokens: discardedUsage.totalTokens + supervisionReservations
+                    alreadyUsedTokens: max(executionOwner.record.limits.tokensSpent,
+                        recoveryTokensSpent + discardedUsage.totalTokens + supervisionReservations),
+                    tokenCeiling: executionOwner.record.limits.tokenCeiling
                 ) else {
                     // The run ends here, but the discarded attempt still spent what it spent.
                     for event in discardedUsage.unappliedEvents() { persistRecordedEvent(event) }
@@ -1113,9 +1151,15 @@ final class AgentRuntimeWorker {
                 }
                 prompt = promptWithoutResume
                 // maxRunSeconds bounds the whole run, so the re-run only gets what the first attempt left.
-                let remainingRunSeconds = max(1, launchMaxRunSeconds - Date().timeIntervalSince(firstAttemptStartedAt))
+                let remainingRunSeconds = min(executionOwner.record.limits.secondsRemaining,
+                    max(0, launchMaxRunSeconds - Date().timeIntervalSince(firstAttemptStartedAt)))
                 // The empty attempt spent one provider turn of the run's maxTurns.
-                result = await launchProcess(prompt, nil, nil, remainingRunSeconds, 1, discardedUsage.totalTokens)
+                if remainingRunSeconds <= 0 {
+                    result = AgentProcessResult(exitCode: -1, runtimeStopReason: "recovery_limits_exhausted",
+                        runtimeStopMessage: "The remaining execution time expired before recovery.", budgetExceeded: true)
+                } else {
+                    result = await launchProcess(prompt, nil, nil, remainingRunSeconds, 1, discardedUsage.totalTokens)
+                }
                 supervisionReservations += result.supervisionReservedTokens ?? 0
             } else {
                 emptyTurnGate.flush(forward: handleLine)
@@ -1156,6 +1200,7 @@ final class AgentRuntimeWorker {
         )
         RuntimeSupervisionUsageRecorder.record(supervisionReservations,
             task: task, run: run, modelContext: modelContext)
+        executionOwner.reconcileUsage()
         let streamSnapshot = streamTelemetry?.snapshot()
 
         if let beforeGitStatus, let beforeDirtyFingerprints {
@@ -1306,7 +1351,8 @@ final class AgentRuntimeWorker {
             return
         }
         guard await RuntimeTurnSettlementService.settle(checkpoint: checkpoint, task: task, run: run,
-            modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence) else { return }
+            modelContext: modelContext, executionOwner: executionOwner,
+            permissionPromotionPersistence: permissionPromotionPersistence) else { return }
 
         RuntimeTurnSettlementService.dispatchChainedTask(task: task, run: run, modelContext: modelContext)
         if runtimeAdapter.performsPostRunFollowUps(phase: auditPhase) {

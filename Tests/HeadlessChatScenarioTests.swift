@@ -3,6 +3,7 @@ import SwiftData
 import Testing
 import ASTRAModels
 @testable import ASTRA
+@testable import ASTRAPersistence
 import ASTRACore
 
 @Suite("Headless Chat Scenarios", .serialized)
@@ -108,8 +109,14 @@ final class HeadlessChatHarness {
         context = container.mainContext
     }
 
-    func cleanup() {
-        try? FileManager.default.removeItem(at: rootURL)
+    private var cleanupTask: Task<Void, Never>?
+
+    @discardableResult
+    func cleanup(reader: WorkspaceSavedAutoExport = .shared) -> Task<Void, Never> {
+        if let cleanupTask { return cleanupTask }
+        let task = TestWorkspaceStoreCleanup.schedule(context: context, roots: [rootURL], reader: reader)
+        cleanupTask = task
+        return task
     }
 
     func writeExecutable(named name: String, script: String) throws -> String {
@@ -285,10 +292,17 @@ final class HeadlessChatHarness {
         executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
+        guard case .success(let submitted) = ExecutionRequestSubmissionService.submitFollowUp(
+            message: message, for: task, into: context),
+            let request = try? TaskTurnRequestRepository.request(id: submitted.requestID, in: context) else {
+            Issue.record("Could not submit the user follow-up"); return []
+        }
+        _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
         DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: context)
         await worker.continueSession(
             task: task,
             message: message,
+            existingMessageEventID: submitted.eventID, turnRequestID: submitted.requestID,
             modelContext: context,
             executionPolicy: executionPolicy
         ) { event in
@@ -306,6 +320,16 @@ final class HeadlessChatHarness {
         executionRequestID: UUID? = nil
     ) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
+        var executionRequestID = executionRequestID
+        if executionRequestID == nil {
+            guard case .success(let submitted) = ExecutionRequestSubmissionService.submitPlan(plan: plan,
+                mode: mode, mutation: .existingTask, for: task, into: context),
+                let request = try? TaskTurnRequestRepository.request(id: submitted.requestID, in: context) else {
+                Issue.record("Could not submit the approved plan"); return []
+            }
+            _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
+            executionRequestID = submitted.requestID
+        }
         DirectWorkerLaunchAdmission.admitApprovedPlanRun(task, modelContext: context)
         await worker.executeApprovedPlan(
             task: task,

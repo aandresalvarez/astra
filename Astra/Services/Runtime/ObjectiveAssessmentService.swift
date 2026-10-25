@@ -18,6 +18,16 @@ import ASTRAPersistence
 /// (INVARIANTS #5), and callers remain responsible for surfacing a divergence
 /// note when a pivot changes what work happens next (INVARIANTS #1).
 enum ObjectiveAssessmentService {
+    /// This tool-free background assessment has its own lifetime, independent
+    /// of task validation. Injecting the operation tests that lifetime boundary.
+    @MainActor @discardableResult
+    static func schedule(task: AgentTask,
+                         operation: @escaping @MainActor (AgentTask) async -> Void = { await assessIfNeeded(task: $0) }) -> Task<Void, Never> {
+        RuntimeSettlementExecutionScope.$current.withValue(nil) {
+            Task { @MainActor in await operation(task) }
+        }
+    }
+
     /// Injectable so tests can substitute a fake utility runtime without
     /// spawning a real CLI process. Defaults to the real provider plumbing.
     typealias PromptRunner = (
