@@ -27,10 +27,19 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
     /// identity, and `user@host` an alias-less connection needs.
     let targets: [String]
     let route: HostControlSSHRoute
+    /// `astra-workspace-job` is on this run's PATH for `targets`. Set only by
+    /// `RemoteWorkspaceJobShim.prepare` once the shim is written, so the run
+    /// line never offers a helper the run does not have.
+    private(set) var remoteJobs: Bool
 
-    init(targets: [String], route: HostControlSSHRoute) {
+    init(targets: [String], route: HostControlSSHRoute, remoteJobs: Bool = false) {
         self.targets = targets
         self.route = route
+        self.remoteJobs = remoteJobs && route == .nativeShell
+    }
+
+    func offeringRemoteJobs(_ offered: Bool) -> RemoteWorkspaceSSHRoute {
+        RemoteWorkspaceSSHRoute(targets: targets, route: route, remoteJobs: offered)
     }
 
     /// The facts the decision reads, each from its own owner.
@@ -165,8 +174,19 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
     /// is what the launch actually wired.
     var runGuidance: String {
         """
-        SSH route for this run (resolved by ASTRA at launch; it overrides any earlier note in current_state.json, investigation notes, or prior turns about SSH being disabled or available): \(route.summary). \(instruction)
+        SSH route for this run (resolved by ASTRA at launch; it overrides any earlier note in current_state.json, investigation notes, or prior turns about SSH being disabled or available): \(route.summary). \(instruction)\(remoteJobs ? " " + remoteJobGuidance : "")
         """
+    }
+
+    /// What the helper is for, said where the route is: the turn ends after
+    /// the launch, and nothing claims ASTRA resumes the task on its own yet.
+    private var remoteJobGuidance: String {
+        let target = targets.first ?? "<target>"
+        let example = target.contains(" ") ? "'" + target.replacingOccurrences(of: "'", with: "'\\''") + "'" : target
+        return "For a remote command that may run longer than about two minutes (scans, loads, syncs, builds), start it with `\(RemoteWorkspaceJobShim.commandName) start --connection \(example) --label '<short label>' -- '<command>'` instead of `ssh`: it runs detached on the host exactly as `ssh \(example) '<command>'` would, keeps running after this turn ends, and is registered by ASTRA under this execution owner."
+            + " Then end your turn and give the user its remote_job_id; do not wait, sleep, or poll for it."
+            + " ASTRA follows the existing job in the Remote jobs panel, where the user can check status, read output, and request cancellation. Remote results do not prove detached tools stopped, so the workspace reservation stays protected."
+            + " ASTRA does not resume this task by itself when the job finishes."
     }
 
     static func appendingRunGuidance(to prompt: String, route: RemoteWorkspaceSSHRoute?) -> String {
@@ -186,6 +206,7 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case targets
         case route
+        case remoteJobs
     }
 
     init(from decoder: Decoder) throws {
@@ -200,12 +221,14 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
             )
         }
         self.route = route
+        remoteJobs = (try container.decodeIfPresent(Bool.self, forKey: .remoteJobs) ?? false) && route == .nativeShell
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(targets, forKey: .targets)
         try container.encode(route.wireValue, forKey: .route)
+        try container.encode(remoteJobs, forKey: .remoteJobs)
     }
 }
 

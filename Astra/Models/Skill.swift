@@ -5,6 +5,10 @@ import ASTRACore
 @Model
 public final class Skill {
     public var id: UUID
+    /// Nil for legacy/authored rows using their own ID. Projections derive
+    /// this from PluginActivation; recovered authored rows retain the reference.
+    public var credentialNamespaceID: UUID? = nil
+    public var secretNamespaceID: UUID { credentialNamespaceID ?? id }
     public var name: String
     public var skillDescription: String
     public var icon: String
@@ -121,7 +125,7 @@ public final class Skill {
 
             let newSecretKeys = Set(environmentKeys.filter(Self.isSecretEnvironmentKey))
             for key in oldSecretKeys where !newSecretKeys.contains(key) {
-                let deleted = SkillSecretSeam.required.deleteSecret(key: key, skillID: id)
+                let deleted = SkillSecretSeam.required.deleteSecret(key: key, skillID: secretNamespaceID)
                 AuditLoggingSeam.required.audit(.skillSecretRemoved, category: "Keychain", fields: [
                     "skill_id": id.uuidString,
                     "result": deleted ? "removed" : "failed"
@@ -151,7 +155,7 @@ public final class Skill {
         let key = environmentKeys[index]
         let storedValue = normalizedEnvironmentValue(at: index)
         guard Self.isSecretEnvironmentKey(key) else { return storedValue }
-        return SkillSecretSeam.required.loadSecretValue(key: key, skillID: id, store: store) ?? storedValue
+        return SkillSecretSeam.required.loadSecretValue(key: key, skillID: secretNamespaceID, store: store) ?? storedValue
     }
 
     @discardableResult
@@ -188,7 +192,7 @@ public final class Skill {
                 let saved = SkillSecretSeam.required.saveSecretValue(
                     value,
                     key: key,
-                    skillID: id,
+                    skillID: secretNamespaceID,
                     skillName: name,
                     allowUserInteraction: allowUserInteraction
                 )
@@ -214,7 +218,7 @@ public final class Skill {
         guard index < environmentKeys.count else { return }
         let key = environmentKeys[index]
         if Self.isSecretEnvironmentKey(key) {
-            let deleted = SkillSecretSeam.required.deleteSecret(key: key, skillID: id)
+            let deleted = SkillSecretSeam.required.deleteSecret(key: key, skillID: secretNamespaceID)
             AuditLoggingSeam.required.audit(.skillSecretRemoved, category: "Keychain", fields: [
                 "skill_id": id.uuidString,
                 "result": deleted ? "removed" : "failed"
@@ -234,12 +238,12 @@ public final class Skill {
             let legacyValue = environmentValues[index]
             guard !legacyValue.isEmpty else { continue }
 
-            if SkillSecretSeam.required.secretExists(key: key, skillID: id) {
+            if SkillSecretSeam.required.secretExists(key: key, skillID: secretNamespaceID) {
                 environmentValues[index] = ""
                 continue
             }
 
-            if SkillSecretSeam.required.saveSecretValue(legacyValue, key: key, skillID: id, skillName: name, allowUserInteraction: false) {
+            if SkillSecretSeam.required.saveSecretValue(legacyValue, key: key, skillID: secretNamespaceID, skillName: name, allowUserInteraction: false) {
                 environmentValues[index] = ""
             }
         }
@@ -252,7 +256,7 @@ public final class Skill {
     /// `cleanupKeychain()` as a value, so a deletion can record it durably
     /// and run it once the skill's row is gone.
     public var keychainCleanup: SkillKeychainCleanup {
-        SkillKeychainCleanup(skillID: id)
+        SkillKeychainCleanup(skillID: secretNamespaceID)
     }
 
     public func normalizedEnvironmentValue(at index: Int) -> String {
@@ -352,6 +356,10 @@ public final class Skill {
 /// Deleting a skill's Keychain secrets needs only its ID.
 public struct SkillKeychainCleanup: Codable, Equatable, Sendable {
     public let skillID: UUID
+
+    public init(skillID: UUID) {
+        self.skillID = skillID
+    }
 
     @discardableResult
     public func run() -> Bool {

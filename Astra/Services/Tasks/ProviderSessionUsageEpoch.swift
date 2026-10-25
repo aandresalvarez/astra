@@ -47,8 +47,8 @@ enum ProviderSessionUsageEpoch {
         let epochStart = earlier.filter { resetRunIDs.contains($0.id) }.map(\.startedAt).max()
         let epoch = epochStart.map { start in earlier.filter { $0.startedAt >= start } } ?? earlier
         return ProviderSessionUsageBaseline(
-            input: epoch.reduce(0) { $0 + $1.inputTokens },
-            output: epoch.reduce(0) { $0 + $1.outputTokens },
+            input: epoch.reduce(0) { RuntimeUsageArithmetic.adding($0, $1.inputTokens) },
+            output: epoch.reduce(0) { RuntimeUsageArithmetic.adding($0, $1.outputTokens) },
             cost: epoch.reduce(0) { $0 + $1.costUSD }
         )
     }

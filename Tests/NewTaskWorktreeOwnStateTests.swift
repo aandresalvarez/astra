@@ -242,11 +242,11 @@ struct NewTaskWorktreeOwnStateTests {
         let older = TaskEvent(task: draft, eventType: TaskEventTypes.Task.worktreePrepared, payload: stale)
         older.timestamp = current.timestamp.addingTimeInterval(1)
         context.insert(older)
-        guard case .bound(_, let event, _) = TaskWorktreeBinding.state(of: draft) else {
+        guard case .bound(_, let eventID, _) = TaskWorktreeBinding.state(of: draft) else {
             Issue.record("The incarnation Git registers must still bind")
             return
         }
-        #expect(event.id == current.id)
+        #expect(eventID == current.id)
         // Deleting the draft queues the incarnation this install owns, not
         // nothing because the newer one at its path isn't owned.
         #expect(TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership).map(\.identity)

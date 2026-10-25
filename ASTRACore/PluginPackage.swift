@@ -297,7 +297,7 @@ public struct CapabilityIconDescriptor: Codable, Sendable, Equatable {
     }
 }
 
-public struct PluginPackage: Codable, Identifiable, Sendable {
+public struct PluginPackage: Codable, Equatable, Identifiable, Sendable {
     public var formatVersion: Int
     public var id: String
     public var name: String
@@ -495,7 +495,16 @@ public struct PluginSetupRequirement: Codable, Equatable, Sendable, Identifiable
     }
 }
 
-public struct PluginSkill: Codable, Sendable {
+public struct PluginSkill: Codable, Equatable, Sendable {
+    /// Stable component identity within the plugin (Plugins 2.0). Optional:
+    /// without it the identity derives from the name, as rows stamped by
+    /// earlier installers recorded it. Changing it is a rename only when the
+    /// new component lists the old identity in `replaces`.
+    public var id: String? = nil
+    /// Component identities this one takes over in an Update: their
+    /// settings, accounts and secrets move to it. A bare value is an `id`;
+    /// a value with a colon is a full component identity.
+    public var replaces: [String]? = nil
     public var name: String
     public var icon: String
     public var description: String
@@ -521,7 +530,16 @@ public struct PluginSkill: Codable, Sendable {
     }
 }
 
-public struct PluginConnector: Codable, Sendable {
+public struct PluginConnector: Codable, Equatable, Sendable {
+    /// Stable component identity within the plugin (Plugins 2.0). Optional:
+    /// without it the identity derives from the name, as rows stamped by
+    /// earlier installers recorded it. Changing it is a rename only when the
+    /// new component lists the old identity in `replaces`.
+    public var id: String? = nil
+    /// Component identities this one takes over in an Update: their
+    /// settings, accounts and secrets move to it. A bare value is an `id`;
+    /// a value with a colon is a full component identity.
+    public var replaces: [String]? = nil
     public var name: String
     public var serviceType: String
     public var icon: String
@@ -532,7 +550,7 @@ public struct PluginConnector: Codable, Sendable {
     public var configHints: [ConfigHint]
     public var notes: String
 
-    public struct CredentialHint: Codable, Sendable {
+    public struct CredentialHint: Codable, Equatable, Sendable {
         public var key: String
         public var hint: String
         /// Shape this credential must have, enforced at save time by
@@ -551,16 +569,41 @@ public struct PluginConnector: Codable, Sendable {
         }
     }
 
-    public struct ConfigHint: Codable, Sendable {
+    public struct ConfigHint: Codable, Equatable, Sendable {
         public var key: String
         public var hint: String
         public var isList: Bool
+        /// Where the value goes when it is the account's structure rather
+        /// than a setting (Plugins 2.0 `storage`): `account.baseURL` (its
+        /// endpoint) or `account.alias` (its name). Nil, or anything else,
+        /// for a setting.
+        public var storage: String?
 
-        public init(key: String, hint: String, isList: Bool) {
+        public static let accountBaseURL = "account.baseURL"
+        public static let accountAlias = "account.alias"
+
+        /// Whether the value is the account's endpoint or name, never a
+        /// setting or a credential.
+        public var isAccountStructure: Bool {
+            storage == Self.accountBaseURL || storage == Self.accountAlias
+        }
+
+        public init(key: String, hint: String, isList: Bool, storage: String? = nil) {
             self.key = key
             self.hint = hint
             self.isList = isList
+            self.storage = storage
         }
+    }
+
+    /// The field whose value is the account's endpoint, if any.
+    public var accountBaseURLField: ConfigHint? {
+        configHints.first { $0.storage == ConfigHint.accountBaseURL }
+    }
+
+    /// The field whose value is the account's name, if any.
+    public var accountAliasField: ConfigHint? {
+        configHints.first { $0.storage == ConfigHint.accountAlias }
     }
 
     public init(name: String, serviceType: String, icon: String, description: String,
@@ -578,7 +621,16 @@ public struct PluginConnector: Codable, Sendable {
     }
 }
 
-public struct PluginLocalTool: Codable, Sendable {
+public struct PluginLocalTool: Codable, Equatable, Sendable {
+    /// Stable component identity within the plugin (Plugins 2.0). Optional:
+    /// without it the identity derives from the name, as rows stamped by
+    /// earlier installers recorded it. Changing it is a rename only when the
+    /// new component lists the old identity in `replaces`.
+    public var id: String? = nil
+    /// Component identities this one takes over in an Update: their
+    /// settings, accounts and secrets move to it. A bare value is an `id`;
+    /// a value with a colon is a full component identity.
+    public var replaces: [String]? = nil
     public var name: String
     public var description: String
     public var icon: String
@@ -724,7 +776,7 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-public struct PluginTemplate: Codable, Sendable {
+public struct PluginTemplate: Codable, Equatable, Sendable {
     public var name: String
     public var icon: String
     public var description: String

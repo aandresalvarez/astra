@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 enum RuntimePathResolver {
     static let usrBin = "/usr/bin"
@@ -6,7 +7,17 @@ enum RuntimePathResolver {
     static let usrLocalBin = "/usr/local/bin"
     static let googleCloudSDKBin = "\(NSHomeDirectory())/google-cloud-sdk/bin"
     static let userLocalBin = "\(NSHomeDirectory())/.local/bin"
-    static let astraToolsPath = "\(NSHomeDirectory())/.astra/tools"
+    static let astraToolsPath = toolsDirectory()
+
+    static func toolsDirectory(channel: AppChannel = .current,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default) -> String {
+        if let isolated = AppChannelStoragePaths.developmentApplicationSupportOverride(
+            for: channel, environment: environment, fileManager: fileManager) {
+            return isolated.appendingPathComponent("Tools", isDirectory: true).path
+        }
+        return fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".astra/tools", isDirectory: true).path
+    }
 
     static let npmGlobalBin = "\(NSHomeDirectory())/.npm-global/bin"
 

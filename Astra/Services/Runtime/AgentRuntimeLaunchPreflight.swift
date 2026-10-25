@@ -1080,13 +1080,24 @@ enum AgentRuntimeLaunchPreflight {
                 approvalRecords: CapabilityApprovalStore().records()
             )
         }
-        let issues = CapabilityRuntimeIntegrityService.issues(
+        let packages = task.workspace.map { CapabilityRuntimeResourceMatcher.packageDefinitions(for: $0) } ?? []
+        var issues = CapabilityRuntimeIntegrityService.issues(
             for: task,
+            packages: packages,
             prerequisiteStatuses: prerequisiteStatuses,
             policyContext: policyContext,
             scope: .providerLaunch(contextText: contextText),
             capabilityResolutionSnapshot: resolutionSnapshot
         )
+        if let workspace = task.workspace {
+            var pluginIDs = Set(WorkspaceCapabilityActivation.enabledPluginIDs(of: workspace))
+            pluginIDs.formUnion(resolutionSnapshot.fullInventory.behaviorSkills.compactMap(\.originPackageID))
+            pluginIDs.formUnion(resolutionSnapshot.fullInventory.connectors.compactMap(\.originPackageID))
+            pluginIDs.formUnion(resolutionSnapshot.fullInventory.localTools.compactMap(\.originPackageID))
+            let names = Dictionary(packages.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+            issues += PluginOperationRuntimeAdmission.issues(in: workspace, pluginIDs: pluginIDs,
+                names: names, modelContext: modelContext)
+        }
         var fields = CapabilityAudit.taskContextFields(
             source: "capability_runtime_integrity",
             task: task,
@@ -1122,7 +1133,7 @@ enum AgentRuntimeLaunchPreflight {
             )
             var mcpServers = MCPRuntimeProjection.enabledServers(
                 for: task.workspace,
-                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(for: task.workspace),
                 approvalRecords: CapabilityApprovalStore().records()
             )
             let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
@@ -1296,7 +1307,7 @@ enum AgentRuntimeLaunchPreflight {
         workingDirectory: String,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
     ) async -> [String: HealthStatus] {
-        let packages = CapabilityRuntimeResourceMatcher.packageDefinitions()
+        let packages = CapabilityRuntimeResourceMatcher.packageDefinitions(for: task.workspace)
         let enabledPackageIDs = Set(task.workspace?.enabledCapabilityIDs ?? [])
         let resolvedScope = capabilityResolutionSnapshot.scope(.providerLaunch(contextText: contextText))
         let selectedSkillNames = Set(

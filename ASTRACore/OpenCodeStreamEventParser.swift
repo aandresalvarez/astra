@@ -66,7 +66,9 @@ public enum OpenCodeStreamEventParser {
         case .toolResult(let toolID, let content, let isError):
             return [.toolResult(id: toolID, content: content, isError: isError)]
         case .usage(let input, let output):
-            return [.stats(inputTokens: input, outputTokens: output, costUSD: nil, durationMs: nil, turns: nil)]
+            let frame = (try? JSONSerialization.jsonObject(with: Data(rawLine.utf8))) as? [String: Any]
+            let totals = frame?[OpenCodeStreamAccounting.totalsKey] as? [String: Any]
+            return [.stats(inputTokens: input, outputTokens: output, costUSD: totals?["cost"] as? Double, durationMs: nil, turns: nil)]
         case .result(let text, let cost, let input, let output, let duration, let turns, let isError):
             if isError {
                 return [.failed(message: text ?? "OpenCode CLI run failed.")]
@@ -128,6 +130,18 @@ public enum OpenCodeStreamEventParser {
         case "text":
             let events = textEvent(from: object)
             return .recognized(events.isEmpty ? [.unknown(type: type)] : events)
+        case "step_finish":
+            // This ends one model step, not the process/session. In particular,
+            // a tool-calls step can be followed by more work in the same run.
+            guard let part = object["part"] as? [String: Any],
+                  part["type"] as? String == "step-finish",
+                  part["reason"] is String else { return .recognized([.unknown(type: type)]) }
+            var events: [ParsedEvent] = [.control(type: "opencode.step_finish")]
+            if let totals = object[OpenCodeStreamAccounting.totalsKey] as? [String: Any],
+               let input = totals["input"] as? Int, let output = totals["output"] as? Int {
+                events.append(.usage(totalInputTokens: input, totalOutputTokens: output))
+            }
+            return .recognized(events)
         case "reasoning":
             let events = reasoningEvent(from: object)
             return .recognized(events.isEmpty ? [.unknown(type: type)] : events)

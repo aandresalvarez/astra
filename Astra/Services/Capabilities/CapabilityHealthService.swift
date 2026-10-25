@@ -7,6 +7,7 @@ struct CapabilityHealthIssue: Equatable, Identifiable {
         case unauthenticated
         case authorizationRequired = "authorization_required"
         case unresponsive
+        case notChecked = "not_checked"
     }
 
     let packageID: String
@@ -97,6 +98,14 @@ enum CapabilityHealthService {
                 resourceName: prerequisite.displayName,
                 message: "\(prerequisite.displayName): did not respond. \(detail). \(prerequisite.installHint)"
                     .trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        case .notChecked(let detail):
+            return CapabilityHealthIssue(
+                packageID: package.id,
+                packageName: package.name,
+                kind: .notChecked,
+                resourceName: prerequisite.displayName,
+                message: "\(prerequisite.displayName): \(detail)."
             )
         }
     }

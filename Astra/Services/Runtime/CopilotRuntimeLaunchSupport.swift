@@ -44,7 +44,7 @@ struct CopilotMCPLaunchProjection {
         if capabilities.supportsAdditionalMCPConfig {
             servers = MCPRuntimeProjection.enabledServers(
                 for: task.workspace,
-                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(for: task.workspace),
                 approvalRecords: CapabilityApprovalStore().records()
             )
             if let workspaceServer = DockerWorkspaceMCPProjection.resolvedServer(

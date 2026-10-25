@@ -125,9 +125,9 @@ public enum AntigravityStreamEventParser {
         // run failed. Observed: `{"status":"ERROR","response":"","error":
         // "invalid model selection (…): model … is not recognized"}`.
         //
-        // A print timeout does *not* land here: agy reports SUCCESS with an
-        // empty response and explains itself on stderr, which the empty-result
-        // path already treats as no usable result.
+        // A print timeout does *not* land here: agy reports SUCCESS and
+        // explains itself only on stderr, which the process runner reads once
+        // agy exits (`AntigravityCLIRuntime.printTimeoutStop`).
         let usage = usageEvent(in: result)
         if status == "SUCCESS" {
             return (usage.map { [$0] } ?? []) + [.completed(summary: response)]

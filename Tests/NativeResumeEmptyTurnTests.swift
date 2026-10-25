@@ -139,10 +139,16 @@ struct NativeResumeEmptyTurnTests {
         DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
         #expect(task.sessionId == "chat-xyz")
+        try #require(try RuntimeExecutionOwner.existing(task: task, context: context)?.canReplace == true,
+            "The initial fixture turn must provide a bound cleanup receipt before continuation")
 
         configure(worker, task)
         DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: context)
-        await worker.continueSession(task: task, message: "What number did I give you?", modelContext: context) { _ in }
+        let submission = try ExecutionRequestSubmissionService.submitFollowUp(message: "What number did I give you?", for: task, into: context).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
+        await worker.continueSession(task: task, message: "What number did I give you?",
+            existingMessageEventID: submission.eventID, turnRequestID: submission.requestID, modelContext: context) { _ in }
         try? FileManager.default.removeItem(atPath: root)
         return (runner, task, container)
     }
@@ -165,6 +171,18 @@ struct NativeResumeEmptyTurnTests {
         #expect(latest.stopReason != "no_usable_result")
     }
 
+    @Test("Expired fallback time never launches a replacement with unlimited zero timeout")
+    func expiredFallbackDoesNotLaunch() async throws {
+        let (runner, task, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyTurn, delayAfterStop: 0.2),
+            .init(lines: Self.freshAnswerTurn)
+        ], configure: { worker, _ in worker.maxRunSeconds = 0.1 })
+        defer { withExtendedLifetime(container) {} }
+        #expect(runner.nativeSessionIDs.count == 2)
+        #expect(task.runs.max { $0.startedAt < $1.startedAt }?.stopReason == "recovery_limits_exhausted")
+    }
+
     @Test("The re-run only gets the wall-clock allowance the first attempt left")
     func rerunSharesTheRunDeadline() async throws {
         let (runner, _, container) = try await runFollowUp(scripts: [
@@ -174,6 +192,7 @@ struct NativeResumeEmptyTurnTests {
         ], configure: { worker, _ in worker.maxRunSeconds = 600 })
         defer { withExtendedLifetime(container) {} }
 
+        try #require(runner.maxRunSeconds.count == 3)
         let resumed = try #require(runner.maxRunSeconds[1])
         let rerun = try #require(runner.maxRunSeconds[2])
         #expect(resumed == 600)
@@ -199,6 +218,7 @@ struct NativeResumeEmptyTurnTests {
             .init(lines: Self.freshAnswerTurn)
         ], configure: padHistory)
         defer { withExtendedLifetime(measuredContainer) {} }
+        try #require(measured.prompts.count == 3)
         let compact = AgentProcessMonitor.estimatedTokenCount(for: measured.prompts[1])
         let full = AgentProcessMonitor.estimatedTokenCount(for: measured.prompts[2])
         try #require(full > compact, "the fallback prompt must be the larger one for this test to mean anything")
@@ -216,6 +236,26 @@ struct NativeResumeEmptyTurnTests {
 
         // initial launch and the resumed attempt happen; the oversized re-run does not
         #expect(runner.nativeSessionIDs == [nil, "chat-xyz"])
+    }
+
+    @Test("Fallback prompt counts unreported input already charged to the owner")
+    func fallbackPromptUsesOwnerConsumption() async throws {
+        let (measured, _, firstContainer) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn), .init(lines: Self.reasoningOnlyTurn), .init(lines: Self.freshAnswerTurn)
+        ])
+        defer { withExtendedLifetime(firstContainer) {} }
+        try #require(measured.prompts.count == 3)
+        let full = AgentRuntimeProcessRunner.estimatedLaunchInputTokens(prompt: measured.prompts[2], runtime: .cursorCLI)
+        let (runner, task, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn), .init(lines: Self.reasoningOnlyTurn, chargedTokens: 500),
+            .init(lines: Self.freshAnswerTurn)
+        ], configure: { worker, task in
+            worker.budgetEnforcementModeOverride = .hardStop
+            task.tokenBudget = full + 100
+        })
+        defer { withExtendedLifetime(container) {} }
+        #expect(runner.nativeSessionIDs == [nil, "chat-xyz"])
+        #expect(task.runs.max { $0.startedAt < $1.startedAt }?.status == .budgetExceeded)
     }
 
     @Test("The re-run is told how many provider turns the empty attempt spent")
@@ -263,6 +303,7 @@ struct NativeResumeEmptyTurnTests {
             .init(lines: Self.initialTurn), .init(lines: Self.reasoningOnlyTurn), .init(lines: Self.freshAnswerTurn)
         ], configure: padHistory)
         defer { withExtendedLifetime(measuredContainer) {} }
+        try #require(measured.prompts.count == 3)
         let compact = AgentProcessMonitor.estimatedTokenCount(for: measured.prompts[1])
         let full = AgentProcessMonitor.estimatedTokenCount(for: measured.prompts[2])
         try #require(full > compact)
@@ -310,7 +351,7 @@ struct NativeResumeEmptyTurnTests {
     }
 
     @Test("Usage carry adds to every later usage event and stands alone only when none came")
-    func usageCarryArithmetic() {
+    func usageCarryArithmetic() throws {
         let carry = DiscardedAttemptUsage()
         carry.record(from: [
             .thinking(text: "t"),
@@ -322,6 +363,7 @@ struct NativeResumeEmptyTurnTests {
             .agent(.text(text: "hi")),
             .agent(.stats(inputTokens: 50, outputTokens: 5, costUSD: 0.25, durationMs: 7, turns: 1))
         ])
+        try #require(events.count == 2)
         guard case .agent(.stats(let input, let output, let cost, let duration, _)) = events[1] else {
             Issue.record("expected a stats event"); return
         }
@@ -334,6 +376,15 @@ struct NativeResumeEmptyTurnTests {
         #expect(alone.unappliedEvents().isEmpty)
 
         #expect(DiscardedAttemptUsage().apply(to: [.agent(.text(text: "x"))]).count == 1)
+        let extreme = DiscardedAttemptUsage()
+        extreme.record(from: [.stats(inputTokens: Int.max, outputTokens: 10, costUSD: nil, durationMs: nil, turns: nil)])
+        #expect(extreme.totalTokens == Int.max)
+        let combined = extreme.apply(to: [.agent(.stats(inputTokens: 100, outputTokens: Int.max, costUSD: nil, durationMs: nil, turns: nil))])
+        try #require(combined.count == 1)
+        guard case .agent(.stats(let largeInput, let largeOutput, _, _, _)) = combined[0] else {
+            Issue.record("Expected preserved cumulative usage"); return
+        }
+        #expect(largeInput == Int.max && largeOutput == Int.max)
     }
 
     @Test("The token ceiling shrinks by what an earlier attempt spent; unlimited and malformed budgets are left alone")
@@ -360,6 +411,7 @@ struct NativeResumeEmptyTurnTests {
         ]
         let (measured, _, measuredContainer) = try await runFollowUp(scripts: scripts, configure: padHistory)
         defer { withExtendedLifetime(measuredContainer) {} }
+        try #require(measured.prompts.count == 3)
         let full = AgentProcessMonitor.estimatedTokenCount(for: measured.prompts[2])
 
         // The full prompt fits the whole budget, but not what is left after the discarded attempt's 110 tokens.
@@ -394,6 +446,36 @@ struct NativeResumeEmptyTurnTests {
         #expect(task.sessionId == "chat-xyz")
     }
 
+    @Test("A successful empty result without stop proof cannot launch a replacement")
+    func missingStopProofBlocksFallback() async throws {
+        let (runner, task, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyTurn, providesStopProof: false),
+            .init(lines: Self.freshAnswerTurn)
+        ])
+        defer { withExtendedLifetime(container) {} }
+        #expect(runner.nativeSessionIDs == [nil, "chat-xyz"])
+        let owner = try #require(try RuntimeExecutionOwner.existing(task: task, context: container.mainContext))
+        #expect(!owner.canReplace)
+        #expect(owner.resourcesReleased != true)
+    }
+
+    @Test("A reaped scripted child without a native final signal cannot authorize fallback")
+    func missingNativeFinalBlocksFallback() async throws {
+        let (runner, task, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Array(Self.reasoningOnlyTurn.dropLast())),
+            .init(lines: Self.freshAnswerTurn)
+        ])
+        defer { withExtendedLifetime(container) {} }
+        #expect(runner.nativeSessionIDs == [nil, "chat-xyz"])
+        let owner = try #require(try RuntimeExecutionOwner.existing(task: task, context: container.mainContext))
+        #expect(owner.stopProof?.reaped == true)
+        #expect(owner.stopProof?.toolsStopped == false)
+        #expect(!owner.canReplace)
+        #expect(owner.resourcesReleased != true)
+    }
+
     @Test("A resumed turn that fails is not re-run")
     func failedResumedTurnIsNotRetried() async throws {
         let (runner, _, container) = try await runFollowUp(scripts: [
@@ -409,8 +491,13 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
     struct Script {
         var lines: [String]
         var exitCode = 0
+        var providesStopProof = true
+        var delayAfterStop: TimeInterval = 0
+        var chargedTokens = 0
     }
 
+    @MainActor private var owner: RuntimeExecutionOwner?
+    @MainActor func configureExecutionOwner(_ owner: RuntimeExecutionOwner?) { self.owner = owner }
     private var scripts: [Script]
     private(set) var nativeSessionIDs: [String?] = []
     private(set) var maxRunSeconds: [TimeInterval?] = []
@@ -449,13 +536,60 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
+        guard let owner, owner.isActive else {
+            Issue.record("The scripted provider requires an active execution owner")
+            return AgentProcessResult(exitCode: -1, error: "Fixture ownership missing")
+        }
+        guard !scripts.isEmpty else {
+            Issue.record("The worker launched more attempts than the fixture supplied")
+            return AgentProcessResult(exitCode: -1, error: "Fixture script missing")
+        }
         nativeSessionIDs.append(nativeContinuationSessionID)
         self.maxRunSeconds.append(maxRunSeconds)
         turnsAlreadyUsed.append(executionPolicy.providerTurnsAlreadyUsed)
         tokensAlreadyUsed.append(executionPolicy.providerTokensAlreadyUsed)
         prompts.append(prompt)
-        let script = scripts.isEmpty ? Script(lines: []) : scripts.removeFirst()
-        for line in script.lines { onLine(line, true) }
-        return AgentProcessResult(exitCode: script.exitCode)
+        let script = scripts.removeFirst()
+        // The fallback now needs an actual reaped child receipt. A scripted
+        // success alone is deliberately insufficient to authorize replacement.
+        // Arguments carry fixture JSON as data, never as executable shell text.
+        let process = AgentExecutionScopedProcess(executablePath: "/bin/sh",
+            arguments: ["-c", "printf '%s\\n' \"$@\"; exit \(script.exitCode)", "fixture"] + script.lines,
+            currentDirectory: NSTemporaryDirectory(), environment: [:])
+        let stdoutReader = AgentProcessPipeReader(process.stdoutFileHandle)
+        let stderrReader = AgentProcessPipeReader(process.stderrFileHandle)
+        let executionID: UUID
+        do { try owner.prepareLaunch(sessionID: nativeContinuationSessionID); executionID = owner.record.executionID }
+        catch { return AgentProcessResult(exitCode: -1, error: "Fixture ownership failed") }
+        let exitCode = await withCheckedContinuation { continuation in
+            process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
+            do { try process.run() }
+            catch { owner.didNotLaunch(); continuation.resume(returning: -1); return }
+            do { try owner.launched(process) }
+            catch { Issue.record("The scripted child could not bind its execution owner"); process.terminate() }
+        }
+        var stdout = Data()
+        let stdoutEOF = stdoutReader.finish { stdout.append($0) }
+        stderrReader.finish { _ in }
+        let evidence = RuntimeExecutionProcessEvidence(runtime: adapter.id)
+        for line in String(decoding: stdout, as: UTF8.self).split(separator: "\n").map(String.init) {
+            let events = adapter.parseProcessEvents(line: line, parsesJSONLines: true)
+            evidence.observeFrame(line, parsesJSONLines: true, events: events)
+            for event in events {
+                if case .systemInit(_, let sessionID) = event { owner.session(sessionID) }
+            }
+            onLine(line, true)
+        }
+        evidence.processExited(naturally: process.naturalSuccessfulExit, stdoutEOF: stdoutEOF)
+        let proof = script.providesStopProof
+            ? process.stopProof(executionID: executionID, toolsStopped: evidence.toolsStopped, remoteWorkExcluded: owner.remoteWorkExcluded) : nil
+        owner.stopped(proof: proof, turns: 1, tokens: script.chargedTokens, seconds: 0.05)
+        if script.delayAfterStop > 0 { try? await Task.sleep(for: .seconds(script.delayAfterStop)) }
+        var result = AgentProcessResult(exitCode: Int(exitCode))
+        result.executionStopProof = proof
+        result.executionTurnsSpent = 1
+        result.executionTokensSpent = script.chargedTokens
+        result.executionSecondsSpent = 0.05
+        return result
     }
 }

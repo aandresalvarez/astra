@@ -741,6 +741,9 @@ public struct ASTRAApp: App {
         // with credential projections or reads TaskRoleProfile.runtime — see
         // RuntimeSeamRegistration.swift.
         RuntimeSeamRegistration.registerAll()
+        // The person's plugin source store, from here on only: the test
+        // bootstrap runs `registerAll()` but never this.
+        PluginSourceStore.launchedApp()
 
         // A production bundle outside Applications is an installer launcher,
         // not a normal ASTRA session. Give SwiftUI an in-memory container so
@@ -799,7 +802,7 @@ public struct ASTRAApp: App {
             )
         let startup = AstraStoreStartupCoordinator.start(isUITesting: isUITesting, appInfo: appInfo)
         modelContainer = startup.modelContainer
-        startupBlocker = startup.blocker
+        startupBlocker = startup.blocker ?? (isUITesting ? nil : PluginSourceOperationRecovery.startupBlocker(modelContext: startup.modelContainer.mainContext))
         _storeLeaseHolder = StateObject(wrappedValue: StoreLeaseHolder(lease: startup.lease))
 
         Task.detached(priority: .utility) {
@@ -823,6 +826,7 @@ public struct ASTRAApp: App {
         if startupBlocker == nil {
             if !isUITesting {
                 LegacyWorkspaceCanvasItemPreferenceMigration.migrate(modelContainer: modelContainer)
+                PluginActivationMigration.migrateIfNeeded(modelContext: modelContainer.mainContext)
             }
             StartupCredentialMigrationService.schedule(modelContainer: modelContainer)
         }
@@ -917,6 +921,8 @@ public struct ASTRAApp: App {
             let pendingWorktreeCleanup = ((try? worktreeCleanup.pendingURLs()).map { !$0.isEmpty } ?? true)
                 || ((try? worktreeCleanup.ownership.creationJournal.pendingURLs()).map { !$0.isEmpty } ?? true)
                 || connectorCleanup
+                || ConnectorCredentialGenerationJournal.requiresRecoveryScan(modelContext: modelContext)
+                || SkillCredentialGenerationJournal.requiresRecoveryScan(modelContext: modelContext)
             // Every folder a mirror was written into is probed too, wherever
             // it is. The store's own workspaces are recorded first, so ones
             // imported before the registry existed are covered from now on.
@@ -934,7 +940,15 @@ public struct ASTRAApp: App {
                 excludedByIdentity: { movedDeletionMirrors = $0.map(\.path) },
                 vouchedWithoutScan: { recoveryVouchedWithoutScan = true },
                 registeredFolders: registryComplete ? mirrorRegistry.map { $0.folders() } ?? [] : nil,
-                afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) },
+                afterImport: {
+                    // A mirror an older build wrote recreates plugin rows:
+                    // fold them onto activations before anything runs.
+                    PluginActivationMigration.migrateIfNeeded(modelContext: modelContext)
+                    // Recovered activations meet the library's definitions:
+                    // renames move, nothing is released (`PluginUpdateService`).
+                    reconcilePluginActivations(modelContext: modelContext)
+                    settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true)
+                },
                 // A pending deletion, one made while recovery loads included,
                 // keeps its mirror out by path or, wherever a copy of it is
                 // now, as across volumes where its identity doesn't follow,
@@ -965,34 +979,53 @@ public struct ASTRAApp: App {
                 // namespace: credential cleanups wait, and their records make
                 // the next launch scan.
                 WorkspaceRecoveryTrust.set(recoveryVouchedWithoutScan ? .vouchedWithoutScan : .trusted)
+                // An interrupted Remove only needs the store's activations,
+                // which a recovery that loaded every mirror vouches for; it
+                // releases no credential, so it doesn't wait for a scan.
+                PluginRemoveJournal.resumePending(modelContext: modelContext)
                 // Only a scan vouches for credential owners: on a launch that
                 // skipped it, even a cleanup recorded meanwhile waits. Each
                 // pass spares what the other's pending records hold, so an
                 // unconfirmed workspace deletion is dropped only after both.
+                // Rewriting saved projections needs a trusted store, but
+                // does not require the credential-ownership scan.
+                PluginSourceOperationRecovery(library: CapabilityLibrary(), store: PluginSourceStore())
+                    .resumePending(modelContext: modelContext)
+                PluginOperationRecovery.resumePending(modelContext: modelContext)
                 if WorkspaceRecoveryTrust.allowsCleanup {
                     WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
                                                                   movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
+                    ConnectorCredentialGenerationJournal.resumeAfterWorkspaceRecovery(modelContext: modelContext)
+                    SkillCredentialGenerationJournal.resumeAfterWorkspaceRecovery(modelContext: modelContext)
                     ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
+                    PluginSecretCleanupOutbox.resumePending(modelContext: modelContext)
                     WorkspaceDeletionCleanupService.dropUnconfirmed(
                         modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker
                     )
                 }
             }
         }
-        // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()
-        // (runtime.loadPluginCatalog()), which runs synchronously in
-        // ContentView.handleAppear BEFORE this deferred Task. By the time we get
-        // here the Capabilities directory is already seeded/pruned, so the repair
-        // pass below sees a populated directory and its installedIDs early-out works.
-        // Re-syncing here would just rewrite every built-in JSON a second time.
-        let capabilityLibrary = CapabilityLibrary()
-        CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
-            modelContext: modelContext,
-            library: capabilityLibrary,
-            approvedPackages: PluginCatalog.builtInPackages
-        )
+        // Recovery may have re-created plugin rows from a mirror an older build
+        // wrote; fold them onto activations now rather than next launch.
+        PluginActivationMigration.migrateIfNeeded(modelContext: modelContext)
+        // The built-in sync in ContentView.handleAppear may have brought new
+        // definitions; every activation is reconciled with what is installed.
+        reconcilePluginActivations(modelContext: modelContext)
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
         settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: !skipWorkspaceRecovery)
+    }
+
+    /// The automatic reconcile: renamed components move, and an activation
+    /// records the new definition only when nothing would be released.
+    @MainActor
+    private static func reconcilePluginActivations(modelContext: ModelContext) {
+        do {
+            try PluginUpdateService.reconcileAll(modelContext: modelContext, mode: .automatic)
+        } catch {
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                "operation": "plugin_reconcile", "error_type": String(describing: error)
+            ], level: .error)
+        }
     }
 
     /// Settles the runs and turn requests a crash or quit left in flight.
@@ -1015,6 +1048,10 @@ public struct ASTRAApp: App {
     @MainActor private static var runtimeSettlementAutoExportWorkspaces = true
     @MainActor private static var worktreeCleanupRecovery: Task<Void, Never>?
 
+    /// Settles interrupted work and reconciles plugin activations with the
+    /// library (`runDeferredStartupWork`). `ContentView` starts the task
+    /// scheduler only after this, so an overdue schedule never launches
+    /// against a definition its activation hasn't met yet.
     @MainActor
     static func recoverInterruptedWork(modelContext: ModelContext, taskQueue: TaskQueue) async {
         runDeferredStartupWork(modelContext: modelContext)

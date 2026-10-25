@@ -192,12 +192,38 @@ public enum ASTRASchemaV19: VersionedSchema {
     }
 }
 
-/// The original V20 Dev format adds Connector.accountAlias and the workspace's
-/// paired default-account arrays. Keep this graph compatible with those stores;
-/// adding PluginActivation/AccountBinding or other persisted fields requires a
-/// new schema version. V19 stores lightweight-migrate to this additive shape.
+/// Original V20 Dev format, frozen before the plugin activation migration.
 public enum ASTRASchemaV20: VersionedSchema {
     public static var versionIdentifier = Schema.Version(20, 0, 0)
+
+    public static var models: [any PersistentModel.Type] {
+        [
+            ASTRASchemaV20Models.Workspace.self,
+            ASTRASchemaV20Models.AgentTask.self,
+            ASTRASchemaV20Models.TaskRun.self,
+            ASTRASchemaV20Models.TaskEvent.self,
+            ASTRASchemaV20Models.Artifact.self,
+            ASTRASchemaV20Models.Skill.self,
+            ASTRASchemaV20Models.Connector.self,
+            ASTRASchemaV20Models.LocalTool.self,
+            ASTRASchemaV20Models.TaskTemplate.self,
+            ASTRASchemaV20Models.TaskSchedule.self,
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self,
+            GoogleOAuthAccountProfile.self,
+            FeedbackReport.self,
+            PersistentStoreMigrationRecord.self,
+            TaskTurnRequest.self
+        ]
+    }
+}
+
+/// Plugins 2.0: additive activations and account bindings, after original V20.
+public enum ASTRASchemaV21: VersionedSchema {
+    public static var versionIdentifier = Schema.Version(21, 0, 0)
 
     public static var models: [any PersistentModel.Type] {
         [
@@ -219,7 +245,10 @@ public enum ASTRASchemaV20: VersionedSchema {
             GoogleOAuthAccountProfile.self,
             FeedbackReport.self,
             PersistentStoreMigrationRecord.self,
-            TaskTurnRequest.self
+            TaskTurnRequest.self,
+            PluginActivation.self,
+            AccountBinding.self,
+            PluginOperationReceipt.self
         ]
     }
 }
@@ -227,9 +256,9 @@ public enum ASTRASchemaV20: VersionedSchema {
 public enum ASTRASchema {
     /// The newest durable store schema this binary can read and write.
     /// Keep startup compatibility checks derived from this single owner.
-    public static let currentVersion = 20
+    public static let currentVersion = 21
 
     public static var current: Schema {
-        Schema(versionedSchema: ASTRASchemaV20.self)
+        Schema(versionedSchema: ASTRASchemaV21.self)
     }
 }

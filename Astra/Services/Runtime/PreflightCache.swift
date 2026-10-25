@@ -6,12 +6,11 @@ import ASTRACore
 /// re-probe every CLI — that hammers `which` for no benefit, and worse,
 /// `--version` calls can be slow for some tools (java, gcloud first-run).
 ///
-/// Keys are the `CLIPrerequisite.id` (binary + livenessArgs) so two
-/// packages sharing the same probe share a single cache slot.
+/// Keys are the `CLIPrerequisite.id` (binary, arguments, semantic test,
+/// context, timeout policy) so two packages sharing the same check share a single cache
+/// slot, and a stricter check of the same probe gets its own.
 ///
-/// Thread-safe: the cache is a plain dictionary guarded by an NSLock.
-/// Using a real `actor` would force every call site to `await`, which is
-/// noisy in SwiftUI bodies. The lock holds for O(1) dictionary ops only.
+/// Actor isolation protects the cached entries across concurrent consumers.
 public actor PreflightCache {
     public typealias ContextualHealthProbe = @Sendable (
         _ check: CLIContextualCheck,
@@ -68,6 +67,9 @@ public actor PreflightCache {
         }
         let checked = await checker.check(prereq)
         var fresh = normalizedStatus(checked, for: prereq)
+        if case .unverified = fresh, prereq.contextualCheck != nil {
+            fresh = .notChecked(detail: "The CLI did not answer. Workspace access has not been verified; check again before starting.")
+        }
         if case .healthy(let executablePath, _) = fresh,
            let contextualCheck = prereq.contextualCheck,
            let workingDirectory = normalizedWorkingDirectory(workingDirectory) {
@@ -117,8 +119,8 @@ public actor PreflightCache {
     /// variants. Used by the "Re-check" button and when a user runs an
     /// install action we know should change the status.
     public func invalidate(binary: String) {
-        // A prereq's id embeds the binary + args, so prefix-match the key.
-        let matching = entries.keys.filter { $0.hasPrefix("\(binary):") }
+        // A prereq's id starts with its escaped binary, so prefix-match the key.
+        let matching = entries.keys.filter { $0.hasPrefix("\(CLIPrerequisite.idField(binary)):") }
         for key in matching { entries.removeValue(forKey: key) }
     }
 

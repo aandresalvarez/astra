@@ -76,7 +76,12 @@ struct WorkspaceHoverTests {
     @Test("Configuration explicitly routes to the full workspace screen")
     func configurationRoute() throws {
         let source = try sidebarSource()
-        #expect(source.contains("openConfiguration: { openWorkspace(workspace) }"))
+        #expect(source.contains("openConfiguration: { openWorkspaceConfiguration(workspace) }"))
+        #expect(source.contains("onOpenWorkspaceConfiguration(workspace)"))
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let content = try String(contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"), encoding: .utf8)
+        #expect(content.contains("onOpenWorkspaceConfiguration: openWorkspaceConfiguration"))
+        #expect(content.contains("sceneSelection.openWorkspaceConfiguration(workspace)"))
         // The old details sheet must not be the hover configuration route.
         let start = try #require(source.range(of: "private func workspaceActions("))
         let end = try #require(source.range(of: "\n    }", range: start.upperBound..<source.endIndex))

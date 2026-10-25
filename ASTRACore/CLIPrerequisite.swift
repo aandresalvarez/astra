@@ -12,14 +12,34 @@ import Foundation
 /// JSON later if desired. The semantic check is an enum (not a closure)
 /// for the same reason.
 public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
-    /// Stable identity: we key caches on `binary`, so two specs for the
-    /// same binary share a result. The struct's `id` is a synthesised
-    /// composite so SwiftUI lists can key on it if they want per-package
-    /// rendering.
+    /// Stable identity: the whole check contract (binary, arguments,
+    /// semantic test, context, timeout policy), not the label. Health results are keyed by
+    /// it (`PreflightCache`, the Plugins surface), so two specs share a
+    /// result only when they check the same thing: an identical `docker
+    /// version` probe that also requires a reachable daemon is a different
+    /// check. Each value is escaped (`idField`), so no binary or argument
+    /// spells a delimiter: an argument `x:semantic=stdoutNonEmpty` is not
+    /// `x` checked with `.stdoutNonEmpty`, and `["a b"]` is not `["a", "b"]`.
     public var id: String {
-        let base = "\(binary):\(livenessArgs.joined(separator: " "))"
-        guard let contextualCheck else { return base }
-        return "\(base):context=\(contextualCheck.rawValue)"
+        var id = "\(Self.idField(binary)):\(livenessArgs.map(Self.idArgument).joined(separator: " "))"
+        if let semantic { id += ":semantic=\(semantic.rawValue)" }
+        if let contextualCheck { id += ":context=\(contextualCheck.rawValue)" }
+        if let slowStartTimeout { id += ":slowStart=\(slowStartTimeout)" }
+        return id
+    }
+
+    /// `value` with the id's field delimiter `:` and the escape `%`
+    /// percent-escaped; a value with neither is unchanged, so the ids of
+    /// ordinary checks (`gh:auth status`) are what they always were.
+    public static func idField(_ value: String) -> String {
+        value.replacingOccurrences(of: "%", with: "%25").replacingOccurrences(of: ":", with: "%3A")
+    }
+
+    /// An argument as `idField`, with the separator between arguments, a
+    /// space, escaped too, and an empty argument as `%00`, so `[""]` is not
+    /// `[]`.
+    private static func idArgument(_ argument: String) -> String {
+        argument.isEmpty ? "%00" : idField(argument).replacingOccurrences(of: " ", with: "%20")
     }
 
     /// Short binary name as it should appear on PATH, e.g. `gcloud`,
@@ -63,6 +83,16 @@ public struct CLIPrerequisite: Codable, Sendable, Equatable, Identifiable {
     /// from a slow CLI is not evidence that it is broken or signed out.
     /// `nil` keeps the checker's short default, where no answer is a failure.
     public var slowStartTimeout: TimeInterval?
+
+    /// Bound imported probe budgets before starting a process. A slow-start
+    /// opt-in must allow at least the normal probe budget, and cannot hold a
+    /// readiness scan indefinitely. Nil retains the strict default policy.
+    public static let slowStartTimeoutRange: ClosedRange<TimeInterval> = 3...60
+
+    public var hasValidSlowStartTimeout: Bool {
+        guard let slowStartTimeout else { return true }
+        return slowStartTimeout.isFinite && Self.slowStartTimeoutRange.contains(slowStartTimeout)
+    }
 
     public init(
         binary: String,
@@ -199,12 +229,17 @@ public enum CommonCLIPrerequisites {
     /// Second spec for the auth state — separate entry so the catalog
     /// renders "installed ✓, not authenticated ⚠" as two distinct lines
     /// and each has its own remediation link.
+    ///
+    /// `auth list` passed even when reauthentication was required, because
+    /// the expired account is still listed. `config-helper` refreshes the
+    /// credential and fails when it cannot; it prints only the expiry time,
+    /// never the token (the checker shows stdout as the "version").
     public static let gcloudAuth = CLIPrerequisite(
         binary: "gcloud",
-        livenessArgs: ["auth", "list", "--format=value(account)"],
+        livenessArgs: ["config", "config-helper", "--format=value(credential.token_expiry)"],
         semantic: .stdoutNonEmpty,
         displayName: "Google Cloud login",
-        purpose: "At least one active account is required for API calls.",
+        purpose: "A signed-in account whose credentials still refresh is required for API calls.",
         installURL: nil,
         installHint: "",
         authHint: "Run `gcloud auth login` to sign in.",

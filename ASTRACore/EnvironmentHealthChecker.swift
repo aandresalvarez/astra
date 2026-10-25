@@ -19,6 +19,9 @@ import Foundation
 ///                       hung background state.
 ///   - `missingBinary` — `which` / PATH scan returned nothing. User needs
 ///                       to install it.
+///   - `notChecked`    — the declared check is not a read-only status
+///                       command (`HealthCheckPolicy`), so it was never run.
+///                       Not usable: an unrun check is not a pass.
 public enum HealthStatus: Sendable, Equatable {
     case healthy(path: String, version: String)
     case unverified(path: String, detail: String)
@@ -26,12 +29,20 @@ public enum HealthStatus: Sendable, Equatable {
     case authorizationRequired(detail: String, authorizationURL: URL?)
     case unresponsive(detail: String)
     case missingBinary
+    case notChecked(detail: String)
+
+    /// The declared check was refused and never ran: neither a pass nor a
+    /// failure a sign-in or install could fix.
+    public var isNotChecked: Bool {
+        if case .notChecked = self { return true }
+        return false
+    }
 
     public var executablePath: String? {
         switch self {
         case .healthy(let path, _), .unverified(let path, _):
             return path
-        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary:
+        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary, .notChecked:
             return nil
         }
     }
@@ -43,7 +54,7 @@ public enum HealthStatus: Sendable, Equatable {
         switch self {
         case .healthy, .unverified:
             return true
-        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary:
+        case .unauthenticated, .authorizationRequired, .unresponsive, .missingBinary, .notChecked:
             return false
         }
     }
@@ -109,6 +120,7 @@ public struct EnvironmentHealthChecker: Sendable {
     private let overridePath: String?
     private let fallbackDirectories: [String]
     private let isExecutable: @Sendable (String) -> Bool
+    private let isInstalled: @Sendable (String) -> Bool
 
     public init(
         runner: BinaryRunner = ProcessBinaryRunner(),
@@ -117,20 +129,25 @@ public struct EnvironmentHealthChecker: Sendable {
         fallbackDirectories: [String] = EnvironmentHealthChecker.defaultFallbackDirectories,
         isExecutable: @escaping @Sendable (String) -> Bool = {
             FileManager.default.isExecutableFile(atPath: $0)
-        }
+        },
+        isInstalled: @escaping @Sendable (String) -> Bool = { TrustedExecutablePath.isInstalled($0) }
     ) {
         self.runner = runner
         self.envPath = envPath
         self.overridePath = overridePath
         self.fallbackDirectories = fallbackDirectories
         self.isExecutable = isExecutable
+        self.isInstalled = isInstalled
     }
 
     /// Check a prerequisite with the probe it declares. A prerequisite with a
     /// `slowStartTimeout` gets that budget, and comes back `.unverified` —
     /// never `.unresponsive` — when its probe still gets no answer.
     public func check(_ prerequisite: CLIPrerequisite) async -> HealthStatus {
-        await check(
+        guard prerequisite.hasValidSlowStartTimeout else {
+            return .notChecked(detail: "Invalid slow-start timeout; use a finite value from 3 to 60 seconds.")
+        }
+        return await check(
             binary: prerequisite.binary,
             livenessArgs: prerequisite.livenessArgs,
             semantic: prerequisite.semantic,
@@ -148,6 +165,9 @@ public struct EnvironmentHealthChecker: Sendable {
         timeout: TimeInterval = EnvironmentHealthChecker.defaultLivenessTimeout,
         onTimeout: TimeoutOutcome = .unresponsive
     ) async -> HealthStatus {
+        guard timeout.isFinite, timeout > 0, timeout <= CLIPrerequisite.slowStartTimeoutRange.upperBound else {
+            return .notChecked(detail: "Invalid probe timeout; use a positive, finite value no greater than 60 seconds.")
+        }
         // Step 1: resolve path via `env which <binary>`.
         let whichEnv: [String: String]? = overridePath.map { ["PATH": $0] }
         let whichResult = await runner.run(
@@ -165,6 +185,24 @@ public struct EnvironmentHealthChecker: Sendable {
             : whichPath
         guard !resolved.isEmpty else {
             return .missingBinary
+        }
+
+        // A check with no arguments only finds the binary; it never runs it.
+        if HealthCheckPolicy.isExistenceOnly(binary: binary, arguments: livenessArgs) {
+            return binary.contains("/") || resolved.hasPrefix("/")
+                ? .healthy(path: resolved, version: "")
+                : .notChecked(detail: "not checked: `\(resolved)` is not an absolute path")
+        }
+        // A check that is not a read-only status command is never run: it
+        // would run on every scan, unasked (`HealthCheckPolicy`).
+        guard HealthCheckPolicy.isReadOnly(binary: binary, arguments: livenessArgs) else {
+            return .notChecked(detail: HealthCheckPolicy.refusal(binary: binary, arguments: livenessArgs))
+        }
+        // And what was found must be that CLI: a declared path still an
+        // installed path once symlinks resolve, a bare name found on ASTRA's
+        // own search path as an absolute path (`TrustedExecutablePath`).
+        guard binary.contains("/") ? isInstalled(resolved) : resolved.hasPrefix("/") else {
+            return .notChecked(detail: "not checked: `\(resolved)` is not an installed copy of \((binary as NSString).lastPathComponent)")
         }
 
         // Step 2: liveness probe. Run the resolved binary directly so we're
@@ -196,6 +234,11 @@ public struct EnvironmentHealthChecker: Sendable {
         case .cancelled:
             return .unresponsive(detail: "cancelled")
         case .exited(let code) where code != 0:
+            if let detail = GCloudCredentialProbe.authenticationFailure(
+                binary: binary, arguments: livenessArgs, stderr: liveness.stderr
+            ) {
+                return .unauthenticated(detail: detail)
+            }
             let tail = liveness.stderr.isEmpty ? liveness.stdout : liveness.stderr
             return .unresponsive(detail: "exit \(code): \(tail.trimmed(max: 120))")
         case .exited:

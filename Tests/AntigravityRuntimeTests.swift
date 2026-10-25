@@ -14,7 +14,6 @@ struct AntigravityCLIRuntimeTests {
             workspacePath: "/workspace",
             additionalPaths: ["/workspace", "/tmp/context", "/tmp/context", ""],
             permissionPolicy: .restricted,
-            timeoutSeconds: 45,
             taskEnvironment: ["ASTRA_TEST_ENV": "1"],
             pathPrefix: ["/tmp/astra-shim", "/tmp/astra-shim"],
             includeAstraToolsPath: true,
@@ -22,7 +21,7 @@ struct AntigravityCLIRuntimeTests {
         )
 
         #expect(plan.executablePath == "/bin/agy")
-        #expect(plan.arguments.starts(with: ["--print", "hello", "--print-timeout", "45s"]))
+        #expect(plan.arguments.starts(with: ["--print", "hello", "--print-timeout", "0s"]))
         #expect(plan.arguments.contains("--sandbox"))
         #expect(plan.arguments.contains("--dangerously-skip-permissions") == false)
         #expect(plan.arguments.filter { $0 == "--add-dir" }.count == 1)
@@ -45,7 +44,6 @@ struct AntigravityCLIRuntimeTests {
             workspacePath: "/workspace",
             additionalPaths: [],
             permissionPolicy: .restricted,
-            timeoutSeconds: 30,
             taskEnvironment: ["HOME": "/tmp/task-home"],
             providerHomeDirectory: "/tmp/provider-home",
             permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)
@@ -70,7 +68,6 @@ struct AntigravityCLIRuntimeTests {
             workspacePath: "/workspace",
             additionalPaths: [],
             permissionPolicy: .restricted,
-            timeoutSeconds: 30,
             taskEnvironment: [:],
             permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
             defaults: defaults
@@ -89,7 +86,6 @@ struct AntigravityCLIRuntimeTests {
                 workspacePath: "/workspace",
                 additionalPaths: [],
                 permissionPolicy: .restricted,
-                timeoutSeconds: 30,
                 taskEnvironment: [:],
                 permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
                 defaults: defaults
@@ -105,7 +101,7 @@ struct AntigravityCLIRuntimeTests {
         AntigravityCLIRuntime.cacheStructuredOutputSupport(true, executablePath: "/bin/agy", defaults: defaults)
         #expect(AntigravityCLIRuntime.structuredOutputSupported(executablePath: "/bin/agy", defaults: defaults))
         #expect(plan().arguments.starts(with: [
-            "--print", "hello", "--output-format", "stream-json", "--print-timeout", "30s"
+            "--print", "hello", "--output-format", "stream-json", "--print-timeout", "0s"
         ]))
         #expect(plan().parsesJSONLines)
 
@@ -269,7 +265,6 @@ struct AntigravityCLIRuntimeTests {
             workspacePath: "/workspace",
             additionalPaths: [],
             permissionPolicy: .restricted,
-            timeoutSeconds: 30,
             taskEnvironment: ["AGY_ADC_AUTH": "true"],
             permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
             defaults: defaults
@@ -347,7 +342,6 @@ struct AntigravityCLIRuntimeTests {
             workspacePath: "/workspace",
             additionalPaths: [],
             permissionPolicy: .autonomous,
-            timeoutSeconds: 30,
             taskEnvironment: [:],
             permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .autonomous)
         )
@@ -364,7 +358,6 @@ struct AntigravityCLIRuntimeTests {
             workspacePath: "/workspace",
             additionalPaths: [],
             permissionPolicy: .restricted,
-            timeoutSeconds: 30,
             taskEnvironment: [:],
             diagnosticLogPath: "/workspace/.astra/tasks/TASK/diagnostics/antigravity-run.log",
             permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)

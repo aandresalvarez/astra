@@ -163,13 +163,13 @@ struct EnvironmentHealthCheckerTests {
     @Test("Unresponsive when liveness exits non-zero")
     func unresponsive_nonZeroExit() async {
         let stub = await makeStub(responses: [
-            ("/usr/bin/env which broken",
+            ("/usr/bin/env which node",
              RunResult(outcome: .exited(code: 0), stdout: "/opt/broken\n", stderr: "")),
             ("/opt/broken --version",
              RunResult(outcome: .exited(code: 2), stdout: "", stderr: "dylib not found: libfoo"))
         ])
         let checker = EnvironmentHealthChecker(runner: stub)
-        let status = await checker.check(binary: "broken")
+        let status = await checker.check(binary: "node")
         guard case .unresponsive(let detail) = status else {
             Issue.record("Expected .unresponsive, got \(status)")
             return
@@ -181,13 +181,13 @@ struct EnvironmentHealthCheckerTests {
     @Test("Unresponsive when liveness fails to launch")
     func unresponsive_launchFailed() async {
         let stub = await makeStub(responses: [
-            ("/usr/bin/env which ghost",
+            ("/usr/bin/env which jq",
              RunResult(outcome: .exited(code: 0), stdout: "/var/tmp/ghost\n", stderr: "")),
             ("/var/tmp/ghost --version",
              RunResult(outcome: .launchFailed("permission denied"), stdout: "", stderr: ""))
         ])
         let checker = EnvironmentHealthChecker(runner: stub)
-        let status = await checker.check(binary: "ghost")
+        let status = await checker.check(binary: "jq")
         guard case .unresponsive(let detail) = status else {
             Issue.record("Expected .unresponsive, got \(status)")
             return
@@ -299,7 +299,7 @@ struct EnvironmentHealthCheckerTests {
         "/usr/bin/env which gcloud",
         RunResult(outcome: .exited(code: 0), stdout: "/opt/homebrew/bin/gcloud\n", stderr: "")
     )
-    private static let gcloudAuthList = "/opt/homebrew/bin/gcloud auth list --format=value(account)"
+    private static let gcloudCredentialRefresh = "/opt/homebrew/bin/gcloud config config-helper --format=value(credential.token_expiry)"
 
     @Test("Slow-start prerequisite gets its own budget; no answer leaves it usable")
     func slowStart_versionTimeoutIsUnverified() async {
@@ -325,7 +325,7 @@ struct EnvironmentHealthCheckerTests {
     func slowStart_authTimeoutIsNotUnauthenticated() async {
         let stub = await makeStub(responses: [
             Self.gcloudWhich,
-            (Self.gcloudAuthList, RunResult(outcome: .timedOut, stdout: "", stderr: ""))
+            (Self.gcloudCredentialRefresh, RunResult(outcome: .timedOut, stdout: "", stderr: ""))
         ])
         let checker = EnvironmentHealthChecker(runner: stub)
 
@@ -341,7 +341,7 @@ struct EnvironmentHealthCheckerTests {
     func slowStart_realAnswersStillFail() async {
         let stub = await makeStub(responses: [
             Self.gcloudWhich,
-            (Self.gcloudAuthList, RunResult(outcome: .exited(code: 0), stdout: "\n", stderr: "")),
+            (Self.gcloudCredentialRefresh, RunResult(outcome: .exited(code: 0), stdout: "\n", stderr: "")),
             ("/opt/homebrew/bin/gcloud --version",
              RunResult(outcome: .exited(code: 1), stdout: "", stderr: "ERROR: python not found"))
         ])

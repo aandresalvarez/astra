@@ -961,9 +961,7 @@ enum TaskPolicyStore {
 
     @MainActor
     static func latestSelectedLevel(for task: AgentTask) -> AgentPolicyLevel? {
-        task.events
-            .filter { $0.type == selectedPolicyEventType }
-            .sorted { $0.timestamp < $1.timestamp }
+        TaskHistoryRead.records(for: task, ofTypes: [selectedPolicyEventType])
             .last
             .flatMap { event in
                 if let data = event.payload.data(using: .utf8),
@@ -1891,7 +1889,7 @@ private func diagnostics(for policy: AgentPolicy, context: PolicyRenderContext) 
             id: "\(context.runtimeID.rawValue).ask-checkpoints-brokered",
             severity: .warning,
             title: "Ask checkpoints are brokered by ASTRA",
-            message: "\(context.runtimeID.displayName) cannot ask for live approval mid-run. Blocked actions pause the task; approving resumes it in a new provider run.",
+            message: "\(context.runtimeID.displayName) cannot ask for live approval mid-run. Approval requires a new provider run, which stays blocked until ASTRA can prove the previous execution and its tools stopped. SSH work may keep that protection in place.",
             affectedCapability: "permissions",
             remediation: "Approve requested permissions when the task pauses, or pick a runtime with live approval support for ask-heavy work."
         ))

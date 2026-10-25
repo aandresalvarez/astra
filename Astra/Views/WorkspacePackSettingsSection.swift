@@ -87,7 +87,7 @@ struct WorkspacePackSettingsSection: View {
             isEnabled: enabled
         )
         guard workspace.enabledPackIDs != nextPackIDs else { return }
-        workspace.enabledPackIDs = nextPackIDs
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.packIDs = nextPackIDs }
         workspace.updatedAt = Date()
         WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
     }
