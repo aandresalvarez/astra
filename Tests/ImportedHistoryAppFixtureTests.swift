@@ -23,7 +23,7 @@ struct ImportedHistoryAppFixtureTests {
         let task = AgentTask(title: "History ALPHA", goal: "Synthetic ALPHA history. Answer only the requested marker.", workspace: workspace,
             tokenBudget: 25_000, model: "gpt-6.1-sol", runtime: .codexCLI)
         task.status = .completed; task.runtimeExplicitlySelected = true
-        task.createdAt = Date(timeIntervalSince1970: 1_800_000_000)
+        task.createdAt = Date().addingTimeInterval(-86_400)
         context.insert(workspace); context.insert(task)
         try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
         for offset in 0..<1305 {
