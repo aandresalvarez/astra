@@ -7,16 +7,22 @@ public final class ClaudeStreamAccounting: @unchecked Sendable {
     private let lock = NSLock()
     private var messages: [String: [String: Int]] = [:]
     private var activeMessages: [String: String] = [:]
-    private var input = 0
-    private var output = 0
+    private var input: Int
+    private var output: Int
+    private let sessionInput: Int
+    private let sessionOutput: Int
     private var invalid = false
     public var hasInvalidUsage: Bool { lock.withLock { invalid } }
-    public init() {}
+    public init(sessionInput: Int = 0, sessionOutput: Int = 0) {
+        self.sessionInput = max(0, sessionInput); self.sessionOutput = max(0, sessionOutput)
+        input = self.sessionInput; output = self.sessionOutput
+    }
 
     public func normalize(_ line: String) -> (line: String, invalidUsage: Bool) {
         lock.lock(); defer { lock.unlock() }
         guard var frame = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
               let type = frame["type"] as? String else { return (line, false) }
+        if type == "result" { return normalizeResult(frame, fallback: line) }
         let scope = frame["parent_tool_use_id"] as? String ?? "main"
         var event = frame["event"] as? [String: Any] ?? [:]
         var message = (type == "assistant" ? frame["message"] : event["message"]) as? [String: Any] ?? [:]
@@ -65,6 +71,30 @@ public final class ClaudeStreamAccounting: @unchecked Sendable {
             frame["event"] = event
         }
         return (encode(frame, fallback: line), false)
+    }
+
+    private func normalizeResult(_ value: [String: Any], fallback: String) -> (line: String, invalidUsage: Bool) {
+        var frame = value
+        if let models = frame["modelUsage"] as? [String: Any], !models.isEmpty {
+            guard ClaudeSessionUsageSnapshot.modelTotals(models) != nil else { invalid = true; return (fallback, true) }
+            return (fallback, false) // Native session totals already include all subagents.
+        }
+        guard let usage = frame["usage"] as? [String: Any] else { return (fallback, false) }
+        let aliases = [["input_tokens", "inputTokens"], ["cachedInputTokens"],
+                       ["cache_read_input_tokens", "cacheReadInputTokens", "cacheReadTokens"],
+                       ["cache_creation_input_tokens", "cacheCreationInputTokens", "cacheWriteTokens"],
+                       ["output_tokens", "outputTokens"]]
+        var counts = [Int?]()
+        for names in aliases {
+            guard let value = names.compactMap({ usage[$0] }).first else { counts.append(nil); continue }
+            guard let count = ProviderUsageArithmetic.reportedCount(value) else { invalid = true; return (fallback, true) }
+            counts.append(count)
+        }
+        guard counts.contains(where: { $0 != nil }) else { return (fallback, false) }
+        frame.removeValue(forKey: "modelUsage")
+        frame["usage"] = ["input_tokens": ProviderUsageArithmetic.sum([sessionInput] + counts.prefix(4).map { $0 ?? 0 }),
+                          "output_tokens": ProviderUsageArithmetic.adding(sessionOutput, counts[4] ?? 0)]
+        return (encode(frame, fallback: fallback), false)
     }
 
     private func removingUsage(_ frame: [String: Any], event: [String: Any], message: [String: Any], type: String, delta: Bool, fallback: String) -> String {

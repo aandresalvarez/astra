@@ -9,10 +9,13 @@ enum AgentUsageMetadataRecorder {
                        run: TaskRun, context: ModelContext, mode: AgentRuntimeRecordingMode) {
         if let cost, cost.isFinite, cost >= 0 {
             let baseline = ProviderSessionUsageEpoch.baseline(for: run, in: task)
-            let share = max(0, cost - baseline.cost)
-            if mode == .initial { task.costUSD = max(task.costUSD, share) }
-            else { task.costUSD += max(0, share - run.costUSD) }
-            run.costUSD = max(run.costUSD, share)
+            if baseline.reconciliationPending { ClaudeSessionUsageEvidence.markUnconfirmed(task: task, run: run, context: context) }
+            if baseline.costIsConfirmed {
+                let share = max(0, cost - baseline.cost)
+                if mode == .initial { task.costUSD = max(task.costUSD, share) }
+                else { task.costUSD += max(0, share - run.costUSD) }
+                run.costUSD = max(run.costUSD, share)
+            }
         }
         let details = [cost.map { String(format: "cost: $%.4f", $0) },
                        duration.map { "duration: \($0)ms" }, turns.map { "turns: \($0)" }]

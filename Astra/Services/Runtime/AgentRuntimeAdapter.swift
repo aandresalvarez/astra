@@ -1100,7 +1100,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             "claude-sonnet-4-6"
         ],
         supportsAstraRunProtocol: true,
-        supportsNativeContinuation: true,
+        supportsNativeContinuation: true, reportsCumulativeSessionUsage: true,
         supportsMCPServers: true,
         supportsReasoningEffort: true
     )

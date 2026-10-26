@@ -10,7 +10,7 @@ The local evidence root is `/private/tmp/astra-usage-six-qa`. This directory con
 
 | Runtime | Automated coverage | Real provider in ASTRA Dev |
 | --- | --- | --- |
-| Claude Code | Split message counters, cache counters, duplicate snapshots, absent versus explicit-zero usage, request budget, Retry and reload | Authentication unavailable at the last check. User is arranging sign-in; successful model usage is not claimed. |
+| Claude Code | Split message counters, exact native session snapshots, cache/subagent totals, duplicate snapshots, absent/zero usage, uncertain history, counter resets, timestamp ties, request budget, Retry and reload | Authenticated successfully. Fresh final test completed 11,624 + 13,054 + 17,331 tokens (42,009 total). The last request reused the second native session after restarting ASTRA; exact cost delta was $0.00106572. Native counters, persisted run and owner allowance agree; tools/process group stopped and resources released. The app labels the retained earlier inflated history as Usage unconfirmed. |
 | Codex CLI | Cumulative-session deltas, repeated/imported reports, incomplete estimated history, zero reports, request and recovery allowances | Multiple completed requests, including native session reuse after restart. A 25,000-token request reported 27,878 and stopped over budget; Retry did not launch again or refill its allowance. After the fix, a new request completed at 31,274/50,000 with lifetime usage 109,391, native session preserved and resources released. |
 | Antigravity CLI | Cumulative epochs, cache/thinking subsets, missing/invalid/zero counters, timing metadata, continuation frame evidence | Three completed responses: 10,141, 10,495 and 14,199 tokens. The last reused the previous session after restart. A context-update frame initially kept resources reserved. Fresh final retest completed 8,976 + 10,182 + 13,545 tokens; the last two share a native session, with verified tools/group termination and resources released. |
 | GitHub Copilot CLI | Per-call projection and deduplication, session baseline, final shutdown/file metrics, timestamps, cache/fallback counters, metadata and invalid values | Native HTTP 402 `quota_exceeded`. Successful accounting could not be verified. User authorized documenting this limitation and continuing. |
@@ -21,8 +21,13 @@ One terse Codex follow-up repeated the first response marker; explicitly describ
 
 Earlier failed Codex credentials were refreshed privately and tested in a separate task. Its original unresolved receipt was not removed. Likewise, the Antigravity receipt created before recognizing its context metadata remains reserved; the fix does not reinterpret old uncertain receipts into proof.
 
+Claude's first restart test exposed another native discrepancy: `usage` described the invocation, while `modelUsage` and `total_cost_usd` included the previous session consumption. A request with 17,283 new tokens was initially recorded as 30,325. The final fix persists exact native snapshots, projects live counters consistently and uses only demonstrated prior usage as credit. Missing snapshots, possible resets and ambiguous imported timestamps grant no inferred credit. Legacy records remain intact and are labeled unconfirmed; this change does not claim to reconstruct historical usage without evidence.
+
+The final Claude run reported cumulative session input/output 30,328/57. Subtracting the preceding confirmed snapshot 13,028/26 gives exactly 17,300/31 for that request. Its owner persisted 17,331 tokens and $0.00106572, matching the provider's exact cost difference ($0.00202238 minus $0.00095666). Screenshots `claude-final-after-restart.png` and `usage-dashboard-claude-final.png` capture the terminal result and the distinction between confirmed new accounting and uncertain old history.
+
 ## Changes verified by regression tests
 
+- Exact Claude native snapshots survive restart; evidence gaps and timestamp ties cannot confer an old baseline or double-charge a confirmed cost. Imported legacy histories remain explicitly uncertain.
 - Provider-specific normalization feeds the monitor and recorder the same counters. Claude message snapshots and Copilot API-call reports are not mistaken for interchangeable run totals.
 - Explicit zero is measured usage; absence or malformed counters remain unknown. Costs, duration and turns can be retained without inventing token evidence.
 - Saturating arithmetic prevents token overflow. Cache conventions remain provider-specific; Copilot premium-request multipliers are not labeled USD.
@@ -46,4 +51,6 @@ Focused regressions, full tests, a verified development build, pre-commit/pre-pu
 - Full serial suite before the final review fixes: 9,424 root tests passed, plus auxiliary package suites. This is an intermediate result; final-revision validation is required separately.
 - Final accounting/safety focused run: 715 tests in 53 suites passed serially. A combined parallel run had eight timeout/wait failures; unchanged assertions passed in the serial rerun.
 - UI/request regression run: 85 tests in six suites passed. Later diagnostics wording is covered by the mandatory hook and final suite.
-- The isolated verified build passed and both native defects were retested to terminal results.
+- The final accounting/history run passed 257 tests in 16 suites. After review hardened ambiguous evidence further, the final Claude/request run passed 16 tests in two suites.
+- Independent re-review of the final Claude changes found no outstanding actionable issues.
+- The isolated verified build passed, and the request-admission, Antigravity completion and Claude resumed-accounting defects were retested to terminal native results.

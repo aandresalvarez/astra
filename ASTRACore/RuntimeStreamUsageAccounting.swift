@@ -7,7 +7,7 @@ public final class RuntimeStreamUsageAccounting: @unchecked Sendable {
     private let copilot: CopilotStreamAccounting?
     private let openCode: OpenCodeStreamAccounting?
     public init(runtime: AgentRuntimeID, sessionInput: Int = 0, sessionOutput: Int = 0) {
-        claude = runtime == .claudeCode ? ClaudeStreamAccounting() : nil
+        claude = runtime == .claudeCode ? ClaudeStreamAccounting(sessionInput: sessionInput, sessionOutput: sessionOutput) : nil
         copilot = runtime == .copilotCLI ? CopilotStreamAccounting(sessionInput: sessionInput, sessionOutput: sessionOutput) : nil
         openCode = runtime == .openCodeCLI ? OpenCodeStreamAccounting() : nil
     }

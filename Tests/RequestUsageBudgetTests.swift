@@ -166,9 +166,16 @@ extension HeadlessChatScenarioTests {
     func requestBudgetExcludesPreviousRequests() async throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
+        let marker = Self.shQuoteSandboxPath(h.rootURL.appendingPathComponent("request-budget-first").path)
         let cli = try h.writeExecutable(named: "claude", script: Self.claudeScript(body: """
         printf '%s\\n' '{"type":"system","subtype":"init","session_id":"request-budget","model":"test"}'
-        printf '%s\\n' '{"type":"result","is_error":false,"duration_ms":10,"num_turns":1,"result":"Complete","usage":{"input_tokens":119990,"output_tokens":10}}'
+        if [ -e \(marker) ]; then
+          input=239980; output=20
+        else
+          touch \(marker)
+          input=119990; output=10
+        fi
+        printf '{"type":"result","is_error":false,"session_id":"request-budget","duration_ms":10,"num_turns":1,"result":"Complete","usage":{"input_tokens":119990,"output_tokens":10},"modelUsage":{"m":{"inputTokens":%s,"outputTokens":%s}},"total_cost_usd":0}\\n' "$input" "$output"
         exit 0
         """))
         let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic request", model: "test", tokenBudget: 200_000)

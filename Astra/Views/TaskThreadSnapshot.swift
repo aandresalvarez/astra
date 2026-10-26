@@ -235,7 +235,7 @@ struct TaskThreadSnapshotInput: Sendable {
     init(task: AgentTask, maxRuns: Int = 50, performanceFields: [String: String] = [:]) {
         let start = DispatchTime.now().uptimeNanoseconds
         let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs, maxRuns: maxRuns)
-        let budgets = TaskRequestBudget.Index(events: task.events)
+        let budgets = TaskRequestBudget.Index(events: task.events, runs: task.runs)
         self.init(
             goal: task.goal,
             createdAt: task.createdAt,
@@ -265,7 +265,7 @@ struct TaskThreadSnapshotInput: Sendable {
     }
 
     init(goal: String, createdAt: Date, events: [TaskEvent], runs: [TaskRun]) {
-        let budgets = TaskRequestBudget.Index(events: events)
+        let budgets = TaskRequestBudget.Index(events: events, runs: runs)
         self.init(
             goal: goal,
             createdAt: createdAt,

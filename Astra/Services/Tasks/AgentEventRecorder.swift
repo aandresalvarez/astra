@@ -832,7 +832,7 @@ enum AgentEventRecorder {
                 )
             }
             // A resumed session's cost is cumulative too: record only what this run's turn added.
-            if let cost = cost.map({ max(0, $0 - sessionBaseline.cost) }) {
+            if sessionBaseline.costIsConfirmed, let cost = cost.map({ max(0, $0 - sessionBaseline.cost) }) {
                 switch recordingMode {
                 case .initial:
                     task.costUSD = cost

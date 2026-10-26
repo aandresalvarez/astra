@@ -218,9 +218,12 @@ enum TaskThreadHistoryReader {
         let owner = TaskEventTypes.System.runtimeExecutionOwnership.rawValue
         let captured = TaskEventTypes.System.runtimeResultCaptured.rawValue
         let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
-            $0.task?.id == taskID && ($0.type == owner || $0.type == captured || ($0.type == "task.stats" && $0.payload.starts(with: "estimated tokens:")))
+            $0.task?.id == taskID && ($0.type == owner || $0.type == captured || $0.type == "astra.claude_session_usage_unconfirmed"
+                || $0.type == "astra.claude_session_usage"
+                || ($0.type == "task.stats" && $0.payload.starts(with: "estimated tokens:")))
         }))
-        let budgets = TaskRequestBudget.Index(events: events)
+        let allRuns = try modelContext.fetch(FetchDescriptor<TaskRun>(predicate: #Predicate<TaskRun> { $0.task?.id == taskID }))
+        let budgets = TaskRequestBudget.Index(events: events, runs: allRuns)
         return runs.map { run in
             TaskRunSnapshotInput(run: run, budget: run.task.map { budgets.budget(for: run, task: $0) })
         }

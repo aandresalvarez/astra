@@ -12,6 +12,8 @@ struct ProviderSessionUsageBaseline: Equatable, Sendable {
     /// Non-nil only when the ledger also contains estimated historical usage.
     var reportedInput: Int? = nil
     var reportedOutput: Int? = nil
+    var reconciliationPending = false
+    var costIsConfirmed = true
 
     var budgetBaseline: Self { .init(input: reportedInput ?? input, output: reportedOutput ?? output, cost: cost) }
 
@@ -45,6 +47,10 @@ enum ProviderSessionUsageEpoch {
               AgentRuntimeAdapterRegistry.adapter(for: runtime).descriptor.reportsCumulativeSessionUsage,
               let session = run.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
               !session.isEmpty else { return .zero }
+        if runtime == .claudeCode {
+            if task.events.contains(where: { $0.run?.id == run.id && $0.type == resetEventType }) { return .zero }
+            return ClaudeSessionUsageEvidence.baseline(for: run, task: task)
+        }
         let earlier = task.runs.filter { $0.id != run.id && $0.runtimeID == run.runtimeID
             && $0.providerSessionId == session && $0.startedAt < run.startedAt }
         guard !earlier.isEmpty else { return .zero }
@@ -72,13 +78,20 @@ enum ProviderSessionUsageEpoch {
         modelContext: ModelContext
     ) -> ProviderSessionUsageBaseline {
         let baseline = baseline(for: run, in: task)
+        if baseline.reconciliationPending { ClaudeSessionUsageEvidence.markUnconfirmed(task: task, run: run, context: modelContext) }
         if baseline.reportedInput != nil, input < baseline.input || output < baseline.output {
             let message = "Usage remains approximate because earlier turns have estimates rather than provider reports. ASTRA kept conservative historical totals; this request's limit uses the confirmed usage baseline."
             if !task.events.contains(where: { $0.run?.id == run.id && $0.type == TaskEventTypes.System.info.rawValue && $0.payload == message }) {
                 modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: message, run: run))
             }
         }
-        guard baseline.isReset(input: input, output: output) else { return baseline }
+        let nativeZeroReset = run.runtimeID == AgentRuntimeID.claudeCode.rawValue
+            && (input < baseline.input || output < baseline.output)
+            && task.events.contains { event in
+                guard let snapshot = ClaudeSessionUsageEvidence.snapshot(event: event, run: run) else { return false }
+                return snapshot.input == input && snapshot.output == output
+            }
+        guard baseline.isReset(input: input, output: output) || nativeZeroReset else { return baseline }
         let payload: [String: String] = [
             "session_id_prefix": String((run.providerSessionId ?? "").prefix(8)),
             "reported_input": String(input),

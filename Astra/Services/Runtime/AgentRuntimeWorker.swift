@@ -1015,6 +1015,9 @@ final class AgentRuntimeWorker {
         let discardedUsage = DiscardedAttemptUsage()
         let sessionUsageBaseline = nativeContinuationSessionID == nil ? .zero
             : ProviderSessionUsageEpoch.baseline(for: run, in: task)
+        if sessionUsageBaseline.reconciliationPending {
+            ClaudeSessionUsageEvidence.markUnconfirmed(task: task, run: run, context: modelContext)
+        }
         let persistRecordedEvent: (AgentRuntimeRecordedEvent) -> Void = { event in
             pendingEvents.add { [weak self] in
                 guard self != nil, !wait.retired else { return }
@@ -1037,6 +1040,12 @@ final class AgentRuntimeWorker {
             PerformanceSignposts.processStreamLine {
                 streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
                 streamDebugCapture?.recordLine(line, parsesJSONLines: parsesJSONLines)
+                if selectedRuntime == .claudeCode, let snapshot = ClaudeSessionUsageSnapshot(line: line) {
+                    pendingEvents.add { [weak self] in
+                        guard self != nil, !wait.retired else { return }
+                        ClaudeSessionUsageEvidence.record(snapshot, task: task, run: run, context: modelContext)
+                    }
+                }
                 let parsedBatch = PerformanceSignposts.parseProviderStream {
                     runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: parsesJSONLines)
                 }
@@ -1048,24 +1057,7 @@ final class AgentRuntimeWorker {
                 let emittedBatch = AgentRuntimeStreamEventBatch(events: emittedEvents)
                 emittedBatch.recordEmitted(to: streamTelemetry)
                 emittedBatch.recordEmitted(to: streamDebugCapture)
-                for filtered in emittedEvents {
-                    pendingEvents.add { [weak self] in
-                        guard self != nil, !wait.retired else { return }
-                        PerformanceSignposts.persistProviderEvent {
-                            runtimeAdapter.recordWorkerStreamEvent(
-                                filtered,
-                                mode: recordingMode,
-                                task: task,
-                                run: run,
-                                modelContext: modelContext,
-                                recordingState: recordingState
-                            )
-                        }
-                        if let parsed = runtimeAdapter.callbackEvent(from: filtered) {
-                            onEvent(parsed)
-                        }
-                    }
-                }
+                for filtered in emittedEvents { persistRecordedEvent(filtered) }
             }
         }
         // A resumed turn on a runtime that sometimes answers with reasoning only is held
