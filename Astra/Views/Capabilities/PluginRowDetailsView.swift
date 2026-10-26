@@ -34,6 +34,12 @@ struct PluginRowDetailsView<SetupRow: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !unreadableSettings.isEmpty {
+                ConnectorCredentialReentrySection(keys: unreadableSettings.map(\.field), subject: "plugin",
+                    labels: Dictionary(uniqueKeysWithValues: unreadableSettings.map { ($0.field, "\($0.skill.name) · \($0.key)") }),
+                    save: reenterSettings)
+                    .id(row.activation?.id)
+            }
             ForEach(Array(row.package.skills.enumerated()), id: \.offset) { _, skill in
                 skillSection(skill)
             }
@@ -47,6 +53,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
             footer
         }
         .onAppear(perform: loadDrafts)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loadDrafts() }
         // An Update while the row stays open renames or adds settings: the
         // drafts follow the activation and the definition.
         .onChange(of: draftSource) { _, _ in loadDrafts() }
@@ -230,6 +237,34 @@ struct PluginRowDetailsView<SetupRow: View>: View {
 
     // MARK: - Actions
 
+    private var unreadableSettings: [PluginOperations.SettingChange] {
+        guard settingDrafts.belongs(to: row.activation) else { return [] }
+        return row.package.skills.flatMap { skill in
+            PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation, package: row.package).compactMap { key in
+                let field = PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: key)
+                guard settingDrafts.failures[field] != nil, Skill.isSecretEnvironmentKey(key) else { return nil }
+                return PluginOperations.SettingChange(skill: skill, key: key, value: "")
+            }
+        }
+    }
+
+    private func reenterSettings(_ values: [String: String]) -> Bool {
+        let fields = unreadableSettings
+        guard !fields.isEmpty, fields.allSatisfy({ !(values[$0.field] ?? "").isEmpty }) else { return false }
+        do {
+            try actions.setSettings(fields.map {
+                PluginOperations.SettingChange(skill: $0.skill, key: $0.key, value: values[$0.field]!)
+            }, package: row.package, workspace: workspace, modelContext: modelContext)
+            loadDrafts()
+            onChanged()
+            return true
+        } catch {
+            loadDrafts()
+            onError(error.localizedDescription)
+            return false
+        }
+    }
+
     private func loadDrafts() {
         let snapshot = PluginSettingDrafts.load(package: row.package, activation: row.activation) { key, skill, activation in
             try PluginOperations.setting(key, of: skill, in: activation)
@@ -245,6 +280,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
             try actions.setSetting(key, to: value, of: skill, package: row.package, workspace: workspace, modelContext: modelContext)
             onChanged()
         } catch {
+            loadDrafts()
             onError("Couldn't save \(key): \(error.localizedDescription)")
         }
     }

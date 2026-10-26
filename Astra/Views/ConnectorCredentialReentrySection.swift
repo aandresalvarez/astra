@@ -10,6 +10,7 @@ struct ConnectorCredentialReentrySection: View {
     let keys: [String]
     /// What the values let the person keep using: "account" or "skill".
     var subject = "account"
+    var labels: [String: String] = [:]
     /// True once every value is saved; the fields keep what was typed otherwise.
     let save: ([String: String]) -> Bool
     @State private var values: [String: String] = [:]
@@ -29,7 +30,7 @@ struct ConnectorCredentialReentrySection: View {
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(keys, id: \.self) { key in
                 HStack(spacing: 6) {
-                    Text(key)
+                    Text(labels[key] ?? key)
                         .font(Stanford.ui(13, design: .monospaced))
                         .fontWeight(.medium)
                         .frame(minWidth: 100, alignment: .leading)

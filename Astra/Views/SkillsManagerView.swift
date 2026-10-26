@@ -582,6 +582,7 @@ struct SkillEditorView: View {
 
                         if !unreadableSecretKeys.isEmpty {
                             ConnectorCredentialReentrySection(keys: unreadableSecretKeys, subject: "skill") { reenterSecrets($0) }
+                                .id(skill.id)
                         }
 
                         if !directSecretVars.isEmpty {
@@ -790,6 +791,9 @@ struct SkillEditorView: View {
         }
         .onAppear { if skill.name == "New Skill" { isNameFocused = true } }
         .task(id: skill.id) { refreshUnreadableSecretKeys() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshUnreadableSecretKeys()
+        }
         .onDisappear {
             guard skill.modelContext === modelContext, !skill.isDeleted else { return }
             skill.updatedAt = Date()
@@ -851,6 +855,7 @@ struct SkillEditorView: View {
     }
 
     private func showSecretError(_ error: Error) {
+        refreshUnreadableSecretKeys()
         secretRecoveryID = nil
         if let problem = error as? PluginOperationProblem {
             if case .savedRecoveryPending(let id) = problem { secretRecoveryID = id }

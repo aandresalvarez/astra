@@ -385,6 +385,12 @@ struct CapabilityCatalogActionService {
         try PluginOperations.setSetting(key, to: value, of: skill, package: package, in: workspace, modelContext: modelContext)
     }
 
+    /// Re-entry may replace unreadable values in several components together.
+    func setSettings(_ changes: [PluginOperations.SettingChange], package: PluginPackage,
+                     workspace: Workspace, modelContext: ModelContext) throws {
+        try PluginOperations.setSettings(changes, package: package, in: workspace, modelContext: modelContext)
+    }
+
     /// A new account for a connector component, bound in this workspace.
     @discardableResult
     func addAccount(

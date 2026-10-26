@@ -169,6 +169,7 @@ enum SkillCredentialEditor {
             guard !PluginOperationProblem.preventsRollback(error) else { throw error }
             if attemptedCommit { modelContext.rollback() }
             previous.restore(skill)
+            PluginSavedStateRollback.finish(in: modelContext)
             prepared.discard()
             throw error
         }
