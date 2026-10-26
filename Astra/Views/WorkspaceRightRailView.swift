@@ -1090,14 +1090,6 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    // MARK: - Connector Subsection
-
-    // MARK: - Tools & Templates Pills
-
-    @ViewBuilder
-
-    // MARK: - Context Section
-
     private func toggleWorkspaceSetupItem(_ item: WorkspaceSetupItem) {
         withAnimation(disclosureAnimation) {
             if expandedWorkspaceSetupItems.contains(item) {
@@ -1475,12 +1467,6 @@ struct WorkspaceRightRailView: View {
                 .foregroundStyle(Stanford.lagunita)
         }
     }
-
-    // MARK: - Access Section
-
-    // MARK: - Routines Content
-
-    // MARK: - Collapsible Section Helpers
 
     private func markWorkspaceConfigurationChanged() {
         workspace.updatedAt = Date()
