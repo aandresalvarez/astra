@@ -117,7 +117,7 @@ enum TaskThreadHistoryReader {
         let counts = try totals(taskID: taskID, modelContext: modelContext)
         let page = TaskThreadHistoryTailPage(
             events: eventResult.items.map(TaskEventSnapshot.init),
-            runs: runResult.items.map(TaskRunSnapshotInput.init),
+            runs: try budgetedRunSnapshots(runResult.items, taskID: taskID, modelContext: modelContext),
             totalRunCount: counts.runs,
             totalEventCount: counts.events,
             hasEarlierRuns: runResult.hasEarlier,
@@ -189,7 +189,7 @@ enum TaskThreadHistoryReader {
         let counts = try totals(taskID: taskID, modelContext: modelContext)
         let totalRunCount = counts.runs
         let totalEventCount = counts.events
-        let runSnapshots = runs.map(TaskRunSnapshotInput.init)
+        let runSnapshots = try budgetedRunSnapshots(runs, taskID: taskID, modelContext: modelContext)
         let eventSnapshots = events.map(TaskEventSnapshot.init)
         let stateAnchors = try latestStateAnchors(
             taskID: taskID,
@@ -211,6 +211,19 @@ enum TaskThreadHistoryReader {
             totalRunCount: totalRunCount,
             totalEventCount: totalEventCount
         )
+    }
+
+    /// A narrow event query also supplies admission anchors omitted by a tail page.
+    private static func budgetedRunSnapshots(_ runs: [TaskRun], taskID: UUID, modelContext: ModelContext) throws -> [TaskRunSnapshotInput] {
+        let owner = TaskEventTypes.System.runtimeExecutionOwnership.rawValue
+        let captured = TaskEventTypes.System.runtimeResultCaptured.rawValue
+        let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
+            $0.task?.id == taskID && ($0.type == owner || $0.type == captured || ($0.type == "task.stats" && $0.payload.starts(with: "estimated tokens:")))
+        }))
+        let budgets = TaskRequestBudget.Index(events: events)
+        return runs.map { run in
+            TaskRunSnapshotInput(run: run, budget: run.task.map { budgets.budget(for: run, task: $0) })
+        }
     }
 
     /// The authoritative row counts for the task. Tail reads reconcile against

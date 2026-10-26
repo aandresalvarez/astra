@@ -132,9 +132,9 @@ enum AgentRuntimeBudgetPolicy {
         run: TaskRun,
         modelContext: ModelContext,
         phase: RunPhase,
-        budgetEnforcementMode: BudgetEnforcementMode
+        budgetEnforcementMode: BudgetEnforcementMode,
+        budget: AgentRuntimeBudgetSnapshot
     ) {
-        let budget = AgentRuntimeBudgetSnapshot(task: task)
         guard budget.hasEnforceableBudget else { return }
 
         let reportedBudgetWarning = budgetEnforcementMode == .warning && hasReportedTokensAboveBudget(budget: budget)
@@ -144,10 +144,10 @@ enum AgentRuntimeBudgetPolicy {
         let message: String
         let reason: String
         if result.budgetWarning || reportedBudgetWarning {
-            message = "Budget exceeded in warning mode (\(task.tokensUsed)/\(task.tokenBudget)). ASTRA kept the provider running because Budget Enforcement is set to Warning Only."
+            message = "Budget exceeded in warning mode (\(budget.tokensUsed)/\(budget.effectiveTokenBudget)). ASTRA kept the provider running because Budget Enforcement is set to Warning Only."
             reason = "budget_exceeded_warning_mode"
         } else {
-            message = "Completed after exceeding the reported provider token budget (\(task.tokensUsed)/\(task.tokenBudget)). The completion marker was emitted before the final usage report, so ASTRA recorded this as a warning instead of a budget kill."
+            message = "Completed after exceeding the reported provider token budget (\(budget.tokensUsed)/\(budget.effectiveTokenBudget)). The completion marker was emitted before the final usage report, so ASTRA recorded this as a warning instead of a budget kill."
             reason = "final_reported_budget_exceeded_after_completion"
         }
         modelContext.insert(TaskEvent(
@@ -159,8 +159,8 @@ enum AgentRuntimeBudgetPolicy {
         AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
             "phase": phase.rawValue,
             "reason": reason,
-            "tokens_used": String(task.tokensUsed),
-            "token_budget": String(task.tokenBudget)
+            "tokens_used": String(budget.tokensUsed),
+            "token_budget": String(budget.effectiveTokenBudget)
         ], level: .warning)
     }
 

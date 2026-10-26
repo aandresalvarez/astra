@@ -955,7 +955,7 @@ final class AgentRuntimeProcessRunner {
             }
         }
         let processEvidence = RuntimeExecutionProcessEvidence(runtime: plan.runtime)
-        let openCodeAccounting = plan.runtime == .openCodeCLI ? OpenCodeStreamAccounting() : nil
+        let usageAccounting = RuntimeStreamUsageAccounting(runtime: plan.runtime, sessionInput: reportedUsageBaseline.input, sessionOutput: reportedUsageBaseline.output)
         let processStartedAt = ProcessInfo.processInfo.systemUptime
         let deliveryChannel = AgentLivePermissionDeliveryChannel()
         let result: AgentProcessResult = await withCheckedContinuation { continuation in
@@ -1072,15 +1072,15 @@ final class AgentRuntimeProcessRunner {
                 }
                 let nativeEvents = adapter.parseProcessEvents(line: line, parsesJSONLines: plan.parsesJSONLines)
                 processEvidence.observeFrame(line, parsesJSONLines: plan.parsesJSONLines, events: nativeEvents)
-                let accounting = openCodeAccounting?.normalize(line)
-                if accounting?.invalidUsage == true {
-                    processEvidence.observe(.unknown(type: "opencode.invalid_usage"))
-                    errorOutput.append("OpenCode reported invalid step usage. ASTRA stopped the run to preserve its remaining limits.")
+                let accounting = usageAccounting.normalize(line)
+                if accounting.invalidUsage {
+                    processEvidence.observe(.unknown(type: "runtime.invalid_usage"))
+                    errorOutput.append("The provider reported invalid usage. ASTRA stopped the run to preserve its remaining limits.")
                     process.terminate()
                 }
-                let deliveredLine = accounting?.line ?? line
+                let deliveredLine = accounting.line
                 onLine(deliveredLine, plan.parsesJSONLines)
-                let parsedEvents = accounting == nil ? nativeEvents : adapter.parseProcessEvents(line: deliveredLine, parsesJSONLines: plan.parsesJSONLines)
+                let parsedEvents = adapter.parseProcessEvents(line: deliveredLine, parsesJSONLines: plan.parsesJSONLines)
                 for parsed in parsedEvents {
                     if case .systemInit(_, let sessionID) = parsed {
                         ownershipEvents.add { owner?.session(sessionID) }
@@ -1190,7 +1190,7 @@ final class AgentRuntimeProcessRunner {
                     ], level: .error)
                 }
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
-                let invalidAccounting = openCodeAccounting?.hasInvalidUsage == true
+                let invalidAccounting = usageAccounting.hasInvalidUsage
                 var processResult = AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
@@ -1201,7 +1201,7 @@ final class AgentRuntimeProcessRunner {
                     policyApprovalRequired: monitor.policyApprovalRequired,
                     policyApprovalMessage: monitor.policyApprovalMessage,
                     runtimeStopReason: invalidAccounting ? "runtime_accounting_invalid" : dockerFailure?.stopReason ?? monitor.runtimeStopReason ?? selfStop?.reason,
-                    runtimeStopMessage: invalidAccounting ? "OpenCode usage could not be verified. ASTRA preserved the remaining limits and blocked recovery." : dockerFailure?.message ?? monitor.runtimeStopMessage ?? selfStop?.message,
+                    runtimeStopMessage: invalidAccounting ? "Provider usage could not be verified. ASTRA preserved the remaining limits and blocked recovery." : dockerFailure?.message ?? monitor.runtimeStopMessage ?? selfStop?.message,
                     runtimeRepairContext: dockerFailure == nil ? monitor.runtimeRepairContext : nil,
                     budgetExceeded: monitor.budgetExceeded,
                     budgetWarning: monitor.budgetWarning,
@@ -1277,17 +1277,17 @@ final class AgentRuntimeProcessRunner {
         let stdoutBuffer = AgentLockedBuffer()
         let stderrBuffer = AgentLockedBuffer()
         let stdoutLineBuffer = AgentLockedBuffer()
-        let openCodeAccounting = plan.runtime == .openCodeCLI ? OpenCodeStreamAccounting() : nil
+        let usageAccounting = RuntimeStreamUsageAccounting(runtime: plan.runtime)
         let runState = AgentUtilityScopedProcessRunState()
         let outputAllowance = AgentUtilityOutputAllowance(AgentUtilityExecutionLimits.maximumOutputBytes)
         let outputLimitResult = AgentUtilityRunResult(exitCode: -1, output: "", error: "Utility output exceeded its configured limit.")
 
         let deliverAccountedLine: @Sendable (String, Bool) -> AgentUtilityRunResult? = { line, newline in
-            let normalized = openCodeAccounting?.normalize(line)
-            let delivered = normalized?.line ?? line
+            let normalized = usageAccounting.normalize(line)
+            let delivered = normalized.line
             stdoutBuffer.append(delivered + (newline ? "\n" : ""))
-            if normalized?.invalidUsage == true {
-                return AgentUtilityRunResult(exitCode: -1, output: "", error: "OpenCode reported invalid step usage.")
+            if normalized.invalidUsage {
+                return AgentUtilityRunResult(exitCode: -1, output: "", error: "The provider reported invalid usage.")
             }
             return stdoutLineHandler?(delivered)
         }
@@ -1296,7 +1296,7 @@ final class AgentRuntimeProcessRunner {
         // protects the final partial-line flush after the reader is sealed.
         let handleStdoutLocked: @Sendable (String) -> AgentUtilityRunResult? = { chunk in
             guard outputAllowance.accept(chunk.utf8.count) else { return outputLimitResult }
-            if openCodeAccounting != nil {
+            if plan.parsesJSONLines {
                 for line in stdoutLineBuffer.appendAndDrainLinesLocked(chunk) {
                     if let result = deliverAccountedLine(line, true) { return result }
                 }
@@ -1316,7 +1316,7 @@ final class AgentRuntimeProcessRunner {
             let remaining = stdoutLineBuffer.drainRemainingLocked()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !remaining.isEmpty else { return nil }
-            if openCodeAccounting != nil { return deliverAccountedLine(remaining, false) }
+            if plan.parsesJSONLines { return deliverAccountedLine(remaining, false) }
             return stdoutLineHandler?(remaining)
         }
 

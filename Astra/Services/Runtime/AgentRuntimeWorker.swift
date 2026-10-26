@@ -336,9 +336,10 @@ final class AgentRuntimeWorker {
             return
         }
         let request = turnRequestID.flatMap { try? TaskTurnRequestRepository.request(id: $0, in: modelContext) }
-        let newUserTurn = RuntimeExecutionAdmission.resolve(request: request, task: task).isNewUserTurn
+        let admission = RuntimeExecutionAdmission.resolve(request: request, task: task)
         guard let executionOwner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
-            maxRunSeconds: maxRunSeconds, newUserTurn: newUserTurn, launchTask: launchTask,
+            maxRunSeconds: maxRunSeconds, newUserTurn: admission.isNewUserTurn,
+            newUserRequest: admission == .userInstruction, launchTask: launchTask,
             resourceClaims: executionPolicy.admittedResourceClaims) else { return }
         currentExecutionOwner = executionOwner
         defer { RemoteWorkspaceJobLaunchPolicy.finish(taskID: executionOwner.record.taskID); executionOwner.finish(); currentExecutionOwner = nil }
@@ -1086,7 +1087,7 @@ final class AgentRuntimeWorker {
             attemptPolicy.recoveryAllowance = executionOwner.record.limits
             attemptPolicy.providerTurnsAlreadyUsed = priorTurns + recoveryTurnsSpent
             attemptPolicy.providerTokensAlreadyUsed = RuntimeUsageArithmetic.adding(RuntimeUsageArithmetic.adding(priorTokens, supervisionReservations), recoveryTokensSpent)
-            attemptPolicy.providerSessionUsageBaseline = sessionUsageBaseline
+            attemptPolicy.providerSessionUsageBaseline = sessionUsageBaseline.budgetBaseline
             return await self.processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
             prompt: launchPrompt,
@@ -1359,12 +1360,13 @@ final class AgentRuntimeWorker {
                 verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
                     fallbackRuntime: selectedRuntime, preferredModel: validationModel, modelContext: modelContext),
                 timeoutSeconds: timeoutSeconds, budgetEnforcementMode: budgetEnforcementMode.rawValue,
-                effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
+                effectiveTokenBudget: min(executionOwner.record.limits.tokenCeiling, AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask)),
                 tokensUsed: task.tokensUsed, agentReportedError: recordingState.agentReportedError(for: run),
                 cancelled: cancellationRequested, failureDiagnostic: failureDiagnostic,
                 approvedPlan: approvedPlan, chainedGoal: task.chainedGoal, scheduleID: task.originScheduleID,
                 sessionMessage: runtimeAdapter.sessionTurnMessage(task: task, promptOverride: promptOverride,
-                    startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase))
+                    startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase),
+                requestTokensUsed: executionOwner.record.limits.tokensSpent)
 
         // Before the outcome branches, not inside one. What the run left behind
         // for the user is waiting whether the run succeeded, was cancelled, or
@@ -1487,7 +1489,8 @@ final class AgentRuntimeWorker {
     ) {
         guard runtimeStopReason != RuntimeProviderResourceRegistry.Block.stopReason,
               runtimeAdapter.recordsEstimatedUsageWhenProviderUsageMissing,
-              run.tokensUsed == 0 else {
+              run.tokensUsed == 0,
+              !ProviderUsageEvidence.hasReport(run: run, task: task) else {
             return
         }
 

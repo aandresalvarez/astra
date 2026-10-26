@@ -22,8 +22,6 @@ extension CopilotCLIRuntimeAdapter {
         let task = context.task
         let run = context.run
         let ownSession = run.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let needsUsage = run.tokensUsed == 0
-        guard ownSession.isEmpty || needsUsage else { return }
         let accepts: (String, Date) -> Bool = ownSession.isEmpty
             ? CopilotSessionMetricsReader.launchCreatedSessionFilter(
                 task: task, run: run, runStartedAt: context.runStartedAt)
@@ -37,6 +35,7 @@ extension CopilotCLIRuntimeAdapter {
                 copilotHome: trimmed,
                 taskID: task.id,
                 modifiedSince: context.runStartedAt.addingTimeInterval(-CopilotSessionMetricsReader.metricsWindow),
+                metricsSince: context.runStartedAt,
                 accepts: accepts
             )
         }
@@ -44,12 +43,12 @@ extension CopilotCLIRuntimeAdapter {
         if ownSession.isEmpty {
             CopilotSessionMetricsReader.adoptSession(session.sessionID, task: task, run: run)
         }
-        guard needsUsage, let metrics = session.metrics else { return }
+        guard let metrics = session.metrics else { return }
         AgentEventRecorder.recordCopilotEvent(
             metrics.event,
             to: task,
             run: run,
-            modelContext: context.modelContext, recordingMode: context.recordingMode,
+            modelContext: context.modelContext, recordingMode: run.tokensUsed > 0 ? .followUp : context.recordingMode,
             recordingState: context.recordingState
         )
         if let parsed = AgentEventRecorder.parsedEvent(from: metrics.event) {

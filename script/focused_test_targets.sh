@@ -20,6 +20,18 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Runtime/NativeResumeEmptyTurnGate.swift|Tests/NativeResumeEmptyTurnTests.swift)
+      add_target "NativeResumeEmptyTurnTests|RuntimeUsage"
+      ;;
+  esac
+
+  case "$path" in
+    ASTRACore/AgentRuntimeTypes.swift|Astra/Services/Runtime/AgentProcessSupport.swift|Astra/Services/Tasks/AgentUsageMetadataRecorder.swift|ASTRACore/*StreamAccounting.swift|ASTRACore/ProviderUsageArithmetic.swift|ASTRACore/*StreamEventParser.swift|Astra/Models/TaskRequestBudget.swift|Astra/Services/Tasks/ProviderUsageEvidence.swift|Astra/Services/Tasks/ProviderSessionUsageEpoch.swift|Astra/Services/Tasks/AgentEventRecorder.swift|Astra/Services/Tasks/TaskThreadHistoryReader.swift|Astra/Views/TaskThreadSnapshot.swift|Astra/Services/Runtime/CopilotSessionMetricsReader.swift|Astra/Services/Runtime/CopilotCLIRuntimeAdapter+Session.swift|Astra/Services/Runtime/RuntimeTurnOutcomeService.swift|Astra/Services/Runtime/RuntimeTurnSettlementService.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift|Astra/Services/Runtime/RuntimeExecutionOwner.swift|Astra/Services/Runtime/RuntimeExecutionAdmission.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Tests/RuntimeUsage*Tests.swift|Tests/RequestUsageBudgetTests.swift)
+      add_target "RuntimeUsage|requestBudget|CumulativeSessionUsage|ProviderSessionUsageEpoch|CopilotSessionDiscovery|TaskThreadHistory|TaskThreadSnapshot|AntigravityStreamEventParser|OpenCodeStreamAccounting"
+      ;;
+  esac
+
+  case "$path" in
     ASTRACore/CodexUsageHistory.swift|Astra/Services/Tasks/CodexSessionUsage*.swift|Astra/Services/Persistence/WorkspaceConfigManager+CodexUsageHistory.swift|Astra/Services/Tasks/WorkspaceImportOrchestrator.swift|Tests/CodexSessionUsageCorrection*.swift)
       add_target "CodexSessionUsageCorrection|CumulativeSessionUsage|ProviderSessionUsageEpoch|WorkspaceImportOrchestrator|RuntimeRecoveryOwnershipTests"
       return

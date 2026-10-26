@@ -36,6 +36,9 @@ enum RuntimeTurnSettlementService {
         let chainedGoal: String
         let scheduleID: UUID?
         var sessionMessage: String? = nil
+        /// The persisted execution owner includes every retry and recovery of this request.
+        var requestTokensUsed: Int? = nil
+        var budgetTokensUsed: Int { requestTokensUsed ?? tokensUsed }
     }
 
     struct Verdict: Codable {
@@ -84,7 +87,7 @@ enum RuntimeTurnSettlementService {
     /// budget, both end the run as failed.
     static func finishedCleanly(checkpoint: Checkpoint, taskStatus: TaskStatus) -> Bool {
         let budget = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: checkpoint.effectiveTokenBudget,
-                                                tokensUsed: checkpoint.tokensUsed)
+                                                tokensUsed: checkpoint.budgetTokensUsed)
         let overBudget = AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
             result: checkpoint.result,
             budget: budget,

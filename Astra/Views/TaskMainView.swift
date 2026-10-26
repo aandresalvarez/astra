@@ -2298,9 +2298,11 @@ struct TaskMainView: View {
         if presentation.files.count > 0 {
             parts.append("\(presentation.files.count) \(presentation.files.count == 1 ? "file" : "files")")
         }
-        if shouldShowBudgetTokenCount(run) {
-            let used = max(task.tokensUsed, run.tokensUsed)
-            parts.append("Budget \(Formatters.formatTokens(used))/\(Formatters.formatTokens(task.tokenBudget))")
+        if run.requestUsageReconciliationPending {
+            parts.append("Request usage unconfirmed")
+        } else if shouldShowBudgetTokenCount(run) {
+            let used = run.requestBudgetTokensUsed
+            parts.append("Request budget \(Formatters.formatTokens(used))/\(Formatters.formatTokens(run.requestTokenCeiling))")
         }
         if let duration = runFooterDurationLabel(run, now: now) {
             parts.append(duration)
@@ -2337,9 +2339,9 @@ struct TaskMainView: View {
     }
 
     private func shouldShowBudgetTokenCount(_ run: TaskRunSnapshot) -> Bool {
-        guard task.tokenBudget > 0 else { return false }
-        let used = max(task.tokensUsed, run.tokensUsed)
-        return task.status == .budgetExceeded || Double(used) >= Double(task.tokenBudget) * 0.8
+        guard run.requestTokenCeiling > 0, run.requestTokenCeiling != Int.max else { return false }
+        let used = run.requestBudgetTokensUsed
+        return run.status == .budgetExceeded || Double(used) >= Double(run.requestTokenCeiling) * 0.8
     }
 
     private func runActivityDisclosure(

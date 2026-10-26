@@ -1823,6 +1823,13 @@ struct CopilotWorkerExecutionTests {
         {"type":"user.message","data":{"content":"Task thread: \(task.id.uuidString)\\nTask Output Folder: .astra/tasks/\(String(task.id.uuidString.prefix(8)))"}}
         {"type":"session.shutdown","data":{"totalApiDurationMs":42,"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":2,"cost":1},"usage":{"inputTokens":10,"outputTokens":5,"cacheReadTokens":7,"cacheWriteTokens":3}}}}}
         JSON
+        python3 - "$session_dir/events.jsonl" <<'STAMP'
+        import sys,json,datetime,pathlib
+        p=pathlib.Path(sys.argv[1])
+        rows=[json.loads(line) for line in p.read_text().splitlines()]
+        for row in rows: row['timestamp']=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
+        p.write_text('\\n'.join(json.dumps(row) for row in rows)+'\\n')
+        STAMP
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
@@ -1886,6 +1893,13 @@ struct CopilotWorkerExecutionTests {
         {"type":"user.message","data":{"content":"Task thread: \(task.id.uuidString)\\nTask Output Folder: .astra/tasks/\(String(task.id.uuidString.prefix(8)))"}}
         {"type":"session.shutdown","data":{"totalApiDurationMs":84,"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":3,"cost":1},"usage":{"inputTokens":3000,"outputTokens":500,"cacheReadTokens":2500,"cacheWriteTokens":1500}}}}}
         JSON
+        python3 - "$session_dir/events.jsonl" <<'STAMP'
+        import sys,json,datetime,pathlib
+        p=pathlib.Path(sys.argv[1])
+        rows=[json.loads(line) for line in p.read_text().splitlines()]
+        for row in rows: row['timestamp']=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
+        p.write_text('\\n'.join(json.dumps(row) for row in rows)+'\\n')
+        STAMP
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
@@ -1957,6 +1971,13 @@ struct CopilotWorkerExecutionTests {
         {"type":"user.message","data":{"content":"Task thread: \(task.id.uuidString)\\nTask Output Folder: .astra/tasks/\(String(task.id.uuidString.prefix(8)))"}}
         {"type":"session.shutdown","data":{"totalApiDurationMs":84,"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":3,"cost":1},"usage":{"inputTokens":3000,"outputTokens":500,"cacheReadTokens":2500,"cacheWriteTokens":1500}}}}}
         JSON
+        python3 - "$session_dir/events.jsonl" <<'STAMP'
+        import sys,json,datetime,pathlib
+        p=pathlib.Path(sys.argv[1])
+        rows=[json.loads(line) for line in p.read_text().splitlines()]
+        for row in rows: row['timestamp']=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
+        p.write_text('\\n'.join(json.dumps(row) for row in rows)+'\\n')
+        STAMP
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)

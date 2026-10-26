@@ -117,7 +117,7 @@ final class RuntimeExecutionOwner {
     }
 
     static func acquire(task: AgentTask, context: ModelContext, maxRunSeconds: TimeInterval,
-                        newUserTurn: Bool = false, launchTask: AgentTask? = nil,
+                        newUserTurn: Bool = false, newUserRequest: Bool = false, launchTask: AgentTask? = nil,
                         resourceClaims: [TaskResourceLockClaim]? = nil) -> RuntimeExecutionOwner? {
         let key = key(taskID: task.id, context: context)
         do {
@@ -155,7 +155,11 @@ final class RuntimeExecutionOwner {
                 }
             }
             guard let app = RuntimeProcessIdentity.read(ProcessInfo.processInfo.processIdentifier) else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
-            let recovering = previous != nil && !(newUserTurn && previous?.canBeginNewTurn == true)
+            // A separately authored request gets its own limits after verified
+            // cleanup, including when the prior request exhausted its budget.
+            // Retry and approved continuations keep the same request's limits.
+            let startsNewRequest = newUserRequest && previous?.canAcceptUserTurn == true
+            let recovering = previous != nil && !startsNewRequest
             let configuration = launchTask ?? task
             let limits = recovering ? previous!.limits : RuntimeRecoveryLimits(
                 tokenCeiling: AgentRuntimeProcessRunner.effectiveTokenBudget(for: configuration),

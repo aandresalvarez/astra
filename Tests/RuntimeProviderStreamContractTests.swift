@@ -49,6 +49,27 @@ struct RuntimeProviderStreamContractTests {
         #expect(!evidence.toolsStopped)
     }
 
+    @Test("Antigravity continuation context metadata still requires the final frame")
+    func antigravityContinuationMetadata() {
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .antigravityCLI)
+        let metadata = #"{"event":"step_update","step_update":{"conversation_id":"qa","step_index":3,"state":"DONE","step_type":"system_message","duration_seconds":0.000089}}"#
+        let terminal = #"{"event":"result","result":{"status":"SUCCESS","response":"Complete"}}"#
+        observe(metadata, runtime: .antigravityCLI, into: evidence)
+        #expect(!evidence.toolsStopped)
+        observe(terminal, runtime: .antigravityCLI, into: evidence)
+        #expect(evidence.toolsStopped)
+        for extra in [#", "tool_name":"shell""#, #", "future_work":true"#] {
+            let uncertain = RuntimeExecutionProcessEvidence(runtime: .antigravityCLI)
+            observe(metadata.replacingOccurrences(of: "0.000089}", with: "0.000089" + extra + "}"), runtime: .antigravityCLI, into: uncertain)
+            observe(terminal, runtime: .antigravityCLI, into: uncertain)
+            #expect(!uncertain.toolsStopped)
+        }
+        let active = RuntimeExecutionProcessEvidence(runtime: .antigravityCLI)
+        observe(metadata.replacingOccurrences(of: "DONE", with: "ACTIVE"), runtime: .antigravityCLI, into: active)
+        observe(terminal, runtime: .antigravityCLI, into: active)
+        #expect(!active.toolsStopped)
+    }
+
     @Test("Copilot accounting and error frames alone never certify a stopped session", arguments: [
         #"{"type":"usage","content":"done","input_tokens":1}"#,
         #"{"type":"session.shutdown","data":{"modelMetrics":{}}}"#,

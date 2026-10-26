@@ -30,7 +30,7 @@ enum RuntimeTurnOutcomeService {
         let claudePath = checkpoint.verifierRuntime.claudePath
         let budgetEnforcementMode = BudgetEnforcementMode(rawValue: checkpoint.budgetEnforcementMode) ?? .hardStop
         let budgetSnapshot = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: checkpoint.effectiveTokenBudget,
-                                                      tokensUsed: checkpoint.tokensUsed)
+                                                      tokensUsed: checkpoint.budgetTokensUsed)
         let processSucceeded = result.exitCode == 0 || result.terminatedAfterTerminalProgress
         let failureDiagnostic = checkpoint.failureDiagnostic
         if !checkpoint.cancelled, task.status != .cancelled,
@@ -86,7 +86,7 @@ enum RuntimeTurnOutcomeService {
             run.typedStopReason = .maxBudgetReached
             TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext)
             let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
-            let payload = "Token budget exceeded (\(task.tokensUsed)/\(budgetSnapshot.effectiveTokenBudget)). \(outcome)"
+            let payload = "Request token budget exceeded (\(budgetSnapshot.tokensUsed)/\(budgetSnapshot.effectiveTokenBudget)). \(outcome)"
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: payload, run: run)
             modelContext.insert(event)
@@ -111,7 +111,8 @@ enum RuntimeTurnOutcomeService {
                 run: run,
                 modelContext: modelContext,
                 phase: auditPhase,
-                budgetEnforcementMode: budgetEnforcementMode
+                budgetEnforcementMode: budgetEnforcementMode,
+                budget: budgetSnapshot
             )
             let blockedFromCompleting = await AgentRuntimeCompletionValidation.applyCompletionBlocksIfNeeded(
                 task: task, run: run, modelContext: modelContext,
