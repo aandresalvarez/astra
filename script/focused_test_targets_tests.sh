@@ -58,6 +58,12 @@ assert_targets "CLIPrerequisiteSlowStartTests|EnvironmentHealthCheckerTests|Pref
   "ASTRACore/GCloudCredentialProbe.swift" \
   "Tests/CLIPrerequisiteSlowStartTests.swift"
 
+assert_targets "CodexSessionUsageCorrection|CumulativeSessionUsage|ProviderSessionUsageEpoch|WorkspaceImportOrchestrator|RuntimeRecoveryOwnershipTests" \
+  "Astra/Services/Tasks/CodexSessionUsageCorrectionAdmission.swift" \
+  "Astra/Services/Tasks/CodexSessionUsageReplay.swift" \
+  "Astra/Services/Persistence/WorkspaceConfigManager+CodexUsageHistory.swift" \
+  "Tests/CodexSessionUsageCorrectionImportTests.swift"
+
 assert_targets "AppSemanticFitnessTests" \
   "Tests/AppSemanticFitnessTests.swift"
 

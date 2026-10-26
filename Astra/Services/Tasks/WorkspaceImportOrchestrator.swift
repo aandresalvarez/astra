@@ -201,6 +201,7 @@ struct WorkspaceImportOrchestrator {
         )
 
         for workspace in imported {
+            CodexSessionUsageCorrectionService.correct(workspace: workspace, modelContext: modelContext)
             WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
         }
 

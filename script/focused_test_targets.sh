@@ -20,6 +20,13 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    ASTRACore/CodexUsageHistory.swift|Astra/Services/Tasks/CodexSessionUsage*.swift|Astra/Services/Persistence/WorkspaceConfigManager+CodexUsageHistory.swift|Astra/Services/Tasks/WorkspaceImportOrchestrator.swift|Tests/CodexSessionUsageCorrection*.swift)
+      add_target "CodexSessionUsageCorrection|CumulativeSessionUsage|ProviderSessionUsageEpoch|WorkspaceImportOrchestrator|RuntimeRecoveryOwnershipTests"
+      return
+      ;;
+  esac
+
+  case "$path" in
     Astra/Views/CapabilityPrerequisitePresentation.swift|ASTRACore/CLIPrerequisite.swift|ASTRACore/EnvironmentHealthChecker.swift|ASTRACore/GCloudCredentialProbe.swift|ASTRACore/PluginManifest.swift|ASTRACore/RepairAction.swift|Astra/Services/Capabilities/PluginRepairCoordinator.swift|Astra/Services/Runtime/CLISessionExpiryClassifier.swift|Astra/Services/Runtime/PreflightCache.swift|Astra/Resources/Capabilities/gcloud-workflow.json|Tests/CLIPrerequisiteSlowStartTests.swift)
       add_target "CLIPrerequisiteSlowStartTests|EnvironmentHealthCheckerTests|PreflightCacheTests|PluginManifestTests|PluginPackagePrereqTests|CapabilityHealthServiceTests|CapabilityRuntimeIntegrityServiceTests|PluginRepair|CLISessionExpiryTests"
       ;;

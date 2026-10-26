@@ -15,7 +15,8 @@ extension WorkspaceConfigManager {
     /// Worktree events are the task's durable checkout binding; dropping them
     /// would turn a worktree pin into a legacy pin on recovery.
     static func isTaskRecoveryEvent(_ type: String) -> Bool {
-        ["runtime.", "execution.request.", "permission.", "plan.", "validation.", "task.worktree."]
+        if type.hasPrefix("astra.provider_session_usage_") { return true }
+        return ["runtime.", "execution.request.", "permission.", "plan.", "validation.", "task.worktree."]
             .contains { type.hasPrefix($0) }
     }
 

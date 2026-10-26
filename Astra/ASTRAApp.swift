@@ -1179,6 +1179,13 @@ public struct ASTRAApp: App {
             modelContext: modelContext,
             currentBuild: AppBuildInfo.current.build
         )
+        // Rewrites Codex runs that stored the thread's running total as their own usage.
+        // Deferred with the other repairs: it corrects history, and new runs record
+        // their own share regardless.
+        await CodexSessionUsageCorrectionService.correctIfNeeded(
+            modelContext: modelContext,
+            currentBuild: AppBuildInfo.current.build
+        )
     }
 
     /// Legacy Skill data backfills, gated on the build number so they run once

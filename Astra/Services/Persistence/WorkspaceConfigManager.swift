@@ -492,6 +492,8 @@ public enum WorkspaceConfigManager {
     }
 
     public struct TaskConfig: Codable, Sendable {
+        /// Nil in older mirrors; neither nil nor false proves a complete baseline.
+        public var codexUsageHistoryComplete: Bool? = nil
         public init(id: String? = nil, title: String, goal: String, status: String, isPinned: Bool? = nil, isDone: Bool? = nil, inputs: [String], constraints: [String], acceptanceCriteria: [String], tokenBudget: Int, tokensUsed: Int, model: String, runtimeID: String? = nil, runtimeExplicitlySelected: Bool? = nil, reasoningEffort: String? = nil, costUSD: Double, sessionId: String? = nil, maxTurns: Int, createdAt: Date, updatedAt: Date, completedAt: Date? = nil, unreadAt: Date? = nil, isolationStrategy: String? = nil, validationStrategy: String? = nil, testCommand: String? = nil, draftMessages: String? = nil, chainedGoal: String? = nil, chainedFromID: String? = nil, useAgentTeam: Bool? = nil, teamSize: Int? = nil, teamInstructions: String? = nil, templateID: String? = nil, templateHooksJSON: String? = nil, queuePosition: Int? = nil, forkedFromID: String? = nil, forkedAtRunIndex: Int? = nil, originScheduleID: String? = nil, executionRootPath: String? = nil, runs: [RunConfig], events: [EventConfig], artifacts: [ArtifactConfig]? = nil, skillIDs: [String]? = nil, skillNames: [String], skillSnapshots: [SkillSnapshotConfig]? = nil, executionEnvironmentSnapshotJSON: String? = nil, runtimePermissionOpenRequestsJSON: String? = nil, runtimePermissionGrantsJSON: String? = nil, rememberedWorkspaceCanvasItemRawValue: String? = nil) {
             self.id = id
             self.title = title
@@ -2028,6 +2030,8 @@ public enum WorkspaceConfigManager {
         config.turnRequests = recovery.requests.filter { request in
             request.state.isActive || request.runID.map { retainedRunIDs.contains($0) } == true
         }
+        config.codexUsageHistoryComplete = completeCodexUsageHistory(
+            task: task, runs: mirroredRuns, events: eventConfigs)
         return config
     }
 
@@ -2586,7 +2590,6 @@ public enum WorkspaceConfigManager {
             modelContext.insert(run)
             importedRuns.append(run)
         }
-
         for ec in config.events {
             let run = ec.runIndex.flatMap { index in
                 index < importedRuns.count ? importedRuns[index] : nil
@@ -2607,6 +2610,7 @@ public enum WorkspaceConfigManager {
             event.category = ec.category
             modelContext.insert(event)
         }
+        prepareCodexUsageHistoryImport(config, task: task, runs: importedRuns, context: modelContext)
         if recoveryTrust == .trustedLocalRecovery {
             importTaskRequestOwners(config.turnRequests ?? [], task: task, modelContext: modelContext)
         } else if quarantinesActiveRecovery(config, trust: recoveryTrust) && !task.isDone {
