@@ -72,6 +72,8 @@ struct RuntimeRecoveryLegacyReconciliationTests {
     func settledLegacyContinuationPreservesHistory(status: TaskStatus) async throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
+        SSHConnectionManager.save([SSHConnection(name: "configured-unused", host: "unused.example.test",
+            user: "fixture", remotePath: "/srv")], workspacePath: h.workspaceURL.path)
         let argsFile = h.rootURL.appendingPathComponent("legacy-resume-args.txt")
         let path = try h.writeExecutable(named: "claude", script: HeadlessChatScenarioTests.claudeScript(body: """
         printf '%s\\n' '{"type":"system","subtype":"init","session_id":"legacy-session","model":"claude-sonnet-4-6"}'
@@ -85,9 +87,11 @@ struct RuntimeRecoveryLegacyReconciliationTests {
         old.setOutput("Earlier answer remains intact"); old.tokensUsed = 600
         let oldID = old.id
         try h.context.save()
-        let worker = h.makeWorker(runtime: .claudeCode, executablePath: path)
+        let worker = h.makeWorker(runtime: .claudeCode, executablePath: path, permissionPolicy: .autonomous)
 
-        _ = await h.continueTask(task: task, message: "Continue the earlier conversation", worker: worker)
+        let sshPolicy = AgentRuntimeExecutionPolicy.default.withRemoteSSHRoute(
+            RemoteWorkspaceSSHRoute(targets: ["fixture@unused.example.test"], route: .nativeShell))
+        _ = await h.continueTask(task: task, message: "Continue the earlier conversation", worker: worker, executionPolicy: sshPolicy)
 
         #expect(task.status == .completed)
         #expect(task.runs.count == 2)
@@ -103,10 +107,23 @@ struct RuntimeRecoveryLegacyReconciliationTests {
         #expect(args.joined(separator: "\n").contains("Continue the earlier conversation"))
         #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context) != nil)
 
+        for turn in 2...4 {
+            let receipt = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+            #expect(receipt.resourcesReleased == true && receipt.canReplace)
+            #expect(receipt.stopProof?.remoteWorkExcluded == true)
+            #expect(try RuntimeResourceOwnership.claims(in: RuntimeExecutionOwner.store(in: h.context), context: h.context).isEmpty)
+            _ = await h.continueTask(task: task, message: "Follow-up number \(turn)", worker: worker, executionPolicy: sshPolicy)
+            #expect(task.status == .completed && task.runs.count == turn + 1)
+            #expect(old.output == "Earlier answer remains intact" && old.tokensUsed == 600)
+        }
+        #expect(SSHConnectionManager.load(workspacePath: h.workspaceURL.path).count == 1)
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context)?.resourcesReleased == true)
+        #expect(reconciliationEvents(task) == 1)
+
         let reopened = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
             configurations: [ModelConfiguration(url: h.rootURL.appendingPathComponent("headless.store"))])
         let saved = try #require(try reopened.mainContext.fetch(FetchDescriptor<AgentTask>()).first { $0.id == task.id })
-        #expect(saved.status == .completed && saved.runs.count == 2)
+        #expect(saved.status == .completed && saved.runs.count == 5)
         #expect(saved.runs.first { $0.id == oldID }?.output == "Earlier answer remains intact")
         #expect(saved.runs.first { $0.id != oldID }?.output == "Follow-up preserved")
         #expect(saved.sessionId == "legacy-session")

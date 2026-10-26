@@ -69,6 +69,8 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     var cancellationRequested: Bool? = nil
     /// The pre-journal run that `RuntimeRecoveryLegacyReconciliation` admitted this owner on.
     var legacySettledRunID: UUID? = nil
+    /// Original protected evidence retained when an unused SSH route was the only fence.
+    var hostNoToolReconciliationOriginalProof: RuntimeExecutionStopProof? = nil
     var automaticRestarts = 0
     var updatedAt: Date
 

@@ -9,6 +9,7 @@ extension TaskQueue {
         let store = RuntimeExecutionOwner.store(in: context)
         resourceOwnershipStore = store
         do {
+            try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: context)
             persistedResourceLocks = try RuntimeResourceOwnership.claims(in: store, context: context)
             resourceOwnershipReadFailed = false
         } catch {

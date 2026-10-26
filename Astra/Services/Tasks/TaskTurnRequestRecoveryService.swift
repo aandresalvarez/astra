@@ -23,6 +23,10 @@ enum TaskTurnRequestRecoveryService {
     ) -> Summary {
         let requests: [TaskTurnRequest]
         do {
+            // Repair a proved tool-free host completion before deciding whether
+            // its saved follow-up lost an unresolved connection on restart.
+            try RuntimeHostNoToolReceiptReconciliation.reconcile(
+                in: RuntimeExecutionOwner.store(in: modelContext), context: modelContext)
             // The table is append-only; recovery only ever acts on active
             // (non-terminal) rows, so bound the fetch at the store rather
             // than pulling the full history into memory to filter it.
