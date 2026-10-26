@@ -1998,7 +1998,6 @@ struct ArchitectureFitnessTests {
             // mark itself lives in SidebarWorkspaceActivityViews.swift.
             "Astra/Views/TaskSidebarView.swift": .init(2_535, .owner("Task sidebar")),
             "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": .init(2_450, .owner("Workspace App action execution")),
-            "Astra/Views/WorkspaceRightRailView.swift": .init(2_400, .owner("Workspace right rail")),
             // Budget raised for Track A4 (ASTRAPersistence extraction) - see
             // WorkspaceConfigManager.swift's entry above for why.
             "Astra/Services/Persistence/TaskContextStateManager.swift": .init(2_450, .owner("Task context state")),

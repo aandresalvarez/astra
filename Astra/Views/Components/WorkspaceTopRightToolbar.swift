@@ -317,7 +317,8 @@ private struct ShelfActiveIndicator: Equatable {
     let width: CGFloat
 }
 
-private struct ToolbarMenuAnchorView: NSViewRepresentable {
+/// Anchors an AppKit menu to a SwiftUI control. Shared with the rail boxes' `+` menus.
+struct ToolbarMenuAnchorView: NSViewRepresentable {
     @Binding var anchor: NSView?
 
     func makeNSView(context: Context) -> NSView {
@@ -340,13 +341,13 @@ private struct ToolbarMenuAnchorView: NSViewRepresentable {
     }
 }
 
-private final class ToolbarMenuAnchorNSView: NSView {
+final class ToolbarMenuAnchorNSView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
     }
 }
 
-private final class ToolbarClosureMenuItem: NSMenuItem {
+final class ToolbarClosureMenuItem: NSMenuItem {
     private let handler: () -> Void
 
     init(title: String, systemSymbolName: String, handler: @escaping () -> Void) {

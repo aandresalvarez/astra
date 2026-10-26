@@ -390,7 +390,9 @@ struct WorkspaceRailSectionPresentationTests {
         #expect(Rail.Layout.rowHeight < CapabilityRailLayout.regularRowMinHeight)
         #expect(Rail.Layout.rowHeight < CapabilityRailLayout.setupRowMinHeight)
         #expect(Rail.Layout.leadingIconFrame < CapabilityRailLayout.leadingIconFrame)
-        #expect(Rail.Layout.boxTitleFontSize < CapabilityRailLayout.sectionTitleFontSize)
+        // The Repository and Container cards share the box title size until the
+        // Environment box absorbs them.
+        #expect(Rail.Layout.boxTitleFontSize == CapabilityRailLayout.sectionTitleFontSize)
         #expect(Rail.Layout.rowTitleFontSize < CapabilityRailLayout.rowTitleFontSize)
         #expect(Rail.Layout.rowTitleFontSize < Stanford.chatBodyPointSize)
         #expect(Rail.Layout.boxTitleFontSize < Stanford.chatBodyPointSize)
