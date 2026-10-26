@@ -2045,7 +2045,6 @@ struct ArchitectureFitnessTests {
             // 2_295 -> 2_300: the terminal-progress reap now also requires
             // the provider to have gone quiet, and says why.
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_300, .owner("Runtime process stream support")),
-            "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // Global multi-resource admission remains coordinated here, while
             // claim resolution, compatibility, fairness, persistence events,
             // and store lifetime are extracted into focused task services.

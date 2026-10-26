@@ -1709,7 +1709,7 @@ struct NewTaskWorktreeCleanupTests {
         let body = String(source[start.upperBound..<end.lowerBound])
         let delete = try #require(body.range(of: "coordinator.deleteTask(task) { if wasSelected { setSelectedTask(nil) } }"))
         let failed = try #require(body.range(of: "guard deleted else {"))
-        let release = try #require(body.range(of: "browserSessionStore.releaseSession(for: deletedTaskID)"))
+        let release = try #require(body.range(of: "browserSessionStore.releaseSession(for: deletedTaskID, ownerID: filesOwnerID)"))
         #expect(body.components(separatedBy: "setSelectedTask(nil)").count == 2)
         #expect(delete.upperBound <= failed.lowerBound)
         #expect(failed.upperBound <= release.lowerBound)

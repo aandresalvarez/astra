@@ -1141,6 +1141,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
                 code,
                 "ASTRA stopped browser control because the Google Docs safe edit path could not verify the final document content. It did not fall back to manual select-all/delete."
             )
+        case "controlled_browser_profile_reserved":
+            return (code, "ASTRA stopped browser actions because the shared Controlled Browser profile belongs to another session or its previous execution has not been confirmed stopped. Return to the owning task to check or close that browser, then retry once the reservation is released. Embedded Browser remains available for independent work.")
         case "controlled_browser_unavailable":
             return (
                 code,
@@ -1174,6 +1176,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         "google_docs_safe_edit_unavailable",
         "google_docs_safe_edit_verification_failed",
         "controlled_browser_unavailable",
+        "controlled_browser_profile_reserved",
         "unauthorized_browser_bridge_request",
         "browser_action_budget_exceeded",
         "dangerous_keypress_sequence"

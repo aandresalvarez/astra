@@ -178,6 +178,10 @@ enum BrowserBridgeRecoveryHints {
             command = "astra-browser health"
             summary = "Agent browser control is disabled or not attached to this task. Enable the Shelf bridge, then check health."
             kind = "check-health"
+        case "controlled_browser_profile_reserved":
+            command = nil
+            summary = "The shared profile remains reserved by another session or unverified prior execution. Check the original task and retry after the reservation is released. Embedded Browser can continue independently."
+            kind = "wait-for-profile"
         case "controlled_browser_unavailable", "google_docs_controlled_browser_required":
             command = "astra-browser health"
             summary = "This helper needs Controlled Browser mode. Open or repair the controlled browser, then check health before retrying."

@@ -393,7 +393,9 @@ for path in Astra/Services/Persistence/TaskContextEventIndex.swift Astra/Service
   assert_targets $'TaskContextEventIndexTests|TaskContextState|TaskPlanServiceTests\nTaskHistoryReadTests|TaskMainActorScalingGateTests\nTaskAttachmentFilesReaderTests|ShelfAttachmentHistoryTests\nrequestBudget' "$path"
 done
 
+assert_targets $'ShelfBrowserOwnershipTests|ShelfBrowserLifetimeTests|ControlledBrowserProfileLeaseTests|BrowserBridgeSecurityTests|BrowserSessionPolicy|ShelfBrowserPanelLayoutTests|WorkspaceRightRailPerformanceTests\nShelfFilesOwnershipTests|ShelfMarkdownSessionTests|ShelfMarkdownAsyncLoadingTests' \
+  "Astra/Services/Browser/ShelfSessionStores.swift"
 assert_targets "ShelfFilesOwnershipTests|ShelfMarkdownSessionTests|ShelfMarkdownAsyncLoadingTests" \
-  "Astra/Services/Browser/ShelfSessionStores.swift" "Tests/ShelfFilesOwnershipTests.swift"
+  "Tests/ShelfFilesOwnershipTests.swift"
 assert_targets $'TaskAttachmentFilesReaderTests\nComposerAttachmentsTests' \
   "Astra/Services/Tasks/TaskHeaderFilesReader.swift"

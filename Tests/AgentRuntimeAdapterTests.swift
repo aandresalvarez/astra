@@ -2887,6 +2887,8 @@ struct AgentRuntimeAdapterTests {
             currentURL: nil,
             currentTitle: nil,
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: false,
             isEnabled: true
         )
@@ -2939,6 +2941,8 @@ struct AgentRuntimeAdapterTests {
             currentURL: nil,
             currentTitle: nil,
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: false,
             isEnabled: true
         )
@@ -2995,6 +2999,8 @@ struct AgentRuntimeAdapterTests {
             currentURL: nil,
             currentTitle: nil,
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             accessToken: "browser-token",
             isPresented: false,
             isEnabled: true
@@ -3244,6 +3250,8 @@ struct AgentRuntimeAdapterTests {
             currentURL: "https://example.com",
             currentTitle: "Example",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -3279,6 +3287,8 @@ struct AgentRuntimeAdapterTests {
             currentURL: "https://example.com",
             currentTitle: "Example",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
