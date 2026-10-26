@@ -1841,10 +1841,13 @@ final class TaskQueue {
                 return
             }
         }
-        let cancellationVerified = task.flatMap { task in
-            let matches = (try? resourceOwnershipStore?.records())?.filter { $0.taskOwnerID == task.persistentModelID } ?? []
-            return matches.count == 1 ? matches.first : nil
-        }.map { $0.cancellationRequested == true && $0.resourcesReleased == true } ?? false
+        var cancellationVerified = false
+        if let task, let store = resourceOwnershipStore, let records = try? store.records() {
+            let matches = records.filter { $0.taskOwnerID == task.persistentModelID }
+            if matches.count == 1, let record = matches.first {
+                cancellationVerified = record.cancellationRequested == true && record.resourcesReleased == true
+            }
+        }
         let releaseReason = reason ?? (cancellationVerified ? "cancelled_cleanup_verified" : nil)
         let held = Set(localResourceLocks)
         let released = claims.filter { held.contains($0) }
