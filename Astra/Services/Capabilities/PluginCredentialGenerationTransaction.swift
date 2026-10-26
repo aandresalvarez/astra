@@ -21,7 +21,8 @@ struct PluginCredentialGenerationTransaction {
         persistence: any SkillSecretPersisting.Type
     ) throws -> Self {
         try stage(activation: activation, workspaceID: workspaceID, modelContext: modelContext,
-            replacing: (componentID, key, replacement), additionalComponents: [], producerLease: nil, skillName: skillName, persistence: persistence)
+            replacing: (componentID, key, replacement), additionalComponents: [], producerLease: nil, skillName: skillName,
+            persistence: persistence, vault: KeychainSecretStore())
     }
 
     /// Add and reconciliation may touch several keys or rename components.
@@ -29,17 +30,19 @@ struct PluginCredentialGenerationTransaction {
     static func prepareCopy(
         activation: PluginActivation, workspaceID: UUID, modelContext: ModelContext,
         skillName: String, persistence: any SkillSecretPersisting.Type,
-        additionalComponents: Set<String> = [], producerLease: PluginCredentialProducerLease? = nil
+        additionalComponents: Set<String> = [], producerLease: PluginCredentialProducerLease? = nil,
+        vault: SecretStore = KeychainSecretStore()
     ) throws -> Self {
         try stage(activation: activation, workspaceID: workspaceID, modelContext: modelContext,
-            replacing: nil, additionalComponents: additionalComponents, producerLease: producerLease, skillName: skillName, persistence: persistence)
+            replacing: nil, additionalComponents: additionalComponents, producerLease: producerLease, skillName: skillName,
+            persistence: persistence, vault: vault)
     }
 
     private static func stage(
         activation: PluginActivation, workspaceID: UUID, modelContext: ModelContext,
         replacing: (component: String, key: String, value: String?)?, additionalComponents: Set<String>,
         producerLease: PluginCredentialProducerLease?, skillName: String,
-        persistence: any SkillSecretPersisting.Type
+        persistence: any SkillSecretPersisting.Type, vault: SecretStore
     ) throws -> Self {
         guard activation.modelContext === modelContext, activation.workspace?.id == workspaceID,
               !activation.isDeleted else { throw PluginOperations.OperationError.workspaceChanged }
@@ -54,7 +57,7 @@ struct PluginCredentialGenerationTransaction {
             }
             let name = String(setting.dropFirst(component.count + 1))
             let source = PluginRuntimeProjection.credentialID(of: activation, componentID: component)
-            switch persistence.readSecretValue(key: name, skillID: source, store: KeychainSecretStore()) {
+            switch persistence.readSecretValue(key: name, skillID: source, store: vault) {
             case .value(let value): writes.append(Write(key: name, component: component, value: value, explicit: false))
             case .missing: break // Preserve an already-unconfigured field, not a read failure.
             case .unavailable: throw PluginOperations.OperationError.secretReadFailed(key: name)

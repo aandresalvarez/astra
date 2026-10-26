@@ -28,14 +28,42 @@ enum SkillCredentialEditor {
                      persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil) throws {
         guard !value.isEmpty else { throw Failure.invalidKey }
         try serializedSkill(skill, modelContext: modelContext) {
-            try change(value, key: key, skill: skill, modelContext: modelContext, persist: persist, rewriteMirror: rewriteMirror)
+            try change([key: value], removing: nil, skill: skill, modelContext: modelContext, persist: persist,
+                rewriteMirror: rewriteMirror, vault: KeychainSecretStore())
+        }
+    }
+
+    /// Several values in one generation, or none of them. Re-entering every
+    /// value this build can't read (`unreadableKeys`) is the only edit of such
+    /// a skill that needn't copy one. It is also the one edit a plugin skill
+    /// row takes, for its own keys: one the migration left as it was because
+    /// an earlier build saved them, which a later launch then moves onto its
+    /// activation (`PluginActivationMigration`).
+    static func save(_ values: [String: String], on skill: Skill, modelContext: ModelContext,
+                     persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil,
+                     vault: SecretStore = KeychainSecretStore()) throws {
+        guard !values.isEmpty, values.values.allSatisfy({ !$0.isEmpty }) else { throw Failure.invalidKey }
+        try serializedSkill(skill, modelContext: modelContext, reentering: Set(values.keys)) {
+            try change(values, removing: nil, skill: skill, modelContext: modelContext, persist: persist,
+                rewriteMirror: rewriteMirror, vault: vault)
         }
     }
 
     static func remove(_ key: String, from skill: Skill, modelContext: ModelContext,
                        persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil) throws {
         try serializedSkill(skill, modelContext: modelContext) {
-            try change(nil, key: key, skill: skill, modelContext: modelContext, persist: persist, rewriteMirror: rewriteMirror)
+            try change([:], removing: key, skill: skill, modelContext: modelContext, persist: persist,
+                rewriteMirror: rewriteMirror, vault: KeychainSecretStore())
+        }
+    }
+
+    /// Saved secret keys whose values this build's Keychain access refuses
+    /// (not missing ones): what an earlier ad-hoc build stored, before the
+    /// person re-enters it. An explicit read per key; call it from an action
+    /// or a task, never from a view body.
+    static func unreadableKeys(of skill: Skill, vault: SecretStore = KeychainSecretStore()) -> [String] {
+        Set(skill.environmentKeys.filter(Skill.isSecretEnvironmentKey)).sorted().filter {
+            SkillSecretSeam.required.readSecretValue(key: $0, skillID: skill.secretNamespaceID, store: vault) == .unavailable
         }
     }
 
@@ -52,9 +80,11 @@ enum SkillCredentialEditor {
     }
 
     private static func serializedSkill<Result>(
-        _ skill: Skill, modelContext: ModelContext, _ body: () throws -> Result
+        _ skill: Skill, modelContext: ModelContext, reentering: Set<String>? = nil, _ body: () throws -> Result
     ) throws -> Result {
-        guard skill.modelContext === modelContext, !skill.isDeleted, skill.originPackageID == nil else { throw Failure.changedSkill }
+        guard skill.modelContext === modelContext, !skill.isDeleted,
+              skill.originPackageID == nil || reentering.map({ reentersOwnKeys($0, of: skill) }) == true
+        else { throw Failure.changedSkill }
         guard !modelContext.hasChanges else { throw Failure.pendingEdits }
         // Saving again must retain the existing receipt and recovery action;
         // source admission must not silently complete a previous secret edit.
@@ -69,11 +99,37 @@ enum SkillCredentialEditor {
         } catch PluginSourceStoreError.pluginBusy(_) { throw PluginSourceStoreError.libraryBusy }
     }
 
-    private static func change(_ replacement: String?, key rawKey: String, skill: Skill, modelContext: ModelContext,
-                               persist: (ModelContext) throws -> Void, rewriteMirror: ((Workspace) -> Bool)?) throws {
-        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard !key.isEmpty, Skill.isSecretEnvironmentKey(key) else { throw Failure.invalidKey }
-        guard skill.modelContext === modelContext, !skill.isDeleted, skill.originPackageID == nil else { throw Failure.changedSkill }
+    /// A plugin skill row keeps matching its definition, so the migration
+    /// still recognizes it: only keys it already has, all of them secret.
+    private static func reentersOwnKeys(_ keys: Set<String>, of skill: Skill) -> Bool {
+        let own = skill.environmentKeys.filter(Skill.isSecretEnvironmentKey)
+        return !keys.isEmpty && keys.allSatisfy { key in
+            own.contains { $0.caseInsensitiveCompare(normalized(key)) == .orderedSame }
+        }
+    }
+
+    private static func normalized(_ key: String) -> String {
+        key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    }
+
+    private static func change(_ rawReplacements: [String: String], removing rawRemoved: String?, skill: Skill,
+                               modelContext: ModelContext, persist: (ModelContext) throws -> Void,
+                               rewriteMirror: ((Workspace) -> Bool)?, vault: SecretStore) throws {
+        var replacements: [String: String] = [:]
+        for (rawKey, value) in rawReplacements {
+            let key = normalized(rawKey)
+            guard !key.isEmpty, Skill.isSecretEnvironmentKey(key), replacements.updateValue(value, forKey: key) == nil else {
+                throw Failure.invalidKey
+            }
+        }
+        let removed = rawRemoved.map(normalized)
+        guard removed.map({ !$0.isEmpty && Skill.isSecretEnvironmentKey($0) }) != false,
+              !replacements.isEmpty || removed != nil else { throw Failure.invalidKey }
+        let edited = Set(replacements.keys).union(removed.map { [$0] } ?? [])
+        func isEdited(_ existing: String) -> Bool { edited.contains { existing.caseInsensitiveCompare($0) == .orderedSame } }
+        guard skill.modelContext === modelContext, !skill.isDeleted,
+              skill.originPackageID == nil || (removed == nil && reentersOwnKeys(edited, of: skill))
+        else { throw Failure.changedSkill }
         guard !modelContext.hasChanges else { throw Failure.pendingEdits }
         let previous = Snapshot(skill)
         let saved = ModelContext(modelContext.container)
@@ -87,18 +143,19 @@ enum SkillCredentialEditor {
         guard skill.environmentValues.dropFirst(skill.environmentKeys.count).allSatisfy({ $0.isEmpty }) else {
             throw Failure.legacyFieldsNeedReview
         }
-        for (index, existing) in skill.environmentKeys.enumerated() where Skill.isSecretEnvironmentKey(existing) && existing.caseInsensitiveCompare(key) != .orderedSame {
+        for (index, existing) in skill.environmentKeys.enumerated() where Skill.isSecretEnvironmentKey(existing) && !isEdited(existing) {
             guard skill.normalizedEnvironmentValue(at: index).isEmpty else { throw Failure.legacyFieldsNeedReview }
         }
-        let prepared = try SkillCredentialGenerationTransaction.prepare(skill: skill, replacing: key, with: replacement, modelContext: modelContext)
+        let prepared = try SkillCredentialGenerationTransaction.prepare(skill: skill, replacing: replacements, removing: removed,
+            modelContext: modelContext, vault: vault)
         var attemptedCommit = false
         do {
             skill.credentialNamespaceID = prepared.namespaceID
-            let kept = skill.environmentKeys.indices.filter { skill.environmentKeys[$0].caseInsensitiveCompare(key) != .orderedSame }
+            let kept = skill.environmentKeys.indices.filter { !isEdited(skill.environmentKeys[$0]) }
             let values = kept.map { skill.normalizedEnvironmentValue(at: $0) }
             skill.environmentKeys = kept.map { skill.environmentKeys[$0] }
             skill.environmentValues = values
-            if replacement != nil { skill.environmentKeys.append(key); skill.environmentValues.append("") }
+            for key in replacements.keys.sorted() { skill.environmentKeys.append(key); skill.environmentValues.append("") }
             skill.updatedAt = Date()
             attemptedCommit = true
             switch PluginStateCommit.save(workspaceIDs: workspaceIDs, pluginIDs: [], kind: .configure,

@@ -27,7 +27,12 @@ import ASTRAPersistence
 ///   templates and schedules that named it are pointed at the projected ID,
 ///   and the row is deleted. An edited one stays as an authored skill the
 ///   activation names as its component's override, on only while the
-///   activation is. Tools follow the same rule.
+///   activation is. Tools follow the same rule. An unedited one holding a
+///   value this build can't read is left exactly as it is, provenance and
+///   namespace included, and reported as awaiting re-entry; until then it is
+///   its component's override, so the plugin's copy doesn't run beside it,
+///   and once its values are re-entered (`SkillCredentialEditor`) a later
+///   launch moves it like any other.
 /// - A row whose plugin is no longer in the library, that no activation
 ///   uses, or that a workspace turned on by itself without the plugin, is
 ///   kept as an authored row rather than lost; so is an account whose plugin
@@ -54,6 +59,18 @@ enum PluginActivationMigration {
         /// Account -> the first key this build couldn't read. Not a change:
         /// nothing about these accounts' credentials moved.
         var accountsAwaitingReentry: [UUID: String] = [:]
+        /// Plugin skill row -> what keeps its values from moving. Not a
+        /// change: the row and its values are where they were.
+        var skillsAwaitingReentry: [UUID: AwaitingReentry] = [:]
+    }
+
+    /// Values this build can't read, by key name only.
+    struct AwaitingReentry: Equatable {
+        let keys: [String]
+        /// nil: the skill row's own values, re-entered on the row. Otherwise
+        /// that activation's saved settings, which a new generation has to
+        /// carry along: re-entered in the plugin's settings.
+        let activationID: UUID?
     }
 
     enum MigrationError: Error, Equatable {
@@ -84,12 +101,14 @@ enum PluginActivationMigration {
         guard needsMigration(modelContext: context, packages: packages) else { return }
         do {
             let report = try migrate(modelContext: context, packages: packages)
+            let awaiting = !report.accountsAwaitingReentry.isEmpty || !report.skillsAwaitingReentry.isEmpty
             AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
                 "migration": "plugin_activations_v21",
-                "result": report.accountsAwaitingReentry.isEmpty ? "migrated" : "migrated_awaiting_reentry",
+                "result": awaiting ? "migrated_awaiting_reentry" : "migrated",
                 "activations": String(report.activations),
                 "accounts_bound": String(report.accountsBound),
                 "accounts_awaiting_reentry": String(report.accountsAwaitingReentry.count),
+                "skills_awaiting_reentry": String(report.skillsAwaitingReentry.count),
                 "skills_projected": String(report.skillsProjected),
                 "skills_kept_authored": String(report.skillsKeptAsAuthored),
                 "tools_projected": String(report.toolsProjected),
@@ -104,6 +123,16 @@ enum PluginActivationMigration {
                     "connector_id": accountID.uuidString,
                     "key": key
                 ], level: .warning)
+            }
+            for (skillID, awaiting) in report.skillsAwaitingReentry.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+                var fields = [
+                    "migration": "plugin_activations_v21",
+                    "result": "awaiting_reentry",
+                    "skill_id": skillID.uuidString,
+                    "keys": awaiting.keys.joined(separator: ",")
+                ]
+                if let activationID = awaiting.activationID { fields["activation_id"] = activationID.uuidString }
+                AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .warning)
             }
         } catch {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
@@ -186,7 +215,7 @@ enum PluginActivationMigration {
         for tool in tools { SwiftDataDeletionPreparation.prepare(tool) }
         var report = Report()
         var releasedSkillIDs: [UUID] = []
-        let credentials = PluginMigrationSkillCredentials(modelContext: modelContext, persistence: secrets)
+        let credentials = PluginMigrationSkillCredentials(modelContext: modelContext, persistence: secrets, vault: vault)
         let accountCredentials = PluginMigrationAccountCredentials(modelContext: modelContext, vault: vault)
         // rollback() doesn't restore array-backed state (legacy and global
         // memberships, activation records): a failed run puts it back.
@@ -345,7 +374,27 @@ enum PluginActivationMigration {
                     report.skillsKeptAsAuthored += 1
                     continue
                 }
+                // Values this build can't read stay where they are, with the
+                // provenance and namespace that name them, so a later launch
+                // retries the row as it is. Meanwhile it is the component's
+                // override: the one copy that runs, while the activation is on.
+                if let awaiting = try credentials.awaitingReentry(skill, into: using, package: package) {
+                    let skillID = skill.id.uuidString
+                    for (workspace, activation) in using where !usesOnItsOwn(workspace, pluginID, \.globalSkillIDs, skill.id) {
+                        if activation.overridingRowID(forComponent: componentID) != skill.id {
+                            WorkspaceCapabilityActivation.setOverridden(true, componentID: componentID, rowID: skill.id, on: activation)
+                        }
+                        WorkspaceCapabilityActivation.mutate(workspace) { $0.globalSkillIDs.removeAll { $0 == skillID } }
+                    }
+                    report.skillsAwaitingReentry[skill.id] = awaiting
+                    continue
+                }
                 for (workspace, activation) in using {
+                    // An earlier launch's override, kept until the row's
+                    // values could move: the projection takes over again.
+                    if activation.overridingRowID(forComponent: componentID) == skill.id {
+                        WorkspaceCapabilityActivation.setOverridden(false, componentID: componentID, on: activation)
+                    }
                     let projectedID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
                     try credentials.copy(from: skill, to: activation, in: workspace,
                         package: package, componentID: componentID)
@@ -434,6 +483,7 @@ enum PluginActivationMigration {
             report.accountsAwaitingReentry = accountCredentials.awaitingReentry
             var moved = report
             moved.accountsAwaitingReentry = [:]
+            moved.skillsAwaitingReentry = [:]
             guard moved != Report() || modelContext.hasChanges || !releasedSkillIDs.isEmpty else { return report }
             var saveError: Error?
             var committed: PluginOperationCommit.Outcome?
