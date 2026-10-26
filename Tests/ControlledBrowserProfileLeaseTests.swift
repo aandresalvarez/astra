@@ -79,6 +79,10 @@ struct ControlledBrowserProfileLeaseTests {
         let profile = "/tmp/Astra Dev/Profile"
         let executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         let base = [executable, "--remote-debugging-port=60007"]
+        #expect(throws: (any Error).self) {
+            try ControlledBrowserProcessDiscovery.inspectedTarget(pid: 99935, arguments: nil,
+                profilePath: profile, allowedExecutables: [executable])
+        }
         func target(_ extra: [String]) throws -> ControlledBrowserDebugTarget? {
             try ControlledBrowserProcessDiscovery.target(pid: 99935, arguments: base + extra, profilePath: profile)
         }
@@ -100,6 +104,26 @@ struct ControlledBrowserProfileLeaseTests {
         #expect(try ControlledBrowserProcessDiscovery.target(pid: 1, arguments: overridden, profilePath: profile) == nil)
         #expect(try ControlledBrowserProcessDiscovery.target(pid: 1, arguments: overridden,
             profilePath: profile, allowedExecutables: [override])?.processID == 1)
+    }
+
+    @Test("Configured executable aliases match both kernel paths and argv without admitting siblings")
+    func executableAliases() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let executable = root.appendingPathComponent("Browser")
+        try Data().write(to: executable)
+        let alias = root.appendingPathComponent("Browser Alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: executable)
+        #expect(ControlledBrowserProcessDiscovery.executableIsAllowed(executable.path, allowedExecutables: [alias.path]))
+        #expect(ControlledBrowserProcessDiscovery.executableIsAllowed(alias.path, allowedExecutables: [executable.path]))
+        #expect(!ControlledBrowserProcessDiscovery.executableIsAllowed(executable.path + " Other", allowedExecutables: [alias.path]))
+        let profile = root.appendingPathComponent("Profile").path
+        for path in [alias.path, executable.path] {
+            #expect(try ControlledBrowserProcessDiscovery.target(pid: 1,
+                arguments: [path, "--user-data-dir=\(profile)", "--remote-debugging-port=60007"],
+                profilePath: profile, allowedExecutables: [alias.path])?.processID == 1)
+        }
     }
 
     @Test("Kernel argv decoding preserves spaces and stops before environment values")
