@@ -268,10 +268,9 @@ struct GitRepositoryPanelIntegrationTests {
         }
     }
 
-    @Test("Repository context changes preserve hidden details and clear transient popovers")
-    func repositoryContextChangesPreserveHiddenDetailsAndClearTransientPopovers() {
+    @Test("Repository context changes clear transient popovers and the changes drawer")
+    func repositoryContextChangesClearTransients() {
         let initial = WorkspaceGitTransientPresentationState(
-            repositoryDetailsMode: .summary,
             isChangesDrawerExpanded: true,
             showRepositoryPopover: true,
             showLocationPopover: true,
@@ -281,28 +280,6 @@ struct GitRepositoryPanelIntegrationTests {
 
         let next = WorkspaceGitPanelPresentation.transientStateAfterRepositoryContextChange(initial)
 
-        #expect(next.repositoryDetailsMode == .summary)
-        #expect(next.isChangesDrawerExpanded == false)
-        #expect(next.showRepositoryPopover == false)
-        #expect(next.showLocationPopover == false)
-        #expect(next.showPRCommentsPopover == false)
-        #expect(next.showBranchPickerPopover == false)
-    }
-
-    @Test("Repository context changes preserve expanded details while closing transients")
-    func repositoryContextChangesPreserveExpandedDetails() {
-        let initial = WorkspaceGitTransientPresentationState(
-            repositoryDetailsMode: .details,
-            isChangesDrawerExpanded: true,
-            showRepositoryPopover: true,
-            showLocationPopover: true,
-            showPRCommentsPopover: true,
-            showBranchPickerPopover: true
-        )
-
-        let next = WorkspaceGitPanelPresentation.transientStateAfterRepositoryContextChange(initial)
-
-        #expect(next.repositoryDetailsMode == .details)
         #expect(next.isChangesDrawerExpanded == false)
         #expect(next.showRepositoryPopover == false)
         #expect(next.showLocationPopover == false)

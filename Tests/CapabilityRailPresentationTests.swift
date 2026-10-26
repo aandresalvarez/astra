@@ -142,8 +142,6 @@ struct CapabilityRailPresentationTests {
 
     @Test("workspace context uses desktop inspector density")
     func workspaceContextUsesDesktopInspectorDensity() {
-        // The Repository and Container cards share the v2 box title size until
-        // the Environment box absorbs them.
         #expect(CapabilityRailLayout.sectionTitleFontSize == 13)
         #expect(CapabilityRailLayout.sectionTitleFontSize == WorkspaceRailSectionPresentation.Layout.boxTitleFontSize)
         #expect(CapabilityRailLayout.rowTitleFontSize == 14)
@@ -155,8 +153,8 @@ struct CapabilityRailPresentationTests {
         #expect(CapabilityRailLayout.regularGroupSpacing == 12)
     }
 
-    @Test("repository and container rows keep their v1 density until the Environment box absorbs them")
-    func repositoryAndContainerRowsKeepV1Density() {
+    @Test("the v1 layout tokens survive only for the Plugins surface rows")
+    func v1LayoutTokensSurviveForPluginsSurface() {
         #expect(CapabilityRailLayout.minimumTwoLineRowHeight > 34)
         #expect(CapabilityRailLayout.rowMinHeight(isCompact: true) >= CapabilityRailLayout.minimumTwoLineRowHeight)
         #expect(CapabilityRailLayout.rowMinHeight(isCompact: false) == 56)
@@ -193,16 +191,10 @@ struct CapabilityRailPresentationTests {
         #expect(source.contains(".onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshCapabilityPrerequisiteStatuses() }"))
     }
 
-    @Test("repository rail exposes git controls by default")
-    func repositoryRailExposesGitControlsByDefault() {
-        #expect(WorkspaceGitPanelPresentation.startsCollapsed == false)
-        #expect(WorkspaceGitPanelPresentation.collapsedVisibleRowCount == 1)
-        #expect(WorkspaceGitPanelPresentation.expandedDetailRowCount == 6)
-        #expect(WorkspaceGitPanelPresentation.repositorySelectorRowMinHeight == 50)
-        #expect(WorkspaceGitPanelPresentation.detailRowMinHeight == 44)
-        #expect(WorkspaceGitPanelPresentation.detailRowMinHeight < CapabilityRailLayout.setupRowMinHeight)
-        #expect(WorkspaceGitPanelPresentation.showDetailsActionTitle == "Show controls")
-        #expect(WorkspaceGitPanelPresentation.hideDetailsActionTitle == "Hide")
+    @Test("git rows share the rail's one-line row height")
+    func gitRowsShareTheRailRowHeight() {
+        #expect(WorkspaceGitPanelPresentation.rowMinHeight == WorkspaceRailSectionPresentation.Layout.rowHeight)
+        #expect(WorkspaceGitPanelPresentation.rowMinHeight == 30)
     }
 
     @Test("workspace instruction editor distinguishes draft from saved guidance")

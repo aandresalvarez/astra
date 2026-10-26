@@ -279,10 +279,25 @@ rebuild splits sections into their own files rather than editing in place.
    a summary of them) while the Repository and Container cards stay; PR 3
    lifts that filter when it folds the cards in, and only then does
    `Run in a container…` join the add menus.
-3. **Environment section.** Fold `WorkspaceGitSectionView` and
-   `WorkspaceDockerSectionView` into `WorkspaceRailEnvironmentSection`, add
-   folder and remote rows, gate the button footer on actionability, and move
-   the width constants in `PanelLayoutGeometry`.
+3. **Environment box.** *(implemented on this branch, stacked on PR 2)* The
+   Repository and Container cards are gone; their rows live inside the
+   Environment box as row groups that keep their behaviour (pickers,
+   popovers, sheets, the changes drawer, image builds, credential
+   projection). The rail owns `WorkspaceGitViewModel` and
+   `WorkspaceDockerViewModel`, so the model's facts (repository, branch,
+   changes, ahead/behind, pull request, container) feed the box's rows and
+   collapsed summary. Row order: folders, remote, runs-in (the container
+   picker when containers exist, otherwise a plain `Local`), then source
+   control, whose verbs footer renders only with something to commit, push or
+   pull. The box header carries one refresh control for both scans. Git rows
+   are one line (scope and path in the Repository tooltip, the worktree
+   caption in the Changes tooltip, counts neutral); container rows are
+   key/value (`Provider · Host`), with `Build` and `Switch` as verbs and a
+   tinted `Refresh` beside a Docker daemon that is not answering. The
+   `repositoryShowsDetails` toggle retired. `PanelLayoutGeometry` reads the
+   rail's width tokens: 300 minimum, 340 default, 380 automatic maximum, 420
+   drag maximum. `Run in a container…` stays out of the add menus: the
+   picker row is the way to change where tasks run.
 4. **Outputs section** (optional, phase 2): task artifacts as rows that open
    in the Files shelf.
 

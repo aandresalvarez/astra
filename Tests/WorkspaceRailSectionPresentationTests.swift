@@ -384,6 +384,7 @@ struct WorkspaceRailSectionPresentationTests {
         #expect(Rail.Layout.boxSpacing == 10)
         #expect(Rail.Layout.columnWidth == 340)
         #expect(Rail.Layout.minimumColumnWidth == 300)
+        #expect(Rail.Layout.automaticMaximumColumnWidth == 380)
         #expect(Rail.Layout.maximumColumnWidth == 420)
 
         // Lighter than the v1 rail it replaces, and subordinate to the chat body.

@@ -38,6 +38,11 @@ struct RailBoxHeader: View {
     let isExpanded: Bool
     let collapsedSummary: String
     let addActions: [WorkspaceRailSectionPresentation.AddAction]
+    /// Spins while the box's facts are being re-read.
+    var isBusy = false
+    /// A quiet refresh control beside the `+`, for boxes whose facts come
+    /// from scans (repositories, containers).
+    var onRefresh: (() -> Void)? = nil
     let onToggle: () -> Void
     let onAdd: (WorkspaceRailSectionPresentation.AddAction) -> Void
 
@@ -73,6 +78,23 @@ struct RailBoxHeader: View {
             .help(isExpanded ? "Collapse \(title)" : "Expand \(title)")
             .accessibilityLabel(title)
             .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+
+            if isBusy {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 20, height: 20)
+            } else if let onRefresh {
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(Stanford.ui(11, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Refresh \(title.lowercased())")
+                .accessibilityLabel("Refresh \(title)")
+            }
 
             if !addActions.isEmpty {
                 RailAddMenuButton(actions: addActions, onAdd: onAdd)
