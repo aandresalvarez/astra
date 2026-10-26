@@ -29,9 +29,10 @@ assert_targets "MailToolSupportTests" \
   "Tools/StanfordAppleMailTool/main.swift" \
   "Tests/MailToolSupportTests/StanfordAppleMailToolTests.swift"
 
-assert_targets "HostControlToolSupportTests" \
+assert_targets $'HostControlToolSupportTests\nProcessDescriptorIsolationTests|SpawnedChildSignalStateTests|HostControlParentDeathSupervisorTests' \
   "Tools/HostControlToolSupport/HostControlToolSupport.swift" \
   "Tools/AstraHostControlTool/main.swift" \
+  "Tests/HostControlParentDeathSupervisorTests.swift" \
   "Tests/HostControlToolSupportTests.swift"
 
 assert_targets "BrowserToolShimTests" \
@@ -236,7 +237,7 @@ assert_targets "OrphanedV12StoreMigratorTests" \
   "Astra/Services/Persistence/OrphanedV12StoreMigrator.swift" \
   "Tests/OrphanedV12StoreMigratorTests.swift"
 
-assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nAgentExecutionScopedProcessTests\nRuntimeRecovery\nAgentUtilityRuntimeTests\nProcessMonitorTests\nClaudeSessionUsageAccounting|claudeSessionSnapshotsAcrossRequests|RuntimeUsage|requestBudget|CumulativeSessionUsage|ProviderSessionUsageEpoch|CopilotSessionDiscovery|TaskThreadHistory|TaskThreadSnapshot|AntigravityStreamEventParser|OpenCodeStreamAccounting\nRuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode' \
+assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nAgentExecutionScopedProcessTests\nRuntimeRecovery\nAgentUtilityRuntimeTests\nProcessMonitorTests\nProcessDescriptorIsolationTests|ProcessBinaryRunnerTests|SpawnedChildSignalStateTests|OpenCodeRunnerCompletionTests|OpenCodeCompletionProofTests|HostControlParentDeathSupervisorTests\nClaudeSessionUsageAccounting|claudeSessionSnapshotsAcrossRequests|RuntimeUsage|requestBudget|CumulativeSessionUsage|ProviderSessionUsageEpoch|CopilotSessionDiscovery|TaskThreadHistory|TaskThreadSnapshot|AntigravityStreamEventParser|OpenCodeStreamAccounting\nRuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode' \
   "Astra/Services/Runtime/AgentProcessPipeReader.swift" \
   "Astra/Services/Runtime/AgentExecutionScopedProcess.swift" \
   "Tests/AgentExecutionScopedProcessTests.swift" \
@@ -399,3 +400,9 @@ assert_targets "ShelfFilesOwnershipTests|ShelfMarkdownSessionTests|ShelfMarkdown
   "Tests/ShelfFilesOwnershipTests.swift"
 assert_targets $'TaskAttachmentFilesReaderTests\nComposerAttachmentsTests' \
   "Astra/Services/Tasks/TaskHeaderFilesReader.swift"
+
+assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nAgentExecutionScopedProcessTests\nRuntimeRecovery\nAgentUtilityRuntimeTests\nProcessMonitorTests\nProcessDescriptorIsolationTests|ProcessBinaryRunnerTests|SpawnedChildSignalStateTests|OpenCodeRunnerCompletionTests|OpenCodeCompletionProofTests|HostControlParentDeathSupervisorTests' \
+  "ASTRACore/ProcessGroupSpawn.swift" \
+  "ASTRACore/BinaryRunner.swift" \
+  "Tests/BinaryRunnerTests.swift" \
+  "Tests/ProcessDescriptorIsolationTests.swift"

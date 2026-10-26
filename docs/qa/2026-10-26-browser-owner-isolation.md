@@ -102,5 +102,13 @@ automated evidence, not claims of native manual reproduction.
 
 ## Validation
 
+CI exposed an existing cross-runtime descriptor leak: a concurrent POSIX spawn
+could inherit another execution's output writers, preventing EOF certification
+after that execution exited. A deterministic regression reproduced the leak in
+the provider, utility and host-control launchers. They now close undeclared
+descriptors by default, preserve explicit stdin/stdout/stderr and the host-control
+supervisor channel, and retain the same strict completion-proof rules. The
+regressions use real child processes; they do not relax EOF, stop proof or limits.
+
 Final test, verified-build, hook and CI results are recorded in the pull request.
 No hook bypass or merge is performed by the agent.

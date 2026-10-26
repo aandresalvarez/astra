@@ -50,7 +50,7 @@ struct OpenCodeRunnerCompletionTests {
         }
         let result = await operation.value
         #expect(result.executionStopProof?.permitsReplacement == (scenario == "natural"),
-                "exit=\(result.exitCode), reason=\(result.runtimeStopReason ?? "none"), error=\(result.error)")
+                "exit=\(result.exitCode), reason=\(result.runtimeStopReason ?? "none"), error=\(result.error), proof=\(String(describing: result.executionStopProof))")
         if scenario == "invalid" {
             #expect(result.runtimeStopReason == "runtime_accounting_invalid")
             #expect(result.stoppedByASTRA)

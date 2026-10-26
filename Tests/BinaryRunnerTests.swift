@@ -164,14 +164,16 @@ struct ProcessBinaryRunnerTests {
         #expect(result.stdout == "cwd marker")
     }
 
-    @Test("Stdin payload is delivered and closed so the child sees EOF")
-    func stdinPayloadIsDeliveredWithEOF() async {
+    @Test("Stdin payload is delivered and closed so the child sees EOF", arguments: [false, true])
+    func stdinPayloadIsDeliveredWithEOF(processGroup: Bool) async {
         let result = await ProcessBinaryRunner().run(
             path: "/bin/cat",
             args: [],
             timeout: hangBreakerTimeout,
             environment: nil,
-            stdin: Data("ping over stdin".utf8)
+            currentDirectory: nil,
+            stdin: Data("ping over stdin".utf8),
+            terminateProcessGroup: processGroup
         )
 
         // `cat` exits only once its stdin is closed, so the exit itself is half
@@ -186,13 +188,15 @@ struct ProcessBinaryRunnerTests {
         #expect(result.stdout == "ping over stdin")
     }
 
-    @Test("Nil stdin still terminates stdin-reading children")
-    func nilStdinTerminatesStdinReaders() async {
+    @Test("Nil stdin still terminates stdin-reading children", arguments: [false, true])
+    func nilStdinTerminatesStdinReaders(processGroup: Bool) async {
         let result = await ProcessBinaryRunner().run(
             path: "/bin/cat",
             args: [],
             timeout: hangBreakerTimeout,
-            environment: nil
+            environment: nil,
+            currentDirectory: nil,
+            terminateProcessGroup: processGroup
         )
 
         // No payload means the child should get /dev/null, already at EOF. The
