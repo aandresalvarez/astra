@@ -61,6 +61,7 @@ struct BrowserFailureDebugCaptureTests {
             currentURL: "https://example.com",
             currentTitle: "Example",
             taskID: taskID,
+            sessionID: taskID,
             isPresented: true,
             isEnabled: true
         )

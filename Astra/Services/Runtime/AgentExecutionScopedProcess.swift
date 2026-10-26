@@ -163,6 +163,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
                   operation: "posix_spawn_file_actions_addclose(stdout_read)")
         try check(posix_spawn_file_actions_addclose(&actions, stderrPipe.fileHandleForReading.fileDescriptor),
                   operation: "posix_spawn_file_actions_addclose(stderr_read)")
+        if stdoutPipe.fileHandleForWriting.fileDescriptor != STDOUT_FILENO {
+            try check(posix_spawn_file_actions_addclose(&actions, stdoutPipe.fileHandleForWriting.fileDescriptor),
+                      operation: "posix_spawn_file_actions_addclose(stdout_write)")
+        }
+        if stderrPipe.fileHandleForWriting.fileDescriptor != STDERR_FILENO {
+            try check(posix_spawn_file_actions_addclose(&actions, stderrPipe.fileHandleForWriting.fileDescriptor),
+                      operation: "posix_spawn_file_actions_addclose(stderr_write)")
+        }
         if let stdinPipe {
             try check(posix_spawn_file_actions_adddup2(&actions, stdinPipe.fileHandleForReading.fileDescriptor, STDIN_FILENO),
                       operation: "posix_spawn_file_actions_adddup2(stdin)")
@@ -173,6 +181,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         } else if stdinMode == .closed {
             try check(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0),
                       operation: "posix_spawn_file_actions_addopen(stdin)")
+        } else if ![stdoutPipe, stderrPipe].contains(where: {
+            $0.fileHandleForReading.fileDescriptor == STDIN_FILENO || $0.fileHandleForWriting.fileDescriptor == STDIN_FILENO
+        }), fcntl(STDIN_FILENO, F_GETFD) >= 0 {
+            // Preserve an open inherited stdin; if the parent already closed
+            // it, a new pipe may reuse fd 0. Do not inherit that pipe or ask
+            // spawn to inherit a descriptor our file actions just closed.
+            try check(posix_spawn_file_actions_addinherit_np(&actions, STDIN_FILENO),
+                      operation: "posix_spawn_file_actions_addinherit_np(stdin)")
         }
         try addWorkingDirectory(to: &actions)
 
@@ -217,7 +233,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         lock.unlock()
         if cancelledDuringLaunch { terminate() }
 
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        ProcessWaitExecutor.submit { [weak self] in
             self?.reapProcess(pid: childPID)
         }
     }

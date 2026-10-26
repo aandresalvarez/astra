@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Browser/ShelfBrowserOwner.swift|Astra/Services/Browser/ShelfBrowserBridgeRegistry.swift|Astra/Services/Browser/ShelfBrowserSession.swift|Astra/Services/Browser/ShelfSessionStores.swift|Astra/Services/Browser/ControlledBrowser*.swift|Astra/Views/ContentViewBrowserSessionPolicyCache.swift|Astra/Views/ShelfBrowserPanelView.swift|Tests/ShelfBrowserOwnershipTests.swift|Tests/ShelfBrowserLifetimeTests.swift|Tests/ControlledBrowserProfileLeaseTests.swift)
+      add_target "ShelfBrowserOwnershipTests|ShelfBrowserLifetimeTests|ControlledBrowserProfileLeaseTests|BrowserBridgeSecurityTests|BrowserSessionPolicy|ShelfBrowserPanelLayoutTests|WorkspaceRightRailPerformanceTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Runtime/NativeResumeEmptyTurnGate.swift|Tests/NativeResumeEmptyTurnTests.swift)
       add_target "NativeResumeEmptyTurnTests|RuntimeUsage"
       ;;
@@ -274,13 +280,14 @@ target_for_path() {
       add_target "SidebarTaskStoreSignalIntegrationTests"
       add_target "SidebarTaskSourceObservationTests"
       ;;
-    Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentUtilityScopedProcessRunState.swift|Astra/Services/Runtime/AgentProcessPipeReader.swift|Astra/Services/Runtime/AgentExecutionScopedProcess.swift|Tests/AgentRuntimePipeCompletionTests.swift|Tests/AgentExecutionScopedProcessTests.swift)
+    Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentUtilityScopedProcessRunState.swift|Astra/Services/Runtime/AgentProcessPipeReader.swift|Astra/Services/Runtime/AgentExecutionScopedProcess.swift|Tests/AgentRuntimePipeCompletionTests.swift|Tests/AgentExecutionScopedProcessTests.swift|ASTRACore/ProcessGroupSpawn.swift|ASTRACore/ProcessWaitExecutor.swift|Tests/ProcessWaitExecutorTests.swift|ASTRACore/BinaryRunner.swift|Tests/ProcessDescriptorIsolationTests.swift|Tests/BinaryRunnerTests.swift)
       add_target "AgentRuntimePipeCompletionTests"
       add_target "StreamVolumeAccountingTests"
       add_target "AgentExecutionScopedProcessTests"
       add_target "RuntimeRecovery"
       add_target "AgentUtilityRuntimeTests"
       add_target "ProcessMonitorTests"
+      add_target "ProcessWaitExecutorTests|ProcessDescriptorIsolationTests|ProcessBinaryRunnerTests|SpawnedChildSignalStateTests|OpenCodeRunnerCompletionTests|OpenCodeCompletionProofTests|HostControlParentDeathSupervisorTests"
       ;;
     ASTRACore/RuntimeProgressSignals.swift|Tests/RuntimeProgressSignalTests.swift)
       add_target "StreamVolumeAccountingTests"
@@ -339,8 +346,9 @@ target_for_path() {
     Tests/MailToolSupportTests/*|Tools/MailToolSupport/*|Tools/StanfordAppleMailTool/*|Tools/StanfordGraphMailTool/*|Tools/StanfordMailTool/*)
       add_target "MailToolSupportTests"
       ;;
-    Tests/HostControlToolSupportTests.swift|Tools/AstraHostControlTool/*|Tools/HostControlToolSupport/*)
+    Tests/HostControlToolSupportTests.swift|Tests/HostControlParentDeathSupervisorTests.swift|Tools/AstraHostControlTool/*|Tools/HostControlToolSupport/*)
       add_target "HostControlToolSupportTests"
+      add_target "ProcessWaitExecutorTests|ProcessDescriptorIsolationTests|SpawnedChildSignalStateTests|HostControlParentDeathSupervisorTests"
       ;;
     ASTRACore/SSHKnownHostsOption.swift|Tests/BrowserToolShimTests.swift)
       add_target "BrowserToolShimTests"

@@ -237,10 +237,10 @@ struct WorkspaceRightRailPerformanceTests {
         let context = container.mainContext
         let task = AgentTask(title: "Draft", goal: "Draft")
         context.insert(task)
-        #expect(!BrowserSessionPolicyContext.hasRuns(taskID: task.id, modelContext: context))
+        #expect(!BrowserSessionPolicyContext.hasRuns(task: task, modelContext: context))
         context.insert(TaskRun(task: task))
         try context.save()
-        #expect(BrowserSessionPolicyContext.hasRuns(taskID: task.id, modelContext: context))
+        #expect(BrowserSessionPolicyContext.hasRuns(task: task, modelContext: context))
     }
 
     @Test("Browser policy task projection keeps the newest durable user event")
@@ -263,7 +263,7 @@ struct WorkspaceRightRailPerformanceTests {
         context.insert(initial)
 
         var projection = BrowserSessionPolicyTaskProjection()
-        #expect(projection.latestUserMessage(for: task.id, modelContext: context) == "newest durable context")
+        #expect(projection.latestUserMessage(for: task, modelContext: context) == "newest durable context")
 
         let olderInsertion = DurableTaskEventInsertion(
             taskID: task.id,
@@ -274,7 +274,7 @@ struct WorkspaceRightRailPerformanceTests {
         )
         let invalidated = projection.record(olderInsertion, selectedTaskID: task.id)
         #expect(invalidated)
-        #expect(projection.latestUserMessage(for: task.id, modelContext: context) == "newest durable context")
+        #expect(projection.latestUserMessage(for: task, modelContext: context) == "newest durable context")
         #expect(projection.revision(for: task).hasSuffix(olderInsertion.eventID.uuidString))
         let previousRevision = projection.revision(for: task)
         task.goal = "Updated request after the user event"

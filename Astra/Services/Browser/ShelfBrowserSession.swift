@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import SwiftData
 import WebKit
 import ASTRACore
 import ASTRAModels
@@ -68,8 +69,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             let embeddedHandoffAddress = oldValue == .controlled && engine == .embedded
                 ? Self.embeddedBrowserHandoffAddress(currentURL: currentURL, controlledURL: controlledBrowser.currentURL)
                 : nil
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+            enqueueOwnedOperation { [self] in
                 if self.engine == .controlled, let controlledHandoffAddress {
                     await self.openControlledBrowser(initialAddress: controlledHandoffAddress)
                 } else if self.engine == .embedded, let embeddedHandoffAddress {
@@ -94,6 +94,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     @Published private(set) var canGoBack = false
     @Published private(set) var canGoForward = false
     @Published private(set) var bridgeEndpoint: String?
+    @Published var ownershipNotice: String?
     @Published private(set) var boundTaskID: UUID?
     @Published private(set) var lastPageReadCoverage: String?
     @Published private(set) var lastPageReadURL: String?
@@ -152,7 +153,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var observations: [NSKeyValueObservation] = []
     private var controlledBrowserCancellable: AnyCancellable?
     private var bridgeServer: BrowserBridgeServer?
-    private let bridgeAccessToken = BrowserBridgeServer.generateAccessToken()
+    let bridgeSessionID = UUID()
+    private var bridgeAccessToken = BrowserBridgeServer.generateAccessToken()
+    private var bridgeGeneration = UUID()
+    private(set) var boundOwner: ShelfBrowserOwner?
+    private(set) var inFlightBridgeRequests = 0
+    private var bridgeOperations: [UUID: Task<BrowserBridgeResponse, Never>] = [:]
+    private var uiOperations: [UUID: Task<Void, Never>] = [:]
+    private var isRetiring = false
+    private var isTornDown = false
+    private var isLaunchSelected = true
+    /// Test seam inside the same admission/lease boundary used by real commands.
+    var bridgeCommandHandlerForTesting: ((BrowserBridgeRequest) async -> BrowserBridgeResponse)?
     private var isPresented = false
     /// Last time an agent hit this session's bridge. Used to keep an
     /// off-screen session that a background agent is actively driving from
@@ -160,10 +172,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var lastBridgeActivity = Date()
     /// Idle grace before a hidden session becomes eligible for eviction.
     static let evictionIdleGrace: TimeInterval = 120
-    /// Plain mirror of `boundTaskID` (which is @Published and therefore not
-    /// readable from the nonisolated deinit). Used only for the guarded
-    /// registry reset on deallocation.
-    private var lastBoundTaskID: UUID?
     private var browserActionLoopCounts: [String: (state: String, count: Int)] = [:]
     private let browserAnalysisCache = BrowserAnalysisCache()
     private var enabledBrowserAdapters: Set<String> = []
@@ -409,7 +417,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return capabilities
     }
 
-    override init() {
+    private let bridgeRegistry: ShelfBrowserBridgeRegistry
+
+    override convenience init() { self.init(registry: .shared) }
+
+    init(registry: ShelfBrowserBridgeRegistry) {
+        bridgeRegistry = registry
         super.init()
         controlledBrowserCancellable = controlledBrowser.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in
@@ -444,11 +457,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     deinit {
         bridgeServer?.stop()
-        // Only clear the shared registry if it still points at us, so a
-        // non-active session being deallocated cannot wipe the registration
-        // of the session an agent is currently driving. Uses the plain mirror
-        // because the @Published boundTaskID isn't readable from deinit.
-        ShelfBrowserBridgeRegistry.shared.resetIfActive(taskID: lastBoundTaskID)
+        bridgeRegistry.remove(sessionID: bridgeSessionID)
     }
 
     /// True only when this session is safe to tear down: off screen, not
@@ -457,6 +466,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     /// browser automation running in a non-visible task.
     var isEvictable: Bool {
         !isPresented
+            && inFlightBridgeRequests == 0
             && !isLoading
             && !isUsingControlledBrowser
             && !controlledBrowser.isRunning
@@ -467,6 +477,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     /// bridge listener, KVO observers) before the store drops it. Only call on
     /// an `isEvictable` session.
     func teardown() {
+        // Listener shutdown is not stop proof for already admitted commands.
+        // Retire admission now and release resources only when their leases end.
+        retireBridge()
+        guard inFlightBridgeRequests == 0, !isTornDown else { return }
+        isTornDown = true
         _webView?.stopLoading()
         _webView?.navigationDelegate = nil
         _webView?.uiDelegate = nil
@@ -477,7 +492,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         controlledBrowser.stop()
         bridgeServer?.stop()
         bridgeServer = nil
-        ShelfBrowserBridgeRegistry.shared.resetIfActive(taskID: boundTaskID)
+        bridgeRegistry.remove(sessionID: bridgeSessionID)
         // Release the WebContent process and message handler outright. Keeping a
         // strong `_webView` ref would hold WebKit (and its helper process) alive
         // for a session that's being evicted but not yet deallocated. A later
@@ -491,15 +506,48 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         publishBridgeState()
     }
 
-    func bindToTask(_ taskID: UUID?) {
-        guard boundTaskID != taskID else { return }
+    @discardableResult
+    func bindToTask(_ taskID: UUID?, ownerID: PersistentIdentifier? = nil) -> Bool {
+        let owner = taskID.map { ShelfBrowserOwner(taskID: $0, modelID: ownerID) }
+        guard !isRetiring, !isTornDown else { return false }
+        guard boundOwner != owner else { return true }
+        guard inFlightBridgeRequests == 0 else { return false }
+        guard controlledBrowser.bindProfileOwner(owner?.leaseKey ?? "draft-" + bridgeSessionID.uuidString) else { return false }
+        boundOwner = owner
         boundTaskID = taskID
-        lastBoundTaskID = taskID
+        renewBridgeAuthority()
         keypressSafetyState = BrowserKeypressSafetyState()
         browserRunGuard.reset()
         browserDiagnostics.reset()
+        browserAnalysisCache.invalidate()
         lastBrowserTrace = nil
         publishBridgeState()
+        return true
+    }
+
+    private func renewBridgeAuthority() {
+        bridgeGeneration = UUID()
+        bridgeAccessToken = BrowserBridgeServer.generateAccessToken()
+        bridgeServer?.stop()
+        bridgeEndpoint = nil
+        if !isRetiring, !isTornDown { startBridge() }
+    }
+
+    func setLaunchSelected(_ selected: Bool) {
+        guard isLaunchSelected != selected else { return }
+        isLaunchSelected = selected
+        publishBridgeState()
+    }
+
+    /// Revoke new admissions, keeping any admitted request on its original
+    /// instance. Its async call retains this session until the final lease ends.
+    private func retireBridge() {
+        guard !isRetiring else { return }
+        isRetiring = true
+        bridgeGeneration = UUID()
+        bridgeServer?.stop()
+        bridgeEndpoint = nil
+        bridgeRegistry.remove(sessionID: bridgeSessionID)
     }
 
     func setEnabledBrowserAdapters(_ adapterIDs: [String]) {
@@ -526,7 +574,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         invalidateLastPageReadState()
         logNavigation(phase: "requested", source: source, url: url)
         if isUsingControlledBrowser {
-            Task { await navigateControlledBrowser(to: url.absoluteString) }
+            enqueueOwnedOperation { [self] in await navigateControlledBrowser(to: url.absoluteString) }
         } else if url.isFileURL {
             webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
         } else {
@@ -548,7 +596,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     func reload() {
         if isUsingControlledBrowser {
-            Task { await reloadControlledBrowser() }
+            enqueueOwnedOperation { [self] in await reloadControlledBrowser() }
         } else {
             webView.reload()
         }
@@ -561,7 +609,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     func openExternal() {
         if isUsingControlledBrowser {
-            Task { await controlledBrowser.showWindow() }
+            enqueueOwnedOperation { [self] in await controlledBrowser.showWindow() }
         } else if let url = webView.url {
             NSWorkspace.shared.open(url)
         }
@@ -574,7 +622,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             return
         }
 
-        Task {
+        enqueueOwnedOperation { [self] in
             await openControlledBrowser(initialAddress: initialAddress)
         }
     }
@@ -674,9 +722,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             return nil
         }
 
+        let failureCode = controlledBrowser.runState == .waitingForProfile
+            ? "controlled_browser_profile_reserved" : "controlled_browser_unavailable"
         var response: [String: Any] = [
             "ok": false,
-            "error": "controlled_browser_unavailable",
+            "error": failureCode,
             "action": action,
             "url": currentURL,
             "title": pageTitle,
@@ -684,31 +734,33 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "controlledBrowserStatus": controlledBrowser.statusMessage,
             "controlledBrowserLastError": controlledBrowser.lastErrorMessage ?? "",
             "elapsedSeconds": Date().timeIntervalSince(started),
-            "hint": "ASTRA could not launch or reach controlled Chromium. Stop browser probing and fix controlled browser setup or permissions before retrying Google Drive/Docs automation."
+            "hint": controlledBrowser.runState == .waitingForProfile ? controlledBrowser.statusMessage : "ASTRA could not launch or reach controlled Chromium. Stop browser probing and fix controlled browser setup or permissions before retrying Google Drive/Docs automation."
         ]
         BrowserBridgeRecoveryHints.attach(
             to: &response,
-            error: "controlled_browser_unavailable",
+            error: failureCode,
             action: action
         )
         return response
     }
 
-    private func waitForControlledBrowserReady(timeoutSeconds: Double) async -> Bool {
+    func waitForControlledBrowserReady(timeoutSeconds: Double) async -> Bool {
         let started = Date()
         let timeout = max(0.5, min(timeoutSeconds, 20))
         while Date().timeIntervalSince(started) <= timeout {
+            guard !Task.isCancelled else { return false }
             syncDisplayedStateForEngine()
             if engine == .controlled, controlledBrowser.isRunning {
                 publishBridgeState()
                 return true
             }
-            if controlledBrowser.runState == .failed {
+            if [.failed, .stopped, .waitingForProfile].contains(controlledBrowser.runState) {
                 syncDisplayedStateForEngine()
                 publishBridgeState()
                 return false
             }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            do { try await Task.sleep(nanoseconds: 200_000_000) }
+            catch { return false }
         }
         syncDisplayedStateForEngine()
         publishBridgeState()
@@ -735,6 +787,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     func stopControlledBrowser() {
+        // Also fence authenticated requests still queued for MainActor. They
+        // are not registered in bridgeOperations yet and cannot be cancelled.
+        renewBridgeAuthority()
+        for operation in bridgeOperations.values { operation.cancel() }
+        for operation in uiOperations.values { operation.cancel() }
         controlledBrowser.stop()
         syncDisplayedStateForEngine()
         publishBridgeState()
@@ -971,33 +1028,83 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         ]
     }
 
-    private func startBridge() {
-        let server = BrowserBridgeServer(requiredAccessToken: bridgeAccessToken, route: { [weak self] request in
+    /// Captures authority before a request is queued onto MainActor.
+    func makeBridgeRoute() -> BrowserBridgeServer.RouteHandler {
+        let generation = bridgeGeneration
+        return { [weak self] request in
             guard let self else {
                 return .json(["ok": false, "error": "browser_session_unavailable"], statusCode: 404)
             }
-            return await self.handleBridgeRequest(request)
-        }, onEndpointChanged: { [weak self] endpoint in
+            return await self.handleAuthorizedBridgeRequest(request, generation: generation)
+        }
+    }
+
+    @discardableResult
+    func enqueueOwnedOperation(_ operation: @escaping @MainActor () async -> Void) -> Task<Void, Never> {
+        let generation = bridgeGeneration
+        let operationID = UUID()
+        inFlightBridgeRequests += 1
+        let task = Task { @MainActor [self] in
+            defer { uiOperations[operationID] = nil; finishOwnedOperation() }
+            guard !Task.isCancelled, generation == bridgeGeneration, !isRetiring, !isTornDown else { return }
+            await operation()
+        }
+        uiOperations[operationID] = task
+        return task
+    }
+
+    private func finishOwnedOperation() {
+        inFlightBridgeRequests -= 1
+        if isRetiring && inFlightBridgeRequests == 0 { teardown() }
+    }
+
+    private func startBridge() {
+        let generation = bridgeGeneration
+        let server = BrowserBridgeServer(requiredAccessToken: bridgeAccessToken, route: makeBridgeRoute(), onEndpointChanged: { [weak self] endpoint in
             Task { @MainActor [weak self] in
-                self?.bridgeEndpoint = endpoint
-                self?.publishBridgeState()
+                guard let self, self.bridgeGeneration == generation,
+                      !self.isRetiring, !self.isTornDown else { return }
+                self.bridgeEndpoint = endpoint
+                self.publishBridgeState()
             }
         })
         bridgeServer = server
         server.start()
     }
 
+    private func handleAuthorizedBridgeRequest(_ request: BrowserBridgeRequest, generation: UUID) async -> BrowserBridgeResponse {
+        // The server may have authenticated a request before a MainActor hop.
+        // Validate again here; the lease then prevents rebinding across awaits.
+        guard generation == bridgeGeneration, !isRetiring, !isTornDown else {
+            return .json(["ok": false, "error": "browser_session_changed",
+                "message": "Browser ownership changed. Reopen Browser for this task before continuing."], statusCode: 409)
+        }
+        inFlightBridgeRequests += 1
+        let operationID = UUID()
+        let operation = Task { @MainActor in
+            if let handler = self.bridgeCommandHandlerForTesting { return await handler(request) }
+            return await self.handleBridgeRequest(request)
+        }
+        bridgeOperations[operationID] = operation
+        defer { bridgeOperations[operationID] = nil; finishOwnedOperation() }
+        return await operation.value
+    }
+
     func publishBridgeState() {
-        ShelfBrowserBridgeRegistry.shared.update(
+        guard !isRetiring, !isTornDown else { return }
+        bridgeRegistry.update(
             endpoint: bridgeEndpoint,
             currentURL: currentURL.isEmpty ? nil : currentURL,
             currentTitle: pageTitle.isEmpty ? nil : pageTitle,
             backend: engine.bridgeBackendLabel,
             taskID: boundTaskID,
+            taskOwnerID: boundOwner?.modelID,
+            sessionID: bridgeSessionID,
             accessToken: bridgeAccessToken,
             isPresented: isPresented,
             isEnabled: isAgentBridgeEnabled,
-            enabledBrowserAdapters: Array(enabledBrowserAdapters).sorted()
+            enabledBrowserAdapters: Array(enabledBrowserAdapters).sorted(),
+            isLaunchSelected: isLaunchSelected
         )
     }
 
@@ -1073,7 +1180,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         do {
             try await controlledBrowser.navigate(to: address)
         } catch {
-            await controlledBrowser.launch(initialAddress: address)
+            controlledBrowser.reportOperationFailure(error)
         }
         syncDisplayedStateForEngine()
         publishBridgeState()
@@ -1083,7 +1190,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         do {
             try await controlledBrowser.reload()
         } catch {
-            await controlledBrowser.launch(initialAddress: currentURL.isEmpty ? nil : currentURL)
+            controlledBrowser.reportOperationFailure(error)
         }
         syncDisplayedStateForEngine()
         publishBridgeState()
@@ -1633,13 +1740,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 return .json(response, statusCode: 404)
             }
         } catch {
+            let reserved = error is ControlledBrowserProfileLease.Failure
+            if reserved { controlledBrowser.reportOperationFailure(error) }
+            let code = reserved ? "controlled_browser_profile_reserved" : "browser_bridge_error"
             var response: [String: Any] = [
                 "ok": false,
-                "error": "browser_bridge_error",
+                "error": code,
                 "message": error.localizedDescription
             ]
-            BrowserBridgeRecoveryHints.attach(to: &response, error: "browser_bridge_error")
-            return .json(response, statusCode: 400)
+            BrowserBridgeRecoveryHints.attach(to: &response, error: code)
+            return .json(response, statusCode: reserved ? 409 : 400)
         }
     }
 
