@@ -3,16 +3,37 @@ import SwiftData
 import ASTRAModels
 import ASTRACore
 
+/// A read belongs to a persisted model, not just its importable UUID.
+struct TaskAttachmentHistoryScope: Hashable, Sendable {
+    let taskID: UUID
+    let ownerID: PersistentIdentifier
+
+    init(task: AgentTask) {
+        taskID = task.id
+        ownerID = task.persistentModelID
+    }
+
+    var signature: String { "\(taskID.uuidString)|\(ownerID)" }
+}
+
 /// Reads attachment history independently of the bounded transcript window.
 /// Call off-main with a fresh context; events remain the durable owner.
 enum TaskAttachmentFilesReader {
-    static func paths(taskID: UUID, container: ModelContainer) async throws -> [String] {
-        try await Task.detached(priority: .utility) {
-            try paths(taskID: taskID, modelContext: ModelContext(container))
-        }.value
+    static func paths(scope: TaskAttachmentHistoryScope, container: ModelContainer) async throws -> [String] {
+        let read = Task.detached(priority: .utility) {
+            let context = ModelContext(container)
+            context.autosaveEnabled = false
+            return try paths(scope: scope, modelContext: context)
+        }
+        return try await withTaskCancellationHandler {
+            try await read.value
+        } onCancel: {
+            read.cancel()
+        }
     }
 
-    static func paths(taskID: UUID, modelContext: ModelContext) throws -> [String] {
+    static func paths(scope: TaskAttachmentHistoryScope, modelContext: ModelContext) throws -> [String] {
+        let taskID = scope.taskID
         let messageType = TaskEventTypes.Conversation.userMessage.rawValue
         let planningType = TaskPlanConversationEventTypes.userMessage
         let recordType = TaskEventTypes.Conversation.attachments.rawValue
@@ -24,6 +45,9 @@ enum TaskAttachmentFilesReader {
         )
         var facts: [TaskAttachmentLedger.EventFacts] = []
         try modelContext.enumerate(descriptor, batchSize: 128) { event in
+            try Task.checkCancellation()
+            guard !event.isDeleted, let owner = event.task, !owner.isDeleted,
+                  owner.persistentModelID == scope.ownerID else { return }
             // Keep identities and attachment metadata, never whole user texts.
             let payload = event.type == recordType ? event.payload
                 : TaskAttachmentBlock.message("", attaching: TaskAttachmentBlock.paths(in: event.payload))

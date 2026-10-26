@@ -319,6 +319,34 @@ struct TaskPlanServiceTests {
         #expect(state.plan?.steps[1].status == .pending)
     }
 
+    @Test("Plan events at one instant replay in lifecycle order whatever their stored order")
+    func reconstructsSameInstantEventsInLifecycleOrder() throws {
+        let task = AgentTask(title: "Plan task", goal: "Do work")
+        let plan = TaskPlanPayload(title: "Do work plan", goal: "Do work", steps: [TaskPlanPayloadStep(id: "step-1", title: "Inspect")])
+        let created = TaskEvent(task: task, type: TaskPlanEventTypes.created, payload: TaskPlanService.encodePlanPayload(plan))
+        let approved = TaskEvent(task: task, type: TaskPlanEventTypes.approved, payload: TaskPlanService.encodePlanPayload(plan))
+        let started = TaskEvent(task: task, type: TaskPlanEventTypes.executionStarted, payload: encode(TaskPlanLifecyclePayload(planID: plan.planID)))
+        let completed = TaskEvent(task: task, type: TaskPlanEventTypes.stepCompleted, payload: TaskPlanService.encodeStepProgressPayload(TaskPlanProgressPayload(
+            version: 1, type: TaskPlanEventTypes.stepCompleted, planID: plan.planID, stepID: "step-1",
+            status: .done, title: nil, detail: nil, summary: "Inspected", reason: nil
+        )))
+        let instant = Date(timeIntervalSince1970: 50)
+        for event in [created, approved, started, completed] {
+            event.timestamp = instant
+        }
+        let later = TaskEvent(task: task, type: "agent.response", payload: "Done")
+        later.timestamp = Date(timeIntervalSince1970: 60)
+
+        let state = TaskPlanService.reconstruct(from: [later, completed, started, approved, created])
+
+        #expect(state.lifecycleStatus == .executing)
+        #expect(state.approvedAt == instant)
+        #expect(state.executionStartedAt == instant)
+        #expect(state.plan?.steps[0].status == .done)
+        // Every event, plan or not, advances the replay clock.
+        #expect(state.latestEventAt == later.timestamp)
+    }
+
     @Test("Plan payload decoders expose diagnostic failures")
     func planPayloadDecodersExposeDiagnosticFailures() {
         switch TaskPlanService.decodePlanPayloadResult("not-json") {

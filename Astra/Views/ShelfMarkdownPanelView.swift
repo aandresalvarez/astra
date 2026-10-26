@@ -62,7 +62,7 @@ struct ShelfMarkdownPanelView: View {
     @AppStorage(AppStorageKeys.markdownShelfFileNavigatorPinned) private var isFileNavigatorPinned = false
     @State private var fileNavigatorOrganization = ShelfFileNavigatorOrganization.stored
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var historyAttachments: (taskID: UUID, paths: [String])?
+    @State private var historyAttachments: (scope: TaskAttachmentHistoryScope, paths: [String])?
     @State private var viewMode: ShelfTextViewMode = .preview
     @State private var isEditing = false
     @State private var wrapLines = true
@@ -119,8 +119,8 @@ struct ShelfMarkdownPanelView: View {
                 FilesShelfResponsivenessTelemetry.chromeReady(scope: responsivenessScope)
             }
         }
-        .shelfAttachmentHistory(task: task) { taskID, paths in
-            historyAttachments = taskID.map { ($0, paths) }
+        .shelfAttachmentHistory(task: task) { scope, paths in
+            historyAttachments = scope.map { ($0, paths) }
         }
         .task(id: fileSearchText) {
             // Apply clears immediately; debounce non-empty queries so typing
@@ -938,7 +938,7 @@ struct ShelfMarkdownPanelView: View {
         let taskPart: String
         if let task {
             taskPart = [
-                task.id.uuidString,
+                TaskAttachmentHistoryScope(task: task).signature,
                 task.inputs.joined(separator: "|"),
                 currentHistoryAttachmentPaths.joined(separator: "|"),
                 TaskWorkspaceAccess(task: task).taskFolder
@@ -1061,7 +1061,7 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private var currentHistoryAttachmentPaths: [String] {
-        historyAttachments?.taskID == task?.id ? (historyAttachments?.paths ?? []) : []
+        historyAttachments?.scope == task.map(TaskAttachmentHistoryScope.init) ? (historyAttachments?.paths ?? []) : []
     }
 
     private func normalizeFileNavigatorScope() {
@@ -1243,10 +1243,9 @@ struct ShelfMarkdownPanelView: View {
 
     private func startDocumentLoad(_ url: URL, automatically: Bool) {
         documentLoadTask?.cancel()
+        let request = session.prepareLoad(url, automatically: automatically)
         documentLoadTask = Task {
-            let loaded = automatically
-                ? await session.loadAutomaticallyIfAllowedAsync(url)
-                : await session.loadAsync(url)
+            let loaded = await session.load(request)
             guard loaded, !Task.isCancelled else { return }
             expandFileNavigator(to: url.path, isFile: true)
         }

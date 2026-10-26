@@ -78,6 +78,12 @@ target_for_path() {
     Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
       ;;
+    Astra/Services/Persistence/TaskContextEventIndex.swift|Astra/Services/Persistence/TaskContextStateManager.swift|Astra/Services/Persistence/TaskActiveObjectiveResolver.swift|Astra/Models/TaskCorrectiveWorkQueries.swift|Tests/TaskContextEventIndexTests.swift|Tests/TaskContextDerivationPerformanceTests.swift|Tests/TaskContextStateOffMainRefreshTests.swift)
+      add_target "TaskContextEventIndexTests|TaskContextState|TaskPlanServiceTests"
+      add_target "TaskHistoryReadTests|TaskMainActorScalingGateTests"
+      add_target "TaskAttachmentFilesReaderTests|ShelfAttachmentHistoryTests"
+      add_target "requestBudget"
+      ;;
     Tests/TaskMainActorScalingGateTests.swift|Tests/TaskHistoryReadTests.swift|Astra/Models/TaskHistoryRead.swift|Astra/Services/Tasks/TaskConversationContinuationService.swift|Astra/Services/Tasks/TaskExecutionLaunchSnapshotApplicator.swift|Astra/Services/Runtime/TaskRuntimePermissionGrants.swift)
       add_target "TaskMainActorScalingGateTests"
       add_target "TaskHistoryReadTests"
@@ -175,7 +181,10 @@ target_for_path() {
       add_target "TaskInputContinuityPromptTests"
       add_target "TaskAttachmentFilesReaderTests"
       ;;
-    Astra/Services/Tasks/TaskAttachmentFilesReader.swift|Tests/TaskAttachmentFilesReaderTests.swift)
+    Astra/Services/Browser/ShelfSessionStores.swift|Tests/ShelfFilesOwnershipTests.swift)
+      add_target "ShelfFilesOwnershipTests|ShelfMarkdownSessionTests|ShelfMarkdownAsyncLoadingTests"
+      ;;
+    Astra/Services/Tasks/TaskAttachmentFilesReader.swift|Astra/Services/Tasks/TaskHeaderFilesReader.swift|Tests/TaskAttachmentFilesReaderTests.swift)
       add_target "TaskAttachmentFilesReaderTests"
       add_target "ComposerAttachmentsTests"
       ;;
@@ -229,7 +238,7 @@ target_for_path() {
     ASTRACore/HostFileAccessBroker.swift|Astra/Services/Browser/ShelfPreviewFailure.swift|Astra/Services/Browser/ShelfMarkdownSession.swift|Tests/ShelfPreviewFailureTests.swift)
       add_target "HostFileAccessBrokerTests"
       add_target "ShelfPreviewFailureTests"
-      add_target "ShelfMarkdownAsyncLoadingTests"
+      add_target "ShelfMarkdownAsyncLoadingTests|ShelfFilesOwnershipTests"
       ;;
     Astra/Services/Runtime/AgentRuntimeRunPersistence.swift|Astra/Services/Persistence/TaskOutputDiscovery.swift)
       add_target "TaskOutputDiscoveryTests"

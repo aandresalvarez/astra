@@ -319,7 +319,9 @@ struct ContentView: View {
         markdownSessionStore.session(
             for: selectedTask?.id,
             workspaceID: effectiveWorkspaceID,
-            pinnedToTask: isMarkdownPinnedToTask
+            pinnedToTask: isMarkdownPinnedToTask,
+            taskOwnerID: selectedTask?.persistentModelID,
+            workspaceOwnerID: effectiveWorkspace?.persistentModelID
         )
     }
     private var currentBrowserSessionPolicy: BrowserSessionPolicy {
@@ -1411,10 +1413,11 @@ struct ContentView: View {
             return
         case .markdown:
             let session = currentMarkdownSession
-            session.bindToTask(selectedTask?.id)
+            session.bindToTask(selectedTask?.id, ownerID: selectedTask?.persistentModelID)
             guard !selectedTaskPreferredMarkdownPath.isEmpty else { return }
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            Task { await session.loadAutomaticallyIfAllowedAsync(url) }
+            let request = session.prepareLoad(url, automatically: true)
+            Task { await session.load(request) }
         case .browser:
             currentBrowserSession.bindToTask(selectedTask?.id)
             loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: source)
@@ -1494,10 +1497,11 @@ struct ContentView: View {
             return
         }
         let session = currentMarkdownSession
-        session.bindToTask(selectedTask?.id)
+        session.bindToTask(selectedTask?.id, ownerID: selectedTask?.persistentModelID)
         if !selectedTaskPreferredMarkdownPath.isEmpty {
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            Task { await session.loadAutomaticallyIfAllowedAsync(url) }
+            let request = session.prepareLoad(url, automatically: true)
+            Task { await session.load(request) }
         }
         if activeWorkspaceCanvasItem == .markdown {
             animatePanelChange {
@@ -1541,7 +1545,7 @@ struct ContentView: View {
             return
         }
 
-        let taskID = selectedTask.id
+        let ownerID = selectedTask.persistentModelID
         let attachedMarkdownPath = preferredAttachedMarkdownPath(for: selectedTask)
         selectedTaskPreferredMarkdownPath = attachedMarkdownPath ?? ""
         selectedTaskHasMarkdownShelfContent = attachedMarkdownPath != nil
@@ -1558,7 +1562,7 @@ struct ContentView: View {
 
             await MainActor.run {
                 guard !Task.isCancelled,
-                      self.selectedTask?.id == taskID else {
+                      self.selectedTask?.persistentModelID == ownerID else {
                     return
                 }
 
@@ -1944,7 +1948,8 @@ struct ContentView: View {
             selectedTaskHasMarkdownShelfContent = true
             let session = currentMarkdownSession
             presentCanvas(.markdown)
-            Task { await session.loadAsync(url) }
+            let request = session.prepareLoad(url)
+            Task { await session.load(request) }
             return
 
         case .query?:
@@ -1991,7 +1996,8 @@ struct ContentView: View {
             "result": FileManager.default.fileExists(atPath: url.path) ? "opened" : "missing"
         ], level: FileManager.default.fileExists(atPath: url.path) ? .info : .warning)
         presentCanvas(.markdown)
-        Task { await session.loadAsync(url) }
+        let request = session.prepareLoad(url)
+        Task { await session.load(request) }
     }
 
     private func syncBrowserPresentation() {
@@ -2368,9 +2374,10 @@ struct ContentView: View {
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
+        let filesOwnerID = ws.persistentModelID
         let result = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
         guard result.persisted else { workspaceDeletionFailure = "ASTRA couldn't save the deletion, so the workspace was kept."; return }
-        markdownSessionStore.releaseSession(forWorkspaceID: ws.id)
+        markdownSessionStore.releaseSession(forWorkspaceID: ws.id, ownerID: filesOwnerID)
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: result.nextWorkspace))
     }
 
@@ -2442,6 +2449,7 @@ struct ContentView: View {
     }
     // MARK: - Task Actions
     private func setSelectedTask(_ task: AgentTask?, recordsFinalHomeTransition: Bool = true) {
+        let previousFilesOwnerID = selectedTask?.persistentModelID
         let previousTaskID = selectedTask?.id
         if previousTaskID != task?.id {
             TaskOpenResponsivenessTelemetry.beginForSelection(task: task, source: "task_selection", scope: taskOpenResponsivenessScope)
@@ -2463,6 +2471,9 @@ struct ContentView: View {
             clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
             if previousTaskID != task?.id {
                 handleSelectedTaskIdentityChanged(to: task)
+            } else if previousFilesOwnerID != task?.persistentModelID {
+                currentMarkdownSession.bindToTask(task?.id, ownerID: task?.persistentModelID)
+                refreshMarkdownShelfAvailabilityForSelectedTask()
             }
             markTaskRead(task)
         }
@@ -2511,7 +2522,7 @@ struct ContentView: View {
     }
     private func bindTaskScopedSessions(to taskID: UUID?) {
         currentBrowserSession.bindToTask(taskID)
-        currentMarkdownSession.bindToTask(taskID)
+        currentMarkdownSession.bindToTask(taskID, ownerID: selectedTask?.persistentModelID)
         querySession.bindToTask(taskID)
     }
 
@@ -2562,20 +2573,21 @@ struct ContentView: View {
     }
 
     private func deleteTask(_ task: AgentTask) {
-        let deletedTaskID = task.id, wasSelected = selectedTask?.id == task.id
+        let filesOwnerID = task.persistentModelID
+        let deletedTaskID = task.id, wasSelected = selectedTask?.persistentModelID == filesOwnerID
         // Selection clears only as the deletion happens. A failed save puts the
         // task back, so it is reselected and the user is told it was kept.
         let deleted = coordinator.deleteTask(task) { if wasSelected { setSelectedTask(nil) } }
         refreshRunningTaskCount()
         guard deleted else {
-            if wasSelected, selectedTask?.id != deletedTaskID, !task.isDeleted { setSelectedTask(task) }
+            if wasSelected, selectedTask?.persistentModelID != filesOwnerID, !task.isDeleted { setSelectedTask(task) }
             taskDeletionFailure = "ASTRA couldn't save the deletion, so \"\(task.title)\" was kept."
             return
         }
         // Release the task's browser (WebContent process + bridge listener) and
         // markdown sessions; otherwise they leak until the window closes.
         browserSessionStore.releaseSession(for: deletedTaskID)
-        markdownSessionStore.releaseSession(for: deletedTaskID)
+        markdownSessionStore.releaseSession(for: deletedTaskID, ownerID: filesOwnerID)
     }
 
     private func requestDeleteTask(_ task: AgentTask) {

@@ -285,7 +285,7 @@ assert_targets $'TaskInputContinuityPromptTests\nBuildPromptTests\nAgentRuntimeA
   "Tests/TaskInputContinuityPromptTests.swift" \
   "Tests/AgentRuntimeWorkerTests.swift"
 
-assert_targets $'HostFileAccessBrokerTests\nShelfPreviewFailureTests\nShelfMarkdownAsyncLoadingTests' \
+assert_targets $'HostFileAccessBrokerTests\nShelfPreviewFailureTests\nShelfMarkdownAsyncLoadingTests|ShelfFilesOwnershipTests' \
   "ASTRACore/HostFileAccessBroker.swift" \
   "Astra/Services/Browser/ShelfPreviewFailure.swift"
 
@@ -388,3 +388,12 @@ assert_targets "ClaudeSessionUsageAccounting|claudeSessionSnapshotsAcrossRequest
 assert_targets "NativeResumeEmptyTurnTests|RuntimeUsage" \
   "Astra/Services/Runtime/NativeResumeEmptyTurnGate.swift" \
   "Tests/NativeResumeEmptyTurnTests.swift"
+
+for path in Astra/Services/Persistence/TaskContextEventIndex.swift Astra/Services/Persistence/TaskContextStateManager.swift Astra/Services/Persistence/TaskActiveObjectiveResolver.swift Astra/Models/TaskCorrectiveWorkQueries.swift Tests/TaskContextEventIndexTests.swift Tests/TaskContextDerivationPerformanceTests.swift Tests/TaskContextStateOffMainRefreshTests.swift; do
+  assert_targets $'TaskContextEventIndexTests|TaskContextState|TaskPlanServiceTests\nTaskHistoryReadTests|TaskMainActorScalingGateTests\nTaskAttachmentFilesReaderTests|ShelfAttachmentHistoryTests\nrequestBudget' "$path"
+done
+
+assert_targets "ShelfFilesOwnershipTests|ShelfMarkdownSessionTests|ShelfMarkdownAsyncLoadingTests" \
+  "Astra/Services/Browser/ShelfSessionStores.swift" "Tests/ShelfFilesOwnershipTests.swift"
+assert_targets $'TaskAttachmentFilesReaderTests\nComposerAttachmentsTests' \
+  "Astra/Services/Tasks/TaskHeaderFilesReader.swift"

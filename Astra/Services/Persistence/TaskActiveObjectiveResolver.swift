@@ -61,7 +61,25 @@ extension TaskContextStateManager {
         startingRequest: String,
         approvedGoal: String?
     ) -> ActiveObjectiveResolution {
-        if let override = latestObjectiveOverride(for: task) {
+        activeObjectiveResolution(for: task, override: latestObjectiveOverride(for: task),
+            planState: planState, startingRequest: startingRequest, approvedGoal: approvedGoal)
+    }
+
+    static func activeObjectiveResolution(
+        for task: AgentTask, events: TaskContextEventIndex, planState: TaskPlanState,
+        startingRequest: String, approvedGoal: String?
+    ) -> ActiveObjectiveResolution {
+        activeObjectiveResolution(for: task,
+            override: latestObjectiveOverride(userMessages: events.orderedUserMessages,
+                pendingTurnMessageIDs: events.pendingTurnMessageIDs),
+            planState: planState, startingRequest: startingRequest, approvedGoal: approvedGoal)
+    }
+
+    private static func activeObjectiveResolution(
+        for task: AgentTask, override: ObjectiveOverride?, planState: TaskPlanState,
+        startingRequest: String, approvedGoal: String?
+    ) -> ActiveObjectiveResolution {
+        if let override {
             return ActiveObjectiveResolution(
                 objective: override.objective,
                 sourcePointers: [override.source],
@@ -152,11 +170,13 @@ private struct ObjectiveOverride: Equatable {
 }
 
 private func latestObjectiveOverride(for task: AgentTask) -> ObjectiveOverride? {
-    let pendingTurnMessageIDs = TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
-    let userMessages = TaskHistoryRead.records(
-        for: task,
-        ofTypes: TaskContextStateManager.conversationRequestEventTypes
-    ).filter { !pendingTurnMessageIDs.contains($0.id) }
+    latestObjectiveOverride(
+        userMessages: TaskHistoryRead.records(for: task, ofTypes: TaskContextStateManager.conversationRequestEventTypes),
+        pendingTurnMessageIDs: TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task))
+}
+
+private func latestObjectiveOverride(userMessages: [TaskEventRecord], pendingTurnMessageIDs: Set<UUID>) -> ObjectiveOverride? {
+    let userMessages = userMessages.filter { !pendingTurnMessageIDs.contains($0.id) }
     guard userMessages.count > 1 else { return nil }
 
     for event in userMessages.dropFirst().reversed() {

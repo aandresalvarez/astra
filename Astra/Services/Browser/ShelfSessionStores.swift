@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import SwiftData
 
 /// Deterministic LRU ownership for expensive per-scope sessions. Capacity is
 /// soft: callers decide whether a candidate is safe to evict, so active work
@@ -227,51 +228,53 @@ final class ShelfBrowserSessionStore: ObservableObject {
 @MainActor
 final class ShelfMarkdownSessionStore: ObservableObject {
     private let unscopedSession = ShelfMarkdownSession()
-    private var workspaceSessions: [UUID: ShelfMarkdownSession] = [:]
-    private var taskSessions: [UUID: ShelfMarkdownSession] = [:]
+    private var workspaceSessions: [ShelfFilesOwner: ShelfMarkdownSession] = [:]
+    private var taskSessions: [ShelfFilesOwner: ShelfMarkdownSession] = [:]
 
     func session(
         for taskID: UUID?,
         workspaceID: UUID?,
-        pinnedToTask: Bool
+        pinnedToTask: Bool,
+        taskOwnerID: PersistentIdentifier? = nil,
+        workspaceOwnerID: PersistentIdentifier? = nil
     ) -> ShelfMarkdownSession {
         guard pinnedToTask, let taskID else {
             guard let workspaceID else {
-                unscopedSession.bindToTask(taskID)
+                unscopedSession.bindToTask(taskID, ownerID: taskOwnerID)
                 return unscopedSession
             }
 
-            if let session = workspaceSessions[workspaceID] {
-                session.bindToTask(taskID)
+            if let session = workspaceSessions[ShelfFilesOwner(id: workspaceID, ownerID: workspaceOwnerID)] {
+                session.bindToTask(taskID, ownerID: taskOwnerID)
                 return session
             }
 
             let session = ShelfMarkdownSession()
-            session.bindToTask(taskID)
-            workspaceSessions[workspaceID] = session
+            session.bindToTask(taskID, ownerID: taskOwnerID)
+            workspaceSessions[ShelfFilesOwner(id: workspaceID, ownerID: workspaceOwnerID)] = session
             return session
         }
 
-        if let session = taskSessions[taskID] {
-            session.bindToTask(taskID)
+        if let session = taskSessions[ShelfFilesOwner(id: taskID, ownerID: taskOwnerID)] {
+            session.bindToTask(taskID, ownerID: taskOwnerID)
             return session
         }
 
         let session = ShelfMarkdownSession()
-        session.bindToTask(taskID)
-        taskSessions[taskID] = session
+        session.bindToTask(taskID, ownerID: taskOwnerID)
+        taskSessions[ShelfFilesOwner(id: taskID, ownerID: taskOwnerID)] = session
         return session
     }
 
     /// Drop the markdown session bound to `taskID` (e.g. on task delete).
     /// These are plain value-backed sessions with no WebKit/bridge resources,
     /// so removing the reference is sufficient.
-    func releaseSession(for taskID: UUID) {
-        taskSessions.removeValue(forKey: taskID)
+    func releaseSession(for taskID: UUID, ownerID: PersistentIdentifier? = nil) {
+        taskSessions.removeValue(forKey: ShelfFilesOwner(id: taskID, ownerID: ownerID))?.cancelPendingDocumentLoad()
     }
 
-    func releaseSession(forWorkspaceID workspaceID: UUID) {
-        workspaceSessions.removeValue(forKey: workspaceID)
+    func releaseSession(forWorkspaceID workspaceID: UUID, ownerID: PersistentIdentifier? = nil) {
+        workspaceSessions.removeValue(forKey: ShelfFilesOwner(id: workspaceID, ownerID: ownerID))?.cancelPendingDocumentLoad()
     }
 
     var taskSessionCountForTesting: Int { taskSessions.count }

@@ -218,7 +218,7 @@ struct TaskMainView: View {
     @State private var scheduleStatusMessage: TaskScopedStatusMessage?
     @State private var isShowingFilesPopover = false
     @State private var isShowingDiagnosticsPopover = false
-    @State private var headerFileItemsCache: [TaskFileItem] = []
+    @State private var headerFileItemsCache: (scope: TaskAttachmentHistoryScope, items: [TaskFileItem])?
     /// Not `private`: refreshed from `TaskMainViewTaskFolderCaches.swift`.
     @State var diagnosticFileGroupsCache: [TaskDiagnosticFileGroup] = []
     @State var runFileChangeCountsCache = TaskRunVisibleFileChangeCounts()
@@ -1036,7 +1036,8 @@ struct TaskMainView: View {
     /// off-main by `recomputeHeaderFileItems()` only when the inputs change.
     /// See the UI responsiveness audit (Cluster 2).
     private var headerFileItems: [TaskFileItem] {
-        headerFileItemsCache
+        guard headerFileItemsCache?.scope == TaskAttachmentHistoryScope(task: task) else { return [] }
+        return headerFileItemsCache?.items ?? []
     }
 
     /// Cheap, syscall-free signature of the inputs that determine the header
@@ -1045,7 +1046,7 @@ struct TaskMainView: View {
         let runChangePaths = currentThreadSnapshot.sortedRuns.flatMap { run in
             run.fileChanges.map(\.path)
         }
-        return (runChangePaths
+        return ([TaskAttachmentHistoryScope(task: task).signature] + runChangePaths
             + threadViewModel.generatedFilePaths
             + task.inputs
             + currentThreadSnapshot.sortedEvents.filter {
@@ -1055,34 +1056,27 @@ struct TaskMainView: View {
     }
 
     private func recomputeHeaderFileItems() async {
-        let runs = currentThreadSnapshot.sortedRuns
-        let generatedFilePaths = threadViewModel.generatedFilePaths
         let inputs = task.inputs
         let access = TaskWorkspaceAccess(task: task)
         let taskFolder = access.taskFolder
         let workspacePath = access.effectiveWorkspacePath
-        let taskID = task.id
+        let scope = TaskAttachmentHistoryScope(task: task)
         let container = modelContext.container
-        let items = await Task.detached(priority: .userInitiated) {
-            let indexed = TaskFileIndex.headerItems(
-                runs: runs,
-                generatedFilePaths: generatedFilePaths,
-                inputs: inputs,
-                taskFolder: taskFolder,
-                workspacePath: workspacePath
-            )
-            do {
-                let context = ModelContext(container)
-                let paths = try TaskAttachmentFilesReader.paths(taskID: taskID, modelContext: context)
-                return TaskAttachmentFilesReader.merging(paths: paths, with: indexed)
-            } catch {
-                AppLogger.error("Attachment history could not be read: \(error.localizedDescription)", category: "UI")
-                return indexed
-            }
-        }.value
-        // Under `.task(id:)`: don't apply a result whose inputs are now stale.
-        guard !Task.isCancelled else { return }
-        headerFileItemsCache = items
+        let read = Task.detached(priority: .userInitiated) {
+            let context = ModelContext(container)
+            context.autosaveEnabled = false
+            return try TaskHeaderFilesReader.items(scope: scope, inputs: inputs, taskFolder: taskFolder,
+                workspacePath: workspacePath, modelContext: context)
+        }
+        do {
+            let items = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
+            guard !Task.isCancelled, scope == TaskAttachmentHistoryScope(task: task) else { return }
+            headerFileItemsCache = (scope, items)
+        } catch is CancellationError {
+            return
+        } catch {
+            AppLogger.error("Task files could not be read: \(error.localizedDescription)", category: "UI")
+        }
     }
 
     private var headerTextShelfFileItems: [TaskFileItem] {
