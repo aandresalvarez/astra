@@ -71,10 +71,16 @@ struct PluginRowDetailsView<SetupRow: View>: View {
 
     @ViewBuilder
     private func skillSection(_ skill: PluginSkill) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            componentHeader(skill.name, kind: "Skill")
-            ForEach(PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation, package: row.package), id: \.self) { key in
-                settingField(key, of: skill)
+        let recovering = Set(unreadableSettings.map(\.field))
+        let keys = PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation, package: row.package).filter {
+            !recovering.contains(PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: $0))
+        }
+        if !keys.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                componentHeader(skill.name, kind: "Skill")
+                ForEach(keys, id: \.self) { key in
+                    settingField(key, of: skill)
+                }
             }
         }
     }
