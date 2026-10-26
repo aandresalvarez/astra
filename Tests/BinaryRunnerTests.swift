@@ -35,11 +35,23 @@ private let hangBreakerTimeout: TimeInterval = 120
 /// test fails.
 private let outputTimeouts: [TimeInterval] = [0.1, 0.4, 1.6, 6.4, 25.6]
 
+// The synchronous API waits for an async runner. Calling it directly from a
+// Swift Testing task can occupy every cooperative worker on small CI runners,
+// preventing that runner from ever starting. Keep the real synchronous API
+// under test, but call it from a dispatch worker, as the synchronous CLI does.
+private func runSynchronousExecutorOffCooperativePool(_ request: HardenedProcessRequest) async -> RunResult {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global().async {
+            continuation.resume(returning: HardenedProcessExecutor().runSynchronously(request))
+        }
+    }
+}
+
 @Suite("ProcessBinaryRunner")
 struct ProcessBinaryRunnerTests {
     @Test("Hardened process executor provides synchronous PATH lookup and stdin")
-    func hardenedProcessExecutorProvidesSynchronousPathLookupAndStdin() {
-        let result = HardenedProcessExecutor().runSynchronously(
+    func hardenedProcessExecutorProvidesSynchronousPathLookupAndStdin() async {
+        let result = await runSynchronousExecutorOffCooperativePool(
             HardenedProcessRequest(
                 executable: "cat",
                 standardInput: Data("mail input".utf8),
@@ -58,7 +70,7 @@ struct ProcessBinaryRunnerTests {
         // `exec` makes the sleeper the child itself, so the timeout kills it
         // instead of orphaning a `sleep` that outlives every budget.
         let result = try await timedOutRunPastMarkers(["printed"]) { timeout, markers in
-            HardenedProcessExecutor().runSynchronously(
+            await runSynchronousExecutorOffCooperativePool(
                 HardenedProcessRequest(
                     executable: "/bin/sh",
                     arguments: ["-c", #"printf started; : > "$1/printed"; exec sleep 600"#, "sh", markers],
@@ -75,8 +87,8 @@ struct ProcessBinaryRunnerTests {
     }
 
     @Test("Hardened process executor caps captured output and reports truncation")
-    func hardenedProcessExecutorCapsOutputAndReportsTruncation() {
-        let result = HardenedProcessExecutor().runSynchronously(
+    func hardenedProcessExecutorCapsOutputAndReportsTruncation() async {
+        let result = await runSynchronousExecutorOffCooperativePool(
             HardenedProcessRequest(
                 executable: "/bin/sh",
                 arguments: ["-c", "printf 1234567890"],
@@ -92,12 +104,12 @@ struct ProcessBinaryRunnerTests {
     }
 
     @Test("Hardened process executor preserves the valid UTF-8 prefix when truncation lands mid-character")
-    func hardenedProcessExecutorPreservesValidPrefixOnMidCharacterTruncation() {
+    func hardenedProcessExecutorPreservesValidPrefixOnMidCharacterTruncation() async {
         // \346\227\245 is the 3-byte UTF-8 encoding of 日 (U+65E5); capping at
         // 4 bytes keeps "AB" plus only the first 2 of those 3 bytes, landing
         // mid multi-byte character. A strict UTF-8 decode of that buffer
         // fails wholesale and used to return "", losing "AB" too.
-        let result = HardenedProcessExecutor().runSynchronously(
+        let result = await runSynchronousExecutorOffCooperativePool(
             HardenedProcessRequest(
                 executable: "/bin/sh",
                 arguments: ["-c", "printf 'AB\\346\\227\\245'"],

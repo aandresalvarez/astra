@@ -72,10 +72,10 @@ struct ProcessDescriptorIsolationTests {
                 environment: ["PATH": "/bin:/usr/bin"], currentDirectory: root.path, terminateProcessGroup: true)
             return Int(result.exitCode ?? -1)
         case "host":
-            return await Task.detached {
+            return await BlockingWork.run {
                 Int(HostControlProcessRunner().run(executablePath: "/bin/sh", arguments: ["-c", script],
                     timeoutSeconds: 60, environment: [:], currentDirectory: root.path).exitCode)
-            }.value
+            }
         default:
             return Int(await run(AgentExecutionScopedProcess(executablePath: "/bin/sh", arguments: ["-c", script],
                 currentDirectory: root.path, environment: ["PATH": "/bin:/usr/bin"])))

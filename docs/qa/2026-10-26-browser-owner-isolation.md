@@ -59,7 +59,7 @@ Native Computer Control used the development build with a separate identity:
 - Three synthetic workspaces: Original A and Imported B share one task UUID;
   Independent C has a different UUID. Each contains a distinct local HTML page.
 - No production/development store or browser profile was copied. Ask policy was
-  retained. No model-provider task execution was requested in this Browser QA.
+  retained. The initial Browser-only phase did not request model-provider execution.
 
 | Scenario | Observed result |
 | --- | --- |
@@ -95,10 +95,24 @@ correctly changes owner, but transcript/sidebar/history pagination require their
 own persistent-owner propagation. That follow-up is outside this Browser PR;
 this PR does **not** claim complete imported-task UI isolation.
 
-Live model-provider executions were not part of this change's QA. Six-runtime
-launch-context coverage is automated; actual app coverage used WebKit and Google
-Chrome. Uncertain/corrupt receipt scenarios and queued-request races are
-automated evidence, not claims of native manual reproduction.
+Six-runtime launch-context coverage is automated. Native Browser QA used WebKit
+and Google Chrome. A later final-head smoke at `294d9887` also ran a real Codex
+`gpt-6.1-sol` task in a new isolated workspace with Ask and a 25,000-token Hard
+Stop. It visibly returned `BROWSER_PIPE_OK`, exited 0, used 19,247 tokens, and
+persisted reaped-process, empty-group, stopped-tools and excluded-remote-work
+proof before releasing its workspace. A further Chrome open/Stop/status check
+created one root and confirmed its exit. The QA app and provider were closed.
+
+An earlier fixture still named unsupported `gpt-5.4`; that run failed with
+`model_unavailable`, used zero tokens and retained recovery protection. The
+same-UUID fixture also exposed `source_event_missing`, included in the deferred
+history/event-identity follow-up. These attempts are not successful provider QA.
+
+The subsequent strict reconnect retest at `f84652ba` also removed only the QA
+owner receipt while its known Chrome survived: Retry and a second ASTRA restart
+refused to adopt it. After external closure of that identified QA process,
+Check status cleared the wait and a fresh open/Stop cycle released the profile.
+Queued-request races and corrupt receipt cases remain automated evidence.
 
 ## Validation
 
@@ -109,6 +123,15 @@ the provider, utility and host-control launchers. They now close undeclared
 descriptors by default, preserve explicit stdin/stdout/stderr and the host-control
 supervisor channel, and retain the same strict completion-proof rules. The
 regressions use real child processes; they do not relax EOF, stop proof or limits.
+
+The next focused CI run exposed cooperative-pool starvation. A one-worker
+reproduction and process samples located a synchronous test bridge waiting for
+its own async runner, and the production POSIX reaper blocking that pool in
+waitpid/pipe draining. Tests now call synchronous APIs on dispatch workers; the
+production reaper also waits on a dispatch worker, leaving timeout/cancellation
+tasks runnable. The same concurrent six-suite group passes with one cooperative
+worker. CI repeats that strict regression without removing coverage or extending
+time limits.
 
 Final test, verified-build, hook and CI results are recorded in the pull request.
 No hook bypass or merge is performed by the agent.
