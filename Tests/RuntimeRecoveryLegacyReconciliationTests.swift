@@ -67,8 +67,9 @@ struct RuntimeRecoveryLegacyReconciliationTests {
         #expect(reconciliationEvents(task) == 1)
     }
 
-    @Test("A settled legacy task continues through the worker and persists its old history and new answer")
-    func settledLegacyContinuationPreservesHistory() async throws {
+    @Test("A settled legacy task continues through the worker and persists its old history and new answer",
+          arguments: [TaskStatus.completed, .pendingUser])
+    func settledLegacyContinuationPreservesHistory(status: TaskStatus) async throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
         let argsFile = h.rootURL.appendingPathComponent("legacy-resume-args.txt")
@@ -79,7 +80,7 @@ struct RuntimeRecoveryLegacyReconciliationTests {
         exit 0
         """, argsFile: argsFile))
         let task = h.makeTask(runtime: .claudeCode, goal: "Preserve the earlier conversation", model: "claude-sonnet-4-6")
-        task.status = .completed; task.sessionId = "legacy-session"; task.tokensUsed = 600
+        task.status = status; task.sessionId = "legacy-session"; task.tokensUsed = 600
         let old = try legacyRun(task, context: h.context)
         old.setOutput("Earlier answer remains intact"); old.tokensUsed = 600
         let oldID = old.id
