@@ -73,7 +73,7 @@ struct OpenCodeRunnerCompletionTests {
         } else {
             #expect(next == nil)
             let reopened = RuntimeExecutionOwnerStore(root: RuntimeExecutionOwner.store(in: h.context).root)
-            #expect(try reopened.read(taskID: task.id)?.executionID == owner.record.executionID)
+            #expect(try reopened.read(taskID: task.id, taskOwnerID: task.persistentModelID)?.executionID == owner.record.executionID)
             if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: h.context) {} else { Issue.record("Uncertain execution admitted Retry") }
         }
     }

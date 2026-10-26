@@ -10,24 +10,27 @@ enum RuntimeResourceOwnership {
         record.resourcesReleased != true && !record.canRecoverPreparation
     }
 
-    static func claims(in store: RuntimeExecutionOwnerStore, context: ModelContext? = nil, excluding taskID: UUID? = nil) throws -> [TaskResourceLockClaim] {
+    static func claims(in store: RuntimeExecutionOwnerStore, context: ModelContext? = nil, excluding taskID: UUID? = nil, excludingOwner: PersistentIdentifier? = nil) throws -> [TaskResourceLockClaim] {
         let records = try store.records()
         var claims: [TaskResourceLockClaim] = []
-        for record in records where record.taskID != taskID && retainsResources(record) {
+        for record in records where !(record.taskID == taskID && record.taskOwnerID == excludingOwner) && retainsResources(record) {
             if let captured = record.resourceClaims { claims += captured; continue }
             // Pre-upgrade receipts have no captured resource identity. Only a
             // verifiably ended owner can be omitted; unknown ownership blocks.
-            let lease = try store.acquire(taskID: record.taskID)
+            let lease = try store.acquire(taskID: record.taskID, taskOwnerID: record.taskOwnerID)
             defer { withExtendedLifetime(lease) {} }
             guard record.canReplace || record.canBeginNewTurn else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         }
         if let context {
             let type = "runtime.execution_ownership"
             let events = try context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.type == type }))
-            let known = Set(records.map(\.taskID))
             for event in events {
                 guard let audit = try? JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: Data(event.payload.utf8)),
-                      !known.contains(audit.taskID), audit.taskID != taskID else { continue }
+                      !records.contains(where: { record in
+                          record.taskID == audit.taskID && (record.taskOwnerID == event.task?.persistentModelID
+                              || (record.taskOwnerID == nil && record.ownerID == audit.ownerID))
+                      }),
+                      !(audit.taskID == taskID && event.task?.persistentModelID == excludingOwner) else { continue }
                 guard let captured = audit.resourceClaims else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
                 claims += captured
             }

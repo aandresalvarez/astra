@@ -5,9 +5,10 @@ enum WorkspaceCanvasItemSelectionTransition {
         currentItem: WorkspaceCanvasItem?,
         previousTaskID: UUID?,
         nextTaskID: UUID?,
-        isComposingTask: Bool
+        isComposingTask: Bool,
+        ownerChanged: Bool = false
     ) -> WorkspaceCanvasItem? {
-        guard previousTaskID != nextTaskID else { return currentItem }
+        guard ownerChanged || previousTaskID != nextTaskID else { return currentItem }
         guard currentItem == .browser else { return nil }
         guard nextTaskID != nil || isComposingTask else { return nil }
 
@@ -20,9 +21,10 @@ enum WorkspacePlanCanvasPresentationTransition {
         previousTaskID: UUID?,
         targetTaskID: UUID,
         currentCachedHasPlanContent: Bool,
-        targetHasPlanContent: Bool
+        targetHasPlanContent: Bool,
+        ownerChanged: Bool = false
     ) -> Bool {
-        previousTaskID == targetTaskID ? currentCachedHasPlanContent : targetHasPlanContent
+        !ownerChanged && previousTaskID == targetTaskID ? currentCachedHasPlanContent : targetHasPlanContent
     }
 }
 

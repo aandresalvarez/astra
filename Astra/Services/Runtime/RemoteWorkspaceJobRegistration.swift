@@ -18,14 +18,15 @@ enum RemoteWorkspaceJobRegistration {
     static func prepare(task: AgentTask, runID: UUID, owner: RuntimeExecutionOwner,
                         context: ModelContext, connections: [RemoteWorkspaceJobConnection]) throws -> RemoteWorkspaceJobConfiguration {
         let receipt = owner.record
-        guard receipt.taskID == task.id, receipt.runID == runID, owner.isActive,
+        guard receipt.taskID == task.id, receipt.taskOwnerID == task.persistentModelID,
+              let receiptURL = owner.receiptURL, receipt.runID == runID, owner.isActive,
               receipt.cancellationRequested != true, receipt.limits.secondsRemaining > 0,
               receipt.limits.turnsRemaining > 0, receipt.limits.tokensRemaining > 0 else {
             throw RemoteWorkspaceJobError.invalidArgument("No active execution owner is available for remote jobs.")
         }
         let root = directory(taskID: task.id, executionID: receipt.executionID, context: context)
         let binding = RemoteWorkspaceJobOwnerBinding(
-            receiptPath: RuntimeExecutionOwner.store(in: context).root.appendingPathComponent(task.id.uuidString + ".json").path,
+            receiptPath: receiptURL.path,
             taskID: task.id.uuidString, runID: runID.uuidString,
             ownerID: receipt.ownerID.uuidString, executionID: receipt.executionID.uuidString)
         var configuration = RemoteWorkspaceJobConfiguration(recordRootPath: root.appendingPathComponent("jobs").path,

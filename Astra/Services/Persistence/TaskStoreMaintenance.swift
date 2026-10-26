@@ -103,6 +103,7 @@ public enum TaskStoreMaintenance {
     ) -> Int {
         var removed = 0
         for task in tasks where TaskHygiene.isPrunableAbandonedDraft(task, olderThan: staleInterval, now: now) {
+            guard (try? TaskTurnRequestOwnership.preserveLegacyBindings(taskID: task.id, in: modelContext)) != nil else { continue }
             modelContext.delete(task)
             removed += 1
         }
@@ -163,7 +164,7 @@ public enum TaskStoreMaintenance {
         let completed = TaskTurnRequestState.completed.rawValue
         let failed = TaskTurnRequestState.failed.rawValue
         let cancelled = TaskTurnRequestState.cancelled.rawValue
-        var descriptor = FetchDescriptor<TaskTurnRequest>(
+        let descriptor = FetchDescriptor<TaskTurnRequest>(
             predicate: #Predicate {
                 $0.taskID == taskID
                     && $0.stateRawValue != completed
@@ -171,8 +172,12 @@ public enum TaskStoreMaintenance {
                     && $0.stateRawValue != cancelled
             }
         )
-        descriptor.fetchLimit = 1
-        return ((try? modelContext.fetch(descriptor)) ?? []).isEmpty == false
+        guard let requests = try? modelContext.fetch(descriptor),
+              let candidates = try? TaskTurnRequestOwnership.candidates(taskID: taskID, in: modelContext) else { return true }
+        return requests.contains { request in
+            guard let owner = TaskTurnRequestOwnership.resolve(request, among: candidates) else { return true }
+            return owner.persistentModelID == task.persistentModelID
+        }
     }
 
     /// Turn requests reference their task by scalar id, so task deletion never
@@ -184,9 +189,10 @@ public enum TaskStoreMaintenance {
         let descriptor = FetchDescriptor<TaskTurnRequest>(
             predicate: #Predicate { $0.taskID == taskID }
         )
-        for request in (try? modelContext.fetch(descriptor)) ?? [] {
-            modelContext.delete(request)
-        }
+        guard let requests = try? modelContext.fetch(descriptor),
+              let owned = try? TaskTurnRequestOwnership.owned(requests, by: task, in: modelContext),
+              (try? TaskTurnRequestOwnership.preserveLegacyBindings(taskID: taskID, in: modelContext)) != nil else { return }
+        for request in owned { modelContext.delete(request) }
     }
 
     /// A task created by `SessionScanner.importSessions`: a completed, archived

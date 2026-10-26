@@ -49,7 +49,7 @@ struct RuntimeSettlementRecoveryFollowupTests {
         // The provider fixture already has a verified stop receipt. Attach its
         // real workspace claims before validation, without changing that proof.
         do {
-            let lease = try RuntimeExecutionOwner.store(in: fixture.context).acquire(taskID: fixture.task.id)
+            let lease = try RuntimeExecutionOwner.store(in: fixture.context).acquire(taskID: fixture.task.id, taskOwnerID: fixture.task.persistentModelID)
             var providerReceipt = try #require(try lease.read())
             providerReceipt.resourceClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(
                 for: request, task: fixture.task, runMode: "settlement", sandboxEnforcement: .off)

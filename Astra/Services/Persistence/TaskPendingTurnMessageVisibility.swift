@@ -47,6 +47,13 @@ public enum TaskPendingTurnMessageVisibility {
             }
         )
         guard let requests = try? modelContext.fetch(descriptor) else { return [] }
-        return Set(requests.map(\.messageEventID))
+        guard let candidates = try? TaskTurnRequestOwnership.candidates(taskID: taskID, in: modelContext) else {
+            return Set(requests.map(\.messageEventID))
+        }
+        var resolver = TaskTurnRequestOwnership.Resolver(candidates: candidates)
+        return Set(requests.filter {
+            guard let owner = resolver.resolve($0) else { return true }
+            return owner.persistentModelID == task.persistentModelID
+        }.map(\.messageEventID))
     }
 }

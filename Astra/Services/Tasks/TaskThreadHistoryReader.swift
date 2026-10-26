@@ -10,6 +10,7 @@ struct TaskThreadRunCursor: Equatable, Sendable {
 struct TaskThreadEventCursor: Equatable, Sendable {
     let timestamp: Date
     let id: UUID
+    var ownerID: PersistentIdentifier? = nil
 }
 
 struct TaskThreadHistoryCursor: Equatable, Sendable {
@@ -17,6 +18,7 @@ struct TaskThreadHistoryCursor: Equatable, Sendable {
     let event: TaskThreadEventCursor?
     let hasEarlierRuns: Bool
     let hasEarlierEvents: Bool
+    var ownerID: PersistentIdentifier? = nil
 
     var hasEarlierHistory: Bool {
         hasEarlierRuns || hasEarlierEvents
@@ -59,23 +61,25 @@ enum TaskThreadHistoryReader {
 
     static func initialPage(
         taskID: UUID,
+        ownerID: PersistentIdentifier? = nil,
         modelContext: ModelContext,
         runPageSize: Int = defaultRunPageSize,
         eventPageSize: Int = defaultEventPageSize
     ) throws -> TaskThreadHistoryPage {
+        let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let runResult = try latestRuns(
-            taskID: taskID,
+            ownerID: ownerID,
             limit: max(1, runPageSize),
             modelContext: modelContext
         )
         let eventResult = try latestEvents(
-            taskID: taskID,
+            ownerID: ownerID,
             limit: max(1, eventPageSize),
             modelContext: modelContext
         )
         let page = try makePage(
-            taskID: taskID,
+            ownerID: ownerID,
             runs: runResult.items,
             events: eventResult.items,
             hasEarlierRuns: runResult.hasEarlier,
@@ -94,14 +98,17 @@ enum TaskThreadHistoryReader {
     /// whenever it does not match.
     static func tailPage(
         taskID: UUID,
+        ownerID: PersistentIdentifier? = nil,
         since cursor: TaskThreadEventCursor,
         modelContext: ModelContext,
         runPageSize: Int = defaultRunPageSize,
         eventPageSize: Int = defaultEventPageSize
     ) throws -> TaskThreadHistoryTailPage {
+        let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
+        guard cursor.ownerID == nil || cursor.ownerID == ownerID else { throw TaskHistoryScope.Failure.ambiguousOwner }
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let eventResult = try eventsSince(
-            taskID: taskID,
+            ownerID: ownerID,
             cursor: cursor,
             limit: max(1, eventPageSize),
             modelContext: modelContext
@@ -110,14 +117,14 @@ enum TaskThreadHistoryReader {
         // ordering key, so the newest run page must still be re-read or a live
         // run's streamed output stops updating.
         let runResult = try latestRuns(
-            taskID: taskID,
+            ownerID: ownerID,
             limit: max(1, runPageSize),
             modelContext: modelContext
         )
-        let counts = try totals(taskID: taskID, modelContext: modelContext)
+        let counts = try totals(ownerID: ownerID, modelContext: modelContext)
         let page = TaskThreadHistoryTailPage(
             events: eventResult.items.map(TaskEventSnapshot.init),
-            runs: try budgetedRunSnapshots(runResult.items, taskID: taskID, modelContext: modelContext),
+            runs: try budgetedRunSnapshots(runResult.items, ownerID: ownerID, modelContext: modelContext),
             totalRunCount: counts.runs,
             totalEventCount: counts.events,
             hasEarlierRuns: runResult.hasEarlier,
@@ -129,16 +136,19 @@ enum TaskThreadHistoryReader {
 
     static func previousPage(
         taskID: UUID,
+        ownerID: PersistentIdentifier? = nil,
         before cursor: TaskThreadHistoryCursor,
         modelContext: ModelContext,
         runPageSize: Int = defaultRunPageSize,
         eventPageSize: Int = defaultEventPageSize
     ) throws -> TaskThreadHistoryPage {
+        let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
+        guard cursor.ownerID == nil || cursor.ownerID == ownerID else { throw TaskHistoryScope.Failure.ambiguousOwner }
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let runResult: PageResult<TaskRun>
         if cursor.hasEarlierRuns, let runCursor = cursor.run {
             runResult = try runs(
-                taskID: taskID,
+                ownerID: ownerID,
                 before: runCursor,
                 limit: max(1, runPageSize),
                 modelContext: modelContext
@@ -150,7 +160,7 @@ enum TaskThreadHistoryReader {
         let eventResult: PageResult<TaskEvent>
         if cursor.hasEarlierEvents, let eventCursor = cursor.event {
             eventResult = try events(
-                taskID: taskID,
+                ownerID: ownerID,
                 before: eventCursor,
                 limit: max(1, eventPageSize),
                 modelContext: modelContext
@@ -160,7 +170,7 @@ enum TaskThreadHistoryReader {
         }
 
         let page = try makePage(
-            taskID: taskID,
+            ownerID: ownerID,
             runs: runResult.items,
             events: eventResult.items,
             hasEarlierRuns: runResult.hasEarlier,
@@ -178,7 +188,7 @@ enum TaskThreadHistoryReader {
     }
 
     private static func makePage(
-        taskID: UUID,
+        ownerID: PersistentIdentifier,
         runs: [TaskRun],
         events: [TaskEvent],
         hasEarlierRuns: Bool,
@@ -186,13 +196,13 @@ enum TaskThreadHistoryReader {
         modelContext: ModelContext,
         includeRunlessStateAnchors: Bool
     ) throws -> TaskThreadHistoryPage {
-        let counts = try totals(taskID: taskID, modelContext: modelContext)
+        let counts = try totals(ownerID: ownerID, modelContext: modelContext)
         let totalRunCount = counts.runs
         let totalEventCount = counts.events
-        let runSnapshots = try budgetedRunSnapshots(runs, taskID: taskID, modelContext: modelContext)
+        let runSnapshots = try budgetedRunSnapshots(runs, ownerID: ownerID, modelContext: modelContext)
         let eventSnapshots = events.map(TaskEventSnapshot.init)
         let stateAnchors = try latestStateAnchors(
-            taskID: taskID,
+            ownerID: ownerID,
             runs: runs,
             includeRunless: includeRunlessStateAnchors,
             modelContext: modelContext
@@ -204,9 +214,10 @@ enum TaskThreadHistoryReader {
             stateAnchors: stateAnchors,
             cursor: TaskThreadHistoryCursor(
                 run: runs.last.map { TaskThreadRunCursor(startedAt: $0.startedAt, id: $0.id) },
-                event: events.last.map { TaskThreadEventCursor(timestamp: $0.timestamp, id: $0.id) },
+                event: events.last.map { TaskThreadEventCursor(timestamp: $0.timestamp, id: $0.id, ownerID: ownerID) },
                 hasEarlierRuns: hasEarlierRuns,
-                hasEarlierEvents: hasEarlierEvents
+                hasEarlierEvents: hasEarlierEvents,
+                ownerID: ownerID
             ),
             totalRunCount: totalRunCount,
             totalEventCount: totalEventCount
@@ -214,15 +225,15 @@ enum TaskThreadHistoryReader {
     }
 
     /// A narrow event query also supplies admission anchors omitted by a tail page.
-    private static func budgetedRunSnapshots(_ runs: [TaskRun], taskID: UUID, modelContext: ModelContext) throws -> [TaskRunSnapshotInput] {
+    private static func budgetedRunSnapshots(_ runs: [TaskRun], ownerID: PersistentIdentifier, modelContext: ModelContext) throws -> [TaskRunSnapshotInput] {
         let owner = TaskEventTypes.System.runtimeExecutionOwnership.rawValue
         let captured = TaskEventTypes.System.runtimeResultCaptured.rawValue
         let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
-            $0.task?.id == taskID && ($0.type == owner || $0.type == captured || $0.type == "astra.claude_session_usage_unconfirmed"
+            $0.task?.persistentModelID == ownerID && ($0.type == owner || $0.type == captured || $0.type == "astra.claude_session_usage_unconfirmed"
                 || $0.type == "astra.claude_session_usage"
                 || ($0.type == "task.stats" && $0.payload.starts(with: "estimated tokens:")))
         }))
-        let allRuns = try modelContext.fetch(FetchDescriptor<TaskRun>(predicate: #Predicate<TaskRun> { $0.task?.id == taskID }))
+        let allRuns = try modelContext.fetch(FetchDescriptor<TaskRun>(predicate: #Predicate<TaskRun> { $0.task?.persistentModelID == ownerID }))
         let budgets = TaskRequestBudget.Index(events: events, runs: allRuns)
         return runs.map { run in
             TaskRunSnapshotInput(run: run, budget: run.task.map { budgets.budget(for: run, task: $0) })
@@ -232,25 +243,25 @@ enum TaskThreadHistoryReader {
     /// The authoritative row counts for the task. Tail reads reconcile against
     /// these, so both callers must derive them from the same predicates.
     private static func totals(
-        taskID: UUID,
+        ownerID: PersistentIdentifier,
         modelContext: ModelContext
     ) throws -> (runs: Int, events: Int) {
         let runCount = try modelContext.fetchCount(FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { $0.task?.id == taskID }
+            predicate: #Predicate<TaskRun> { $0.task?.persistentModelID == ownerID }
         ))
         let eventCount = try modelContext.fetchCount(FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> { $0.task?.id == taskID }
+            predicate: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID }
         ))
         return (runCount, eventCount)
     }
 
     private static func latestRuns(
-        taskID: UUID,
+        ownerID: PersistentIdentifier,
         limit: Int,
         modelContext: ModelContext
     ) throws -> PageResult<TaskRun> {
         var descriptor = FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { $0.task?.id == taskID },
+            predicate: #Predicate<TaskRun> { $0.task?.persistentModelID == ownerID },
             sortBy: [
                 SortDescriptor(\TaskRun.startedAt, order: .reverse),
                 SortDescriptor(\TaskRun.id, order: .reverse)
@@ -262,12 +273,12 @@ enum TaskThreadHistoryReader {
     }
 
     private static func latestEvents(
-        taskID: UUID,
+        ownerID: PersistentIdentifier,
         limit: Int,
         modelContext: ModelContext
     ) throws -> PageResult<TaskEvent> {
         var descriptor = FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> { $0.task?.id == taskID },
+            predicate: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID },
             sortBy: [
                 SortDescriptor(\TaskEvent.timestamp, order: .reverse),
                 SortDescriptor(\TaskEvent.id, order: .reverse)
@@ -284,7 +295,7 @@ enum TaskThreadHistoryReader {
     /// come back; a strict composite compare would drop a tie-mate whose UUID
     /// sorts below the cursor. Callers dedupe by id.
     private static func eventsSince(
-        taskID: UUID,
+        ownerID: PersistentIdentifier,
         cursor: TaskThreadEventCursor,
         limit: Int,
         modelContext: ModelContext
@@ -292,7 +303,7 @@ enum TaskThreadHistoryReader {
         let boundaryDate = cursor.timestamp
         var descriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> {
-                $0.task?.id == taskID && $0.timestamp >= boundaryDate
+                $0.task?.persistentModelID == ownerID && $0.timestamp >= boundaryDate
             },
             sortBy: [
                 SortDescriptor(\TaskEvent.timestamp, order: .reverse),
@@ -308,7 +319,7 @@ enum TaskThreadHistoryReader {
     /// separately and ordered by UUID, then the query continues strictly before
     /// the timestamp. Newer inserts therefore cannot shift or duplicate a page.
     private static func runs(
-        taskID: UUID,
+        ownerID: PersistentIdentifier,
         before cursor: TaskThreadRunCursor,
         limit: Int,
         modelContext: ModelContext
@@ -317,7 +328,7 @@ enum TaskThreadHistoryReader {
         let boundaryID = cursor.id
         var boundaryDescriptor = FetchDescriptor<TaskRun>(
             predicate: #Predicate<TaskRun> {
-                $0.task?.id == taskID
+                $0.task?.persistentModelID == ownerID
                     && $0.startedAt == boundaryDate
                     && $0.id < boundaryID
             },
@@ -326,7 +337,7 @@ enum TaskThreadHistoryReader {
         boundaryDescriptor.fetchLimit = limit + 1
         let boundaryItems = try modelContext.fetch(boundaryDescriptor)
         return try pageBeforeRunBoundary(
-            taskID: taskID,
+            ownerID: ownerID,
             boundaryItems: boundaryItems,
             boundaryDate: boundaryDate,
             limit: limit,
@@ -335,7 +346,7 @@ enum TaskThreadHistoryReader {
     }
 
     private static func pageBeforeRunBoundary(
-        taskID: UUID,
+        ownerID: PersistentIdentifier,
         boundaryItems: [TaskRun],
         boundaryDate: Date,
         limit: Int,
@@ -346,7 +357,7 @@ enum TaskThreadHistoryReader {
         if remaining > 0 {
             var earlierDescriptor = FetchDescriptor<TaskRun>(
                 predicate: #Predicate<TaskRun> {
-                    $0.task?.id == taskID && $0.startedAt < boundaryDate
+                    $0.task?.persistentModelID == ownerID && $0.startedAt < boundaryDate
                 },
                 sortBy: [
                     SortDescriptor(\TaskRun.startedAt, order: .reverse),
@@ -360,7 +371,7 @@ enum TaskThreadHistoryReader {
     }
 
     private static func events(
-        taskID: UUID,
+        ownerID: PersistentIdentifier,
         before cursor: TaskThreadEventCursor,
         limit: Int,
         modelContext: ModelContext
@@ -369,7 +380,7 @@ enum TaskThreadHistoryReader {
         let boundaryID = cursor.id
         var boundaryDescriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> {
-                $0.task?.id == taskID
+                $0.task?.persistentModelID == ownerID
                     && $0.timestamp == boundaryDate
                     && $0.id < boundaryID
             },
@@ -382,7 +393,7 @@ enum TaskThreadHistoryReader {
         if remaining > 0 {
             var earlierDescriptor = FetchDescriptor<TaskEvent>(
                 predicate: #Predicate<TaskEvent> {
-                    $0.task?.id == taskID && $0.timestamp < boundaryDate
+                    $0.task?.persistentModelID == ownerID && $0.timestamp < boundaryDate
                 },
                 sortBy: [
                     SortDescriptor(\TaskEvent.timestamp, order: .reverse),
@@ -396,7 +407,7 @@ enum TaskThreadHistoryReader {
     }
 
     private static func latestStateAnchors(
-        taskID: UUID,
+        ownerID: PersistentIdentifier,
         runs: [TaskRun],
         includeRunless: Bool,
         modelContext: ModelContext
@@ -409,7 +420,7 @@ enum TaskThreadHistoryReader {
         let stateEventTypes = TaskThreadStateEventPolicy.eventTypes
         var descriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> {
-                $0.task?.id == taskID && stateEventTypes.contains($0.type)
+                $0.task?.persistentModelID == ownerID && stateEventTypes.contains($0.type)
             }
         )
         // `TaskEventSnapshot` reads `event.run?.id` for every row, so prefetch the
