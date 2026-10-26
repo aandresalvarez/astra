@@ -831,7 +831,7 @@ enum LogDiagnosticsService {
         let outputText = outputChars > 0 ? "\(outputChars) visible output character\(outputChars == 1 ? "" : "s")" : "visible output"
         let fileText = fileChanges > 0 ? " and \(fileChanges) file change\(fileChanges == 1 ? "" : "s")" : ""
         let saveText = savedState ? " ASTRA saved the run state successfully." : ""
-        return "The task reached its configured budget after producing \(outputText)\(fileText).\(saveText) Resume with a narrower prompt, split the work into smaller tasks, or increase the budget when the broader run is intentional."
+        return "The task reached its configured budget after producing \(outputText)\(fileText).\(saveText) \(TaskRequestBudget.exhaustedMessage)"
     }
 
     private static func classifyConnectorCredentialRegression(

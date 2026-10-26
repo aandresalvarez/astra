@@ -82,6 +82,60 @@ struct PreflightCacheTests {
         #expect(await runner.count() == 4, "Expired entry must trigger a re-probe")
     }
 
+    @Test("The same probe under a stricter semantic test is its own check, whichever runs first")
+    func semanticTestIsPartOfTheCheckIdentity() async {
+        let strict = CommonCLIPrerequisites.docker
+        var lenient = strict
+        lenient.semantic = nil
+        #expect(lenient.id != strict.id)
+        for order in [[lenient, strict], [strict, lenient]] {
+            let stub = StubBinaryRunner()
+            await stub.setResponse(forKey: "/usr/bin/env which docker", result: .exited(code: 0, stdout: "/usr/local/bin/docker\n", stderr: ""))
+            await stub.setResponse(
+                forKey: "/usr/local/bin/docker version --format {{.Client.Version}}",
+                result: .exited(code: 0, stdout: "27.0.0\n", stderr: "Cannot connect to the Docker daemon. Is the docker daemon running?")
+            )
+            let cache = PreflightCache(checker: EnvironmentHealthChecker(runner: stub))
+            // Merged by id, as the Plugins surface merges every package's results.
+            var statuses: [String: HealthStatus] = [:]
+            for prerequisite in order { statuses[prerequisite.id] = await cache.status(for: prerequisite) }
+            #expect(statuses[lenient.id]?.isUsable == true)
+            #expect(statuses[strict.id]?.isUsable == false)
+            await cache.invalidate(binary: "docker")
+            #expect(await cache.cachedCount() == 0)
+        }
+    }
+
+    @Test("A value that spells an id delimiter is escaped: no two checks share an id")
+    func prerequisiteIDsDoNotCollide() async {
+        func check(_ binary: String, _ arguments: [String], _ semantic: SemanticCheck? = nil) -> CLIPrerequisite {
+            CLIPrerequisite(binary: binary, livenessArgs: arguments, semantic: semantic, displayName: binary, purpose: "")
+        }
+        for (first, second) in [
+            (check("x", ["y:semantic=stdoutNonEmpty"]), check("x", ["y"], .stdoutNonEmpty)),
+            (check("x", ["y:context=githubRepositoryAccess"]), check("x", ["y"])),
+            (check("x:y", ["z"]), check("x", ["y:z"])),
+            (check("x", ["a b"]), check("x", ["a", "b"])),
+            (check("x", [""]), check("x", [])),
+            (check("x", ["%3A"]), check("x", [":"]))
+        ] {
+            #expect(first.id != second.id, "\(first.id)")
+        }
+        // Ordinary checks keep the ids they always had.
+        #expect(CommonCLIPrerequisites.githubAuth.id == "gh:auth status --hostname github.com:context=githubRepositoryAccess")
+        #expect(CommonCLIPrerequisites.docker.id == "docker:version --format {{.Client.Version}}:semantic=stderrNoDaemonError")
+        #expect(CommonCLIPrerequisites.gcloudAuth.id == "gcloud:config config-helper --format=value(credential.token_expiry):semantic=stdoutNonEmpty:slowStart=20.0")
+        // The two colliding checks get their own results, and a binary with
+        // a delimiter in it is still invalidated by name.
+        let cache = PreflightCache(checker: EnvironmentHealthChecker(runner: CountingRunner()))
+        _ = await cache.status(for: check("x", ["y:semantic=stdoutNonEmpty"]))
+        _ = await cache.status(for: check("x", ["y"], .stdoutNonEmpty))
+        _ = await cache.status(for: check("/opt/a:b/tool", ["--version"]))
+        #expect(await cache.cachedCount() == 3)
+        await cache.invalidate(binary: "/opt/a:b/tool")
+        #expect(await cache.cachedCount() == 2)
+    }
+
     @Test("invalidate(binary:) removes the binary's entries only")
     func invalidateSingleBinary() async {
         let runner = CountingRunner()
@@ -117,7 +171,7 @@ struct PreflightCacheTests {
         let cache = PreflightCache(checker: checker)
 
         _ = await cache.status(for: CommonCLIPrerequisites.gcloud)       // --version
-        _ = await cache.status(for: CommonCLIPrerequisites.gcloudAuth)   // auth list
+        _ = await cache.status(for: CommonCLIPrerequisites.gcloudAuth)   // credential refresh
         #expect(await cache.cachedCount() == 2, "Different liveness args = different cache slots")
     }
 
@@ -134,6 +188,31 @@ struct PreflightCacheTests {
             return
         }
         #expect(detail.contains("not logged in"))
+    }
+
+    /// The cache turns an auth probe that fails into "needs login". A
+    /// slow-start auth probe that only got no answer must not take that path:
+    /// it blocked launches right after the user had run `gcloud auth login`.
+    @Test("slow-start auth probe with no answer stays usable, not unauthenticated")
+    func slowStartAuthTimeoutIsNotClassifiedAsUnauthenticated() async {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/usr/bin/env which gcloud",
+            result: RunResult(outcome: .exited(code: 0), stdout: "/opt/homebrew/bin/gcloud\n", stderr: "")
+        )
+        await runner.setResponse(
+            forKey: "/opt/homebrew/bin/gcloud config config-helper --format=value(credential.token_expiry)",
+            result: RunResult(outcome: .timedOut, stdout: "", stderr: "")
+        )
+        let cache = PreflightCache(checker: EnvironmentHealthChecker(runner: runner))
+
+        let status = await cache.status(for: CommonCLIPrerequisites.gcloudAuth)
+
+        guard case .unverified = status else {
+            Issue.record("Expected unverified, got \(status)")
+            return
+        }
+        #expect(status.isUsable)
     }
 }
 

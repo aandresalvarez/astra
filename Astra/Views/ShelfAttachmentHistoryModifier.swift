@@ -13,7 +13,7 @@ enum ShelfAttachmentHistoryRefreshPolicy {
 }
 
 extension View {
-    func shelfAttachmentHistory(task: AgentTask?, onLoad: @escaping (UUID?, [String]) -> Void) -> some View {
+    func shelfAttachmentHistory(task: AgentTask?, onLoad: @escaping (TaskAttachmentHistoryScope?, [String]) -> Void) -> some View {
         modifier(ShelfAttachmentHistoryModifier(task: task, onLoad: onLoad))
     }
 }
@@ -22,12 +22,12 @@ extension View {
 /// messages do not invalidate it, and an old read cannot replace a newer one.
 private struct ShelfAttachmentHistoryModifier: ViewModifier {
     let task: AgentTask?
-    let onLoad: (UUID?, [String]) -> Void
+    let onLoad: (TaskAttachmentHistoryScope?, [String]) -> Void
     @Environment(\.modelContext) private var modelContext
     @State private var revision = 0
 
     private struct RefreshKey: Hashable {
-        let taskID: UUID?
+        let scope: TaskAttachmentHistoryScope?
         let status: String?
         let revision: Int
     }
@@ -39,12 +39,14 @@ private struct ShelfAttachmentHistoryModifier: ViewModifier {
                       ShelfAttachmentHistoryRefreshPolicy.affectsAttachments(insertion, taskID: task?.id) else { return }
                 revision &+= 1
             }
-            .task(id: RefreshKey(taskID: task?.id, status: task?.status.rawValue, revision: revision)) {
-                guard let taskID = task?.id else { onLoad(nil, []); return }
+            .task(id: RefreshKey(scope: task.map(TaskAttachmentHistoryScope.init), status: task?.status.rawValue, revision: revision)) {
+                guard let scope = task.map(TaskAttachmentHistoryScope.init) else { onLoad(nil, []); return }
                 do {
-                    let paths = try await TaskAttachmentFilesReader.paths(taskID: taskID, container: modelContext.container)
-                    guard !Task.isCancelled, task?.id == taskID else { return }
-                    onLoad(taskID, paths)
+                    let paths = try await TaskAttachmentFilesReader.paths(scope: scope, container: modelContext.container)
+                    guard !Task.isCancelled, task.map(TaskAttachmentHistoryScope.init) == scope else { return }
+                    onLoad(scope, paths)
+                } catch is CancellationError {
+                    return
                 } catch {
                     AppLogger.error("Files attachment history could not be read: \(error.localizedDescription)", category: "UI")
                 }

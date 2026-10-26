@@ -61,41 +61,23 @@ extension TaskContextStateManager {
         startingRequest: String,
         approvedGoal: String?
     ) -> ActiveObjectiveResolution {
-        activeObjectiveResolution(
-            for: task,
-            override: latestObjectiveOverride(for: task),
-            planState: planState,
-            startingRequest: startingRequest,
-            approvedGoal: approvedGoal
-        )
+        activeObjectiveResolution(for: task, override: latestObjectiveOverride(for: task),
+            planState: planState, startingRequest: startingRequest, approvedGoal: approvedGoal)
     }
 
-    /// `activeObjectiveResolution` over a context derive's one-pass event index.
     static func activeObjectiveResolution(
-        for task: AgentTask,
-        events: TaskContextEventIndex,
-        planState: TaskPlanState,
-        startingRequest: String,
-        approvedGoal: String?
+        for task: AgentTask, events: TaskContextEventIndex, planState: TaskPlanState,
+        startingRequest: String, approvedGoal: String?
     ) -> ActiveObjectiveResolution {
-        activeObjectiveResolution(
-            for: task,
-            override: latestObjectiveOverride(
-                userMessages: events.userMessages,
-                pendingTurnMessageIDs: events.pendingTurnMessageIDs
-            ),
-            planState: planState,
-            startingRequest: startingRequest,
-            approvedGoal: approvedGoal
-        )
+        activeObjectiveResolution(for: task,
+            override: latestObjectiveOverride(userMessages: events.orderedUserMessages,
+                pendingTurnMessageIDs: events.pendingTurnMessageIDs),
+            planState: planState, startingRequest: startingRequest, approvedGoal: approvedGoal)
     }
 
     private static func activeObjectiveResolution(
-        for task: AgentTask,
-        override: ObjectiveOverride?,
-        planState: TaskPlanState,
-        startingRequest: String,
-        approvedGoal: String?
+        for task: AgentTask, override: ObjectiveOverride?, planState: TaskPlanState,
+        startingRequest: String, approvedGoal: String?
     ) -> ActiveObjectiveResolution {
         if let override {
             return ActiveObjectiveResolution(
@@ -145,20 +127,19 @@ extension TaskContextStateManager {
     }
 
     public static func firstConversationRequestValue(for task: AgentTask) -> String? {
-        firstConversationEventValue(for: task)?
+        TaskHistoryRead.records(for: task, ofTypes: conversationRequestEventTypes)
+            .first?
             .payload
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    public static func firstConversationEventValue(for task: AgentTask) -> TaskEvent? {
-        firstConversationEventValue(in: task.events)
-    }
+    static let conversationRequestEventTypes: Set<String> = ["user.message", TaskPlanConversationEventTypes.userMessage]
 
-    static func firstConversationEventValue(in events: [TaskEvent]) -> TaskEvent? {
-        events
-            .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
-            .sorted { $0.timestamp < $1.timestamp }
-            .first
+    public static func firstConversationEventValue(for task: AgentTask) -> TaskEvent? {
+        guard let first = TaskHistoryRead.records(for: task, ofTypes: conversationRequestEventTypes).first else {
+            return nil
+        }
+        return TaskHistoryRead.event(id: first.id, in: task)
     }
 
     /// Whether `text` (typically the CURRENT turn's follow-up message, before
@@ -190,23 +171,19 @@ private struct ObjectiveOverride: Equatable {
 
 private func latestObjectiveOverride(for task: AgentTask) -> ObjectiveOverride? {
     latestObjectiveOverride(
-        userMessages: task.events,
-        pendingTurnMessageIDs: TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
-    )
+        userMessages: TaskHistoryRead.records(for: task, ofTypes: TaskContextStateManager.conversationRequestEventTypes),
+        pendingTurnMessageIDs: TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task))
 }
 
-private func latestObjectiveOverride(userMessages events: [TaskEvent], pendingTurnMessageIDs: Set<UUID>) -> ObjectiveOverride? {
-    let userMessages = events
-        .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
-        .filter { !pendingTurnMessageIDs.contains($0.id) }
-        .sorted { $0.timestamp < $1.timestamp }
+private func latestObjectiveOverride(userMessages: [TaskEventRecord], pendingTurnMessageIDs: Set<UUID>) -> ObjectiveOverride? {
+    let userMessages = userMessages.filter { !pendingTurnMessageIDs.contains($0.id) }
     guard userMessages.count > 1 else { return nil }
 
     for event in userMessages.dropFirst().reversed() {
         guard let objective = objectiveOverrideCandidate(from: event.payload) else { continue }
         return ObjectiveOverride(
             objective: objective,
-            source: activeEventSource(event, summary: "User objective override")
+            source: activeSourcePointer(kind: "event", id: event.id.uuidString, summary: "User objective override")
         )
     }
     return nil
@@ -309,10 +286,6 @@ private func activeSourcePointer(
         path: path,
         summary: activeBoundedInline(summary, maxCharacters: 220)
     )
-}
-
-private func activeEventSource(_ event: TaskEvent, summary: String) -> TaskContextState.SourcePointer {
-    activeSourcePointer(kind: "event", id: event.id.uuidString, summary: summary)
 }
 
 private let explicitObjectiveMarkers: [String] = [

@@ -361,6 +361,32 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(actual.nextLikelyAction?.contains("corrective work") == true)
     }
 
+    @Test("Equal-time contract events agree with verification regardless of enumeration order", arguments: [false, true])
+    func contractFallbackTieOrder(reverse: Bool) throws {
+        let f = try makeFixture("contract-tie")
+        defer { f.cleanup() }
+        let planID = UUID()
+        let events = try ["passed", "failed"].enumerated().map { offset, status in
+            let payload = TaskValidationContractEventPayload(version: 1, planID: planID, status: status,
+                requiredPassed: status == "passed" ? 1 : 0, requiredTotal: 1,
+                failedRequiredAssertionIDs: status == "failed" ? ["csv"] : [], summary: status)
+            let event = TaskEvent(task: f.task,
+                type: status == "passed" ? TaskValidationEventTypes.contractPassed : TaskValidationEventTypes.contractFailed,
+                payload: String(decoding: try TaskEventPayloadCodec.makeISO8601Encoder().encode(payload), as: UTF8.self))
+            event.id = UUID(uuidString: offset == 0 ? "00000000-0000-0000-0000-000000000001" : "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF")!
+            event.timestamp = Date(timeIntervalSince1970: 100)
+            f.container.mainContext.insert(event)
+            return event
+        }
+        var index = TaskContextEventIndex(task: f.task)
+        index.validationContract = reverse ? events.reversed() : events
+        index.validation = index.validationContract
+        TaskContextStateManager.applyRefresh(existing: nil, folder: f.folder, task: f.task, followUpMessage: "", events: index)
+        let state = try #require(TaskContextStateManager.load(taskFolder: f.folder))
+        #expect(state.validationContract?.status == "failed")
+        #expect(state.verification.status == "failed")
+    }
+
     private func addEveryBucketedEventKind(to task: AgentTask, withPlanContract: Bool, in context: ModelContext) throws {
         var clock: TimeInterval = 1_000
         @discardableResult

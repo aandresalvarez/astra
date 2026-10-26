@@ -29,6 +29,8 @@ final class SceneSelectionModel: ObservableObject {
     @Published private(set) var selectedWorkspaceApp: WorkspaceApp?
     @Published private(set) var isComposingWorkspaceApp = false
     @Published private(set) var isComposingTask = false
+    /// Explicit configuration must remain reachable even without any tasks.
+    @Published private(set) var isShowingWorkspaceConfiguration = false
     private var didOpenLaunchComposer = false
     private var keepsComposerThroughWorkspaceFlow = false
 
@@ -61,7 +63,8 @@ final class SceneSelectionModel: ObservableObject {
             effectiveWorkspace: workspace,
             isComposingTask: isComposingTask,
             selectedWorkspaceApp: selectedWorkspaceApp,
-            isComposingWorkspaceApp: isComposingWorkspaceApp
+            isComposingWorkspaceApp: isComposingWorkspaceApp,
+            isShowingWorkspaceConfiguration: isShowingWorkspaceConfiguration
         )
         return presentation == .newTaskComposer ? workspace?.id : nil
     }
@@ -84,7 +87,13 @@ final class SceneSelectionModel: ObservableObject {
         clearTransientSurfaces()
     }
 
+    func openWorkspaceConfiguration(_ workspace: Workspace) {
+        openWorkspace(workspace)
+        isShowingWorkspaceConfiguration = true
+    }
+
     func openTask(_ task: AgentTask?) {
+        isShowingWorkspaceConfiguration = false
         guard let task else {
             selectedTask = nil
             isComposingTask = false
@@ -100,6 +109,7 @@ final class SceneSelectionModel: ObservableObject {
     }
 
     func openApp(_ app: WorkspaceApp?, workspace: Workspace? = nil) {
+        isShowingWorkspaceConfiguration = false
         if let workspace {
             selectedWorkspace = workspace
         }
@@ -110,6 +120,7 @@ final class SceneSelectionModel: ObservableObject {
     }
 
     func composeTask(workspace: Workspace? = nil) {
+        isShowingWorkspaceConfiguration = false
         if let workspace {
             selectedWorkspace = workspace
         }
@@ -162,6 +173,7 @@ final class SceneSelectionModel: ObservableObject {
     }
 
     func composeApp(workspace: Workspace? = nil) {
+        isShowingWorkspaceConfiguration = false
         if let workspace {
             selectedWorkspace = workspace
         }
@@ -199,6 +211,9 @@ final class SceneSelectionModel: ObservableObject {
         // transition, so no observer has to infer it from the change afterwards.
         let changesWorkspace = update.selectedWorkspace !== selectedWorkspace
 
+        if changesWorkspace || update.selectedTask != nil || update.isComposingTask {
+            isShowingWorkspaceConfiguration = false
+        }
         selectedWorkspace = update.selectedWorkspace
         selectedTask = update.selectedTask
         isComposingTask = (update.isComposingTask && !changesWorkspace) || keepsComposer
@@ -219,6 +234,7 @@ final class SceneSelectionModel: ObservableObject {
     }
 
     private func clearTransientSurfaces() {
+        isShowingWorkspaceConfiguration = false
         selectedWorkspaceApp = nil
         isComposingTask = false
         isComposingWorkspaceApp = false

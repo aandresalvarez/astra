@@ -594,6 +594,7 @@ enum AgentEventRecorder {
         to task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
+        recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
         recordProviderAgentEvent(
@@ -604,6 +605,7 @@ enum AgentEventRecorder {
             to: task,
             run: run,
             modelContext: modelContext,
+            recordingMode: recordingMode,
             recordingState: recordingState
         )
     }
@@ -614,6 +616,7 @@ enum AgentEventRecorder {
         to task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
+        recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
         recordProviderAgentEvent(
@@ -624,6 +627,7 @@ enum AgentEventRecorder {
             to: task,
             run: run,
             modelContext: modelContext,
+            recordingMode: recordingMode,
             recordingState: recordingState
         )
     }
@@ -808,13 +812,17 @@ enum AgentEventRecorder {
                 "source": permissionSource
             ], level: .warning)
 
+        case .usageMetadata(let cost, let duration, let turns):
+            AgentUsageMetadataRecorder.record(cost: cost, duration: duration, turns: turns,
+                task: task, run: run, context: modelContext, mode: recordingMode)
+
         case .stats(let input, let output, let cost, let duration, let turns):
             recordingState?.breakConversationCoalescing(for: run)
             // A resumed session reports its whole usage; earlier runs of it already recorded their share.
             let sessionBaseline = ProviderSessionUsageEpoch.baseline(
                 forReport: input, output: output, run: run, task: task, modelContext: modelContext
             )
-            let total = input + output
+            let total = RuntimeUsageArithmetic.adding(input, output)
             if total > 0 {
                 recordUsageTotals(
                     sessionShare: sessionBaseline.runShare(input: input, output: output),
@@ -824,17 +832,17 @@ enum AgentEventRecorder {
                 )
             }
             // A resumed session's cost is cumulative too: record only what this run's turn added.
-            if let cost = cost.map({ max(0, $0 - sessionBaseline.cost) }) {
+            if sessionBaseline.costIsConfirmed, let cost = cost.map({ max(0, $0 - sessionBaseline.cost) }) {
                 switch recordingMode {
                 case .initial:
                     task.costUSD = cost
                 case .followUp:
-                    task.costUSD += cost
+                    task.costUSD += max(0, cost - run.costUSD)
                 }
-                run.costUSD = cost
+                run.costUSD = max(run.costUSD, cost)
             }
             let details = [
-                total > 0 ? "tokens: \(total) (in: \(input), out: \(output))" : nil,
+                "tokens: \(total) (in: \(input), out: \(output))",
                 cost.map { String(format: "cost: $%.4f", $0) },
                 duration.map { "duration: \($0)ms" },
                 turns.map { "turns: \($0)" }
@@ -930,6 +938,8 @@ enum AgentEventRecorder {
             return .toolResult(toolId: id, content: content, isError: isError)
         case .permissionRequested(let tool, let reason):
             return .permissionDenied(tool: tool, reason: reason)
+        case .usageMetadata:
+            return .control(type: "usage.metadata")
         case .stats(let input, let output, let cost, let duration, let turns):
             return .result(text: nil, costUSD: cost, totalInputTokens: input, totalOutputTokens: output, durationMs: duration, numTurns: turns, isError: false)
         case .astraProtocol(let event):
@@ -1013,12 +1023,13 @@ enum AgentEventRecorder {
             if isError {
                 events.append(.failed(message: text ?? "Claude Code run failed."))
             }
-            // A `.result` event always carries the authoritative final totals
-            // (even when zero) regardless of isError, so it must reach
-            // `recordProviderAgentEvent` as `.stats` unconditionally rather
-            // than only on the success path, unlike other providers'
-            // best-effort stats extraction — a failed run still spent tokens.
-            events.append(.stats(inputTokens: totalInput, outputTokens: totalOutput, costUSD: costUSD, durationMs: durationMs, turns: numTurns))
+            // Explicit zero reports arrive separately as .usage. A zero-filled
+            // terminal result alone does not prove the provider reported usage.
+            if totalInput > 0 || totalOutput > 0 {
+                events.append(.stats(inputTokens: totalInput, outputTokens: totalOutput, costUSD: costUSD, durationMs: durationMs, turns: numTurns))
+            } else if costUSD != nil || durationMs != nil || numTurns != nil {
+                events.append(.usageMetadata(costUSD: costUSD, durationMs: durationMs, turns: numTurns))
+            }
             return events
         case .permissionDenied(let tool, let reason):
             return [.permissionRequested(tool: tool, reason: reason)]
@@ -1062,7 +1073,7 @@ enum AgentEventRecorder {
         recordingMode: AgentRuntimeRecordingMode
     ) {
         let (inputTokens, outputTokens) = sessionShare
-        let totalTokens = inputTokens + outputTokens
+        let totalTokens = RuntimeUsageArithmetic.adding(inputTokens, outputTokens)
         switch recordingMode {
         case .initial:
             task.tokensUsed = totalTokens
@@ -1074,7 +1085,7 @@ enum AgentEventRecorder {
             run.tokensUsed = max(run.tokensUsed, totalTokens)
             run.inputTokens = max(run.inputTokens, inputTokens)
             run.outputTokens = max(run.outputTokens, outputTokens)
-            task.tokensUsed += max(0, run.tokensUsed - previousRunTokens)
+            task.tokensUsed = RuntimeUsageArithmetic.adding(task.tokensUsed, max(0, run.tokensUsed - previousRunTokens))
         }
     }
 

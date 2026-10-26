@@ -38,7 +38,11 @@ struct CapabilitySetupCopier {
         var configCount = 0
 
         for package in packages where OnboardingCapabilitySetup.installablePackageIDs.contains(package.id) {
-            let inputs = installationInputs(for: package, from: workspace, globalConnectors: globalConnectors)
+            // Onboarding's form holds one value per field.
+            let inputs = PluginSetupInputs.flattened(
+                installationInputs(for: package, from: workspace, globalConnectors: globalConnectors),
+                for: package.connectors
+            )
             guard explicitlyEnabledPackageIDs.contains(package.id) || !inputs.isEmpty else {
                 continue
             }
@@ -60,17 +64,50 @@ struct CapabilitySetupCopier {
         )
     }
 
+    /// The setup `workspace` has for `package`, each value keyed by the
+    /// connector component it was copied from (`PluginSetupInputs`): two
+    /// components declaring one field each keep their own value.
     func installationInputs(
         for package: PluginPackage,
         from workspace: Workspace,
         globalConnectors: [Connector] = []
     ) -> OnboardingCapabilityInstallationInputs {
         var inputs = OnboardingCapabilityInstallationInputs()
-        let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
+        // A setting only a bundled definition keeps plain; any other is
+        // copied as the credential it is stored as, never as a skill setting.
+        let movedSettings = Set(package.connectors.flatMap { PluginConnectorFieldTrust.settingsStoredAsCredentials(of: $0, in: package) })
+        let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys).filter { !movedSettings.contains($0) }
+        // A plugin turned off keeps its bindings so Add can bring them back,
+        // not so a copy can: nonempty inputs select the package, which would
+        // turn it back on in the new workspace.
+        let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
+        if let activation, !activation.isEnabled { return inputs }
 
-        for pluginConnector in package.connectors {
+        if let activation {
+            for skill in package.skills where PluginRuntimeProjection.packageSkillOwnsSettings(skill, activation: activation) {
+                let component = CapabilityResourceOrigin.componentID(for: skill)
+                let configuration = activation.configuration(forComponent: component)
+                for key in skill.environmentKeys {
+                    let scoped = PluginSetupInputs.key(key, component: component)
+                    let field = PluginActivation.settingKey(componentID: component, key: key)
+                    if activation.secretSettingKeys.contains(field) {
+                        let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: component)
+                        if case .value(let value) = secretStore.read(key: key, entityID: KeychainSecretStore.skillEntityID(for: namespace)),
+                           !value.isEmpty { inputs.credentialInputs[scoped] = value }
+                    } else if !Skill.isSecretEnvironmentKey(key), let value = configuration[key] {
+                        inputs.configInputs[scoped] = value
+                    }
+                }
+            }
+        }
+
+        for declaredConnector in package.connectors {
+            let pluginConnector = PluginConnectorFieldTrust.asStored(declaredConnector, in: package)
+            let componentID = pluginConnector.setupComponentID
+            func own(_ field: String) -> String { PluginSetupInputs.key(field, component: componentID) }
             let connectors = matchingConnectors(
                 for: pluginConnector,
+                activation: activation,
                 in: workspace,
                 globalConnectors: globalConnectors
             )
@@ -79,40 +116,37 @@ struct CapabilitySetupCopier {
                 let baseURL = connector.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !baseURL.isEmpty,
                    baseURL != pluginConnector.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) {
-                    inputs.baseURLOverrides[pluginConnector.name] = baseURL
+                    inputs.baseURLOverrides[componentID] = baseURL
                     for key in packageEnvironmentKeys where Self.shouldMapBaseURL(baseURL, toEnvironmentKey: key, connector: pluginConnector) {
-                        inputs.configInputs[key] = baseURL
+                        inputs.configInputs[own(key)] = baseURL
                     }
                 }
 
                 let connectorConfig = connector.config
-                for hint in pluginConnector.configHints where inputs.configInputs[hint.key] == nil {
-                    if let value = connectorValue(for: hint.key, in: connectorConfig, serviceType: pluginConnector.serviceType) {
-                        inputs.configInputs[hint.key] = value
-                    }
-                }
-                for key in packageEnvironmentKeys where inputs.configInputs[key] == nil {
+                for key in pluginConnector.configHints.map(\.key) + packageEnvironmentKeys where inputs.configInputs[own(key)] == nil {
                     if let value = connectorValue(for: key, in: connectorConfig, serviceType: pluginConnector.serviceType) {
-                        inputs.configInputs[key] = value
+                        inputs.configInputs[own(key)] = value
                     }
                 }
 
-                for hint in pluginConnector.credentialHints where inputs.credentialInputs[hint.key] == nil {
+                for hint in pluginConnector.credentialHints where inputs.credentialInputs[own(hint.key)] == nil {
                     if let value = credentialValue(for: hint.key, in: connector, serviceType: pluginConnector.serviceType)
                         ?? connectorValue(for: hint.key, in: connectorConfig, serviceType: pluginConnector.serviceType) {
-                        inputs.credentialInputs[hint.key] = value
+                        inputs.credentialInputs[own(hint.key)] = value
                     }
                 }
             }
 
-            for hint in pluginConnector.credentialHints where inputs.credentialInputs[hint.key] == nil {
+            // A workspace with the plugin's activation is copied from the
+            // accounts it binds, never from a row it doesn't.
+            for hint in pluginConnector.credentialHints where activation == nil && inputs.credentialInputs[own(hint.key)] == nil {
                 if let value = legacyGlobalCredentialValue(
                     for: hint.key,
                     workspace: workspace,
                     pluginConnector: pluginConnector,
                     globalConnectors: globalConnectors
                 ) {
-                    inputs.credentialInputs[hint.key] = value
+                    inputs.credentialInputs[own(hint.key)] = value
                 }
             }
         }
@@ -140,19 +174,39 @@ struct CapabilitySetupCopier {
         return !name.isEmpty && normalizedKey.contains(name)
     }
 
+    /// The account this package's own (enabled) activation uses for the
+    /// component, its default (`accounts(forComponent:)` puts it first),
+    /// and only that one: the setup is copied from one account whole, its
+    /// credentials, settings and URL together, so a second account's URL
+    /// can never land beside the default's secret, and a row it never bound
+    /// must not fill in a URL, setting or credential its account lacks. A
+    /// workspace without the activation (one from before plugins had them)
+    /// falls back to its rows no plugin is bound to. An account another
+    /// plugin uses is never a source: two plugins of one service must not
+    /// swap URLs or credentials.
     private func matchingConnectors(
         for pluginConnector: PluginConnector,
+        activation: PluginActivation?,
         in workspace: Workspace,
         globalConnectors: [Connector]
     ) -> [Connector] {
+        let ownAccounts = activation?
+            .accounts(forComponent: CapabilityResourceOrigin.componentID(for: pluginConnector))
+            .filter { !$0.isDeleted } ?? []
+        if activation != nil { return Array(ownAccounts.prefix(1)) }
         let enabledGlobalConnectorIDs = Set(workspace.enabledGlobalConnectorIDs.map(Self.normalizedID))
         let enabledGlobalConnectors = globalConnectors.filter { connector in
             enabledGlobalConnectorIDs.contains(Self.normalizedID(connector.id.uuidString))
         }
-        let candidates = workspace.connectors + enabledGlobalConnectors
-        return candidates.filter { connector in
+        let boundElsewhere = Set(WorkspaceCapabilityActivation.activations(of: workspace)
+            .flatMap(\.bindings)
+            .filter { !$0.isDeleted }
+            .compactMap { $0.account?.id })
+        let unbound = (workspace.connectors + enabledGlobalConnectors).filter { !boundElsewhere.contains($0.id) }
+        var seen = Set<UUID>()
+        return (ownAccounts + unbound.filter { connector in
             CapabilityRuntimeResourceMatcher.connectorMatches(pluginConnector, connector: connector)
-        }
+        }).filter { seen.insert($0.id).inserted }
     }
 
     private func credentialValue(for key: String, in connector: Connector, serviceType: String) -> String? {

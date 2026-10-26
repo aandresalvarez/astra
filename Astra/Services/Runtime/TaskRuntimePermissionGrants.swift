@@ -56,9 +56,7 @@ enum TaskRuntimePermissionGrants {
     }
 
     private static func compatibilityPayloads(for task: AgentTask) -> [Payload] {
-        task.events
-            .filter { $0.type == eventType }
-            .filter { !$0.isDeleted }
+        TaskHistoryRead.events(for: task, ofTypes: [eventType])
             .sorted { $0.timestamp < $1.timestamp }
             .compactMap { decodePayload($0.payload) }
     }

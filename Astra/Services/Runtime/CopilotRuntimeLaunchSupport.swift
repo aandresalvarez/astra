@@ -35,7 +35,8 @@ struct CopilotMCPLaunchProjection {
         // guard reads back out of hostControlEnvironment) reuses that single
         // derivation instead of independently re-deriving it. See
         // Tests/HostControlRequirementDerivationConsistencyTests.swift.
-        runtimeRequirements: TaskRuntimeRequirementSet? = nil
+        runtimeRequirements: TaskRuntimeRequirementSet? = nil,
+        sshRoute: RemoteWorkspaceSSHRoute? = nil
     ) -> CopilotMCPLaunchProjection {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
         var browserServerProjected = false
@@ -43,7 +44,7 @@ struct CopilotMCPLaunchProjection {
         if capabilities.supportsAdditionalMCPConfig {
             servers = MCPRuntimeProjection.enabledServers(
                 for: task.workspace,
-                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(for: task.workspace),
                 approvalRecords: CapabilityApprovalStore().records()
             )
             if let workspaceServer = DockerWorkspaceMCPProjection.resolvedServer(
@@ -61,7 +62,8 @@ struct CopilotMCPLaunchProjection {
                 runID: runID,
                 taskEnvironment: taskEnvironment,
                 contextText: contextText,
-                precomputedRuntimeRequirements: runtimeRequirements
+                precomputedRuntimeRequirements: runtimeRequirements,
+                sshRoute: sshRoute
             )
             if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
                 task: task,
@@ -98,7 +100,8 @@ struct CopilotMCPLaunchProjection {
             runID: runID,
             taskEnvironment: taskEnvironment,
             contextText: contextText,
-            precomputedRuntimeRequirements: runtimeRequirements
+            precomputedRuntimeRequirements: runtimeRequirements,
+            sshRoute: sshRoute
         )
         let explicitMCPEnvironment = taskEnvironment
             .merging(workspaceExecutorEnvironment) { current, _ in current }

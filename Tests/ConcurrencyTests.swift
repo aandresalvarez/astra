@@ -160,13 +160,14 @@ struct RuntimeSnapshotBackgroundWorkTests {
 @MainActor
 struct TaskQueueCancellationTests {
 
-    @Test("cancelAll resets state")
+    @Test("Stop Queue stops dispatch while retaining worker ownership until cleanup")
     func cancelAllResetsState() {
         let queue = TaskQueue(poolSize: 2)
-        queue.activeTasks.insert(UUID())
+        let owner = UUID()
+        queue.activeTasks.insert(owner)
         queue.cancelAll()
 
-        #expect(queue.activeTasks.isEmpty)
+        #expect(queue.activeTasks == [owner])
         #expect(queue.isProcessing == false)
     }
 

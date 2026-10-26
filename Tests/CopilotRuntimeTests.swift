@@ -414,20 +414,17 @@ struct CopilotStreamEventParserTests {
         }
     }
 
-    @Test("Usage event maps to result stats")
+    @Test("Intermediate usage is nonterminal and retains accounting")
     func usageStats() {
         let line = #"{"type":"usage","usage":{"input_tokens":120,"output_tokens":30,"cost_usd":0.01},"duration_ms":500,"turns":2}"#
         let parsed = CopilotStreamEventParser.parse(line: line)
-        if case .result(_, let cost, let input, let output, let duration, let turns, let isError) = parsed {
-            #expect(cost == 0.01)
+        if case .usage(let input, let output) = parsed {
             #expect(input == 120)
             #expect(output == 30)
-            #expect(duration == 500)
-            #expect(turns == 2)
-            #expect(!isError)
-        } else {
-            Issue.record("Expected result stats")
-        }
+        } else { Issue.record("Expected nonterminal usage") }
+        #expect(CopilotStreamEventParser.parseAgentEvents(line: line).contains {
+            if case .stats(120, 30, 0.01, 500, 2) = $0 { true } else { false }
+        })
     }
 
     @Test("Usage event maps Copilot data payload to result stats")
@@ -478,23 +475,19 @@ struct CopilotStreamEventParserTests {
         }
     }
 
-    @Test("Session shutdown model metrics map to result stats")
+    @Test("Session shutdown model metrics remain nonterminal usage")
     func sessionShutdownModelMetrics() {
         let line = #"{"type":"session.shutdown","data":{"totalApiDurationMs":31170,"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":7,"cost":1},"usage":{"inputTokens":197185,"outputTokens":1532,"cacheReadTokens":180864,"cacheWriteTokens":16310,"reasoningTokens":0}}}}}"#
         let events = CopilotStreamEventParser.parseAll(line: line)
         #expect(events.count == 1)
-        if case .result(let text, let cost, let input, let output, let duration, let turns, let isError) = events.first {
-            #expect(text == nil)
-            #expect(cost == nil)
+        if case .usage(let input, let output) = events.first {
             #expect(input == 394_359)
             #expect(output == 1_532)
-            #expect(duration == 31_170)
-            #expect(turns == 7)
-            #expect(!isError)
         } else {
-            Issue.record("Expected result stats from session shutdown")
+            Issue.record("Expected nonterminal usage from session shutdown")
         }
     }
+
 }
 
 @Suite("Agent Runtime Stream Telemetry")
@@ -1830,6 +1823,13 @@ struct CopilotWorkerExecutionTests {
         {"type":"user.message","data":{"content":"Task thread: \(task.id.uuidString)\\nTask Output Folder: .astra/tasks/\(String(task.id.uuidString.prefix(8)))"}}
         {"type":"session.shutdown","data":{"totalApiDurationMs":42,"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":2,"cost":1},"usage":{"inputTokens":10,"outputTokens":5,"cacheReadTokens":7,"cacheWriteTokens":3}}}}}
         JSON
+        python3 - "$session_dir/events.jsonl" <<'STAMP'
+        import sys,json,datetime,pathlib
+        p=pathlib.Path(sys.argv[1])
+        rows=[json.loads(line) for line in p.read_text().splitlines()]
+        for row in rows: row['timestamp']=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
+        p.write_text('\\n'.join(json.dumps(row) for row in rows)+'\\n')
+        STAMP
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
@@ -1893,6 +1893,13 @@ struct CopilotWorkerExecutionTests {
         {"type":"user.message","data":{"content":"Task thread: \(task.id.uuidString)\\nTask Output Folder: .astra/tasks/\(String(task.id.uuidString.prefix(8)))"}}
         {"type":"session.shutdown","data":{"totalApiDurationMs":84,"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":3,"cost":1},"usage":{"inputTokens":3000,"outputTokens":500,"cacheReadTokens":2500,"cacheWriteTokens":1500}}}}}
         JSON
+        python3 - "$session_dir/events.jsonl" <<'STAMP'
+        import sys,json,datetime,pathlib
+        p=pathlib.Path(sys.argv[1])
+        rows=[json.loads(line) for line in p.read_text().splitlines()]
+        for row in rows: row['timestamp']=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
+        p.write_text('\\n'.join(json.dumps(row) for row in rows)+'\\n')
+        STAMP
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
@@ -1964,6 +1971,13 @@ struct CopilotWorkerExecutionTests {
         {"type":"user.message","data":{"content":"Task thread: \(task.id.uuidString)\\nTask Output Folder: .astra/tasks/\(String(task.id.uuidString.prefix(8)))"}}
         {"type":"session.shutdown","data":{"totalApiDurationMs":84,"modelMetrics":{"claude-sonnet-4.6":{"requests":{"count":3,"cost":1},"usage":{"inputTokens":3000,"outputTokens":500,"cacheReadTokens":2500,"cacheWriteTokens":1500}}}}}
         JSON
+        python3 - "$session_dir/events.jsonl" <<'STAMP'
+        import sys,json,datetime,pathlib
+        p=pathlib.Path(sys.argv[1])
+        rows=[json.loads(line) for line in p.read_text().splitlines()]
+        for row in rows: row['timestamp']=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
+        p.write_text('\\n'.join(json.dumps(row) for row in rows)+'\\n')
+        STAMP
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)

@@ -319,7 +319,9 @@ struct ContentView: View {
         markdownSessionStore.session(
             for: selectedTask?.id,
             workspaceID: effectiveWorkspaceID,
-            pinnedToTask: isMarkdownPinnedToTask
+            pinnedToTask: isMarkdownPinnedToTask,
+            taskOwnerID: selectedTask?.persistentModelID,
+            workspaceOwnerID: effectiveWorkspace?.persistentModelID
         )
     }
     private var currentBrowserSessionPolicy: BrowserSessionPolicy {
@@ -327,16 +329,17 @@ struct ContentView: View {
     }
     private var browserSessionPolicyRefreshTriggerSignature: String {
         let workspace = selectedTask?.workspace ?? effectiveWorkspace
+        let catalogRevision = workspace.map {
+            BrowserSessionPolicyContext.CatalogPolicyInput(workspace: $0).signature
+        } ?? "no-policy"
         let environmentJSON = selectedTask?.executionEnvironmentSnapshotJSON
             ?? workspace?.activeExecutionEnvironmentJSON
             ?? "host"
         return BrowserSessionPolicyRefreshTrigger(
             taskID: selectedTask?.id, workspaceID: workspace?.id,
             enabledCapabilityIDs: normalizedEnabledCapabilityIDs(for: selectedTask),
-            taskCanvasRevision: selectedTaskCanvasSignature,
-            taskRevision: String(selectedTask?.updatedAt.timeIntervalSince1970 ?? 0),
-            workspaceRevision: [workspaceSelectionSignature, String(workspace?.updatedAt.timeIntervalSince1970 ?? 0)]
-                .joined(separator: ":"),
+            taskRevision: BrowserSessionPolicyContext.taskPolicyRevision(for: selectedTask),
+            workspaceRevision: [workspaceSelectionSignature, catalogRevision].joined(separator: ":"),
             environmentRevision: environmentJSON
         ).rawValue
     }
@@ -526,6 +529,7 @@ struct ContentView: View {
             workspaces: workspaces,
             selectedWorkspace: selectedWorkspaceBinding,
             onNewTask: { startComposingTask(in: $0) },
+            onOpenWorkspaceConfiguration: openWorkspaceConfiguration,
             onRunQueue: runQueue,
             onRunTask: runSingleTask,
             onToggleDone: toggleDone,
@@ -603,7 +607,8 @@ struct ContentView: View {
             effectiveWorkspace: sceneCoordinator.workspace(for: selectedWorkspaceApp) ?? effectiveWorkspace,
             isComposingTask: isComposingTask,
             selectedWorkspaceApp: selectedWorkspaceApp,
-            isComposingWorkspaceApp: isComposingWorkspaceApp
+            isComposingWorkspaceApp: isComposingWorkspaceApp,
+            isShowingWorkspaceConfiguration: sceneSelection.isShowingWorkspaceConfiguration
         )
     }
 
@@ -622,6 +627,7 @@ struct ContentView: View {
             querySession: querySession,
             queryUtilityRuntime: queryUtilityRuntime,
             sshReloadTrigger: sshReloadTrigger,
+            isConfigurationPresented: showingConfigure,
             isRightRailPresented: rightRailInspectorBinding,
             activeCanvasItem: workspaceCanvasItemBinding,
             isPlanCanvasVisible: activeWorkspaceCanvasItem == .plan,
@@ -1213,10 +1219,7 @@ struct ContentView: View {
     }
 
     private func openCapabilitiesManager() {
-        configureInitialTab = .capabilities
-        configureFocusItemID = nil
-        configureFocusCapabilityPackageID = nil
-        showingConfigure = true
+        openConfigureTab(.capabilities, itemID: nil)
     }
 
     private func openSkillsManager() {
@@ -1410,10 +1413,11 @@ struct ContentView: View {
             return
         case .markdown:
             let session = currentMarkdownSession
-            session.bindToTask(selectedTask?.id)
+            session.bindToTask(selectedTask?.id, ownerID: selectedTask?.persistentModelID)
             guard !selectedTaskPreferredMarkdownPath.isEmpty else { return }
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            Task { await session.loadAutomaticallyIfAllowedAsync(url) }
+            let request = session.prepareLoad(url, automatically: true)
+            Task { await session.load(request) }
         case .browser:
             currentBrowserSession.bindToTask(selectedTask?.id)
             loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: source)
@@ -1493,10 +1497,11 @@ struct ContentView: View {
             return
         }
         let session = currentMarkdownSession
-        session.bindToTask(selectedTask?.id)
+        session.bindToTask(selectedTask?.id, ownerID: selectedTask?.persistentModelID)
         if !selectedTaskPreferredMarkdownPath.isEmpty {
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            Task { await session.loadAutomaticallyIfAllowedAsync(url) }
+            let request = session.prepareLoad(url, automatically: true)
+            Task { await session.load(request) }
         }
         if activeWorkspaceCanvasItem == .markdown {
             animatePanelChange {
@@ -1540,7 +1545,7 @@ struct ContentView: View {
             return
         }
 
-        let taskID = selectedTask.id
+        let ownerID = selectedTask.persistentModelID
         let attachedMarkdownPath = preferredAttachedMarkdownPath(for: selectedTask)
         selectedTaskPreferredMarkdownPath = attachedMarkdownPath ?? ""
         selectedTaskHasMarkdownShelfContent = attachedMarkdownPath != nil
@@ -1557,7 +1562,7 @@ struct ContentView: View {
 
             await MainActor.run {
                 guard !Task.isCancelled,
-                      self.selectedTask?.id == taskID else {
+                      self.selectedTask?.persistentModelID == ownerID else {
                     return
                 }
 
@@ -1943,7 +1948,8 @@ struct ContentView: View {
             selectedTaskHasMarkdownShelfContent = true
             let session = currentMarkdownSession
             presentCanvas(.markdown)
-            Task { await session.loadAsync(url) }
+            let request = session.prepareLoad(url)
+            Task { await session.load(request) }
             return
 
         case .query?:
@@ -1990,7 +1996,8 @@ struct ContentView: View {
             "result": FileManager.default.fileExists(atPath: url.path) ? "opened" : "missing"
         ], level: FileManager.default.fileExists(atPath: url.path) ? .info : .warning)
         presentCanvas(.markdown)
-        Task { await session.loadAsync(url) }
+        let request = session.prepareLoad(url)
+        Task { await session.load(request) }
     }
 
     private func syncBrowserPresentation() {
@@ -2036,11 +2043,17 @@ struct ContentView: View {
         if pinnedToTask { refreshMarkdownShelfAvailabilityForSelectedTask() }
     }
 
+    private func openWorkspaceConfiguration(_ workspace: Workspace) {
+        navigateWorkspace { sceneSelection.openWorkspaceConfiguration(workspace) }
+    }
+
     private func selectWorkspaceFromSidebar(_ workspace: Workspace?) {
+        navigateWorkspace { sceneSelection.openWorkspace(workspace) }
+    }
+
+    private func navigateWorkspace(_ intent: () -> Void) {
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
-        applySceneSelectionIntent {
-            sceneSelection.openWorkspace(workspace)
-        }
+        applySceneSelectionIntent(intent)
         clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
     }
 
@@ -2361,9 +2374,10 @@ struct ContentView: View {
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
+        let filesOwnerID = ws.persistentModelID
         let result = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
         guard result.persisted else { workspaceDeletionFailure = "ASTRA couldn't save the deletion, so the workspace was kept."; return }
-        markdownSessionStore.releaseSession(forWorkspaceID: ws.id)
+        markdownSessionStore.releaseSession(forWorkspaceID: ws.id, ownerID: filesOwnerID)
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: result.nextWorkspace))
     }
 
@@ -2435,6 +2449,7 @@ struct ContentView: View {
     }
     // MARK: - Task Actions
     private func setSelectedTask(_ task: AgentTask?, recordsFinalHomeTransition: Bool = true) {
+        let previousFilesOwnerID = selectedTask?.persistentModelID
         let previousTaskID = selectedTask?.id
         if previousTaskID != task?.id {
             TaskOpenResponsivenessTelemetry.beginForSelection(task: task, source: "task_selection", scope: taskOpenResponsivenessScope)
@@ -2456,6 +2471,9 @@ struct ContentView: View {
             clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
             if previousTaskID != task?.id {
                 handleSelectedTaskIdentityChanged(to: task)
+            } else if previousFilesOwnerID != task?.persistentModelID {
+                currentMarkdownSession.bindToTask(task?.id, ownerID: task?.persistentModelID)
+                refreshMarkdownShelfAvailabilityForSelectedTask()
             }
             markTaskRead(task)
         }
@@ -2504,7 +2522,7 @@ struct ContentView: View {
     }
     private func bindTaskScopedSessions(to taskID: UUID?) {
         currentBrowserSession.bindToTask(taskID)
-        currentMarkdownSession.bindToTask(taskID)
+        currentMarkdownSession.bindToTask(taskID, ownerID: selectedTask?.persistentModelID)
         querySession.bindToTask(taskID)
     }
 
@@ -2555,20 +2573,21 @@ struct ContentView: View {
     }
 
     private func deleteTask(_ task: AgentTask) {
-        let deletedTaskID = task.id, wasSelected = selectedTask?.id == task.id
+        let filesOwnerID = task.persistentModelID
+        let deletedTaskID = task.id, wasSelected = selectedTask?.persistentModelID == filesOwnerID
         // Selection clears only as the deletion happens. A failed save puts the
         // task back, so it is reselected and the user is told it was kept.
         let deleted = coordinator.deleteTask(task) { if wasSelected { setSelectedTask(nil) } }
         refreshRunningTaskCount()
         guard deleted else {
-            if wasSelected, selectedTask?.id != deletedTaskID, !task.isDeleted { setSelectedTask(task) }
+            if wasSelected, selectedTask?.persistentModelID != filesOwnerID, !task.isDeleted { setSelectedTask(task) }
             taskDeletionFailure = "ASTRA couldn't save the deletion, so \"\(task.title)\" was kept."
             return
         }
         // Release the task's browser (WebContent process + bridge listener) and
         // markdown sessions; otherwise they leak until the window closes.
         browserSessionStore.releaseSession(for: deletedTaskID)
-        markdownSessionStore.releaseSession(for: deletedTaskID)
+        markdownSessionStore.releaseSession(for: deletedTaskID, ownerID: filesOwnerID)
     }
 
     private func requestDeleteTask(_ task: AgentTask) {
@@ -2679,7 +2698,6 @@ struct ContentView: View {
         enterUITestComposerIfNeeded()
         sceneSelection.openLaunchComposerOnce()
         rightPanel.finishLaunchLanding()
-        runtime.startScheduler(modelContext: modelContext)
         runtime.loadPluginCatalog()
         refreshRunningTaskCount()
         handlePendingExternalRoute()
@@ -2701,6 +2719,7 @@ struct ContentView: View {
         // after this frame is presented. Run-once-guarded inside.
         Task { @MainActor in
             await ASTRAApp.recoverInterruptedWork(modelContext: modelContext, taskQueue: runtime.taskQueue)
+            runtime.startScheduler(modelContext: modelContext)
             runtime.taskQueue.replayRecoveredTurns(modelContext: modelContext)
             refreshRunningTaskCount()
             await ASTRAApp.runDeferredStartupMigrations(modelContext: modelContext)
@@ -2898,6 +2917,7 @@ private struct ContentDetailAreaView: View {
     @ObservedObject var querySession: ShelfQuerySession
     let queryUtilityRuntime: AgentUtilityRuntimeConfiguration
     let sshReloadTrigger: Int
+    var isConfigurationPresented: Bool = false
     @Binding var isRightRailPresented: Bool
     @Binding var activeCanvasItem: WorkspaceCanvasItem?
     let isPlanCanvasVisible: Bool
@@ -3101,6 +3121,7 @@ private struct ContentDetailAreaView: View {
             onNewSSHConnection: onNewSSHConnection,
             onEditSSHConnection: onEditSSHConnection,
             sshReloadTrigger: sshReloadTrigger,
+            isConfigurationPresented: isConfigurationPresented,
             isCompact: isOverlay || width <= PanelLayoutGeometry.inspectorMinColumnWidth + 8,
             onDismiss: isOverlay ? { isRightRailPresented = false } : nil
         )
@@ -4315,7 +4336,7 @@ struct WorkspaceSetupForm: View {
         if draft.selectedCapabilityIDs.contains(packageID) {
             if capabilityIssue(for: packageID) != nil { return "Setup needed" }
             if let (prerequisite, status) = firstUnreadyPrerequisite(for: packageID) {
-                return prerequisiteStatusLabel(prerequisite, status: status)
+                return CapabilityPrerequisitePresentation.label(prerequisite, status: status)
             }
             switch capabilityValidationState(for: packageID) {
             case .unchecked:
@@ -4798,9 +4819,7 @@ struct WorkspaceSetupForm: View {
             return nil
         }
         switch status {
-        case .healthy:
-            return nil
-        case .unverified:
+        case .healthy, .unverified:
             return nil
         case .missingBinary:
             return "\(prerequisite.displayName) is not installed"
@@ -4810,32 +4829,10 @@ struct WorkspaceSetupForm: View {
             return "\(prerequisite.displayName) needs authorization (\(detail))"
         case .unresponsive(let detail):
             return "\(prerequisite.displayName) failed (\(detail))"
-        case .none:
+        case .notChecked, .none:
             return isProbingCapability(packageID)
                 ? "Checking \(prerequisite.displayName)"
                 : "\(prerequisite.displayName) not checked"
-        }
-    }
-
-    private func prerequisiteStatusLabel(
-        _ prerequisite: CLIPrerequisite,
-        status: HealthStatus?
-    ) -> String {
-        switch status {
-        case .healthy:
-            return "Ready"
-        case .unverified:
-            return "Repository unverified"
-        case .missingBinary:
-            return "Needs \(prerequisite.binary)"
-        case .unauthenticated:
-            return "Needs login"
-        case .authorizationRequired:
-            return "Authorize"
-        case .unresponsive:
-            return "Check CLI"
-        case .none:
-            return "Check"
         }
     }
 
@@ -4859,6 +4856,7 @@ struct WorkspaceSetupForm: View {
             return "\(prerequisite.displayName) needs authorization: \(detail). Open Manage Capabilities to approve access."
         case .unresponsive(let detail):
             return "\(prerequisite.displayName) did not respond: \(detail)"
+        case .notChecked(let detail): return "\(prerequisite.displayName): \(detail)."
         case .none:
             return "Re-check \(prerequisite.displayName)."
         }

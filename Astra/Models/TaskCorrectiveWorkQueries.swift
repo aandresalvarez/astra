@@ -21,15 +21,12 @@ public struct TaskCorrectiveWorkRecord {
 public enum TaskCorrectiveWorkQueries {
     @MainActor
     public static func latestCorrectiveSteps(for task: AgentTask) -> [TaskCorrectiveWorkRecord] {
-        latestCorrectiveSteps(in: task.events)
+        latestCorrectiveSteps(in: TaskHistoryRead.events(for: task, ofTypes: correctiveTypes))
     }
 
-    /// `latestCorrectiveSteps(for:)` over an already-gathered event list, for
-    /// callers that scan `task.events` once and share the result.
     public static func latestCorrectiveSteps(in events: [TaskEvent]) -> [TaskCorrectiveWorkRecord] {
         var latestByID: [String: TaskCorrectiveWorkRecord] = [:]
-        for event in events
-            .filter({ isCorrectiveStepEvent($0.type) })
+        for event in events.filter({ correctiveTypes.contains($0.type) })
             .sorted(by: { $0.timestamp > $1.timestamp }) {
             guard let payload = decode(event.payload) else { continue }
             let stepID = normalizedCorrectiveStepID(payload)
@@ -41,14 +38,21 @@ public enum TaskCorrectiveWorkQueries {
 
     @MainActor
     public static func openCorrectiveSteps(for task: AgentTask) -> [TaskCorrectiveWorkRecord] {
-        openCorrectiveSteps(in: task.events)
-    }
-
-    public static func openCorrectiveSteps(in events: [TaskEvent]) -> [TaskCorrectiveWorkRecord] {
-        latestCorrectiveSteps(in: events).filter { record in
+        latestCorrectiveSteps(for: task).filter { record in
             ["proposed", "approved", "task_created"].contains(record.payload.status)
         }
     }
+
+    public static func openCorrectiveSteps(in events: [TaskEvent]) -> [TaskCorrectiveWorkRecord] {
+        latestCorrectiveSteps(in: events).filter {
+            ["proposed", "approved", "task_created"].contains($0.payload.status)
+        }
+    }
+
+    private static let correctiveTypes: Set<String> = [
+        TaskCorrectiveEventTypes.stepCreated, TaskCorrectiveEventTypes.stepApproved,
+        TaskCorrectiveEventTypes.stepDismissed, TaskCorrectiveEventTypes.taskCreated
+    ]
 
     public static func correctiveStepID(planID: UUID, failedAssertionID: String) -> String {
         "corrective-\(planID.uuidString.prefix(8))-\(failedAssertionID)"
@@ -63,10 +67,4 @@ public enum TaskCorrectiveWorkQueries {
         return try? JSONDecoder().decode(TaskCorrectiveStepPayload.self, from: data)
     }
 
-    private static func isCorrectiveStepEvent(_ type: String) -> Bool {
-        type == TaskCorrectiveEventTypes.stepCreated ||
-            type == TaskCorrectiveEventTypes.stepApproved ||
-            type == TaskCorrectiveEventTypes.stepDismissed ||
-            type == TaskCorrectiveEventTypes.taskCreated
-    }
 }

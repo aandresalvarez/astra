@@ -36,6 +36,7 @@ struct LaunchSnapshotDisciplineTests {
     private static let requestPath = "Astra/Models/TaskTurnRequest.swift"
     private static let workerPath = "Astra/Services/Runtime/AgentRuntimeWorker.swift"
     private static let queuePath = "Astra/Services/Tasks/TaskQueue.swift"
+    private static let templateHookScopePath = "Astra/Services/Runtime/RuntimeTemplateHookScope.swift"
 
     /// The fields `detachedTask` overwrites from the frozen snapshot. Reading
     /// any of these off the live `task` after admission is the bug shape this
@@ -61,6 +62,14 @@ struct LaunchSnapshotDisciplineTests {
         "validationStrategy"
     ]
 
+    /// Derived resource records are frozen with workspace state, rather than
+    /// assigned to scalar AgentTask fields. The behavioral retirement tests
+    /// verify that authored records and their attachments stay authoritative.
+    private static let snapshotOwnedResourceFields: Set<String> = [
+        "pluginActivations", "pluginDefinitions", "pluginAccounts", "pluginOverrides", "retiredPluginActivations",
+        "authoredSkills", "pendingLegacyPluginState", "accountInventory", "standaloneToolIDs"
+    ]
+
     // MARK: - Freeze chain
 
     @Test("Snapshot-owned field set is consistent across the whole freeze chain")
@@ -73,7 +82,7 @@ struct LaunchSnapshotDisciplineTests {
         //    which detachedTask copies from the source task, not the snapshot).
         let snapshotProperties = try Set(
             capturedNames(in: snapshotSource, pattern: #"(?m)^    let ([A-Za-z_]\w*):"#)
-        ).subtracting(["id"])
+        ).subtracting(["id"]).subtracting(Self.snapshotOwnedResourceFields)
         #expect(
             snapshotProperties == Self.snapshotOwnedFields,
             "AgentTaskLaunchSnapshot gained or lost a field. Update snapshotOwnedFields and re-audit the allowlists below: \(symmetricDifference(snapshotProperties, Self.snapshotOwnedFields))"
@@ -87,6 +96,13 @@ struct LaunchSnapshotDisciplineTests {
             applied == Self.snapshotOwnedFields,
             "TaskExecutionLaunchSnapshotApplicator.detachedTask must assign every snapshot-owned field from the snapshot: \(symmetricDifference(applied, Self.snapshotOwnedFields))"
         )
+
+        for field in Self.snapshotOwnedResourceFields {
+            #expect(
+                applicatorSource.contains("snapshot.\(field)") && requestSource.contains("public let \(field):"),
+                "\(field) must be captured by TaskExecutionPolicySnapshotV1 and applied from the snapshot by detachedTask."
+            )
+        }
 
         // 3. Every field is actually captured at admission time — otherwise the
         //    "frozen" value is whatever the live task happened to hold later.
@@ -156,35 +172,19 @@ struct LaunchSnapshotDisciplineTests {
             reason: "benign: audit logging only, and the same shadowed launchTask parameter as the read above."
         ),
         .init(
-            file: Self.queuePath,
+            file: Self.templateHookScopePath,
             symbol: "task.templateHooksJSON",
-            line: #"hooksJSON: task.templateHooksJSON,"#,
-            count: 2,
-            classification: .knownGap,
-            reason: "KNOWN GAP (behavioural): inject/restoreTemplateHooks bracket the launch in executeTask, but read the live task. templateHooksJSON is snapshot-owned and executionPolicy.launchSnapshot is already in scope at both call sites."
-        ),
-        .init(
-            file: Self.queuePath,
-            symbol: "task.templateHooksJSON",
-            line: #"if backup != nil || (!task.templateHooksJSON.isEmpty && task.templateHooksJSON != "{}") {"#,
-            count: 2,
-            classification: .knownGap,
-            reason: "KNOWN GAP (audit accuracy): decides whether the injection is reported, from the same live value as the injection itself."
-        ),
-        .init(
-            file: Self.queuePath,
-            symbol: "task.templateHooksJSON",
-            line: #"} else if !task.templateHooksJSON.isEmpty, task.templateHooksJSON != "{}" {"#,
-            count: 2,
-            classification: .knownGap,
-            reason: "KNOWN GAP (behavioural): restore is graded against a value the user may have edited after the hooks were injected, so injected and restored state can disagree."
+            line: #"self.hooks = task.templateHooksJSON"#,
+            count: 1,
+            classification: .benign,
+            reason: "benign: RuntimeTemplateHookScope's only call site passes the frozen launchTask. It captures the admitted hooks once and uses that same value for restoration."
         )
     ]
 
     @Test("Post-admission live-task reads of snapshot-owned fields match the allowlist")
     func postAdmissionLiveTaskReadsMatchTheAllowlist() throws {
         var found: [SourceOccurrence: Int] = [:]
-        for path in [Self.workerPath, Self.queuePath] {
+        for path in [Self.workerPath, Self.queuePath, Self.templateHookScopePath] {
             for (occurrence, count) in try occurrences(receiver: "task", in: path, assignments: false) {
                 found[occurrence, default: 0] += count
             }
@@ -211,7 +211,7 @@ struct LaunchSnapshotDisciplineTests {
     @Test("Mutations of the frozen launch copy match the allowlist")
     func frozenLaunchTaskMutationsMatchTheAllowlist() throws {
         var found: [SourceOccurrence: Int] = [:]
-        for path in [Self.workerPath, Self.queuePath] {
+        for path in [Self.workerPath, Self.queuePath, Self.templateHookScopePath] {
             for (occurrence, count) in try occurrences(receiver: "launchTask", in: path, assignments: true) {
                 found[occurrence, default: 0] += count
             }

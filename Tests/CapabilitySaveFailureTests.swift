@@ -152,10 +152,8 @@ struct CapabilityDisableSaveFailureTests {
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: capabilities,
             modelContext: context,
-            availablePackages: [package],
-            persist: failingPersist
+            persist: { _ in throw NSError(domain: "synthetic.disable.save", code: 1) }
         )
 
         // Empty result and no committed deletions, flagged as rolled back so
@@ -163,12 +161,14 @@ struct CapabilityDisableSaveFailureTests {
         #expect(result.removedWorkspaceConnectorIDs.isEmpty)
         #expect(result.removedWorkspaceSkillIDs.isEmpty)
         #expect(!result.persisted)
+        #expect(result.problem == .saveFailed)
         #expect(try context.fetch(FetchDescriptor<Connector>()).count == connectorsBefore)
         let view = try String(
             contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("Astra/Views/PluginCatalogView.swift"), encoding: .utf8
+                .appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift"), encoding: .utf8
         )
-        #expect(view.contains("guard result.persisted else {"))
+        #expect(view.contains("if let problem = result.problem, problem.operationID == nil"))
+        #expect(view.contains("errorMessage = problem.localizedDescription"))
     }
 }
 
@@ -237,5 +237,61 @@ struct CapabilityEnableSaveFailureTests {
         #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
         #expect(try context.fetch(FetchDescriptor<Skill>()).isEmpty)
         #expect(try context.fetch(FetchDescriptor<Connector>()).isEmpty)
+    }
+}
+
+/// Skill secret storage whose every value is already set ("previous"), that
+/// takes a new value but cannot write the previous one back: the Keychain
+/// failing on the rollback's compensation, not on the enable's own write.
+private enum UnrestorableSkillSecrets: SkillSecretPersisting {
+    static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? { "previous" }
+    static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool {
+        value != "previous"
+    }
+    static func deleteSecret(key: String, skillID: UUID) -> Bool { false }
+    static func secretExists(key: String, skillID: UUID) -> Bool { true }
+    static func deleteAllSecrets(skillID: UUID) {}
+}
+
+@Suite("Capability Enable Secret Restore Failure")
+@MainActor
+struct CapabilityEnableSecretRestoreFailureTests {
+    @Test("A failed enable that cannot put a skill secret back reports the restore, not a clean rollback")
+    func unrestoredSkillSecretIsReported() throws {
+        let root = try saveFailureTempDirectory(named: "astra-enable-secret-restore")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let container = try saveFailureContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Secret Restore", primaryPath: root.path)
+        context.insert(workspace)
+        var package = PluginPackage(
+            id: "secret-restore-pkg", name: "secret-restore-pkg", icon: "star", description: "d",
+            author: "a", category: "c", tags: [], version: "1.0.0",
+            skills: [PluginSkill(
+                name: "Secret Skill", icon: "star", description: "s",
+                allowedTools: ["Read"], disallowedTools: [], customTools: [],
+                behaviorInstructions: "b", environmentKeys: ["SVC_API_TOKEN"], environmentValues: [""]
+            )],
+            connectors: [], localTools: [], templates: []
+        )
+        package.governance = .builtInApproved(riskLevel: .medium)
+        try library.install(package, sourceMetadata: .localLibrary())
+        let installer = CapabilityInstaller(
+            library: library, appVersion: SemanticVersion(1, 0, 0), skillSecrets: UnrestorableSkillSecrets.self
+        )
+
+        #expect(throws: CapabilityInstaller.InstallationError.credentialRestoreFailed(
+            packageID: package.id, keys: ["SVC_API_TOKEN"]
+        )) {
+            try installer.enable(
+                package,
+                in: workspace,
+                modelContext: context,
+                configInputs: ["SVC_API_TOKEN": "new-value"],
+                persist: failingPersist
+            )
+        }
+        #expect(!workspace.enabledCapabilityIDs.contains(package.id))
     }
 }

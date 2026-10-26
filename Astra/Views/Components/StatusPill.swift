@@ -109,7 +109,7 @@ extension StatusPill {
                 icon: "dollarsign.circle.fill",
                 label: "Budget hit",
                 color: Stanford.failed,
-                help: "The agent ran out of token budget before finishing. Raise the budget and retry, or close the task.",
+                help: TaskRequestBudget.exhaustedMessage,
                 size: size
             )
         case .draft, .queued, .running:

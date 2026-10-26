@@ -223,6 +223,11 @@ struct WorkspaceHomeView: View {
     // (WorkspaceRightRailView) already computes the same aggregates.
 
     var body: some View {
+        // A deleted workspace re-runs this body before the parent unmounts it.
+        if workspace.isLive { liveBody } else { Color.clear }
+    }
+
+    private var liveBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {

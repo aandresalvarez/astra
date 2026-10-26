@@ -105,7 +105,7 @@ struct WorkspaceAppRunResumptionService {
                 continue
             }
             let outputRows = tasks.map { taskOutputRow(for: $0) }
-            let consumed = tasks.reduce(0) { $0 + consumedTokens(for: $1) }
+            let consumed = tasks.reduce(0) { RuntimeUsageArithmetic.adding($0, consumedTokens(for: $1)) }
             if let result = try? await executor.resume(
                 run: run,
                 app: app,
@@ -137,7 +137,7 @@ struct WorkspaceAppRunResumptionService {
         // TOTAL provider spend, not output-only: a high-input/low-output run still burns tokens and
         // must count toward the app's cumulative budget. Use the runtime's `tokensUsed` when set,
         // else `inputTokens + outputTokens`.
-        task.runs.reduce(0) { $0 + max($1.tokensUsed, $1.inputTokens + $1.outputTokens) }
+        task.runs.reduce(0) { RuntimeUsageArithmetic.adding($0, max($1.tokensUsed, RuntimeUsageArithmetic.adding($1.inputTokens, $1.outputTokens))) }
     }
 
     @MainActor

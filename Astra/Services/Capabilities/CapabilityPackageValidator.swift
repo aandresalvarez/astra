@@ -13,6 +13,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case invalidPackageID
         case duplicatePackageID
         case duplicatePackageFilename
+        case duplicateMCPServerID
         case invalidVersion
         case localSourceNormalized
         case missingGovernance
@@ -27,6 +28,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case packageUpdate
         case invalidIconAsset
         case missingIconAsset
+        case invalidComponentIdentity
     }
 
     var severity: Severity
@@ -83,7 +85,8 @@ enum CapabilityPackageValidator {
         let decoder = JSONDecoder()
         let decoded: PluginPackage
         do {
-            decoded = try decoder.decode(PluginPackage.self, from: data)
+            // A Plugins 2.0 manifest (`components`) converts to its package.
+            decoded = try PluginManifestConverter.decodePackage(from: data, decoder: decoder)
         } catch {
             return CapabilityPackageValidationReport(
                 package: nil,
@@ -192,7 +195,7 @@ enum CapabilityPackageValidator {
         validatePayload(package, issues: &issues)
         validateIconDescriptor(package.iconDescriptor, sourceURL: sourceURL, issues: &issues)
         validateLocalTools(package.localTools, issues: &issues)
-        validateConnectors(package.connectors, issues: &issues)
+        validateConnectors(package.connectors, in: package, issues: &issues)
         validateBrowserAdapters(package.browserAdapters, issues: &issues)
         validateMCPServers(in: package, issues: &issues)
         validatePrerequisites(
@@ -265,6 +268,50 @@ enum CapabilityPackageValidator {
             return
         }
 
+        // Settings, accounts and secrets are keyed by component identity, so
+        // two components may not share one, and a rename must be declared
+        // unambiguously (`replaces`).
+        let componentIDs = PluginUpdateService.componentIDs(of: package)
+        let duplicates = Dictionary(grouping: componentIDs, by: { $0 }).filter { $0.value.count > 1 }.keys.sorted()
+        for duplicate in duplicates {
+            issues.append(issue(
+                .blocker,
+                .invalidComponentIdentity,
+                "Duplicate component",
+                "Two components share the identity \(duplicate); give one of them its own id.",
+                component: duplicate
+            ))
+        }
+        // Templates are matched to their rows by identity too.
+        let templateIDs = package.templates.map(CapabilityResourceOrigin.componentID(for:))
+        for duplicate in Dictionary(grouping: templateIDs, by: { $0 }).filter({ $0.value.count > 1 }).keys.sorted() {
+            issues.append(issue(
+                .blocker,
+                .invalidComponentIdentity,
+                "Duplicate template",
+                "Two templates share the identity \(duplicate); give one of them another name.",
+                component: duplicate
+            ))
+        }
+        for problem in PluginUpdateService.replacesProblems(in: package) {
+            issues.append(issue(.blocker, .invalidComponentIdentity, "Invalid replaces", problem))
+        }
+        // Against the installed version: a component that takes over one
+        // the installed version declares beside it would merge two owners.
+        if let installed = installedPackages.first(where: { $0.id == package.id }) {
+            let before = Set(PluginUpdateService.componentIDs(of: installed))
+            for (old, new) in PluginUpdateService.renames(in: package).sorted(by: { $0.key < $1.key })
+            where old != new && before.contains(old) && before.contains(new) {
+                issues.append(issue(
+                    .blocker,
+                    .invalidComponentIdentity,
+                    "Rename into an existing component",
+                    "\(new) replaces \(old), but the installed version has both: their settings, accounts and secrets can't be merged.",
+                    component: new
+                ))
+            }
+        }
+
         if !isValidPackageIDLiteral(rawID) {
             issues.append(issue(
                 .blocker,
@@ -330,6 +377,59 @@ enum CapabilityPackageValidator {
                 "Package ID \(package.id) maps to the same filename as installed package \(collision.id).",
                 component: package.id
             ))
+        }
+
+        // Projected MCP servers, provider configuration and permission names
+        // use the server ID unqualified: one ID across two plugins would
+        // drop a server or point a permission at the wrong plugin.
+        for server in package.mcpServers {
+            let serverID = server.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if let owner = installedPackages.first(where: { other in
+                other.id.lowercased() != normalizedID
+                    && other.mcpServers.contains { $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == serverID }
+            }) {
+                issues.append(issue(
+                    .blocker,
+                    .duplicateMCPServerID,
+                    "MCP server ID in use",
+                    "MCP server \(server.id) is already declared by installed plugin \(owner.id).",
+                    component: server.id
+                ))
+            }
+        }
+
+        // Two servers of one package with one ID: the projection keeps only
+        // the first, so the other's tools would silently be missing.
+        let serverIDs = package.mcpServers.map { $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        for duplicate in Dictionary(grouping: serverIDs, by: { $0 }).filter({ $0.value.count > 1 }).keys.sorted() {
+            issues.append(issue(
+                .blocker,
+                .duplicateMCPServerID,
+                "Duplicate MCP server ID",
+                "Two MCP servers in \(package.name) share the ID \(duplicate); give one of them its own.",
+                component: duplicate
+            ))
+        }
+
+        // A setting is stored under `componentID#KEY`
+        // (`PluginActivation.settingKey`) and split at the last `#`, so a key
+        // containing one would be read back under the wrong component.
+        for skill in package.skills {
+            let duplicates = Dictionary(grouping: skill.environmentKeys, by: { $0 })
+                .filter { $0.value.count > 1 }.keys.sorted()
+            for key in duplicates {
+                issues.append(issue(.blocker, .invalidComponentIdentity, "Duplicate setting name",
+                    "\(skill.name) declares \(key) more than once; each setting needs one field.", component: key))
+            }
+            for key in skill.environmentKeys where key.contains("#") {
+                issues.append(issue(
+                    .blocker,
+                    .invalidComponentIdentity,
+                    "Invalid setting name",
+                    "\(skill.name) declares the setting \(key); setting names cannot contain #.",
+                    component: key
+                ))
+            }
         }
 
         if !isValidSemanticVersionLiteral(package.version) {
@@ -459,14 +559,62 @@ enum CapabilityPackageValidator {
 
     private static func validateConnectors(
         _ connectors: [PluginConnector],
+        in package: PluginPackage,
         issues: inout [CapabilityPackageValidationIssue]
     ) {
+        // Only a bundled plugin keeps plain settings, and only ones its own
+        // definition declares (`PluginConnectorFieldTrust`); every other
+        // plugin's settings are stored as credentials. A bundled setting
+        // named like a credential is a definition mistake: refused.
+        let isBundled = PluginConnectorFieldTrust.isBundled(package.id)
         for connector in connectors {
-            guard let reason = ConnectorSecurityPolicy.credentialTransportViolation(
-                baseURL: connector.baseURL,
-                authMethod: connector.authMethod,
-                credentialKeys: connector.credentialHints.map(\.key)
-            ) else {
+            for hint in connector.configHints where isBundled && RunSecretRedaction.isSecretKey(hint.key) {
+                let name = displayName(connector.name, fallback: connector.serviceType)
+                issues.append(issue(
+                    .blocker,
+                    .unsafeConnector,
+                    "Credential stored as a setting",
+                    "\(name) declares \(hint.key) as a plain setting. A key named like a credential must be a credential field, kept in the Keychain.",
+                    component: name
+                ))
+            }
+            // One endpoint and one name per account.
+            for storage in [PluginConnector.ConfigHint.accountBaseURL, PluginConnector.ConfigHint.accountAlias]
+            where connector.configHints.filter({ $0.storage == storage }).count > 1 {
+                let name = displayName(connector.name, fallback: connector.serviceType)
+                issues.append(issue(
+                    .blocker, .invalidComponentIdentity, "Two fields for one account value",
+                    "\(name) declares more than one field stored as \(storage).", component: name
+                ))
+            }
+            // Structure and ordinary fields share the setup-input dictionary.
+            // Each account value needs a distinct key, regardless of storage.
+            for key in PluginAccountFieldLayout.duplicateStructureKeys(in: connector.configHints) {
+                let name = displayName(connector.name, fallback: connector.serviceType)
+                issues.append(issue(
+                    .blocker, .invalidComponentIdentity, "Duplicate account field key",
+                    "\(name) declares \(key) for more than one setup field; account structure needs a distinct key.",
+                    component: name
+                ))
+            }
+            // Credentials are stored under their canonical key: two that
+            // differ only in case would be one Keychain item.
+            let stored = connector.credentialHints.map(\.key)
+                + PluginConnectorFieldTrust.settingsStoredAsCredentials(of: connector, in: package)
+            let collisions = Dictionary(grouping: stored, by: ConnectorCredentialKey.canonical).filter { $0.value.count > 1 }
+            for (canonical, spellings) in collisions.sorted(by: { $0.key < $1.key }) {
+                let name = displayName(connector.name, fallback: connector.serviceType)
+                issues.append(issue(
+                    .blocker,
+                    .invalidComponentIdentity,
+                    Set(spellings).count == 1 ? "Duplicate credential key" : "Credential keys differ only in case",
+                    Set(spellings).count == 1
+                        ? "\(name) declares \(canonical) more than once; each credential needs one field."
+                        : "\(name) declares \(spellings.sorted().joined(separator: " and ")), which are stored as one key, \(canonical).",
+                    component: name
+                ))
+            }
+            guard let reason = PluginConnectorFieldTrust.credentialTransportViolation(of: connector, in: package) else {
                 continue
             }
             let name = displayName(connector.name, fallback: connector.serviceType)
@@ -604,6 +752,16 @@ enum CapabilityPackageValidator {
         issues: inout [CapabilityPackageValidationIssue]
     ) {
         for prerequisite in prerequisites {
+            guard prerequisite.hasValidSlowStartTimeout else {
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Invalid probe timeout",
+                    "\(prerequisite.displayName) must use a finite slow-start timeout from 3 to 60 seconds.",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
             if let reason = LocalToolSecurityPolicy.unsafeInvocationReason(
                 command: prerequisite.binary,
                 arguments: prerequisite.livenessArgs.joined(separator: " ")
@@ -613,6 +771,49 @@ enum CapabilityPackageValidator {
                     .unsafeLocalTool,
                     "Unsafe prerequisite",
                     "\(prerequisite.displayName) declares an unsafe binary or liveness arguments: \(reason).",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
+            // The check runs on every scan with no click, so it may only read
+            // status (`HealthCheckPolicy`): refused here, as the checker never
+            // runs it.
+            guard HealthCheckPolicy.isReadOnly(binary: prerequisite.binary, arguments: prerequisite.livenessArgs)
+                || HealthCheckPolicy.isExistenceOnly(binary: prerequisite.binary, arguments: prerequisite.livenessArgs) else {
+                let check = ([prerequisite.binary] + prerequisite.livenessArgs).joined(separator: " ")
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe health check",
+                    "\(prerequisite.displayName) checks itself with `\(check)`; a check may only run a read-only status command of a CLI ASTRA knows, such as `gh --version` or `gh auth status`.",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
+            // The install link becomes a repair button: a web page only.
+            if let url = prerequisite.installURL, !RepairAction.isSafeRepairURL(url) {
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe install link",
+                    "\(prerequisite.displayName) links to \(url.scheme ?? "a non-web") address; install links must be https.",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
+            // A sign-in hint whose first command runs the CLI becomes its Sign
+            // in button, so it may only sign in (`TerminalRepairPolicy`):
+            // refused here at import, as the button refuses it at launch. A
+            // hint naming another program (`stanford-graph-mail login` for
+            // `pwsh`) is guidance and offers no button.
+            if let command = prerequisite.authHint.flatMap(PluginManifestConverter.firstCommand),
+               command.split(whereSeparator: \.isWhitespace).first.map(String.init) == prerequisite.binary,
+               !RepairAction.isSafeTerminalCommand(command, binary: prerequisite.binary, allowsInstaller: false) {
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe repair command",
+                    "\(prerequisite.displayName) offers `\(command)` as its sign-in; a repair may only run \(prerequisite.binary)'s own sign-in command.",
                     component: prerequisite.displayName
                 ))
                 continue

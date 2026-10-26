@@ -693,7 +693,7 @@ struct TaskDeliverableExpectationTests {
 @MainActor
 struct AgentFileChangeDetectorTests {
     @Test("Inferred file changes ignore provider cache files")
-    func inferredFileChangesIgnoreProviderCacheFiles() throws {
+    func inferredFileChangesIgnoreProviderCacheFiles() async throws {
         let container = try makeContainer()
         let context = container.mainContext
         let workspacePath = NSTemporaryDirectory() + "file-change-runtime-cache-\(UUID().uuidString)"
@@ -715,7 +715,7 @@ struct AgentFileChangeDetectorTests {
         let report = URL(fileURLWithPath: workspacePath).appendingPathComponent("report.md")
         try "# Report".write(to: report, atomically: true, encoding: .utf8)
 
-        AgentFileChangeDetector.appendInferredFileChanges(
+        await AgentFileChangeDetector.appendInferredFileChanges(
             to: run,
             task: task,
             modelContext: context,

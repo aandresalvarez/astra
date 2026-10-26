@@ -7,6 +7,8 @@ import ASTRAPersistence
 import ASTRACore
 
 extension HeadlessChatScenarioTests {
+    // Successful Copilot fixtures emit native messages and an explicit result
+    // before EOF. Usage alone cannot authorize validation or another turn.
     @Test("Headless chat can continue a task")
     func headlessChatCanContinueTask() async throws {
         let harness = try HeadlessChatHarness()
@@ -20,11 +22,12 @@ extension HeadlessChatScenarioTests {
             count=$((count + 1))
             printf '%s' "$count" > \(Self.shQuote(countFile.path))
             if [ "$count" = "1" ]; then
-              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Initial answer"}}'
+              printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-1","content":"Initial answer"}}'
             else
-              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Follow-up answer"}}'
+              printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-2","content":"Follow-up answer"}}'
             fi
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":1,"output_tokens":1},"duration_ms":5,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"copilot-plan-session","exitCode":0}'
             exit 0
             """)
         )
@@ -33,6 +36,7 @@ extension HeadlessChatScenarioTests {
         let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
 
         _ = await harness.execute(task: task, worker: worker)
+        try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context)?.canReplace == true)
         _ = await harness.continueTask(task: task, message: "Follow up", worker: worker)
 
         #expect(task.runs.count == 2)
@@ -57,10 +61,11 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.started\\",\\"stepID\\":\\"step-1\\"}\\n"}}'
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Plan executed"}}'
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-3","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.started\\",\\"stepID\\":\\"step-1\\"}\\n"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-4","content":"Plan executed"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-5","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"copilot-plan-session","exitCode":0}'
             exit 0
             """)
         )
@@ -106,9 +111,10 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Plan work completed"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-6","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-7","content":"Plan work completed"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"copilot-plan-session","exitCode":0}'
             exit 0
             """)
         )
@@ -156,9 +162,10 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Plan work completed"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-8","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-9","content":"Plan work completed"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"copilot-plan-session","exitCode":0}'
             exit 0
             """)
         )
@@ -231,9 +238,10 @@ extension HeadlessChatScenarioTests {
             <html><body><h1>Med13 Foundation</h1></body></html>
             HTML
             printf 'body { font-family: system-ui; }\\n' > \(Self.shQuote(stylesPath))
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Created Med13 homepage artifacts\\"}\\n"}}'
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Created Med13 homepage artifacts."}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-10","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Created Med13 homepage artifacts\\"}\\n"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-11","content":"Created Med13 homepage artifacts."}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"copilot-plan-session","exitCode":0}'
             exit 0
             """)
         )
@@ -304,8 +312,9 @@ extension HeadlessChatScenarioTests {
             named: "copilot",
             script: Self.copilotScript(
                 body: """
-                printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"review plan executed"}}'
+                printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-12","content":"review plan executed"}}'
                 printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                printf '%s\\n' '{"type":"result","sessionId":"copilot-plan-session","exitCode":0}'
                 exit 0
                 """,
                 argsFile: argsURL
@@ -363,8 +372,9 @@ extension HeadlessChatScenarioTests {
                 count="$(cat \(Self.shQuote(countFile.path)) 2>/dev/null || echo 0)"
                 count=$((count + 1))
                 printf '%s' "$count" > \(Self.shQuote(countFile.path))
-                printf '%s\\n' "{\\"sessionUpdate\\":\\"agent_message_chunk\\",\\"content\\":{\\"type\\":\\"text\\",\\"text\\":\\"review step $count executed\\"}}"
+                printf '%s\\n' "{\\"type\\":\\"assistant.message\\",\\"data\\":{\\"messageId\\":\\"plan-message-13\\",\\"content\\":\\"review step $count executed\\"}}"
                 printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                printf '%s\\n' '{"type":"result","sessionId":"copilot-plan-session","exitCode":0}'
                 exit 0
                 """,
                 argsFile: argsURL
@@ -385,6 +395,7 @@ extension HeadlessChatScenarioTests {
 
         let stateAfterFirstStep = TaskPlanService.reconstruct(for: task)
         let currentPlan = try #require(stateAfterFirstStep.plan)
+        try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context)?.canReplace == true)
         _ = await harness.executeApprovedPlan(task: task, plan: currentPlan, worker: worker, mode: .nextStep)
 
         let finalState = TaskPlanService.reconstruct(for: task)
@@ -432,12 +443,13 @@ extension HeadlessChatScenarioTests {
             count=$((count + 1))
             printf '%s' "$count" > \(Self.shQuote(countFile.path))
             if [ "$count" = "1" ]; then
-              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Prepared\\"}\\n"}}'
+              printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-14","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Prepared\\"}\\n"}}'
             else
               printf 'proof complete' > \(Self.shQuote(proofURL.path))
-              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-2\\",\\"summary\\":\\"Finished\\"}\\n"}}'
+              printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-15","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-2\\",\\"summary\\":\\"Finished\\"}\\n"}}'
             fi
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"copilot-plan-session","exitCode":0}'
             exit 0
             """)
         )
@@ -459,6 +471,7 @@ extension HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == TaskValidationEventTypes.contractFailed })
         #expect(!task.events.contains { $0.type == TaskPlanEventTypes.executionCompleted })
 
+        try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context)?.canReplace == true)
         _ = await harness.executeApprovedPlan(task: task, plan: currentPlan, worker: worker, mode: .nextStep)
 
         let finalState = TaskPlanService.reconstruct(for: task)
@@ -488,9 +501,10 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.blocked\\",\\"planID\\":\\"\(planID.uuidString)\\",\\"stepID\\":\\"step-1\\",\\"status\\":\\"blocked\\",\\"reason\\":\\"Needs credentials\\"}\\n"}}'
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Need credentials before continuing."}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-16","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.blocked\\",\\"planID\\":\\"\(planID.uuidString)\\",\\"stepID\\":\\"step-1\\",\\"status\\":\\"blocked\\",\\"reason\\":\\"Needs credentials\\"}\\n"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-17","content":"Need credentials before continuing."}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"copilot-plan-session","exitCode":0}'
             exit 0
             """)
         )
@@ -573,8 +587,9 @@ extension HeadlessChatScenarioTests {
             named: "copilot",
             script: Self.copilotScript(
                 body: """
-                printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"auto plan executed"}}'
+                printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-18","content":"auto plan executed"}}'
                 printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                printf '%s\\n' '{"type":"result","sessionId":"copilot-plan-session","exitCode":0}'
                 exit 0
                 """,
                 argsFile: argsURL
@@ -975,12 +990,13 @@ extension HeadlessChatScenarioTests {
             count=$((count + 1))
             printf '%s' "$count" > \(Self.shQuote(countFile.path))
             if [ "$count" = "1" ]; then
-              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Initial chat answer"}}'
+              printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-19","content":"Initial chat answer"}}'
             else
-              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
-              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Approved plan executed"}}'
+              printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-20","content":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Done\\"}\\n"}}'
+              printf '%s\\n' '{"type":"assistant.message","data":{"messageId":"plan-message-21","content":"Approved plan executed"}}'
             fi
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":1,"output_tokens":1},"duration_ms":5,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"copilot-plan-session","exitCode":0}'
             exit 0
             """)
         )
@@ -996,13 +1012,14 @@ extension HeadlessChatScenarioTests {
         let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
 
         _ = await harness.execute(task: task, worker: worker)
+        try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context)?.canReplace == true)
         TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
         TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
         _ = await harness.executeApprovedPlan(task: task, plan: plan, worker: worker)
 
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
         let state = TaskPlanService.reconstruct(for: task)
-        #expect(runs.count == 2)
+        try #require(runs.count == 2)
         #expect(runs[0].output == "Initial chat answer")
         #expect(runs[1].output == "Approved plan executed")
         #expect(task.status == .completed)

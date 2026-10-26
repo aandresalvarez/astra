@@ -33,6 +33,7 @@ struct TaskSidebarContainerView: View {
     @Binding var selectedWorkspace: Workspace?
     /// Opens the new-task composer in the given workspace, or, with `nil`, in the selected one.
     let onNewTask: (Workspace?) -> Void
+    let onOpenWorkspaceConfiguration: (Workspace) -> Void
     let onRunQueue: () -> Void
     let onRunTask: (AgentTask) -> Void
     var onToggleDone: ((AgentTask) -> Void)?
@@ -68,6 +69,7 @@ struct TaskSidebarContainerView: View {
             taskActivities: taskActivities,
             activityRequests: Dictionary(grouping: turnRequests, by: \.taskID),
             onNewTask: onNewTask,
+            onOpenWorkspaceConfiguration: onOpenWorkspaceConfiguration,
             onRunQueue: onRunQueue,
             onRunTask: onRunTask,
             onToggleDone: onToggleDone,
@@ -357,6 +359,7 @@ struct TaskSidebarView: View {
     var activityRequests: [UUID: [TaskTurnRequest]] = [:]
     /// Opens the new-task composer in the given workspace, or, with `nil`, in the selected one.
     let onNewTask: (Workspace?) -> Void
+    let onOpenWorkspaceConfiguration: (Workspace) -> Void
     let onRunQueue: () -> Void
     let onRunTask: (AgentTask) -> Void
     var onToggleDone: ((AgentTask) -> Void)?
@@ -1721,7 +1724,7 @@ struct TaskSidebarView: View {
     private func workspaceActions(for workspace: Workspace) -> WorkspaceSidebarActions {
         WorkspaceSidebarActions(
             newTask: { startNewTask(in: workspace) },
-            openConfiguration: { openWorkspace(workspace) },
+            openConfiguration: { openWorkspaceConfiguration(workspace) },
             toggleStarred: { toggleStarred(for: workspace) },
             rename: { onRenameWorkspace?(workspace) },
             remove: { workspacePendingRemoval = workspace }
@@ -1733,9 +1736,8 @@ struct TaskSidebarView: View {
         onNewTask(workspace)
     }
 
-    private func openWorkspace(_ workspace: Workspace) {
-        selectedTask = nil
-        selectedWorkspace = workspace
+    private func openWorkspaceConfiguration(_ workspace: Workspace) {
+        onOpenWorkspaceConfiguration(workspace)
         ensureWorkspaceExpanded(workspace)
     }
 

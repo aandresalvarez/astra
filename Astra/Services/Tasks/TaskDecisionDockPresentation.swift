@@ -38,6 +38,8 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case closeWithoutRunningPlan
     case reopenTask
     case switchRuntime
+    /// Run the repair a stopped run asked for (sign in, open a page).
+    case runRepair
 }
 
 enum TaskThreadAffordance: Hashable {
@@ -121,9 +123,12 @@ struct TaskDecisionDockPresentation: Equatable {
         var hasProviderSession: Bool
         var failureReason: String?
         var launchBlock: TaskRunLaunchBlockPayload?
+        /// The repair the latest run stopped for (a plugin sign-in expired).
+        var repair: RepairAction?
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail] = []
         var visibleThreadAffordances: Set<TaskThreadAffordance> = []
+        var recoveryBlockMessage: String? = nil
 
         /// Auto allows a connector's credentials for the task without asking, so
         /// a credential card reaches an Auto task only when that grant could not
@@ -183,6 +188,18 @@ struct TaskDecisionDockPresentation: Equatable {
     static func build(_ context: Context) -> TaskDecisionDockPresentation? {
         if context.isClosed {
             return closedPresentation(context)
+        }
+
+        if let message = context.recoveryBlockMessage {
+            return TaskDecisionDockPresentation(
+                id: "recovery-blocked", icon: "lock.fill", tone: .attention,
+                title: "Recovery blocked", summary: message,
+                metrics: metrics(context), details: details(context),
+                primaryAction: context.canRetry
+                    ? action(.retry, title: "Check again", systemImage: "arrow.clockwise") : nil,
+                secondaryActions: [], overflowActions: closeOverflowActions(context, closeTitle: nil),
+                prefersExpandedDetails: false
+            )
         }
 
         if context.hasRuntimePermissionRequest {
@@ -572,7 +589,35 @@ struct TaskDecisionDockPresentation: Equatable {
         )
     }
 
+    /// The run stopped because a plugin needs the person (a CLI sign-in
+    /// expired). The repair leads; Resume picks the same session back up.
+    private static func repairPresentation(_ context: Context, repair: RepairAction) -> TaskDecisionDockPresentation {
+        let canResume = context.canResume && context.hasProviderSession
+        return TaskDecisionDockPresentation(
+            id: "repair-required",
+            icon: "key.fill",
+            tone: .attention,
+            title: repair.title,
+            summary: repair.detail,
+            metrics: metrics(context),
+            details: details(context),
+            primaryAction: action(.runRepair, title: repair.verb, systemImage: "key.fill"),
+            secondaryActions: [
+                canResume ? action(.resume, title: "Resume", systemImage: "play.fill") : nil,
+                context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
+                context.canReportProblem
+                    ? action(.reportProblem, title: "Report a Problem", systemImage: "exclamationmark.bubble")
+                    : nil
+            ].compactMap { $0 },
+            overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil),
+            prefersExpandedDetails: false
+        )
+    }
+
     private static func failedPresentation(_ context: Context) -> TaskDecisionDockPresentation {
+        if context.status == .failed, let repair = context.repair {
+            return repairPresentation(context, repair: repair)
+        }
         let overBudget = context.status == .budgetExceeded
         return TaskDecisionDockPresentation(
             id: overBudget ? "budget-exceeded" : "failed",
@@ -580,7 +625,7 @@ struct TaskDecisionDockPresentation: Equatable {
             tone: .failed,
             title: overBudget ? "Budget exceeded" : "Run stopped",
             summary: overBudget
-                ? "Raise the budget and resume, or retry this task from scratch."
+                ? TaskRequestBudget.exhaustedMessage
                 : (context.failureReason ?? "The run failed. Review the output, then resume or retry."),
             metrics: metrics(context),
             details: details(context),
@@ -1132,6 +1177,7 @@ private extension TaskDecisionDockActionKind {
              .approveCorrection,
              .createCorrectionTask,
              .dismissCorrection,
+             .runRepair,
              .runApprovedPlan,
              .runTask,
              .retry,

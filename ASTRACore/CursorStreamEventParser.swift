@@ -56,14 +56,13 @@ public enum CursorStreamEventParser {
         case .usage(let input, let output):
             return [.stats(inputTokens: input, outputTokens: output, costUSD: nil, durationMs: nil, turns: nil)]
         case .result(let text, let cost, let input, let output, let duration, let turns, let isError):
-            if isError {
-                return [.failed(message: text ?? "Cursor CLI run failed.")]
-            }
             var events: [AgentEvent] = []
-            if let text, !text.isEmpty {
+            if isError {
+                events.append(.failed(message: text ?? "Cursor CLI run failed."))
+            } else if let text, !text.isEmpty {
                 events.append(.completed(summary: text))
             }
-            if input > 0 || output > 0 || cost != nil || duration != nil || turns != nil {
+            if input > 0 || output > 0 {
                 events.append(.stats(
                     inputTokens: input,
                     outputTokens: output,
@@ -71,6 +70,8 @@ public enum CursorStreamEventParser {
                     durationMs: duration,
                     turns: turns
                 ))
+            } else if cost != nil || duration != nil || turns != nil {
+                events.append(.usageMetadata(costUSD: cost, durationMs: duration, turns: turns))
             }
             return events
         case .permissionDenied(let tool, let reason):
@@ -110,6 +111,9 @@ public enum CursorStreamEventParser {
         case "tool_call":
             return .recognized(toolCallEvents(object))
         case "thinking":
+            if object["subtype"] as? String == "completed", object["text"] == nil {
+                return .recognized([.control(type: "thinking.completed")])
+            }
             guard let text = object["text"] as? String, !text.isEmpty else {
                 return .recognized([.unknown(type: type)])
             }

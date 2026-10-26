@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftData
 import ASTRACore
 
 enum ShelfTextDocumentKind: String, Equatable {
@@ -108,12 +109,16 @@ private struct ShelfFileMetadata {
     let modifiedAt: Date?
 }
 
-private enum ShelfMarkdownTaskBinding: Hashable {
-    case task(UUID)
+/// Persisted models use storage identity; UUID-only bindings remain available
+/// for ephemeral callers without a model store.
+enum ShelfFilesOwner: Hashable {
+    case persisted(PersistentIdentifier)
+    case ephemeral(UUID)
     case unscoped
 
-    init(taskID: UUID?) {
-        self = taskID.map(Self.task) ?? .unscoped
+    init(id: UUID?, ownerID: PersistentIdentifier? = nil) {
+        if let ownerID { self = .persisted(ownerID) }
+        else { self = id.map(Self.ephemeral) ?? .unscoped }
     }
 }
 
@@ -142,7 +147,8 @@ final class ShelfMarkdownSession: ObservableObject {
     /// manual `load(_:)` re-legitimizes it: closing a tab is a statement about
     /// the document, not about whichever task happened to be bound.
     private var dismissedDocumentPaths: Set<String> = []
-    private var selectionIntentsByTask: [ShelfMarkdownTaskBinding: ShelfMarkdownSelectionIntent] = [:]
+    private var selectionIntentsByTask: [ShelfFilesOwner: ShelfMarkdownSelectionIntent] = [:]
+    private var taskBinding: ShelfFilesOwner = .unscoped
     private let documentLoader: any ShelfDocumentLoading
     private var documentLoadGeneration = 0
 
@@ -203,16 +209,42 @@ final class ShelfMarkdownSession: ObservableObject {
         loadingDocumentID != nil
     }
 
-    func bindToTask(_ taskID: UUID?) {
-        guard boundTaskID != taskID else { return }
+    func bindToTask(_ taskID: UUID?, ownerID: PersistentIdentifier? = nil) {
+        let binding = ShelfFilesOwner(id: taskID, ownerID: ownerID)
+        guard taskBinding != binding else { return }
         cancelPendingDocumentLoad()
+        taskBinding = binding
         boundTaskID = taskID
-        if case .document(let restoredID)? = selectionIntentsByTask[ShelfMarkdownTaskBinding(taskID: taskID)],
+        if case .document(let restoredID)? = selectionIntentsByTask[binding],
            documents.contains(where: { $0.id == restoredID }) {
             selectedDocumentID = restoredID
         } else {
             selectedDocumentID = nil
         }
+    }
+
+    struct LoadRequest {
+        fileprivate let url: URL
+        fileprivate let automatically: Bool
+        fileprivate let generation: Int
+        fileprivate let binding: ShelfFilesOwner
+    }
+
+    /// Capture intent before scheduling asynchronous work, so a task switch
+    /// also invalidates requests whose async body has not started yet.
+    func prepareLoad(_ url: URL, automatically: Bool = false) -> LoadRequest {
+        cancelPendingDocumentLoad()
+        return LoadRequest(url: url, automatically: automatically,
+                           generation: documentLoadGeneration, binding: taskBinding)
+    }
+
+    @discardableResult
+    func load(_ request: LoadRequest) async -> Bool {
+        guard !Task.isCancelled, request.generation == documentLoadGeneration,
+              request.binding == taskBinding else { return false }
+        return request.automatically
+            ? await loadAutomaticallyIfAllowedAsync(request.url)
+            : await loadAsync(request.url)
     }
 
     func load(_ url: URL) {
@@ -290,7 +322,7 @@ final class ShelfMarkdownSession: ObservableObject {
     @discardableResult
     func loadAutomaticallyIfAllowed(_ url: URL) -> Bool {
         guard !dismissedDocumentPaths.contains(url.path) else { return false }
-        let intent = selectionIntentsByTask[ShelfMarkdownTaskBinding(taskID: boundTaskID)]
+        let intent = selectionIntentsByTask[taskBinding]
         guard intent != .cleared, fileURL?.path != url.path else { return false }
         if case .document(let chosenID)? = intent,
            documents.contains(where: { $0.id == chosenID }),
@@ -307,7 +339,7 @@ final class ShelfMarkdownSession: ObservableObject {
     @discardableResult
     func loadAutomaticallyIfAllowedAsync(_ url: URL) async -> Bool {
         guard !dismissedDocumentPaths.contains(url.path) else { return false }
-        let intent = selectionIntentsByTask[ShelfMarkdownTaskBinding(taskID: boundTaskID)]
+        let intent = selectionIntentsByTask[taskBinding]
         guard intent != .cleared, fileURL?.path != url.path else { return false }
         if case .document(let chosenID)? = intent,
            documents.contains(where: { $0.id == chosenID }),
@@ -347,7 +379,7 @@ final class ShelfMarkdownSession: ObservableObject {
     /// the last open tab.
     private func selectDocumentID(_ id: String?) {
         selectedDocumentID = id
-        let binding = ShelfMarkdownTaskBinding(taskID: boundTaskID)
+        let binding = taskBinding
         selectionIntentsByTask[binding] = id.map(ShelfMarkdownSelectionIntent.document) ?? .cleared
     }
 

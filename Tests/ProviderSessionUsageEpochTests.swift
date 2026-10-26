@@ -52,6 +52,18 @@ struct ProviderSessionUsageEpochTests {
         return Fixture(container: container, context: container.mainContext, task: task, runtime: runtime)
     }
 
+    @Test("Session history with extreme usage saturates rather than overflowing")
+    func extremeSessionHistory() throws {
+        let fixture = try makeFixture()
+        let first = fixture.run(at: 0)
+        first.inputTokens = Int.max; first.outputTokens = Int.max
+        let second = fixture.run(at: 1)
+        second.inputTokens = 100; second.outputTokens = 100
+        let next = fixture.run(at: 2)
+        let baseline = ProviderSessionUsageEpoch.baseline(for: next, in: fixture.task)
+        #expect(baseline.input == Int.max && baseline.output == Int.max)
+    }
+
     @Test("After a counter reset, the next run of the session is measured against the new epoch only")
     func runAfterResetUsesTheEpochBaseline() throws {
         for runtime in [AgentRuntimeID.antigravityCLI, .copilotCLI] {

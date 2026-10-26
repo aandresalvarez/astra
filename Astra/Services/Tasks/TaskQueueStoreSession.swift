@@ -12,6 +12,7 @@ import ASTRAPersistence
 final class TaskQueueStoreSession {
     let modelContainer: ModelContainer
     let modelContext: ModelContext
+    private let remoteJobs: RemoteWorkspaceJobMonitorSession
 
     private(set) var didRepairLegacyRequests = false
     private(set) var didAttemptLegacyRequestsRepair = false
@@ -19,6 +20,7 @@ final class TaskQueueStoreSession {
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
         self.modelContainer = modelContext.container
+        self.remoteJobs = RemoteWorkspaceJobMonitorSession(context: modelContext)
     }
 
     func matches(_ modelContext: ModelContext) -> Bool {

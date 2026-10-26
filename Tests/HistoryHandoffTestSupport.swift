@@ -18,6 +18,9 @@ final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
     var hostControlBrokerAvailable = true
     var result = AgentProcessResult(exitCode: 0)
 
+    @MainActor private var owner: RuntimeExecutionOwner?
+    @MainActor func configureExecutionOwner(_ owner: RuntimeExecutionOwner?) { self.owner = owner }
+
     func cancel() {
         cancelCallCount += 1
     }
@@ -57,7 +60,12 @@ final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
         receivedPrompts.append(prompt)
         receivedNativeSessions.append(nativeContinuationSessionID)
         onLaunch?(task, runID)
-        for line in streamLines { onLine(line, true) }
+        for line in streamLines {
+            onLine(line, true)
+            for event in adapter.parseProcessEvents(line: line, parsesJSONLines: true) {
+                if case .systemInit(_, let sessionID) = event { owner?.session(sessionID) }
+            }
+        }
         return result
     }
 }

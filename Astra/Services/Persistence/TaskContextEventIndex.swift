@@ -1,17 +1,10 @@
 import Foundation
 import ASTRAModels
 
-/// One pass over `task.events` for a context-state derive.
-///
-/// `updateDerivedFields` used to filter all of `task.events` once per helper,
-/// about a dozen full scans per apply. On SwiftData models each `type` read is
-/// a backing-store lookup, so on a task with thousands of events those scans
-/// were most of the apply's main-actor time. The index reads every event's
-/// type once and keeps each helper's candidates in their original order.
-///
-/// Every bucket is a superset of what its helper selects, in `task.events`
-/// order, so a helper that filters and sorts a bucket sees exactly the
-/// sequence it would have filtered out of `task.events` itself.
+/// A disposable projection for one synchronous context-state derive.
+/// Fetch only the required types through the durable history reader; never
+/// replace the full history, cache this across awaits, or use it for launch
+/// snapshots, ownership, permissions or usage accounting.
 struct TaskContextEventIndex {
     var userMessages: [TaskEvent] = []
     var assistantReplies: [TaskEvent] = []
@@ -69,7 +62,7 @@ struct TaskContextEventIndex {
 
     @MainActor
     init(task: AgentTask) {
-        self.init(events: task.events)
+        self.init(events: TaskHistoryRead.events(for: task, ofTypes: Self.requiredTypes))
         pendingTurnMessageIDs = TaskPendingTurnMessageVisibility.pendingMessageEventIDs(for: task)
     }
 
@@ -91,6 +84,19 @@ struct TaskContextEventIndex {
         }
         self.pendingTurnMessageIDs = pendingTurnMessageIDs
     }
+
+    static func oldestFirst(_ lhs: TaskEvent, _ rhs: TaskEvent) -> Bool {
+        lhs.timestamp == rhs.timestamp ? lhs.id.uuidString < rhs.id.uuidString : lhs.timestamp < rhs.timestamp
+    }
+
+    static func newestFirst(_ lhs: TaskEvent, _ rhs: TaskEvent) -> Bool { oldestFirst(rhs, lhs) }
+
+    var orderedUserMessages: [TaskEventRecord] {
+        userMessages.filter { Self.userMessageTypes.contains($0.type) }
+            .map(TaskEventRecord.init(event:)).sorted(by: TaskEventRecord.isChronologicallyOrdered)
+    }
+
+    static let requiredTypes = Set(bucketMembership.flatMap { $0.types })
 
     private typealias Bucket = WritableKeyPath<TaskContextEventIndex, [TaskEvent]>
 

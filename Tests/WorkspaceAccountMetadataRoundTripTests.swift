@@ -162,6 +162,23 @@ struct WorkspaceAccountMetadataRoundTripTests {
         #expect(try destination.mainContext.fetchCount(FetchDescriptor<Connector>()) == 2)
     }
 
+    @Test("A picked file remaps its default onto fresh account IDs while preserving the alias")
+    func validatedAccountDefaultRemapsToFreshIdentity() throws {
+        let (root, source, workspace, connectors) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: source.mainContext))
+        let destination = try container()
+        let result = WorkspaceConfigManager.importWorkspaceResult(
+            from: config, modelContext: destination.mainContext,
+            capabilityTrust: .validate(.init(approvedPackageIDs: [], installedPackageIDs: [], availablePackIDs: []))
+        )
+        try destination.mainContext.save()
+        let restoredDefault = try #require(result.workspace.connectors.first { $0.accountAlias == "Personal" })
+        #expect(restoredDefault.id != connectors[1].id)
+        #expect(result.workspace.defaultAccountServiceTypes == ["jira"])
+        #expect(result.workspace.defaultAccountConnectorIDs == [restoredDefault.id.uuidString])
+    }
+
     private func awaitMirror(_ url: URL, matching condition: (WorkspaceConfigManager.WorkspaceConfig) -> Bool)
         async throws -> WorkspaceConfigManager.WorkspaceConfig {
         for _ in 0..<500 {
