@@ -322,18 +322,24 @@ struct WorkspaceRailSectionPresentationTests {
 
     @Test("the box order is fixed and never reacts to what is empty")
     func boxOrderIsFixed() {
-        #expect(Rail.sectionOrder == [.environment, .context, .capabilities])
+        #expect(Rail.sectionOrder == [.environment, .context, .capabilities, .outputs])
         #expect(Rail.Section.allCases == Rail.sectionOrder)
 
-        let full = Rail.boxes(environment: ownerEnvironment(), context: ownerContext(), capabilities: ownerCapabilities())
+        let full = Rail.boxes(
+            environment: ownerEnvironment(),
+            context: ownerContext(),
+            capabilities: ownerCapabilities(),
+            outputs: Rail.OutputFacts(files: [Rail.OutputFile(path: "/tmp/task/PLAN.md")])
+        )
         #expect(full.map(\.section) == Rail.sectionOrder)
 
+        // No outputs yet: the task-scoped box is simply absent, nothing moves.
         let onboarding = Rail.boxes(
             environment: Rail.EnvironmentFacts(primaryPath: "/tmp/w"),
             context: Rail.ContextFacts(),
             capabilities: ownerCapabilities()
         )
-        #expect(onboarding.map(\.section) == Rail.sectionOrder)
+        #expect(onboarding.map(\.section) == [.environment, .context, .capabilities])
     }
 
     @Test("collapsed boxes say what is inside")
@@ -397,5 +403,92 @@ struct WorkspaceRailSectionPresentationTests {
         #expect(Rail.Layout.rowTitleFontSize < CapabilityRailLayout.rowTitleFontSize)
         #expect(Rail.Layout.rowTitleFontSize < Stanford.chatBodyPointSize)
         #expect(Rail.Layout.boxTitleFontSize < Stanford.chatBodyPointSize)
+    }
+}
+
+// MARK: - Outputs
+
+extension WorkspaceRailSectionPresentationTests {
+    private typealias Outputs = WorkspaceRailSectionPresentation
+
+    private func outputs(_ count: Int, prefix: String = "/tmp/task/out") -> Outputs.OutputFacts {
+        Outputs.OutputFacts(files: (1...count).map {
+            Outputs.OutputFile(path: "\(prefix)/report-\($0).md")
+        })
+    }
+
+    @Test("a task that produced nothing has no Outputs box")
+    func noOutputsMeansNoOutputsBox() {
+        #expect(Outputs.outputsBox(Outputs.OutputFacts()) == nil)
+        let boxes = Outputs.boxes(
+            environment: Outputs.EnvironmentFacts(primaryPath: "/tmp/w"),
+            context: Outputs.ContextFacts(),
+            capabilities: []
+        )
+        #expect(!boxes.contains { $0.section == .outputs })
+        #expect(Outputs.sectionOrder.last == .outputs)
+        #expect(Outputs.Section.outputs.title == "Outputs")
+    }
+
+    @Test("outputs list one line per file, newest first, with the shelf's icon")
+    func outputsListOneLinePerFile() throws {
+        let facts = Outputs.OutputFacts(files: [
+            Outputs.OutputFile(path: "/tmp/task/PLAN.md"),
+            Outputs.OutputFile(path: "/tmp/task/site/index.html", destination: .browser),
+            Outputs.OutputFile(path: "/tmp/task/data/results.csv", destination: .query),
+            Outputs.OutputFile(path: "/tmp/task/PLAN.md")
+        ])
+        let box = try #require(Outputs.outputsBox(facts))
+        #expect(box.rows.map(\.title) == ["PLAN.md", "index.html", "results.csv"])
+        #expect(box.rows.map(\.systemImage) == ["doc.text", "globe", "tablecells"])
+        #expect(box.rows.allSatisfy { $0.action == nil && $0.value == nil && !$0.isExpandable })
+        #expect(box.rows.first?.kind == .output(path: "/tmp/task/PLAN.md"))
+        #expect(box.addActions.isEmpty)
+        #expect(box.forcesExpansion == false)
+        #expect(box.collapsedSummary == "3 files · PLAN.md, index.html, results.csv")
+    }
+
+    @Test("outputs past the row limit fold into one link row into Files")
+    func outputsPastTheLimitFoldIntoOneRow() throws {
+        let box = try #require(Outputs.outputsBox(outputs(11)))
+        #expect(box.rows.count == Outputs.outputRowLimit + 1)
+        #expect(Outputs.outputRowLimit == 8)
+        let overflow = try #require(box.rows.last)
+        #expect(overflow.kind == .outputsOverflow(hiddenCount: 3, firstHiddenPath: "/tmp/task/out/report-9.md"))
+        #expect(overflow.title == "3 more in Files")
+        #expect(overflow.tone == .link)
+        #expect(box.collapsedSummary == "11 files · report-1.md, report-2.md, report-3.md +8")
+
+        let exact = try #require(Outputs.outputsBox(outputs(8)))
+        #expect(exact.rows.count == 8)
+        #expect(exact.rows.allSatisfy { if case .output = $0.kind { return true } else { return false } })
+    }
+
+    @Test("duplicate output names lead with their folder")
+    func duplicateOutputNamesLeadWithTheirFolder() throws {
+        let box = try #require(Outputs.outputsBox(Outputs.OutputFacts(files: [
+            Outputs.OutputFile(path: "/tmp/task/a/README.md"),
+            Outputs.OutputFile(path: "/tmp/task/b/readme.md"),
+            Outputs.OutputFile(path: "/tmp/task/notes.md")
+        ])))
+        #expect(box.rows.map(\.title) == ["a/README.md", "b/readme.md", "notes.md"])
+    }
+
+    @Test("the Outputs box has no adds and never changes the rail-level Add")
+    func outputsHaveNoAdds() {
+        #expect(Outputs.AddAction.actions(for: .outputs).isEmpty)
+        let with = Outputs.boxes(
+            environment: Outputs.EnvironmentFacts(primaryPath: "/tmp/w"),
+            context: Outputs.ContextFacts(),
+            capabilities: [],
+            outputs: outputs(2)
+        )
+        let without = Outputs.boxes(
+            environment: Outputs.EnvironmentFacts(primaryPath: "/tmp/w"),
+            context: Outputs.ContextFacts(),
+            capabilities: []
+        )
+        #expect(with.map(\.section) == [.environment, .context, .outputs])
+        #expect(Outputs.railAddActions(for: with) == Outputs.railAddActions(for: without))
     }
 }

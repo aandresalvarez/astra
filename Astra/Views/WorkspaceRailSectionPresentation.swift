@@ -16,30 +16,32 @@ import Foundation
 ///    working tree whose sync is blocking (info tint, never the accent).
 /// 4. One line per fact. Rows are key/value on a single line.
 ///
-/// It owns no state and imports no UI, so a test can pin every rule. The view
-/// adopts it in later changes; nothing here is rendered yet.
+/// It owns no state and imports no UI, so a test can pin every rule.
 enum WorkspaceRailSectionPresentation {
 
     // MARK: - Boxes
 
-    /// The three boxes in their fixed order. There is no adaptive reorder:
-    /// the old one existed to surface pending setup, a concept this model
-    /// does not have.
+    /// The boxes in their fixed order. There is no adaptive reorder: the old
+    /// one existed to surface pending setup, a concept this model does not
+    /// have. Outputs is last and task-scoped: the files the selected task
+    /// produced, so the rail ends the way Claude Code's and Codex's do.
     enum Section: String, CaseIterable, Equatable {
         case environment
         case context
         case capabilities
+        case outputs
 
         var title: String {
             switch self {
             case .environment: "Environment"
             case .context: "Context"
             case .capabilities: "Capabilities"
+            case .outputs: "Outputs"
             }
         }
     }
 
-    static let sectionOrder: [Section] = [.environment, .context, .capabilities]
+    static let sectionOrder: [Section] = [.environment, .context, .capabilities, .outputs]
 
     // MARK: - Facts (inputs)
 
@@ -96,6 +98,37 @@ enum WorkspaceRailSectionPresentation {
         var isDraft: Bool = false
     }
 
+    /// Where an output opens when tapped: the shelf that renders its kind.
+    enum OutputDestination: Equatable {
+        case files
+        case browser
+        case query
+        case none
+
+        var systemImage: String {
+            switch self {
+            case .files: "doc.text"
+            case .browser: "globe"
+            case .query: "tablecells"
+            case .none: "doc"
+            }
+        }
+    }
+
+    /// One file the selected task produced, newest first as given. Inputs the
+    /// user attached are not outputs and never reach this list.
+    struct OutputFile: Equatable, Identifiable {
+        var path: String
+        var destination: OutputDestination = .files
+
+        var id: String { path }
+        var name: String { WorkspaceRailSectionPresentation.lastPathComponent(path) }
+    }
+
+    struct OutputFacts: Equatable {
+        var files: [OutputFile] = []
+    }
+
     // MARK: - Rows
 
     enum RowTone: Equatable {
@@ -131,6 +164,9 @@ enum WorkspaceRailSectionPresentation {
         case memory
         case routines
         case capability(id: String)
+        case output(path: String)
+        /// The files past the row limit, as one link row into the Files shelf.
+        case outputsOverflow(hiddenCount: Int, firstHiddenPath: String)
     }
 
     struct Row: Equatable {
@@ -210,6 +246,8 @@ enum WorkspaceRailSectionPresentation {
     static let emptyContextSummary = "No instructions yet"
     static let railAddTitle = "Add…"
     static let summarySeparator = " · "
+    /// How many outputs the box lists before folding the rest into one row.
+    static let outputRowLimit = 8
 
     // MARK: - Building boxes
 
@@ -218,12 +256,14 @@ enum WorkspaceRailSectionPresentation {
     static func boxes(
         environment: EnvironmentFacts,
         context: ContextFacts,
-        capabilities: [CapabilityFacts]
+        capabilities: [CapabilityFacts],
+        outputs: OutputFacts = OutputFacts()
     ) -> [Box] {
         let built: [Section: Box?] = [
             .environment: environmentBox(environment),
             .context: contextBox(context),
-            .capabilities: capabilitiesBox(capabilities)
+            .capabilities: capabilitiesBox(capabilities),
+            .outputs: outputsBox(outputs)
         ]
         return sectionOrder.compactMap { built[$0] ?? nil }.filter { !$0.rows.isEmpty }
     }
@@ -463,6 +503,63 @@ enum WorkspaceRailSectionPresentation {
     static func displayName(_ capability: CapabilityFacts) -> String {
         let trimmed = capability.name.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? untitledCapabilityName : trimmed
+    }
+
+    // MARK: Outputs
+
+    /// Nil when the task produced nothing (or no task is selected): the box
+    /// does not render. Up to `outputRowLimit` files, newest first, then one
+    /// row that names the rest and opens the Files shelf.
+    static func outputsBox(_ facts: OutputFacts) -> Box? {
+        var seen = Set<String>()
+        let files = facts.files.filter { !$0.path.isEmpty && seen.insert($0.path).inserted }
+        guard !files.isEmpty else { return nil }
+
+        let duplicateNames = duplicateBasenames(files.map(\.path))
+        let shown = files.prefix(outputRowLimit)
+        var rows: [Row] = shown.map { file in
+            Row(
+                kind: .output(path: file.path),
+                systemImage: file.destination.systemImage,
+                title: outputDisplayName(file.path, duplicateBasenames: duplicateNames),
+                isExpandable: false
+            )
+        }
+        let hidden = files.dropFirst(outputRowLimit)
+        if let first = hidden.first {
+            rows.append(Row(
+                kind: .outputsOverflow(hiddenCount: hidden.count, firstHiddenPath: first.path),
+                systemImage: "folder",
+                title: "\(hidden.count) more in Files",
+                tone: .link
+            ))
+        }
+
+        return Box(section: .outputs, rows: rows, collapsedSummary: outputsSummary(files))
+    }
+
+    static func outputsSummary(_ files: [OutputFile]) -> String {
+        let names = files.prefix(3).map(\.name)
+        let remaining = files.count - names.count
+        let list = remaining > 0 ? names.joined(separator: ", ") + " +\(remaining)" : names.joined(separator: ", ")
+        return countPhrase(files.count, "file", "files") + summarySeparator + list
+    }
+
+    /// Basenames that appear more than once (case-insensitive), so those rows
+    /// can lead with their parent folder.
+    static func duplicateBasenames(_ paths: [String]) -> Set<String> {
+        var counts: [String: Int] = [:]
+        for path in paths {
+            counts[lastPathComponent(path).lowercased(), default: 0] += 1
+        }
+        return Set(counts.filter { $0.value > 1 }.map(\.key))
+    }
+
+    static func outputDisplayName(_ path: String, duplicateBasenames: Set<String>) -> String {
+        let components = path.split(separator: "/").map(String.init)
+        guard let basename = components.last else { return path }
+        guard duplicateBasenames.contains(basename.lowercased()), components.count > 1 else { return basename }
+        return components[components.count - 2] + "/" + basename
     }
 
     // MARK: - Paths and counts

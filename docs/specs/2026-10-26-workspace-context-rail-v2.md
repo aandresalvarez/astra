@@ -176,14 +176,23 @@ present boxes: `Add capability…`, `Add memory`, `New routine…`, `Add
 folder…`, `Connect a server…`, `Run in a container…`. It is the one place
 that covers everything, so absent boxes cost nothing in discoverability.
 
-### Outputs (phase 2, not in the first change)
+### Outputs
 
 Claude Code and Codex both end with **Outputs** or **Sources**: the files
-the conversation produced or was given. ASTRA has the data (task artifacts and
-the Files shelf) but the rail does not use it. A fourth section listing the
-selected task's produced files, opening them in the Files shelf, is what makes
-the rail task-aware. It needs its own data feed and is proposed as separate
-work.
+the conversation produced or was given. The rail's fourth box is task-scoped
+and lists what the selected task produced, newest first, from the same owner
+the task header reads (`TaskHeaderFilesReader`: runs' file changes plus the
+task folder), minus the user's inputs and any folder.
+
+| Row | Shown when | Value / verb |
+| --- | --- | --- |
+| One per file (up to 8) | the task produced it | none; the icon is the shelf that renders it, a tap opens it there |
+| `N more in Files` | more than 8 files | a link row that opens the Files shelf on the next file |
+
+No `+`: outputs are produced, not added. No task, or no files, no box. The
+header carries a refresh control for the read, which is also re-keyed by the
+task's status and last update. Collapsed: `3 files · PLAN.md, index.html,
+results.csv`.
 
 ## Density
 
@@ -298,8 +307,18 @@ rebuild splits sections into their own files rather than editing in place.
    rail's width tokens: 300 minimum, 340 default, 380 automatic maximum, 420
    drag maximum. `Run in a container…` stays out of the add menus: the
    picker row is the way to change where tasks run.
-4. **Outputs section** (optional, phase 2): task artifacts as rows that open
-   in the Files shelf.
+4. **Outputs box.** *(implemented on this branch, stacked on PR 3)* A fourth,
+   task-scoped box, last in the order: the files the selected task produced,
+   read off the main actor by `TaskHeaderFilesReader` (the task header's
+   owner of file facts: runs' file changes plus the task folder), minus the
+   inputs the user attached and any folder. One line per file, newest first,
+   with the icon of the shelf that renders it; a tap opens it there (HTML in
+   the browser, tables in Query, the rest in Files) through
+   `onOpenGeneratedFile`. Up to eight rows, then one link row `N more in
+   Files` that opens the Files shelf on the next file. No `+`: outputs are
+   produced, not added. No task, or no files, no box. The box header carries
+   a refresh control; the read is also re-keyed by the task's status and
+   `updatedAt`. Persisted as `outputsExpanded`.
 
 Also: update `docs/design-system/lean-ui-system.md` (the card rule becomes a
 section rule; add "presence, not progress" as principle 0 and note the

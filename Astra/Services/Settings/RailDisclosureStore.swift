@@ -14,6 +14,7 @@ enum RailDisclosureStore {
         case environmentExpanded
         case contextExpanded
         case capabilitiesExpanded
+        case outputsExpanded
     }
 
     /// Toggles the v1 rail persisted and the v2 rail no longer reads: the
