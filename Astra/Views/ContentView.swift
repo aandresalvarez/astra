@@ -205,7 +205,7 @@ struct ContentView: View {
     /// Read-only forward to `RightPanelPresentationModel`. Every write goes
     /// through the model's methods (`presentRail`, `dismissRail`,
     /// `setRailPresented`) — never assign this directly.
-    private var isWorkspaceRightRailVisible: Bool {
+    var isWorkspaceRightRailVisible: Bool {
         rightPanel.isRailShown
     }
 
@@ -619,6 +619,7 @@ struct ContentView: View {
             filesShelfResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
             detailPresentation: detailPresentation,
+            screenTransitionCoordinator: screenTransitionCoordinator,
             taskQueue: runtime.taskQueue,
             browserSession: currentBrowserSession,
             isBrowserPinnedToTask: browserPinnedToTaskBinding,
@@ -1287,11 +1288,13 @@ struct ContentView: View {
             return
         }
 
+        beginRightRailTransition(isPresenting: false, source: "sidebar_reveal")
         animatePanelChange {
             setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
             rightPanel.dismissRail()
             presentation.revealAfterClearingRightSidePanel()
         }
+        screenTransitionCoordinator.stateCommitted()
     }
 
     private func handleSelectedTaskCanvasSignatureChanged() {
@@ -1311,19 +1314,23 @@ struct ContentView: View {
     private var taskReadStateService: TaskReadStateService { TaskReadStateService(modelContext: modelContext) }
 
     private func setRightRailPresented(_ isPresented: Bool) {
+        beginRightRailTransition(isPresenting: isPresented, source: "rail_toggle")
         animatePanelChange { rightPanel.setRailPresented(isPresented) }
         if isPresented {
             workspaceCanvasPreferenceService.apply(.explicitUserChoice, item: nil, for: selectedTask)
         }
+        screenTransitionCoordinator.stateCommitted()
     }
 
     private func presentRightRail(rememberShelfState: Bool = true) {
+        beginRightRailTransition(isPresenting: true, source: "rail_toggle")
         animatePanelChange {
             rightPanel.presentRail()
         }
         if rememberShelfState {
             workspaceCanvasPreferenceService.apply(.explicitUserChoice, item: nil, for: selectedTask)
         }
+        screenTransitionCoordinator.stateCommitted()
     }
 
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
@@ -2909,6 +2916,7 @@ private struct ContentDetailAreaView: View {
     let filesShelfResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
     let detailPresentation: ContentDetailPresentation
+    let screenTransitionCoordinator: ScreenTransitionCoordinator
     let taskQueue: TaskQueue
     @ObservedObject var browserSession: ShelfBrowserSession
     @Binding var isBrowserPinnedToTask: Bool
@@ -3039,6 +3047,7 @@ private struct ContentDetailAreaView: View {
                 transitionMode.animatesPanel ? panelAnimation : nil,
                 value: activeRightPanel
             )
+            .onChange(of: ScreenTransitionLayout(mode: String(describing: layoutMode), detailWidth: Double(detailProposalWidth), panelWidth: Double(dockedPanelWidth)), initial: true) { screenTransitionCoordinator.recordLayout($1) }
         }
         .background(Stanford.panelBackground)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
