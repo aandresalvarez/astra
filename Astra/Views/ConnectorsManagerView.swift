@@ -471,137 +471,137 @@ struct ConnectorEditorView: View {
                         if !unreadableCredentialKeys.isEmpty {
                             ConnectorCredentialReentrySection(keys: unreadableCredentialKeys) { reenterCredentials($0) }
                                 .id(connector.id)
-                        }
-
-                        if !connector.credentialKeys.isEmpty {
-                            VStack(spacing: 4) {
-                                // Legacy duplicate rows retain distinct UI identity. Removing
-                                // a credential removes all markers for its canonical key.
-                                ForEach(Array(connector.credentialKeys.enumerated()), id: \.offset) { idx, key in
-                                    if idx > 0 {
-                                        SubtleDivider()
-                                    }
-                                    HStack(spacing: 8) {
-                                        Text(key)
-                                            .font(Stanford.ui(13, design: .monospaced))
-                                            .fontWeight(.medium)
-                                            .frame(minWidth: 100, alignment: .leading)
-
-                                        let inKeychain = KeychainService.exists(key: key, connector: connector)
-
-                                        if showSecrets {
-                                            let value = KeychainService.load(key: key, connector: connector)
-                                                ?? (idx < connector.credentialValues.count ? connector.credentialValues[idx] : "")
-                                            Text(value.isEmpty ? "(empty)" : value)
-                                                .font(Stanford.ui(13, design: .monospaced))
-                                                .foregroundStyle(value.isEmpty ? .tertiary : .secondary)
-                                                .lineLimit(1)
-                                        } else if inKeychain, SecretEntryPresentation.isIdentifierKey(key),
-                                                  let identity = KeychainService.load(key: key, connector: connector),
-                                                  !identity.isEmpty {
-                                            // An address or login is not a secret: show it so a
-                                            // typo is visible after saving, not only while typing.
-                                            Text(identity)
-                                                .font(Stanford.ui(13, design: .monospaced))
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                                .truncationMode(.middle)
-                                        } else {
-                                            HStack(spacing: 4) {
-                                                Text(String(repeating: "\u{2022}", count: 12))
-                                                    .font(Stanford.ui(13))
-                                                    .foregroundStyle(.secondary)
-                                                // P2: the header carries the count for stored secrets;
-                                                // only flag the exceptional row that still needs a value.
-                                                if !inKeychain {
-                                                    Image(systemName: "exclamationmark.triangle")
-                                                        .font(Stanford.ui(10))
-                                                        .foregroundStyle(Stanford.poppy)
-                                                        .help("Not yet in Keychain — re-enter value")
-                                                }
-                                            }
-                                        }
-
-                                        Spacer()
-
-                                        if editingCredentialKey == key {
-                                            SecretEntryField("value", text: $replacementCredentialValue)
-                                                .font(Stanford.ui(12, design: .monospaced))
-                                                .frame(maxWidth: 260)
-                                                .onSubmit { saveCredentialReplacement(for: key) }
-
-                                            Button("Save") {
-                                                saveCredentialReplacement(for: key)
-                                            }
-                                            .font(Stanford.caption(12))
-                                            .disabled(replacementCredentialValue.isEmpty)
-
-                                            Button("Cancel") {
-                                                cancelCredentialReplacement()
-                                            }
-                                            .font(Stanford.caption(12))
-                                            .buttonStyle(.plain)
-                                            .foregroundStyle(Stanford.coolGrey)
-                                        } else {
-                                            Button(inKeychain ? "Replace" : "Set Value") {
-                                                editingCredentialKey = key
-                                                replacementCredentialValue = ""
-                                                credentialSaveError = nil
-                                                pendingCredentialSaveContext = nil
-                                            }
-                                            .font(Stanford.caption(12))
-                                            .buttonStyle(.bordered)
-                                            .controlSize(.small)
-
-                                            Button {
-                                                pendingDeletion = PendingConnectorDeletion(
-                                                    title: "Remove secret “\(key)”?",
-                                                    message: "Remove the \(key) secret from \(connectorDisplayName)? Queued tasks keep their accepted credentials until they finish.",
-                                                    confirmTitle: "Remove Secret"
-                                                ) {
-                                                    removeCredential(key)
-                                                }
-                                            } label: {
-                                                Image(systemName: "trash")
-                                                    .font(Stanford.ui(12))
-                                                    .foregroundStyle(Stanford.coolGrey)
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                    .padding(.vertical, 4)
-                                }
-                            }
-                        }
-
-                        if isAddingCredential {
-                            HStack(spacing: 6) {
-                                TextField("KEY", text: $newCredKey)
-                                    .textFieldStyle(.roundedBorder)
-                                    .font(Stanford.ui(13, design: .monospaced))
-                                    .frame(width: 140)
-                                SecretEntryField("value", text: $newCredValue)
-                                    .font(Stanford.ui(13, design: .monospaced))
-                                    .onSubmit { addCredential() }
-                                Button("Store secret") { addCredential() }
-                                    .disabled(newCredKey.trimmingCharacters(in: .whitespaces).isEmpty || newCredValue.isEmpty)
-                                Button("Cancel") {
-                                    cancelCredentialEntry()
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(Stanford.coolGrey)
-                            }
                         } else {
-                            Button {
-                                isAddingCredential = true
-                                credentialSaveError = nil
-                                pendingCredentialSaveContext = nil
-                            } label: {
-                                Label("New secret", systemImage: "plus.circle")
-                                    .font(Stanford.body(13))
+                            if !connector.credentialKeys.isEmpty {
+                                VStack(spacing: 4) {
+                                    // Legacy duplicate rows retain distinct UI identity. Removing
+                                    // a credential removes all markers for its canonical key.
+                                    ForEach(Array(connector.credentialKeys.enumerated()), id: \.offset) { idx, key in
+                                        if idx > 0 {
+                                            SubtleDivider()
+                                        }
+                                        HStack(spacing: 8) {
+                                            Text(key)
+                                                .font(Stanford.ui(13, design: .monospaced))
+                                                .fontWeight(.medium)
+                                                .frame(minWidth: 100, alignment: .leading)
+
+                                            let inKeychain = KeychainService.exists(key: key, connector: connector)
+
+                                            if showSecrets {
+                                                let value = KeychainService.load(key: key, connector: connector)
+                                                    ?? (idx < connector.credentialValues.count ? connector.credentialValues[idx] : "")
+                                                Text(value.isEmpty ? "(empty)" : value)
+                                                    .font(Stanford.ui(13, design: .monospaced))
+                                                    .foregroundStyle(value.isEmpty ? .tertiary : .secondary)
+                                                    .lineLimit(1)
+                                            } else if inKeychain, SecretEntryPresentation.isIdentifierKey(key),
+                                                      let identity = KeychainService.load(key: key, connector: connector),
+                                                      !identity.isEmpty {
+                                                // An address or login is not a secret: show it so a
+                                                // typo is visible after saving, not only while typing.
+                                                Text(identity)
+                                                    .font(Stanford.ui(13, design: .monospaced))
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                                    .truncationMode(.middle)
+                                            } else {
+                                                HStack(spacing: 4) {
+                                                    Text(String(repeating: "\u{2022}", count: 12))
+                                                        .font(Stanford.ui(13))
+                                                        .foregroundStyle(.secondary)
+                                                    // P2: the header carries the count for stored secrets;
+                                                    // only flag the exceptional row that still needs a value.
+                                                    if !inKeychain {
+                                                        Image(systemName: "exclamationmark.triangle")
+                                                            .font(Stanford.ui(10))
+                                                            .foregroundStyle(Stanford.poppy)
+                                                            .help("Not yet in Keychain — re-enter value")
+                                                    }
+                                                }
+                                            }
+
+                                            Spacer()
+
+                                            if editingCredentialKey == key {
+                                                SecretEntryField("value", text: $replacementCredentialValue)
+                                                    .font(Stanford.ui(12, design: .monospaced))
+                                                    .frame(maxWidth: 260)
+                                                    .onSubmit { saveCredentialReplacement(for: key) }
+
+                                                Button("Save") {
+                                                    saveCredentialReplacement(for: key)
+                                                }
+                                                .font(Stanford.caption(12))
+                                                .disabled(replacementCredentialValue.isEmpty)
+
+                                                Button("Cancel") {
+                                                    cancelCredentialReplacement()
+                                                }
+                                                .font(Stanford.caption(12))
+                                                .buttonStyle(.plain)
+                                                .foregroundStyle(Stanford.coolGrey)
+                                            } else {
+                                                Button(inKeychain ? "Replace" : "Set Value") {
+                                                    editingCredentialKey = key
+                                                    replacementCredentialValue = ""
+                                                    credentialSaveError = nil
+                                                    pendingCredentialSaveContext = nil
+                                                }
+                                                .font(Stanford.caption(12))
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.small)
+
+                                                Button {
+                                                    pendingDeletion = PendingConnectorDeletion(
+                                                        title: "Remove secret “\(key)”?",
+                                                        message: "Remove the \(key) secret from \(connectorDisplayName)? Queued tasks keep their accepted credentials until they finish.",
+                                                        confirmTitle: "Remove Secret"
+                                                    ) {
+                                                        removeCredential(key)
+                                                    }
+                                                } label: {
+                                                    Image(systemName: "trash")
+                                                        .font(Stanford.ui(12))
+                                                        .foregroundStyle(Stanford.coolGrey)
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+                                        }
+                                        .padding(.vertical, 4)
+                                    }
+                                }
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+
+                            if isAddingCredential {
+                                HStack(spacing: 6) {
+                                    TextField("KEY", text: $newCredKey)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(Stanford.ui(13, design: .monospaced))
+                                        .frame(width: 140)
+                                    SecretEntryField("value", text: $newCredValue)
+                                        .font(Stanford.ui(13, design: .monospaced))
+                                        .onSubmit { addCredential() }
+                                    Button("Store secret") { addCredential() }
+                                        .disabled(newCredKey.trimmingCharacters(in: .whitespaces).isEmpty || newCredValue.isEmpty)
+                                    Button("Cancel") {
+                                        cancelCredentialEntry()
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(Stanford.coolGrey)
+                                }
+                            } else {
+                                Button {
+                                    isAddingCredential = true
+                                    credentialSaveError = nil
+                                    pendingCredentialSaveContext = nil
+                                } label: {
+                                    Label("New secret", systemImage: "plus.circle")
+                                        .font(Stanford.body(13))
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
                         }
                     }
                     .padding(.vertical, 4)
@@ -1050,8 +1050,25 @@ struct ConnectorEditorView: View {
         cancelCredentialEntry()
     }
 
+    /// The form binds metadata directly to the model. Commit those normal
+    /// form edits before entering the credential transaction, whose clean-context
+    /// guard must still reject unsettled domain saves.
+    private func savePendingConnectorFormChanges() throws {
+        guard modelContext.hasChanges else { return }
+        try ConnectorCredentialEditor.requireReady(
+            try ConnectorCredentialEditor.workspaceScope(of: connector, modelContext: modelContext),
+            modelContext: modelContext)
+        guard CapabilityPersistence.saveResourceMutation(workspace: workspace ?? connector.workspace,
+            isGlobal: connector.isGlobal, modelContext: modelContext) else {
+            throw ConnectorCredentialEditor.Failure.saveFailed
+        }
+        PluginStateMirrors.exportAfterSave(workspace: workspace ?? connector.workspace,
+            accounts: [connector], modelContext: modelContext)
+    }
+
     private func storeCredential(_ value: String, key: String) -> ConnectorCredentialSaveOutcome? {
         do {
+            try savePendingConnectorFormChanges()
             let result = try ConnectorCredentialEditor.save(value, forKey: key, on: connector,
                 modelContext: modelContext, allowUserInteraction: true)
             credentialOperationError = nil
@@ -1066,6 +1083,7 @@ struct ConnectorEditorView: View {
     private func reenterCredentials(_ values: [String: String]) -> Bool {
         defer { refreshUnreadableCredentialKeys() }
         do {
+            try savePendingConnectorFormChanges()
             let failure = try ConnectorCredentialEditor.save(values, on: connector,
                 modelContext: modelContext, allowUserInteraction: true)
             // The section keeps what was typed, so its own Save is the retry.
@@ -1073,7 +1091,11 @@ struct ConnectorEditorView: View {
             pendingCredentialSaveContext = nil
             credentialRecoveryID = nil
             credentialOperationError = failure.map { presentation(for: $0.outcome, key: $0.key).message }
-            if failure == nil { testResult = nil }
+            if failure == nil {
+                testResult = nil
+                cancelCredentialReplacement()
+                cancelCredentialEntry()
+            }
             return failure == nil
         } catch { showCredentialOperationError(error); return false }
     }
@@ -1085,6 +1107,7 @@ struct ConnectorEditorView: View {
 
     private func removeCredential(_ key: String) {
         do {
+            try savePendingConnectorFormChanges()
             try ConnectorCredentialEditor.remove(key, from: connector, modelContext: modelContext)
             refreshUnreadableCredentialKeys()
             credentialOperationError = nil

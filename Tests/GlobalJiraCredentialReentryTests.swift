@@ -46,6 +46,17 @@ struct GlobalJiraCredentialReentryTests {
             #expect(!env.context.hasChanges)
             #expect(account.credentialNamespaceID == nil)
 
+            // The real form also edits ordinary account metadata. Its Save
+            // commits those edits before entering the clean credential boundary.
+            account.connectorDescription = "Edited in the account form"
+            #expect(throws: ConnectorCredentialEditor.Failure.pendingEdits) {
+                _ = try ConnectorCredentialEditor.save(["JIRA_API_TOKEN": "new-test-token", "JIRA_EMAIL": "new@example.test"],
+                    on: account, modelContext: env.context, vault: vault)
+            }
+            try #require(CapabilityPersistence.saveResourceMutation(workspace: env.workspace,
+                isGlobal: account.isGlobal, modelContext: env.context))
+            #expect(!env.context.hasChanges)
+
             let failure = try ConnectorCredentialEditor.save(["JIRA_API_TOKEN": "new-test-token", "JIRA_EMAIL": "new@example.test"],
                 on: account, modelContext: env.context, vault: vault)
             #expect(failure == nil)
@@ -54,6 +65,7 @@ struct GlobalJiraCredentialReentryTests {
             let reopened = try env.disk.reopen()
             let saved = try #require(try reopened.mainContext.fetch(FetchDescriptor<Connector>()).first { $0.id == account.id })
             #expect(saved.isGlobal && saved.originPackageID == nil)
+            #expect(saved.connectorDescription == "Edited in the account form")
             let result = await saved.testConnection(store: KeychainSecretStore(), transport: JiraPermissionTransport())
             #expect(result.0)
             #expect(result.1.contains("BROWSE_PROJECTS"))
