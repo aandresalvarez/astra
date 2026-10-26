@@ -625,7 +625,7 @@ struct TaskDecisionDockPresentation: Equatable {
             tone: .failed,
             title: overBudget ? "Budget exceeded" : "Run stopped",
             summary: overBudget
-                ? "Raise the budget and resume, or retry this task from scratch."
+                ? TaskRequestBudget.exhaustedMessage
                 : (context.failureReason ?? "The run failed. Review the output, then resume or retry."),
             metrics: metrics(context),
             details: details(context),

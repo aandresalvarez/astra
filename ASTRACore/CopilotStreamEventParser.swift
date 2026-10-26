@@ -54,6 +54,7 @@ public enum CopilotStreamEventParser {
                 parsed.append(.control(type: type))
             case .stats where isResultFrame && hasCompletion:
                 if let stats, !emittedMergedResult {
+                    if stats.0 == 0 && stats.1 == 0 { parsed.append(.usage(totalInputTokens: 0, totalOutputTokens: 0)) }
                     parsed.append(.result(
                         text: completionSummary,
                         costUSD: stats.2,
@@ -319,22 +320,33 @@ public enum CopilotStreamEventParser {
             )]
         }
 
+        if normalized == "assistant.usage" {
+            let cost = doubleValueIncludingPayload(in: object, keys: ["costUSD", "cost_usd", "total_cost_usd"])
+            let duration = intValueIncludingPayload(in: object, keys: ["duration_ms", "durationMs"])
+            let turns = intValueIncludingPayload(in: object, keys: ["turns", "num_turns", "numTurns"])
+            guard let totals = object[CopilotStreamAccounting.totalsKey] as? [String: Any],
+                  let input = totals["input"] as? Int, let output = totals["output"] as? Int else {
+                return cost != nil || duration != nil || turns != nil
+                    ? [.usageMetadata(costUSD: cost, durationMs: duration, turns: turns)]
+                    : [.control(type: "assistant.usage")]
+            }
+            return [.stats(inputTokens: input, outputTokens: output, costUSD: cost, durationMs: duration, turns: turns)]
+        }
+
         if normalized.contains("usage") || normalized.contains("stats") || normalized == "result" {
             // Copilot names its session only here, at the end of the run.
             let session: [AgentEvent] = normalized == "result"
                 ? firstStringIncludingPayload(in: object, keys: ["sessionId", "session_id"])
                     .map { [.started(sessionID: $0, model: nil)] } ?? []
                 : []
-            let input = intValueIncludingPayload(in: object, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"])
-                ?? nestedIntIncludingPayload(object, path: ["usage", "input_tokens"])
-                ?? nestedIntIncludingPayload(object, path: ["usage", "inputTokens"])
-                ?? nestedIntIncludingPayload(object, path: ["usage", "prompt_tokens"])
-                ?? 0
-            let output = intValueIncludingPayload(in: object, keys: ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"])
-                ?? nestedIntIncludingPayload(object, path: ["usage", "output_tokens"])
-                ?? nestedIntIncludingPayload(object, path: ["usage", "outputTokens"])
-                ?? nestedIntIncludingPayload(object, path: ["usage", "completion_tokens"])
-                ?? 0
+            let input = tokenCountIncludingPayload(in: object, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"])
+                ?? nestedTokenCountIncludingPayload(object, path: ["usage", "input_tokens"])
+                ?? nestedTokenCountIncludingPayload(object, path: ["usage", "inputTokens"])
+                ?? nestedTokenCountIncludingPayload(object, path: ["usage", "prompt_tokens"])
+            let output = tokenCountIncludingPayload(in: object, keys: ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"])
+                ?? nestedTokenCountIncludingPayload(object, path: ["usage", "output_tokens"])
+                ?? nestedTokenCountIncludingPayload(object, path: ["usage", "outputTokens"])
+                ?? nestedTokenCountIncludingPayload(object, path: ["usage", "completion_tokens"])
             let cost = doubleValueIncludingPayload(in: object, keys: ["costUSD", "cost_usd", "total_cost_usd"])
                 ?? nestedDoubleIncludingPayload(object, path: ["usage", "costUSD"])
                 ?? nestedDoubleIncludingPayload(object, path: ["usage", "cost_usd"])
@@ -342,8 +354,10 @@ public enum CopilotStreamEventParser {
             let turns = intValueIncludingPayload(in: object, keys: ["turns", "num_turns", "numTurns"])
 
             var events: [AgentEvent] = []
-            if input > 0 || output > 0 || cost != nil || duration != nil || turns != nil {
-                events.append(.stats(inputTokens: input, outputTokens: output, costUSD: cost, durationMs: duration, turns: turns))
+            if input != nil || output != nil {
+                events.append(.stats(inputTokens: input ?? 0, outputTokens: output ?? 0, costUSD: cost, durationMs: duration, turns: turns))
+            } else if cost != nil || duration != nil || turns != nil {
+                events.append(.usageMetadata(costUSD: cost, durationMs: duration, turns: turns))
             }
             if let text = textValue(in: object), !text.isEmpty {
                 events.append(.completed(summary: text))
@@ -386,6 +400,8 @@ public enum CopilotStreamEventParser {
             return .toolResult(toolId: id, content: content, isError: isError)
         case .permissionRequested(let tool, let reason):
             return .permissionDenied(tool: tool, reason: reason)
+        case .usageMetadata:
+            return .control(type: "usage.metadata")
         case .stats(let input, let output, _, _, _):
             return .usage(totalInputTokens: input, totalOutputTokens: output)
         case .astraProtocol(let event):
@@ -552,41 +568,46 @@ public enum CopilotStreamEventParser {
         var output = 0
         var turns = 0
         var cost: Double?
+        var hasTokenCounts = false
         for value in modelMetrics.values {
             guard let entry = value as? [String: Any] else { continue }
             let usage = entry["usage"] as? [String: Any]
-            input += tokenCount(
+            let uncachedInput = tokenCount(
                 in: usage,
                 fallback: entry,
                 keys: ["inputTokens", "input_tokens", "promptTokens", "prompt_tokens"]
             )
-            input += tokenCount(
+            let cacheReadInput = tokenCount(
                 in: usage,
                 fallback: entry,
                 keys: ["cacheReadTokens", "cacheReadInputTokens", "cache_read_input_tokens"]
             )
-            input += tokenCount(
+            let cacheWriteInput = tokenCount(
                 in: usage,
                 fallback: entry,
                 keys: ["cacheWriteTokens", "cacheCreationInputTokens", "cache_creation_input_tokens"]
             )
-            output += tokenCount(
+            let reportedOutput = tokenCount(
                 in: usage,
                 fallback: entry,
                 keys: ["outputTokens", "output_tokens", "completionTokens", "completion_tokens"]
             )
-            if cost == nil {
-                cost = usage.flatMap { doubleValue(in: $0, keys: ["costUSD", "cost_usd", "total_cost_usd"]) }
-                    ?? doubleValue(in: entry, keys: ["costUSD", "cost_usd", "total_cost_usd"])
+            hasTokenCounts = hasTokenCounts || [uncachedInput, cacheReadInput, cacheWriteInput, reportedOutput].contains { $0 != nil }
+            input = ProviderUsageArithmetic.sum([input, uncachedInput ?? 0, cacheReadInput ?? 0, cacheWriteInput ?? 0])
+            output = ProviderUsageArithmetic.adding(output, reportedOutput ?? 0)
+            if let modelCost = usage.flatMap({ doubleValue(in: $0, keys: ["costUSD", "cost_usd", "total_cost_usd"]) })
+                ?? doubleValue(in: entry, keys: ["costUSD", "cost_usd", "total_cost_usd"]), modelCost.isFinite, modelCost >= 0 {
+                cost = min(Double.greatestFiniteMagnitude, (cost ?? 0) + modelCost)
             }
             if let requests = entry["requests"] as? [String: Any] {
-                turns += intValue(in: requests, keys: ["count"]) ?? 0
+                turns = ProviderUsageArithmetic.adding(turns, intValue(in: requests, keys: ["count"]) ?? 0)
             }
         }
 
         let duration = intValue(in: payload, keys: ["totalApiDurationMs", "durationMs", "duration_ms"])
-        guard input > 0 || output > 0 || cost != nil || duration != nil || turns > 0 else {
-            return nil
+        guard hasTokenCounts else {
+            return cost != nil || duration != nil || turns > 0
+                ? [.usageMetadata(costUSD: cost, durationMs: duration, turns: turns > 0 ? turns : nil)] : nil
         }
         return [.stats(
             inputTokens: input,
@@ -597,8 +618,17 @@ public enum CopilotStreamEventParser {
         )]
     }
 
-    private static func tokenCount(in primary: [String: Any]?, fallback: [String: Any], keys: [String]) -> Int {
-        primary.flatMap { intValue(in: $0, keys: keys) } ?? intValue(in: fallback, keys: keys) ?? 0
+    private static func tokenCount(in primary: [String: Any]?, fallback: [String: Any], keys: [String]) -> Int? {
+        primary.flatMap { tokenCount(in: $0, keys: keys) } ?? tokenCount(in: fallback, keys: keys)
+    }
+
+    private static func tokenCount(in object: [String: Any], keys: [String]) -> Int? {
+        keys.lazy.compactMap { tokenCount(object[$0]) }.first
+    }
+
+    private static func tokenCount(_ value: Any?) -> Int? {
+        if let string = value as? String, let count = Int(string), count >= 0 { return count }
+        return ProviderUsageArithmetic.reportedCount(value)
     }
 
     private static func nestedContentText(_ value: Any?) -> String? {
@@ -724,6 +754,11 @@ public enum CopilotStreamEventParser {
             ?? payloadObject(in: object).flatMap { intValue(in: $0, keys: keys) }
     }
 
+    private static func tokenCountIncludingPayload(in object: [String: Any], keys: [String]) -> Int? {
+        tokenCount(in: object, keys: keys)
+            ?? payloadObject(in: object).flatMap { tokenCount(in: $0, keys: keys) }
+    }
+
     private static func doubleValueIncludingPayload(in object: [String: Any], keys: [String]) -> Double? {
         doubleValue(in: object, keys: keys)
             ?? payloadObject(in: object).flatMap { doubleValue(in: $0, keys: keys) }
@@ -762,9 +797,9 @@ public enum CopilotStreamEventParser {
         return nil
     }
 
-    private static func nestedIntIncludingPayload(_ object: [String: Any], path: [String]) -> Int? {
-        nestedInt(object, path: path)
-            ?? payloadObject(in: object).flatMap { nestedInt($0, path: path) }
+    private static func nestedTokenCountIncludingPayload(_ object: [String: Any], path: [String]) -> Int? {
+        tokenCount(nestedValue(object, path: path))
+            ?? payloadObject(in: object).flatMap { tokenCount(nestedValue($0, path: path)) }
     }
 
     private static func nestedDoubleIncludingPayload(_ object: [String: Any], path: [String]) -> Double? {
@@ -847,7 +882,7 @@ public enum CopilotStreamEventParser {
     private static func intValue(in object: [String: Any], keys: [String]) -> Int? {
         for key in keys {
             if let value = object[key] as? Int { return value }
-            if let value = object[key] as? Double { return Int(value) }
+            if let value = object[key] as? Double, let integer = Int(exactly: value) { return integer }
             if let value = object[key] as? String, let int = Int(value) { return int }
         }
         return nil
@@ -869,14 +904,6 @@ public enum CopilotStreamEventParser {
     private static func nestedStringIncludingPayload(_ object: [String: Any], path: [String]) -> String? {
         nestedString(object, path: path)
             ?? payloadObject(in: object).flatMap { nestedString($0, path: path) }
-    }
-
-    private static func nestedInt(_ object: [String: Any], path: [String]) -> Int? {
-        let value = nestedValue(object, path: path)
-        if let int = value as? Int { return int }
-        if let double = value as? Double { return Int(double) }
-        if let string = value as? String { return Int(string) }
-        return nil
     }
 
     private static func nestedDouble(_ object: [String: Any], path: [String]) -> Double? {

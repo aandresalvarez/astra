@@ -246,11 +246,14 @@ public enum CodexStreamEventParser {
         let usage = object["usage"] as? [String: Any] ?? object
         // Codex's input_tokens already include cached_input_tokens (its own
         // total_tokens is input plus output), so the cached count is not added.
-        let input = (int(in: usage, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"]) ?? 0)
-            + (int(in: usage, keys: ["cache_read_input_tokens", "cacheReadInputTokens", "cacheReadTokens"]) ?? 0)
-            + (int(in: usage, keys: ["cache_creation_input_tokens", "cacheCreationInputTokens", "cacheWriteTokens"]) ?? 0)
+        let input = ProviderUsageArithmetic.sum([
+            int(in: usage, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"]) ?? 0,
+            int(in: usage, keys: ["cache_read_input_tokens", "cacheReadInputTokens", "cacheReadTokens"]) ?? 0,
+            int(in: usage, keys: ["cache_creation_input_tokens", "cacheCreationInputTokens", "cacheWriteTokens"]) ?? 0
+        ])
         let output = int(in: usage, keys: ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"]) ?? 0
-        guard input > 0 || output > 0 else { return nil }
+        let tokenKeys = ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens", "output_tokens", "outputTokens", "completion_tokens", "completionTokens"]
+        guard input > 0 || output > 0 || tokenKeys.contains(where: { int(in: usage, keys: [$0]) != nil }) else { return nil }
         return .stats(inputTokens: input, outputTokens: output, costUSD: nil, durationMs: nil, turns: nil)
     }
 
@@ -284,6 +287,8 @@ public enum CodexStreamEventParser {
             return .toolResult(toolId: id, content: content, isError: isError)
         case .permissionRequested(let tool, let reason):
             return .permissionDenied(tool: tool, reason: reason)
+        case .usageMetadata:
+            return .control(type: "usage.metadata")
         case .stats(let input, let output, let cost, let duration, let turns):
             if cost == nil, duration == nil, turns == nil {
                 return .usage(totalInputTokens: input, totalOutputTokens: output)

@@ -39,16 +39,8 @@ extension CodexSessionUsageCorrectionService {
     }
 
     nonisolated static func report(fromStatsPayload payload: String) -> Report? {
-        guard payload.hasPrefix("tokens: "),
-              let open = payload.range(of: " (in: "),
-              open.lowerBound > payload.index(payload.startIndex, offsetBy: 8),
-              let separator = payload.range(of: ", out: ", range: open.upperBound..<payload.endIndex),
-              let close = payload.range(of: ")", range: separator.upperBound..<payload.endIndex),
-              let total = Int(payload[payload.index(payload.startIndex, offsetBy: 8)..<open.lowerBound]),
-              let input = Int(payload[open.upperBound..<separator.lowerBound]),
-              let output = Int(payload[separator.upperBound..<close.lowerBound]),
-              let calculated = sum(input, output), total == calculated else { return nil }
-        return Report(input: input, output: output)
+        guard let report = ProviderUsageEvidence.Report(payload: payload) else { return nil }
+        return Report(input: report.input, output: report.output)
     }
 
     @MainActor

@@ -1545,7 +1545,8 @@ struct AgentRuntimeBudgetPolicyTests {
             run: run,
             modelContext: context,
             phase: "run",
-            budgetEnforcementMode: .warning
+            budgetEnforcementMode: .warning,
+            budget: AgentRuntimeBudgetSnapshot(task: task)
         )
 
         #expect(task.events.contains { $0.type == "budget.warning" && $0.run?.id == run.id })
@@ -1567,7 +1568,8 @@ struct AgentRuntimeBudgetPolicyTests {
             run: run,
             modelContext: context,
             phase: "run",
-            budgetEnforcementMode: .warning
+            budgetEnforcementMode: .warning,
+            budget: AgentRuntimeBudgetSnapshot(task: task)
         )
 
         #expect(!task.events.contains { $0.type == "budget.warning" })

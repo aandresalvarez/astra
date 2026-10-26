@@ -101,6 +101,12 @@ enum RuntimeProviderFrameEvidence {
             let state = step["state"] as? String
             switch step["step_type"] as? String {
             case "user_input": return state == "DONE" ? .activity : .uncertain
+            case "system_message":
+                // Native continuation can insert a completed context update.
+                // Only the captured metadata shape is harmless; unfamiliar
+                // fields or unfinished steps still preserve uncertainty.
+                let keys: Set<String> = ["conversation_id", "step_index", "state", "step_type", "duration_seconds"]
+                return state == "DONE" && Set(step.keys).isSubset(of: keys) ? .bookkeeping : .uncertain
             case "agent_response": return state == "ACTIVE" || state == "DONE" ? .activity : .uncertain
             default: return .uncertain
             }

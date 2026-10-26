@@ -200,6 +200,8 @@ public enum AgentEvent: Sendable, Equatable {
     )
     case permissionRequested(tool: String, reason: String)
     case stats(inputTokens: Int, outputTokens: Int, costUSD: Double?, durationMs: Int?, turns: Int?)
+    /// Billing/timing without a token report must not prove zero consumption.
+    case usageMetadata(costUSD: Double?, durationMs: Int?, turns: Int?)
     case astraProtocol(AstraRunProtocolParsedEvent)
     case completed(summary: String?)
     case failed(message: String)

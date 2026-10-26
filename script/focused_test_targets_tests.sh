@@ -67,7 +67,7 @@ assert_targets "CodexSessionUsageCorrection|CumulativeSessionUsage|ProviderSessi
 assert_targets "AppSemanticFitnessTests" \
   "Tests/AppSemanticFitnessTests.swift"
 
-assert_targets $'RuntimeSupervision\nProcessMonitorTests' \
+assert_targets $'RuntimeSupervision\nProcessMonitorTests\nClaudeSessionUsageAccounting|claudeSessionSnapshotsAcrossRequests|RuntimeUsage|requestBudget|CumulativeSessionUsage|ProviderSessionUsageEpoch|CopilotSessionDiscovery|TaskThreadHistory|TaskThreadSnapshot|AntigravityStreamEventParser|OpenCodeStreamAccounting' \
   "Astra/Services/Runtime/RuntimeSupervisionSession.swift" \
   "Astra/Services/Runtime/AgentProcessSupport.swift" \
   "Tests/RuntimeSupervisionWorkerTests.swift"
@@ -166,7 +166,7 @@ assert_targets $'TaskAttachmentFilesReaderTests\nComposerAttachmentsTests' \
   "Astra/Services/Tasks/TaskAttachmentFilesReader.swift" \
   "Tests/TaskAttachmentFilesReaderTests.swift"
 
-assert_targets $'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode\nRuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nCopilotPostFailureHomeInspectionTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
+assert_targets $'ClaudeSessionUsageAccounting|claudeSessionSnapshotsAcrossRequests|RuntimeUsage|requestBudget|CumulativeSessionUsage|ProviderSessionUsageEpoch|CopilotSessionDiscovery|TaskThreadHistory|TaskThreadSnapshot|AntigravityStreamEventParser|OpenCodeStreamAccounting\nRuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode\nRuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nCopilotPostFailureHomeInspectionTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
   "Astra/Services/Runtime/AgentRuntimeWorker.swift" \
   "Tests/HeadlessChatProcessScenarioTests.swift" \
   "Astra/Services/Diagnostics/AgentRuntimeDiagnostics.swift" \
@@ -236,7 +236,7 @@ assert_targets "OrphanedV12StoreMigratorTests" \
   "Astra/Services/Persistence/OrphanedV12StoreMigrator.swift" \
   "Tests/OrphanedV12StoreMigratorTests.swift"
 
-assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nAgentExecutionScopedProcessTests\nRuntimeRecovery\nAgentUtilityRuntimeTests\nProcessMonitorTests\nRuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode' \
+assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nAgentExecutionScopedProcessTests\nRuntimeRecovery\nAgentUtilityRuntimeTests\nProcessMonitorTests\nClaudeSessionUsageAccounting|claudeSessionSnapshotsAcrossRequests|RuntimeUsage|requestBudget|CumulativeSessionUsage|ProviderSessionUsageEpoch|CopilotSessionDiscovery|TaskThreadHistory|TaskThreadSnapshot|AntigravityStreamEventParser|OpenCodeStreamAccounting\nRuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode' \
   "Astra/Services/Runtime/AgentProcessPipeReader.swift" \
   "Astra/Services/Runtime/AgentExecutionScopedProcess.swift" \
   "Tests/AgentExecutionScopedProcessTests.swift" \
@@ -263,7 +263,11 @@ for path in \
   Astra/Services/Runtime/CodexCLIRuntime.swift \
   Tests/CodexCLIRuntimeTests.swift \
   Tests/CodexFileChangeProgressTests.swift; do
-  assert_targets $'CodexCLIRuntimeTests\nProviderMessageIdentityTests\nAgentEventRecorderTests\nProviderTranscriptConformanceTests\nRuntimeProgressClassificationTests\nWatchdogEscalationTests\nCodexFileChangeProgressTests' "$path"
+  expected=$'CodexCLIRuntimeTests\nProviderMessageIdentityTests\nAgentEventRecorderTests\nProviderTranscriptConformanceTests\nRuntimeProgressClassificationTests\nWatchdogEscalationTests\nCodexFileChangeProgressTests'
+  if [[ "$path" == "ASTRACore/CodexStreamEventParser.swift" ]]; then
+    expected=$'ClaudeSessionUsageAccounting|claudeSessionSnapshotsAcrossRequests|RuntimeUsage|requestBudget|CumulativeSessionUsage|ProviderSessionUsageEpoch|CopilotSessionDiscovery|TaskThreadHistory|TaskThreadSnapshot|AntigravityStreamEventParser|OpenCodeStreamAccounting\n'"$expected"
+  fi
+  assert_targets "$expected" "$path"
 done
 
 assert_targets $'TaskTextOnlyDeliverableTests\nTaskDeliverableExpectationTests\nDeliverableExpectationCoverageTests\nTaskDeliverableVerificationServiceTests\nTaskDeliverableFollowUpTests\nTaskExecutionResourceClaimResolverTests' \
@@ -367,7 +371,20 @@ assert_targets 'CapabilityInstallerTests|CapabilityResolutionInputsTests|PluginA
   'Tests/RoutineSkillSelectionTests.swift'
 
 # Completion/accounting safety must run in the required focused CI lane.
-assert_targets 'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode' \
+assert_targets $'ClaudeSessionUsageAccounting|claudeSessionSnapshotsAcrossRequests|RuntimeUsage|requestBudget|CumulativeSessionUsage|ProviderSessionUsageEpoch|CopilotSessionDiscovery|TaskThreadHistory|TaskThreadSnapshot|AntigravityStreamEventParser|OpenCodeStreamAccounting\nRuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode' \
   "ASTRACore/OpenCodeStreamAccounting.swift" \
   "Tests/RuntimeProviderStreamContractTests.swift" \
   "Tests/Fixtures/ProviderStreams/claude/recovery-captured-20261024.jsonl"
+
+assert_targets "ClaudeSessionUsageAccounting|claudeSessionSnapshotsAcrossRequests|RuntimeUsage|requestBudget|CumulativeSessionUsage|ProviderSessionUsageEpoch|CopilotSessionDiscovery|TaskThreadHistory|TaskThreadSnapshot|AntigravityStreamEventParser|OpenCodeStreamAccounting" \
+  "ASTRACore/ClaudeSessionUsageSnapshot.swift" \
+  "Astra/Services/Tasks/ClaudeSessionUsageEvidence.swift" \
+  "Tests/ClaudeSessionUsageAccountingTests.swift" \
+  "ASTRACore/ClaudeStreamAccounting.swift" \
+  "ASTRACore/CopilotStreamAccounting.swift" \
+  "Astra/Models/TaskRequestBudget.swift" \
+  "Tests/RuntimeUsageStreamContractTests.swift"
+
+assert_targets "NativeResumeEmptyTurnTests|RuntimeUsage" \
+  "Astra/Services/Runtime/NativeResumeEmptyTurnGate.swift" \
+  "Tests/NativeResumeEmptyTurnTests.swift"

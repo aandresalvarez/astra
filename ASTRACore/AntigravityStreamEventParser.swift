@@ -53,7 +53,11 @@ public enum AntigravityStreamEventParser {
         // event by event, so the monitor sees a single unambiguous end of run
         // carrying the usage that rode with it.
         if let terminal = terminalParsedEvent(from: events) {
-            return [terminal]
+            let zeroReport = events.compactMap { event -> ParsedEvent? in
+                if case .stats(0, 0, _, _, _) = event { return .usage(totalInputTokens: 0, totalOutputTokens: 0) }
+                return nil
+            }
+            return zeroReport + [terminal]
         }
         return events.compactMap(parsedEvent(from:))
     }
@@ -141,20 +145,23 @@ public enum AntigravityStreamEventParser {
 
     private static func usageEvent(in result: [String: Any]) -> AgentEvent? {
         let usage = result["usage"] as? [String: Any] ?? [:]
+        let input = ProviderUsageArithmetic.reportedCount(usage["input_tokens"])
+        let output = ProviderUsageArithmetic.reportedCount(usage["output_tokens"])
+        let duration = double(in: result, keys: ["duration_seconds"]).flatMap { Int(exactly: ($0 * 1000).rounded(.towardZero)) }
+        let turns = int(in: result, keys: ["num_turns"])
+        guard input != nil || output != nil else {
+            return duration != nil || turns != nil
+                ? .usageMetadata(costUSD: nil, durationMs: duration, turns: turns) : nil
+        }
         // `input_tokens` already counts cached reads: the captured frame
         // reports input 20,532 and output 1,339 against a `total_tokens` of
         // 21,871 exactly, with 7,296 of that input cached. Adding the cached
         // figure would inflate persisted usage and push cache-heavy runs over
         // a hard token budget they never actually spent.
-        let input = int(in: usage, keys: ["input_tokens"]) ?? 0
         // `thinking_tokens` is a subset of `output_tokens`, not an addition.
-        let output = int(in: usage, keys: ["output_tokens"]) ?? 0
-        let duration = double(in: result, keys: ["duration_seconds"]).map { Int($0 * 1000) }
-        let turns = int(in: result, keys: ["num_turns"])
-        guard input > 0 || output > 0 || duration != nil || turns != nil else { return nil }
         // Antigravity bills through a subscription, so there is no per-run cost
         // to report.
-        return .stats(inputTokens: input, outputTokens: output, costUSD: nil, durationMs: duration, turns: turns)
+        return .stats(inputTokens: input ?? 0, outputTokens: output ?? 0, costUSD: nil, durationMs: duration, turns: turns)
     }
 
     // MARK: - ParsedEvent mapping
@@ -183,11 +190,17 @@ public enum AntigravityStreamEventParser {
         var duration: Int?
         var turns: Int?
         for event in events {
-            if case .stats(let statsInput, let statsOutput, _, let statsDuration, let statsTurns) = event {
+            switch event {
+            case .stats(let statsInput, let statsOutput, _, let statsDuration, let statsTurns):
                 input = statsInput
                 output = statsOutput
                 duration = statsDuration
                 turns = statsTurns
+            case .usageMetadata(_, let metadataDuration, let metadataTurns):
+                duration = metadataDuration
+                turns = metadataTurns
+            default:
+                continue
             }
         }
 
@@ -219,6 +232,8 @@ public enum AntigravityStreamEventParser {
             return .toolUse(name: name, id: id, input: inputSummary.map { ["summary": $0] })
         case .toolResult(let id, let content, let isError):
             return .toolResult(toolId: id, content: content, isError: isError)
+        case .usageMetadata:
+            return .control(type: "usage.metadata")
         case .stats(let input, let output, _, _, _):
             return .usage(totalInputTokens: input, totalOutputTokens: output)
         case .completed(let summary):

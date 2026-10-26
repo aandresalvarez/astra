@@ -230,7 +230,15 @@ public final class AgentTask {
         unreadAt = nil
     }
 
+    public var latestRequestBudget: TaskRequestBudget? {
+        runs.max(by: TaskRun.isChronologicallyOrdered).map { TaskRequestBudget(run: $0, task: self) }
+    }
+
     public var budgetProgress: Double {
+        if let budget = latestRequestBudget {
+            return budget.progress
+        }
+        // Legacy imported summaries may have no retained run history.
         guard tokenBudget > 0 else { return 0 }
         return min(1.0, max(0, Double(tokensUsed) / Double(tokenBudget)))
     }

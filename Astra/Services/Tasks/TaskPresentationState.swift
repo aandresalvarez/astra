@@ -147,10 +147,10 @@ enum TaskPresentationState {
                 reviewLabel: "Needs review",
                 composerLabel: "Needs review",
                 composerIcon: "speedometer",
-                composerHelp: "The run hit the token budget. Raise the budget, resume, retry, or close the task.",
+                composerHelp: TaskRequestBudget.exhaustedMessage,
                 tone: .failed,
                 decisionTitle: "Budget hit",
-                decisionDetail: "Raise the budget and resume, retry this task from scratch, or close it."
+                decisionDetail: TaskRequestBudget.exhaustedMessage
             )
         case .cancelled:
             return TaskReviewPresentation(

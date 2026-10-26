@@ -26,6 +26,7 @@ struct UsageDashboardSummary: Sendable, Equatable {
         let tokensUsed: Int
         let costUSD: Double
         let budgetProgress: Double
+        var requestUsageReconciliationPending: Bool = false
     }
 
     let tasks: [TaskRow]
@@ -49,8 +50,10 @@ struct UsageDashboardSummary: Sendable, Equatable {
                 fields: ["filter": timeFilter.rawValue.replacingOccurrences(of: " ", with: "_"), "isolation": "background"])
         }
         let rows = try context.fetch(tasks).map { task in
-            TaskRow(id: task.id, title: task.title, status: task.status, tokensUsed: task.tokensUsed,
-                    costUSD: task.costUSD, budgetProgress: task.budgetProgress)
+            let budget = task.latestRequestBudget
+            return TaskRow(id: task.id, title: task.title, status: task.status, tokensUsed: task.tokensUsed,
+                    costUSD: task.costUSD, budgetProgress: budget?.progress ?? task.budgetProgress,
+                    requestUsageReconciliationPending: budget?.reconciliationPending ?? false)
         }
         return Self(tasks: rows, totalTokens: rows.reduce(0) { $0 + $1.tokensUsed },
                     totalCost: rows.reduce(0) { $0 + $1.costUSD },

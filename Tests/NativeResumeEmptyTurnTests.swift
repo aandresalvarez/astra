@@ -55,6 +55,7 @@ struct NativeResumeEmptyTurnTests {
         let held: [AgentEvent] = [
             .control(type: "x"), .started(sessionID: "s", model: nil), .thinking(text: "t"),
             .stats(inputTokens: 1, outputTokens: 1, costUSD: nil, durationMs: nil, turns: nil),
+            .usageMetadata(costUSD: 0.5, durationMs: 5, turns: 1),
             .completed(summary: nil), .completed(summary: "  "),
             .unknown(provider: "cursor", type: "thinking", raw: "{}")
         ]
@@ -385,6 +386,64 @@ struct NativeResumeEmptyTurnTests {
             Issue.record("Expected preserved cumulative usage"); return
         }
         #expect(largeInput == Int.max && largeOutput == Int.max)
+    }
+
+    @Test("Discarded and fresh Cursor attempts preserve independent cost and token reports")
+    func metadataCarryPreservesUsagePresence() throws {
+        func result(hasTokens: Bool, input: Int, output: Int, cost: Double) -> String {
+            let usage = hasTokens ? #", "usage":{"input_tokens":\#(input),"output_tokens":\#(output)}"# : ""
+            return #"{"type":"result","result":"","total_cost_usd":\#(cost)\#(usage)}"#
+        }
+        for (firstHasTokens, secondHasTokens) in [(false, true), (true, false), (false, false)] {
+            let carry = DiscardedAttemptUsage()
+            carry.record(from: CursorStreamEventParser.parseAgentEvents(
+                line: result(hasTokens: firstHasTokens, input: 100, output: 10, cost: 0.5)))
+            let next = CursorStreamEventParser.parseAgentEvents(
+                line: result(hasTokens: secondHasTokens, input: 50, output: 5, cost: 0.25))
+            let events = carry.apply(to: next.map { .agent($0) }) + carry.unappliedEvents()
+            #expect(carry.unappliedEvents().isEmpty)
+
+            let h = try HeadlessChatHarness()
+            defer { h.cleanup() }
+            let task = h.makeTask(runtime: .cursorCLI, goal: "Metadata carry", model: "test")
+            let run = TaskRun(task: task); h.context.insert(run)
+            for case .agent(let event) in events {
+                AgentEventRecorder.recordCursorEvent(event, to: task, run: run, modelContext: h.context,
+                    recordingMode: .followUp)
+            }
+            let expectedTokens = (firstHasTokens ? 110 : 0) + (secondHasTokens ? 55 : 0)
+            #expect(run.tokensUsed == expectedTokens && task.tokensUsed == expectedTokens)
+            #expect(run.costUSD == 0.75 && task.costUSD == 0.75)
+            #expect(ProviderUsageEvidence.hasReport(run: run, task: task) == (firstHasTokens || secondHasTokens))
+        }
+    }
+
+    @Test("Separate final billing retains earlier tokens and does not add repeated cumulative costs")
+    func separateMetadataRetainsFinalCost() throws {
+        let carry = DiscardedAttemptUsage()
+        carry.record(from: [
+            .stats(inputTokens: 100, outputTokens: 10, costUSD: 0.25, durationMs: nil, turns: nil),
+            .usageMetadata(costUSD: 0.5, durationMs: 7, turns: 1),
+            .usageMetadata(costUSD: nil, durationMs: 8, turns: 1)
+        ])
+        let metadata = carry.apply(to: [.agent(.usageMetadata(costUSD: 0.25, durationMs: 2, turns: 1))])
+        #expect(metadata.first?.agentEvent == .usageMetadata(costUSD: 0.75, durationMs: 2, turns: 1))
+        let stats = carry.apply(to: [.agent(.stats(inputTokens: 50, outputTokens: 5, costUSD: 0.25, durationMs: 2, turns: 1))])
+        #expect(stats.first?.agentEvent == .stats(inputTokens: 150, outputTokens: 15, costUSD: 0.75, durationMs: 2, turns: 1))
+        #expect(carry.unappliedEvents().isEmpty)
+    }
+
+    @Test("Unapplied billing remains metadata while an explicit zero remains a token report")
+    func standaloneMetadataDoesNotInventZeroUsage() {
+        let metadata = DiscardedAttemptUsage()
+        metadata.record(from: [.usageMetadata(costUSD: 0.5, durationMs: 7, turns: 1)])
+        #expect(metadata.unappliedEvents().first?.agentEvent == .usageMetadata(costUSD: 0.5, durationMs: nil, turns: nil))
+        #expect(metadata.unappliedEvents().isEmpty)
+
+        let zero = DiscardedAttemptUsage()
+        zero.record(from: [.stats(inputTokens: 0, outputTokens: 0, costUSD: nil, durationMs: nil, turns: nil)])
+        #expect(zero.unappliedEvents().first?.agentEvent == .stats(inputTokens: 0, outputTokens: 0, costUSD: nil, durationMs: nil, turns: nil))
+        #expect(zero.unappliedEvents().isEmpty)
     }
 
     @Test("The token ceiling shrinks by what an earlier attempt spent; unlimited and malformed budgets are left alone")

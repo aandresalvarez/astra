@@ -336,9 +336,10 @@ final class AgentRuntimeWorker {
             return
         }
         let request = turnRequestID.flatMap { try? TaskTurnRequestRepository.request(id: $0, in: modelContext) }
-        let newUserTurn = RuntimeExecutionAdmission.resolve(request: request, task: task).isNewUserTurn
+        let admission = RuntimeExecutionAdmission.resolve(request: request, task: task)
         guard let executionOwner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
-            maxRunSeconds: maxRunSeconds, newUserTurn: newUserTurn, launchTask: launchTask,
+            maxRunSeconds: maxRunSeconds, newUserTurn: admission.isNewUserTurn,
+            newUserRequest: admission == .userInstruction, launchTask: launchTask,
             resourceClaims: executionPolicy.admittedResourceClaims) else { return }
         currentExecutionOwner = executionOwner
         defer { RemoteWorkspaceJobLaunchPolicy.finish(taskID: executionOwner.record.taskID); executionOwner.finish(); currentExecutionOwner = nil }
@@ -1014,6 +1015,9 @@ final class AgentRuntimeWorker {
         let discardedUsage = DiscardedAttemptUsage()
         let sessionUsageBaseline = nativeContinuationSessionID == nil ? .zero
             : ProviderSessionUsageEpoch.baseline(for: run, in: task)
+        if sessionUsageBaseline.reconciliationPending {
+            ClaudeSessionUsageEvidence.markUnconfirmed(task: task, run: run, context: modelContext)
+        }
         let persistRecordedEvent: (AgentRuntimeRecordedEvent) -> Void = { event in
             pendingEvents.add { [weak self] in
                 guard self != nil, !wait.retired else { return }
@@ -1036,6 +1040,12 @@ final class AgentRuntimeWorker {
             PerformanceSignposts.processStreamLine {
                 streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
                 streamDebugCapture?.recordLine(line, parsesJSONLines: parsesJSONLines)
+                if selectedRuntime == .claudeCode, let snapshot = ClaudeSessionUsageSnapshot(line: line) {
+                    pendingEvents.add { [weak self] in
+                        guard self != nil, !wait.retired else { return }
+                        ClaudeSessionUsageEvidence.record(snapshot, task: task, run: run, context: modelContext)
+                    }
+                }
                 let parsedBatch = PerformanceSignposts.parseProviderStream {
                     runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: parsesJSONLines)
                 }
@@ -1047,24 +1057,7 @@ final class AgentRuntimeWorker {
                 let emittedBatch = AgentRuntimeStreamEventBatch(events: emittedEvents)
                 emittedBatch.recordEmitted(to: streamTelemetry)
                 emittedBatch.recordEmitted(to: streamDebugCapture)
-                for filtered in emittedEvents {
-                    pendingEvents.add { [weak self] in
-                        guard self != nil, !wait.retired else { return }
-                        PerformanceSignposts.persistProviderEvent {
-                            runtimeAdapter.recordWorkerStreamEvent(
-                                filtered,
-                                mode: recordingMode,
-                                task: task,
-                                run: run,
-                                modelContext: modelContext,
-                                recordingState: recordingState
-                            )
-                        }
-                        if let parsed = runtimeAdapter.callbackEvent(from: filtered) {
-                            onEvent(parsed)
-                        }
-                    }
-                }
+                for filtered in emittedEvents { persistRecordedEvent(filtered) }
             }
         }
         // A resumed turn on a runtime that sometimes answers with reasoning only is held
@@ -1086,7 +1079,7 @@ final class AgentRuntimeWorker {
             attemptPolicy.recoveryAllowance = executionOwner.record.limits
             attemptPolicy.providerTurnsAlreadyUsed = priorTurns + recoveryTurnsSpent
             attemptPolicy.providerTokensAlreadyUsed = RuntimeUsageArithmetic.adding(RuntimeUsageArithmetic.adding(priorTokens, supervisionReservations), recoveryTokensSpent)
-            attemptPolicy.providerSessionUsageBaseline = sessionUsageBaseline
+            attemptPolicy.providerSessionUsageBaseline = sessionUsageBaseline.budgetBaseline
             return await self.processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
             prompt: launchPrompt,
@@ -1359,12 +1352,13 @@ final class AgentRuntimeWorker {
                 verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
                     fallbackRuntime: selectedRuntime, preferredModel: validationModel, modelContext: modelContext),
                 timeoutSeconds: timeoutSeconds, budgetEnforcementMode: budgetEnforcementMode.rawValue,
-                effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
+                effectiveTokenBudget: min(executionOwner.record.limits.tokenCeiling, AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask)),
                 tokensUsed: task.tokensUsed, agentReportedError: recordingState.agentReportedError(for: run),
                 cancelled: cancellationRequested, failureDiagnostic: failureDiagnostic,
                 approvedPlan: approvedPlan, chainedGoal: task.chainedGoal, scheduleID: task.originScheduleID,
                 sessionMessage: runtimeAdapter.sessionTurnMessage(task: task, promptOverride: promptOverride,
-                    startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase))
+                    startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase),
+                requestTokensUsed: executionOwner.record.limits.tokensSpent)
 
         // Before the outcome branches, not inside one. What the run left behind
         // for the user is waiting whether the run succeeded, was cancelled, or
@@ -1487,7 +1481,8 @@ final class AgentRuntimeWorker {
     ) {
         guard runtimeStopReason != RuntimeProviderResourceRegistry.Block.stopReason,
               runtimeAdapter.recordsEstimatedUsageWhenProviderUsageMissing,
-              run.tokensUsed == 0 else {
+              run.tokensUsed == 0,
+              !ProviderUsageEvidence.hasReport(run: run, task: task) else {
             return
         }
 

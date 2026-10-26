@@ -210,7 +210,7 @@ final class AgentRuntimeStreamTelemetry: @unchecked Sendable {
             break
         case .permissionRequested:
             break
-        case .stats:
+        case .stats, .usageMetadata:
             statsEventCount += 1
         case .astraProtocol:
             break
@@ -341,6 +341,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     private var _estimatedTokens: Int = 0
     private var supervisionTokens = 0
     private var reportedTokensForSupervision = 0
+    private var hasReportedUsage = false
     private var supervisionProgressRevision = 0
     private var supervisionLastProgressTime = Date()
     var supervision: RuntimeSupervisionSession?
@@ -472,7 +473,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     func recoveryTokensConsumed(estimatedInputTokens: Int) -> Int {
         lock.withLock {
-            let estimated = RuntimeUsageArithmetic.adding(_estimatedTokens, reportedTokensForSupervision > 0 ? 0 : estimatedInputTokens)
+            let estimated = RuntimeUsageArithmetic.adding(_estimatedTokens, hasReportedUsage ? 0 : estimatedInputTokens)
             return RuntimeUsageArithmetic.adding(max(estimated, reportedTokensForSupervision), supervisionTokens)
         }
     }
@@ -724,7 +725,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         if case .usage(let totalInput, let totalOutput) = parsed {
+            hasReportedUsage = true
             let totalTokens = RuntimeUsageArithmetic.adding(totalInput, totalOutput)
+            if totalTokens > 0 { hasReportedUsage = true }
             if reportedRunShare(input: totalInput, output: totalOutput) > tokenBudget - supervisionTokens {
                 if budgetEnforcementMode == .warning {
                     return recordBudgetWarning(
@@ -747,6 +750,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             }
         } else if case .result(_, _, let totalInput, let totalOutput, _, _, let isError) = parsed {
             let totalTokens = RuntimeUsageArithmetic.adding(totalInput, totalOutput)
+            if totalTokens > 0 { hasReportedUsage = true }
             if reportedRunShare(input: totalInput, output: totalOutput) > tokenBudget - supervisionTokens {
                 if budgetEnforcementMode == .warning {
                     return recordBudgetWarning(

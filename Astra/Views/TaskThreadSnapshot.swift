@@ -66,6 +66,9 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
     let startedAt: Date
     let completedAt: Date?
     let tokensUsed: Int
+    let requestBudgetTokensUsed: Int
+    let requestTokenCeiling: Int
+    let requestUsageReconciliationPending: Bool
     let inputTokens: Int
     let outputTokens: Int
     let runtimeID: String?
@@ -100,6 +103,9 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
         startedAt = input.startedAt
         completedAt = input.completedAt
         tokensUsed = input.tokensUsed
+        requestBudgetTokensUsed = input.requestBudgetTokensUsed
+        requestTokenCeiling = input.requestTokenCeiling
+        requestUsageReconciliationPending = input.requestUsageReconciliationPending
         inputTokens = input.inputTokens
         outputTokens = input.outputTokens
         runtimeID = input.runtimeID
@@ -180,6 +186,9 @@ struct TaskRunSnapshotInput: Identifiable, Sendable {
     let startedAt: Date
     let completedAt: Date?
     let tokensUsed: Int
+    let requestBudgetTokensUsed: Int
+    let requestTokenCeiling: Int
+    let requestUsageReconciliationPending: Bool
     let inputTokens: Int
     let outputTokens: Int
     let runtimeID: String?
@@ -191,12 +200,15 @@ struct TaskRunSnapshotInput: Identifiable, Sendable {
     let fileChangesJSON: String
     let stopReason: String
 
-    init(run: TaskRun) {
+    init(run: TaskRun, budget: TaskRequestBudget? = nil) {
         id = run.id
         status = run.status
         startedAt = run.startedAt
         completedAt = run.completedAt
         tokensUsed = run.tokensUsed
+        requestBudgetTokensUsed = budget?.tokensUsed ?? run.tokensUsed
+        requestTokenCeiling = budget?.tokenCeiling ?? run.task?.tokenBudget ?? 0
+        requestUsageReconciliationPending = budget?.reconciliationPending ?? false
         inputTokens = run.inputTokens
         outputTokens = run.outputTokens
         runtimeID = run.runtimeID
@@ -223,11 +235,12 @@ struct TaskThreadSnapshotInput: Sendable {
     init(task: AgentTask, maxRuns: Int = 50, performanceFields: [String: String] = [:]) {
         let start = DispatchTime.now().uptimeNanoseconds
         let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs, maxRuns: maxRuns)
+        let budgets = TaskRequestBudget.Index(events: task.events, runs: task.runs)
         self.init(
             goal: task.goal,
             createdAt: task.createdAt,
             events: window.events.map(TaskEventSnapshot.init),
-            runs: window.runs.map(TaskRunSnapshotInput.init),
+            runs: window.runs.map { TaskRunSnapshotInput(run: $0, budget: budgets.budget(for: $0, task: task)) },
             totalEventCount: window.totalEventCount,
             omittedEventCount: window.omittedEventCount,
             totalRunCount: window.totalRunCount,
@@ -252,11 +265,12 @@ struct TaskThreadSnapshotInput: Sendable {
     }
 
     init(goal: String, createdAt: Date, events: [TaskEvent], runs: [TaskRun]) {
+        let budgets = TaskRequestBudget.Index(events: events, runs: runs)
         self.init(
             goal: goal,
             createdAt: createdAt,
             events: events.map(TaskEventSnapshot.init),
-            runs: runs.map(TaskRunSnapshotInput.init),
+            runs: runs.map { run in TaskRunSnapshotInput(run: run, budget: run.task.map { budgets.budget(for: run, task: $0) }) },
             totalEventCount: events.count,
             omittedEventCount: 0,
             totalRunCount: runs.count,

@@ -124,9 +124,16 @@ private struct UsageDashboardTaskRow: View {
                 }
             }
 
-            ProgressView(value: min(task.budgetProgress, 1.0))
-                .frame(width: 60)
-                .tint(task.budgetProgress > 0.9 ? Stanford.failed : Stanford.coolGrey)
+            if task.requestUsageReconciliationPending {
+                Text("Usage unconfirmed")
+                    .font(Stanford.caption())
+                    .help("Earlier usage is estimated. These totals remain approximate; the execution allowance stays protected.")
+            } else {
+                ProgressView(value: min(task.budgetProgress, 1.0))
+                    .frame(width: 60)
+                    .tint(task.budgetProgress > 0.9 ? Stanford.failed : Stanford.coolGrey)
+                    .help("Latest request budget; retries share the same allowance")
+            }
         }
         .padding(.vertical, 4)
     }
