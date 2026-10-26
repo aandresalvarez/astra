@@ -12,13 +12,15 @@ final class ControlledBrowserProfileLease: @unchecked Sendable {
         var launchPending = false
     }
     enum Failure: LocalizedError {
-        case busy, unverified
+        case busy, unverified, unownedProcess
         var errorDescription: String? {
             switch self {
             case .busy:
                 return "Controlled Browser is reserved by another session or is still stopping. Close it from its current task, then retry here. Embedded Browser remains available."
             case .unverified:
                 return "ASTRA cannot confirm the previous Controlled Browser stopped. Its profile stays reserved. Return to the original task to check or reconnect the existing session; opening another browser stays blocked until its state can be verified."
+            case .unownedProcess:
+                return "A browser is already using this profile, but ASTRA cannot verify its owner. ASTRA will not attach to or stop it. Close that browser manually, then check status here. Embedded Browser remains available."
             }
         }
     }
@@ -27,6 +29,7 @@ final class ControlledBrowserProfileLease: @unchecked Sendable {
     private let receiptURL: URL
     private(set) var receipt: Receipt
     private var retirementStarted = false
+    private var launchCapturePending = false
 
     private init(descriptor: Int32, receiptURL: URL, receipt: Receipt) {
         self.descriptor = descriptor
@@ -72,10 +75,23 @@ final class ControlledBrowserProfileLease: @unchecked Sendable {
         next.unknownProcessID = nil
         next.launchPending = true
         try persist(next)
+        launchCapturePending = true
     }
 
     func recordProcess(_ pid: Int32) throws {
         guard acceptsExistingProcess(pid) else { throw Failure.unverified }
+        try persistProcess(pid)
+    }
+
+    /// Only the synchronous caller that just created this Process may supply
+    /// its initial identity. A recovered launch intent is not that proof.
+    func recordLaunchedProcess(_ pid: Int32) throws {
+        guard launchCapturePending, receipt.launchPending, receipt.process == nil, receipt.unknownProcessID == nil else { throw Failure.unverified }
+        defer { launchCapturePending = false }
+        try persistProcess(pid)
+    }
+
+    private func persistProcess(_ pid: Int32) throws {
         var next = receipt
         next.process = RuntimeProcessIdentity.read(pid)
         next.unknownProcessID = next.process == nil ? pid : nil
@@ -87,10 +103,11 @@ final class ControlledBrowserProfileLease: @unchecked Sendable {
     /// Process.run failed before creating a child. No elapsed timer is used as
     /// evidence; the caller must own that synchronous launch failure.
     func launchFailedWithoutProcess() throws {
-        guard receipt.process == nil, receipt.unknownProcessID == nil else { throw Failure.unverified }
+        guard launchCapturePending, receipt.process == nil, receipt.unknownProcessID == nil else { throw Failure.unverified }
         var next = receipt
         next.launchPending = false
         try persist(next)
+        launchCapturePending = false
     }
 
     func transfer(to owner: String) throws {
@@ -129,13 +146,8 @@ final class ControlledBrowserProfileLease: @unchecked Sendable {
     }
 
     func acceptsExistingProcess(_ pid: Int32) -> Bool {
-        if let previous = receipt.process, previous.presence != .absent {
-            return RuntimeProcessIdentity.read(pid) == previous
-        }
-        if let unknown = receipt.unknownProcessID, !(kill(unknown, 0) == -1 && errno == ESRCH) {
-            return unknown == pid
-        }
-        return true
+        guard let previous = receipt.process else { return false }
+        return RuntimeProcessIdentity.read(pid) == previous
     }
 
     private func save() throws { try persist(receipt) }

@@ -111,18 +111,24 @@ final class ControlledBrowserController: ObservableObject {
     private var profileLease: ControlledBrowserProfileLease?
     private var profileOwner = "draft-" + UUID().uuidString
     private var lifecycleGeneration = UUID()
+    private var refreshGeneration = UUID()
     private var launchOperation: Task<Void, Error>?
     private var process: Process?
     private var attachedProcessID: pid_t?
     private var diagnosticsClient: PersistentCDPDiagnosticsClient?
     private var diagnosticsPageID: String?
+    private let processDiscovery: @Sendable (String) async throws -> ControlledBrowserDebugTarget?
 
     var isLaunching: Bool {
         runState == .launching
     }
 
-    init(profilePath: String? = nil) {
+    init(profilePath: String? = nil,
+         processDiscovery: @escaping @Sendable (String) async throws -> ControlledBrowserDebugTarget? = {
+             try await ControlledBrowserController.runningDebugTarget(profilePath: $0)
+         }) {
         self.profilePath = profilePath ?? Self.defaultProfilePath
+        self.processDiscovery = processDiscovery
     }
 
     @discardableResult
@@ -156,6 +162,10 @@ final class ControlledBrowserController: ObservableObject {
     private func requireCurrentLifecycle(_ generation: UUID) throws {
         try Task.checkCancellation()
         guard lifecycleGeneration == generation else { throw CancellationError() }
+    }
+
+    private func requireCurrentRefresh(_ generation: UUID?) throws {
+        if let generation, refreshGeneration != generation { throw CancellationError() }
     }
 
     func launch(initialAddress: String? = nil) async {
@@ -196,20 +206,24 @@ final class ControlledBrowserController: ObservableObject {
     }
 
     func refreshStatus() async {
-        guard !Task.isCancelled, !isLaunching else { return }
+        guard !Task.isCancelled, !isLaunching, launchOperation == nil else { return }
         let generation = lifecycleGeneration
+        refreshGeneration = UUID()
+        let observation = refreshGeneration
         do {
             try acquireProfile()
             if isRunning {
-                try await refreshPageMetadata()
+                try await refreshPageMetadata(observation: observation)
                 try requireCurrentLifecycle(generation)
+                try requireCurrentRefresh(observation)
                 runState = attachedProcessID == nil ? .running : .attached
                 statusMessage = "\(browserName ?? "Controlled browser") ready"
                 lastErrorMessage = nil
                 return
             }
-            if try await attachToExistingControlledBrowser() { return }
+            if try await attachToExistingControlledBrowser(observation: observation) { return }
             try requireCurrentLifecycle(generation)
+            try requireCurrentRefresh(observation)
             guard profileLease?.canStartNewProcess == true else { throw ControlledBrowserProfileLease.Failure.unverified }
             profileLease?.releaseAfterExit()
             profileLease = nil
@@ -219,7 +233,7 @@ final class ControlledBrowserController: ObservableObject {
             lastErrorMessage = nil
             statusMessage = "Controlled browser not launched"
         } catch {
-            guard lifecycleGeneration == generation else { return }
+            guard lifecycleGeneration == generation, refreshGeneration == observation else { return }
             runState = error is ControlledBrowserProfileLease.Failure ? .waitingForProfile : .failed
             lastErrorMessage = error.localizedDescription
             statusMessage = error.localizedDescription
@@ -715,6 +729,9 @@ final class ControlledBrowserController: ObservableObject {
             try requireCurrentLifecycle(generation)
             return
         }
+        // A refresh begun before this launch may still be awaiting discovery.
+        // It must not clear this operation's lease or publish older metadata.
+        refreshGeneration = UUID()
         let operation = Task { @MainActor in
             try await self.ensureLaunchedCore(initialURL: initialURL, generation: generation)
         }
@@ -782,7 +799,7 @@ final class ControlledBrowserController: ObservableObject {
         }
 
         self.process = process
-        do { try profileLease?.recordProcess(process.processIdentifier) }
+        do { try profileLease?.recordLaunchedProcess(process.processIdentifier) }
         catch { process.terminate(); throw error }
         attachedProcessID = nil
         debugPort = port
@@ -1255,10 +1272,11 @@ final class ControlledBrowserController: ObservableObject {
         statusMessage = error.localizedDescription
     }
 
-    private func refreshPageMetadata() async throws {
+    private func refreshPageMetadata(observation: UUID? = nil) async throws {
         let generation = lifecycleGeneration
         let page = try await currentPage()
         try requireCurrentLifecycle(generation)
+        try requireCurrentRefresh(observation)
         currentURL = page.url
         pageTitle = page.title
     }
@@ -1438,14 +1456,15 @@ final class ControlledBrowserController: ObservableObject {
         return try JSONDecoder().decode(DevToolsVersion.self, from: data)
     }
 
-    private func attachToExistingControlledBrowser() async throws -> Bool {
+    private func attachToExistingControlledBrowser(observation: UUID? = nil) async throws -> Bool {
         try acquireProfile()
         let generation = lifecycleGeneration
-        let target = try await Self.runningDebugTarget(profilePath: profilePath)
+        let target = try await processDiscovery(profilePath)
         try requireCurrentLifecycle(generation)
+        try requireCurrentRefresh(observation)
         guard let target else { return false }
         guard profileLease?.acceptsExistingProcess(target.processID) == true else {
-            throw ControlledBrowserProfileLease.Failure.unverified
+            throw ControlledBrowserProfileLease.Failure.unownedProcess
         }
         try profileLease?.recordProcess(target.processID)
 
@@ -1460,11 +1479,13 @@ final class ControlledBrowserController: ObservableObject {
         statusMessage = "Attached to existing controlled browser"
 
         do {
-            try await refreshPageMetadata()
+            try await refreshPageMetadata(observation: observation)
             try requireCurrentLifecycle(generation)
+            try requireCurrentRefresh(observation)
             return true
         } catch {
             try requireCurrentLifecycle(generation)
+            try requireCurrentRefresh(observation)
             debugPort = nil
             attachedProcessID = nil
             processID = nil

@@ -180,7 +180,7 @@ enum BrowserBridgeRecoveryHints {
             kind = "check-health"
         case "controlled_browser_profile_reserved":
             command = nil
-            summary = "The shared profile remains reserved by another session or unverified prior execution. Check the original task and retry after the reservation is released. Embedded Browser can continue independently."
+            summary = "The shared profile remains reserved by another session or unverified prior execution. Check the explanation in Browser; use the owning task when known, or close the existing browser manually if its owner cannot be verified. Retry after the reservation is released. Embedded Browser can continue independently."
             kind = "wait-for-profile"
         case "controlled_browser_unavailable", "google_docs_controlled_browser_required":
             command = "astra-browser health"

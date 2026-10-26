@@ -12,9 +12,9 @@ enum ControlledBrowserProcessDiscovery {
         guard count > 0, count < capacity else { throw ControlledBrowserProfileLease.Failure.unverified }
         let allowedExecutables = Set(ControlledBrowserCandidate.defaultCandidates.map(\.executablePath)
             + [ControlledBrowserCandidate.firstAvailable()?.executablePath].compactMap { $0 })
-        let matches = pids.prefix(min(Int(count), capacity)).compactMap { pid -> ControlledBrowserDebugTarget? in
+        let matches = try pids.prefix(min(Int(count), capacity)).compactMap { pid -> ControlledBrowserDebugTarget? in
             guard let argv = arguments(pid: pid) else { return nil }
-            return target(pid: pid, arguments: argv, profilePath: profilePath, allowedExecutables: allowedExecutables)
+            return try target(pid: pid, arguments: argv, profilePath: profilePath, allowedExecutables: allowedExecutables)
         }
         return try select(matches)
     }
@@ -26,14 +26,23 @@ enum ControlledBrowserProcessDiscovery {
     }
 
     static func target(pid: pid_t, arguments: [String], profilePath: String,
-                       allowedExecutables: Set<String> = Set(ControlledBrowserCandidate.defaultCandidates.map(\.executablePath))) -> ControlledBrowserDebugTarget? {
+                       allowedExecutables: Set<String> = Set(ControlledBrowserCandidate.defaultCandidates.map(\.executablePath))) throws -> ControlledBrowserDebugTarget? {
         guard let executable = arguments.first,
               allowedExecutables.contains(executable),
-              !arguments.contains(where: { $0.hasPrefix("--type=") }),
-              arguments.filter({ $0.hasPrefix("--user-data-dir=") }) == ["--user-data-dir=\(profilePath)"] else { return nil }
+              !arguments.contains(where: { $0.hasPrefix("--type=") }) else { return nil }
+        let profiles = arguments.filter { $0.hasPrefix("--user-data-dir=") }
+            .map { canonicalProfile(String($0.dropFirst("--user-data-dir=".count))) }
+        guard profiles.contains(canonicalProfile(profilePath)) else { return nil }
+        guard profiles.count == 1 else { throw ControlledBrowserProfileLease.Failure.unownedProcess }
         let ports = arguments.filter { $0.hasPrefix("--remote-debugging-port=") }
-        guard ports.count == 1, let port = UInt16(ports[0].dropFirst("--remote-debugging-port=".count)), port > 0 else { return nil }
+        guard ports.count == 1, let port = UInt16(ports[0].dropFirst("--remote-debugging-port=".count)), port > 0 else {
+            throw ControlledBrowserProfileLease.Failure.unownedProcess
+        }
         return ControlledBrowserDebugTarget(processID: pid, debugPort: port)
+    }
+
+    private static func canonicalProfile(_ path: String) -> String {
+        URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     private static func arguments(pid: pid_t) -> [String]? {

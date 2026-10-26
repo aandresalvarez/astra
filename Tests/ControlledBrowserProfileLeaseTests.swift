@@ -5,6 +5,51 @@ import Testing
 
 @Suite("Controlled Browser profile reservation", .serialized)
 struct ControlledBrowserProfileLeaseTests {
+    @MainActor @Test("Concurrent commands join one launch without invalidating it")
+    func concurrentCommandsJoinLaunch() async {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let discovery = SuspendedProfileDiscovery(firstResult: .init(processID: getpid(), debugPort: 1))
+        let controller = ControlledBrowserController(profilePath: root.path, processDiscovery: { _ in await discovery.next() })
+        func attempt() async -> Bool {
+            do { try await controller.navigate(to: "https://example.com"); return false }
+            catch { return error is ControlledBrowserProfileLease.Failure }
+        }
+        let first = Task { await attempt() }
+        await discovery.waitForStart()
+        var secondStarted = false
+        let second = Task { secondStarted = true; return await attempt() }
+        while !secondStarted { await Task.yield() }
+        await discovery.resume()
+        #expect(await first.value)
+        #expect(await second.value)
+        #expect(await discovery.callCount() == 1)
+        #expect(controller.processID == nil)
+    }
+
+    @MainActor @Test("An older status refresh cannot release or overwrite a newer launch", arguments: [true, false])
+    func staleRefreshCannotReleaseLaunch(explicitLaunch: Bool) async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let discovery = SuspendedProfileDiscovery()
+        let controller = ControlledBrowserController(profilePath: root.path, processDiscovery: { _ in
+            await discovery.next()
+        })
+        let refresh = Task { await controller.refreshStatus() }
+        await discovery.waitForStart()
+        if explicitLaunch { await controller.launch() }
+        else {
+            do { try await controller.navigate(to: "https://example.com") }
+            catch { controller.reportOperationFailure(error) }
+        }
+        #expect(controller.runState == .waitingForProfile)
+        await discovery.resume()
+        await refresh.value
+        #expect(controller.runState == .waitingForProfile)
+        #expect(controller.lastErrorMessage?.contains("cannot verify its owner") == true)
+        #expect(throws: (any Error).self) { try ControlledBrowserProfileLease.acquire(profilePath: root.path, owner: "other") }
+    }
+
     @Test("Runtime status explains a reserved profile without claiming a permission failure")
     func runtimeReservationMessage() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
@@ -30,25 +75,30 @@ struct ControlledBrowserProfileLeaseTests {
     }
 
     @Test("Reconnect matches the exact profile argument, including spaces, and only a browser root")
-    func exactProcessArguments() {
+    func exactProcessArguments() throws {
         let profile = "/tmp/Astra Dev/Profile"
         let executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         let base = [executable, "--remote-debugging-port=60007"]
-        func target(_ extra: [String]) -> ControlledBrowserDebugTarget? {
-            ControlledBrowserProcessDiscovery.target(pid: 99935, arguments: base + extra, profilePath: profile)
+        func target(_ extra: [String]) throws -> ControlledBrowserDebugTarget? {
+            try ControlledBrowserProcessDiscovery.target(pid: 99935, arguments: base + extra, profilePath: profile)
         }
-        #expect(target(["--user-data-dir=\(profile)"]) == ControlledBrowserDebugTarget(processID: 99935, debugPort: 60007))
-        #expect(target(["--user-data-dir=\(profile)/independent"]) == nil)
-        #expect(target(["--user-data-dir=\(profile) Other"]) == nil)
-        #expect(target(["--user-data-dir=\(profile)", "--type=renderer"]) == nil)
-        #expect(target(["--user-data-dir=\(profile)", "--user-data-dir=/tmp/other"]) == nil)
-        #expect(target(["--user-data-dir=\(profile)", "--remote-debugging-port=60008"]) == nil)
-        #expect(ControlledBrowserProcessDiscovery.target(pid: 1,
+        #expect(try target(["--user-data-dir=\(profile)"]) == ControlledBrowserDebugTarget(processID: 99935, debugPort: 60007))
+        #expect(try target(["--user-data-dir=\(profile)/"]) != nil)
+        #expect(throws: (any Error).self) {
+            try ControlledBrowserProcessDiscovery.target(pid: 99935,
+                arguments: [executable, "--user-data-dir=\(profile)"], profilePath: profile)
+        }
+        #expect(try target(["--user-data-dir=\(profile)/independent"]) == nil)
+        #expect(try target(["--user-data-dir=\(profile) Other"]) == nil)
+        #expect(try target(["--user-data-dir=\(profile)", "--type=renderer"]) == nil)
+        #expect(throws: (any Error).self) { try target(["--user-data-dir=\(profile)", "--user-data-dir=/tmp/other"]) }
+        #expect(throws: (any Error).self) { try target(["--user-data-dir=\(profile)", "--remote-debugging-port=60008"]) }
+        #expect(try ControlledBrowserProcessDiscovery.target(pid: 1,
             arguments: ["/usr/bin/other", "--user-data-dir=\(profile)", "--remote-debugging-port=60007"], profilePath: profile) == nil)
         let override = "/tmp/QA Browser.app/Contents/MacOS/QA Browser"
         let overridden = [override, "--user-data-dir=\(profile)", "--remote-debugging-port=60007"]
-        #expect(ControlledBrowserProcessDiscovery.target(pid: 1, arguments: overridden, profilePath: profile) == nil)
-        #expect(ControlledBrowserProcessDiscovery.target(pid: 1, arguments: overridden,
+        #expect(try ControlledBrowserProcessDiscovery.target(pid: 1, arguments: overridden, profilePath: profile) == nil)
+        #expect(try ControlledBrowserProcessDiscovery.target(pid: 1, arguments: overridden,
             profilePath: profile, allowedExecutables: [override])?.processID == 1)
     }
 
@@ -106,13 +156,43 @@ struct ControlledBrowserProfileLeaseTests {
         defer { try? FileManager.default.removeItem(at: root) }
         do {
             let first = try ControlledBrowserProfileLease.acquire(profilePath: root.path, owner: "A")
-            try first.recordProcess(getpid()) // real OS identity; never signalled by this test
+            try first.beginLaunch()
+            try first.recordLaunchedProcess(getpid()) // real OS identity; never signalled by this test
             #expect(!first.canStartNewProcess)
         }
         #expect(throws: (any Error).self) { try ControlledBrowserProfileLease.acquire(profilePath: root.path, owner: "B") }
         let reconnected = try ControlledBrowserProfileLease.acquire(profilePath: root.path, owner: "A")
         #expect(reconnected.receipt.process == RuntimeProcessIdentity.read(getpid()))
+        #expect(reconnected.acceptsExistingProcess(getpid()))
+        try reconnected.recordProcess(getpid())
         #expect(!reconnected.canStartNewProcess)
+    }
+
+    @Test("Empty, expired and recovered launch receipts never adopt an unowned browser")
+    func unownedBrowserCannotBeAdopted() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Includes Retry/restart after acquire has persisted an empty receipt.
+        for _ in 0..<2 {
+            let lease = try ControlledBrowserProfileLease.acquire(profilePath: root.path, owner: "A")
+            #expect(!lease.acceptsExistingProcess(getpid()))
+            #expect(throws: (any Error).self) { try lease.recordProcess(getpid()) }
+            #expect(throws: (any Error).self) { try lease.recordLaunchedProcess(getpid()) }
+            #expect(lease.receipt.process == nil)
+        }
+        let expired = RuntimeProcessIdentity(pid: getpid(), startedSeconds: 0, startedMicroseconds: 0)
+        try JSONEncoder().encode(ControlledBrowserProfileLease.Receipt(owner: "A", process: expired))
+            .write(to: root.appendingPathComponent(".astra-profile-owner.json"))
+        do {
+            let lease = try ControlledBrowserProfileLease.acquire(profilePath: root.path, owner: "A")
+            #expect(!lease.acceptsExistingProcess(getpid()))
+            try lease.beginLaunch()
+        }
+        let recovered = try ControlledBrowserProfileLease.acquire(profilePath: root.path, owner: "A")
+        #expect(!recovered.acceptsExistingProcess(getpid()))
+        #expect(!recovered.canStartNewProcess)
+        #expect(throws: (any Error).self) { try recovered.recordLaunchedProcess(getpid()) }
+        #expect(throws: (any Error).self) { try recovered.launchFailedWithoutProcess() }
     }
 
     @Test("Missing launch proof and corrupt receipts fail closed")
@@ -151,7 +231,7 @@ struct ControlledBrowserProfileLeaseTests {
         try JSONEncoder().encode(receipt).write(to: root.appendingPathComponent(".astra-profile-owner.json"))
         let lease = try ControlledBrowserProfileLease.acquire(profilePath: root.path, owner: "A")
         #expect(!lease.acceptsExistingProcess(Int32.max))
-        #expect(lease.acceptsExistingProcess(getpid()))
+        #expect(!lease.acceptsExistingProcess(getpid()))
         #expect(throws: (any Error).self) { try lease.recordProcess(Int32.max) }
         #expect(lease.receipt.unknownProcessID == getpid())
     }
@@ -159,4 +239,19 @@ struct ControlledBrowserProfileLeaseTests {
     private func temporaryRoot() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("browser-profile-lease-\(UUID())")
     }
+}
+
+private actor SuspendedProfileDiscovery {
+    private var continuation: CheckedContinuation<ControlledBrowserDebugTarget?, Never>?
+    private var calls = 0
+    private let firstResult: ControlledBrowserDebugTarget?
+    init(firstResult: ControlledBrowserDebugTarget? = nil) { self.firstResult = firstResult }
+    func next() async -> ControlledBrowserDebugTarget? {
+        calls += 1
+        if calls == 1 { return await withCheckedContinuation { continuation = $0 } }
+        return ControlledBrowserDebugTarget(processID: getpid(), debugPort: 1) // unowned; never signalled
+    }
+    func waitForStart() async { while continuation == nil { await Task.yield() } }
+    func resume() { continuation?.resume(returning: firstResult); continuation = nil }
+    func callCount() -> Int { calls }
 }

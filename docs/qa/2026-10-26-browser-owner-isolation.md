@@ -23,6 +23,11 @@ timeout does not release the reservation. Stop retains the lock until the record
 Chromium root has exited. This is browser-profile ownership, not a replacement
 for the runtime/task execution supervisor or proof about arbitrary detached tools.
 
+An existing browser from an older version or an external launch cannot be adopted
+without a matching saved process identity. An empty receipt does not become proof
+after Retry/restart. Chrome using the profile without a DevTools port also blocks
+opening. ASTRA asks the user to close that browser manually and preserves the profile.
+
 ## Automated coverage
 
 - Persistent task and workspace UUID collisions; pinned/session deletion isolation.
@@ -37,6 +42,10 @@ for the runtime/task execution supervisor or proof about arbitrary detached tool
   unknown PID, PID reuse, uncertain launch and corrupt receipt behavior.
 - Exact argv matching rejects sibling/child profile paths and helper processes;
   configured executables remain supported; ambiguous roots fail closed.
+- A stale status refresh cannot release a newer launch's reservation or publish
+  older metadata. Explicit opening and direct navigation share the same guard;
+  concurrent commands join one launch. The race was reproduced in a failing test
+  before the fix after native QA exposed it.
 - Reservation has its own runtime stop reason and recovery hint. Waiting is not
   presented as a permission failure, and does not consume or reset the request budget.
 
