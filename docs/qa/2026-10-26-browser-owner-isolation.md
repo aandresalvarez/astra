@@ -124,14 +124,21 @@ descriptors by default, preserve explicit stdin/stdout/stderr and the host-contr
 supervisor channel, and retain the same strict completion-proof rules. The
 regressions use real child processes; they do not relax EOF, stop proof or limits.
 
-The next focused CI run exposed cooperative-pool starvation. A one-worker
-reproduction and process samples located a synchronous test bridge waiting for
-its own async runner, and the production POSIX reaper blocking that pool in
-waitpid/pipe draining. Tests now call synchronous APIs on dispatch workers; the
-production reaper also waits on a dispatch worker, leaving timeout/cancellation
-tasks runnable. The same concurrent six-suite group passes with one cooperative
-worker. CI repeats that strict regression without removing coverage or extending
-time limits.
+Focused CI also exposed worker-pool starvation. A one-worker reproduction and
+process samples located synchronous test bridges waiting for their async runner,
+and the production POSIX reaper blocking in waitpid/pipe draining. Moving waits
+only to a shared Dispatch queue was insufficient: a bounded experiment held 96
+waits on an 18-core machine; the utility queue started 90 and could not run a
+short operation until release. This explains why a completed child can wait
+behind live children that depend on its completion.
+
+The final reapers use one dedicated waiting thread per child, released on
+completion. Agent and BinaryRunner share a small executor; Host Control retains
+its independent permission boundary and starts its own thread. Synchronous test
+APIs run off the Swift cooperative pool. A regression holds 96 waits and requires
+a short wait to finish before releasing them, then verifies cleanup. The full
+seven-suite process group passes with one cooperative worker. CI repeats that
+strict regression without reducing coverage or extending time limits.
 
 Final test, verified-build, hook and CI results are recorded in the pull request.
 No hook bypass or merge is performed by the agent.

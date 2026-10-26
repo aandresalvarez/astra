@@ -233,7 +233,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         lock.unlock()
         if cancelledDuringLaunch { terminate() }
 
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        ProcessWaitExecutor.submit { [weak self] in
             self?.reapProcess(pid: childPID)
         }
     }

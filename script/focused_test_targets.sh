@@ -280,14 +280,14 @@ target_for_path() {
       add_target "SidebarTaskStoreSignalIntegrationTests"
       add_target "SidebarTaskSourceObservationTests"
       ;;
-    Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentUtilityScopedProcessRunState.swift|Astra/Services/Runtime/AgentProcessPipeReader.swift|Astra/Services/Runtime/AgentExecutionScopedProcess.swift|Tests/AgentRuntimePipeCompletionTests.swift|Tests/AgentExecutionScopedProcessTests.swift|ASTRACore/ProcessGroupSpawn.swift|ASTRACore/BinaryRunner.swift|Tests/ProcessDescriptorIsolationTests.swift|Tests/BinaryRunnerTests.swift)
+    Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentUtilityScopedProcessRunState.swift|Astra/Services/Runtime/AgentProcessPipeReader.swift|Astra/Services/Runtime/AgentExecutionScopedProcess.swift|Tests/AgentRuntimePipeCompletionTests.swift|Tests/AgentExecutionScopedProcessTests.swift|ASTRACore/ProcessGroupSpawn.swift|ASTRACore/ProcessWaitExecutor.swift|Tests/ProcessWaitExecutorTests.swift|ASTRACore/BinaryRunner.swift|Tests/ProcessDescriptorIsolationTests.swift|Tests/BinaryRunnerTests.swift)
       add_target "AgentRuntimePipeCompletionTests"
       add_target "StreamVolumeAccountingTests"
       add_target "AgentExecutionScopedProcessTests"
       add_target "RuntimeRecovery"
       add_target "AgentUtilityRuntimeTests"
       add_target "ProcessMonitorTests"
-      add_target "ProcessDescriptorIsolationTests|ProcessBinaryRunnerTests|SpawnedChildSignalStateTests|OpenCodeRunnerCompletionTests|OpenCodeCompletionProofTests|HostControlParentDeathSupervisorTests"
+      add_target "ProcessWaitExecutorTests|ProcessDescriptorIsolationTests|ProcessBinaryRunnerTests|SpawnedChildSignalStateTests|OpenCodeRunnerCompletionTests|OpenCodeCompletionProofTests|HostControlParentDeathSupervisorTests"
       ;;
     ASTRACore/RuntimeProgressSignals.swift|Tests/RuntimeProgressSignalTests.swift)
       add_target "StreamVolumeAccountingTests"
@@ -348,7 +348,7 @@ target_for_path() {
       ;;
     Tests/HostControlToolSupportTests.swift|Tests/HostControlParentDeathSupervisorTests.swift|Tools/AstraHostControlTool/*|Tools/HostControlToolSupport/*)
       add_target "HostControlToolSupportTests"
-      add_target "ProcessDescriptorIsolationTests|SpawnedChildSignalStateTests|HostControlParentDeathSupervisorTests"
+      add_target "ProcessWaitExecutorTests|ProcessDescriptorIsolationTests|SpawnedChildSignalStateTests|HostControlParentDeathSupervisorTests"
       ;;
     ASTRACore/SSHKnownHostsOption.swift|Tests/BrowserToolShimTests.swift)
       add_target "BrowserToolShimTests"

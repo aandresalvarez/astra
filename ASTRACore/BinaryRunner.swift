@@ -539,9 +539,8 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 }
 
                 // waitpid and the post-exit pipe drain block their thread.
-                // Keep them off Swift's cooperative pool so cancellation and
-                // timeout tasks can still run when all providers are waiting.
-                DispatchQueue.global(qos: .utility).async {
+                // Keep each wait independent of shared worker-pool capacity.
+                ProcessWaitExecutor.submit {
                     var status = Int32(0)
                     while waitpid(pid, &status, 0) == -1 {
                         guard errno == EINTR else {

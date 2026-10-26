@@ -302,9 +302,14 @@ private final class HostControlScopedProcess: @unchecked Sendable {
         running = true
         lock.unlock()
 
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        // The broker deliberately has no dependency on ASTRA's permission
+        // core. Keep its blocking wait independent of shared worker capacity.
+        let reaper = Thread { [weak self] in
             self?.reapProcess(pid: childPID)
         }
+        reaper.name = "ASTRA host process wait"
+        reaper.qualityOfService = .utility
+        reaper.start()
     }
 
     func terminate() {
