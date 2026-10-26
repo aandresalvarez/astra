@@ -64,7 +64,9 @@ final class RuntimeExecutionOwner {
         // An audit event can require verification, but can never grant a lease.
         // A restored database must not treat a missing sidecar as a fresh task.
         if task.events.contains(where: { $0.type == TaskEventTypes.System.runtimeExecutionOwnership.rawValue }) { return true }
-        return !task.runs.isEmpty || task.hasProviderSession
+        guard !task.runs.isEmpty || task.hasProviderSession else { return false }
+        // History from before the journal is admitted only on an older app's own settlement.
+        return RuntimeRecoveryLegacyReconciliation.settledRun(of: task) == nil
     }
 
     static func inspection(task: AgentTask, context: ModelContext) throws -> RuntimeSessionInspection? {
@@ -140,6 +142,7 @@ final class RuntimeExecutionOwner {
                 report("The saved execution receipt is missing. ASTRA preserved this task and blocked replacement work.", task: task, context: context, pause: true)
                 return nil
             }
+            let legacyRun = previous == nil ? RuntimeRecoveryLegacyReconciliation.settledRun(of: task) : nil
             if let previous {
                 if previous.cancellationRequested == true, previous.resourcesReleased != true,
                    !previous.canReplace, !previous.canRecoverPreparation {
@@ -172,8 +175,10 @@ final class RuntimeExecutionOwner {
             record.inheritedToolUncertainty = previous?.hasUnverifiedTools
             record.resourceClaims = claims
             record.resourcesReleased = false
+            record.legacySettledRunID = legacyRun?.id
             try lease.save(record) // fail closed before any worker/provider side effect
             active.insert(key)
+            if let legacyRun { reportLegacyReconciliation(legacyRun, record: record, task: task, context: context) }
             return .init(key: key, lease: lease, record: record, isRecovery: recovering, task: task, context: context)
         } catch RuntimeExecutionOwnerStore.Failure.busy {
             report("The existing execution owner is still active. No competing attempt was started.", task: task, context: context)
@@ -365,6 +370,24 @@ final class RuntimeExecutionOwner {
         record.providerSharedStateKey = key.rawValue
         record.providerSharedStateReleased = false
         try save(nil)
+    }
+
+    /// The journal now holds this task's first receipt. Its ownership event makes the
+    /// task tracked at once, so a lost receipt blocks it instead of reconciling again.
+    private static func reportLegacyReconciliation(_ run: TaskRun, record: RuntimeExecutionOwnerRecord,
+                                                   task: AgentTask, context: ModelContext) {
+        guard task.isLive, task.modelContext === context else { return }
+        context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: TaskEvent.payloadString(record, fallback: "{}")))
+        AppLogger.audit(.workerLegacyExecutionReconciled, category: "Worker", taskID: task.id, fields: [
+            "settled_run_id": run.id.uuidString,
+            "settled_stop_reason": run.stopReason,
+            "run_count": String(task.runs.count),
+            "has_session_id": String(task.hasProviderSession),
+            "runtime": record.runtime
+        ])
+        report("Earlier runs of this task finished under an older ASTRA version that kept no execution receipt. Each one ended, ran on this Mac, and belonged to an app session that has since exited, so ASTRA now tracks this task's execution.",
+            task: task, context: context)
     }
 
     private static func replacementBlockedMessage(_ record: RuntimeExecutionOwnerRecord, inspection: RuntimeSessionInspection) -> String {

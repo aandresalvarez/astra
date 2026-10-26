@@ -36,7 +36,9 @@ Retry of a verified unfinished execution submits a continuation instead of repea
 
 A **new explicit user follow-up, approved plan step, or permission approval** remains distinct from replay for context and limits, but requires the same full cleanup proof. It inherits the unfinished execution's remaining limits. Older tool uncertainty survives every owner handoff, including an interrupted preparation from an older app version. Retry and Resume remain subject to this gate even when their stored prompt is a continuation. Admission derives intent from the durable source event and typed envelope, never the worker phase, request kind alone, or prompt wording. Startup never invents a new user turn.
 
-All existing tasks with execution history or a native session but no receipt are blocked, including historical failures, cancellations, timeouts and completions. A missing journal never grants a fresh allowance. Imported or legacy execution requires reconciliation; there is no unchecked Retry exception.
+Execution history from before this journal existed has no receipt, so it requires reconciliation. A task qualifies only when the journal never tracked it (no ownership event), every run has a terminal status and a recorded completion, every run ran on the host rather than in a container, every run ended before the current app process started (so the app instance that supervised it has exited), and the latest run records a stop reason other than an app restart or a lost connection. The first owner it admits records the settled run in the journal, the task records why, and from then on that receipt governs the task. This accepts the older version's own settlement; those versions never recorded tool, SSH or container termination, so it does not claim that proof.
+
+Every other task with execution history or a native session but no receipt is blocked, including a tracked task whose journal is missing and historical runs that were cut off, still marked running, unsettled or containerized. A missing journal never grants a fresh allowance, and there is no unchecked Retry exception.
 
 ## Settlement ownership
 
@@ -52,4 +54,4 @@ Input estimates are charged when the provider reports no usage; finalized run ac
 
 ## Validation
 
-Regression coverage includes competing contexts and workers, exclusive kernel leases, Retry during a live run, preserved usage and continuation requests, crash windows, settled results, corrupt journals, stale process/execution receipts, remote/tool uncertainty, unchanged native-session fallback accounting, and same-process recovery across all six provider adapters. Native acceptance uses a separate development bundle, App Support store, and synthetic workspace with a real provider; evidence is recorded in the PR.
+Regression coverage includes competing contexts and workers, exclusive kernel leases, Retry during a live run, preserved usage and continuation requests, crash windows, settled results, corrupt journals, settled and unsettled pre-journal history, stale process/execution receipts, remote/tool uncertainty, unchanged native-session fallback accounting, and same-process recovery across all six provider adapters. Native acceptance uses a separate development bundle, App Support store, and synthetic workspace with a real provider; evidence is recorded in the PR.
