@@ -103,10 +103,15 @@ struct TaskMainViewCrashRegressionTests {
         let nextRowStart = try #require(dockerSource[pickerStart.upperBound...].range(of: "private var credentialProjectionRow"))
         let pickerSource = String(dockerSource[pickerStart.lowerBound..<nextRowStart.lowerBound])
 
-        #expect(pickerSource.contains("rowTitle(viewModel.environmentPickerTitle)"))
-        #expect(pickerSource.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
+        // The one-line row (rail v2) gives the key layout priority over the
+        // trailing value, so a long scope value can never squeeze the title.
+        #expect(pickerSource.contains("key: viewModel.environmentPickerTitle"))
         #expect(pickerSource.contains("Image(systemName: \"chevron.up.chevron.down\")"))
-        #expect(!pickerSource.contains("RailCountBadge(viewModel.activeScopeLabel)"))
+        #expect(!pickerSource.contains("RailCountBadge"))
+        let rowLineStart = try #require(dockerSource.range(of: "private func rowLine<Trailing: View>("))
+        let rowLineSource = String(dockerSource[rowLineStart.lowerBound...])
+        #expect(rowLineSource.contains(".layoutPriority(1)"))
+        #expect(rowLineSource.contains(".frame(maxWidth: .infinity, minHeight: Layout.rowHeight, alignment: .leading)"))
     }
 
     private func fileText(_ path: String) throws -> String {
