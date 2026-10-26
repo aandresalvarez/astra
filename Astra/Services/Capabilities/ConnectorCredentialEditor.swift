@@ -147,7 +147,9 @@ enum ConnectorCredentialEditor {
                 prepared.noteWriteAttempt()
                 let result = account.saveCredentialChecked(key: key, value: replacement, allowUserInteraction: allowUserInteraction)
                 guard result.isSaved else {
-                    previous.restore(account); prepared.discard()
+                    // The context was clean on entry. Restoring values alone still
+                    // leaves SwiftData dirty, which would block a corrected retry.
+                    previous.restore(account); PluginSavedStateRollback.finish(in: modelContext); prepared.discard()
                     return (key, result)
                 }
             }
@@ -168,6 +170,7 @@ enum ConnectorCredentialEditor {
             guard !PluginOperationProblem.preventsRollback(error) else { throw error }
             if attemptedCommit { modelContext.rollback() }
             previous.restore(account)
+            PluginSavedStateRollback.finish(in: modelContext)
             prepared.discard()
             throw error
         }

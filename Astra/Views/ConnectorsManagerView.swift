@@ -470,6 +470,7 @@ struct ConnectorEditorView: View {
 
                         if !unreadableCredentialKeys.isEmpty {
                             ConnectorCredentialReentrySection(keys: unreadableCredentialKeys) { reenterCredentials($0) }
+                                .id(connector.id)
                         }
 
                         if !connector.credentialKeys.isEmpty {
@@ -728,6 +729,9 @@ struct ConnectorEditorView: View {
             applyServiceDefaults(for: newType)
         }
         .task(id: connector.id) { refreshUnreadableCredentialKeys() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshUnreadableCredentialKeys()
+        }
         .onDisappear {
             cancelOutlookSignIn()
             connector.updatedAt = Date()
@@ -1107,6 +1111,9 @@ struct ConnectorEditorView: View {
     }
 
     private func showCredentialOperationError(_ error: Error) {
+        // A refused copy can reveal unreadable keys after the initial probe.
+        // Offer their batch replacement immediately, without reopening the editor.
+        refreshUnreadableCredentialKeys()
         credentialSaveError = nil
         pendingCredentialSaveContext = nil
         credentialRecoveryID = nil
