@@ -153,6 +153,7 @@ struct ConnectorEditorView: View {
     @State private var credentialOperationError: String?
     @State private var credentialRecoveryID: UUID?
     @State private var pendingCredentialSaveContext: PendingConnectorCredentialSaveContext?
+    @State private var unreadableCredentialKeys: [String] = []
     @State private var newListItem = ""
     @State private var testResult: (Bool, String)?
     @State private var isTesting = false
@@ -467,6 +468,10 @@ struct ConnectorEditorView: View {
                             }
                         }
 
+                        if !unreadableCredentialKeys.isEmpty {
+                            ConnectorCredentialReentrySection(keys: unreadableCredentialKeys) { reenterCredentials($0) }
+                        }
+
                         if !connector.credentialKeys.isEmpty {
                             VStack(spacing: 4) {
                                 // Legacy duplicate rows retain distinct UI identity. Removing
@@ -722,6 +727,7 @@ struct ConnectorEditorView: View {
         .onChange(of: connector.serviceType) { _, newType in
             applyServiceDefaults(for: newType)
         }
+        .task(id: connector.id) { refreshUnreadableCredentialKeys() }
         .onDisappear {
             cancelOutlookSignIn()
             connector.updatedAt = Date()
@@ -1046,13 +1052,37 @@ struct ConnectorEditorView: View {
                 modelContext: modelContext, allowUserInteraction: true)
             credentialOperationError = nil
             credentialRecoveryID = nil
+            refreshUnreadableCredentialKeys()
             return result
         } catch { showCredentialOperationError(error); return nil }
+    }
+
+    /// One generation for every value this build can't read; see
+    /// `ConnectorCredentialReentrySection`.
+    private func reenterCredentials(_ values: [String: String]) -> Bool {
+        defer { refreshUnreadableCredentialKeys() }
+        do {
+            let failure = try ConnectorCredentialEditor.save(values, on: connector,
+                modelContext: modelContext, allowUserInteraction: true)
+            // The section keeps what was typed, so its own Save is the retry.
+            credentialSaveError = nil
+            pendingCredentialSaveContext = nil
+            credentialRecoveryID = nil
+            credentialOperationError = failure.map { presentation(for: $0.outcome, key: $0.key).message }
+            if failure == nil { testResult = nil }
+            return failure == nil
+        } catch { showCredentialOperationError(error); return false }
+    }
+
+    /// Explicit reads, so on appear and after a credential change only.
+    private func refreshUnreadableCredentialKeys() {
+        unreadableCredentialKeys = ConnectorCredentialEditor.unreadableKeys(of: connector)
     }
 
     private func removeCredential(_ key: String) {
         do {
             try ConnectorCredentialEditor.remove(key, from: connector, modelContext: modelContext)
+            refreshUnreadableCredentialKeys()
             credentialOperationError = nil
             credentialRecoveryID = nil
             credentialSaveError = nil
@@ -1064,6 +1094,7 @@ struct ConnectorEditorView: View {
     private func finishCredentialRecovery(_ id: UUID) {
         do {
             try ConnectorCredentialEditor.recover(id, modelContext: modelContext)
+            refreshUnreadableCredentialKeys()
             credentialOperationError = nil
             credentialRecoveryID = nil
             testResult = nil
