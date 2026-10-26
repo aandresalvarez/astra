@@ -67,6 +67,51 @@ struct RuntimeRecoveryLegacyReconciliationTests {
         #expect(reconciliationEvents(task) == 1)
     }
 
+    @Test("A settled legacy task continues through the worker and persists its old history and new answer")
+    func settledLegacyContinuationPreservesHistory() async throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let argsFile = h.rootURL.appendingPathComponent("legacy-resume-args.txt")
+        let path = try h.writeExecutable(named: "claude", script: HeadlessChatScenarioTests.claudeScript(body: """
+        printf '%s\\n' '{"type":"system","subtype":"init","session_id":"legacy-session","model":"claude-sonnet-4-6"}'
+        printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Follow-up preserved"}]}}'
+        printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Follow-up preserved","usage":{"input_tokens":3,"output_tokens":5}}'
+        exit 0
+        """, argsFile: argsFile))
+        let task = h.makeTask(runtime: .claudeCode, goal: "Preserve the earlier conversation", model: "claude-sonnet-4-6")
+        task.status = .completed; task.sessionId = "legacy-session"; task.tokensUsed = 600
+        let old = try legacyRun(task, context: h.context)
+        old.setOutput("Earlier answer remains intact"); old.tokensUsed = 600
+        let oldID = old.id
+        try h.context.save()
+        let worker = h.makeWorker(runtime: .claudeCode, executablePath: path)
+
+        _ = await h.continueTask(task: task, message: "Continue the earlier conversation", worker: worker)
+
+        #expect(task.status == .completed)
+        #expect(task.runs.count == 2)
+        #expect(old.output == "Earlier answer remains intact" && old.tokensUsed == 600)
+        #expect(task.runs.first { $0.id != oldID }?.output == "Follow-up preserved")
+        #expect(task.tokensUsed >= 608)
+        #expect(reconciliationEvents(task) == 1)
+        let args = try String(contentsOf: argsFile, encoding: .utf8).split(separator: "\n").map(String.init)
+        // This older run has no provider launch signature. Native session
+        // reuse must stay off; ASTRA supplies its durable history instead.
+        #expect(!args.contains("--resume"))
+        #expect(args.joined(separator: "\n").contains("Context Source Index:"))
+        #expect(args.joined(separator: "\n").contains("Continue the earlier conversation"))
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context) != nil)
+
+        let reopened = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: h.rootURL.appendingPathComponent("headless.store"))])
+        let saved = try #require(try reopened.mainContext.fetch(FetchDescriptor<AgentTask>()).first { $0.id == task.id })
+        #expect(saved.status == .completed && saved.runs.count == 2)
+        #expect(saved.runs.first { $0.id == oldID }?.output == "Earlier answer remains intact")
+        #expect(saved.runs.first { $0.id != oldID }?.output == "Follow-up preserved")
+        #expect(saved.sessionId == "legacy-session")
+        #expect(reconciliationEvents(saved) == 1)
+    }
+
     @Test("Pre-journal history stays blocked without an older version's own settlement",
           arguments: ["appRestarted", "connectionLost", "noStopReason", "noCompletion", "earlierRunLive",
                       "endedAfterLaunch", "earlierRunContainerized", "unreadableEnvironment", "trackedByJournal", "sessionOnly"])
