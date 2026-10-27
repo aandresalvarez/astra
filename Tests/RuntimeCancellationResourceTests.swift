@@ -25,7 +25,7 @@ struct RuntimeCancellationResourceTests {
             runMode: "task", leaseID: UUID())]
         record.cancellationRequested = true
         record.resourcesReleased = false
-        let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id)
+        let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
         try lease.save(record)
         return record
     }
@@ -38,7 +38,7 @@ struct RuntimeCancellationResourceTests {
         var record = try saved(h, task: task)
         record.resourceClaims?.append(.init(taskID: task.id, resourceKey: h.workspaceURL.appendingPathComponent("other").path,
             accessMode: .readOnly, runMode: "task", leaseID: UUID()))
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(record) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         try h.context.save()
         let reopened = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
             configurations: Array(h.container.configurations))
@@ -82,7 +82,7 @@ struct RuntimeCancellationResourceTests {
         task.executionRootPath = h.workspaceURL.appendingPathComponent("different").path
         let owner = RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, newUserTurn: true)
         #expect(owner == nil)
-        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: task.id) == record)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: task.id, taskOwnerID: task.persistentModelID) == record)
     }
 
     @Test("A missing bound journal cannot release a live queue's claims or admit a competing task")
@@ -97,8 +97,7 @@ struct RuntimeCancellationResourceTests {
         let acquired = RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, resourceClaims: claims)
         let owner = try #require(acquired)
         let run = TaskRun(task: task); h.context.insert(run); try owner.bind(run: run)
-        let store = RuntimeExecutionOwner.store(in: h.context)
-        try FileManager.default.removeItem(at: store.root.appendingPathComponent(task.id.uuidString + ".json"))
+        try FileManager.default.removeItem(at: try #require(owner.receiptURL))
         queue.releaseResourceLocks(claims, task: task, modelContext: h.context)
         #expect(queue.activeResourceLocks.contains(claims[0]))
         owner.finish()
@@ -113,15 +112,15 @@ struct RuntimeCancellationResourceTests {
         record.resourceClaims = nil
         record.cancellationRequested = nil
         let store = RuntimeExecutionOwner.store(in: h.context)
-        do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         #expect(throws: (any Error).self) { try RuntimeResourceOwnership.claims(in: store) }
         record.state = .finished
-        do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         #expect(throws: (any Error).self) { try RuntimeResourceOwnership.claims(in: store) }
         let prior = try #require(record.stopProof)
         record.stopProof = .init(executionID: prior.executionID, process: prior.process, reaped: true,
             processGroupEmpty: true, toolsStopped: true, remoteWorkExcluded: true, capturedAt: Date())
-        do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         #expect(try RuntimeResourceOwnership.claims(in: store).isEmpty)
     }
 
@@ -150,7 +149,7 @@ struct RuntimeCancellationResourceTests {
         record.runID = run.id; record.resourcesReleased = true
         record.cancellationRequested = false
         let store = RuntimeExecutionOwner.store(in: h.context)
-        do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         let admission = RuntimeExecutionOwner.acquireSettlement(task: task, run: run, context: h.context,
             resourceClaims: record.resourceClaims)
         let owner = try #require(admission.owner)
@@ -171,12 +170,12 @@ struct RuntimeCancellationResourceTests {
         let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: UUID().uuidString)
         record.providerSharedStateKey = key.rawValue
         let store = RuntimeExecutionOwner.store(in: h.context)
-        do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         let gate = AgentRuntimeSharedStateGate(processLockRoot: h.rootURL.appendingPathComponent("provider-leases"),
             registeredStoreRoots: [store.root])
         await #expect(throws: (any Error).self) { try await gate.acquire(key) }
         record.resourcesReleased = true
-        do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         let lease = try await gate.acquire(key)
         await gate.release(lease)
     }
@@ -195,7 +194,7 @@ struct RuntimeCancellationResourceTests {
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path) }
         owner.finish()
         #expect(!owner.persistedResourceRelease)
-        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: task.id)?.resourcesReleased == false)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: task.id, taskOwnerID: task.persistentModelID)?.resourcesReleased == false)
     }
     @Test("Separate gate instances serialize provider settings and cancel parked acquisitions")
     func providerProcessLockSerializesGates() async throws {
@@ -244,10 +243,10 @@ struct RuntimeCancellationResourceTests {
         let utility = try await RuntimeSettlementExecutionScope.$current.withValue(scope) {
             try await RuntimeUtilitySharedStateLease.acquire(key, gate: gate)
         }
-        #expect(try store.read(taskID: task.id)?.providerSharedStateKey == key.rawValue)
+        #expect(try store.read(taskID: task.id, taskOwnerID: task.persistentModelID)?.providerSharedStateKey == key.rawValue)
         owner.requestCancellation()
         await utility.release()
-        #expect(try store.read(taskID: task.id)?.providerSharedStateReleased == false)
+        #expect(try store.read(taskID: task.id, taskOwnerID: task.persistentModelID)?.providerSharedStateReleased == false)
         await #expect(throws: (any Error).self) { try await gate.acquire(key) }
         await #expect(throws: (any Error).self) {
             try await RuntimeSettlementExecutionScope.$current.withValue(scope) {

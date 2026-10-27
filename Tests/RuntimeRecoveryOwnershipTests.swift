@@ -148,7 +148,7 @@ struct RuntimeRecoveryOwnershipTests {
         #expect(TaskActivityPresentation.resolve(taskID: task.id, taskStatus: task.status, requests: [request.snapshot]).isRunning)
         var value = try record(taskID: task.id, state: .launching)
         value.runtime = runtime.rawValue; value.runID = run.id; value.providerProcess = nil; value.stopProof = nil
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(value) }
         _ = TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: h.context, autoExportWorkspaces: false)
         _ = TaskTurnRequestRecoveryService.recoverInterruptedRequests(modelContext: h.context, autoExportWorkspaces: false)
         #expect(run.status == .failed && run.typedStopReason == .runtimeConnectionLost)
@@ -170,7 +170,7 @@ struct RuntimeRecoveryOwnershipTests {
         let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "claude-sonnet-4-6")
         task.status = .running; task.tokensUsed = 600
         let previous = try record(taskID: task.id, state: state)
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(previous) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(previous) }
         let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 999))
         defer { owner.finish() }
         #expect(owner.isRecovery)
@@ -186,7 +186,7 @@ struct RuntimeRecoveryOwnershipTests {
         defer { h.cleanup() }
         let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "claude-sonnet-4-6")
         let previous = try record(taskID: task.id)
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(previous) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(previous) }
         let first = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 999))
         first.finish() // admission/preflight failed without launching
         let next = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 999))
@@ -207,7 +207,7 @@ struct RuntimeRecoveryOwnershipTests {
         task.status = .failed; task.tokensUsed = 600; task.costUSD = 0.2; task.sessionId = "original-session"
         let run = TaskRun(task: task); run.status = .failed; h.context.insert(run)
         let value = try record(taskID: task.id)
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(value) }
         let queue = TaskQueue(poolSize: 0)
         let coordinator = TaskLifecycleCoordinator(modelContext: h.context, taskQueue: queue)
         let pending = coordinator.retryTask(task)
@@ -235,10 +235,10 @@ struct RuntimeRecoveryOwnershipTests {
         let run = TaskRun(task: task); run.status = .completed; h.context.insert(run)
         var value = try record(taskID: task.id, state: .unverified)
         value.runID = run.id
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(value) }
         #expect(try RuntimeExecutionOwner.inspection(task: task, context: h.context)?.state == .finished)
         value.executionID = UUID()
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(value) }
         #expect(try RuntimeExecutionOwner.inspection(task: task, context: h.context)?.state == .unknown)
     }
 
@@ -264,7 +264,7 @@ struct RuntimeRecoveryOwnershipTests {
         let proof = try #require(value.stopProof)
         value.stopProof = .init(executionID: proof.executionID, process: proof.process, reaped: true,
             processGroupEmpty: true, toolsStopped: false, remoteWorkExcluded: false, capturedAt: Date())
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(value) }
         if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: h.context) {} else { Issue.record("Retry bypassed missing tool proof") }
         #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60) == nil)
         #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 999, newUserTurn: true) == nil)
@@ -284,7 +284,7 @@ struct RuntimeRecoveryOwnershipTests {
         let proof = try #require(value.stopProof)
         value.stopProof = .init(executionID: proof.executionID, process: proof.process, reaped: true,
             processGroupEmpty: true, toolsStopped: false, remoteWorkExcluded: false, capturedAt: Date())
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(value) }
         #expect(RuntimeSessionInspection.inspect(value, ownedHere: false).state == .unknown)
         #expect(!RuntimeSessionInspection.inspect(value, ownedHere: false).canReplace)
         let coordinator = TaskLifecycleCoordinator(modelContext: h.context, taskQueue: TaskQueue(poolSize: 0))
@@ -305,7 +305,7 @@ struct RuntimeRecoveryOwnershipTests {
         let run = TaskRun(task: task); run.status = .completed; h.context.insert(run)
         var value = try record(taskID: task.id, state: .stopped)
         value.runID = run.id
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(value) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(value) }
         #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context)?.state == .stopped)
         let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context,
             maxRunSeconds: 999, newUserTurn: true))
@@ -322,7 +322,7 @@ struct RuntimeRecoveryOwnershipTests {
         let run = TaskRun(task: task); h.context.insert(run); try owner.bind(run: run)
         run.status = .failed; owner.finish()
         do {
-            let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id)
+            let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
             try FileManager.default.removeItem(at: lease.recordURL)
         }
         if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: h.context) {} else { Issue.record("Missing receipt bypassed Retry") }
@@ -336,7 +336,7 @@ struct RuntimeRecoveryOwnershipTests {
         defer { h.cleanup() }
         let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "claude-sonnet-4-6")
         let store = RuntimeExecutionOwner.store(in: h.context)
-        do { let lease = try store.acquire(taskID: task.id); try Data("broken".utf8).write(to: lease.recordURL) }
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try Data("broken".utf8).write(to: lease.recordURL) }
         #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60) == nil)
         #expect(task.runs.isEmpty)
     }

@@ -289,7 +289,7 @@ struct RuntimeTurnSettlementTests {
             approvalID: "unreadable")
         guard case .failure = result else { Issue.record("Unreadable launch settings must block continuation"); return }
         #expect(!fixture.task.events.contains { $0.type == TaskEventTypes.ExecutionRequest.permissionResume.rawValue })
-        #expect(try TaskTurnRequestRepository.requests(for: fixture.task, in: fixture.context).count == 1)
+        #expect(try TaskTurnRequestRepository.request(id: request.id, in: fixture.context) != nil)
     }
 
 }

@@ -149,7 +149,8 @@ extension TaskQueue {
               persistedResourceLocks.contains(conflict.holder) else {
             return summary
         }
-        let holder = try? resourceOwnershipStore?.read(taskID: conflict.holder.taskID)
+        let holders = (try? resourceOwnershipStore?.records())?.filter { $0.resourceClaims?.contains(conflict.holder) == true } ?? []
+        let holder = holders.count == 1 ? holders.first : nil
         let awaitingCleanup = holder == nil || holder?.cancellationRequested == true
             || holder?.state == .unverified || holder?.appProcess.presence != .present
             || (holder?.state == .finished && holder?.canReplace != true)

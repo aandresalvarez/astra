@@ -245,7 +245,7 @@ struct TaskThreadArchitectureFitnessTests {
             .deletingLastPathComponent()
         let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
         #expect(taskMainView.contains(
-            "TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task.id))"
+            "TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task))"
         ))
     }
 

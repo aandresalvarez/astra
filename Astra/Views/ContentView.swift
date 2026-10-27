@@ -370,8 +370,8 @@ struct ContentView: View {
         return "\(selectedTask.id.uuidString):\(unread)"
     }
 
-    private var selectedTaskCanvasSignature: String {
-        TaskCanvasRefreshSignature(task: selectedTask).rawValue
+    private var selectedTaskCanvasSignature: TaskCanvasRefreshSignature {
+        TaskCanvasRefreshSignature(task: selectedTask)
     }
 
     private var hasWorkspaceCanvasContent: Bool { cachedHasCanvasContent }
@@ -2131,28 +2131,30 @@ struct ContentView: View {
 
     private func openPlanCanvas(_ task: AgentTask) {
         let previousTaskID = selectedTask?.id
+        let sameOwner = selectedTask?.persistentModelID == task.persistentModelID
         let currentCachedHasPlanContent = cachedHasCanvasContent
         let targetHasPlanContent: Bool
-        if previousTaskID == task.id {
+        if sameOwner {
             targetHasPlanContent = currentCachedHasPlanContent
         } else {
             targetHasPlanContent = TaskPlanService.reconstruct(for: task).plan != nil
         }
         guard targetHasPlanContent else { return }
 
-        if previousTaskID == task.id, activeWorkspaceCanvasItem == .plan {
+        if sameOwner, activeWorkspaceCanvasItem == .plan {
             animatePanelChange {
                 setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
             }
             return
         }
-        if previousTaskID != task.id {
+        if !sameOwner {
             setSelectedTask(task)
             cachedHasCanvasContent = WorkspacePlanCanvasPresentationTransition.cachedHasPlanContentAfterTargetValidation(
                 previousTaskID: previousTaskID,
                 targetTaskID: task.id,
                 currentCachedHasPlanContent: currentCachedHasPlanContent,
-                targetHasPlanContent: targetHasPlanContent
+                targetHasPlanContent: targetHasPlanContent,
+                ownerChanged: !sameOwner
             )
         }
         presentCanvas(.plan)
@@ -2415,14 +2417,16 @@ struct ContentView: View {
 
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
         let previousTaskID = selectedTask?.id
-        if previousTaskID != update.selectedTask?.id {
+        let previousOwnerID = selectedTask?.persistentModelID
+        if previousOwnerID != update.selectedTask?.persistentModelID {
             TaskOpenResponsivenessTelemetry.beginForSelection(task: update.selectedTask, source: "workspace_selection", scope: taskOpenResponsivenessScope)
         }
         let transitionTask = TaskOpenResponsivenessTelemetry.shouldMeasureSelectionTransition(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id) ? update.selectedTask : nil
         let sceneUpdate = measurePreShellNavigation(for: transitionTask) {
-            updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
+            updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id,
+                ownerChanged: previousOwnerID != update.selectedTask?.persistentModelID)
             let sceneUpdate = sceneSelection.apply(update)
-            if previousTaskID != update.selectedTask?.id {
+            if previousOwnerID != update.selectedTask?.persistentModelID {
                 handleSelectedTaskIdentityChanged(to: update.selectedTask)
             }
             markTaskRead(update.selectedTask)
@@ -2441,14 +2445,16 @@ struct ContentView: View {
     private func applySceneSelectionIntent(_ intent: () -> Void) {
         let selectionStart = TaskOpenResponsivenessTelemetry.captureSelectionStart()
         let previousTaskID = selectedTask?.id
+        let previousOwnerID = selectedTask?.persistentModelID
         let isComposingTaskForTransition = isComposingTask
         intent()
-        guard previousTaskID != selectedTask?.id else { return }
+        guard previousOwnerID != selectedTask?.persistentModelID else { return }
         TaskOpenResponsivenessTelemetry.beginForSelection(task: selectedTask, source: "scene_selection",
                                                           scope: taskOpenResponsivenessScope, selectionStart: selectionStart)
         updateCanvasForTaskSelectionChange(
             previousTaskID: previousTaskID,
             nextTaskID: selectedTask?.id,
+            ownerChanged: previousOwnerID != selectedTask?.persistentModelID,
             isComposingTaskForTransition: isComposingTaskForTransition
         )
         handleSelectedTaskIdentityChanged(to: selectedTask)
@@ -2476,6 +2482,7 @@ struct ContentView: View {
             updateCanvasForTaskSelectionChange(
                 previousTaskID: previousTaskID,
                 nextTaskID: task?.id,
+                ownerChanged: previousOwnerID != task?.persistentModelID,
                 recordsTransition: recordsFinalHomeTransition
             )
             let wasComposingWorkspaceApp = isComposingWorkspaceApp
@@ -2494,15 +2501,17 @@ struct ContentView: View {
     private func updateCanvasForTaskSelectionChange(
         previousTaskID: UUID?,
         nextTaskID: UUID?,
+        ownerChanged: Bool = false,
         isComposingTaskForTransition: Bool? = nil,
         recordsTransition: Bool = true
     ) {
-        guard previousTaskID != nextTaskID else { return }
+        guard ownerChanged || previousTaskID != nextTaskID else { return }
         let nextCanvasItem = WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
             currentItem: activeWorkspaceCanvasItem,
             previousTaskID: previousTaskID,
             nextTaskID: nextTaskID,
-            isComposingTask: isComposingTaskForTransition ?? isComposingTask
+            isComposingTask: isComposingTaskForTransition ?? isComposingTask,
+            ownerChanged: ownerChanged
         )
         if nextCanvasItem != activeWorkspaceCanvasItem {
             if recordsTransition {
@@ -3497,7 +3506,7 @@ private struct ContentDetailContentView: View {
                     onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
                     onStartMCPInstallReview: onStartMCPInstallReview
                 )
-                .id(task.id)
+                .id(task.persistentModelID)
             }
         case .existingTask:
             if let task = selectedTask {
@@ -3524,7 +3533,7 @@ private struct ContentDetailContentView: View {
                         onReportProblem(task, prefill, runID, evidence, failureOccurredAt)
                     }
                 )
-                .id(task.id)
+                .id(task.persistentModelID)
             }
         case .newTaskComposer:
             ChatPanelView(
@@ -4880,40 +4889,5 @@ struct WorkspaceSetupForm: View {
 
     private func capabilityPrerequisiteColor(for packageID: String) -> Color {
         capabilityPrerequisitesReady(for: packageID) ? Stanford.paloAltoGreen : Stanford.poppy
-    }
-}
-
-private struct LinkedScheduleWarning: Identifiable {
-    enum Action {
-        case markDone
-        case delete
-
-        var alertTitle: String {
-            switch self {
-            case .markDone:
-                return "Pause linked routines before closing task?"
-            case .delete:
-                return "Pause linked routines before deleting?"
-            }
-        }
-
-        var confirmLabel: String {
-            switch self {
-            case .markDone:
-                return "Pause Routines and Close Task"
-            case .delete:
-                return "Pause Routines and Delete"
-            }
-        }
-    }
-
-    let id = UUID()
-    let task: AgentTask
-    let schedules: [TaskSchedule]
-    let action: Action
-
-    var message: String {
-        let names = schedules.map(\.name).joined(separator: ", ")
-        return "This task is the same-thread conversation source for active routines: \(names). Continuing will pause those routines first so future runs do not lose their thread."
     }
 }

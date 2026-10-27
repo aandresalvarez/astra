@@ -24,6 +24,8 @@ struct RemoteWorkspaceJobPersistenceTests {
         try owner.prepareLaunch()
         #expect(owner.record.executionID != preparingID)
         let config = try RemoteWorkspaceJobRegistration.prepare(task: task, runID: run.id, owner: owner, context: h.context, connections: [])
+        #expect(config.ownerBinding?.receiptPath == owner.receiptURL?.path)
+        #expect(FileManager.default.fileExists(atPath: try #require(config.ownerBinding?.receiptPath)))
         #expect(config.ownerBinding?.executionID == owner.record.executionID.uuidString)
         #expect(config.maximumJobSeconds == 45)
         #expect(try RemoteWorkspaceJobRegistration.load(task: task, context: h.context) == config)
@@ -102,7 +104,7 @@ struct RemoteWorkspaceJobPersistenceTests {
         // A worker's finalizer may run after deletion. It updates only the
         // durable owner and must neither fault nor resurrect deleted models.
         owner.finish()
-        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: owner.record.taskID)?.limits == owner.record.limits)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: owner.record.taskID, taskOwnerID: owner.record.taskOwnerID)?.limits == owner.record.limits)
         #expect(owner.record.stopProof == nil)
         #expect(owner.record.resourcesReleased != true)
         #expect(try h.context.fetch(FetchDescriptor<AgentTask>()).isEmpty)

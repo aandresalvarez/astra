@@ -31,7 +31,7 @@ struct SidebarActivitySection<Row: View>: View {
                 .padding(.bottom, 4)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(visibleTasks, content: row)
+                    ForEach(visibleTasks, id: \.persistentModelID, content: row)
 
                     if tasks.count > visibleTasks.count {
                         disclosureButton("Show \(tasks.count - visibleTasks.count) more") {

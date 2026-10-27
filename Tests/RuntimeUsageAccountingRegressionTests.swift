@@ -77,7 +77,7 @@ struct RuntimeUsageAccountingRegressionTests {
         owner.stopped(proof: nil, turns: 1, tokens: monitor.recoveryTokensConsumed(estimatedInputTokens: 900), seconds: 1)
         owner.finish()
         let reopened = ModelContext(h.container)
-        let receipt = try #require(try RuntimeExecutionOwner.store(in: reopened).read(taskID: task.id))
+        let receipt = try #require(try RuntimeExecutionOwner.store(in: reopened).read(taskID: task.id, taskOwnerID: task.persistentModelID))
         #expect(receipt.limits.tokensSpent == 0)
         #expect(receipt.limits.tokenCeiling == 1000)
         #expect(!receipt.canReplace)

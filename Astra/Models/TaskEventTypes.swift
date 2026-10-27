@@ -45,6 +45,7 @@ public enum TaskEventPayloadDecodeError: Error, Equatable, CustomStringConvertib
 
 public enum TaskEventTypes {
     public enum Task {
+        public static let historyImported: TaskEventType = "task.history.imported"
         public static let started: TaskEventType = "task.started"
         public static let completed: TaskEventType = "task.completed"
         public static let cancelled: TaskEventType = "task.cancelled"
@@ -338,6 +339,7 @@ public enum TaskEventTypes {
     ]
 
     private static let systemTypes: Set<TaskEventType> = [
+        Task.historyImported,
         System.remoteJobObserved,
         System.remoteJobCancellation,
         System.runtimeSupervision,

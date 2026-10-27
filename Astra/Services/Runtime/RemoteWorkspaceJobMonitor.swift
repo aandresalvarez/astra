@@ -16,8 +16,9 @@ final class RemoteWorkspaceJobMonitor {
         var error: String?
         var refreshing = false
     }
-    private var presentations: [String: Presentation] = [:]
-    private var inFlight: Set<String> = []
+    private struct Key: Hashable { let root: String; let owner: PersistentIdentifier }
+    private var presentations: [Key: Presentation] = [:]
+    private var inFlight: Set<Key> = []
 
     func presentation(task: AgentTask, context: ModelContext) -> Presentation {
         guard task.isLive else { return Presentation() }
@@ -31,7 +32,10 @@ final class RemoteWorkspaceJobMonitor {
         guard inFlight.insert(key).inserted else { return }
         defer { inFlight.remove(key); presentations[key]?.refreshing = false }
         do {
-            guard let config = try RemoteWorkspaceJobRegistration.load(task: task, context: context) else { return }
+            guard let config = try RemoteWorkspaceJobRegistration.load(task: task, context: context) else {
+                presentations.removeValue(forKey: key)
+                return
+            }
             let store = RemoteWorkspaceJobStore(rootPath: config.recordRootPath)
             let before = try store.records()
             for job in before { try RemoteWorkspaceJobEventReconciler.reconcile(job, task: task, context: context, store: store) }
@@ -111,8 +115,8 @@ final class RemoteWorkspaceJobMonitor {
         } catch { return error.localizedDescription }
     }
 
-    private func key(task: AgentTask, context: ModelContext) -> String {
-        RuntimeExecutionOwner.store(in: context).root.path + "/" + task.id.uuidString
+    private func key(task: AgentTask, context: ModelContext) -> Key {
+        Key(root: RuntimeExecutionOwner.store(in: context).root.path, owner: task.persistentModelID)
     }
 
 

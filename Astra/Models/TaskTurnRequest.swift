@@ -16,6 +16,9 @@ public enum TaskExecutionRequestKind: String, Codable, CaseIterable, Sendable {
 /// queryable columns on `TaskTurnRequest`.
 public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     public let version: Int
+    /// Local row identity, never portable authority when importing a snapshot.
+    /// Older requests omit it and require unambiguous task resolution.
+    public let taskOwnerID: PersistentIdentifier?
     public let reasoningEffort: String?
     public let runtimeExplicitlySelected: Bool
     public let maxTurns: Int
@@ -76,6 +79,8 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         accountInventory: TaskAccountInventorySnapshot? = nil
     ) {
         version = 1
+        taskOwnerID = task.launchSourceTaskOwnerID
+            ?? (task.persistentModelID.storeIdentifier == nil ? nil : task.persistentModelID)
         reasoningEffort = task.reasoningEffort
         runtimeExplicitlySelected = task.runtimeExplicitlySelected
         maxTurns = task.maxTurns
@@ -281,6 +286,9 @@ public final class TaskTurnRequest {
         modelSnapshot = snapshot.modelSnapshot
         tokenBudgetSnapshot = snapshot.tokenBudgetSnapshot
         executionPolicySnapshotJSON = snapshot.executionPolicySnapshotJSON
+        executionPolicySnapshotJSON = TaskTurnOwnerBinding.rebinding(
+            executionPolicySnapshotJSON, to: task
+        )
         resourceClaimsJSON = snapshot.resourceClaimsJSON
     }
 
@@ -298,6 +306,11 @@ public final class TaskTurnRequest {
     /// source event (`user.message`). V16 allows any typed TaskEvent to own the
     /// request while retaining the on-disk column for lightweight migration.
     public var sourceEventID: UUID { messageEventID }
+
+    public var hasLegacyExecutionPolicy: Bool {
+        runtimeIDSnapshot == nil && modelSnapshot == nil && tokenBudgetSnapshot == nil
+            && TaskTurnOwnerBinding.isLegacyPolicy(executionPolicySnapshotJSON)
+    }
 
     public var executionPolicySnapshot: TaskExecutionPolicySnapshotV1? {
         Self.decode(TaskExecutionPolicySnapshotV1.self, from: executionPolicySnapshotJSON)
