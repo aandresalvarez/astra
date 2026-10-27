@@ -263,13 +263,22 @@ rebuild splits sections into their own files rather than editing in place.
    footer appears only when actionable; the retired checklist vocabulary
    never appears; the order is fixed; collapsed boxes name their contents;
    the density tokens are lighter than v1's and below the chat body size.
-2. **Context and Capabilities sections.** New `WorkspaceRailContextSection`
-   and `WorkspaceRailCapabilitiesSection` files built on a v2 row vocabulary in
-   `ContextRailRows.swift` (`RailKeyValueRow`, `RailSectionHeader` with
-   chevron and `+` menu). Remove the panel header, the
-   `WorkspaceSetupChecklistPresentation` states and groups, and the card
-   chrome. Migrate `RailDisclosureStore` toggles. Reuse today's inline editors
-   unchanged.
+2. **Context and Capabilities boxes.** *(implemented on this branch, stacked
+   on PR 1)* The rail view now renders the model's boxes after the Repository
+   and Container cards, on a v2 row vocabulary in `ContextRailRows.swift`
+   (`RailBoxHeader` with chevron and `+` menu, `RailKeyValueRow`,
+   `RailAddMenuButton` for the `+` and the rail-level `Add…` chip, and a
+   one-line `CapabilityRailRow`). The panel header, the checklist states and
+   groups, the `Show all (n)` / `Hide` verbs and the status pills are gone;
+   today's inline editors (instructions, memory, folders, remote, routines)
+   are reused unchanged behind row expansion. `RailDisclosureStore` gained
+   `environmentExpanded`, `contextExpanded` and `capabilitiesExpanded` and
+   clears the three retired toggles. The folder helpers moved to
+   `WorkspaceFolderPresentation` in `WorkspaceRightRailPresentation.swift`.
+   Interim: the Environment box carries only the folder and remote rows (and
+   a summary of them) while the Repository and Container cards stay; PR 3
+   lifts that filter when it folds the cards in, and only then does
+   `Run in a container…` join the add menus.
 3. **Environment section.** Fold `WorkspaceGitSectionView` and
    `WorkspaceDockerSectionView` into `WorkspaceRailEnvironmentSection`, add
    folder and remote rows, gate the button footer on actionability, and move

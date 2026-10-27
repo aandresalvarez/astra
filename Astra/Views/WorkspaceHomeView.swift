@@ -365,7 +365,7 @@ struct WorkspaceHomeView: View {
     }
 
     private var accessConfiguredCount: Int {
-        WorkspaceSetupChecklistPresentation.userConfiguredFolderCount(
+        WorkspaceFolderPresentation.userConfiguredFolderCount(
             primaryPath: workspace.primaryPath,
             additionalPaths: workspace.additionalPaths
         ) + sshConnections.count
@@ -536,7 +536,7 @@ struct WorkspaceHomeView: View {
 
     // Memory/folders/remote-access mirror the same Workspace fields and
     // actions the right rail's "Workspace setup" checklist already owns
-    // (WorkspaceRightRailView.swift) — reusing WorkspaceSetupChecklistPresentation's
+    // (WorkspaceRightRailView.swift) — reusing WorkspaceFolderPresentation's
     // pure helpers there instead of re-deriving folder/state logic here.
     private var memoryTab: some View {
         memorySetupSubsection
@@ -774,12 +774,12 @@ struct WorkspaceHomeView: View {
         VStack(alignment: .leading, spacing: 8) {
             setupSubsectionHeader(
                 icon: "folder",
-                title: WorkspaceSetupChecklistPresentation.folderAccessTitle,
-                subtitle: WorkspaceSetupChecklistPresentation.folderSubtitle(
+                title: WorkspaceFolderPresentation.folderAccessTitle,
+                subtitle: WorkspaceFolderPresentation.folderSubtitle(
                     primaryPath: workspace.primaryPath,
                     additionalPaths: workspace.additionalPaths
                 ),
-                actionTitle: WorkspaceSetupChecklistPresentation.addFolderActionTitle,
+                actionTitle: WorkspaceFolderPresentation.addFolderActionTitle,
                 action: addExtraFolder
             )
 
@@ -788,15 +788,15 @@ struct WorkspaceHomeView: View {
                     primaryPath: workspace.primaryPath,
                     additionalPaths: []
                 ).first {
-                    folderRow(WorkspaceSetupChecklistPresentation.folderDetailRow(for: rootDescriptor), removeAction: nil)
+                    folderRow(WorkspaceFolderPresentation.folderDetailRow(for: rootDescriptor), removeAction: nil)
                 }
 
-                ForEach(WorkspaceSetupChecklistPresentation.userConfiguredFolderDescriptors(
+                ForEach(WorkspaceFolderPresentation.userConfiguredFolderDescriptors(
                     primaryPath: workspace.primaryPath,
                     additionalPaths: workspace.additionalPaths
                 )) { descriptor in
                     folderRow(
-                        WorkspaceSetupChecklistPresentation.folderDetailRow(for: descriptor),
+                        WorkspaceFolderPresentation.folderDetailRow(for: descriptor),
                         removeAction: { removeAdditionalPaths(matching: descriptor.path) }
                     )
                 }
@@ -855,7 +855,7 @@ struct WorkspaceHomeView: View {
     }
 
     private func removeAdditionalPaths(matching path: String) {
-        let remaining = WorkspaceSetupChecklistPresentation.remainingAdditionalPaths(
+        let remaining = WorkspaceFolderPresentation.remainingAdditionalPaths(
             afterRemovingFolderMatching: path,
             from: workspace.additionalPaths
         )

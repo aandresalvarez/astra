@@ -120,7 +120,7 @@ enum WorkspaceRailSectionPresentation {
         case label(String)
     }
 
-    enum RowKind: Equatable {
+    enum RowKind: Hashable {
         case folder
         case repository
         case branch
@@ -133,7 +133,13 @@ enum WorkspaceRailSectionPresentation {
         case capability(id: String)
     }
 
-    struct Row: Equatable {
+    struct Row: Equatable, Identifiable {
+        struct ID: Hashable {
+            var kind: RowKind
+            var path: String?
+        }
+
+        var id: ID { ID(kind: kind, path: representedPath) }
         var kind: RowKind
         var systemImage: String
         var title: String
@@ -145,6 +151,8 @@ enum WorkspaceRailSectionPresentation {
         var action: RowAction? = nil
         /// Whether the row body expands in place (editors, pickers, details).
         var isExpandable: Bool = false
+        /// Full normalized path, never the abbreviated display value.
+        var representedPath: String? = nil
     }
 
     /// What a box's `+` (and the rail-level `Add…`) can add.
@@ -247,10 +255,10 @@ enum WorkspaceRailSectionPresentation {
         if root.isEmpty {
             rows.append(Row(kind: .folder, systemImage: "folder", title: "Folder", action: .verb(chooseFolderVerb)))
         } else {
-            rows.append(Row(kind: .folder, systemImage: "folder", title: "Folder", value: abbreviatedPath(root), isExpandable: true))
+            rows.append(Row(kind: .folder, systemImage: "folder", title: "Folder", value: abbreviatedPath(root), isExpandable: true, representedPath: root))
         }
         for path in uniqueAdditionalPaths(facts.additionalPaths, excluding: root) {
-            rows.append(Row(kind: .folder, systemImage: "folder", title: "Folder", value: abbreviatedPath(path), isExpandable: true))
+            rows.append(Row(kind: .folder, systemImage: "folder", title: "Folder", value: abbreviatedPath(path), isExpandable: true, representedPath: path))
         }
 
         if let name = facts.repositoryName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
@@ -468,7 +476,7 @@ enum WorkspaceRailSectionPresentation {
     static func standardizedPath(_ path: String) -> String {
         var trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         while trimmed.count > 1, trimmed.hasSuffix("/") { trimmed.removeLast() }
-        return trimmed
+        return trimmed.hasPrefix("/") ? URL(fileURLWithPath: trimmed).standardizedFileURL.path : trimmed
     }
 
     static func uniqueAdditionalPaths(_ paths: [String], excluding root: String) -> [String] {
