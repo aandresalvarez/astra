@@ -190,6 +190,38 @@ struct TaskHistoryReadTests {
         #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: f.task, runtime: .codexCLI) == ["own"])
     }
 
+    @Test("Prefix and payload queries preserve ownership with duplicate UUIDs and pending edits")
+    func narrowedRecoveryQueriesStayOwned() throws {
+        let f = try Fixture()
+        f.context.autosaveEnabled = false
+        let duplicate = AgentTask(title: "Copy", goal: "g", workspace: f.workspace)
+        duplicate.id = f.task.id
+        f.context.insert(duplicate)
+        let own = TaskEvent(task: f.task, type: "execution.request.future_kind", payload: "same")
+        let other = TaskEvent(task: duplicate, type: own.type, payload: own.payload)
+        other.id = own.id
+        f.context.insert(own); f.context.insert(other)
+        try f.context.save()
+        #expect(TaskHistoryRead.events(for: f.task, ofTypes: ["user.message"], orTypePrefix: "execution.request.").map(\.persistentModelID) == [own.persistentModelID])
+        #expect(TaskHistoryRead.events(for: f.task, matchingPayload: "same").map(\.persistentModelID) == [own.persistentModelID])
+        SwiftDataTaskRollbackPreparation.prepare(f.task)
+        own.payload = "edited"
+        #expect(TaskHistoryRead.events(for: f.task, matchingPayload: "same").isEmpty)
+        #expect(TaskHistoryRead.events(for: f.task, matchingPayload: "edited").map(\.id) == [own.id])
+        f.context.rollback()
+        #expect(TaskHistoryRead.events(for: f.task, matchingPayload: "same").map(\.persistentModelID) == [own.persistentModelID])
+    }
+
+    @Test("Detached task recovery queries keep their relationship fallback")
+    func detachedRecoveryQueries() {
+        let task = AgentTask(title: "Detached", goal: "g")
+        let request = TaskEvent(task: task, type: "execution.request.future_kind", payload: "same")
+        let unrelated = TaskEvent(task: task, type: "tool.result", payload: "unrelated")
+        task.events = [request, unrelated]
+        #expect(TaskHistoryRead.events(for: task, ofTypes: ["user.message"], orTypePrefix: "execution.request.").map(\.id) == [request.id])
+        #expect(TaskHistoryRead.events(for: task, matchingPayload: "same").map(\.id) == [request.id])
+    }
+
     // MARK: - Fixture
 
     struct Answers: Equatable {

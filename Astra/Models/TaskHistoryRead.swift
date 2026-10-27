@@ -26,6 +26,24 @@ public enum TaskHistoryRead {
         }, matches: { types.contains($0.type) })
     }
 
+    /// Prefix rules intentionally include future execution-request event kinds.
+    public static func events(for task: AgentTask, ofTypes types: Set<String>, orTypePrefix prefix: String) -> [TaskEvent] {
+        let taskID = task.id
+        let values = Array(types)
+        return events(task: task, predicate: #Predicate<TaskEvent> {
+            $0.task?.id == taskID && (values.contains($0.type) || $0.type.starts(with: prefix))
+        }, matches: { types.contains($0.type) || $0.type.hasPrefix(prefix) })
+    }
+
+    /// Legacy payloads without a run binding still need their latest saved or
+    /// pending occurrence, without faulting unrelated tool output into the UI.
+    public static func events(for task: AgentTask, matchingPayload payload: String) -> [TaskEvent] {
+        let taskID = task.id
+        return events(task: task, predicate: #Predicate<TaskEvent> {
+            $0.task?.id == taskID && $0.payload == payload
+        }, matches: { $0.payload == payload })
+    }
+
     public static func records(for task: AgentTask, ofTypes types: Set<String>) -> [TaskEventRecord] {
         events(for: task, ofTypes: types)
             .map(TaskEventRecord.init(event:))
