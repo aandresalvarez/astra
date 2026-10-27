@@ -64,6 +64,9 @@ struct WorkspaceRightRailView: View {
     var onOpenCapabilityPackage: ((String) -> Void)?
     var onTaskCreated: ((AgentTask) -> Void)?
     var onOpenWorkspaceFile: ((String) -> Void)?
+    /// Opens a task output in the shelf that renders its kind (HTML in the
+    /// browser, tables in Query, everything else in Files).
+    var onOpenGeneratedFile: ((String) -> Void)?
     var onNewSSHConnection: (() -> Void)?
     var onEditSSHConnection: ((SSHConnection) -> Void)?
     var sshReloadTrigger: Int = 0
@@ -105,6 +108,12 @@ struct WorkspaceRightRailView: View {
     @StateObject private var repairs = PluginRepairCoordinator()
     @StateObject private var gitViewModel = WorkspaceGitViewModel()
     @StateObject private var dockerViewModel = WorkspaceDockerViewModel()
+    /// The selected task's file facts, read off the main actor from their
+    /// persisted owner (runs' file changes and the task folder), as the task
+    /// header does. Keyed by scope so a stale task never shows another's files.
+    @State private var outputFilesCache: (scope: TaskAttachmentHistoryScope, files: TaskHeaderFilesReader.Facts)?
+    @State private var isLoadingOutputs = false
+    @State private var outputsRefreshTick = 0
     @State private var showsTopRailScrollShadow = false
     @State private var showsBottomRailScrollShadow = false
     /// Boxes the user collapsed in this workspace; every box starts expanded.
@@ -315,6 +324,7 @@ struct WorkspaceRightRailView: View {
             checkDockerEnvironments()
         }
         .task(id: signature) { rebuildCapabilityRailSnapshot(for: signature) }
+        .task(id: outputsSignature) { await recomputeOutputFiles() }
         .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshCapabilityPrerequisiteStatuses() } // one checkout's repairs
         .onChange(of: isConfigurationPresented) { _, presented in
             if !presented { refreshCapabilityPrerequisiteStatuses() }
@@ -484,8 +494,62 @@ struct WorkspaceRightRailView: View {
         Rail.boxes(
             environment: environmentFacts,
             context: contextFacts,
-            capabilities: capabilityFacts(snapshot.items)
+            capabilities: capabilityFacts(snapshot.items),
+            outputs: outputFacts
         )
+    }
+
+    // MARK: Outputs
+
+    /// What the selected task produced: its file facts minus the inputs the
+    /// user attached and any folder, newest first as the reader lists them.
+    private var outputFacts: Rail.OutputFacts {
+        guard let selectedTask,
+              let cache = outputFilesCache,
+              cache.scope == TaskAttachmentHistoryScope(task: selectedTask) else {
+            return Rail.OutputFacts()
+        }
+        return WorkspaceRailOutputPresentation.facts(from: cache.files)
+    }
+
+    private var outputsSignature: WorkspaceRailOutputPresentation.ReadKey {
+        .init(task: selectedTask, refreshTick: outputsRefreshTick)
+    }
+
+    private func recomputeOutputFiles() async {
+        guard let task = selectedTask else {
+            outputFilesCache = nil
+            return
+        }
+        let inputs = task.inputs
+        let access = TaskWorkspaceAccess(task: task)
+        let taskFolder = access.taskFolder
+        let workspacePath = access.effectiveWorkspacePath
+        let scope = TaskAttachmentHistoryScope(task: task)
+        let container = modelContext.container
+        isLoadingOutputs = true
+        defer { isLoadingOutputs = false }
+        let read = Task.detached(priority: .userInitiated) {
+            let context = ModelContext(container)
+            context.autosaveEnabled = false
+            return try TaskHeaderFilesReader.facts(
+                scope: scope, inputs: inputs, taskFolder: taskFolder,
+                workspacePath: workspacePath, modelContext: context
+            )
+        }
+        do {
+            let items = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
+            guard !Task.isCancelled, let current = selectedTask, scope == TaskAttachmentHistoryScope(task: current) else { return }
+            outputFilesCache = (scope, items)
+        } catch is CancellationError {
+            return
+        } catch {
+            AppLogger.error("Task outputs could not be read: \(error.localizedDescription)", category: "UI")
+        }
+    }
+
+    private func openOutput(_ path: String) {
+        (onOpenGeneratedFile ?? onOpenWorkspaceFile)?(path)
     }
 
     private func railBox(_ box: Rail.Box, capabilityItems: [String: RailCapabilityItem]) -> some View {
@@ -497,8 +561,8 @@ struct WorkspaceRightRailView: View {
                     isExpanded: isExpanded,
                     collapsedSummary: box.collapsedSummary,
                     addActions: availableAddActions(box.addActions),
-                    isBusy: box.section == .environment && environmentIsRefreshing,
-                    onRefresh: box.section == .environment ? environmentRefreshAction : nil,
+                    isBusy: boxIsBusy(box.section),
+                    onRefresh: boxRefreshAction(box.section),
                     onToggle: { toggleBox(box.section) },
                     onAdd: { perform($0) }
                 )
@@ -538,7 +602,7 @@ struct WorkspaceRightRailView: View {
                 if !showsDockerEnvironment {
                     RailKeyValueRow(row: row)
                 }
-            case .repository, .branch, .pullRequest, .instructions, .memory, .routines, .capability:
+            case .repository, .branch, .pullRequest, .instructions, .memory, .routines, .capability, .output, .outputsOverflow:
                 EmptyView()
             }
         }
@@ -566,6 +630,24 @@ struct WorkspaceRightRailView: View {
 
     private var environmentIsRefreshing: Bool {
         (hasGitRepositories && gitViewModel.isSyncing) || (showsDockerEnvironment && dockerViewModel.isRefreshing)
+    }
+
+    private func boxIsBusy(_ section: Rail.Section) -> Bool {
+        switch section {
+        case .environment: environmentIsRefreshing
+        case .outputs: isLoadingOutputs
+        case .context, .capabilities: false
+        }
+    }
+
+    /// Boxes whose facts come from scans carry a refresh control; the others'
+    /// facts are the workspace's own and stay current by themselves.
+    private func boxRefreshAction(_ section: Rail.Section) -> (() -> Void)? {
+        switch section {
+        case .environment: return environmentRefreshAction
+        case .outputs: return { outputsRefreshTick += 1 }
+        case .context, .capabilities: return nil
+        }
     }
 
     /// Re-reads the facts that come from scans; nil when the box holds only
@@ -608,6 +690,10 @@ struct WorkspaceRightRailView: View {
             detailRow(row, item: .memory) { memorySetupDetails }
         case .routines:
             detailRow(row, item: .routines) { routinesSetupDetails }
+        case .output(let path):
+            RailKeyValueRow(row: row, help: path, onTap: { openOutput(path) })
+        case .outputsOverflow(_, let firstHiddenPath):
+            RailKeyValueRow(row: row, help: "Open the Files shelf", onTap: { onOpenWorkspaceFile?(firstHiddenPath) })
         case .repository, .branch, .runsIn, .pullRequest:
             RailKeyValueRow(row: row)
         }
@@ -723,6 +809,7 @@ struct WorkspaceRightRailView: View {
         case .environment: .environmentExpanded
         case .context: .contextExpanded
         case .capabilities: .capabilitiesExpanded
+        case .outputs: .outputsExpanded
         }
     }
 
