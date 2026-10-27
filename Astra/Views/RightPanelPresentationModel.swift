@@ -119,7 +119,8 @@ final class RightPanelPresentationModel: ObservableObject {
     /// presented, restore it without writing durable state. Not while launching.
     func restoreRememberedItemIfAvailable(
         rememberedItem: WorkspaceCanvasItem?,
-        canPresent: (WorkspaceCanvasItem) -> Bool
+        canPresent: (WorkspaceCanvasItem) -> Bool,
+        willRestore: (WorkspaceCanvasItem) -> Void = { _ in }
     ) -> WorkspaceCanvasItem? {
         guard !isLaunching, WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
             activeItem: activeCanvasItem,
@@ -130,6 +131,8 @@ final class RightPanelPresentationModel: ObservableObject {
             return nil
         }
 
+        // Capture transition facts before either observable property changes.
+        willRestore(item)
         isRailShown = false
         persistRailShown()
         setActiveCanvasItem(item)
