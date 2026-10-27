@@ -63,7 +63,7 @@ final class RuntimeExecutionOwner {
     static func requiresExistingReceipt(_ task: AgentTask) -> Bool {
         // An audit event can require verification, but can never grant a lease.
         // A restored database must not treat a missing sidecar as a fresh task.
-        if task.events.contains(where: { $0.type == TaskEventTypes.System.runtimeExecutionOwnership.rawValue }) { return true }
+        if !TaskHistoryRead.events(for: task, ofTypes: [TaskEventTypes.System.runtimeExecutionOwnership.rawValue]).isEmpty { return true }
         guard !task.runs.isEmpty || task.hasProviderSession else { return false }
         // History from before the journal is admitted only on an older app's own settlement.
         return RuntimeRecoveryLegacyReconciliation.settledRun(of: task) == nil
@@ -120,6 +120,7 @@ final class RuntimeExecutionOwner {
 
     static func acquire(task: AgentTask, context: ModelContext, maxRunSeconds: TimeInterval,
                         newUserTurn: Bool = false, newUserRequest: Bool = false, launchTask: AgentTask? = nil,
+                        userRequest: TaskTurnRequest? = nil,
                         resourceClaims: [TaskResourceLockClaim]? = nil) -> RuntimeExecutionOwner? {
         let key = key(taskID: task.id, context: context)
         do {
@@ -143,6 +144,9 @@ final class RuntimeExecutionOwner {
                 return nil
             }
             let legacyRun = previous == nil ? RuntimeRecoveryLegacyReconciliation.settledRun(of: task) : nil
+            let continuesOwner = previous.map {
+                RuntimeCompletedUserTurnContinuation.permits($0, task: task, request: userRequest, context: context)
+            } ?? false
             if let previous {
                 if previous.cancellationRequested == true, previous.resourcesReleased != true,
                    !previous.canReplace, !previous.canRecoverPreparation {
@@ -152,7 +156,7 @@ final class RuntimeExecutionOwner {
                 }
                 let abandonedBeforeLaunch = previous.canRecoverPreparation
                 guard previous.canReplace || abandonedBeforeLaunch
-                    || (newUserTurn && previous.canAcceptUserTurn) else {
+                    || (newUserTurn && previous.canAcceptUserTurn) || continuesOwner else {
                     report(replacementBlockedMessage(previous, inspection: .inspect(previous, ownedHere: false)), task: task, context: context, pause: true)
                     return nil
                 }
@@ -161,7 +165,9 @@ final class RuntimeExecutionOwner {
             // A separately authored request gets its own limits after verified
             // cleanup, including when the prior request exhausted its budget.
             // Retry and approved continuations keep the same request's limits.
-            let startsNewRequest = newUserRequest && previous?.canAcceptUserTurn == true
+            let resumesPreparation = continuesOwner && previous?.continuingUserRequestID == userRequest?.id
+                && previous.map { RuntimeCompletedUserTurnContinuation.hasUnlaunchedPreparation($0, task: task, context: context) } == true
+            let startsNewRequest = (continuesOwner && !resumesPreparation) || (newUserRequest && previous?.canAcceptUserTurn == true)
             let recovering = previous != nil && !startsNewRequest
             let configuration = launchTask ?? task
             let limits = recovering ? previous!.limits : RuntimeRecoveryLimits(
@@ -169,11 +175,23 @@ final class RuntimeExecutionOwner {
                 turnsRemaining: configuration.maxTurns > 0 ? configuration.maxTurns : Int.max,
                 secondsRemaining: maxRunSeconds > 0 ? maxRunSeconds : .greatestFiniteMagnitude,
                 tokensSpent: 0, costSpent: 0)
-            var record = RuntimeExecutionOwnerRecord(taskID: task.id, ownerID: UUID(), executionID: UUID(),
+            var record = RuntimeExecutionOwnerRecord(taskID: task.id, ownerID: continuesOwner ? previous!.ownerID : UUID(), executionID: UUID(),
                 appProcess: app, runtime: recovering ? previous!.runtime : task.resolvedRuntimeID.rawValue, sessionID: recovering ? previous?.sessionID : nil,
                 state: .preparing, limits: limits, automaticRestarts: recovering ? previous!.automaticRestarts : 0, updatedAt: Date())
+            // Keep the source/run binding if preparation is interrupted again
+            // before the worker binds its new attempt. No launch has occurred.
+            if resumesPreparation { record.runID = previous?.runID }
             record.inheritedToolUncertainty = previous?.hasUnverifiedTools
             record.resourceClaims = claims
+            if continuesOwner, let previous {
+                try store.retain(previous)
+                record.retainedExecutionHead = previous.executionID
+                record.continuingUserRequestID = userRequest?.id
+                record.retainedProviderSharedStateKeys = Array(Set((previous.retainedProviderSharedStateKeys ?? [])
+                    + [previous.providerSharedStateKey].compactMap { $0 })).sorted()
+                record.resourceClaims = RuntimeCompletedUserTurnContinuation.retainingClaims(previous,
+                    additional: claims, requestID: userRequest?.id)
+            }
             record.resourcesReleased = false
             record.legacySettledRunID = legacyRun?.id
             try lease.save(record) // fail closed before any worker/provider side effect
@@ -337,7 +355,11 @@ final class RuntimeExecutionOwner {
             record.providerSharedStateReleased = true
         }
         let unresolved = record.resourcesReleased != true && record.providerProcess != nil
-        try? save(unresolved ? "The provider exited, but ASTRA cannot confirm that its execution and tools stopped. Its resources remain reserved; new work and recovery must wait. The result, context and remaining limits are preserved." : nil)
+        let acceptsInstruction = task.isLive && RuntimeCompletedUserTurnContinuation.hasCompletedTurn(record, task: task, context: context)
+        let message = acceptsInstruction
+            ? "This turn finished. You can send a new instruction in this task. Earlier tool effects remain unverified, so ASTRA keeps this task's resource reservations; automatic recovery stays blocked."
+            : "The provider exited, but ASTRA cannot confirm that its execution and tools stopped. Its resources remain reserved; new work and recovery must wait. The result, context and remaining limits are preserved."
+        try? save(unresolved ? message : nil)
     }
 
     var isActive: Bool { lease != nil && !writeFailed }

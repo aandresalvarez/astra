@@ -339,7 +339,7 @@ final class AgentRuntimeWorker {
         let admission = RuntimeExecutionAdmission.resolve(request: request, task: task)
         guard let executionOwner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
             maxRunSeconds: maxRunSeconds, newUserTurn: admission.isNewUserTurn,
-            newUserRequest: admission == .userInstruction, launchTask: launchTask,
+            newUserRequest: admission == .userInstruction, launchTask: launchTask, userRequest: request,
             resourceClaims: executionPolicy.admittedResourceClaims) else { return }
         currentExecutionOwner = executionOwner
         defer { RemoteWorkspaceJobLaunchPolicy.finish(taskID: executionOwner.record.taskID); executionOwner.finish(); currentExecutionOwner = nil }

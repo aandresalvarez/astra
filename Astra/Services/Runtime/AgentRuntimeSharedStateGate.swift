@@ -32,11 +32,11 @@ actor AgentRuntimeSharedStateGate {
         self.registeredStoreRoots = registeredStoreRoots
     }
 
-    private func checkAvailability(_ key: AgentRuntimeSharedStateKey, ownerID: UUID?) throws {
+    private func checkAvailability(_ key: AgentRuntimeSharedStateKey, reference: RuntimeProviderOwnershipReference?) throws {
         if let registeredStoreRoots {
-            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: ownerID, in: registeredStoreRoots)
+            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: reference?.ownerID, in: registeredStoreRoots, reference: reference)
         } else {
-            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: ownerID)
+            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: reference?.ownerID, reference: reference)
         }
     }
 
@@ -51,7 +51,7 @@ actor AgentRuntimeSharedStateGate {
             throw CancellationError()
         }
 
-        try checkAvailability(key, ownerID: ownerReference?.ownerID)
+        try checkAvailability(key, reference: ownerReference)
         let leaseID = UUID()
         if holders[key] == nil {
             holders[key] = leaseID
@@ -80,7 +80,7 @@ actor AgentRuntimeSharedStateGate {
         do {
             let processLock = try await ProviderSharedStateProcessLock.acquire(lease.key, root: processLockRoot)
             try Task.checkCancellation()
-            try checkAvailability(lease.key, ownerID: reference?.ownerID)
+            try checkAvailability(lease.key, reference: reference)
             try await MainActor.run {
                 try Task.checkCancellation()
                 try processLock.handoff(lease.key, reference: reference) {

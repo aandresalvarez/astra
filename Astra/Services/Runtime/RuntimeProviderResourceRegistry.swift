@@ -39,21 +39,24 @@ enum RuntimeProviderResourceRegistry {
     /// Retire only after a store's producers have joined, before deleting it.
     /// Joining the scan lock prevents readers from traversing partially removed files.
     static func unregister(_ root: URL) { _ = lock.withLock { roots.remove(root) } }
-    static func assertAvailable(_ key: AgentRuntimeSharedStateKey, ownerID: UUID?) throws {
-        try lock.withLock { try assertAvailable(key, ownerID: ownerID, in: Array(roots)) }
+    static func assertAvailable(_ key: AgentRuntimeSharedStateKey, ownerID: UUID?, reference: RuntimeProviderOwnershipReference? = nil) throws {
+        try lock.withLock { try assertAvailable(key, ownerID: ownerID, in: Array(roots), reference: reference) }
     }
 
     /// Explicit roots let an isolated coordination namespace avoid unrelated stores.
-    static func assertAvailable(_ key: AgentRuntimeSharedStateKey, ownerID: UUID?, in roots: [URL]) throws {
+    static func assertAvailable(_ key: AgentRuntimeSharedStateKey, ownerID: UUID?, in roots: [URL], reference: RuntimeProviderOwnershipReference? = nil) throws {
         for root in roots {
             let store = RuntimeExecutionOwnerStore(root: root)
             for record in try store.records() {
-                guard record.ownerID != ownerID, record.resourcesReleased != true,
+                let sameOwner = reference?.ownerID == record.ownerID && reference?.taskID == record.taskID
+                    && reference?.journalRoot == root.path && ownerID == record.ownerID
+                guard !sameOwner, record.resourcesReleased != true,
                       record.providerSharedStateReleased != true, !record.canRecoverPreparation else { continue }
-                if record.providerSharedStateKey == key.rawValue {
+                if record.providerSharedStateKey == key.rawValue || record.retainedProviderSharedStateKeys?.contains(key.rawValue) == true {
                     // A live owner waits on the kernel gate. An orphaned or
                     // returned owner must retain its durable quarantine.
-                    if record.appProcess.presence == .present {
+                    if record.appProcess.presence == .present,
+                       record.retainedProviderSharedStateKeys?.contains(key.rawValue) != true {
                         do { let lease = try store.acquire(taskID: record.taskID); withExtendedLifetime(lease) {} }
                         catch RuntimeExecutionOwnerStore.Failure.busy { continue }
                     }

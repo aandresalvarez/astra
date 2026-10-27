@@ -71,6 +71,11 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     var legacySettledRunID: UUID? = nil
     /// Original protected evidence retained when an unused SSH route was the only fence.
     var hostNoToolReconciliationOriginalProof: RuntimeExecutionStopProof? = nil
+    /// Linked immutable receipts retained by an explicit continuation. Cleanup
+    /// uncertainty and reservations belong to the logical owner across turns.
+    var retainedExecutionHead: UUID? = nil
+    var retainedProviderSharedStateKeys: [String]? = nil
+    var continuingUserRequestID: UUID? = nil
     var automaticRestarts = 0
     var updatedAt: Date
 

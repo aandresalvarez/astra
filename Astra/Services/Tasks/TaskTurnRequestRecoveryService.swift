@@ -129,7 +129,8 @@ enum TaskTurnRequestRecoveryService {
                     )
                     if requeued.changed { summary.returnedToWaiting += 1 }
                 }
-            } else if RuntimeExecutionOwner.preserveUnresolvedSession(task: task, context: modelContext, reportStatus: false) {
+            } else if !RuntimeCompletedUserTurnContinuation.permits(task: task, request: request, context: modelContext),
+                      RuntimeExecutionOwner.preserveUnresolvedSession(task: task, context: modelContext, reportStatus: false) {
                 // The app's connection ended; the execution itself is still unverified.
                 // Keeping this admission "running" would show a false spinner and
                 // consume a queue slot forever. The protected execution owner still
