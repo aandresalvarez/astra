@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Runtime/RuntimeWorkspaceContinuation.swift|Astra/Views/TaskWorkspaceContinuationPrompt.swift|Tests/RuntimeWorkspaceContinuationTests.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Tasks/TaskQueue+ResourceAdmission.swift)
+      add_target "RuntimeWorkspaceContinuationTests|RuntimeCompletedUserTurnContinuationTests|RemoteWorkspaceJobPersistenceTests|TaskDecisionDock"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Browser/ShelfBrowserOwner.swift|Astra/Services/Browser/ShelfBrowserBridgeRegistry.swift|Astra/Services/Browser/ShelfBrowserSession.swift|Astra/Services/Browser/ShelfSessionStores.swift|Astra/Services/Browser/ControlledBrowser*.swift|Astra/Views/ContentViewBrowserSessionPolicyCache.swift|Astra/Views/ShelfBrowserPanelView.swift|Tests/ShelfBrowserOwnershipTests.swift|Tests/ShelfBrowserLifetimeTests.swift|Tests/ControlledBrowserProfileLeaseTests.swift)
       add_target "ShelfBrowserOwnershipTests|ShelfBrowserLifetimeTests|ControlledBrowserProfileLeaseTests|BrowserBridgeSecurityTests|BrowserSessionPolicy|ShelfBrowserPanelLayoutTests|WorkspaceRightRailPerformanceTests"
       ;;

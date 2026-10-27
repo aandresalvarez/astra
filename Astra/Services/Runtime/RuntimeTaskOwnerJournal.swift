@@ -29,7 +29,7 @@ enum RuntimeTaskOwnerJournal {
         return lease
     }
 
-    private static func legacyOwner(_ record: RuntimeExecutionOwnerRecord, context: ModelContext) throws -> PersistentIdentifier {
+    static func legacyOwner(_ record: RuntimeExecutionOwnerRecord, context: ModelContext) throws -> PersistentIdentifier {
         if let owner = record.taskOwnerID { return owner }
         let taskID = record.taskID
         let tasks = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))

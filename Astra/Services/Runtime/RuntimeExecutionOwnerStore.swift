@@ -33,7 +33,28 @@ final class RuntimeExecutionOwnerStore {
             record.taskOwnerID = taskOwnerID ?? record.taskOwnerID
             try save(record, at: recordURL)
         }
-        private func save(_ record: RuntimeExecutionOwnerRecord, at recordURL: URL) throws {
+        func saveWorkspaceContinuation(_ authorization: RuntimeWorkspaceContinuationAuthorization) throws {
+            guard authorization.taskID == taskID, authorization.taskOwnerID == taskOwnerID,
+                  !authorization.sources.isEmpty else { throw Failure.unreadable }
+            let directory = recordURL.deletingLastPathComponent()
+            let entries = try RuntimeExecutionOwnerStore.workspaceContinuationEntries(root: directory, create: true)
+            var next: UUID?
+            // Publish the small header last. A crash leaves only unreachable
+            // entries, never a partial authorization. Each entry retains the
+            // journal's size bound without limiting the number of predecessors.
+            for source in authorization.sources.reversed() {
+                let entry = WorkspaceContinuationEntry(source: source, next: next)
+                guard try JSONEncoder().encode(entry).count <= 32_768 else { throw Failure.unreadable }
+                let id = UUID()
+                try save(entry, at: entries.appendingPathComponent(id.uuidString + ".handoffentry"))
+                next = id
+            }
+            let header = WorkspaceContinuationHeader(taskID: authorization.taskID, taskOwnerID: authorization.taskOwnerID,
+                requestID: authorization.requestID, sourceEventID: authorization.sourceEventID,
+                approvedAt: authorization.approvedAt, count: authorization.sources.count, head: next!)
+            try save(header, at: directory.appendingPathComponent(authorization.requestID.uuidString + ".handoff"))
+        }
+        private func save<T: Encodable>(_ record: T, at recordURL: URL) throws {
             let data = try JSONEncoder().encode(record)
             let temporary = recordURL.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".tmp")
             let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
@@ -170,7 +191,51 @@ final class RuntimeExecutionOwnerStore {
         let digest = SHA256.hash(data: try encoder.encode(owner)).map { String(format: "%02x", $0) }.joined()
         return root.appendingPathComponent(id.uuidString + "-" + digest + ".json")
     }
-    static func read(_ url: URL) throws -> RuntimeExecutionOwnerRecord? {
+    private struct WorkspaceContinuationHeader: Codable {
+        let taskID: UUID
+        let taskOwnerID: PersistentIdentifier
+        let requestID: UUID
+        let sourceEventID: UUID
+        let approvedAt: Date
+        let count: Int
+        let head: UUID
+    }
+    private struct WorkspaceContinuationEntry: Codable {
+        let source: RuntimeWorkspaceContinuationAuthorization.Source
+        let next: UUID?
+    }
+
+    private static func workspaceContinuationEntries(root: URL, create: Bool) throws -> URL {
+        let directory = root.appendingPathComponent("workspace-continuations")
+        if create {
+            guard mkdir(directory.path, 0o700) == 0 || errno == EEXIST else { throw Failure.unsafePath }
+        }
+        var info = stat()
+        guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+              info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { throw Failure.unsafePath }
+        return directory
+    }
+
+    func workspaceContinuation(requestID: UUID) throws -> RuntimeWorkspaceContinuationAuthorization? {
+        guard let header: WorkspaceContinuationHeader = try Self.readValue(root.appendingPathComponent(requestID.uuidString + ".handoff")) else { return nil }
+        guard header.requestID == requestID, header.count > 0 else { throw Failure.unreadable }
+        let entries = try Self.workspaceContinuationEntries(root: root, create: false)
+        var sources: [RuntimeWorkspaceContinuationAuthorization.Source] = []
+        var visited = Set<UUID>()
+        var next: UUID? = header.head
+        while let id = next {
+            guard sources.count < header.count, visited.insert(id).inserted,
+                  let entry: WorkspaceContinuationEntry = try Self.readValue(entries.appendingPathComponent(id.uuidString + ".handoffentry")) else { throw Failure.unreadable }
+            sources.append(entry.source); next = entry.next
+        }
+        guard sources.count == header.count else { throw Failure.unreadable }
+        return .init(taskID: header.taskID, taskOwnerID: header.taskOwnerID, requestID: header.requestID,
+            sourceEventID: header.sourceEventID, approvedAt: header.approvedAt, sources: sources)
+    }
+
+    static func read(_ url: URL) throws -> RuntimeExecutionOwnerRecord? { try readValue(url) }
+
+    private static func readValue<T: Decodable>(_ url: URL) throws -> T? {
         let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else {
             if errno == ENOENT { return nil }
@@ -183,7 +248,7 @@ final class RuntimeExecutionOwnerStore {
               info.st_size > 0, info.st_size <= 32_768 else { throw Failure.unreadable }
         var bytes = [UInt8](repeating: 0, count: Int(info.st_size))
         guard Darwin.read(fd, &bytes, bytes.count) == bytes.count else { throw Failure.unreadable }
-        do { return try JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: Data(bytes)) }
+        do { return try JSONDecoder().decode(T.self, from: Data(bytes)) }
         catch { throw Failure.unreadable }
     }
 }

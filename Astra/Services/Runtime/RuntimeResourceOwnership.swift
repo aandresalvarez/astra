@@ -22,13 +22,36 @@ enum RuntimeResourceOwnership {
             guard record.canReplace || record.canBeginNewTurn else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         }
         if let context {
+            // A legacy current journal may have replaced a safely ended older
+            // owner before persistent row attribution existed. Resolve the
+            // current receipt to its unique local row, just as journal reads do;
+            // older audit projections of that same row are not extra owners.
+            // Ambiguous/imported rows keep their fallback fences.
+            var legacyOwners: [UUID: PersistentIdentifier] = [:]
+            for record in records where record.taskOwnerID == nil {
+                legacyOwners[record.taskID] = try? RuntimeTaskOwnerJournal.legacyOwner(record, context: context)
+            }
             let type = "runtime.execution_ownership"
             let events = try context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.type == type }))
-            for event in events {
-                guard let audit = try? JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: Data(event.payload.utf8)),
-                      !records.contains(where: { record in
-                          record.taskID == audit.taskID && (record.taskOwnerID == event.task?.persistentModelID
-                              || (record.taskOwnerID == nil && record.ownerID == audit.ownerID))
+            let audits: [(TaskEvent, RuntimeExecutionOwnerRecord)] = events.compactMap { event in
+                guard let record = try? JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: Data(event.payload.utf8)) else { return nil }
+                return (event, record)
+            }
+            for (event, audit) in audits {
+                guard !records.contains(where: { record in
+                          guard record.taskID == audit.taskID, let eventTask = event.task,
+                                let owner = record.taskOwnerID ?? legacyOwners[record.taskID] else { return false }
+                          if owner == eventTask.persistentModelID { return true }
+                          // A fork preserves its source's history verbatim. It
+                          // cannot recreate old source reservations alongside
+                          // that source's still-authoritative current journal.
+                          // With no verified source journal the fallback stays.
+                          return eventTask.id != audit.taskID && eventTask.forkedFromID == audit.taskID
+                              && (audit.taskOwnerID == nil || audit.taskOwnerID == owner)
+                              && (context.model(for: owner) as? AgentTask)?.id == audit.taskID
+                              && audits.contains { native, receipt in
+                                  native.task?.persistentModelID == owner && receipt == audit
+                              }
                       }),
                       !(audit.taskID == taskID && event.task?.persistentModelID == excludingOwner) else { continue }
                 guard let captured = audit.resourceClaims else { throw RuntimeExecutionOwnerStore.Failure.unreadable }

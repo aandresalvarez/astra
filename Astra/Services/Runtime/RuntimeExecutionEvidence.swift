@@ -79,6 +79,8 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     var retainedExecutionHead: UUID? = nil
     var retainedProviderSharedStateKeys: [String]? = nil
     var continuingUserRequestID: UUID? = nil
+    /// Protected, request-scoped user permission to continue a reserved workspace.
+    var workspaceContinuationRequestID: UUID? = nil
     var automaticRestarts = 0
     var updatedAt: Date
 

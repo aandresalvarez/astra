@@ -85,8 +85,9 @@ extension TaskQueue {
         activeTaskIDs: Set<UUID>
     ) -> Bool {
         let inherited = continuingOwnerClaims(task: candidate.task, request: candidate.request)
-        let available = activeResourceLocks.filter {
-            inherited.isEmpty || $0.taskID != candidate.task.id || $0.requestID == candidate.request.id
+        let excluded = workspaceContinuationClaims(task: candidate.task, request: candidate.request)
+        let available = activeResourceLocks.filter { claim in
+            !excluded.contains(claim) && (inherited.isEmpty || claim.taskID != candidate.task.id || claim.requestID == candidate.request.id)
         }
         return !resourceOwnershipReadFailed && TaskExecutionResourceAdmissionPolicy.canAdmit(
             candidate,
@@ -103,8 +104,19 @@ extension TaskQueue {
     func continuingOwnerClaims(task: AgentTask, request: TaskTurnRequest?) -> [TaskResourceLockClaim] {
         guard !activeTasks.contains(task.id), let context = task.modelContext,
               let saved = try? RuntimeExecutionOwner.existing(task: task, context: context),
-              RuntimeCompletedUserTurnContinuation.permits(saved, task: task, request: request, context: context) else { return [] }
+              RuntimeCompletedUserTurnContinuation.permits(saved, task: task, request: request, context: context)
+                || RuntimeWorkspaceContinuation.resumesPreparation(saved, task: task, request: request, context: context) else { return [] }
         return saved.resourceClaims ?? []
+    }
+
+    @MainActor
+    private func workspaceContinuationClaims(task: AgentTask, request: TaskTurnRequest?) -> Set<TaskResourceLockClaim> {
+        guard !activeTasks.contains(task.id), let context = task.modelContext else { return [] }
+        do {
+            let saved = try RuntimeExecutionOwner.existing(task: task, context: context)
+            return try RuntimeWorkspaceContinuation.admission(task: task, request: request, previous: saved,
+                context: context)?.excludedClaims ?? []
+        } catch { return [] }
     }
 
     @MainActor
@@ -112,11 +124,14 @@ extension TaskQueue {
         guard let task, let context else { return canAcquireResourceLocks(claims) }
         let ids = Set(claims.compactMap(\.requestID))
         guard ids.count == 1, let id = ids.first,
-              let request = try? TaskTurnRequestRepository.request(id: id, in: context),
-              !continuingOwnerClaims(task: task, request: request).isEmpty else {
+              let request = try? TaskTurnRequestRepository.request(id: id, in: context) else {
             return canAcquireResourceLocks(claims)
         }
-        let available = activeResourceLocks.filter { $0.taskID != task.id || $0.requestID == id }
+        let inherited = continuingOwnerClaims(task: task, request: request)
+        let excluded = workspaceContinuationClaims(task: task, request: request)
+        let available = activeResourceLocks.filter { claim in
+            !excluded.contains(claim) && (inherited.isEmpty || claim.taskID != task.id || claim.requestID == id)
+        }
         return !resourceOwnershipReadFailed && TaskExecutionResourceBroker.canAcquire(claims, active: available)
     }
 

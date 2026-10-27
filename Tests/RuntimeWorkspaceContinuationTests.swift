@@ -1,0 +1,444 @@
+import Foundation
+import SwiftData
+import Testing
+import ASTRACore
+import ASTRAModels
+import WorkspaceToolSupport
+@testable import ASTRAPersistence
+@testable import ASTRA
+
+@Suite("Explicit workspace continuation", .serialized)
+@MainActor
+struct RuntimeWorkspaceContinuationTests {
+    private func completed(_ h: HeadlessChatHarness) throws -> (AgentTask, RuntimeExecutionOwnerRecord) {
+        let task = h.makeTask(runtime: .claudeCode, goal: "Keep previous work", model: "test")
+        let run = TaskRun(task: task)
+        run.status = .completed; run.typedStopReason = .completed; run.completedAt = Date()
+        run.setOutput("Preserved answer")
+        run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+        h.context.insert(run); task.status = .completed
+        var record = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context, toolsStopped: false)
+        record.state = .finished; record.inheritedToolUncertainty = true
+        record.settlementInProgress = false; record.settlementLocalWorkStopped = true; record.settlementToolsStopped = true
+        record.resourceClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: task,
+            runMode: "previous", sandboxEnforcement: .off)
+        try save(record, h); try h.context.save()
+        return (task, record)
+    }
+    private func save(_ record: RuntimeExecutionOwnerRecord, _ h: HeadlessChatHarness) throws {
+        let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: record.taskID, taskOwnerID: record.taskOwnerID)
+        try lease.save(record)
+    }
+    private func next(_ h: HeadlessChatHarness, after task: AgentTask) throws -> (AgentTask, TaskTurnRequest) {
+        let next = h.makeTask(runtime: .codexCLI, goal: "Saved initial instruction", model: "test")
+        next.workspace = task.workspace
+        let submission = try ExecutionRequestSubmissionService.submitInitial(for: next, into: h.context).get()
+        return (next, try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context)))
+    }
+    private func approve(_ h: HeadlessChatHarness, task: AgentTask, request: TaskTurnRequest) throws {
+        let proposal = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: h.context)
+        try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: h.context)
+    }
+
+    @Test("Only the explicitly authorized successor can start; old evidence, requests and results stay intact")
+    func exclusiveSuccessor() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, original) = try completed(h)
+        let (b, request) = try next(h, after: a)
+        let (c, thirdRequest) = try next(h, after: a)
+        let before = request.snapshot
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        let originalURL = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID).recordURL
+        let bytes = try Data(contentsOf: originalURL)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let claims = queue.resourceLockClaims(for: request, task: b, runMode: "initial", sandboxEnforcement: .off)
+        #expect(!queue.canAcquireResourceLocks(claims, task: b, context: h.context))
+        try approve(h, task: b, request: request)
+        #expect(request.snapshot == before)
+        queue.refreshResourceOwnership(in: h.context)
+        #expect(queue.canAcquireResourceLocks(claims, task: b, context: h.context))
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context,
+            maxRunSeconds: 60, userRequest: request, resourceClaims: claims))
+        defer { owner.finish() }
+        #expect(owner.record.workspaceContinuationRequestID == request.id)
+        #expect(owner.record.inheritedToolUncertainty == true && owner.record.resourcesReleased == false)
+        let follow = try ExecutionRequestSubmissionService.submitFollowUp(message: "Competing old turn", for: a, into: h.context).get()
+        let oldRequest = try #require(try TaskTurnRequestRepository.request(id: follow.requestID, in: h.context))
+        #expect(RuntimeExecutionOwner.acquire(task: a, context: h.context, maxRunSeconds: 60, userRequest: oldRequest) == nil)
+        #expect(RuntimeExecutionOwner.acquire(task: c, context: h.context, maxRunSeconds: 60, userRequest: thirdRequest) == nil)
+        #expect(try Data(contentsOf: originalURL) == bytes)
+        #expect(try store.read(taskID: a.id, taskOwnerID: a.persistentModelID) == original)
+        #expect(a.runs.first?.output == "Preserved answer")
+    }
+
+    @Test("Cancelled, replayed, automatic and imported requests cannot use a workspace grant", arguments: ["cancel", "retry", "scheduled", "started", "sourceRun", "imported", "changedScope"])
+    func requestFences(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try completed(h)
+        let (b, request) = try next(h, after: a)
+        try approve(h, task: b, request: request)
+        switch fault {
+        case "cancel": _ = TaskTurnRequestStateMachine.transition(request, to: .cancelled)
+        case "retry": request.kind = .retry
+        case "scheduled": request.kind = .scheduled
+        case "started": request.startedAt = Date()
+        case "sourceRun": TaskHistoryRead.event(id: request.sourceEventID, in: b)?.run = a.runs.first
+        case "imported":
+            let other = h.makeTask(runtime: .codexCLI, goal: "Copy", model: "test")
+            other.id = b.id; try h.context.save()
+            #expect(RuntimeExecutionOwner.acquire(task: other, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
+            return
+        default:
+            let unrelated = [TaskResourceLockClaim(taskID: b.id, resourceKey: h.rootURL.appendingPathComponent("unrelated").path,
+                accessMode: .write, runMode: "moved", requestID: request.id)]
+            #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request, resourceClaims: unrelated) == nil)
+            return
+        }
+        try h.context.save()
+        #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
+    }
+
+    @Test("Changed, live, cancelled and unfinished predecessors invalidate approval", arguments: ["changed", "liveLease", "cancelled", "settlement", "running", "missingReceipt"])
+    func sourceFences(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, initial) = try completed(h)
+        let (b, request) = try next(h, after: a)
+        let proposal = try RuntimeWorkspaceContinuation.preview(task: b, request: request, context: h.context)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        var live: RuntimeExecutionOwnerStore.Lease?
+        defer { withExtendedLifetime(live) {} }
+        var changed = initial
+        switch fault {
+        case "changed": changed.limits.tokensSpent += 1
+        case "liveLease": live = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID)
+        case "cancelled": changed.cancellationRequested = true
+        case "settlement": changed.settlementInProgress = true
+        case "running": a.runs.first?.status = .running
+        default:
+            let lease = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID)
+            try FileManager.default.removeItem(at: lease.recordURL)
+        }
+        if fault != "liveLease" && fault != "missingReceipt" { try save(changed, h) }
+        try h.context.save()
+        #expect(throws: (any Error).self) { try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: request, context: h.context) }
+        #expect(try store.workspaceContinuation(requestID: request.id) == nil)
+    }
+
+    @Test("A restart before launch reuses the same authorization and spent limits; launch intent never replays", arguments: [false, true])
+    func interruptedPreparation(launched: Bool) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try completed(h)
+        let (b, request) = try next(h, after: a)
+        try approve(h, task: b, request: request)
+        let first = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 20, userRequest: request))
+        var saved = first.record; first.finish()
+        saved.limits.secondsRemaining = 9; saved.limits.tokensSpent = 7
+        saved.state = launched ? .launching : .notStarted
+        try save(saved, h)
+        let again = RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 900, userRequest: request)
+        if launched { #expect(again == nil); return }
+        let owner = try #require(again); defer { owner.finish() }
+        #expect(owner.record.limits == saved.limits)
+        #expect(owner.record.ownerID == saved.ownerID)
+        #expect(owner.record.workspaceContinuationRequestID == request.id)
+    }
+
+    @Test("Unlaunched preparation cannot hide unsettled tools or an unbound started request", arguments: ["tools", "binding"])
+    func unsafePreparation(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try completed(h)
+        let (b, request) = try next(h, after: a)
+        try approve(h, task: b, request: request)
+        let first = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 20, userRequest: request))
+        var saved = first.record; first.finish()
+        saved.state = .notStarted; saved.settlementLocalWorkStopped = true
+        if fault == "tools" { saved.settlementToolsStopped = false }
+        else { saved.runID = UUID(); request.startedAt = Date(); request.runID = nil }
+        try save(saved, h); try h.context.save()
+        #expect(!RuntimeWorkspaceContinuation.resumesPreparation(saved, task: b, request: request, context: h.context))
+        #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
+    }
+
+    @Test("Persisted authorization survives reopening the disk container")
+    func diskReopen() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try completed(h)
+        let (b, request) = try next(h, after: a)
+        try approve(h, task: b, request: request)
+        let id = b.id; let requestID = request.id
+        let reopened = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: Array(h.container.configurations))
+        let context = reopened.mainContext
+        let restored = try #require(try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id })).first)
+        let pending = try #require(try TaskTurnRequestRepository.request(id: requestID, in: context))
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: restored, context: context,
+            maxRunSeconds: 60, userRequest: pending))
+        defer { owner.finish() }
+        #expect(owner.record.workspaceContinuationRequestID == requestID)
+        #expect(owner.record.inheritedToolUncertainty == true)
+    }
+
+    @Test("Two approved successors still have one exclusive owner and respect the admission lease")
+    func competingApprovals() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try completed(h)
+        let (b, br) = try next(h, after: a)
+        let (c, cr) = try next(h, after: a)
+        try approve(h, task: b, request: br); try approve(h, task: c, request: cr)
+        do {
+            let held = try RuntimeExecutionOwner.store(in: h.context).acquireAdmission()
+            defer { withExtendedLifetime(held) {} }
+            #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: br) == nil)
+        }
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: br))
+        defer { owner.finish() }
+        #expect(RuntimeExecutionOwner.acquire(task: c, context: h.context, maxRunSeconds: 60, userRequest: cr) == nil)
+        let queue = TaskQueue(poolSize: 0); queue.refreshResourceOwnership(in: h.context)
+        let claims = queue.resourceLockClaims(for: cr, task: c, runMode: "initial", sandboxEnforcement: .off)
+        #expect(!queue.canAcquireResourceLocks(claims, task: c, context: h.context))
+    }
+
+    @Test("A different source event or automatic source cannot inherit an interrupted preparation", arguments: [false, true])
+    func changedPreparedSource(automatic: Bool) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try completed(h)
+        let (b, request) = try next(h, after: a)
+        try approve(h, task: b, request: request)
+        let first = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 20, userRequest: request))
+        var saved = first.record; first.finish(); saved.state = .notStarted
+        let source = try #require(TaskHistoryRead.event(id: request.sourceEventID, in: b))
+        if automatic {
+            source.payload = TaskEvent.payloadString(TaskExecutionSourcePayloadV1(launchMode: .initial, scheduleID: UUID()))
+        } else {
+            let replacement = TaskEvent(task: b, type: source.type, payload: source.payload)
+            h.context.insert(replacement); request.messageEventID = replacement.id
+        }
+        try save(saved, h); try h.context.save()
+        #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
+    }
+
+    @Test("Known nonterminal SSH jobs block continuation even in retained lineage", arguments: [false, true])
+    func knownRemoteJobs(retained: Bool) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, old) = try completed(h)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        let root = RemoteWorkspaceJobRegistration.directory(taskID: a.id, executionID: old.executionID, context: h.context)
+        let receiptURL = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID).recordURL
+        var config = RemoteWorkspaceJobConfiguration(recordRootPath: root.appendingPathComponent("jobs").path,
+            sshExecutable: "/usr/bin/ssh", connections: [], taskID: a.id.uuidString, runID: old.runID?.uuidString,
+            ownerBinding: .init(receiptPath: receiptURL.path, taskID: a.id.uuidString, runID: try #require(old.runID).uuidString,
+                ownerID: old.ownerID.uuidString, executionID: old.executionID.uuidString))
+        config.observationSSHOptions = RemoteWorkspaceJobRegistration.observationOptions(task: a)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try RemoteWorkspaceJobProtectedFile.write(JSONEncoder().encode(config), to: root.appendingPathComponent("configuration.json"))
+        if retained {
+            try store.retain(old)
+            var current = old; current.executionID = UUID(); current.retainedExecutionHead = old.executionID
+            let proof = try #require(old.stopProof)
+            current.stopProof = .init(executionID: current.executionID, process: proof.process, reaped: true,
+                processGroupEmpty: true, toolsStopped: false, remoteWorkExcluded: false, capturedAt: Date())
+            try save(current, h)
+        }
+        let (b, request) = try next(h, after: a)
+        // The same registration with no jobs is admissible before a late job appears.
+        let proposal = try RuntimeWorkspaceContinuation.preview(task: b, request: request, context: h.context)
+        var job = RemoteWorkspaceJobRecord(jobID: UUID().uuidString.lowercased(), taskID: a.id.uuidString,
+            runID: old.runID?.uuidString, connection: .init(id: "fixture", name: "Fixture", target: "fixture", arguments: ["fixture"]),
+            command: "true", createdAt: Date())
+        job.status = .running
+        try RemoteWorkspaceJobStore(rootPath: config.recordRootPath).create(job)
+        #expect(throws: (any Error).self) { try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: request, context: h.context) }
+        #expect(throws: (any Error).self) { try RuntimeWorkspaceContinuation.preview(task: b, request: request, context: h.context) }
+        #expect(try store.workspaceContinuation(requestID: request.id) == nil)
+    }
+
+    @Test("Large predecessor sets use protected entries and partial or corrupt chains fail closed", arguments: ["valid", "missing", "cycle", "symlink"])
+    func pagedAuthorization(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        var last: AgentTask?
+        for _ in 0..<24 { last = try completed(h).0 }
+        let (b, request) = try next(h, after: #require(last))
+        let proposed = try RuntimeWorkspaceContinuation.preview(task: b, request: request, context: h.context)
+        #expect(try JSONEncoder().encode(proposed).count > 32_768)
+        try RuntimeWorkspaceContinuation.authorize(proposed, task: b, request: request, context: h.context)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        #expect(try store.workspaceContinuation(requestID: request.id) == proposed)
+        let headerURL = store.root.appendingPathComponent(request.id.uuidString + ".handoff")
+        let header = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: headerURL)) as? [String: Any])
+        let head = try #require(header["head"] as? String)
+        let entryURL = store.root.appendingPathComponent("workspace-continuations").appendingPathComponent(head + ".handoffentry")
+        if fault == "missing" { try FileManager.default.removeItem(at: entryURL) }
+        if fault == "cycle" {
+            var entry = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: entryURL)) as? [String: Any])
+            entry["next"] = head
+            try JSONSerialization.data(withJSONObject: entry).write(to: entryURL)
+        }
+        if fault == "symlink" {
+            try FileManager.default.removeItem(at: entryURL)
+            try FileManager.default.createSymbolicLink(at: entryURL, withDestinationURL: headerURL)
+        }
+        if fault == "valid" {
+            let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request))
+            owner.finish()
+        } else {
+            #expect(throws: (any Error).self) { try store.workspaceContinuation(requestID: request.id) }
+            #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
+        }
+    }
+
+    @Test("Legacy quoted SSH aliases stay readable only with identical saved destinations", arguments: ["same", "target", "arguments", "id", "name", "duplicate"], ["alias", "quoted", "identity"])
+    func legacySSHRendering(fault: String, style: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "SSH registration", model: "test")
+        let connection = SSHConnection(name: "QA", host: "unused.example.test", user: "qa",
+            keyPath: style == "identity" ? "~/keys/qa key" : "",
+            configAlias: style == "identity" ? "" : (style == "quoted" ? "qa'host with space" : "qa-alias"))
+        let legacy = style == "identity" ? "'-i' '~/keys/qa key' 'qa@unused.example.test'"
+            : (style == "quoted" ? "'qa'\\''host with space'" : "'qa-alias'")
+        SSHConnectionManager.save([connection], workspacePath: h.workspaceURL.path)
+        let connections = RemoteWorkspaceJobShim.offeredConnections(task: task, targets: [RemoteWorkspaceSSHRoute.connectTarget(for: connection)])
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60))
+        defer { owner.finish() }
+        let run = TaskRun(task: task); h.context.insert(run); try owner.bind(run: run); try owner.prepareLaunch()
+        _ = try RemoteWorkspaceJobRegistration.prepare(task: task, runID: run.id, owner: owner, context: h.context, connections: connections)
+        let url = RemoteWorkspaceJobRegistration.directory(taskID: task.id, executionID: owner.record.executionID, context: h.context)
+            .appendingPathComponent("configuration.json")
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var items = try #require(json["connections"] as? [[String: Any]])
+        items[0]["target"] = fault == "target" ? "different-destination" : legacy
+        if fault == "arguments" { items[0]["arguments"] = ["different-destination"] }
+        if fault == "id" { items[0]["id"] = UUID().uuidString }
+        if fault == "name" { items[0]["name"] = "Changed name" }
+        if fault == "duplicate" { SSHConnectionManager.save([connection, connection], workspacePath: h.workspaceURL.path) }
+        json["connections"] = items
+        let data = try JSONSerialization.data(withJSONObject: json)
+        try RemoteWorkspaceJobProtectedFile.write(data, to: url)
+        if fault == "same" { #expect(try RemoteWorkspaceJobRegistration.loadAll(task: task, context: h.context).count == 1) }
+        else { #expect(throws: (any Error).self) { try RemoteWorkspaceJobRegistration.loadAll(task: task, context: h.context) } }
+        #expect(try Data(contentsOf: url) == data)
+    }
+
+    @Test("An attributed legacy receipt covers older owners on the same row, while copied rows keep their fences", arguments: ["same", "imported", "ambiguous", "orphan"])
+    func legacyOwnerProjection(mode: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, current) = try completed(h)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        do {
+            let scoped = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID)
+            try FileManager.default.removeItem(at: scoped.recordURL)
+        }
+        var legacy = current; legacy.taskOwnerID = nil
+        do { let lease = try store.acquire(taskID: a.id); try lease.save(legacy) }
+        h.context.insert(TaskEvent(task: a, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: TaskEvent.payloadString(legacy)))
+        var oldJSON = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        oldJSON["ownerID"] = UUID().uuidString
+        var old = try JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: JSONSerialization.data(withJSONObject: oldJSON))
+        old.executionID = UUID()
+        old.resourceClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: a,
+            runMode: "old_owner", sandboxEnforcement: .off)
+        let auditTask: AgentTask
+        if mode == "imported" || mode == "ambiguous" {
+            auditTask = h.makeTask(runtime: .claudeCode, goal: "Imported copy", model: "test")
+            auditTask.id = a.id
+        } else { auditTask = a }
+        let oldEvent = TaskEvent(task: auditTask, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: TaskEvent.payloadString(old))
+        if mode == "orphan" { oldEvent.task = nil }
+        h.context.insert(oldEvent)
+        if mode == "ambiguous" {
+            h.context.insert(TaskEvent(task: auditTask, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+                payload: TaskEvent.payloadString(legacy)))
+        }
+        try h.context.save()
+        let originalAudit = oldEvent.payload
+        let originalBytes = try Data(contentsOf: store.root.appendingPathComponent(a.id.uuidString + ".json"))
+        let claims = try RuntimeResourceOwnership.claims(in: store, context: h.context)
+        #expect(oldEvent.payload == originalAudit)
+        #expect(try Data(contentsOf: store.root.appendingPathComponent(a.id.uuidString + ".json")) == originalBytes)
+        if mode != "same" { #expect(Set(old.resourceClaims!).isSubset(of: Set(claims))) }
+        else {
+            #expect(Set(claims) == Set(legacy.resourceClaims!))
+            let (b, request) = try next(h, after: a)
+            try approve(h, task: b, request: request)
+            let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request))
+            owner.finish()
+            #expect(try store.read(taskID: a.id) == legacy)
+        }
+    }
+
+    @Test("Forked historical audit does not duplicate a verified source fence; missing source authority still blocks", arguments: ["verified", "missing", "unmatched", "otherRow"])
+    func forkedAuditProjection(mode: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, original) = try completed(h)
+        let fork = h.makeTask(runtime: .claudeCode, goal: "Fork", model: "test")
+        fork.forkedFromID = a.id
+        var copied = original; copied.executionID = UUID()
+        copied.resourceClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: a,
+            runMode: "fork_history", sandboxEnforcement: .off)
+        let event = TaskEvent(task: fork, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: TaskEvent.payloadString(copied))
+        if mode != "unmatched" {
+            let source: AgentTask
+            if mode == "otherRow" {
+                source = h.makeTask(runtime: .claudeCode, goal: "Other same UUID row", model: "test")
+                source.id = a.id
+            } else { source = a }
+            h.context.insert(TaskEvent(task: source, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+                payload: TaskEvent.payloadString(copied)))
+        }
+        h.context.insert(event); try h.context.save()
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        if mode == "missing" {
+            let lease = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID)
+            try FileManager.default.removeItem(at: lease.recordURL)
+        }
+        let before = event.payload
+        let claims = try RuntimeResourceOwnership.claims(in: store, context: h.context)
+        if mode != "verified" { #expect(Set(copied.resourceClaims!).isSubset(of: Set(claims))) }
+        else {
+            #expect(Set(claims) == Set(original.resourceClaims!))
+            let (b, request) = try next(h, after: a)
+            try approve(h, task: b, request: request)
+            let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request))
+            owner.finish()
+            #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context) == original)
+        }
+        #expect(event.payload == before)
+    }
+
+    @Test("Three separate tool-using tasks can sequentially continue one workspace with SSH configured")
+    func successiveWorkerTasks() async throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        SSHConnectionManager.save([SSHConnection(name: "configured-unused", host: "unused.example.test",
+            user: "fixture", remotePath: "/srv")], workspacePath: h.workspaceURL.path)
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/ProviderStreams/claude/foreground-tool-completion.jsonl")
+        let frames = h.rootURL.appendingPathComponent("frames.jsonl")
+        try FileManager.default.copyItem(at: fixture, to: frames)
+        let executable = try h.writeExecutable(named: "claude", script: HeadlessChatScenarioTests.claudeScript(body:
+            "cat " + HeadlessChatScenarioTests.shQuote(frames.path)))
+        let policy = AgentRuntimeExecutionPolicy.default.withRemoteSSHRoute(
+            RemoteWorkspaceSSHRoute(targets: ["fixture@unused.example.test"], route: .nativeShell))
+        var previous: AgentTask?
+        for index in 1...3 {
+            let task = h.makeTask(runtime: .claudeCode, goal: "Task \(index)", model: "claude-opus-5")
+            if let previous { task.workspace = previous.workspace }
+            let submission = try ExecutionRequestSubmissionService.submitInitial(for: task, into: h.context).get()
+            let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context))
+            if previous != nil { try approve(h, task: task, request: request) }
+            _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
+            DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: h.context)
+            let worker = h.makeWorker(runtime: .claudeCode, executablePath: executable, permissionPolicy: .autonomous)
+            _ = await worker.execute(task: task, modelContext: h.context, executionRequestID: request.id, executionPolicy: policy) { _ in }
+            try h.context.save()
+            #expect(task.status == .completed)
+            #expect(task.runs.count == 1)
+            #expect(task.events.contains { $0.type == "tool.use" })
+            let receipt = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+            #expect(receipt.stopProof?.toolsStopped == false && receipt.resourcesReleased == false)
+            previous = task
+        }
+    }
+}
