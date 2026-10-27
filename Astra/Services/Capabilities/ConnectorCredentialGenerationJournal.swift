@@ -57,7 +57,7 @@ struct ConnectorCredentialGenerationJournal {
     static func requiresRecoveryScan(modelContext: ModelContext) -> Bool {
         do {
             guard let journal = try Self(modelContext: modelContext) else { return false }
-            return try !journal.pending().isEmpty
+            return try !(try journal.pending()).isEmpty
         } catch { return true }
     }
 
@@ -71,6 +71,26 @@ struct ConnectorCredentialGenerationJournal {
                 "scope": "account_credential_generation", "reason": "recovery_record_unreadable"
             ], level: .warning)
         }
+    }
+
+    /// Startup must not hydrate every task's history on the UI actor. Retain
+    /// the producer lock across background mirror writes, then re-read saved
+    /// ownership and pending records before the synchronous collection boundary.
+    static func resumeAfterWorkspaceRecoveryAsync(modelContext: ModelContext) async {
+        do {
+            guard WorkspaceRecoveryTrust.allowsCleanup,
+                  let journal = try Self(modelContext: modelContext), !(try journal.pending()).isEmpty,
+                  let lease = try? journal.acquireLease(),
+                  let saved = await CredentialCleanupStartupMirrors.rewrite(modelContext: modelContext) else { return }
+            journal.resumePending(modelContext: saved, rewriteMirror: { _, _ in true }, producerLease: lease)
+            withExtendedLifetime(lease) {}
+        } catch { auditStartupFailure() }
+    }
+
+    private static func auditStartupFailure() {
+        AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+            "scope": "account_credential_generation", "reason": "recovery_record_unreadable"
+        ], level: .warning)
     }
 
     /// The producer holds this OS lock across prepare, write and domain
@@ -122,12 +142,13 @@ struct ConnectorCredentialGenerationJournal {
     @discardableResult
     func resumePending(
         modelContext: ModelContext, extraMirrors: [String]? = nil,
-        rewriteMirror: ((Workspace, ModelContext) -> Bool)? = nil
+        rewriteMirror: ((Workspace, ModelContext) -> Bool)? = nil,
+        producerLease: Lease? = nil
     ) -> Int {
         guard WorkspaceRecoveryTrust.allowsCleanup,
               PersistentStoreIdentity.current(for: modelContext) == storeIdentity,
               let seen = try? pending(), !seen.isEmpty,
-              let lease = try? acquireLease(),
+              let lease = try? acquireLease(reusing: producerLease),
               PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext),
               let candidates = try? pending() else { return 0 }
         let saved = ModelContext(modelContext.container)

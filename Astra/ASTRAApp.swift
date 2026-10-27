@@ -992,13 +992,19 @@ public struct ASTRAApp: App {
                 PluginSourceOperationRecovery(library: CapabilityLibrary(), store: PluginSourceStore())
                     .resumePending(modelContext: modelContext)
                 PluginOperationRecovery.resumePending(modelContext: modelContext)
-                if WorkspaceRecoveryTrust.allowsCleanup {
+                // Credential garbage collection is not execution recovery.
+                // Keep its destructive ordering in one retained task, while
+                // background mirror writes allow the scheduler and UI to run.
+                credentialCleanupAfterLaunch = Task { @MainActor in
+                    guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
                     WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
                                                                   movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
-                    ConnectorCredentialGenerationJournal.resumeAfterWorkspaceRecovery(modelContext: modelContext)
-                    SkillCredentialGenerationJournal.resumeAfterWorkspaceRecovery(modelContext: modelContext)
+                    await ConnectorCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
+                    await SkillCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
+                    guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
                     ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
-                    PluginSecretCleanupOutbox.resumePending(modelContext: modelContext)
+                    await PluginSecretCleanupOutbox.resumePendingAsync(modelContext: modelContext)
+                    guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
                     WorkspaceDeletionCleanupService.dropUnconfirmed(
                         modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker
                     )
@@ -1102,6 +1108,7 @@ public struct ASTRAApp: App {
     @MainActor private static var taskFolderSnapshotRecovery: Task<Void, Never>?
     /// Rebuilding workspaces from their mirrors, when the store has none; the
     /// tasks it imports may hold baselines to recover.
+    @MainActor private static var credentialCleanupAfterLaunch: Task<Void, Never>?
     @MainActor private static var workspaceRecoveryAfterLaunch: Task<Void, Never>?
     /// Set once this launch's recovery loaded every mirror it found.
     @MainActor private static var workspaceRecoveryTrusted = false

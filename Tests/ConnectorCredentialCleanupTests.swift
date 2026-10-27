@@ -1070,13 +1070,23 @@ struct ConnectorCredentialCleanupTests {
         #expect(app.contains("|| connectorCleanup"))
         // A launch that skipped the scan resumes no credential cleanup, and
         // an unconfirmed workspace deletion is dropped only after both passes.
-        let gate = try #require(app.range(of: "if WorkspaceRecoveryTrust.allowsCleanup {"))
+        let cleanupTask = try #require(app.range(of: "credentialCleanupAfterLaunch = Task { @MainActor in"))
+        let gate = try #require(app.range(of: "guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }",
+            range: cleanupTask.upperBound..<app.endIndex))
         let operations = try #require(app.range(of: "PluginOperationRecovery.resumePending(modelContext: modelContext)", range: trusted.upperBound..<gate.lowerBound))
         let workspaces = try #require(app.range(of: "WorkspaceDeletionCleanupService.resumePending(", range: gate.upperBound..<app.endIndex))
         #expect(trusted.upperBound <= operations.lowerBound && operations.upperBound < workspaces.lowerBound)
         let connectors = try #require(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: gate.upperBound..<app.endIndex))
         let drop = try #require(app.range(of: "WorkspaceDeletionCleanupService.dropUnconfirmed(\n                        modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker", range: connectors.upperBound..<app.endIndex))
         #expect(app[gate.upperBound..<drop.lowerBound].contains("dropsUnconfirmed: false"))
+        let skills = try #require(app.range(of: "await SkillCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync",
+            range: gate.upperBound..<connectors.lowerBound))
+        #expect(app[skills.upperBound..<connectors.lowerBound].contains(
+            "guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }"))
+        let outboxCall = try #require(app.range(of: "await PluginSecretCleanupOutbox.resumePendingAsync",
+            range: connectors.upperBound..<drop.lowerBound))
+        #expect(app[outboxCall.upperBound..<drop.lowerBound].contains(
+            "guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }"))
         #expect(app.components(separatedBy: "ConnectorCredentialCleanup.resumePending(").count == 2)
         #expect(vouched.upperBound <= trusted.lowerBound)
         #expect(WorkspaceRecoveryTrust.state == .notTracked)

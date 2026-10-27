@@ -72,16 +72,31 @@ struct SkillCredentialGenerationJournal {
         catch { audit("recovery_record_unreadable") }
     }
 
+    static func resumeAfterWorkspaceRecoveryAsync(modelContext: ModelContext) async {
+        do {
+            guard WorkspaceRecoveryTrust.allowsCleanup,
+                  let journal = try Self(modelContext: modelContext), !(try journal.pending()).isEmpty,
+                  let lease = try? journal.acquireLease(),
+                  let saved = await CredentialCleanupStartupMirrors.rewrite(modelContext: modelContext) else { return }
+            try journal.resumePending(modelContext: saved, rewriteMirror: { _, _ in true }, producerLease: lease)
+            withExtendedLifetime(lease) {}
+        } catch { audit("recovery_record_unreadable") }
+    }
+
     /// Never infer liveness from unsaved editor state, nor collect before the
     /// recovery ownership scan, durable receipts, requests and all mirrors agree.
-    func resumePending(modelContext: ModelContext) throws {
+    func resumePending(modelContext: ModelContext,
+                       rewriteMirror: ((Workspace, ModelContext) -> Bool)? = nil,
+                       producerLease: PersistentStoreLease? = nil) throws {
         guard WorkspaceRecoveryTrust.allowsCleanup,
               PersistentStoreIdentity.current(for: modelContext) == storeIdentity,
-              !((try pending()).isEmpty), let lease = try? acquireLease(),
+              !((try pending()).isEmpty), let lease = producerLease ?? (try? acquireLease()),
+              lease.lockURL == fileURL.appendingPathExtension("lock"),
               PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext) else { return }
         let saved = ModelContext(modelContext.container)
+        let rewrite = rewriteMirror ?? { WorkspaceConfigManager.exportMirrorNow(workspace: $0, modelContext: $1) }
         guard let workspaces = try? saved.fetch(FetchDescriptor<Workspace>()),
-              workspaces.reduce(true, { WorkspaceConfigManager.exportMirrorNow(workspace: $1, modelContext: saved) && $0 }),
+              workspaces.reduce(true, { rewrite($1, saved) && $0 }),
               let live = PluginSecretCleanupOutbox.liveSkillIDs(modelContext: saved),
               let requests = PendingTaskCredentialReferences.capture(modelContext: saved),
               let mirrors = PluginCredentialMirrorReferences.capture(modelContext: saved) else { return }
