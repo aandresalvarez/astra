@@ -531,7 +531,9 @@ public enum WorkspaceRecoveryService {
         afterImport: @escaping @MainActor () -> Void = {},
         deletionMirrorsNow: @escaping @MainActor () -> (paths: Set<String>, workspaceIDs: Set<String>)? = { ([], []) },
         excludedByWorkspaceID: @escaping @MainActor ([URL]) -> Void = { _ in },
-        loadedMirrors: @escaping @MainActor ([URL]) -> Void = { _ in }
+        loadedMirrors: @escaping @MainActor ([URL]) -> Void = { _ in },
+        discoveryTimeout: Duration = .seconds(10),
+        discover: (@Sendable () async -> (configs: [URL], complete: Bool))? = nil
     ) -> Task<Bool, Never> {
         // True when the store reflects every mirror recovery could find:
         // nothing needed recovering, or the scan finished and each discovered
@@ -541,39 +543,44 @@ public enum WorkspaceRecoveryService {
         // though the store is no longer empty.
         Task { @MainActor in
             let resumingPartialRecovery = incompleteMarker.map(incompleteMarkerPresent) ?? false
+            let hasSavedWorkspaces = !fetchExistingWorkspaces(modelContext: modelContext).isEmpty
             if storeVouchesWithoutScan(
                 extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots,
                 resumingPartialRecovery: resumingPartialRecovery,
                 pendingCleanup: pendingCleanup || !excluded.isEmpty || !excludedIdentities.isEmpty,
-                hasWorkspaces: !fetchExistingWorkspaces(modelContext: modelContext).isEmpty
+                hasWorkspaces: hasSavedWorkspaces
             ) {
                 vouchedWithoutScan()
                 return true
             }
-            let scan = await withTaskGroup(
-                of: (configs: [URL], complete: Bool).self, returning: (configs: [URL], complete: Bool).self
-            ) { group in
-                group.addTask(priority: .utility) {
-                    guard !Task.isCancelled else { return ([], false) }
-                    let scanned = discoverWorkspaceConfigFilesReportingCompleteness(
-                        extraRoots: extraRoots,
-                        includeDefaultRoots: includeDefaultRoots,
-                        privacyHomeDirectory: privacyHomeDirectory
-                    )
-                    // Folders a mirror was written into, wherever they are,
-                    // so a workspace imported outside the roots is found too.
-                    // A registry that can't be read leaves the scan incomplete.
-                    guard let registeredFolders else { return (scanned.configs, false) }
-                    let registered = discoverRegisteredMirrors(
-                        in: registeredFolders, privacyHomeDirectory: privacyHomeDirectory
-                    )
-                    let found = Set(scanned.configs.map { normalizePath($0.path) })
-                    return (
-                        scanned.configs + registered.configs.filter { !found.contains(normalizePath($0.path)) },
-                        scanned.complete && registered.complete
-                    )
-                }
-                return await group.next() ?? ([], false)
+            // Existing tasks can start while uncertain cleanup stays deferred.
+            // An empty store has no saved work to admit: let initial restoration
+            // complete even when its scan legitimately needs more time.
+            let scan = await WorkspaceRecoveryReadDeadline.read(timeout: hasSavedWorkspaces ? discoveryTimeout : nil) {
+                if let discover { return await discover() }
+                guard !Task.isCancelled else { return (configs: [URL](), complete: false) }
+                let scanned = discoverWorkspaceConfigFilesReportingCompleteness(
+                    extraRoots: extraRoots,
+                    includeDefaultRoots: includeDefaultRoots,
+                    privacyHomeDirectory: privacyHomeDirectory
+                )
+                guard let registeredFolders else { return (configs: scanned.configs, complete: false) }
+                let registered = discoverRegisteredMirrors(
+                    in: registeredFolders, privacyHomeDirectory: privacyHomeDirectory
+                )
+                let found = Set(scanned.configs.map { normalizePath($0.path) })
+                return (
+                    configs: scanned.configs + registered.configs.filter { !found.contains(normalizePath($0.path)) },
+                    complete: scanned.complete && registered.complete
+                )
+            }
+            guard let scan else {
+                _ = recordIncompleteRecovery(at: incompleteMarker)
+                AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                    "operation": "recover_workspaces",
+                    "reason": Task.isCancelled ? "discovery_cancelled" : "discovery_deadline_exceeded"
+                ], level: .warning)
+                return false
             }
             let configs = scan.configs
             // A pending deletion's mirror is recognized by the identity pinned
@@ -615,20 +622,7 @@ public enum WorkspaceRecoveryService {
             // only once recovery is trusted, so imports never become durable
             // while the incomplete state isn't. If it can't be written,
             // nothing is imported this launch.
-            if let incompleteMarker {
-                do {
-                    try FileManager.default.createDirectory(
-                        at: incompleteMarker.deletingLastPathComponent(), withIntermediateDirectories: true
-                    )
-                    try Data().write(to: incompleteMarker, options: .atomic)
-                } catch {
-                    AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
-                        "operation": "recover_workspaces", "reason": "incomplete_marker_unwritable",
-                        "error_type": String(describing: type(of: error))
-                    ], level: .error)
-                    return false
-                }
-            }
+            guard recordIncompleteRecovery(at: incompleteMarker) else { return false }
             // A workspace deleted while its mirror was loading is left out:
             // the pending deletions are read again in the same main-actor
             // step as the import, so no deletion can land in between. One
@@ -669,6 +663,21 @@ public enum WorkspaceRecoveryService {
             // A marker that can't be removed only costs a rescan next launch.
             if trusted, let incompleteMarker { try? FileManager.default.removeItem(at: incompleteMarker) }
             return trusted
+        }
+    }
+
+    private static func recordIncompleteRecovery(at marker: URL?) -> Bool {
+        guard let marker else { return true }
+        do {
+            try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: marker, options: .atomic)
+            return true
+        } catch {
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "recover_workspaces", "reason": "incomplete_marker_unwritable",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return false
         }
     }
 
