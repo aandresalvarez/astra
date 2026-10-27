@@ -106,6 +106,10 @@ struct ShelfBrowserPanelView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
+            if let notice = session.ownershipNotice {
+                Text(notice).font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            }
             browserBody
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -685,13 +689,13 @@ struct ShelfBrowserPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ShelfChrome.contentSurface)
         .task {
-            await session.refreshControlledBrowserStatus()
+            await session.enqueueOwnedOperation { await session.refreshControlledBrowserStatus() }.value
         }
     }
 
     private var shouldShowControlledLaunchProgress: Bool {
         switch session.controlledBrowser.runState {
-        case .idle, .launching, .stopped, .failed:
+        case .idle, .launching, .stopped, .waitingForProfile, .failed:
             return true
         case .running, .attached:
             return session.isAgentBridgeEnabled && session.bridgeEndpoint == nil
@@ -844,7 +848,7 @@ struct ShelfBrowserPanelView: View {
 
     private var checkPermissionAgainButton: some View {
         Button {
-            Task { await session.checkAgentControlPermissionAgain() }
+            session.enqueueOwnedOperation { await session.checkAgentControlPermissionAgain() }
         } label: {
             Label("Check Again", systemImage: "arrow.clockwise")
                 .lineLimit(1)
@@ -950,7 +954,7 @@ struct ShelfBrowserPanelView: View {
 
     private var controlledRefreshButton: some View {
         Button {
-            Task { await session.refreshControlledBrowserStatus() }
+            session.enqueueOwnedOperation { await session.refreshControlledBrowserStatus() }
         } label: {
             Label(session.controlledBrowser.runState == .failed ? "Retry" : "Check status", systemImage: "arrow.clockwise")
                 .lineLimit(1)
@@ -1292,6 +1296,7 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var controlledHeroIcon: String {
+        if session.controlledBrowser.runState == .waitingForProfile { return "hourglass" }
         if session.controlledBrowser.runState == .failed {
             return "exclamationmark.triangle.fill"
         }
@@ -1305,6 +1310,8 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var controlledHeroTitle: String {
+        if session.controlledBrowser.runState == .waitingForProfile { return "Waiting for the shared browser profile" }
+        if session.controlledBrowser.runState == .stopped { return "Browser control disconnected" }
         if session.controlledBrowser.runState == .failed {
             return "Browser control needs attention"
         }
@@ -1321,7 +1328,7 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var controlledHeroSubtitle: String {
-        if session.controlledBrowser.runState == .failed {
+        if [.failed, .waitingForProfile, .stopped].contains(session.controlledBrowser.runState) {
             return session.controlledBrowser.lastErrorMessage ?? session.controlledBrowser.statusMessage
         }
         if session.controlledBrowser.isRunning && session.isAgentBridgeEnabled {
@@ -1342,12 +1349,14 @@ struct ShelfBrowserPanelView: View {
             return "Ready"
         case .launching:
             return "Opening"
+        case .waitingForProfile:
+            return "Waiting"
         case .failed:
             return "Failed"
         case .idle:
             return "Off"
         case .stopped:
-            return "Stopped"
+            return "Disconnected"
         }
     }
 
@@ -1373,6 +1382,9 @@ struct ShelfBrowserPanelView: View {
         }
         if session.bridgeEndpoint == nil {
             return "ASTRA is preparing local browser access for this task."
+        }
+        guard session.controlledBrowser.isRunning else {
+            return "Agent control is enabled. This task can use Chrome once its own browser connection is ready."
         }
         return "This task can inspect and operate the current Chrome page."
     }
@@ -1427,6 +1439,7 @@ struct ShelfBrowserPanelView: View {
         if session.controlledBrowser.isRunning { readyCount += 1 }
         if session.bridgeEndpoint != nil { readyCount += 1 }
         if session.isAgentBridgeEnabled && session.boundTaskID != nil { readyCount += 1 }
+        if session.controlledBrowser.runState == .waitingForProfile { return "Profile reserved" }
         if session.controlledBrowser.runState == .failed { return "Connection failed" }
         return "\(readyCount)/3 ready"
     }
@@ -1440,6 +1453,7 @@ struct ShelfBrowserPanelView: View {
     }
 
     private var controlledPrimaryActionTitle: String {
+        if session.controlledBrowser.runState == .waitingForProfile { return "Retry opening" }
         if session.controlledBrowser.isLaunching { return "Opening..." }
         if session.controlledBrowser.isRunning { return "Show Chrome" }
         return "Open Browser"
@@ -1461,6 +1475,8 @@ struct ShelfBrowserPanelView: View {
             return Stanford.statusHealthy
         case .launching:
             return Stanford.statusInfo
+        case .waitingForProfile:
+            return Stanford.statusWarn
         case .failed:
             return Stanford.statusError
         case .idle, .stopped:
@@ -1474,12 +1490,14 @@ struct ShelfBrowserPanelView: View {
             return .ready("Connected")
         case .launching:
             return .active("Opening")
+        case .waitingForProfile:
+            return .waiting("Profile reserved")
         case .failed:
             return .failed("Failed")
         case .idle:
             return .waiting("Not started")
         case .stopped:
-            return .waiting("Stopped")
+            return .waiting("Disconnected")
         }
     }
 
@@ -1515,12 +1533,12 @@ struct ShelfBrowserPanelView: View {
             return "\(session.controlledBrowser.browserName ?? "Chromium") is reachable from ASTRA."
         case .launching:
             return session.controlledBrowser.statusMessage
-        case .failed:
+        case .waitingForProfile, .failed:
             return session.controlledBrowser.lastErrorMessage ?? session.controlledBrowser.statusMessage
         case .idle:
             return "Launch the isolated Chromium profile or enter a URL above."
         case .stopped:
-            return "The controlled profile was stopped."
+            return session.controlledBrowser.statusMessage
         }
     }
 

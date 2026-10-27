@@ -1,10 +1,12 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 
 struct TaskCanvasRefreshSignature: Equatable, Hashable, Sendable, CustomStringConvertible {
     static let none = TaskCanvasRefreshSignature(rawValue: "none")
 
     let rawValue: String
+    let ownerID: PersistentIdentifier?
 
     var description: String { rawValue }
 
@@ -23,11 +25,12 @@ struct TaskCanvasRefreshSignature: Equatable, Hashable, Sendable, CustomStringCo
             task.goal,
             Self.joinFields(task.constraints),
             Self.joinFields(task.acceptanceCriteria)
-        ]))
+        ]), ownerID: task.persistentModelID)
     }
 
-    private init(rawValue: String) {
+    private init(rawValue: String, ownerID: PersistentIdentifier? = nil) {
         self.rawValue = rawValue
+        self.ownerID = ownerID
     }
 
     private static func joinFields(_ fields: [String]) -> String {

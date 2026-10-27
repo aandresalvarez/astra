@@ -2382,6 +2382,7 @@ struct RunPermissionManifestTests {
             currentURL: "https://example.com",
             currentTitle: "Example",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID, sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )

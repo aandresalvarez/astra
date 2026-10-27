@@ -7,7 +7,7 @@ struct TaskMainViewCrashRegressionTests {
     func taskMainViewDefersSelectedTaskRefreshWork() throws {
         let source = try fileText("Astra/Views/TaskMainView.swift")
 
-        #expect(source.contains(".task(id: task.id) {\n            await initializeDisplayedTaskState()\n        }"))
+        #expect(source.contains(".task(id: task.persistentModelID) {\n            await initializeDisplayedTaskState()\n        }"))
         #expect(source.contains("private func deferTaskViewMutation(_ operation: @escaping @MainActor () -> Void)"))
         #expect(!source.contains(".onChange(of: task.id) {\n            PerformanceTelemetry.log(\"chat_open_selected_task\""))
         #expect(!source.contains(".onAppear {\n            PerformanceTelemetry.log(\"chat_open_selected_task\""))

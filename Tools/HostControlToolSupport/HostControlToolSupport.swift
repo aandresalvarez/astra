@@ -217,6 +217,12 @@ private final class HostControlScopedProcess: @unchecked Sendable {
 
         try addPipe(stdoutPipe, targetDescriptor: STDOUT_FILENO, actions: &actions, operation: "stdout")
         try addPipe(stderrPipe, targetDescriptor: STDERR_FILENO, actions: &actions, operation: "stderr")
+        if ![stdoutPipe, stderrPipe, parentLifetimePipe].contains(where: {
+            $0.fileHandleForReading.fileDescriptor == STDIN_FILENO || $0.fileHandleForWriting.fileDescriptor == STDIN_FILENO
+        }), fcntl(STDIN_FILENO, F_GETFD) >= 0 {
+            try check(posix_spawn_file_actions_addinherit_np(&actions, STDIN_FILENO),
+                      operation: "posix_spawn_file_actions_addinherit_np(stdin)")
+        }
         try check(
             posix_spawn_file_actions_adddup2(
                 &actions,
@@ -251,7 +257,7 @@ private final class HostControlScopedProcess: @unchecked Sendable {
         try check(
             posix_spawnattr_setflags(
                 &attr,
-                Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)
+                Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_CLOEXEC_DEFAULT)
             ),
             operation: "posix_spawnattr_setflags"
         )
@@ -296,9 +302,14 @@ private final class HostControlScopedProcess: @unchecked Sendable {
         running = true
         lock.unlock()
 
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        // The broker deliberately has no dependency on ASTRA's permission
+        // core. Keep its blocking wait independent of shared worker capacity.
+        let reaper = Thread { [weak self] in
             self?.reapProcess(pid: childPID)
         }
+        reaper.name = "ASTRA host process wait"
+        reaper.qualityOfService = .utility
+        reaper.start()
     }
 
     func terminate() {

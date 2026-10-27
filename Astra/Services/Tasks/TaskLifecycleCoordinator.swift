@@ -804,6 +804,7 @@ final class TaskLifecycleCoordinator {
         var allRequests: [TaskTurnRequest] = []
         do {
             for task in tasks {
+                try TaskTurnRequestOwnership.preserveLegacyBindings(taskID: task.id, in: modelContext)
                 active += try TaskTurnRequestRepository.activeRequests(for: task, in: modelContext)
                 allRequests += try TaskTurnRequestRepository.requests(for: task, in: modelContext)
             }

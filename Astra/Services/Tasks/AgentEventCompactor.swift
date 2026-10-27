@@ -19,12 +19,12 @@ enum AgentEventCompactor {
     static func compactEvents(for task: AgentTask, modelContext: ModelContext) {
         let start = DispatchTime.now().uptimeNanoseconds
         RuntimeSettlementProgress.pruneSettledCaptures(task: task, modelContext: modelContext)
-        let taskID = task.id
+        let ownerID = task.persistentModelID
         let summaryType = TaskEventTypes.Activity.compacted.rawValue
         let captured = TaskEventTypes.System.runtimeResultCaptured.rawValue
         let prepared = TaskEventTypes.System.runtimeOutcomePrepared.rawValue
         let predicate = #Predicate<TaskEvent> {
-            $0.task?.id == taskID && $0.type != summaryType && $0.type != captured && $0.type != prepared
+            $0.task?.persistentModelID == ownerID && $0.type != summaryType && $0.type != captured && $0.type != prepared
         }
         do {
             let count = try modelContext.fetchCount(FetchDescriptor<TaskEvent>(predicate: predicate))
@@ -41,7 +41,7 @@ enum AgentEventCompactor {
                 + "\nCompacted detail index:\n" + semanticSummaryLines(from: sample).joined(separator: "\n")
                 + "\nEvidence remains in task history. Latest sampled event: \(sample.last?.id.uuidString ?? "none")."
             let summaries = FetchDescriptor<TaskEvent>(
-                predicate: #Predicate<TaskEvent> { $0.task?.id == taskID && $0.type == summaryType },
+                predicate: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID && $0.type == summaryType },
                 sortBy: [SortDescriptor(\TaskEvent.timestamp, order: .reverse)])
             // Legacy deletion summaries contain the only surviving description
             // of their lost details. Never overwrite those.

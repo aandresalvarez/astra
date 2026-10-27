@@ -45,19 +45,17 @@ enum TaskTurnRequestRecoveryService {
         // task ids the active requests actually reference — not every
         // `AgentTask` row in the store.
         let taskIDs = Array(Set(requests.map(\.taskID)))
-        let tasksByID = Dictionary(
-            ((try? modelContext.fetch(
-                FetchDescriptor<AgentTask>(predicate: #Predicate { taskIDs.contains($0.id) })
-            )) ?? []).map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        let tasksByID = Dictionary(grouping: ((try? modelContext.fetch(
+            FetchDescriptor<AgentTask>(predicate: #Predicate { taskIDs.contains($0.id) })
+        )) ?? []), by: \.id)
+        var resolver = TaskTurnRequestOwnership.Resolver(candidates: tasksByID.values.flatMap { $0 })
         for request in requests {
             guard ownership.claim(request.taskID) else { continue }
-            guard let task = tasksByID[request.taskID] else {
+            guard let task = resolver.resolve(request) else {
                 _ = TaskTurnRequestStateMachine.transition(
                     request,
                     to: .failed,
-                    terminalReason: "missing_task",
+                    terminalReason: tasksByID[request.taskID]?.isEmpty == false ? "task_owner_unresolved" : "missing_task",
                     at: recoveredAt
                 )
                 summary.terminalized += 1

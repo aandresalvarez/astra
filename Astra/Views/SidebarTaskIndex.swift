@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 
 struct SidebarTaskIndex {
@@ -40,8 +41,16 @@ struct SidebarTaskIndex {
         tasks: [AgentTask],
         searchText: String,
         taskActivities: [UUID: TaskActivityPresentation] = [:],
+        ownerActivities: [PersistentIdentifier: TaskActivityPresentation]? = nil,
         stickyUnreadTaskID: UUID? = nil
     ) {
+        // Compatibility for callers holding a portable-ID projection is safe
+        // only for IDs that occur once. Production passes exact row owners.
+        let candidates = Dictionary(grouping: tasks, by: \.id)
+        let taskActivities = ownerActivities ?? Dictionary(uniqueKeysWithValues: tasks.compactMap { task in
+            guard candidates[task.id]?.count == 1, let activity = taskActivities[task.id] else { return nil }
+            return (task.persistentModelID, activity)
+        })
         let start = DispatchTime.now().uptimeNanoseconds
         self.searchText = searchText
 
@@ -59,7 +68,7 @@ struct SidebarTaskIndex {
         var reviewTaskCount = 0
 
         for task in tasks {
-            let activity = taskActivities[task.id] ?? TaskActivityPresentation.resolve(
+            let activity = taskActivities[task.persistentModelID] ?? TaskActivityPresentation.resolve(
                 taskID: task.id,
                 taskStatus: task.status,
                 requests: []
@@ -142,13 +151,13 @@ struct SidebarTaskIndex {
         pinnedTasks = Self.sortedByNewest(pinned) { $0.updatedAt }
         unreadTasks = Self.sortedByNewest(unread) { $0.unreadAt ?? $0.updatedAt }
         activeTasks = Self.sortedByPriorityThenNewest(active) { task in
-            (Self.activityPriority(for: taskActivities[task.id]), task.updatedAt)
+            (Self.activityPriority(for: taskActivities[task.persistentModelID]), task.updatedAt)
         }
         allTasks = Self.sortedByPriorityThenNewest(all) { task in
             (
                 Self.flatPriority(
                     for: task,
-                    activity: taskActivities[task.id],
+                    activity: taskActivities[task.persistentModelID],
                     stickyUnreadTaskID: stickyUnreadTaskID
                 ),
                 task.updatedAt
@@ -159,7 +168,7 @@ struct SidebarTaskIndex {
                 .filter {
                     Self.ranksAsUnread(
                         $0,
-                        activity: taskActivities[$0.id],
+                        activity: taskActivities[$0.persistentModelID],
                         stickyUnreadTaskID: stickyUnreadTaskID
                     )
                 }
@@ -227,10 +236,10 @@ struct SidebarTaskIndex {
     private static func taskSortsBefore(
         _ lhs: AgentTask,
         _ rhs: AgentTask,
-        taskActivities: [UUID: TaskActivityPresentation]
+        taskActivities: [PersistentIdentifier: TaskActivityPresentation]
     ) -> Bool {
-        let leftPriority = activityPriority(for: taskActivities[lhs.id])
-        let rightPriority = activityPriority(for: taskActivities[rhs.id])
+        let leftPriority = activityPriority(for: taskActivities[lhs.persistentModelID])
+        let rightPriority = activityPriority(for: taskActivities[rhs.persistentModelID])
         if leftPriority != rightPriority { return leftPriority < rightPriority }
         return lhs.updatedAt > rhs.updatedAt
     }

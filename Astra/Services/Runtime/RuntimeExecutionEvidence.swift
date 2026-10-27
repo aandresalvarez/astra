@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SwiftData
 import ASTRAModels
 
 /// OS identities, not bare PIDs or a model's judgment, fence recovered work.
@@ -48,6 +49,8 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
         case notStarted, preparing, launching, working, waitingForInput, finished, stopped, unverified
     }
     let taskID: UUID
+    var taskOwnerID: PersistentIdentifier? = nil
+    var legacyReferenceOwnerID: UUID? = nil
     let ownerID: UUID
     var executionID: UUID
     var runID: UUID?

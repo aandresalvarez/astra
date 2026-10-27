@@ -25,8 +25,7 @@ enum RemoteWorkspaceJobLaunchPolicy {
         let helperPath = RemoteWorkspaceJobShim.helperPath
         let offered = route.route == .nativeShell && !connections.isEmpty
             && FileManager.default.isExecutableFile(atPath: helperPath)
-        if offered {
-            let receiptPath = RuntimeExecutionOwner.store(in: context).root.appendingPathComponent(task.id.uuidString + ".json").path
+        if offered, let receiptPath = owner.receiptURL?.path {
             resourcePlan.hostPathGrants += readableGrants(helperPath: helperPath, receiptPath: receiptPath)
             preparations[task.id] = { currentOwner in
                 let configuration = try RemoteWorkspaceJobRegistration.prepare(task: task, runID: runID,
