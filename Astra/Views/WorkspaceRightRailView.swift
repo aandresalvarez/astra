@@ -103,6 +103,8 @@ struct WorkspaceRightRailView: View {
     @State private var prerequisiteScan = PrerequisiteScanSnapshot()
     private var capabilityPrerequisiteStatuses: [String: HealthStatus] { prerequisiteScan.statuses }
     @StateObject private var repairs = PluginRepairCoordinator()
+    @StateObject private var gitViewModel = WorkspaceGitViewModel()
+    @StateObject private var dockerViewModel = WorkspaceDockerViewModel()
     @State private var showsTopRailScrollShadow = false
     @State private var showsBottomRailScrollShadow = false
     /// Boxes the user collapsed in this workspace; every box starts expanded.
@@ -297,6 +299,11 @@ struct WorkspaceRightRailView: View {
 
         return railContent(boxes: boxes, capabilityItems: capabilityItemsByID)
         .tint(Stanford.lagunita)
+        .modifier(WorkspaceRailEnvironmentLifecycle(
+            git: gitViewModel, docker: dockerViewModel, workspace: workspace,
+            selectedTask: selectedTask, hasGitRepositories: hasGitRepositories,
+            hasDockerEnvironments: showsDockerEnvironment
+        ))
         .onDisappear { repairs.cancelAll() }
         .onAppear {
             loadSSHConnections()
@@ -369,28 +376,6 @@ struct WorkspaceRightRailView: View {
     /// off `configurePanel`.
     private func railContent(boxes: [Rail.Box], capabilityItems: [String: RailCapabilityItem]) -> some View {
         VStack(alignment: .leading, spacing: WorkspaceRailSectionPresentation.Layout.boxSpacing) {
-            if hasGitRepositories {
-                floatingContextSection {
-                    WorkspaceGitSectionView(
-                        workspace: workspace,
-                        selectedTask: selectedTask,
-                        isCompact: isCompact,
-                        onTaskCreated: onTaskCreated,
-                        onOpenWorkspaceFile: onOpenWorkspaceFile
-                    )
-                }
-            }
-
-            if hasDockerEnvironments {
-                floatingContextSection {
-                    WorkspaceDockerSectionView(
-                        workspace: workspace,
-                        selectedTask: selectedTask,
-                        isCompact: isCompact
-                    )
-                }
-            }
-
             ForEach(boxes, id: \.section) { box in
                 railBox(box, capabilityItems: capabilityItems)
             }
@@ -429,20 +414,6 @@ struct WorkspaceRightRailView: View {
         )
     }
 
-    private func floatingContextSection<Content: View>(
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
-
-        return content()
-            .padding(isCompact ? CapabilityRailLayout.compactSectionPadding : CapabilityRailLayout.regularSectionPadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(shape.fill(floatingSectionFill))
-            .overlay {
-                shape.stroke(floatingSectionStroke, lineWidth: 1)
-            }
-    }
-
     private var floatingSectionFill: Color {
         colorScheme == .dark
             ? Color.primary.opacity(0.052)
@@ -457,12 +428,35 @@ struct WorkspaceRightRailView: View {
 
     private typealias Rail = WorkspaceRailSectionPresentation
 
+    private var showsDockerEnvironment: Bool {
+        WorkspaceRailEnvironmentLifecycle.needsContainerRows(
+            workspaceHasContainers: hasDockerEnvironments, task: selectedTask
+        )
+    }
+
     private var environmentFacts: Rail.EnvironmentFacts {
-        Rail.EnvironmentFacts(
+        var facts = Rail.EnvironmentFacts(
             primaryPath: workspace.primaryPath,
             additionalPaths: workspace.additionalPaths,
             remoteServerNames: sshConnections.map { $0.name.isEmpty ? $0.host : $0.name }
         )
+        if hasGitRepositories, gitViewModel.selectedRepository != nil {
+            facts.repositoryName = gitViewModel.selectedRepositoryName
+            facts.repositoryPath = gitViewModel.selectedRepositoryFullPath
+            facts.hasMultipleRepositories = gitViewModel.repositories.count > 1
+            let branch = gitViewModel.currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+            facts.branch = branch.isEmpty || branch == "unknown" ? nil : branch
+            facts.changedFileCount = gitViewModel.statusFiles.count
+            facts.aheadCount = gitViewModel.pushableCommitCount
+            facts.behindCount = gitViewModel.behind
+            facts.openPullRequestLabel = gitViewModel.openPullRequest.map {
+                "#\($0.number)" + ($0.isDraft ? " · draft" : "")
+            }
+        }
+        if showsDockerEnvironment, dockerViewModel.selectedEnvironment.isContainerized {
+            facts.executionEnvironment = .container(name: dockerViewModel.selectedEnvironment.displayName)
+        }
+        return facts
     }
 
     private var contextFacts: Rail.ContextFacts {
@@ -485,25 +479,13 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    /// The boxes the rail renders, in the model's fixed order. Until the
-    /// Environment box absorbs the Repository and Container cards above it, it
-    /// carries only the folder and remote rows; the cards keep the rest.
+    /// The boxes the rail renders, in the model's fixed order.
     private func railBoxes(_ snapshot: CapabilityRailSnapshot) -> [Rail.Box] {
         Rail.boxes(
             environment: environmentFacts,
             context: contextFacts,
             capabilities: capabilityFacts(snapshot.items)
         )
-        .compactMap { box in box.section == .environment ? interimEnvironmentBox(box) : box }
-    }
-
-    private func interimEnvironmentBox(_ box: Rail.Box) -> Rail.Box? {
-        var interim = box
-        interim.rows = box.rows.filter { $0.kind == .folder || $0.kind == .remote }
-        guard !interim.rows.isEmpty else { return nil }
-        interim.footerActions = []
-        interim.collapsedSummary = interim.rows.compactMap(\.value).joined(separator: Rail.summarySeparator)
-        return interim
     }
 
     private func railBox(_ box: Rail.Box, capabilityItems: [String: RailCapabilityItem]) -> some View {
@@ -515,14 +497,19 @@ struct WorkspaceRightRailView: View {
                     isExpanded: isExpanded,
                     collapsedSummary: box.collapsedSummary,
                     addActions: availableAddActions(box.addActions),
+                    isBusy: box.section == .environment && environmentIsRefreshing,
+                    onRefresh: box.section == .environment ? environmentRefreshAction : nil,
                     onToggle: { toggleBox(box.section) },
                     onAdd: { perform($0) }
                 )
 
                 if isExpanded {
-                    folderRows(box.rows)
-                    ForEach(box.rows.filter { $0.kind != .folder }) { row in
-                        railRow(row, capabilityItems: capabilityItems)
+                    if box.section == .environment {
+                        environmentRows(box)
+                    } else {
+                        ForEach(box.rows) { row in
+                            railRow(row, capabilityItems: capabilityItems)
+                        }
                     }
                     if box.section == .context,
                        isMemoryComposerVisible,
@@ -530,6 +517,65 @@ struct WorkspaceRightRailView: View {
                         firstMemoryComposerRow
                     }
                 }
+            }
+        }
+    }
+
+    /// Where it is (folders, remote), where it runs (the container rows, or a
+    /// plain `Local`), then source control, whose verbs footer closes the box.
+    /// The model's repository, branch and pull-request rows are rendered by
+    /// the git row group, which owns their pickers and sheets.
+    @ViewBuilder
+    private func environmentRows(_ box: Rail.Box) -> some View {
+        folderRows(box.rows)
+        ForEach(box.rows.filter { $0.kind != .folder }) { row in
+            switch row.kind {
+            case .folder:
+                EmptyView()
+            case .remote:
+                detailRow(row, item: .remoteAccess) { remoteAccessSetupDetails }
+            case .runsIn:
+                if !showsDockerEnvironment {
+                    RailKeyValueRow(row: row)
+                }
+            case .repository, .branch, .pullRequest, .instructions, .memory, .routines, .capability:
+                EmptyView()
+            }
+        }
+
+        if showsDockerEnvironment {
+            WorkspaceDockerSectionView(
+                viewModel: dockerViewModel,
+                workspace: workspace,
+                selectedTask: selectedTask,
+                isCompact: isCompact
+            )
+        }
+
+        if hasGitRepositories {
+            WorkspaceGitSectionView(
+                viewModel: gitViewModel,
+                workspace: workspace,
+                selectedTask: selectedTask,
+                isCompact: isCompact,
+                onTaskCreated: onTaskCreated,
+                onOpenWorkspaceFile: onOpenWorkspaceFile
+            )
+        }
+    }
+
+    private var environmentIsRefreshing: Bool {
+        (hasGitRepositories && gitViewModel.isSyncing) || (showsDockerEnvironment && dockerViewModel.isRefreshing)
+    }
+
+    /// Re-reads the facts that come from scans; nil when the box holds only
+    /// folders, which the workspace itself keeps current.
+    private var environmentRefreshAction: (() -> Void)? {
+        guard hasGitRepositories || showsDockerEnvironment else { return nil }
+        return {
+            Task {
+                if hasGitRepositories { await gitViewModel.scanRepositories() }
+                if showsDockerEnvironment { await dockerViewModel.refresh() }
             }
         }
     }

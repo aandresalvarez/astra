@@ -70,11 +70,11 @@ final class WorkspaceDockerViewModel: ObservableObject {
         self.homeDirectoryPath = WorkspacePathPresentation.standardizedPath(homeDirectoryPath)
     }
 
-    func setup(for workspace: Workspace, selectedTask: AgentTask? = nil) {
+    func setup(for workspace: Workspace, selectedTask: AgentTask? = nil, refreshInventory: Bool = true) {
         self.workspace = workspace
         self.selectedTask = selectedTask
         syncSelectedEnvironment()
-        Task { await refresh() }
+        if refreshInventory { Task { await refresh() } }
     }
 
     #if DEBUG

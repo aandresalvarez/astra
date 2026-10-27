@@ -27,6 +27,32 @@ The lean system optimizes for:
 - Semantic grouping instead of repeated per-row labels.
 - Editing in place only when the user has chosen to expand a row.
 
+## Presence, Not Progress
+
+The Workspace Context rail v2 (`docs/specs/2026-10-26-workspace-context-rail-v2.md`,
+owner decision 2026-10-26) sharpened the system with one rule that now applies
+to every operational panel: **the panel lists what exists; absence is not a
+state.** Four consequences:
+
+1. **Presence makes a row.** A row exists when there is something behind it
+   (a memory, a server, a capability). The box's `+` adds the first one. An
+   optional feature that is empty is never a `Needs setup` chore. The one
+   exception is a lever that changes every task (Instructions), which always
+   shows and reads `Write` when empty, with no warning tint.
+2. **No box without content.** Boxes stay, but a box renders only when it has
+   at least one row. An absent box is never an empty bar with a title and a
+   `+`; its first add lives in the rail-level `Add…` at the foot.
+3. **Only two things get colour.** A blocked item's repair verb as a tinted
+   button, and a working tree whose sync blocks a push (info tint). No dots,
+   pills, counts in colour, or the words configured, missing, needs setup,
+   ready.
+4. **One line per fact.** Rows are key/value on one line (30 pt, 13 pt type);
+   inventory and explanations move to the tooltip and the details behind
+   expansion.
+
+The pure model that encodes these rules is
+`Astra/Views/WorkspaceRailSectionPresentation.swift`; its tests pin each one.
+
 ## When To Use This System
 
 Use this system for:
@@ -58,7 +84,7 @@ labels, and subtle dividers.
 Preferred:
 
 - Outer card for `Capabilities`.
-- Group labels like `Action needed`, `Ready`, `Drafts`.
+- A group label only for exceptional shared state (`Action needed`).
 - Full-width rows inside the card.
 
 Avoid:
@@ -74,12 +100,10 @@ If several rows share status, put that status in the group heading. Do not repea
 
 Preferred:
 
-- `Needs setup` group containing Instructions and Remote access.
-- `Configured` group containing Memory and Folders.
-- Row-level pills only for exceptional item-specific state such as a Jira
-  capability that needs setup.
-- A single quiet dot on the leading icon of a configured item is acceptable: it
-  is one glyph reinforcing the group, not scattered status text.
+- A group heading only for exceptional shared state (`Action needed`).
+- A blocked row carries its repair verb as a button; that button is the
+  whole signal (see Presence, Not Progress).
+- No configured dots and no `Configured` group: presence already says it.
 
 Avoid:
 
@@ -143,6 +167,9 @@ collapse a single item behind a summary.
   `Show all (1)`, which hides nothing worth hiding.
 - Remember the choice (see State Model): the panel should not forget what the
   user expanded every session.
+- In the rail, the disclosure is the box itself: a collapsed box is one line
+  whose summary names what is inside (`clew · main · clean`), so `Show all
+  (n)` and `Hide` verbs are retired there.
 
 ### 5. Actions Should Be Close To Meaning
 
@@ -331,13 +358,13 @@ Expanded state:
 - Exposes edit, remove, copy, and add controls.
 - Preserves the row's card context.
 
-Repository is the deliberate exception to summary-first disclosure: show it
-expanded by default when Git repositories exist, because the panel only appears
-when source control is actionable workspace context. Its state (repository,
-branch, checkout, changes) reads as quiet key-value rows; its verbs live in a
-button footer (see 5a). Offer `Hide` to compress to a one-line summary, and put
-the changes count and any ahead/behind in that summary so the collapsed line is
-still truthful about whether there is uncommitted or unpushed work.
+The Environment box holds source control and containers as row groups: its
+state (folders, runs-in, repository, branch, checkout, changes) reads as quiet
+key-value rows; its verbs live in a button footer (see 5a) that renders only
+when something can be committed, pushed or pulled. A clean, pushed checkout
+shows rows and no buttons. Collapsed, the box is one line that still names
+the repository, branch and working-tree state, so it is truthful about
+uncommitted or unpushed work.
 
 Persisted state:
 
@@ -348,12 +375,11 @@ Persisted state:
   details). Keep momentary state ephemeral (the changes drawer, an in-progress
   composer).
 
-Adaptive order:
+Fixed order:
 
-- Order sections by where the user has invested. While setup is still pending,
-  keep it directly under the repository so onboarding is not buried. Once setup
-  is complete, let the capabilities the workspace actually uses rise above the
-  now-compact configured-setup summary.
+- The rail's boxes keep one order (Environment, Context, Capabilities). The
+  earlier adaptive order existed to surface pending setup, a concept the rail
+  no longer has; a fixed order is what the eye learns.
 
 Empty state:
 
@@ -478,20 +504,28 @@ When building a lean panel in SwiftUI:
 
 For right-rail work, the canonical example lives in:
 
-- `Astra/Views/WorkspaceRightRailView.swift` — the panel and its adaptive order.
-- `Astra/Views/WorkspaceGitSectionView.swift` — the state-rows + button-footer
-  Repository card.
-- `Astra/Views/Components/ContextRailRows.swift` — the shared row, badge, and
-  summary-row vocabulary.
+- `Astra/Views/WorkspaceRailSectionPresentation.swift` — the pure model:
+  facts in, boxes and rows out, the presence rules, the density tokens.
+- `Astra/Views/WorkspaceRightRailView.swift` — the panel: boxes, the inline
+  editors behind row expansion, the rail-level `Add…`.
+- `Astra/Views/WorkspaceGitSectionView.swift` and
+  `Astra/Views/WorkspaceDockerSectionView.swift` — the source-control and
+  container row groups inside the Environment box.
+- `Astra/Views/Components/ContextRailRows.swift` — the shared row vocabulary:
+  `RailBoxHeader`, `RailKeyValueRow`, `RailAddMenuButton`, the one-line
+  `CapabilityRailRow`.
 - `Astra/Views/Components/BrandMark.swift` + `SVGPathParser.swift` — brand marks.
 - `Astra/Services/Settings/RailDisclosureStore.swift` — persisted disclosure.
-- `Tests/CapabilityRailPresentationTests.swift`,
+- `Tests/WorkspaceRailSectionPresentationTests.swift`,
+  `Tests/CapabilityRailPresentationTests.swift`,
   `Tests/BrandMarkTests.swift`, `Tests/RailDisclosureStoreTests.swift`.
 
 ## Anti-Patterns
 
 Avoid:
 
+- An optional feature shown as `Needs setup` because it happens to be empty.
+- A box or section with nothing in it, kept for the sake of its title.
 - Double-border designs around one conceptual list.
 - Summary counts repeated in row badges.
 - Scattered status text and dots when a group label can carry the state.
@@ -514,6 +548,8 @@ Avoid:
 Before shipping a UI change, ask:
 
 - Can a user understand the card in five seconds?
+- Does every row stand for something that exists, and does every box have
+  at least one row?
 - Does the collapsed state show only the essential scan path?
 - Is each repeated item using the same row grammar?
 - Do nouns lead, with counts and status as metadata?

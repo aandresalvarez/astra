@@ -261,6 +261,23 @@ enum WorkspaceRailSectionPresentation {
             rows.append(Row(kind: .folder, systemImage: "folder", title: "Folder", value: abbreviatedPath(path), isExpandable: true, representedPath: path))
         }
 
+        // Where it is, where it runs, then source control, which carries the
+        // verbs footer at the foot of the box.
+        let servers = facts.remoteServerNames
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !servers.isEmpty {
+            rows.append(Row(kind: .remote, systemImage: "network", title: "Remote", value: remoteSummary(servers), isExpandable: true))
+        }
+
+        rows.append(Row(
+            kind: .runsIn,
+            systemImage: facts.executionEnvironment == .local ? "desktopcomputer" : "shippingbox",
+            title: "Runs in",
+            value: facts.executionEnvironment.label,
+            isExpandable: true
+        ))
+
         if let name = facts.repositoryName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
             var value = name
             if let repositoryPath = facts.repositoryPath.map(standardizedPath),
@@ -286,21 +303,6 @@ enum WorkspaceRailSectionPresentation {
                 tone: facts.behindCount > 0 ? .info : .neutral,
                 isExpandable: true
             ))
-        }
-
-        rows.append(Row(
-            kind: .runsIn,
-            systemImage: facts.executionEnvironment == .local ? "desktopcomputer" : "shippingbox",
-            title: "Runs in",
-            value: facts.executionEnvironment.label,
-            isExpandable: true
-        ))
-
-        let servers = facts.remoteServerNames
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        if !servers.isEmpty {
-            rows.append(Row(kind: .remote, systemImage: "network", title: "Remote", value: remoteSummary(servers), isExpandable: true))
         }
 
         if let pullRequest = facts.openPullRequestLabel?.trimmingCharacters(in: .whitespacesAndNewlines), !pullRequest.isEmpty {
@@ -515,6 +517,9 @@ enum WorkspaceRailSectionPresentation {
         static let boxSpacing: CGFloat = 10
         static let columnWidth: CGFloat = 340
         static let minimumColumnWidth: CGFloat = 300
+        /// The widest the automatic docked size grows on a large window; the
+        /// user can still drag to `maximumColumnWidth`.
+        static let automaticMaximumColumnWidth: CGFloat = 380
         static let maximumColumnWidth: CGFloat = 420
     }
 }

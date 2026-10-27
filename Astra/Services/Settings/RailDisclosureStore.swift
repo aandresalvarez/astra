@@ -14,18 +14,17 @@ enum RailDisclosureStore {
         case environmentExpanded
         case contextExpanded
         case capabilitiesExpanded
-        /// The Repository card's details/summary choice, until the Environment
-        /// box absorbs it.
-        case repositoryShowsDetails
     }
 
     /// Toggles the v1 rail persisted and the v2 rail no longer reads: the
-    /// configured-setup summary and the ready/draft capability groups. Cleared
-    /// with the workspace's other keys so they never linger.
+    /// configured-setup summary, the ready/draft capability groups, and the
+    /// Repository card's details/summary choice. Cleared with the workspace's
+    /// other keys so they never linger.
     static let retiredToggleRawValues = [
         "configuredSetupExpanded",
         "readyCapabilitiesExpanded",
-        "draftCapabilitiesExpanded"
+        "draftCapabilitiesExpanded",
+        "repositoryShowsDetails"
     ]
 
     private static func defaultsKey(_ workspaceID: String, _ rawToggle: String) -> String {

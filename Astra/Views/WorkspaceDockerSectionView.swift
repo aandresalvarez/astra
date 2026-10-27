@@ -2,27 +2,20 @@ import ASTRACore
 import SwiftUI
 import ASTRAModels
 
+/// The container rows of the Environment box (rail v2): where new tasks run,
+/// what that means for the provider and project commands, and the image and
+/// Docker state behind it. The rail owns the view model and the box header
+/// carries the refresh control, so these are rows, not a card.
 struct WorkspaceDockerSectionView: View {
-    private static let viewUpdateDeferralNanoseconds: UInt64 = 1_000_000
+    private typealias Layout = WorkspaceRailSectionPresentation.Layout
 
-    @StateObject var viewModel = WorkspaceDockerViewModel()
+    @ObservedObject var viewModel: WorkspaceDockerViewModel
     let workspace: Workspace
     var selectedTask: AgentTask?
     var isCompact = false
 
-    private static let rowIconGlyphSize = CapabilityRailLayout.leadingIconFontSize
-    private static let rowIconFrame = CapabilityRailLayout.leadingIconFrame
-    private static let rowIconSpacing = CapabilityRailLayout.leadingIconSpacing
-
     var body: some View {
-        VStack(
-            alignment: .leading,
-            spacing: isCompact
-                ? CapabilityRailLayout.compactSectionContentSpacing
-                : CapabilityRailLayout.regularSectionContentSpacing
-        ) {
-            header
-
+        VStack(alignment: .leading, spacing: 0) {
             if let error = viewModel.errorMessage {
                 errorBanner(error)
             }
@@ -33,93 +26,34 @@ struct WorkspaceDockerSectionView: View {
 
             environmentPickerRow
 
-            if !viewModel.runtimeContractRows.isEmpty {
-                ForEach(viewModel.runtimeContractRows) { row in
-                    rowDivider
-                    runtimeContractRow(row)
-                }
+            ForEach(viewModel.runtimeContractRows) { row in
+                runtimeContractRow(row)
             }
 
             if viewModel.canSwitchPinnedTaskToWorkspaceEnvironment && !viewModel.canUseEnvironmentPicker {
-                rowDivider
                 pinnedTaskEnvironmentActionRow
             }
 
             if viewModel.shouldShowCredentialProjectionRow {
-                rowDivider
                 credentialProjectionRow
             }
 
             if viewModel.buildRequest != nil {
-                rowDivider
                 buildActionRow
             }
 
             if let title = viewModel.dockerIssueTitle,
                let subtitle = viewModel.dockerIssueSubtitle {
-                rowDivider
                 dockerIssueRow(title: title, subtitle: subtitle, detail: viewModel.imageInventoryIssue)
             }
 
             if let detected = viewModel.detectedSummary {
-                rowDivider
                 detectedSummaryRow(detected)
             }
         }
-        .task(id: setupSignature) {
-            await setupAfterViewUpdate()
-        }
     }
 
-    private var setupSignature: String {
-        [
-            workspace.id.uuidString,
-            selectedTask?.id.uuidString ?? "none",
-            selectedTask?.status.rawValue ?? "none",
-            selectedTask?.executionEnvironmentSnapshotJSON ?? "task-environment-none",
-            workspace.primaryPath,
-            workspace.additionalPaths.joined(separator: "\u{1F}"),
-            workspace.activeExecutionEnvironmentJSON ?? "none"
-        ].joined(separator: "\u{1E}")
-    }
-
-    @MainActor
-    private func setupAfterViewUpdate() async {
-        do {
-            try await Task.sleep(nanoseconds: Self.viewUpdateDeferralNanoseconds)
-        } catch {
-            return
-        }
-        guard !Task.isCancelled else { return }
-        viewModel.setup(for: workspace, selectedTask: selectedTask)
-    }
-
-    private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Text("Container")
-                .font(Stanford.ui(CapabilityRailLayout.sectionTitleFontSize, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-
-            if viewModel.isRefreshing {
-                ProgressView().controlSize(.small)
-            } else {
-                Button {
-                    Task { await viewModel.refresh() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .frame(width: 20, height: 20)
-                .help("Refresh containers")
-            }
-        }
-    }
+    // MARK: - Rows (one line per fact)
 
     private var environmentPickerRow: some View {
         Menu {
@@ -133,200 +67,147 @@ struct WorkspaceDockerSectionView: View {
                 .help(option.help)
             }
         } label: {
-            HStack(spacing: Self.rowIconSpacing) {
-                rowIcon(viewModel.selectedEnvironment.isContainerized ? "shippingbox.fill" : "desktopcomputer")
-
-                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
-                    rowTitle(viewModel.environmentPickerTitle)
-                    Text(viewModel.environmentPickerSubtitle)
-                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(1)
-
+            rowLine(
+                icon: viewModel.selectedEnvironment.isContainerized ? "shippingbox" : "desktopcomputer",
+                key: viewModel.environmentPickerTitle,
+                value: viewModel.selectedEnvironment.displayName
+            ) {
                 Image(systemName: "chevron.up.chevron.down")
-                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
-                    .foregroundStyle(viewModel.canUseEnvironmentPicker ? Stanford.lagunita : .secondary)
+                    .font(Stanford.ui(9, weight: .semibold))
+                    .foregroundStyle(viewModel.canUseEnvironmentPicker ? Color.secondary : Stanford.textTertiary)
             }
-            .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.summaryRowMinHeight, alignment: .leading)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!viewModel.canUseEnvironmentPicker)
-        .help(viewModel.environmentPickerHelp)
+        .help("\(viewModel.environmentPickerSubtitle)\n\(viewModel.environmentPickerHelp)")
+    }
+
+    /// `Provider: Host` reads as key and value; the contract's explanation is
+    /// the tooltip.
+    private func runtimeContractRow(_ contract: DockerRuntimeContractRow) -> some View {
+        let parts = contract.title.components(separatedBy: ": ")
+        let key = parts.count > 1 ? parts[0] : contract.title
+        let value = parts.count > 1 ? parts.dropFirst().joined(separator: ": ") : nil
+        return rowLine(icon: contract.iconSystemName, key: key, value: value)
+            .help("\(contract.subtitle)\n\(contract.help)")
+    }
+
+    private var pinnedTaskEnvironmentActionRow: some View {
+        HStack(spacing: 6) {
+            rowLine(icon: "arrow.triangle.2.circlepath", key: viewModel.pinnedTaskEnvironmentActionTitle)
+            Button {
+                viewModel.switchPinnedTaskToWorkspaceEnvironment()
+            } label: {
+                Text("Switch")
+                    .font(Stanford.caption(Layout.rowValueFontSize).weight(.medium))
+                    .foregroundStyle(Stanford.lagunita)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 4)
+        }
+        .help("\(viewModel.pinnedTaskEnvironmentActionSubtitle)\n\(viewModel.pinnedTaskEnvironmentActionHelp)")
     }
 
     private var credentialProjectionRow: some View {
         Button {
             viewModel.toggleGCPADCProjection()
         } label: {
-            HStack(spacing: Self.rowIconSpacing) {
-                rowIcon("key.fill", color: viewModel.credentialProjectionIsEnabled ? Stanford.lagunita : .secondary)
-
-                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
-                    rowTitle(viewModel.credentialProjectionTitle)
-                    Text(viewModel.credentialProjectionSubtitle)
-                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                .layoutPriority(1)
-
-                Spacer(minLength: 8)
-
+            rowLine(icon: "key", key: viewModel.credentialProjectionTitle) {
                 Image(systemName: viewModel.credentialProjectionActionSystemName)
-                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize + 2, weight: .semibold))
-                    .foregroundStyle(viewModel.credentialProjectionIsEnabled ? Stanford.lagunita : .secondary)
+                    .font(Stanford.ui(11, weight: .semibold))
+                    .foregroundStyle(viewModel.credentialProjectionIsEnabled ? Stanford.lagunita : Color.secondary)
             }
-            .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .leading)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!viewModel.credentialProjectionIsEnabled)
-        .help(viewModel.credentialProjectionHelp)
+        .help("\(viewModel.credentialProjectionSubtitle)\n\(viewModel.credentialProjectionHelp)")
     }
 
-    private func runtimeContractRow(_ contract: DockerRuntimeContractRow) -> some View {
-        HStack(spacing: Self.rowIconSpacing) {
-            rowIcon(contract.iconSystemName, color: .secondary)
-
-            VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
-                rowTitle(contract.title)
-                Text(contract.subtitle)
-                    .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-            }
-            .layoutPriority(1)
-
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .leading)
-        .help(contract.help)
-    }
-
-    private var pinnedTaskEnvironmentActionRow: some View {
-        Button {
-            viewModel.switchPinnedTaskToWorkspaceEnvironment()
-        } label: {
-            HStack(spacing: Self.rowIconSpacing) {
-                rowIcon("arrow.triangle.2.circlepath.circle.fill", color: Stanford.lagunita)
-
-                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
-                    rowTitle(viewModel.pinnedTaskEnvironmentActionTitle)
-                    Text(viewModel.pinnedTaskEnvironmentActionSubtitle)
-                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-                .layoutPriority(1)
-
-                Spacer(minLength: 8)
-
-                Image(systemName: "play.circle.fill")
-                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize + 2, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
-            }
-            .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(viewModel.pinnedTaskEnvironmentActionHelp)
-    }
-
+    /// The image is a fact; building it is the verb beside it.
     private var buildActionRow: some View {
-        Button {
-            Task { await viewModel.buildWorkspaceImage() }
-        } label: {
-            HStack(spacing: Self.rowIconSpacing) {
-                if viewModel.isBuildingImage {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: Self.rowIconFrame)
-                } else {
-                    rowIcon("hammer.fill", color: Stanford.lagunita)
+        HStack(spacing: 6) {
+            rowLine(icon: "hammer", key: viewModel.setupActionTitle, value: viewModel.buildRequest?.image)
+            if viewModel.isBuildingImage {
+                ProgressView()
+                    .controlSize(.mini)
+                    .padding(.trailing, 6)
+            } else {
+                Button {
+                    Task { await viewModel.buildWorkspaceImage() }
+                } label: {
+                    Text("Build")
+                        .font(Stanford.caption(Layout.rowValueFontSize).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
-                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
-                    rowTitle(viewModel.setupActionTitle)
-                    Text(viewModel.setupActionSubtitle)
-                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                        .help(viewModel.setupActionSubtitle)
-                }
-                .layoutPriority(1)
-
-                Spacer(minLength: 8)
-
-                Image(systemName: viewModel.isBuildingImage ? "hourglass" : "play.circle.fill")
-                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize + 2, weight: .semibold))
-                    .foregroundStyle(viewModel.isBuildingImage ? .secondary : Stanford.lagunita)
+                .buttonStyle(.plain)
+                .padding(.trailing, 4)
             }
-            .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .leading)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .disabled(viewModel.isBuildingImage)
         .help(viewModel.setupActionHelp)
     }
 
+    /// Docker not answering blocks every containerized run, so this is one of
+    /// the two things the rail tints: the repair verb, nothing else.
     private func dockerIssueRow(title: String, subtitle: String, detail: String?) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(Stanford.ui(Self.rowIconGlyphSize, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: Self.rowIconFrame)
-            VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
-                rowTitle(title)
-                Text(subtitle)
-                    .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+        HStack(spacing: 6) {
+            rowLine(icon: "exclamationmark.triangle", key: title)
+            Button("Refresh") {
+                Task { await viewModel.refresh() }
             }
-            Spacer(minLength: 0)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(Stanford.poppy)
+            .padding(.trailing, 4)
         }
-        .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .leading)
         .help(detail ?? subtitle)
     }
 
     private func detectedSummaryRow(_ title: String) -> some View {
-        HStack(spacing: Self.rowIconSpacing) {
-            rowIcon("shippingbox", color: .secondary)
-            VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
-                rowTitle(title)
-                Text("Only loaded Docker images can run workspace commands right now.")
-                    .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
+        let value = title.hasPrefix("Detected ") ? String(title.dropFirst("Detected ".count)) : title
+        return rowLine(icon: "shippingbox", key: "Detected", value: value)
+            .help("Only loaded Docker images can run workspace commands right now.")
+    }
+
+    private func rowLine(icon: String, key: String, value: String? = nil) -> some View {
+        rowLine(icon: icon, key: key, value: value) { EmptyView() }
+    }
+
+    private func rowLine<Trailing: View>(
+        icon: String,
+        key: String,
+        value: String? = nil,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(Stanford.ui(Layout.leadingIconFontSize, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: Layout.leadingIconFrame)
+
+            Text(key)
+                .font(Stanford.ui(Layout.rowTitleFontSize))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .layoutPriority(1)
+
+            Spacer(minLength: 8)
+
+            if let value {
+                Text(value)
+                    .font(Stanford.caption(Layout.rowValueFontSize))
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            Spacer(minLength: 0)
+
+            trailing()
         }
-        .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .leading)
-    }
-
-    private var rowDivider: some View {
-        SubtleDivider()
-            .padding(.leading, Self.rowIconFrame)
-    }
-
-    private func rowIcon(_ name: String, color: Color = Stanford.lagunita) -> some View {
-        Image(systemName: name)
-            .font(Stanford.ui(Self.rowIconGlyphSize, weight: .medium))
-            .foregroundStyle(color)
-            .frame(width: Self.rowIconFrame)
-    }
-
-    private func rowTitle(_ text: String) -> some View {
-        Text(text)
-            .font(Stanford.ui(CapabilityRailLayout.rowTitleFontSize, weight: .semibold))
-            .foregroundStyle(.primary)
-            .lineLimit(1)
+        .frame(maxWidth: .infinity, minHeight: Layout.rowHeight, alignment: .leading)
+        .padding(.leading, 6)
+        .padding(.trailing, 4)
+        .contentShape(Rectangle())
     }
 
     private func errorBanner(_ message: String) -> some View {

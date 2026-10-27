@@ -15,7 +15,7 @@ struct RailDisclosureStoreTests {
         let id = freshWorkspaceID()
         defer { RailDisclosureStore.clear(id) }
         #expect(RailDisclosureStore.bool(id, .contextExpanded, default: false) == false)
-        #expect(RailDisclosureStore.bool(id, .repositoryShowsDetails, default: true) == true)
+        #expect(RailDisclosureStore.bool(id, .environmentExpanded, default: true) == true)
     }
 
     @Test("persists a toggle and reads it back")
@@ -53,5 +53,6 @@ struct RailDisclosureStoreTests {
         #expect(UserDefaults.standard.object(forKey: retiredKey) == nil)
         #expect(RailDisclosureStore.bool(id, .capabilitiesExpanded, default: true) == true)
         #expect(RailDisclosureStore.retiredToggleRawValues.contains("readyCapabilitiesExpanded"))
+        #expect(RailDisclosureStore.retiredToggleRawValues.contains("repositoryShowsDetails"))
     }
 }
