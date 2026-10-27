@@ -224,6 +224,45 @@ struct TaskInferredValidationServiceTests {
         #expect(fixture.task.events.contains { $0.type == TaskValidationEventTypes.contractPassed })
     }
 
+    @Test("Automatic baseline respects historical and pending exact evidence types", arguments: [
+        TaskValidationEventTypes.contractCreated,
+        TaskValidationEventTypes.contractUpdated,
+        TaskValidationEventTypes.contractPassed,
+        TaskValidationEventTypes.contractFailed,
+        TaskValidationEventTypes.contractOverridden,
+        TaskDeliverableVerificationEventTypes.passed,
+        TaskDeliverableVerificationEventTypes.failed
+    ])
+    func automaticBaselineRespectsPendingEvidence(type: String) throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        try "Masterball notes".write(
+            toFile: (fixture.folder as NSString).appendingPathComponent("notes.txt"),
+            atomically: true, encoding: .utf8
+        )
+        let other = AgentTask(title: "Other", goal: "Unrelated validation")
+        fixture.context.insert(other)
+        fixture.context.insert(TaskEvent(task: other, type: type, payload: "{}"))
+        try fixture.context.save()
+        #expect(TaskInferredValidationService.shouldRunAutomaticBaseline(for: fixture.task))
+
+        // Older evidence without a run binding still suppresses inferred validation.
+        let evidence = TaskEvent(task: fixture.task, type: type, payload: "{}")
+        fixture.context.insert(evidence)
+        #expect(!TaskInferredValidationService.shouldRunAutomaticBaseline(for: fixture.task))
+        try fixture.context.save()
+        #expect(!TaskInferredValidationService.shouldRunAutomaticBaseline(for: fixture.task))
+
+        evidence.type = "validation.future"
+        #expect(TaskInferredValidationService.shouldRunAutomaticBaseline(for: fixture.task))
+        fixture.context.rollback()
+        #expect(!TaskInferredValidationService.shouldRunAutomaticBaseline(for: fixture.task))
+        fixture.context.delete(evidence)
+        #expect(TaskInferredValidationService.shouldRunAutomaticBaseline(for: fixture.task))
+        fixture.context.rollback()
+        #expect(!TaskInferredValidationService.shouldRunAutomaticBaseline(for: fixture.task))
+    }
+
     private func makeFixture() throws -> (
         root: String,
         context: ModelContext,
