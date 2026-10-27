@@ -971,8 +971,8 @@ final class AgentRuntimeWorker {
             runtime: selectedRuntime, additionalGrants: executionPolicy.permissionGrantsOverride ?? [])
         HostControlBrokerSessionRegistry.shared.bindMailReader(mailAccess.makeReader(), taskID: task.id, runID: run.id)
         defer { HostControlBrokerSessionRegistry.shared.unbindMailReader(taskID: task.id, runID: run.id) }
-        HostControlBrokerSessionRegistry.shared.bindHistory(container: modelContext.container, taskID: task.id, runID: run.id)
-        defer { HostControlBrokerSessionRegistry.shared.unbindHistory(taskID: task.id, runID: run.id) }
+        HostControlBrokerSessionRegistry.shared.bindHistory(container: modelContext.container, taskID: task.id, runID: run.id, ownerID: task.persistentModelID)
+        defer { HostControlBrokerSessionRegistry.shared.unbindHistory(taskID: task.id, runID: run.id, ownerID: task.persistentModelID) }
         // The run's own level, fixed here: a write the agent asks for is sent
         // or left for review by the level the run launched with.
         let coordinatorFactory = connectorMutationCoordinatorFactory

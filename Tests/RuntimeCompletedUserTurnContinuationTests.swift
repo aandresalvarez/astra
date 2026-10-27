@@ -26,7 +26,7 @@ struct RuntimeCompletedUserTurnContinuationTests {
     }
 
     private func save(_ record: RuntimeExecutionOwnerRecord, context: ModelContext) throws {
-        let lease = try RuntimeExecutionOwner.store(in: context).acquire(taskID: record.taskID)
+        let lease = try RuntimeExecutionOwner.store(in: context).acquire(taskID: record.taskID, taskOwnerID: record.taskOwnerID)
         try lease.save(record)
     }
 
@@ -69,6 +69,43 @@ struct RuntimeCompletedUserTurnContinuationTests {
         }
         try RuntimeProviderResourceRegistry.assertAvailable(shared, ownerID: previous.ownerID,
             in: [store.root], reference: owner.providerOwnershipReference)
+    }
+
+    @Test("A retained pre-upgrade receipt stays immutable when its current journal is attributed")
+    func retainedLegacyCrashCanContinue() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Legacy retained receipt", model: "test")
+        var previous = try completed(task, context: h.context)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        // Model an older build that had only the portable-ID journal.
+        do {
+            let scoped = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
+            try FileManager.default.removeItem(at: scoped.recordURL)
+        }
+        previous.taskOwnerID = nil
+        do {
+            let legacy = try store.acquire(taskID: task.id)
+            try legacy.save(previous)
+            try store.retain(previous) // crash before successor publication
+        }
+        h.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: TaskEvent.payloadString(previous)))
+        try h.context.save()
+        let retainedURL = store.root.appendingPathComponent("retained").appendingPathComponent(task.id.uuidString)
+            .appendingPathComponent(previous.ownerID.uuidString).appendingPathComponent(previous.executionID.uuidString + ".json")
+        let before = try Data(contentsOf: retainedURL)
+        let request = try followUp(task, context: h.context)
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context,
+            maxRunSeconds: 60, userRequest: request))
+        defer { owner.finish() }
+        #expect(owner.record.taskOwnerID == task.persistentModelID)
+        #expect(owner.record.ownerID == previous.ownerID)
+        #expect(try store.retainedExecutions(of: owner.record) == [previous])
+        #expect(try Data(contentsOf: retainedURL) == before)
+        var changed = previous
+        changed.taskOwnerID = task.persistentModelID
+        changed.limits.tokensSpent += 1
+        #expect(throws: (any Error).self) { try store.retain(changed) }
     }
 
     @Test("An already consumed, cancelled, or unauthored request cannot continue", arguments: ["consumed", "cancelled", "retry", "failed", "timeout", "cancelOwner", "unsettled", "live", "group", "archive"])

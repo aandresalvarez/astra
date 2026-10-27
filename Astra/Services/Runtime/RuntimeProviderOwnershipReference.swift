@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SwiftData
 
 /// A protected pointer to the journal, never a second termination receipt.
 /// The stable per-key kernel lock covers every read and replacement here.
@@ -7,13 +8,27 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
     let journalRoot: String
     let taskID: UUID
     let ownerID: UUID
+    var taskOwnerID: PersistentIdentifier? = nil
 
     private func record() throws -> RuntimeExecutionOwnerRecord {
         var info = stat()
         guard journalRoot.hasPrefix("/"), lstat(journalRoot, &info) == 0,
-              info.st_mode & S_IFMT == S_IFDIR, info.st_uid == getuid(), info.st_mode & 0o077 == 0,
-              let record = try RuntimeExecutionOwnerStore(root: URL(fileURLWithPath: journalRoot)).read(taskID: taskID),
-              record.taskID == taskID else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
+              info.st_mode & S_IFMT == S_IFDIR, info.st_uid == getuid(), info.st_mode & 0o077 == 0 else {
+            throw RuntimeExecutionOwnerStore.Failure.unreadable
+        }
+        let store = RuntimeExecutionOwnerStore(root: URL(fileURLWithPath: journalRoot))
+        let record: RuntimeExecutionOwnerRecord
+        let records = try store.records().filter { $0.taskID == taskID }
+        let matches: [RuntimeExecutionOwnerRecord]
+        if let taskOwnerID {
+            // Follow this row's journal across generations, including a
+            // legacy file kept in place for an already-launched SSH helper.
+            matches = records.filter { $0.taskOwnerID == taskOwnerID }
+        } else {
+            matches = records.filter { $0.ownerID == ownerID || $0.legacyReferenceOwnerID == ownerID }
+        }
+        guard matches.count == 1, let match = matches.first else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
+        record = match
         return record
     }
 
@@ -25,7 +40,8 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
             // verified the previous generation. Only that admitted owner may
             // replace its own pointer while the new journal is unreleased.
             let sameJournalOwner = next?.journalRoot == previous.journalRoot
-                && next?.taskID == previous.taskID && next?.ownerID == record.ownerID
+                && next?.taskID == previous.taskID && next?.taskOwnerID == record.taskOwnerID
+                && next?.ownerID == record.ownerID
 
             guard sameJournalOwner || record.resourcesReleased == true
                     || record.providerSharedStateReleased == true || record.canRecoverPreparation else {

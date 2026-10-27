@@ -8,9 +8,10 @@ import Darwin
 /// `AgentExecutionScopedProcess`) each hand-rolled the same
 /// `posix_spawnattr_setflags(POSIX_SPAWN_SETPGROUP)` + `kill(-pgid, ...)`
 /// sequence. This type factors out only the parts that are safe to share
-/// without touching any caller's file-action wiring, stdin handling, output
-/// streaming, or scheduling: the process-group spawn attribute, the child's
-/// signal-state reset, and the self-guarded group-kill primitive.
+/// without touching output streaming or scheduling: the process-group spawn
+/// attribute, explicit descriptor inheritance, the child's signal-state reset,
+/// and the self-guarded group-kill primitive. Callers declare every descriptor
+/// the child needs in their file actions, including inherited stdin.
 /// `HostControlToolSupport` cannot import this module, so it keeps its own
 /// copies.
 ///
@@ -36,7 +37,9 @@ public enum ProcessGroupSpawn {
     /// without process-group isolation.
     @discardableResult
     public static func configureNewProcessGroup(_ attr: inout posix_spawnattr_t?) -> Bool {
-        guard addFlags(Int16(POSIX_SPAWN_SETPGROUP), to: &attr) == 0,
+        // A concurrent spawn must not retain another execution's pipe writers
+        // or locks. Per-FD fcntl leaves a race between creation and marking.
+        guard addFlags(Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT), to: &attr) == 0,
               posix_spawnattr_setpgroup(&attr, 0) == 0,
               configureDefaultSignalState(&attr) == 0 else {
             return false

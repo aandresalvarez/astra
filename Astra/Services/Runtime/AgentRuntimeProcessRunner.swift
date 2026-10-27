@@ -1861,7 +1861,7 @@ final class AgentRuntimeProcessRunner {
         BrokeredConnectorEnvironment.strip(from: &taskEnv, capabilityScope: capabilityScope)
         if capabilityScope.exposesBrowserBridge ||
             TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
-            for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {
+            for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id, ownerID: ShelfBrowserOwner(task).modelID) {
                 guard isBrowserBridgeEnvKeyAllowed(key) else {
                     AppLogger.audit(.capabilityChatContext, category: "Capabilities", taskID: task.id, fields: [
                         "source": "browser_bridge_env",

@@ -37,6 +37,33 @@ struct RemoteWorkspaceJobPersistenceTests {
         #expect(try RemoteWorkspaceJobMonitorSession.registeredTasks(context: h.context).map(\.persistentModelID) == [task.persistentModelID])
     }
 
+    @Test("SSH preparation follows a detached execution task's persistent source owner")
+    func detachedExecutionKeepsItsOwner() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Detached SSH", model: "test")
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60))
+        defer { owner.finish() }
+        let run = TaskRun(task: task); h.context.insert(run)
+        try owner.bind(run: run); try owner.prepareLaunch()
+        let execution = AgentRuntimeExecutionContext.make(launchTask: task,
+            executionPath: h.workspaceURL.path, shouldCleanupIsolation: false)
+        #expect(execution.task.persistentModelID != task.persistentModelID)
+        #expect(execution.task.launchSourceTaskOwnerID == task.persistentModelID)
+        let config = try RemoteWorkspaceJobRegistration.prepare(task: execution.task, runID: run.id,
+            owner: owner, context: h.context, connections: [])
+        #expect(try RemoteWorkspaceJobRegistration.load(task: task, context: h.context) == config)
+
+        let other = h.makeTask(runtime: .claudeCode, goal: "Imported copy", model: "test")
+        other.id = task.id; try h.context.save()
+        let foreign = AgentRuntimeExecutionContext.make(launchTask: other,
+            executionPath: h.workspaceURL.path, shouldCleanupIsolation: false)
+        #expect(throws: (any Error).self) {
+            try RemoteWorkspaceJobRegistration.prepare(task: foreign.task, runID: run.id,
+                owner: owner, context: h.context, connections: [])
+        }
+        #expect(try RemoteWorkspaceJobMonitorSession.registeredTasks(context: h.context).map(\.persistentModelID) == [task.persistentModelID])
+    }
+
     @Test("Retained executions remain observable but their old helpers cannot launch")
     func retainedRegistrations() throws {
         let h = try HeadlessChatHarness(persistentStore: true)
@@ -49,9 +76,9 @@ struct RemoteWorkspaceJobPersistenceTests {
             owner: owner, context: h.context, connections: [])
         owner.finish()
         let authority = RuntimeExecutionOwner.store(in: h.context)
-        let previous = try #require(try authority.read(taskID: task.id))
+        let previous = try #require(try authority.read(taskID: task.id, taskOwnerID: task.persistentModelID))
         do {
-            let lease = try authority.acquire(taskID: task.id)
+            let lease = try authority.acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
             try authority.retain(previous)
             var next = previous; next.executionID = UUID(); next.runID = UUID()
             next.retainedExecutionHead = previous.executionID
@@ -76,6 +103,8 @@ struct RemoteWorkspaceJobPersistenceTests {
         try owner.prepareLaunch()
         #expect(owner.record.executionID != preparingID)
         let config = try RemoteWorkspaceJobRegistration.prepare(task: task, runID: run.id, owner: owner, context: h.context, connections: [])
+        #expect(config.ownerBinding?.receiptPath == owner.receiptURL?.path)
+        #expect(FileManager.default.fileExists(atPath: try #require(config.ownerBinding?.receiptPath)))
         #expect(config.ownerBinding?.executionID == owner.record.executionID.uuidString)
         #expect(config.maximumJobSeconds == 45)
         #expect(try RemoteWorkspaceJobRegistration.load(task: task, context: h.context) == config)
@@ -141,9 +170,9 @@ struct RemoteWorkspaceJobPersistenceTests {
         // reopens. Cancellation must survive both a new turn and task deletion.
         owner.finish()
         let authority = RuntimeExecutionOwner.store(in: h.context)
-        let previous = try #require(try authority.read(taskID: task.id))
+        let previous = try #require(try authority.read(taskID: task.id, taskOwnerID: task.persistentModelID))
         do {
-            let lease = try authority.acquire(taskID: task.id)
+            let lease = try authority.acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
             try authority.retain(previous)
             var successor = previous; successor.executionID = UUID()
             successor.retainedExecutionHead = previous.executionID
@@ -166,7 +195,7 @@ struct RemoteWorkspaceJobPersistenceTests {
         // A worker's finalizer may run after deletion. It updates only the
         // durable owner and must neither fault nor resurrect deleted models.
         owner.finish()
-        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: owner.record.taskID)?.limits == owner.record.limits)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: owner.record.taskID, taskOwnerID: owner.record.taskOwnerID)?.limits == owner.record.limits)
         #expect(owner.record.stopProof == nil)
         #expect(owner.record.resourcesReleased != true)
         #expect(try h.context.fetch(FetchDescriptor<AgentTask>()).isEmpty)

@@ -538,7 +538,9 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     return
                 }
 
-                Task.detached {
+                // waitpid and the post-exit pipe drain block their thread.
+                // Keep each wait independent of shared worker-pool capacity.
+                ProcessWaitExecutor.submit {
                     var status = Int32(0)
                     while waitpid(pid, &status, 0) == -1 {
                         guard errno == EINTR else {

@@ -159,7 +159,7 @@ enum RuntimeTurnSettlementService {
         do {
             if let id = checkpoint.requestID {
                 guard let owner = try TaskTurnRequestRepository.request(id: id, in: modelContext),
-                      owner.taskID == task.id, owner.runID == run.id else { throw Failure.invalidRequestOwner }
+                      (try TaskTurnRequestOwnership.resolve(owner, in: modelContext))?.persistentModelID == task.persistentModelID, owner.runID == run.id else { throw Failure.invalidRequestOwner }
             }
             var alreadyPrepared = false
             if let prepared = try RuntimeSettlementProgress.prepared(task: task, run: run) {
@@ -309,7 +309,7 @@ enum RuntimeTurnSettlementService {
             }
             let request = try checkpoint.requestID.flatMap { try TaskTurnRequestRepository.request(id: $0, in: modelContext) }
             if checkpoint.requestID != nil {
-                guard let request, request.taskID == task.id, request.runID == run.id else {
+                guard let request, (try TaskTurnRequestOwnership.resolve(request, in: modelContext))?.persistentModelID == task.persistentModelID, request.runID == run.id else {
                     throw Failure.invalidRequestOwner
                 }
             }

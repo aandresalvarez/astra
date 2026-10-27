@@ -14,6 +14,7 @@ final class RuntimeExecutionOwner {
     private var lease: RuntimeExecutionOwnerStore.Lease?
     private(set) var record: RuntimeExecutionOwnerRecord
     let isRecovery: Bool
+    var receiptURL: URL? { lease?.recordURL }
     var remoteWorkExcluded = false
     private let task: AgentTask
     private let context: ModelContext
@@ -43,7 +44,7 @@ final class RuntimeExecutionOwner {
     }
 
     static func existing(task: AgentTask, context: ModelContext) throws -> RuntimeExecutionOwnerRecord? {
-        let record = try store(in: context).read(taskID: task.id)
+        let record = try RuntimeTaskOwnerJournal.read(task: task, context: context)
         guard record == nil || record?.taskID == task.id else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         return record.map { reconciledCompletion($0, task: task) }
     }
@@ -79,7 +80,7 @@ final class RuntimeExecutionOwner {
     /// Read first, before Retry changes usage, enqueues a turn or resets state.
     static func retryDecision(task: AgentTask, context: ModelContext) -> RetryDecision {
         do {
-            let lease = try store(in: context).acquire(taskID: task.id)
+            let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
             defer { withExtendedLifetime(lease) {} }
             guard let record = try existing(task: task, context: context) else {
                 if requiresExistingReceipt(task) {
@@ -128,15 +129,15 @@ final class RuntimeExecutionOwner {
             let store = store(in: context)
             let admission = try store.acquireAdmission()
             defer { withExtendedLifetime(admission) {} }
+            let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
             let claims = resourceClaims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(
                 for: nil, task: task, runMode: "runtime", fallbackAccess: .write, sandboxEnforcement: .off)
-            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id)
+            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
             guard TaskExecutionResourceBroker.canAcquire(claims, active: held) else {
                 report(TaskExecutionResourceBroker.blockerSummary(requested: claims, active: held)
                     + " Previous execution cleanup is not yet confirmed.", task: task, context: context, pause: true)
                 return nil
             }
-            let lease = try store.acquire(taskID: task.id)
             let previous = try lease.read().map { reconciledCompletion($0, task: task) }
             guard previous == nil || previous?.taskID == task.id else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
             if previous == nil, requiresExistingReceipt(task) {
@@ -181,6 +182,8 @@ final class RuntimeExecutionOwner {
             // Keep the source/run binding if preparation is interrupted again
             // before the worker binds its new attempt. No launch has occurred.
             if resumesPreparation { record.runID = previous?.runID }
+            record.taskOwnerID = task.persistentModelID
+            record.legacyReferenceOwnerID = previous?.legacyReferenceOwnerID ?? previous?.ownerID
             record.inheritedToolUncertainty = previous?.hasUnverifiedTools
             record.resourceClaims = claims
             if continuesOwner, let previous {
@@ -224,7 +227,7 @@ final class RuntimeExecutionOwner {
             let store = store(in: context)
             let admission = try store.acquireAdmission()
             defer { withExtendedLifetime(admission) {} }
-            let lease = try store.acquire(taskID: task.id)
+            let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
             let saved: RuntimeExecutionOwnerRecord?
             do { saved = try lease.read() } catch { return .unresolved(lease) }
             if let saved, saved.taskID != task.id || saved.runID != run.id { return .deferred }
@@ -233,7 +236,7 @@ final class RuntimeExecutionOwner {
                   saved.cancellationRequested != true || saved.canReplace else { return .unresolved(lease) }
             let claims = resourceClaims ?? saved.resourceClaims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(
                 for: nil, task: task, runMode: "settlement", fallbackAccess: .write, sandboxEnforcement: .off)
-            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id)
+            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
             guard TaskExecutionResourceBroker.canAcquire(claims, active: held) else { return .deferred }
             saved.resourceClaims = claims
             saved.resourcesReleased = false
@@ -382,7 +385,7 @@ final class RuntimeExecutionOwner {
     }
 
     var providerOwnershipReference: RuntimeProviderOwnershipReference {
-        .init(journalRoot: Self.store(in: context).root.path, taskID: record.taskID, ownerID: record.ownerID)
+        .init(journalRoot: Self.store(in: context).root.path, taskID: record.taskID, ownerID: record.ownerID, taskOwnerID: record.taskOwnerID)
     }
 
     func bindProviderSharedState(_ key: AgentRuntimeSharedStateKey) throws {

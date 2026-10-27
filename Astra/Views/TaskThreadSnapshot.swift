@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
@@ -1605,6 +1606,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
     private static let highFrequencyEventTypes: Set<String> = ["agent.response", "agent.thinking"]
 
     let taskID: UUID
+    let ownerID: PersistentIdentifier
     let revision: Date
     private let usesDurableRevision: Bool
     let eventCount: Int
@@ -1622,6 +1624,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
         let runs = task.runs
         let latestRun = runs.max { $0.startedAt < $1.startedAt }
         taskID = task.id
+        ownerID = task.persistentModelID
         revision = task.updatedAt
         usesDurableRevision = false
         eventCount = events.count
@@ -1661,6 +1664,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
     init(task: AgentTask, input: TaskThreadSnapshotInput, inputRevision: Date) {
         let latestRun = input.runs.max { $0.startedAt < $1.startedAt }
         taskID = task.id
+        ownerID = task.persistentModelID
         revision = inputRevision
         usesDurableRevision = true
         eventCount = input.totalEventCount
@@ -1732,6 +1736,7 @@ enum TaskLiveness {
 
 struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
     let taskID: UUID
+    let ownerID: PersistentIdentifier
     let status: TaskStatus
     /// `updatedAt` is the durable task revision. Terminal cache hits must be
     /// O(1), so do not rebuild signatures across an entire event history here.
@@ -1746,6 +1751,7 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
     ) {
         guard Self.isCacheable(status: task.status) else { return nil }
         taskID = task.id
+        ownerID = task.persistentModelID
         status = task.status
         revision = task.updatedAt
         createdAt = task.createdAt

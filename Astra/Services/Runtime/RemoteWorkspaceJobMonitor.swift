@@ -16,8 +16,9 @@ final class RemoteWorkspaceJobMonitor {
         var error: String?
         var refreshing = false
     }
-    private var presentations: [String: Presentation] = [:]
-    private var inFlight: Set<String> = []
+    private struct Key: Hashable { let root: String; let owner: PersistentIdentifier }
+    private var presentations: [Key: Presentation] = [:]
+    private var inFlight: Set<Key> = []
 
     func presentation(task: AgentTask, context: ModelContext) -> Presentation {
         guard task.isLive else { return Presentation() }
@@ -32,6 +33,10 @@ final class RemoteWorkspaceJobMonitor {
         defer { inFlight.remove(key); presentations[key]?.refreshing = false }
         do {
             let configurations = try RemoteWorkspaceJobRegistration.loadAll(task: task, context: context)
+            guard !configurations.isEmpty else {
+                presentations.removeValue(forKey: key)
+                return
+            }
             var observed: [RemoteWorkspaceJobRecord] = []
             for config in configurations {
             let store = RemoteWorkspaceJobStore(rootPath: config.recordRootPath)
@@ -120,8 +125,8 @@ final class RemoteWorkspaceJobMonitor {
         } catch { return error.localizedDescription }
     }
 
-    private func key(task: AgentTask, context: ModelContext) -> String {
-        RuntimeExecutionOwner.store(in: context).root.path + "/" + task.id.uuidString
+    private func key(task: AgentTask, context: ModelContext) -> Key {
+        Key(root: RuntimeExecutionOwner.store(in: context).root.path, owner: task.persistentModelID)
     }
 
 
@@ -163,6 +168,7 @@ final class RemoteWorkspaceJobMonitorSession {
         let authority = RuntimeExecutionOwner.store(in: context)
         let owners = try authority.records()
         var result: [AgentTask] = []
+        var seen: Set<PersistentIdentifier> = []
         for owner in owners {
             let executions = [owner] + (try authority.retainedExecutions(of: owner))
             guard executions.contains(where: {
@@ -171,7 +177,13 @@ final class RemoteWorkspaceJobMonitorSession {
                 return FileManager.default.fileExists(atPath: root.appendingPathComponent("configuration.json").path)
             }) else { continue }
             let taskID = owner.taskID
-            result += try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
+            let candidates = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
+            for task in candidates where task.isLive {
+                guard let current = try RuntimeExecutionOwner.existing(task: task, context: context),
+                      current.ownerID == owner.ownerID, current.executionID == owner.executionID,
+                      seen.insert(task.persistentModelID).inserted else { continue }
+                result.append(task)
+            }
         }
         return result
     }

@@ -9,25 +9,27 @@ import HostControlToolSupport
 final class TaskHistoryEvidenceReader: TaskHistoryReading, @unchecked Sendable {
     private let container: ModelContainer
     private let taskID: UUID
-    init(container: ModelContainer, taskID: UUID) {
+    private let ownerID: PersistentIdentifier?
+    init(container: ModelContainer, taskID: UUID, ownerID: PersistentIdentifier? = nil) {
         self.container = container
         self.taskID = taskID
+        self.ownerID = ownerID
     }
 
     func readHistory(_ request: TaskHistoryReadRequest) throws -> [String: Any] {
         let context = ModelContext(container)
         context.autosaveEnabled = false
-        let taskID = taskID
+        let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: context)
         // Recovery envelopes are private implementation state, not conversation
         // evidence, and may include launch configuration or captured credentials.
         let captured = TaskEventTypes.System.runtimeResultCaptured.rawValue
         let prepared = TaskEventTypes.System.runtimeOutcomePrepared.rawValue
         let base = #Predicate<TaskEvent> {
-            $0.task?.id == taskID && $0.type != captured && $0.type != prepared
+            $0.task?.persistentModelID == ownerID && $0.type != captured && $0.type != prepared
         }
         func event(_ id: UUID) throws -> TaskEvent {
             var descriptor = FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
-                $0.task?.id == taskID && $0.type != captured && $0.type != prepared && $0.id == id
+                $0.task?.persistentModelID == ownerID && $0.type != captured && $0.type != prepared && $0.id == id
             })
             descriptor.fetchLimit = 1
             guard let value = try context.fetch(descriptor).first else {
@@ -44,7 +46,7 @@ final class TaskHistoryEvidenceReader: TaskHistoryReading, @unchecked Sendable {
             let boundary = try event(id)
             let timestamp = boundary.timestamp
             predicate = #Predicate<TaskEvent> {
-                $0.task?.id == taskID && $0.type != captured && $0.type != prepared
+                $0.task?.persistentModelID == ownerID && $0.type != captured && $0.type != prepared
                     && ($0.timestamp < timestamp || ($0.timestamp == timestamp && $0.id < id))
             }
         }

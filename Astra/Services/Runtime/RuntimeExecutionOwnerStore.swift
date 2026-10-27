@@ -1,5 +1,7 @@
 import Darwin
 import Foundation
+import SwiftData
+import CryptoKit
 
 /// Protected, local launch authority. Task events are its audit projection,
 /// never a second admission owner; imported workspace JSON cannot grant a lease.
@@ -11,11 +13,27 @@ final class RuntimeExecutionOwnerStore {
     enum Failure: Error { case busy, unsafePath, unreadable, writeFailed }
     final class Lease {
         private var descriptor: Int32
-        let recordURL: URL
-        init(descriptor: Int32, recordURL: URL) { self.descriptor = descriptor; self.recordURL = recordURL }
+        private(set) var recordURL: URL
+        private let taskID: UUID
+        private let taskOwnerID: PersistentIdentifier?
+        init(descriptor: Int32, recordURL: URL, taskID: UUID, taskOwnerID: PersistentIdentifier?) {
+            self.taskID = taskID; self.descriptor = descriptor; self.recordURL = recordURL; self.taskOwnerID = taskOwnerID
+        }
         deinit { close(descriptor) }
-        func read() throws -> RuntimeExecutionOwnerRecord? { try RuntimeExecutionOwnerStore.read(recordURL) }
+        func read() throws -> RuntimeExecutionOwnerRecord? {
+            let record = try RuntimeExecutionOwnerStore.read(recordURL)
+            guard record == nil || (record?.taskID == taskID && (taskOwnerID == nil || record?.taskOwnerID == taskOwnerID)) else {
+                throw Failure.unreadable
+            }
+            return record
+        }
         func save(_ record: RuntimeExecutionOwnerRecord) throws {
+            var record = record
+            guard record.taskID == taskID, taskOwnerID == nil || record.taskOwnerID == nil || record.taskOwnerID == taskOwnerID else { throw Failure.unreadable }
+            record.taskOwnerID = taskOwnerID ?? record.taskOwnerID
+            try save(record, at: recordURL)
+        }
+        private func save(_ record: RuntimeExecutionOwnerRecord, at recordURL: URL) throws {
             let data = try JSONEncoder().encode(record)
             let temporary = recordURL.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".tmp")
             let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
@@ -28,9 +46,23 @@ final class RuntimeExecutionOwnerStore {
             defer { close(parent) }
             guard fsync(parent) == 0 else { throw Failure.writeFailed }
         }
+
+        /// Attribute in place: remote helpers may already hold this receipt
+        /// path. Moving it would strand cancellation/observation after upgrade.
+        func bindLegacy(_ legacy: RuntimeExecutionOwnerRecord) throws {
+            guard let taskOwnerID, try read() == nil else { throw Failure.unreadable }
+            let legacyURL = recordURL.deletingLastPathComponent().appendingPathComponent(legacy.taskID.uuidString + ".json")
+            guard try RuntimeExecutionOwnerStore.read(legacyURL) == legacy else { throw Failure.unreadable }
+            var bound = legacy
+            bound.taskOwnerID = taskOwnerID
+            try save(bound, at: legacyURL)
+            recordURL = legacyURL
+        }
+
     }
 
-    func acquire(taskID: UUID) throws -> Lease {
+    func acquire(taskID: UUID, taskOwnerID: PersistentIdentifier? = nil) throws -> Lease {
+        let targetURL = try recordURL(taskID, owner: taskOwnerID)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var info = stat()
         guard lstat(root.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { throw Failure.unsafePath }
@@ -41,7 +73,8 @@ final class RuntimeExecutionOwnerStore {
             close(fd); throw Failure.unsafePath
         }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { close(fd); throw Failure.busy }
-        return Lease(descriptor: fd, recordURL: recordURL(taskID))
+        // Keep the portable-ID lock across scoped copies, including old apps.
+        return Lease(descriptor: fd, recordURL: targetURL, taskID: taskID, taskOwnerID: taskOwnerID)
     }
 
     /// Serializes conflict inspection and journal publication across app instances.
@@ -57,8 +90,10 @@ final class RuntimeExecutionOwnerStore {
         // Only an absent scan root is empty. Missing or corrupt enumerated
         // receipts still fail closed, as do protected provider references.
         return try entries.filter { $0.pathExtension == "json" }.map { url in
-                guard let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
-                      let record = try Self.read(url), record.taskID == id else { throw Failure.unreadable }
+                guard let record = try Self.read(url) else { throw Failure.unreadable }
+                let scopedURL = try recordURL(record.taskID, owner: record.taskOwnerID)
+                let legacyURL = try recordURL(record.taskID, owner: nil)
+                guard url.lastPathComponent == scopedURL.lastPathComponent || url.lastPathComponent == legacyURL.lastPathComponent else { throw Failure.unreadable }
                 return record
             }
     }
@@ -70,14 +105,19 @@ final class RuntimeExecutionOwnerStore {
         try validateRetainedDirectory(taskID: record.taskID, ownerID: record.ownerID, create: true)
         let url = directory.appendingPathComponent(record.executionID.uuidString + ".json")
         if let existing = try Self.read(url) {
-            guard existing == record else { throw Failure.unreadable }
+            // A pre-upgrade crash may have retained this exact receipt before
+            // publishing its successor. Binding the current legacy journal must
+            // not rewrite or invalidate that immutable, still-unattributed copy.
+            var attributed = existing
+            if attributed.taskOwnerID == nil { attributed.taskOwnerID = record.taskOwnerID }
+            guard attributed == record else { throw Failure.unreadable }
             return
         }
         let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { throw Failure.unsafePath }
         // Lease owns the descriptor and performs the same atomic, synced write
         // as the current journal. Admission already holds the per-task lock.
-        let writer = Lease(descriptor: fd, recordURL: url)
+        let writer = Lease(descriptor: fd, recordURL: url, taskID: record.taskID, taskOwnerID: record.taskOwnerID)
         try writer.save(record)
     }
 
@@ -91,6 +131,7 @@ final class RuntimeExecutionOwnerStore {
                   let previous = try Self.read(retainedDirectory(taskID: record.taskID, ownerID: record.ownerID)
                     .appendingPathComponent(id.uuidString + ".json")),
                   previous.taskID == record.taskID, previous.ownerID == record.ownerID,
+                  previous.taskOwnerID == nil || previous.taskOwnerID == record.taskOwnerID,
                   previous.executionID == id else { throw Failure.unreadable }
             result.append(previous); head = previous.retainedExecutionHead
         }
@@ -115,8 +156,20 @@ final class RuntimeExecutionOwnerStore {
             .appendingPathComponent(ownerID.uuidString)
     }
 
-    func read(taskID: UUID) throws -> RuntimeExecutionOwnerRecord? { try Self.read(recordURL(taskID)) }
-    private func recordURL(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString + ".json") }
+    func read(taskID: UUID, taskOwnerID: PersistentIdentifier? = nil) throws -> RuntimeExecutionOwnerRecord? {
+        let record = try Self.read(recordURL(taskID, owner: taskOwnerID))
+        guard record == nil || (record?.taskID == taskID && (taskOwnerID == nil || record?.taskOwnerID == taskOwnerID)) else {
+            throw Failure.unreadable
+        }
+        return record
+    }
+    private func recordURL(_ id: UUID, owner: PersistentIdentifier?) throws -> URL {
+        guard let owner else { return root.appendingPathComponent(id.uuidString + ".json") }
+        guard owner.storeIdentifier != nil else { throw Failure.unreadable }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let digest = SHA256.hash(data: try encoder.encode(owner)).map { String(format: "%02x", $0) }.joined()
+        return root.appendingPathComponent(id.uuidString + "-" + digest + ".json")
+    }
     static func read(_ url: URL) throws -> RuntimeExecutionOwnerRecord? {
         let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else {

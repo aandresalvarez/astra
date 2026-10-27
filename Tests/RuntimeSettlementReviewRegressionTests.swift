@@ -25,7 +25,7 @@ struct RuntimeSettlementReviewRegressionTests {
         // Keep real workspace reservations on the provider's existing fixture
         // receipt so an uncertain validator cannot appear safe via empty claims.
         do {
-            let lease = try RuntimeExecutionOwner.store(in: fixture.context).acquire(taskID: fixture.task.id)
+            let lease = try RuntimeExecutionOwner.store(in: fixture.context).acquire(taskID: fixture.task.id, taskOwnerID: fixture.task.persistentModelID)
             var providerReceipt = try #require(try lease.read())
             providerReceipt.resourceClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(
                 for: request, task: fixture.task, runMode: "settlement", sandboxEnforcement: .off)

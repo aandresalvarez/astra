@@ -1818,7 +1818,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Tasks/DatabaseQueryService.swift": ["self"],
             "Astra/Services/Tasks/TaskPlanService.swift": ["plan.steps[index]", "merged.steps[index]"],
             "Astra/Services/Tasks/TaskPlanStateCacheSignature.swift": ["self"],
-            "Astra/Services/Tasks/TaskQueue.swift": ["copiedRun"],
+            "Astra/Services/Tasks/TaskQueue+ScheduleResults.swift": ["copiedRun"],
             "Astra/Services/Tasks/TaskRunLifecycleService.swift": ["run"],
             "Astra/Services/Validation/TaskCorrectiveWorkService.swift": ["payload"],
             "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": ["run"],
@@ -2045,7 +2045,6 @@ struct ArchitectureFitnessTests {
             // 2_295 -> 2_300: the terminal-progress reap now also requires
             // the provider to have gone quiet, and says why.
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_300, .owner("Runtime process stream support")),
-            "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             // Global multi-resource admission remains coordinated here, while
             // claim resolution, compatibility, fairness, persistence events,
             // and store lifetime are extracted into focused task services.
@@ -2060,7 +2059,6 @@ struct ArchitectureFitnessTests {
             // lock-event recorder shim, and the blocker-summary call moved to
             // TaskQueue+ResourceAdmission; the wedged-cancel lease release
             // lives in TaskWedgedWorkerLeaseReclaimer.
-            "Astra/Services/Tasks/TaskQueue.swift": .init(2_080, .owner("Durable request and worker orchestration")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             // 2_250 -> 2_280 on 2026-08-10: a get_comments route, and a field allowlist split into list vs detail so one ticket can carry its body.
             // Tools/HostControlToolSupport/HostControlToolSupport.swift held

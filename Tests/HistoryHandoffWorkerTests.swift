@@ -153,7 +153,7 @@ struct HistoryHandoffWorkerTests {
         fake.onLaunch = { launchTask, runID in
             #expect(launchTask.modelContext == nil)
             lastRunID = runID
-            let reader = HostControlBrokerSessionRegistry.shared.historyReader(taskID: task.id, runID: runID)
+            let reader = HostControlBrokerSessionRegistry.shared.historyReader(taskID: task.id, runID: runID, ownerID: task.persistentModelID)
             let request = TaskHistoryReadRequest.parse(["event_id": evidence.id.uuidString])!
             boundReaderWorked = (try? reader?.readHistory(request)["payload"] as? String) == "ORIGINAL_TOOL_RESULT"
         }
@@ -170,7 +170,7 @@ struct HistoryHandoffWorkerTests {
         #expect(fake.receivedPrompts.first?.contains("TURN_1_EVIDENCE") == true)
         #expect(fake.receivedPrompts.first?.contains("Original task evidence") == true)
         #expect(boundReaderWorked)
-        #expect(HostControlBrokerSessionRegistry.shared.historyReader(taskID: task.id, runID: lastRunID) == nil)
+        #expect(HostControlBrokerSessionRegistry.shared.historyReader(taskID: task.id, runID: lastRunID, ownerID: task.persistentModelID) == nil)
 
         DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: context)
         await worker.continueSession(task: task, message: "Continue investigating", modelContext: context) { _ in }

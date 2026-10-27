@@ -2450,6 +2450,9 @@ public enum WorkspaceConfigManager {
         // refuse such configs first; this runs before the task can be adopted.
         if TaskWorktreeCheckoutReservation.isReserved(config.executionRootPath),
            config.events.contains(where: { $0.type == TaskEventTypes.Task.worktreePrepared.rawValue }) { return }
+        if let taskID = config.id.flatMap(UUID.init(uuidString:)) {
+            guard (try? TaskTurnRequestOwnership.preserveLegacyBindings(taskID: taskID, in: modelContext)) != nil else { return }
+        }
         let importedRuntime = config.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)) ?? .claudeCode
         let task = AgentTask(
             title: config.title,
@@ -2610,6 +2613,7 @@ public enum WorkspaceConfigManager {
             event.category = ec.category
             modelContext.insert(event)
         }
+        recordImportedHistoryProvenance(task: task, trust: recoveryTrust, modelContext: modelContext)
         prepareCodexUsageHistoryImport(config, task: task, runs: importedRuns, context: modelContext)
         if recoveryTrust == .trustedLocalRecovery {
             importTaskRequestOwners(config.turnRequests ?? [], task: task, modelContext: modelContext)

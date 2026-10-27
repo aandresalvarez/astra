@@ -133,7 +133,7 @@ enum TaskTurnRequestRepository {
             predicate: #Predicate { $0.taskID == taskID },
             sortBy: [SortDescriptor(\.sequence), SortDescriptor(\.submittedAt)]
         )
-        return try modelContext.fetch(descriptor)
+        return try TaskTurnRequestOwnership.owned(modelContext.fetch(descriptor), by: task, in: modelContext)
     }
 
     /// The table is append-only and never pruned, so active-state filtering
@@ -151,7 +151,7 @@ enum TaskTurnRequestRepository {
             },
             sortBy: [SortDescriptor(\.sequence), SortDescriptor(\.submittedAt)]
         )
-        return try modelContext.fetch(descriptor)
+        return try TaskTurnRequestOwnership.owned(modelContext.fetch(descriptor), by: task, in: modelContext)
     }
 
     /// Same active-state predicate as `activeRequests(for:in:)`, but across
@@ -194,7 +194,7 @@ enum TaskTurnRequestRepository {
             },
             sortBy: [SortDescriptor(\.sequence), SortDescriptor(\.submittedAt)]
         )
-        return try modelContext.fetch(descriptor)
+        return try TaskTurnRequestOwnership.owned(modelContext.fetch(descriptor), by: task, in: modelContext)
     }
 
     static func request(id: UUID, in modelContext: ModelContext) throws -> TaskTurnRequest? {
@@ -202,6 +202,20 @@ enum TaskTurnRequestRepository {
             predicate: #Predicate { $0.id == id }
         )
         return try modelContext.fetch(descriptor).first
+    }
+
+    /// A corrupt owner must not disappear into the "legacy run, no request"
+    /// fallback, which would refill a permission continuation from live settings.
+    static func origin(for task: AgentTask, runID: UUID, in context: ModelContext) throws -> TaskTurnRequest? {
+        let taskID = task.id
+        let rows = try context.fetch(FetchDescriptor<TaskTurnRequest>(predicate: #Predicate {
+            $0.taskID == taskID && $0.runID == runID
+        }, sortBy: [SortDescriptor(\.sequence)]))
+        let candidates = try TaskTurnRequestOwnership.candidates(taskID: taskID, in: context)
+        guard rows.allSatisfy({ TaskTurnRequestOwnership.resolve($0, among: candidates) != nil }) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return rows.last { TaskTurnRequestOwnership.resolve($0, among: candidates)?.persistentModelID == task.persistentModelID }
     }
 
     /// The table is append-only, so computing the next sequence must not
@@ -213,7 +227,17 @@ enum TaskTurnRequestRepository {
             predicate: #Predicate { $0.taskID == taskID },
             sortBy: [SortDescriptor(\.sequence, order: .reverse)]
         )
-        descriptor.fetchLimit = 1
-        return (try modelContext.fetch(descriptor).first?.sequence ?? 0) + 1
+        // Apply ownership before choosing the highest sequence. Read bounded
+        // batches so another copy's rows cannot win the old fetchLimit=1.
+        descriptor.fetchLimit = 64
+        let candidates = try TaskTurnRequestOwnership.candidates(taskID: taskID, in: modelContext)
+        while true {
+            let rows = try modelContext.fetch(descriptor)
+            if let request = rows.first(where: {
+                TaskTurnRequestOwnership.resolve($0, among: candidates)?.persistentModelID == task.persistentModelID
+            }) { return request.sequence + 1 }
+            guard rows.count == 64 else { return 1 }
+            descriptor.fetchOffset = (descriptor.fetchOffset ?? 0) + rows.count
+        }
     }
 }

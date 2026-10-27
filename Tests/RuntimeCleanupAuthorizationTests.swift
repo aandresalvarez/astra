@@ -143,7 +143,7 @@ struct RuntimeCleanupAuthorizationTests {
         record.state = .finished
         record.resourcesReleased = true
         record.providerSharedStateReleased = true
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(record) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         #expect(!RuntimeResourceOwnership.retainsResources(record))
         #expect(!record.canReplace)
         #expect(RuntimeRecoveryPresentation.blockedMessage(task: task, context: h.context)?.contains("cannot confirm") == true)

@@ -83,6 +83,26 @@ struct CodexSessionUsageCorrectionServiceTests {
         return Fixture(container: container, context: container.mainContext, task: task)
     }
 
+    @Test("Copied task and run UUIDs retain independent correction evidence")
+    func importedCopiesUseTheirOwnReports() async throws {
+        let a = try makeFixture()
+        let task = AgentTask(title: "Imported", goal: "Own usage", runtime: .codexCLI)
+        task.id = a.task.id
+        a.context.insert(task)
+        let b = Fixture(container: a.container, context: a.context, task: task)
+        let a1 = a.legacyRun("same-session", at: 0, input: 100, output: 1)
+        let a2 = a.legacyRun("same-session", at: 10, input: 300, output: 3)
+        let b1 = b.legacyRun("same-session", at: 0, input: 500, output: 5)
+        let b2 = b.legacyRun("same-session", at: 10, input: 900, output: 9)
+        b1.id = a1.id; b2.id = a2.id
+        try a.context.save()
+        let outcome = await Service.correct(modelContext: a.context, batchSize: 1)
+        #expect(outcome.tasksCorrected == 2)
+        #expect([a1, a2].map(\.inputTokens) == [100, 200])
+        #expect([b1, b2].map(\.inputTokens) == [500, 400])
+        #expect(a.task.tokensUsed == 303 && b.task.tokensUsed == 909)
+    }
+
     private static let prodSession: [(Int, Int)] = [
         (482_000, 1_566), (543_000, 1_851), (2_680_000, 16_925),
         (2_800_000, 17_334), (6_510_000, 47_077), (7_900_000, 49_691)

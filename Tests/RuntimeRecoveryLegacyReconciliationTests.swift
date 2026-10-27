@@ -58,7 +58,7 @@ struct RuntimeRecoveryLegacyReconciliationTests {
 
         // Reconciliation happens once: losing the receipt now blocks like any tracked task.
         do {
-            let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id)
+            let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
             try FileManager.default.removeItem(at: lease.recordURL)
         }
         #expect(RuntimeExecutionOwner.requiresExistingReceipt(task))
