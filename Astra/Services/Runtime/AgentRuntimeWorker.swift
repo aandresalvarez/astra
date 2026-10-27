@@ -127,12 +127,15 @@ final class AgentRuntimeWorker {
         retainIsolationAfterExecution: Bool = false,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async -> AgentRuntimeExecutionContext? {
-        let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
+        let launchProjection = executionPolicy.launchSnapshot.map { DetachedLaunchProjection($0, from: task) }
+        defer { withExtendedLifetime(launchProjection) {} }
+        let launchTask = launchProjection?.task ?? task
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: launchTask)
         var executionContext: AgentRuntimeExecutionContext?
         await executeRuntimeSession(
             task: task,
             launchTask: launchTask,
+            launchProjection: launchProjection,
             modelContext: modelContext,
             selectedRuntime: selectedRuntime,
             onEvent: onEvent,
@@ -161,7 +164,9 @@ final class AgentRuntimeWorker {
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
-        let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
+        let launchProjection = executionPolicy.launchSnapshot.map { DetachedLaunchProjection($0, from: task) }
+        defer { withExtendedLifetime(launchProjection) {} }
+        let launchTask = launchProjection?.task ?? task
         let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
@@ -259,11 +264,14 @@ final class AgentRuntimeWorker {
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
-        let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
+        let launchProjection = executionPolicy.launchSnapshot.map { DetachedLaunchProjection($0, from: task) }
+        defer { withExtendedLifetime(launchProjection) {} }
+        let launchTask = launchProjection?.task ?? task
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: launchTask)
         await executeRuntimeSession(
             task: task,
             launchTask: launchTask,
+            launchProjection: launchProjection,
             modelContext: modelContext,
             selectedRuntime: selectedRuntime,
             onEvent: onEvent,
@@ -280,7 +288,7 @@ final class AgentRuntimeWorker {
     @MainActor
     private func executeRuntimeSession(
         task: AgentTask,
-        launchTask: AgentTask,
+        launchTask: AgentTask, launchProjection: DetachedLaunchProjection?,
         modelContext: ModelContext,
         selectedRuntime: AgentRuntimeID,
         onEvent: @escaping (ParsedEvent) -> Void,
@@ -1075,6 +1083,9 @@ final class AgentRuntimeWorker {
         let recoveryTurnsSpent = executionOwner.isRecovery ? max(0, executionTask.maxTurns - executionOwner.record.limits.turnsRemaining) : 0
         var supervisionReservations = 0
         let launchProcess: (String, String?, NativeResumeEmptyTurnGate?, TimeInterval, Int, Int) async -> AgentProcessResult = { launchPrompt, nativeSessionID, gate, launchMaxRun, priorTurns, priorTokens in
+            // A retired wait may return before its producer; retain both
+            // launch graphs until the producer really finishes.
+            defer { withExtendedLifetime((executionContext, launchProjection)) {} }
             var attemptPolicy = launchExecutionPolicy
             attemptPolicy.recoveryAllowance = executionOwner.record.limits
             attemptPolicy.providerTurnsAlreadyUsed = priorTurns + recoveryTurnsSpent
