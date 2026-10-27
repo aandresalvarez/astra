@@ -189,7 +189,7 @@ final class TaskThreadViewModel {
     private var hasPendingRequestedRefresh = false
     private var historyTaskID: UUID?
     private var historyTask: AgentTask?
-    private var expansionRunCount: Int = 50
+    private var expansionRunCount: Int = TaskThreadHistoryPagePolicy.runCount
     private var historyPersistence: HistoryPersistence?
     private var historyCursor: TaskThreadHistoryCursor?
     /// Newest event seen by a completed read. Independent of `historyCursor`,
@@ -279,7 +279,7 @@ final class TaskThreadViewModel {
             thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
             fields: Self.taskFields(task)
         ) {
-            expansionRunCount = 50
+            expansionRunCount = TaskThreadHistoryPagePolicy.runCount
             historyPersistence = modelContext.map(HistoryPersistence.init)
             historyTaskID = task.id
             historyTask = task
@@ -867,7 +867,7 @@ final class TaskThreadViewModel {
             return
         }
         guard snapshot?.omittedRunCount ?? 0 > 0 else { return }
-        expansionRunCount += 50
+        expansionRunCount += TaskThreadHistoryPagePolicy.runCount
         snapshotTrigger = nil
         refreshSnapshot(for: task)
     }

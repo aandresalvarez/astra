@@ -232,7 +232,7 @@ struct TaskThreadSnapshotInput: Sendable {
     let totalRunCount: Int
     let omittedRunCount: Int
 
-    init(task: AgentTask, maxRuns: Int = 50, performanceFields: [String: String] = [:]) {
+    init(task: AgentTask, maxRuns: Int = TaskThreadHistoryPagePolicy.runCount, performanceFields: [String: String] = [:]) {
         let start = DispatchTime.now().uptimeNanoseconds
         let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs, maxRuns: maxRuns)
         let budgets = TaskRequestBudget.Index(events: task.events, runs: task.runs)
@@ -375,8 +375,8 @@ private extension TaskEvent {
 }
 
 private struct TaskThreadSnapshotWindow {
-    private static let defaultMaxRuns = 50
-    private static let maxEvents = 1_200
+    private static let defaultMaxRuns = TaskThreadHistoryPagePolicy.runCount
+    private static let maxEvents = TaskThreadHistoryPagePolicy.eventCount
 
     let events: [TaskEvent]
     let runs: [TaskRun]

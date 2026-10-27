@@ -1401,7 +1401,7 @@ extension TaskThreadSnapshotTests {
         let input = TaskThreadSnapshotInput(task: task)
         let snapshot = TaskThreadSnapshot(input: input)
 
-        #expect(input.events.count == 1_201)
+        #expect(input.events.count == TaskThreadHistoryReader.defaultEventPageSize + 1)
         #expect(snapshot.latestAgentPlanItems.map(\.text) == ["Keep this plan"])
         #expect(snapshot.protocolState(for: run).todoItems.map(\.text) == ["Keep this plan"])
     }
