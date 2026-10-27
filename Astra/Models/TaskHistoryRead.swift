@@ -44,6 +44,15 @@ public enum TaskHistoryRead {
         }, matches: { $0.payload == payload })
     }
 
+    /// A run summary needs all of that run's event kinds, including future
+    /// provider evidence, without loading unrelated turns.
+    public static func events(for task: AgentTask, runID: UUID) -> [TaskEvent] {
+        let taskID = task.id
+        return events(task: task, predicate: #Predicate<TaskEvent> {
+            $0.task?.id == taskID && $0.run?.id == runID
+        }, matches: { $0.run?.id == runID })
+    }
+
     public static func records(for task: AgentTask, ofTypes types: Set<String>) -> [TaskEventRecord] {
         events(for: task, ofTypes: types)
             .map(TaskEventRecord.init(event:))
