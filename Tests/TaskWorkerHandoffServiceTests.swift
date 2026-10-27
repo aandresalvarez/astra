@@ -190,6 +190,41 @@ struct TaskWorkerHandoffServiceTests {
         #expect(state.changedFiles.contains { $0.path == indexPath })
     }
 
+    @Test("Handoff uses only its run and applies caps in deterministic event order")
+    func handoffRunScopeAndOrdering() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskWorkerHandoffContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Handoff", primaryPath: root)
+        let task = AgentTask(title: "Run scope", goal: "Keep history", workspace: workspace)
+        let run = TaskRun(task: task)
+        let oldRun = TaskRun(task: task)
+        context.insert(workspace); context.insert(task); context.insert(run); context.insert(oldRun)
+        for index in (0..<14).reversed() {
+            let event = TaskEvent(task: task, type: "tool.use", payload: "command \(index)", run: run)
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+        context.insert(TaskEvent(task: task, type: "tool.use", payload: "unrelated command", run: oldRun))
+        context.insert(TaskEvent(task: task, type: "validation.future", payload: "future evidence", run: run))
+        try context.save()
+        let handoff = try #require(TaskWorkerHandoffService.recordCreatedIfNeeded(
+            task: task, run: run, modelContext: context, discoveredFiles: []))
+        let payload = try #require(TaskWorkerHandoffService.decode(handoff.payload))
+        #expect(payload.commands.map(\.summary) == (0..<12).map { "command \($0)" })
+        #expect(payload.validationEvidence.contains { $0.contains("future evidence") })
+        // A second pass sees the pending handoff without requiring a save.
+        #expect(TaskWorkerHandoffService.recordCreatedIfNeeded(
+            task: task, run: run, modelContext: context, discoveredFiles: []) == nil)
+        try context.save()
+        context.delete(handoff)
+        #expect(TaskHistoryRead.events(for: task, runID: run.id).allSatisfy { $0.type != TaskHandoffEventTypes.created })
+        context.rollback()
+        #expect(TaskWorkerHandoffService.recordCreatedIfNeeded(
+            task: task, run: run, modelContext: context, discoveredFiles: []) == nil)
+    }
+
     private func temporaryRoot() throws -> String {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-handoff-\(UUID().uuidString)", isDirectory: true)

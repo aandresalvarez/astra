@@ -48,7 +48,7 @@ enum TaskExternalOutcomeFailureClassifier {
         return pendingGitHubPullRequestFailure(
             task: task,
             targetRunID: targetRun.id,
-            events: task.events.map { TaskOutcomeEventRecord(event: $0) }
+            events: TaskExternalOutcomeRequirementResolver.outcomeEvents(task: task, runID: targetRun.id)
         )
     }
 

@@ -681,9 +681,8 @@ enum AgentEventRecorder {
             let payload = model.map { "\(providerDisplayName) stream started with model \($0)." }
                 ?? "\(providerDisplayName) stream started."
             let providerStartPayloadPrefix = "\(providerDisplayName) stream started"
-            let providerStartAlreadyPersisted = task.events.contains {
-                $0.run?.id == run.id
-                    && $0.type == TaskEventTypes.Task.started.rawValue
+            let providerStartAlreadyPersisted = TaskHistoryRead.events(for: task, runID: run.id).contains {
+                $0.type == TaskEventTypes.Task.started.rawValue
                     && $0.payload.hasPrefix(providerStartPayloadPrefix)
             }
             let shouldRecordStart = recordingState?.registerProviderStart(
