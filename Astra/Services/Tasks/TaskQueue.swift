@@ -1852,7 +1852,7 @@ final class TaskQueue {
                 cancellationVerified = record.cancellationRequested == true && record.resourcesReleased == true
             }
         }
-        let releaseReason = reason ?? (durableOwnerRetained ? "completed_turn_durable_owner_retained"
+        let releaseReason = reason ?? (durableOwnerRetained ? "settled_turn_durable_owner_retained"
             : (cancellationVerified ? "cancelled_cleanup_verified" : nil))
         let held = Set(localResourceLocks)
         let released = claims.filter { held.contains($0) }

@@ -173,7 +173,7 @@ extension HeadlessChatScenarioTests {
         })
     }
 
-    @Test("Copilot permission denial without terminal proof cannot restart after approval")
+    @Test("A new Copilot instruction uses approved access while retaining prior execution uncertainty")
     func copilotHiddenPermissionPromptPausesForUserApprovalAndCanContinue() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -230,6 +230,11 @@ extension HeadlessChatScenarioTests {
         #expect(firstRun.status == .failed)
         #expect(firstRun.stopReason == "permission_approval_required")
         #expect(task.events.contains { $0.type == "permission.approval.requested" })
+        let originalOwner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        #expect(originalOwner.stopProof?.reaped == true && originalOwner.stopProof?.processGroupEmpty == true)
+        if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: harness.context) {} else {
+            Issue.record("Approval without new human input authorized an unverified retry")
+        }
 
         _ = await harness.continueTask(
             task: task,
@@ -239,12 +244,15 @@ extension HeadlessChatScenarioTests {
         )
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
-        #expect(task.runs.count == 1)
+        #expect(task.runs.count == 2)
         #expect(!args.contains("--allow-all-tools"))
-        #expect(task.status == .pendingUser)
+        #expect(task.status == .completed)
         let owner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        #expect(owner.ownerID == originalOwner.ownerID)
+        #expect(owner.executionID != originalOwner.executionID)
+        #expect(try RuntimeExecutionOwner.store(in: harness.context).retainedExecutions(of: owner) == [originalOwner])
+        #expect(firstRun.status == .failed && firstRun.stopReason == "permission_approval_required")
         #expect(!owner.canReplace && owner.resourcesReleased != true)
-        #expect(task.events.contains { $0.payload.contains("cannot confirm") })
     }
 
     @Test("UI approval saves Copilot permission grants while cleanup stays unverified")

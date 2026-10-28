@@ -308,7 +308,7 @@ extension HeadlessChatScenarioTests {
         #expect(task.status == .completed)
     }
 
-    @Test("Claude no-progress follow-up cannot bypass missing terminal proof")
+    @Test("Claude no-progress follow-up retains uncertainty after verified local termination")
     func claudeNoProgressFollowUpRetainsProtection() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -338,16 +338,26 @@ extension HeadlessChatScenarioTests {
 
         let task = harness.makeTask(runtime: .claudeCode, goal: "Create a standalone artifact", model: "claude-sonnet-4-6")
         let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
-        worker.timeoutSeconds = 2
+        // Keep the normal launch/probe allowance: this test checks admission
+        // after the watchdog stops the provider, not a two-second cold launch.
+        worker.timeoutSeconds = 10
 
         _ = await harness.execute(task: task, worker: worker)
 
         let failedRun = try #require(task.runs.first)
-        #expect(failedRun.status == .failed)
-        #expect(failedRun.stopReason == "provider_no_semantic_progress")
+        let watchdogStopped = failedRun.status == .failed && failedRun.stopReason == "provider_no_semantic_progress"
+        #expect(watchdogStopped)
+        guard watchdogStopped else { return }
         #expect(failedRun.output.isEmpty)
         #expect(task.sessionId == "stuck-claude-session")
         let originalOwner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        #expect(originalOwner.stopProof?.reaped == true)
+        #expect(originalOwner.stopProof?.processGroupEmpty == true)
+        #expect(!originalOwner.canReplace)
+        if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: harness.context) {} else {
+            Issue.record("An automatic retry bypassed the missing tool-cleanup proof")
+        }
+        worker.timeoutSeconds = 30
 
         _ = await harness.continueTask(
             task: task,
@@ -361,18 +371,21 @@ extension HeadlessChatScenarioTests {
             .map(String.init)
         #expect(!args.contains("--resume"))
         #expect(rawArgs.contains("Context Capsule v2:"))
-        #expect(!rawArgs.contains("User's follow-up request:\nContinue with a clean retry"))
-        #expect(task.sessionId == "stuck-claude-session")
-        #expect(task.runs.count == 1)
-        #expect(task.status == .pendingUser)
-        #expect(try String(contentsOf: countFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) == "1")
+        #expect(rawArgs.contains("User's follow-up request:\nContinue with a clean retry"))
+        #expect(task.sessionId == "clean-claude-session")
+        #expect(task.runs.count == 2)
+        #expect(task.status == .completed)
+        #expect(try String(contentsOf: countFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) == "2")
         let retainedOwner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
-        #expect(retainedOwner.executionID == originalOwner.executionID)
-        #expect(retainedOwner.limits == originalOwner.limits)
+        #expect(retainedOwner.ownerID == originalOwner.ownerID)
+        #expect(retainedOwner.executionID != originalOwner.executionID)
+        #expect(try RuntimeExecutionOwner.store(in: harness.context).retainedExecutions(of: retainedOwner) == [originalOwner])
+        #expect(failedRun.status == .failed && failedRun.stopReason == "provider_no_semantic_progress")
         #expect(retainedOwner.resourcesReleased != true)
         #expect(!retainedOwner.canReplace)
         let followUp = try #require(try TaskTurnRequestRepository.requests(for: task, in: harness.context).last)
-        #expect(followUp.runID == nil)
+        #expect(followUp.runID == task.runs.max(by: { $0.startedAt < $1.startedAt })?.id)
+        #expect(followUp.state == .completed)
     }
 
     @Test("Claude launch prompt prunes irrelevant Graph Mail capability for artifact task")

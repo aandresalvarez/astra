@@ -104,8 +104,9 @@ struct PluginMigrationUnreadableCredentialTests {
     }
 
     /// The real vault, except that the named namespaces refuse reads the way
-    /// items an earlier ad-hoc build wrote refuse this one.
-    private struct RefusingVault: SecretStore {
+    /// items an earlier ad-hoc build wrote refuse this one. Shared with
+    /// `PluginMigrationUnreadableSkillSecretTests`.
+    struct RefusingVault: SecretStore {
         let refused: Set<String>
         private let real = KeychainSecretStore()
         init(refused: Set<String>) { self.refused = refused }

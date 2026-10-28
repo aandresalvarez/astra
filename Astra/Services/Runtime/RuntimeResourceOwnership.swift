@@ -66,7 +66,7 @@ enum RuntimeResourceOwnership {
         return claims.filter { seen.insert($0).inserted }
     }
 
-    /// A completed worker can retire its process-local lease while its protected
+    /// A settled worker can retire its process-local lease while its protected
     /// receipt continues to reserve every resource. Keeping both copies leaves
     /// an obsolete lease behind when a later turn replaces the current receipt.
     /// This does not certify tool cleanup or release durable ownership.
@@ -75,7 +75,7 @@ enum RuntimeResourceOwnership {
         guard !claims.isEmpty, task.modelContext === context,
               let record = try RuntimeTaskOwnerJournal.read(task: task, context: context),
               retainsResources(record),
-              RuntimeCompletedUserTurnContinuation.hasCompletedTurn(record, task: task, context: context),
+              RuntimeCompletedUserTurnContinuation.hasSettledTurn(record, task: task, context: context),
               let durable = record.resourceClaims else { return false }
         let lease = try RuntimeExecutionOwner.store(in: context).acquire(taskID: record.taskID, taskOwnerID: record.taskOwnerID)
         defer { withExtendedLifetime(lease) {} }
