@@ -17,7 +17,11 @@ import ASTRAPersistence
 /// - A plugin-origin connector stays a row and becomes an account: a
 ///   workspace-owned one is bound to its workspace's activation, a shared one
 ///   to every activation of its plugin. Credentials stored only under the
-///   stable namespace are copied into the row's own.
+///   stable namespace are copied into the row's own. An account holding a
+///   value this build can't read (a rebuilt ad-hoc ASTRA can't read what an
+///   earlier build saved) is bound with its legacy slots as they are and
+///   reported as awaiting re-entry; the rest of the pass goes on without it,
+///   and re-entering its values (`ConnectorCredentialEditor`) publishes them.
 /// - An unedited plugin skill's settings move to each activation that used
 ///   it (secret ones into a private activation generation), the
 ///   templates and schedules that named it are pointed at the projected ID,
@@ -47,6 +51,9 @@ enum PluginActivationMigration {
         var skillsKeptAsAuthored = 0
         var toolsProjected = 0
         var toolsKeptAsAuthored = 0
+        /// Account -> the first key this build couldn't read. Not a change:
+        /// nothing about these accounts' credentials moved.
+        var accountsAwaitingReentry: [UUID: String] = [:]
     }
 
     enum MigrationError: Error, Equatable {
@@ -79,14 +86,25 @@ enum PluginActivationMigration {
             let report = try migrate(modelContext: context, packages: packages)
             AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
                 "migration": "plugin_activations_v21",
-                "result": "migrated",
+                "result": report.accountsAwaitingReentry.isEmpty ? "migrated" : "migrated_awaiting_reentry",
                 "activations": String(report.activations),
                 "accounts_bound": String(report.accountsBound),
+                "accounts_awaiting_reentry": String(report.accountsAwaitingReentry.count),
                 "skills_projected": String(report.skillsProjected),
                 "skills_kept_authored": String(report.skillsKeptAsAuthored),
                 "tools_projected": String(report.toolsProjected),
                 "tools_kept_authored": String(report.toolsKeptAsAuthored)
             ])
+            // Key names only: the remedy is re-entering that value in the
+            // account's Secrets, which no later launch can do by itself.
+            for (accountID, key) in report.accountsAwaitingReentry.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+                AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                    "migration": "plugin_activations_v21",
+                    "result": "awaiting_reentry",
+                    "connector_id": accountID.uuidString,
+                    "key": key
+                ], level: .warning)
+            }
         } catch {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                 "migration": "plugin_activations_v21",
@@ -149,7 +167,8 @@ enum PluginActivationMigration {
         secrets: any SkillSecretPersisting.Type = SkillSecretSeam.required,
         sourceStore: PluginSourceStore = PluginSourceStore(),
         persist: ((ModelContext) throws -> Void)? = nil,
-        rewriteMirror: ((Workspace) -> Bool)? = nil
+        rewriteMirror: ((Workspace) -> Bool)? = nil,
+        vault: SecretStore = KeychainSecretStore()
     ) throws -> Report {
         guard !modelContext.hasChanges else { throw MigrationError.pendingEdits }
         let packagesByID = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -168,7 +187,7 @@ enum PluginActivationMigration {
         var report = Report()
         var releasedSkillIDs: [UUID] = []
         let credentials = PluginMigrationSkillCredentials(modelContext: modelContext, persistence: secrets)
-        let accountCredentials = PluginMigrationAccountCredentials(modelContext: modelContext)
+        let accountCredentials = PluginMigrationAccountCredentials(modelContext: modelContext, vault: vault)
         // rollback() doesn't restore array-backed state (legacy and global
         // memberships, activation records): a failed run puts it back.
         let restoreState = PluginUpdateService.captureState(of: workspaces)
@@ -258,11 +277,14 @@ enum PluginActivationMigration {
             for connector in connectors.sorted(by: { $0.createdAt < $1.createdAt }) where isPluginOrigin(connector) {
                 let pluginID = trimmed(connector.originPackageID)
                 try accountCredentials.prepare(connector)
+                // Its stable slot is derived from its provenance: an account
+                // whose values couldn't be copied keeps it until they can.
+                let releasable = !accountCredentials.isAwaitingReentry(connector)
                 // Without its definition (a custom plugin's file missing or
                 // unreadable) nothing could project a bound account back into
                 // scope: it stays the person's, as authored, as skills do.
                 guard packagesByID[pluginID] != nil else {
-                    CapabilityResourceOrigin.releaseProvenance(of: connector)
+                    if releasable { CapabilityResourceOrigin.releaseProvenance(of: connector) }
                     continue
                 }
                 let componentIDs = connectorComponentIDs(connector, package: packagesByID[pluginID])
@@ -275,7 +297,7 @@ enum PluginActivationMigration {
                         .map { ($0.0, $0.1, componentID) }
                 }
                 guard !bindings.isEmpty else {
-                    CapabilityResourceOrigin.releaseProvenance(of: connector)
+                    if releasable { CapabilityResourceOrigin.releaseProvenance(of: connector) }
                     continue
                 }
                 if let owner = connector.skill, !independentSkillIDs.contains(owner.id) {
@@ -409,7 +431,10 @@ enum PluginActivationMigration {
             }
 
             releasedSkillIDs += credentials.released
-            guard report != Report() || modelContext.hasChanges || !releasedSkillIDs.isEmpty else { return report }
+            report.accountsAwaitingReentry = accountCredentials.awaitingReentry
+            var moved = report
+            moved.accountsAwaitingReentry = [:]
+            guard moved != Report() || modelContext.hasChanges || !releasedSkillIDs.isEmpty else { return report }
             var saveError: Error?
             var committed: PluginOperationCommit.Outcome?
             var recoveryComplete = false
