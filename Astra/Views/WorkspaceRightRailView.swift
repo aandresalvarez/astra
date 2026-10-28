@@ -449,6 +449,7 @@ struct WorkspaceRightRailView: View {
             facts.changedFileCount = gitViewModel.statusFiles.count
             facts.aheadCount = gitViewModel.pushableCommitCount
             facts.behindCount = gitViewModel.behind
+            facts.canStartPullRequest = gitViewModel.canStartPullRequest
             facts.openPullRequestLabel = gitViewModel.openPullRequest.map {
                 "#\($0.number)" + ($0.isDraft ? " · draft" : "")
             }

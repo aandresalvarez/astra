@@ -14,6 +14,22 @@ enum WorkspaceGitPanelPresentation {
     /// The git rows share the rail's one-line row grammar (rail v2).
     static let rowMinHeight: CGFloat = WorkspaceRailSectionPresentation.Layout.rowHeight
 
+    /// Use the rail's action policy with readiness from the Git model. The
+    /// section must not infer availability from ahead/behind counts alone.
+    @MainActor
+    static func footerActions(for viewModel: WorkspaceGitViewModel) -> [String] {
+        let branch = viewModel.currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return WorkspaceRailSectionPresentation.footerActions(.init(
+            primaryPath: "",
+            branch: branch.isEmpty || branch == "unknown" ? nil : branch,
+            changedFileCount: viewModel.statusFiles.count,
+            aheadCount: viewModel.pushableCommitCount,
+            behindCount: viewModel.behind,
+            canStartPullRequest: viewModel.canStartPullRequest,
+            openPullRequestLabel: viewModel.openPullRequest.map { "#\($0.number)" }
+        ))
+    }
+
     static func transientStateAfterRepositoryContextChange(
         _ state: WorkspaceGitTransientPresentationState
     ) -> WorkspaceGitTransientPresentationState {
@@ -37,8 +53,8 @@ struct WorkspaceGitTransientPresentationState: Equatable {
 
 /// The source-control rows of the Environment box (rail v2): repository,
 /// branch, checkout, changes and pull request as one-line facts, with the
-/// verbs in a footer that renders only when something can be committed,
-/// pushed or pulled. The rail owns the view model and the box header carries
+/// verbs in a footer that includes PR creation for a clean, published branch.
+/// The rail owns the view model and the box header carries
 /// the refresh control.
 struct WorkspaceGitSectionView: View {
     private static let viewUpdateDeferralNanoseconds: UInt64 = 1_000_000
@@ -277,13 +293,16 @@ struct WorkspaceGitSectionView: View {
         }
     }
 
-    /// Verbs render only when something can be committed, pushed or pulled
-    /// (rail v2): a clean, pushed checkout shows rows and no buttons.
+    private var repositoryFooterActions: [String] {
+        WorkspaceGitPanelPresentation.footerActions(for: viewModel)
+    }
+
+    /// Context and sync information can remain without a button; available
+    /// actions, including Create PR, come from the shared rail presentation.
     private var showsActionFooter: Bool {
         newWorktreePreview != nil
-            || !viewModel.statusFiles.isEmpty
-            || viewModel.pushableCommitCount > 0
             || viewModel.behind > 0
+            || !repositoryFooterActions.isEmpty
     }
 
     // MARK: - Repository row
@@ -430,8 +449,11 @@ struct WorkspaceGitSectionView: View {
             }
 
             HStack(spacing: 8) {
-                commitActionButton
-                if !prExists {
+                if repositoryFooterActions.contains(WorkspaceRailSectionPresentation.commitAndPushAction)
+                    || repositoryFooterActions.contains(WorkspaceRailSectionPresentation.pushAction) {
+                    commitActionButton
+                }
+                if repositoryFooterActions.contains(WorkspaceRailSectionPresentation.createPullRequestAction) {
                     createPullRequestButton
                 }
             }
@@ -485,7 +507,7 @@ struct WorkspaceGitSectionView: View {
                 } else {
                     Image(systemName: "sparkles")
                 }
-                Text("Create PR")
+                Text(WorkspaceRailSectionPresentation.createPullRequestAction)
             }
             .font(Stanford.caption(12).weight(.medium))
             .lineLimit(1)
@@ -503,9 +525,8 @@ struct WorkspaceGitSectionView: View {
     }
 
     private var commitActionLabel: String {
-        if !viewModel.statusFiles.isEmpty { return "Commit & push" }
-        if viewModel.pushableCommitCount > 0 { return "Push" }
-        return "Commit & push"
+        repositoryFooterActions.first { $0 != WorkspaceRailSectionPresentation.createPullRequestAction }
+            ?? WorkspaceRailSectionPresentation.commitAndPushAction
     }
 
     private var repositorySyncStatusText: String? {
