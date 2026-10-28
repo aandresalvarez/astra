@@ -9,9 +9,9 @@ import ASTRAPersistence
 import ASTRACore
 import ASTRAGitContracts
 
-/// Reports when the panel's detached `gh pr list` lookups actually reach the
-/// service, and can hold one in flight so a test observes the panel between
-/// "the action fired" and "the follow-up probe answered".
+/// Reports when a panel operation reaches the service and can hold one in
+/// flight so tests distinguish published state from completed work. Used by
+/// detached `gh pr list` lookups and the final rail status refresh.
 ///
 /// Tests wait on this signal instead of a wall clock. The panel's recovery
 /// paths chain several main-actor hops (`selectRepository` -> refresh ->
@@ -21,7 +21,7 @@ import ASTRAGitContracts
 /// un-advanced state. A continuation has no deadline to blow past: either the
 /// lookup happens or the test hangs until the runner kills it, which is a
 /// legible failure rather than a fake one.
-private actor PullRequestLookupGate {
+private actor GitPanelOperationGate {
     private var startedCount = 0
     private var waiters: [(target: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var gatedCall: Int?
@@ -93,7 +93,8 @@ struct GitRepositoryPanelIntegrationTests {
         private(set) var pullRequestLookupCallCount = 0
         /// Signals each lookup as it reaches the service, and optionally holds
         /// one in flight. Tests block on this rather than on a clock.
-        let lookupGate = PullRequestLookupGate()
+        let lookupGate = GitPanelOperationGate()
+        var diffStatsGate: GitPanelOperationGate?
 
         func acquireIndexGuard() -> Bool {
             acquiredIndexGuardCount += 1
@@ -192,7 +193,10 @@ struct GitRepositoryPanelIntegrationTests {
             ""
         }
 
-        func getDiffStats(at repoPath: String) async -> (additions: Int, deletions: Int) { diffStats }
+        func getDiffStats(at repoPath: String) async -> (additions: Int, deletions: Int) {
+            await diffStatsGate?.noteStarted()
+            return diffStats
+        }
 
         func listWorktrees(at repoPath: String) async -> [GitWorktreeInfo] {
             refreshedWorktreeRoots.append(repoPath)
@@ -1021,6 +1025,7 @@ extension GitRepositoryPanelIntegrationTests {
         second.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(container)
         let store = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        store.mainContext.autosaveEnabled = false
         store.mainContext.insert(workspace); store.mainContext.insert(first); store.mainContext.insert(second)
         try store.mainContext.save()
         let intents = NewTaskWorktreeIntentStore()
@@ -1039,12 +1044,14 @@ extension GitRepositoryPanelIntegrationTests {
                     hasDockerEnvironments: WorkspaceRailEnvironmentLifecycle.needsContainerRows(workspaceHasContainers: false, task: task)))
                 .environment(\.scenePhase, .active)
                 .environment(\.newTaskWorktreeIntents, intents)
+                .modelContainer(store)
         }
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 300, height: 100),
             styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: content(first))
         window.contentView = host
+        RailHostedFixtureLifetime.keepAlive(store, store.mainContext, host, window, git, docker, intents)
         defer { window.contentView = nil; window.close(); git.pauseRefresh() }
         host.layoutSubtreeIfNeeded(); window.orderBack(nil)
         try await waitForRail { git.currentBranch == "first" }
@@ -1067,13 +1074,34 @@ extension GitRepositoryPanelIntegrationTests {
         host.layoutSubtreeIfNeeded()
         try await waitForRail { git.currentBranch == "draft-first" }
         #expect(git.activeWorkingPath == WorkspacePathPresentation.standardizedPath(firstRoot))
-        fake.currentBranch = "draft-second"
-        intents.update(owner: composerOwner) { $0.preparedDraft = second }
-        // No host replacement here: observation of the intent store must
-        // rebind the model while selectedTask remains nil.
-        try await waitForRail { git.currentBranch == "draft-second" }
-        #expect(git.activeWorkingPath == WorkspacePathPresentation.standardizedPath(secondRoot))
-        #expect(docker.selectedEnvironment == .host)
+        await git.waitForPendingRefresh()
+        let finalRefreshGate = GitPanelOperationGate()
+        await finalRefreshGate.gate(call: 1)
+        fake.diffStatsGate = finalRefreshGate
+        func finishRefresh() async {
+            git.pauseRefresh()
+            await finalRefreshGate.openGate()
+            await git.waitForPendingRefresh()
+        }
+        do {
+            fake.currentBranch = "draft-second"
+            intents.update(owner: composerOwner) { $0.preparedDraft = second }
+            // No host replacement here: observation of the intent store must
+            // rebind the model while selectedTask remains nil.
+            try await waitForRail { git.currentBranch == "draft-second" }
+            #expect(git.activeWorkingPath == WorkspacePathPresentation.standardizedPath(secondRoot))
+            #expect(docker.selectedEnvironment == .host)
+            // The branch is published before the refresh's remaining async work.
+            // Hold one of those operations to prove that visible state is not a
+            // completion signal, then join the real refresh before teardown.
+            await finalRefreshGate.waitForStart(1)
+            #expect(fake.acquiredIndexGuardCount > fake.releasedIndexGuardCount)
+        } catch {
+            await finishRefresh()
+            throw error
+        }
+        await finishRefresh()
+        #expect(fake.acquiredIndexGuardCount == fake.releasedIndexGuardCount)
     }
 
     @MainActor
@@ -1081,6 +1109,19 @@ extension GitRepositoryPanelIntegrationTests {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while !ready(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(ready(), "The collapsed rail did not bind its current context")
+    }
+}
+
+/// SwiftUI can retain model-reading callbacks after an offscreen test window
+/// closes. Match the app's container lifetime, as the other hosted SwiftData
+/// suites do: this single fixture remains valid through later run-loop turns
+/// and is released with the test process. This is test-only ownership.
+@MainActor
+private enum RailHostedFixtureLifetime {
+    private static var retained: [AnyObject] = []
+
+    static func keepAlive(_ objects: AnyObject...) {
+        retained.append(contentsOf: objects)
     }
 }
 
