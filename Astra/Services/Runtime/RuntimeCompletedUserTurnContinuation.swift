@@ -49,10 +49,10 @@ enum RuntimeCompletedUserTurnContinuation {
 
     static func hasUnlaunchedPreparation(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
                                         context: ModelContext) -> Bool {
-        guard unlaunched(saved), let history = try? RuntimeExecutionOwner.store(in: context).retainedExecutions(of: saved),
+        guard unlaunched(saved, task: task, context: context), let history = try? RuntimeExecutionOwner.store(in: context).retainedExecutions(of: saved),
               let settledIndex = history.firstIndex(where: { settledState($0) }) else { return false }
         let preparations = [saved] + Array(history.prefix(settledIndex))
-        guard preparations.allSatisfy(unlaunched) else { return false }
+        guard preparations.allSatisfy({ unlaunched($0, task: task, context: context) }) else { return false }
         let ignored = Set(preparations.compactMap(\.runID))
         return settledBasis(history[settledIndex], task: task, context: context, excluding: ignored, requiresSuccess: false)
     }
@@ -63,19 +63,40 @@ enum RuntimeCompletedUserTurnContinuation {
         saved.state == .finished || saved.state == .stopped || saved.state == .unverified
     }
 
-    private static func unlaunched(_ saved: RuntimeExecutionOwnerRecord) -> Bool {
-        (saved.state == .preparing || saved.state == .notStarted)
+    private static func unlaunched(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
+                                   context: ModelContext) -> Bool {
+        guard (saved.state == .preparing || saved.state == .notStarted)
             && saved.continuingUserRequestID != nil && saved.retainedExecutionHead != nil
             && saved.providerProcess == nil && saved.stopProof == nil
-            && saved.cancellationRequested != true && saved.settlementInProgress != true
-            && saved.settlementLocalWorkStopped != false && saved.settlementToolsStopped != false
+            && saved.settlementInProgress != true && saved.settlementLocalWorkStopped != false
+            && saved.settlementToolsStopped != false else { return false }
+        guard saved.cancellationRequested == true else { return true }
+        // Stop before the launch-intent boundary cancels this attempt, not
+        // its predecessor's authorization for a separately authored message.
+        // Require the durable cancellation and joined settlement, never just
+        // an absent PID (which is also possible after a failed launch).
+        guard saved.state == .notStarted, saved.settlementInProgress == false,
+              saved.settlementLocalWorkStopped == true, saved.settlementToolsStopped == true else { return false }
+        return cancelledAttempt(saved, task: task, context: context)
+    }
+
+    private static func cancelledAttempt(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
+                                         context: ModelContext) -> Bool {
+        guard saved.cancellationRequested == true, let requestID = saved.continuingUserRequestID,
+              let request = try? TaskTurnRequestRepository.request(id: requestID, in: context),
+              request.taskID == task.id, request.state == .cancelled,
+              let runID = saved.runID, request.runID == runID,
+              let run = task.runs.first(where: { $0.id == runID }),
+              run.status == .cancelled, run.typedStopReason == .cancelled,
+              run.completedAt != nil else { return false }
+        return true
     }
 
     private static func settledBasis(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
                                      context: ModelContext, excluding ignored: Set<UUID>, requiresSuccess: Bool) -> Bool {
         guard task.isLive, task.modelContext === context,
               saved.taskID == task.id, settledState(saved),
-              saved.cancellationRequested != true,
+              saved.cancellationRequested != true || cancelledAttempt(saved, task: task, context: context),
               saved.settlementInProgress == false, saved.settlementLocalWorkStopped == true,
               saved.settlementToolsStopped == true,
               saved.resourceClaims != nil,
@@ -83,7 +104,8 @@ enum RuntimeCompletedUserTurnContinuation {
               proof.process == saved.providerProcess, proof.reaped, proof.processGroupEmpty,
               proof.process.presence == .absent,
               let runID = saved.runID, let run = task.runs.first(where: { $0.id == runID }),
-              settledOutcome(run, requiresSuccess: requiresSuccess), run.completedAt != nil,
+              settledOutcome(run, requiresSuccess: requiresSuccess,
+                cancelled: cancelledAttempt(saved, task: task, context: context)), run.completedAt != nil,
               task.runs.filter({ !ignored.contains($0.id) }).max(by: { $0.startedAt < $1.startedAt })?.id == runID,
               !task.runs.contains(where: { $0.status == .running && !ignored.contains($0.id) }),
               let snapshot = run.executionEnvironmentSnapshotJSON,
@@ -94,8 +116,9 @@ enum RuntimeCompletedUserTurnContinuation {
         return (try? RuntimeExecutionOwner.store(in: context).retainedExecutions(of: saved)) != nil
     }
 
-    private static func settledOutcome(_ run: TaskRun, requiresSuccess: Bool) -> Bool {
+    private static func settledOutcome(_ run: TaskRun, requiresSuccess: Bool, cancelled: Bool) -> Bool {
         if run.status == .completed { return run.typedStopReason == .completed }
+        if !requiresSuccess, run.status == .cancelled { return cancelled }
         guard !requiresSuccess, let reason = run.typedStopReason,
               reason != .completed, reason != .cancelled else { return false }
         switch run.status {
