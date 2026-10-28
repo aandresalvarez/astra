@@ -367,9 +367,9 @@ final class RuntimeExecutionOwner {
             record.providerSharedStateReleased = true
         }
         let unresolved = record.resourcesReleased != true && record.providerProcess != nil
-        let acceptsInstruction = task.isLive && RuntimeCompletedUserTurnContinuation.hasCompletedTurn(record, task: task, context: context)
+        let acceptsInstruction = task.isLive && RuntimeCompletedUserTurnContinuation.hasSettledTurn(record, task: task, context: context)
         let message = acceptsInstruction
-            ? "This turn finished. You can send a new instruction in this task. Earlier tool effects remain unverified, so ASTRA keeps this task's resource reservations; automatic recovery stays blocked."
+            ? "This execution ended. You can send a new instruction in this task. Your work and history are preserved. Earlier tool effects remain unverified, so ASTRA keeps this task's resource reservations; automatic recovery stays blocked."
             : "The provider exited, but ASTRA cannot confirm that its execution and tools stopped. Its resources remain reserved; new work and recovery must wait. The result, context and remaining limits are preserved."
         try? save(unresolved ? message : nil)
     }

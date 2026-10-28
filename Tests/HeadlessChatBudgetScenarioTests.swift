@@ -346,6 +346,7 @@ extension HeadlessChatScenarioTests {
             named: "copilot",
             script: Self.copilotScript(body: """
             for i in 1 2 3 4 5 6 7 8 9; do
+              printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"toolu_repeat","toolName":"bash","arguments":{"command":"pwd"}}}'
               printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"toolu_repeat","success":true,"result":{"content":"same output"}}}'
             done
             sleep 1
@@ -359,7 +360,7 @@ extension HeadlessChatScenarioTests {
             model: "gpt-5",
             tokenBudget: 50_000
         )
-        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath, permissionPolicy: .autonomous)
         worker.budgetEnforcementModeOverride = .warning
 
         _ = await harness.execute(task: task, worker: worker)
@@ -370,6 +371,26 @@ extension HeadlessChatScenarioTests {
         #expect(run.stopReason == "repetition_detected")
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("Repetition loop detected") })
         #expect(!task.events.contains { $0.type == "budget.exceeded" })
+    }
+
+    @Test("Copilot identical tool-output chunks complete the original invocation")
+    func copilotToolOutputProgressCompletes() async throws {
+        let harness = try HeadlessChatHarness(); defer { harness.cleanup() }
+        let copilotPath = try harness.writeExecutable(named: "copilot", script: Self.copilotScript(body: """
+        printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"pytest","toolName":"bash","arguments":{"command":"pytest -q"}}}'
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          printf '%s\\n' '{"type":"tool_result","toolCallId":"pytest","content":"."}'
+        done
+        printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"pytest","success":true,"result":{"content":"10 passed"}}}'
+        printf '%s\\n' '{"type":"result","sessionId":"progress-session","exitCode":0,"result":"Validation complete","inputTokens":10,"outputTokens":5}'
+        """))
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "Validate partial work", model: "gpt-5", tokenBudget: 50_000)
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath, permissionPolicy: .autonomous)
+        _ = await harness.execute(task: task, worker: worker)
+        let run = try #require(task.runs.first)
+        #expect(task.status == .completed && run.status == .completed)
+        #expect(run.typedStopReason == .completed)
+        #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("Repetition loop detected") })
     }
 
     @Test("Claude hard stop rejects budgets below launch overhead before starting")

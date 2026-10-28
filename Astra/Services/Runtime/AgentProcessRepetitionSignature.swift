@@ -15,16 +15,16 @@ extension AgentProcessMonitor {
     ///   that differ only after the first characters (long paths, near-identical
     ///   commands) stay different, while a call genuinely repeated, even under
     ///   fresh provider ids, stays the same.
-    /// - A tool result carries its call's id. A result belongs to exactly one
-    ///   call, so consecutive results under different ids are different calls
-    ///   answering, however alike their text ("No matches found", "File ...
-    ///   updated"). A real loop still shows on the calls, or as one id repeating.
+    /// - Tool output is an observation, not another invocation. A single call
+    ///   can stream identical chunks (pytest dots, download progress) under one
+    ///   id. Ignore results here without resetting invocation repetition, so
+    ///   genuinely repeated calls still trip the breaker between their results.
     static func breakerSignature(_ parsed: ParsedEvent) -> String? {
         switch parsed {
         case .toolUse(let name, let id, let input):
             return toolUseBreakerSignature(name: name, id: id, input: input)
-        case .toolResult(let id, _, _):
-            return repetitionSignature(parsed).map { "\($0):call=\(id)" }
+        case .toolResult:
+            return nil
         default:
             return repetitionSignature(parsed)
         }

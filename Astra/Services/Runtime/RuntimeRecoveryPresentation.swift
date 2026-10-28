@@ -12,7 +12,7 @@ enum RuntimeRecoveryPresentation {
                     ? "The saved execution receipt is missing. ASTRA cannot verify that earlier work stopped, so new work and recovery are blocked."
                     : nil
             }
-            if RuntimeCompletedUserTurnContinuation.hasCompletedTurn(record, task: task, context: context)
+            if RuntimeCompletedUserTurnContinuation.hasSettledTurn(record, task: task, context: context)
                 || RuntimeCompletedUserTurnContinuation.hasUnlaunchedPreparation(record, task: task, context: context) { return nil }
             // Historical resource release is not authority to retry this task.
             guard !record.canReplace, !record.canRecoverPreparation else { return providerResourceMessage(task: task) }
