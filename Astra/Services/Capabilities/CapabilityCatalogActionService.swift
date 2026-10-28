@@ -221,6 +221,22 @@ struct CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
+        do {
+            return try PluginAddContext.perform(workspace: workspace, context: modelContext) { target, owned in
+                try addInContext(package, workspace: target, modelContext: owned, policyContext: policyContext,
+                    approvalStore: approvalStore, traceID: traceID)
+            }
+        } catch {
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: failureFields(
+                package: package, workspace: workspace, source: "plugins_add_admission", traceID: traceID, error: error
+            ), level: .error)
+            throw error
+        }
+    }
+
+    private func addInContext(_ package: PluginPackage, workspace: Workspace, modelContext: ModelContext,
+        policyContext: CapabilityCatalogPolicyContext, approvalStore: CapabilityApprovalStore,
+        traceID: String) throws -> CapabilityInstaller.InstallationResult {
         return try PluginMutationScope.perform(pluginID: package.id, library: library, store: sourceStore,
             modelContext: modelContext, approvals: approvalStore) { permit in
             try Self.validateAccountSupport(for: package)
@@ -547,6 +563,18 @@ struct CapabilityCatalogActionService {
             "workspace_id": workspace.id.uuidString,
             "error_type": String(describing: type(of: error))
         ]
+        if let operation = error as? PluginOperations.OperationError {
+            switch operation {
+            case .pendingEdits: fields["error_reason"] = "pending_edits"
+            case .workspaceChanged: fields["error_reason"] = "workspace_changed"
+            case .storeUnreadable: fields["error_reason"] = "store_unreadable"
+            case .saveFailed: fields["error_reason"] = "save_failed"
+            case .notAdded: fields["error_reason"] = "not_added"
+            case .updateRequired: fields["error_reason"] = "update_required"
+            case .secretReadFailed: fields["error_reason"] = "secret_read_failed"
+            case .secretSaveFailed: fields["error_reason"] = "secret_save_failed"
+            }
+        }
         if let sourceURL {
             fields["source_json_path"] = sourceURL.path
         }

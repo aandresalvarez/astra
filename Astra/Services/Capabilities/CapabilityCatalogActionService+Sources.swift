@@ -25,13 +25,16 @@ extension CapabilityCatalogActionService {
     /// .pendingImport`) as the Plugins screen lists them under "Action
     /// needed": what each waits for, whether Add brings it back now, and
     /// Discard either way (`PluginsSurfacePresentation.heldImports`).
-    func heldImports(in workspace: Workspace, coordinator: PluginSourceCoordinator = .shared) -> [PluginsSurfaceHeldImport] {
-        let provenance = coordinator.store.provenance()
-        let store = coordinator.store
+    func heldImports(in workspace: Workspace, installed: [PluginPackage]? = nil,
+        provenance loadedProvenance: [String: PluginSourceStore.Provenance]? = nil,
+        coordinator: PluginSourceCoordinator = .shared) -> [PluginsSurfaceHeldImport] {
+        guard WorkspaceCapabilityActivation.retiredActivations(of: workspace).contains(where: { $0.pendingImport != nil }) else { return [] }
+        let provenance = loadedProvenance ?? coordinator.store.provenance()
         return PluginsSurfacePresentation.heldImports(
             in: workspace,
-            installed: library.installedPackages(),
-            source: { store.installedCopy(of: $0).source },
+            installed: installed ?? library.installedPackages(),
+            source: { PluginSourceStore.mirrorIdentity(pluginID: $0.id,
+                digest: PluginSourceCatalog.contentDigest($0), provenance: provenance) },
             matches: { PluginPendingImport.matches($0, installed: $1, provenance: provenance) },
             sourceName: { identity in
                 guard let identity, identity != "local" else { return "a local file" }

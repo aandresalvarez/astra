@@ -22,6 +22,8 @@ struct CapabilityPackageState {
     let workspace: Workspace
     let capabilities: WorkspaceCapabilities
     var secretStore: SecretStore = KeychainSecretStore()
+    var credentialReadiness: PluginCredentialReadiness? = nil
+    var projectedResources: PluginRuntimeProjection? = nil
 
     var linkedSkills: [Skill] {
         if isProjectedResourceCapability { return directlyLinkedSkills }
@@ -44,7 +46,7 @@ struct CapabilityPackageState {
     }
 
     private var projection: PluginRuntimeProjection {
-        PluginRuntimeProjection.project(workspace: workspace, packages: [package])
+        projectedResources ?? PluginRuntimeProjection.project(workspace: workspace, packages: [package], definitions: capabilities.packageDefinitions)
     }
 
     /// The activation's accounts by connector component, or nil without one.
@@ -327,9 +329,10 @@ struct CapabilityPackageState {
             return messages
         }
 
-        let required = PluginRuntimeProjection.requiredCredentialKeys(of: connector, package: package, boundAccountIDs: boundAccountIDs)
+        let required = PluginRuntimeProjection.requiredCredentialKeys(of: connector, package: package, boundAccountIDs: boundAccountIDs, definitions: capabilities.packageDefinitions)
         if required.isEmpty { return ["\(name): no credentials configured"] }
         let requiredKeys = Set(required)
+        if let credentialReadiness { return credentialReadiness.messages(for: connector, requiredKeys: requiredKeys) }
         let missingKeys = connector.missingCredentialKeys(store: secretStore).filter { requiredKeys.contains($0) }
         if !missingKeys.isEmpty {
             return ["\(name): missing Keychain value: \(missingKeys.joined(separator: ", "))"]
