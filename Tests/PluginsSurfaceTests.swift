@@ -447,7 +447,7 @@ struct PluginsSurfaceTests {
         #expect(decisions == [true, false, false, true, false])
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let surface = try String(contentsOf: root.appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift"), encoding: .utf8)
-        #expect(surface.contains(".rescansPrerequisitesOnActivation { refreshStatuses() }"))
+        #expect(surface.contains(".rescansPrerequisitesOnActivation { credentialRefresh += 1; refreshStatuses() }"))
         let rail = try String(contentsOf: root.appendingPathComponent("Astra/Views/WorkspaceRightRailView.swift"), encoding: .utf8)
         #expect(rail.contains(".rescansPrerequisitesOnActivation { refreshCapabilityPrerequisiteStatuses() }"))
     }

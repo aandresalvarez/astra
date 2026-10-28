@@ -321,6 +321,12 @@ struct PluginSourcesLibraryTests {
         rows = service.heldImports(in: workspace, coordinator: coordinator)
         #expect(rows[0].name == installed.name && rows[0].canAdd)
         #expect(rows[0].subtitle == "Settings this workspace had. Add it to bring them back, or discard them.")
+        // Presentation consumes the supplied catalog/provenance even when its
+        // service has an empty library. No disk scan is needed for a held row.
+        let emptyLibrary = CapabilityLibrary(directory: fixture.root.appendingPathComponent("empty-presentation-library"))
+        let presentation = CapabilityCatalogActionService(library: emptyLibrary, sourceStore: fixture.store)
+        #expect(presentation.heldImports(in: workspace, installed: [installed],
+            provenance: coordinator.provenance, coordinator: coordinator) == rows)
         // Another version of it: no Add.
         hold("held-plugin", digest: "d-other", source: identity)
         rows = service.heldImports(in: workspace, coordinator: coordinator)
@@ -330,6 +336,21 @@ struct PluginSourcesLibraryTests {
         rows = service.heldImports(in: workspace, coordinator: coordinator)
         #expect(!rows[0].canAdd)
         #expect(rows[0].subtitle.contains("copy from a local file") && rows[0].subtitle.contains("installed is from \(source.displayName)"))
+
+        // Approval/import can commit a new source digest outside the coordinator.
+        // Refreshing its presentation snapshot must make the held import usable.
+        var updated = installed
+        updated.version = "2.0.0"
+        try fixture.library.install(updated)
+        updated = try #require(fixture.library.installedPackage(id: updated.id))
+        try fixture.store.recordProvenance(pluginID: updated.id, sourceID: source.id,
+            digest: PluginSourceCatalog.contentDigest(updated))
+        hold(updated.id, digest: PluginDefinitionDigest.content(of: updated), source: identity, recovered: true)
+        #expect(presentation.heldImports(in: workspace, installed: [updated],
+            provenance: coordinator.provenance, coordinator: coordinator).first?.canAdd == false)
+        coordinator.reload()
+        #expect(presentation.heldImports(in: workspace, installed: [updated],
+            provenance: coordinator.provenance, coordinator: coordinator).first?.canAdd == true)
 
         try fixture.context.save()
         // Discard drops it and saves; a failed save puts it back.
@@ -347,6 +368,7 @@ struct PluginSourcesLibraryTests {
         try service.discardPendingImport(pluginID: "held-plugin", workspace: workspace, modelContext: fixture.context)
         // The screen lists them through the service, with Discard and Add.
         let view = try String(contentsOf: PluginSourcesTests.repositoryRoot().appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift"), encoding: .utf8)
-        #expect(view.contains(".heldImports(in: workspace)") && view.contains(".discardPendingImport(pluginID:"))
+        #expect(view.contains("sourceCoordinator.reload()"))
+        #expect(view.contains(".heldImports(in: workspace, installed: catalog.packages,") && view.contains(".discardPendingImport(pluginID:"))
     }
 }
