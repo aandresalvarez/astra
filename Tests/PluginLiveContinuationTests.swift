@@ -8,14 +8,24 @@ import ASTRAPersistence
 
 /// Opt-in, account-backed acceptance. All ASTRA state and workspace files are
 /// synthetic. SSH is configured and resolved by the real client (-G); this
-/// never connects to a user's remote host or reads production credentials.
+/// never connects to a user's remote host or reads production connector secrets.
 @MainActor @Suite(.serialized)
 struct PluginLiveContinuationTests {
     @Test("Real provider tools continue across tasks after isolated Add with SSH configured",
-          .enabled(if: ProcessInfo.processInfo.environment["RUN_PLUGIN_LIVE_VALIDATION"] == "1"))
+          .enabled(if: ProcessInfo.processInfo.environment["RUN_PLUGIN_LIVE_VALIDATION"] == "1"),
+          .timeLimit(.minutes(5)))
     func toolsAndSSHAcrossTasks() async throws {
         let support = AppChannelStoragePaths.applicationSupportDirectory().path
         try #require(AppChannel.current == .development && support.contains("/ASTRA-TestRuns/"))
+        let environment = ProcessInfo.processInfo.environment
+        let providerHome = try #require(environment["PLUGIN_LIVE_PROVIDER_HOME"])
+        let providerConfig = try #require(environment["CLAUDE_CONFIG_DIR"])
+        let canonicalSupport = URL(fileURLWithPath: support).resolvingSymlinksInPath().path
+        let canonicalHome = URL(fileURLWithPath: providerHome).resolvingSymlinksInPath().path
+        let canonicalConfig = URL(fileURLWithPath: providerConfig).resolvingSymlinksInPath().path
+        try #require(canonicalHome.hasPrefix(canonicalSupport + "/"))
+        try #require(canonicalConfig.hasPrefix(canonicalHome + "/"))
+        try FileManager.default.createDirectory(atPath: providerConfig, withIntermediateDirectories: true)
         let cli = try #require(ProcessInfo.processInfo.environment["PLUGIN_LIVE_CLAUDE_PATH"])
         let harness = try HeadlessChatHarness(persistentStore: true)
         defer { harness.cleanup() }
@@ -23,6 +33,7 @@ struct PluginLiveContinuationTests {
         let model = LiveProviderTestConfiguration().claudeModel
         let task = harness.makeTask(runtime: .claudeCode, goal: "Run the isolated terminal validation", model: model)
         let workspace = try #require(task.workspace)
+        workspace.additionalPaths.append(providerHome)
         let input = harness.workspaceURL.appendingPathComponent("validation-input.txt")
         try "ASTRA_PLUGIN_TOOL_OK\n".write(to: input, atomically: true, encoding: .utf8)
         let sshConfig = harness.workspaceURL.appendingPathComponent("fixture-ssh-config")
@@ -70,7 +81,7 @@ struct PluginLiveContinuationTests {
             expectedHelperPath: BuiltProductLocator.executablePath(named: "astra-host-control") ?? ""))
         var provider = ProviderSettingsSnapshot.headlessScenario
         provider.providerSettings.setExecutablePath(launcher, for: .claudeCode)
-        let environment = ProcessInfo.processInfo.environment
+        provider.providerSettings.setHomeDirectory(providerHome, for: .claudeCode)
         if let project = environment["PLUGIN_LIVE_VERTEX_PROJECT"] {
             try #require(environment["CLAUDE_CODE_USE_VERTEX"] == "1"
                 && environment["ANTHROPIC_VERTEX_PROJECT_ID"] == project,
@@ -86,6 +97,7 @@ struct PluginLiveContinuationTests {
         let worker = AgentRuntimeWorker(processRunner: runner, providerSettingsSnapshotProvider: { capturedProvider })
         worker.supervisionEnabled = false
         worker.claudePath = launcher
+        worker.setHomeDirectory(providerHome, for: .claudeCode)
         worker.timeoutSeconds = 180
         worker.permissionPolicy = .autonomous
         worker.defaultAgentPolicyLevelRaw = AgentPolicyLevel.autonomous.rawValue
@@ -93,7 +105,9 @@ struct PluginLiveContinuationTests {
         for turn in 0..<3 {
             let events = try await E2ETestSupport.withLiveProviderSlot {
                 if turn == 0 { return await harness.execute(task: task, worker: worker) }
-                return await harness.continueTask(task: task, message: goal, worker: worker)
+                return await harness.continueTask(task: task,
+                    message: "New validation pass \(turn + 1). Re-run both commands now; do not reuse previous results.\n" + goal,
+                    worker: worker)
             }
             if task.status != .completed {
                 print("PLUGIN_LIVE_FAILURE stop=\(task.runs.last?.stopReason ?? "none") events=\(task.events.filter { $0.type.contains("error") || $0.type.contains("blocked") || $0.type.contains("permission") }.map { LiveProviderDiagnostics.redacted(String($0.payload.suffix(800))) })")
@@ -199,9 +213,8 @@ struct PluginLiveContinuationTests {
         import os, sys
         cli = \(String(data: try JSONSerialization.data(withJSONObject: [cli], options: [.withoutEscapingSlashes]), encoding: .utf8)!)[0]
         settings = \(String(data: try JSONSerialization.data(withJSONObject: [settings.path], options: [.withoutEscapingSlashes]), encoding: .utf8)!)[0]
-        # Keep provider session history and settings in the disposable root too.
-        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(os.path.dirname(cli), "claude-config")
-        os.makedirs(os.environ["CLAUDE_CONFIG_DIR"], exist_ok=True)
+        # The parent supplies the same isolated config to preflight and launch.
+        assert os.environ.get("CLAUDE_CONFIG_DIR"), "Isolated provider config is required"
         args = sys.argv[1:]
         if args and args[0] in ("--version", "auth"):
             os.execv(cli, [cli] + args)
