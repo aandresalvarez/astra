@@ -2306,7 +2306,7 @@ struct TaskMainView: View {
 
     private func runFooterStatusLabel(run: TaskRunSnapshot, notices: [TaskRunNotice]) -> String {
         if run.status == .running {
-            return "Running"
+            return RuntimeLaunchPresentation.statusLabel(run: run, events: sortedEvents) ?? "Running"
         }
         if runStoppedByPolicy(run, notices: notices) {
             return "Blocked"
@@ -2325,11 +2325,8 @@ struct TaskMainView: View {
     }
 
     private func runFooterDurationLabel(_ run: TaskRunSnapshot, now: Date) -> String? {
-        if run.status == .running && run.completedAt == nil {
-            return "Working for \(formatChatDuration(Int(now.timeIntervalSince(run.startedAt))))"
-        }
-        guard let completed = run.completedAt else { return nil }
-        return "Worked for \(formatChatDuration(Int(completed.timeIntervalSince(run.startedAt))))"
+        RuntimeLaunchPresentation.durationLabel(run: run, events: sortedEvents, now: now,
+            format: formatChatDuration)
     }
 
     private func shouldShowBudgetTokenCount(_ run: TaskRunSnapshot) -> Bool {
@@ -3544,7 +3541,7 @@ struct TaskMainView: View {
     }
 
     private var taskDecisionExtraDetails: [TaskDecisionDockDetail] {
-        TaskDecisionDockContextBuilder.extraDetails(TaskDecisionDockContextBuilder.ExtraDetailsInput(
+        var details = TaskDecisionDockContextBuilder.extraDetails(TaskDecisionDockContextBuilder.ExtraDetailsInput(
             status: task.status,
             runtimeHealth: runtimeHealth,
             shouldShowPendingApprovalStatus: shouldShowPendingApprovalStatus,
@@ -3556,6 +3553,11 @@ struct TaskMainView: View {
             currentScheduleStatusMessage: currentScheduleStatusMessage,
             isScheduleStatusError: isScheduleStatusError
         ))
+        if [.cancelled, .failed, .pendingUser].contains(task.status),
+           let terminal = RuntimeLaunchPresentation.terminalDetail(run: latestRun, events: sortedEvents) {
+            details.insert(terminal, at: 0)
+        }
+        return details
     }
 
     private var composerTaskStatusOverride: ComposerTaskStatusPresentation? {

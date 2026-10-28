@@ -68,6 +68,9 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     var resourceClaims: [TaskResourceLockClaim]? = nil
     var providerSharedStateKey: String? = nil
     var providerSharedStateReleased: Bool? = nil
+    /// Optional presentation facts owned by this execution; older journals decode unchanged.
+    var preparationStage: String? = nil
+    var preparationResource: String? = nil
     var resourcesReleased: Bool? = nil
     var cancellationRequested: Bool? = nil
     /// The pre-journal run that `RuntimeRecoveryLegacyReconciliation` admitted this owner on.

@@ -2775,7 +2775,7 @@ struct ContentView: View {
 
     private var isUITestingSeededLaunch: Bool {
         let args = ProcessInfo.processInfo.arguments
-        let testFlags = ["--uitesting-seed", "--uitesting-phase1", "--uitesting-phase2", "--uitesting-phase3"]
+        let testFlags = ["--uitesting-launch-waits", "--uitesting-seed", "--uitesting-phase1", "--uitesting-phase2", "--uitesting-phase3"]
         return args.contains(where: { testFlags.contains($0) })
     }
 
@@ -2812,7 +2812,10 @@ struct ContentView: View {
         }
 
         let testPath: String
-        if args.contains("--uitesting-phase1") {
+        if args.contains("--uitesting-launch-waits") {
+            testPath = NSTemporaryDirectory() + "astra-launch-ui-" + UUID().uuidString
+            try? FileManager.default.createDirectory(atPath: testPath, withIntermediateDirectories: true)
+        } else if args.contains("--uitesting-phase1") {
             testPath = "/tmp/uitest_phase1"
         } else if args.contains("--uitesting-phase2") {
             testPath = "/tmp/uitest_phase2"
@@ -2826,6 +2829,13 @@ struct ContentView: View {
         modelContext.insert(ws)
         sceneSelection.openWorkspace(ws)
         enterUITestComposerIfNeeded()
+
+        if args.contains("--uitesting-launch-waits"), Bundle.main.bundleIdentifier == "com.coral.ASTRA.dev" {
+            let task = RuntimeLaunchUIFixture.install(workspace: ws, context: modelContext)
+            WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext)
+            setSelectedTask(task)
+            return
+        }
 
         if args.contains("--uitesting-seed") {
             let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)

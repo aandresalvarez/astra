@@ -6,6 +6,37 @@ import ASTRAModels
 
 @Suite("Task decision dock presentation")
 struct TaskDecisionDockPresentationTests {
+    @Test("Preparation titles remain truthful in both active and passive docks", arguments: [true, false])
+    func preparationTitles(canCancel: Bool) throws {
+        var input = context(status: .running)
+        input.canCancel = canCancel
+        input.extraDetails = [.init(id: "runtime-preparation", title: "Waiting for provider configuration",
+            summary: "The provider has not started.", systemImage: "clock", tone: .running)]
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.title == "Waiting for provider configuration")
+    }
+
+    @Test("Cancellation before launch offers a new instruction without claiming a partial result")
+    func cancelledBeforeLaunch() throws {
+        var input = context(status: .cancelled)
+        input.extraDetails = [.init(id: "runtime-unlaunched-terminal", title: "Cancelled before provider start",
+            summary: "Send a new instruction to continue.", systemImage: "stop.circle", tone: .neutral)]
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.title == "Cancelled before provider start")
+        #expect(dock.compactMeta == "Provider never started")
+        #expect(dock.primaryAction == nil && dock.summary.contains("new instruction"))
+    }
+
+    @Test("A new live attempt cannot inherit a previous attempt's terminal presentation")
+    func liveAttemptIgnoresOldTerminal() throws {
+        var input = context(status: .running)
+        input.extraDetails = [.init(id: "runtime-unlaunched-terminal", title: "Cancelled before provider start",
+            summary: "Send a new instruction to continue.", systemImage: "stop.circle", tone: .attention)]
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.title == "Task running")
+        #expect(dock.id != "unlaunched")
+    }
+
     @Test("Ordinary waiting keeps its presentation when recovery is verified")
     func waitingWithoutRecoveryBlockIsUnchanged() {
         let cancel = TaskDecisionDockAction(kind: .cancelTurnRequest, title: "Cancel request", systemImage: "xmark.circle",

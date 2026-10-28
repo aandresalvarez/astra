@@ -107,7 +107,10 @@ struct RuntimeCancelledPreparationContinuationTests {
         let admitted = try #require(successor); defer { admitted.finish() }
         #expect(admitted.record.ownerID == prior.ownerID)
         #expect(admitted.record.inheritedToolUncertainty == true && !admitted.record.canReplace)
-        #expect(original.output == "Preserved implementation" && cancelled.status == .cancelled)
+        let restoredOriginal = try #require(restored.runs.first { $0.id == original.id })
+        let restoredCancelled = try #require(restored.runs.first { $0.id == cancelled.id })
+        #expect(restoredOriginal.output == "Preserved implementation" && restoredOriginal.status == .completed)
+        #expect(restoredCancelled.status == .cancelled)
         #expect(try store.retainedExecutions(of: admitted.record).count == 2)
         let other = h.makeTask(runtime: .antigravityCLI, goal: "Competing task", model: "test")
         #expect(RuntimeExecutionOwner.acquire(task: other, context: h.context, maxRunSeconds: 60) == nil)
@@ -169,5 +172,8 @@ struct RuntimeCancelledPreparationContinuationTests {
         #expect(task.status == .completed && task.runs.count == 5)
         #expect(try String(contentsOf: preserved, encoding: .utf8) == "select 1;\n")
         #expect(cancelled.status == .cancelled)
+        let final = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(final.ownerID == logicalOwner && final.hasUnverifiedTools && final.resourcesReleased != true)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).retainedExecutions(of: final).count == 4)
     }
 }

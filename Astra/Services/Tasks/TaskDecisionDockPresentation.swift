@@ -223,6 +223,15 @@ struct TaskDecisionDockPresentation: Equatable {
             return connectorMutationPresentation(context)
         }
 
+        if [.cancelled, .failed, .pendingUser].contains(context.status),
+           let terminal = context.extraDetails.first(where: { $0.id == "runtime-unlaunched-terminal" }) {
+            return TaskDecisionDockPresentation(id: "unlaunched", icon: terminal.systemImage, tone: .attention,
+                title: terminal.title, summary: terminal.summary, compactMeta: "Provider never started",
+                metrics: metrics(context), details: details(context), primaryAction: nil,
+                secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
+                overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil), prefersExpandedDetails: false)
+        }
+
         if let correction = context.mission?.correction {
             return correctionPresentation(context, correction: correction)
         }
@@ -233,7 +242,7 @@ struct TaskDecisionDockPresentation: Equatable {
 
         switch context.status {
         case .running:
-            guard context.canCancel else { return passivePresentation(context, title: "Task running") }
+            guard context.canCancel else { return passivePresentation(context, title: context.extraDetails.first { $0.id == "runtime-preparation" }?.title ?? "Task running") }
             return runningPresentation(context)
         case .pendingUser:
             guard !context.pendingReviewState.isDismissed || context.pendingReviewState.dismissalReason != nil else {
@@ -263,7 +272,7 @@ struct TaskDecisionDockPresentation: Equatable {
             id: "running",
             icon: "stop.circle.fill",
             tone: .running,
-            title: "Task running",
+            title: context.extraDetails.first { $0.id == "runtime-preparation" }?.title ?? "Task running",
             summary: firstNonEmpty(context.extraDetails.first?.summary, "The agent is working. Stop it here if you need to change direction."),
             metrics: metrics(context),
             details: details(context),

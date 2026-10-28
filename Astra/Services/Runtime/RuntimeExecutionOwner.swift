@@ -21,6 +21,8 @@ final class RuntimeExecutionOwner {
     private var run: TaskRun?
     var settlementScope: RuntimeSettlementExecutionScope?
     private var writeFailed = false
+    private let admittedAt = ContinuousClock.now
+    private let initialWallTimeAllowance: TimeInterval
     private let initialTokensSpent: Int
 
     private init(key: String, lease: RuntimeExecutionOwnerStore.Lease, record: RuntimeExecutionOwnerRecord,
@@ -28,6 +30,7 @@ final class RuntimeExecutionOwner {
         self.key = key; self.lease = lease; self.record = record
         self.isRecovery = isRecovery; self.task = task; self.context = context
         self.initialTokensSpent = record.limits.tokensSpent
+        self.initialWallTimeAllowance = record.limits.secondsRemaining
     }
 
     static func store(in context: ModelContext) -> RuntimeExecutionOwnerStore {
@@ -268,19 +271,39 @@ final class RuntimeExecutionOwner {
         try save(isRecovery ? "Continuing the saved task within its remaining limits." : nil, audit: true)
     }
 
+    var remainingWallTime: TimeInterval {
+        let elapsed = admittedAt.duration(to: .now)
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        return max(0, min(record.limits.secondsRemaining, initialWallTimeAllowance - seconds))
+    }
+
+    func chargeElapsedPreparation() {
+        guard isActive else { return }
+        record.limits.secondsRemaining = remainingWallTime
+        try? save(nil)
+    }
+
+    func waitingForProviderState(_ key: AgentRuntimeSharedStateKey) throws {
+        guard isActive, record.state == .preparing else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        record.preparationStage = "waiting_for_provider"
+        record.preparationResource = key.rawValue
+        try save(nil, audit: true)
+    }
+
     func prepareLaunch(sessionID: String? = nil) throws {
         guard !writeFailed, lease != nil, record.cancellationRequested != true,
               record.state == .preparing || record.canReplace else { throw RuntimeExecutionOwnerStore.Failure.busy }
         record.executionID = UUID(); record.providerProcess = nil; record.stopProof = nil
         record.sessionID = sessionID
         record.state = .launching
+        record.preparationStage = nil; record.preparationResource = nil
         try save(nil, audit: true)
     }
 
     func launched(_ process: AgentExecutionScopedProcess) throws {
         guard let identity = process.executionIdentity else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         record.providerProcess = identity; record.state = .working
-        try save(nil)
+        try save(nil, audit: true)
     }
 
     func didNotLaunch() { record.state = .notStarted; try? save(nil) }
@@ -365,6 +388,13 @@ final class RuntimeExecutionOwner {
         if !writeFailed && record.canReplace {
             record.resourcesReleased = true
             record.providerSharedStateReleased = true
+        }
+        if record.state == .notStarted, record.cancellationRequested == true,
+           record.providerProcess == nil, record.stopProof == nil,
+           record.settlementInProgress == false, record.settlementLocalWorkStopped == true,
+           record.settlementToolsStopped == true {
+            try? save("This attempt was cancelled before the provider started. Your task history and files are preserved.", audit: true)
+            return
         }
         let unresolved = record.resourcesReleased != true && record.providerProcess != nil
         let acceptsInstruction = task.isLive && RuntimeCompletedUserTurnContinuation.hasSettledTurn(record, task: task, context: context)
