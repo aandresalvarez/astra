@@ -82,10 +82,11 @@ enum RuntimeCompletedUserTurnContinuation {
 
     private static func cancelledAttempt(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
                                          context: ModelContext) -> Bool {
-        guard saved.cancellationRequested == true, let requestID = saved.continuingUserRequestID,
-              let request = try? TaskTurnRequestRepository.request(id: requestID, in: context),
+        guard saved.cancellationRequested == true, let runID = saved.runID,
+              let request = try? TaskTurnRequestRepository.origin(for: task, runID: runID, in: context),
+              saved.continuingUserRequestID == nil || saved.continuingUserRequestID == request.id,
               request.taskID == task.id, request.state == .cancelled,
-              let runID = saved.runID, request.runID == runID,
+              request.runID == runID,
               let run = task.runs.first(where: { $0.id == runID }),
               run.status == .cancelled, run.typedStopReason == .cancelled,
               run.completedAt != nil else { return false }

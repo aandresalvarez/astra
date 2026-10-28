@@ -11,7 +11,7 @@ import WorkspaceToolSupport
 @MainActor
 struct RuntimeCancelledPreparationContinuationTests {
     @Test("Stop after launch permits human input only with a joined local stop and its cancelled request", arguments:
-        ["safe", "live", "settling", "activeRequest", "retry"])
+        ["safe", "initial", "live", "settling", "activeRequest", "retry"])
     func settledCancellation(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let task = h.makeTask(runtime: .antigravityCLI, goal: "Partial work", model: "test")
@@ -28,6 +28,7 @@ struct RuntimeCancelledPreparationContinuationTests {
         TaskHistoryRead.event(id: request.sourceEventID, in: task)?.run = run
         var record = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context, toolsStopped: false)
         record.cancellationRequested = true; record.continuingUserRequestID = request.id
+        if fault == "initial" { record.continuingUserRequestID = nil }
         record.state = .unverified; record.settlementInProgress = false
         record.settlementLocalWorkStopped = true; record.settlementToolsStopped = true
         record.resourceClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: task,
@@ -43,7 +44,7 @@ struct RuntimeCancelledPreparationContinuationTests {
         let next = try #require(try TaskTurnRequestRepository.request(id: nextSubmission.requestID, in: h.context))
         if fault == "retry" { next.kind = .retry }
         let admitted = RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, userRequest: next)
-        #expect((admitted != nil) == (fault == "safe"))
+        #expect((admitted != nil) == (fault == "safe" || fault == "initial"))
         if let admitted {
             #expect(admitted.record.ownerID == record.ownerID && admitted.record.resourcesReleased == false)
             #expect(run.output == "Partial work retained" && run.status == .cancelled)
