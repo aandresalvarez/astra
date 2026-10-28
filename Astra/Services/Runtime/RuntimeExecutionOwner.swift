@@ -202,6 +202,9 @@ final class RuntimeExecutionOwner {
             }
             record.resourcesReleased = false
             record.legacySettledRunID = legacyRun?.id
+            if let workspaceAdmission, workspaceAdmission.needsPersistence {
+                try RuntimeWorkspaceContinuation.persist(workspaceAdmission.authorization, task: task, lease: lease, context: context)
+            }
             try lease.save(record) // fail closed before any worker/provider side effect
             active.insert(key)
             if let legacyRun { reportLegacyReconciliation(legacyRun, record: record, task: task, context: context) }

@@ -51,7 +51,8 @@ final class RuntimeExecutionOwnerStore {
             }
             let header = WorkspaceContinuationHeader(taskID: authorization.taskID, taskOwnerID: authorization.taskOwnerID,
                 requestID: authorization.requestID, sourceEventID: authorization.sourceEventID,
-                approvedAt: authorization.approvedAt, count: authorization.sources.count, head: next!)
+                approvedAt: authorization.approvedAt, count: authorization.sources.count, head: next!,
+                workspaceScope: authorization.workspaceScope, inheritedAuthorizationID: authorization.inheritedAuthorizationID)
             try save(header, at: directory.appendingPathComponent(authorization.requestID.uuidString + ".handoff"))
         }
         private func save<T: Encodable>(_ record: T, at recordURL: URL) throws {
@@ -199,6 +200,8 @@ final class RuntimeExecutionOwnerStore {
         let approvedAt: Date
         let count: Int
         let head: UUID
+        var workspaceScope: RuntimeWorkspaceContinuationAuthorization.WorkspaceScope? = nil
+        var inheritedAuthorizationID: UUID? = nil
     }
     private struct WorkspaceContinuationEntry: Codable {
         let source: RuntimeWorkspaceContinuationAuthorization.Source
@@ -230,7 +233,20 @@ final class RuntimeExecutionOwnerStore {
         }
         guard sources.count == header.count else { throw Failure.unreadable }
         return .init(taskID: header.taskID, taskOwnerID: header.taskOwnerID, requestID: header.requestID,
-            sourceEventID: header.sourceEventID, approvedAt: header.approvedAt, sources: sources)
+            sourceEventID: header.sourceEventID, approvedAt: header.approvedAt, sources: sources,
+            workspaceScope: header.workspaceScope, inheritedAuthorizationID: header.inheritedAuthorizationID)
+    }
+
+    func workspaceAuthorizations(workspaceOwnerID: PersistentIdentifier) throws -> [RuntimeWorkspaceContinuationAuthorization] {
+        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "handoff" }.compactMap { url in
+                guard let header: WorkspaceContinuationHeader = try Self.readValue(url),
+                      header.workspaceScope?.workspaceOwnerID == workspaceOwnerID,
+                      header.inheritedAuthorizationID == nil,
+                      url.lastPathComponent == header.requestID.uuidString + ".handoff" else { return nil }
+                return try workspaceContinuation(requestID: header.requestID)
+            }.sorted { $0.approvedAt > $1.approvedAt }
     }
 
     static func read(_ url: URL) throws -> RuntimeExecutionOwnerRecord? { try readValue(url) }

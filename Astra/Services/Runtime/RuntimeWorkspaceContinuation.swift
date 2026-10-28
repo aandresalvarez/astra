@@ -6,7 +6,8 @@ import ASTRAPersistence
 import WorkspaceToolSupport
 
 /// A user decision, not proof that earlier tool effects stopped. The original
-/// journals remain authoritative and keep fencing every other request.
+/// journals remain authoritative. Remembered workspace decisions authorize only
+/// eligible manual successors; active and unrelated work remains fenced.
 struct RuntimeWorkspaceContinuationAuthorization: Codable, Equatable {
     struct Source: Codable, Equatable {
         let taskOwnerID: PersistentIdentifier
@@ -18,6 +19,14 @@ struct RuntimeWorkspaceContinuationAuthorization: Codable, Equatable {
     let sourceEventID: UUID
     let approvedAt: Date
     let sources: [Source]
+    var workspaceScope: WorkspaceScope? = nil
+    var inheritedAuthorizationID: UUID? = nil
+
+    struct WorkspaceScope: Codable, Equatable {
+        let workspaceID: UUID
+        let workspaceOwnerID: PersistentIdentifier
+        let claims: [TaskResourceLockClaim]
+    }
 }
 
 @MainActor
@@ -25,6 +34,7 @@ enum RuntimeWorkspaceContinuation {
     struct Admission {
         let authorization: RuntimeWorkspaceContinuationAuthorization
         let leases: [RuntimeExecutionOwnerStore.Lease]
+        var needsPersistence = false
         var excludedClaims: Set<TaskResourceLockClaim> {
             Set(authorization.sources.flatMap { $0.receipt.resourceClaims ?? [] })
         }
@@ -77,22 +87,37 @@ enum RuntimeWorkspaceContinuation {
     }
 
     static func authorize(_ proposed: RuntimeWorkspaceContinuationAuthorization, task: AgentTask,
-                          request: TaskTurnRequest, context: ModelContext) throws {
+                          request: TaskTurnRequest, context: ModelContext, rememberWorkspace: Bool = false) throws {
         let store = RuntimeExecutionOwner.store(in: context)
         let admission = try store.acquireAdmission()
         let beneficiary = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
         defer { withExtendedLifetime((admission, beneficiary)) {} }
+        guard proposed.workspaceScope == nil, proposed.inheritedAuthorizationID == nil else { throw RuntimeExecutionOwnerStore.Failure.busy }
         let fresh = try preview(task: task, request: request, context: context)
         guard fresh.taskID == proposed.taskID, fresh.taskOwnerID == proposed.taskOwnerID,
               fresh.requestID == proposed.requestID, fresh.sourceEventID == proposed.sourceEventID, fresh.sources == proposed.sources else { throw RuntimeExecutionOwnerStore.Failure.busy }
         let locked = try lockSources(proposed, store: store, context: context)
         defer { withExtendedLifetime(locked) {} }
+        var authorization = proposed
+        if rememberWorkspace {
+            guard let workspace = task.workspace else { throw RuntimeExecutionOwnerStore.Failure.busy }
+            authorization.workspaceScope = .init(workspaceID: workspace.id, workspaceOwnerID: workspace.persistentModelID,
+                claims: TaskExecutionResourceAdmissionPolicy.lockClaims(for: request, task: task,
+                    runMode: "workspace_continuation", sandboxEnforcement: .off))
+        }
+        try persist(authorization, task: task, lease: beneficiary, context: context)
+    }
+
+    static func persist(_ proposed: RuntimeWorkspaceContinuationAuthorization, task: AgentTask,
+                        lease: RuntimeExecutionOwnerStore.Lease, context: ModelContext) throws {
+        let store = RuntimeExecutionOwner.store(in: context)
         for source in proposed.sources { try store.retain(source.receipt) }
-        try beneficiary.saveWorkspaceContinuation(proposed)
+        try lease.saveWorkspaceContinuation(proposed)
         context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeWorkspaceContinuationAuthorized,
             payload: TaskEvent.payloadString([
                 "request_id": proposed.requestID.uuidString,
                 "source_event_id": proposed.sourceEventID.uuidString,
+                "workspace_authorization_id": (proposed.inheritedAuthorizationID ?? (proposed.workspaceScope != nil ? proposed.requestID : nil))?.uuidString ?? "",
                 "predecessor_executions": proposed.sources.map { $0.receipt.executionID.uuidString }.joined(separator: ",")
             ], fallback: "{}")))
         try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
@@ -105,7 +130,14 @@ enum RuntimeWorkspaceContinuation {
         guard let request else { return nil }
         let store = RuntimeExecutionOwner.store(in: context)
         let authorizationID = previous?.workspaceContinuationRequestID ?? request.id
-        guard let authorization = try store.workspaceContinuation(requestID: authorizationID) else { return nil }
+        let savedAuthorization = try store.workspaceContinuation(requestID: authorizationID)
+        let authorization: RuntimeWorkspaceContinuationAuthorization
+        if let savedAuthorization { authorization = savedAuthorization }
+        else {
+            guard previous == nil,
+                  let inherited = try RuntimeWorkspaceContinuationScope.inherited(task: task, request: request, context: context, claims: claims) else { return nil }
+            authorization = inherited
+        }
         guard authorization.taskID == task.id, authorization.taskOwnerID == task.persistentModelID,
               authorization.requestID == authorizationID, request.state.isActive,
               let original = try TaskTurnRequestRepository.request(id: authorizationID, in: context),
@@ -113,6 +145,8 @@ enum RuntimeWorkspaceContinuation {
               (try? TaskTurnRequestOwnership.resolve(original, in: context))?.persistentModelID == task.persistentModelID,
               isManualSource(original, task: task),
               (try? TaskTurnRequestOwnership.resolve(request, in: context))?.persistentModelID == task.persistentModelID else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
+        guard try RuntimeWorkspaceContinuationScope.validates(authorization, task: task, request: request,
+            context: context, claims: claims) else { throw RuntimeExecutionOwnerStore.Failure.busy }
         if let previous {
             guard previous.workspaceContinuationRequestID == authorizationID,
                   resumesPreparation(previous, task: task, request: request, context: context)
@@ -125,7 +159,8 @@ enum RuntimeWorkspaceContinuation {
         guard authorization.sources.flatMap({ $0.receipt.resourceClaims ?? [] }).allSatisfy({ held in
             requested.contains { $0.resourceKind == held.resourceKind && $0.resourceKey == held.resourceKey && $0.accessMode == held.accessMode }
         }) else { throw RuntimeExecutionOwnerStore.Failure.busy }
-        return Admission(authorization: authorization, leases: try lockSources(authorization, store: store, context: context))
+        return Admission(authorization: authorization, leases: try lockSources(authorization, store: store, context: context),
+            needsPersistence: savedAuthorization == nil)
     }
 
     static func resumesPreparation(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
@@ -146,7 +181,7 @@ enum RuntimeWorkspaceContinuation {
         return (try? TaskTurnRequestOwnership.resolve(request, in: context))?.persistentModelID == task.persistentModelID
     }
 
-    private static func isManualSource(_ request: TaskTurnRequest, task: AgentTask) -> Bool {
+    static func isManualSource(_ request: TaskTurnRequest, task: AgentTask) -> Bool {
         guard request.kind == .initial,
               let source = TaskHistoryRead.event(id: request.sourceEventID, in: task),
               source.type == TaskEventTypes.ExecutionRequest.initial.rawValue,

@@ -408,7 +408,7 @@ struct RuntimeWorkspaceContinuationTests {
         #expect(event.payload == before)
     }
 
-    @Test("Three separate tool-using tasks can sequentially continue one workspace with SSH configured")
+    @Test("Four tool-using tasks need only one workspace approval with SSH configured")
     func successiveWorkerTasks() async throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         SSHConnectionManager.save([SSHConnection(name: "configured-unused", host: "unused.example.test",
@@ -422,12 +422,21 @@ struct RuntimeWorkspaceContinuationTests {
         let policy = AgentRuntimeExecutionPolicy.default.withRemoteSSHRoute(
             RemoteWorkspaceSSHRoute(targets: ["fixture@unused.example.test"], route: .nativeShell))
         var previous: AgentTask?
-        for index in 1...3 {
+        for index in 1...4 {
             let task = h.makeTask(runtime: .claudeCode, goal: "Task \(index)", model: "claude-opus-5")
             if let previous { task.workspace = previous.workspace }
             let submission = try ExecutionRequestSubmissionService.submitInitial(for: task, into: h.context).get()
             let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context))
-            if previous != nil { try approve(h, task: task, request: request) }
+            if index == 2 {
+                let proposal = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: h.context)
+                try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: h.context, rememberWorkspace: true)
+            }
+            if index > 2 {
+                let queue = TaskQueue(poolSize: 0); queue.refreshResourceOwnership(in: h.context)
+                let claims = queue.resourceLockClaims(for: request, task: task, runMode: "initial", sandboxEnforcement: .off)
+                #expect(queue.canAcquireResourceLocks(claims, task: task, context: h.context))
+                #expect(try RuntimeExecutionOwner.store(in: h.context).workspaceContinuation(requestID: request.id) == nil)
+            }
             _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
             DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: h.context)
             let worker = h.makeWorker(runtime: .claudeCode, executablePath: executable, permissionPolicy: .autonomous)
@@ -441,4 +450,105 @@ struct RuntimeWorkspaceContinuationTests {
             previous = task
         }
     }
+
+    private func completedRememberedWorkspace(_ h: HeadlessChatHarness) throws -> (AgentTask, AgentTask, TaskTurnRequest) {
+        let (old, _) = try completed(h)
+        let (task, request) = try next(h, after: old)
+        let proposed = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: h.context)
+        try RuntimeWorkspaceContinuation.authorize(proposed, task: task, request: request, context: h.context, rememberWorkspace: true)
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, userRequest: request))
+        let acquiredClaims = owner.record.resourceClaims
+        owner.finish()
+        let run = TaskRun(task: task); run.status = .completed; run.typedStopReason = .completed; run.completedAt = Date()
+        run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+        h.context.insert(run); task.status = .completed
+        var record = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context, toolsStopped: false)
+        record.state = .finished; record.inheritedToolUncertainty = true
+        record.settlementInProgress = false; record.settlementLocalWorkStopped = true; record.settlementToolsStopped = true
+        record.resourceClaims = acquiredClaims
+        record.workspaceContinuationRequestID = request.id
+        record.continuingUserRequestID = request.id
+        try save(record, h)
+        _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
+        _ = TaskTurnRequestStateMachine.transition(request, to: .running)
+        _ = TaskTurnRequestStateMachine.transition(request, to: .completed)
+        try h.context.save()
+        return (old, task, request)
+    }
+
+    @Test("Remembered approval survives a store reopen and still serializes two successors")
+    func rememberedScopeReopenAndCompetition() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (_, b, root) = try completedRememberedWorkspace(h)
+        let (c, cr) = try next(h, after: b)
+        let (d, dr) = try next(h, after: b)
+        let cid = c.id; let crid = cr.id; let did = d.id; let drid = dr.id
+        let reopened = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: Array(h.container.configurations))
+        let context = reopened.mainContext
+        let restored = try #require(try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == cid })).first)
+        let request = try #require(try TaskTurnRequestRepository.request(id: crid, in: context))
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: restored, context: context, maxRunSeconds: 60, userRequest: request))
+        defer { owner.finish() }
+        #expect(try RuntimeExecutionOwner.store(in: context).workspaceContinuation(requestID: crid)?.inheritedAuthorizationID == root.id)
+        let competing = try #require(try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == did })).first)
+        let pending = try #require(try TaskTurnRequestRepository.request(id: drid, in: context))
+        #expect(RuntimeExecutionOwner.acquire(task: competing, context: context, maxRunSeconds: 60, userRequest: pending) == nil)
+    }
+
+    @Test("Remembered approval never admits new uncertainty or expands its resource scope", arguments:
+        ["changedOriginal", "unrelatedOwner", "failed", "cancelled", "settling", "running", "liveLease", "scheduled", "expandedScope", "missingGrant", "requestOnly"])
+    func rememberedScopeFences(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (old, b, root) = try completedRememberedWorkspace(h)
+        let (c, request) = try next(h, after: b)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        var live: RuntimeExecutionOwnerStore.Lease?
+        defer { withExtendedLifetime(live) {} }
+        switch fault {
+        case "changedOriginal":
+            var changed = try #require(try RuntimeExecutionOwner.existing(task: old, context: h.context))
+            changed.limits.tokensSpent += 1; try save(changed, h)
+        case "unrelatedOwner": _ = try completed(h)
+        case "failed": b.runs.first?.status = .failed
+        case "cancelled":
+            var changed = try #require(try RuntimeExecutionOwner.existing(task: b, context: h.context))
+            changed.cancellationRequested = true; try save(changed, h)
+        case "settling":
+            var changed = try #require(try RuntimeExecutionOwner.existing(task: b, context: h.context))
+            changed.settlementInProgress = true; try save(changed, h)
+        case "running": b.runs.first?.status = .running
+        case "liveLease": live = try store.acquire(taskID: b.id, taskOwnerID: b.persistentModelID)
+        case "scheduled": request.kind = .scheduled
+        case "expandedScope": break
+        case "missingGrant": try FileManager.default.removeItem(at: store.root.appendingPathComponent(root.id.uuidString + ".handoff"))
+        default:
+            var grant = try #require(try store.workspaceContinuation(requestID: root.id)); grant.workspaceScope = nil
+            let lease = try store.acquire(taskID: b.id, taskOwnerID: b.persistentModelID)
+            try lease.saveWorkspaceContinuation(grant)
+        }
+        try h.context.save()
+        var claims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: request, task: c, runMode: "initial", sandboxEnforcement: .off)
+        if fault == "expandedScope" {
+            claims.append(.init(taskID: c.id, resourceKey: h.rootURL.appendingPathComponent("different").path,
+                accessMode: .write, runMode: "initial", requestID: request.id))
+        }
+        #expect(RuntimeExecutionOwner.acquire(task: c, context: h.context, maxRunSeconds: 60, userRequest: request, resourceClaims: claims) == nil)
+        #expect(try store.workspaceContinuation(requestID: request.id) == nil)
+    }
+
+    @Test("A remembered workspace does not block independent resources that need no exception")
+    func independentScopeNeedsNoAuthorization() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (_, b, _) = try completedRememberedWorkspace(h)
+        let (c, request) = try next(h, after: b)
+        let claims = [TaskResourceLockClaim(taskID: c.id, resourceKey: h.rootURL.appendingPathComponent("independent").path,
+            accessMode: .write, runMode: "initial", requestID: request.id)]
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: c, context: h.context,
+            maxRunSeconds: 60, userRequest: request, resourceClaims: claims))
+        defer { owner.finish() }
+        #expect(owner.record.workspaceContinuationRequestID == nil)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).workspaceContinuation(requestID: request.id) == nil)
+    }
+
 }

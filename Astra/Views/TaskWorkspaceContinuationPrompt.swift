@@ -15,11 +15,11 @@ enum TaskWorkspaceContinuationPrompt {
             }
             let alert = NSAlert()
             alert.messageText = "Continue this workspace?"
-            alert.informativeText = "The provider finished in \(names.joined(separator: ", ")), but earlier tool effects remain unverified and could still be active. Continue only if you want this saved request to use the same workspace despite that uncertainty. Earlier history, execution evidence and remote jobs stay preserved. Other requests remain blocked while this one runs."
+            alert.informativeText = "The provider finished in \(names.joined(separator: ", ")), but earlier tool effects remain unverified and could still be active. Continue to resume this workspace despite that uncertainty. ASTRA will remember this decision for tasks you start here after each previous task finishes. Active work, failed cleanup, changed resources and scheduled tasks remain blocked. Your history and execution evidence stay preserved."
             alert.addButton(withTitle: "Continue workspace")
             alert.addButton(withTitle: "Keep waiting")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
-            try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: context)
+            try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: context, rememberWorkspace: true)
             queue.refreshResourceOwnership(in: context)
             _ = queue.signalExecutionRequest(id: requestID, task: task, modelContext: context)
         } catch {
