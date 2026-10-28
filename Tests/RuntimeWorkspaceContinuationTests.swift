@@ -408,7 +408,7 @@ struct RuntimeWorkspaceContinuationTests {
         #expect(event.payload == before)
     }
 
-    @Test("Four tool-using tasks need only one workspace approval with SSH configured")
+    @Test("One queue runs and revisits four tool-using tasks with SSH and one workspace approval")
     func successiveWorkerTasks() async throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         SSHConnectionManager.save([SSHConnection(name: "configured-unused", host: "unused.example.test",
@@ -421,6 +421,7 @@ struct RuntimeWorkspaceContinuationTests {
             "cat " + HeadlessChatScenarioTests.shQuote(frames.path)))
         let policy = AgentRuntimeExecutionPolicy.default.withRemoteSSHRoute(
             RemoteWorkspaceSSHRoute(targets: ["fixture@unused.example.test"], route: .nativeShell))
+        let queue = TaskQueue(poolSize: 0)
         var previous: AgentTask?
         var sequence: [AgentTask] = []
         for index in 1...4 {
@@ -433,16 +434,23 @@ struct RuntimeWorkspaceContinuationTests {
                 try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: h.context, rememberWorkspace: true)
             }
             if index > 2 {
-                let queue = TaskQueue(poolSize: 0); queue.refreshResourceOwnership(in: h.context)
+                queue.refreshResourceOwnership(in: h.context)
                 let claims = queue.resourceLockClaims(for: request, task: task, runMode: "initial", sandboxEnforcement: .off)
                 #expect(queue.canAcquireResourceLocks(claims, task: task, context: h.context))
                 #expect(try RuntimeExecutionOwner.store(in: h.context).workspaceContinuation(requestID: request.id) == nil)
             }
+            let leaseID = UUID()
+            let claims = queue.resourceLockClaims(for: request, task: task, runMode: "task", sandboxEnforcement: .off).map { $0.leased(leaseID) }
+            let lease = try #require(queue.acquireResourceLocksIfAvailable(claims, task: task, modelContext: h.context))
             _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
             DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: h.context)
             let worker = h.makeWorker(runtime: .claudeCode, executablePath: executable, permissionPolicy: .autonomous)
-            _ = await worker.execute(task: task, modelContext: h.context, executionRequestID: request.id, executionPolicy: policy) { _ in }
+            _ = await worker.execute(task: task, modelContext: h.context, executionRequestID: request.id,
+                executionPolicy: policy.withResourceAdmission(workspaceAccess: .exclusive, sandboxEnforcement: .off, claims: lease)) { _ in }
             try h.context.save()
+            queue.releaseResourceLocks(lease, task: task, modelContext: h.context)
+            #expect(queue.localResourceLocks.isEmpty)
+            #expect(!queue.persistedResourceLocks.isEmpty)
             #expect(task.status == .completed)
             #expect(task.runs.count == 1)
             #expect(task.events.contains { $0.type == "tool.use" })
@@ -454,11 +462,77 @@ struct RuntimeWorkspaceContinuationTests {
         for index in [1, 2, 1, 0] {
             let task = sequence[index]
             let before = task.runs.count
+            let message = "Return to task \(index)"
+            let submitted = try ExecutionRequestSubmissionService.submitFollowUp(message: message, for: task, into: h.context).get()
+            let request = try #require(try TaskTurnRequestRepository.request(id: submitted.requestID, in: h.context))
+            let leaseID = UUID()
+            let claims = queue.resourceLockClaims(for: request, task: task, runMode: "continue", sandboxEnforcement: .off).map { $0.leased(leaseID) }
+            let lease = try #require(queue.acquireResourceLocksIfAvailable(claims, task: task, modelContext: h.context))
+            _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
+            DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: h.context)
             let worker = h.makeWorker(runtime: .claudeCode, executablePath: executable, permissionPolicy: .autonomous)
-            _ = await h.continueTask(task: task, message: "Return to task \(index)", worker: worker, executionPolicy: policy)
+            await worker.continueSession(task: task, message: message, existingMessageEventID: submitted.eventID,
+                turnRequestID: request.id, modelContext: h.context,
+                executionPolicy: policy.withResourceAdmission(workspaceAccess: .exclusive, sandboxEnforcement: .off, claims: lease)) { _ in }
+            try h.context.save()
+            queue.releaseResourceLocks(lease, task: task, modelContext: h.context)
+            #expect(queue.localResourceLocks.isEmpty)
+            #expect(!queue.persistedResourceLocks.isEmpty)
             #expect(task.status == .completed)
             #expect(task.runs.count == before + 1)
         }
+    }
+
+    @Test("Only a completed protected owner can replace a local lease with a durable fence", arguments:
+        ["completed", "cancelled", "settling", "running", "failed", "extraResource", "weakerAccess", "otherOwner", "missing", "corrupt", "liveLease"])
+    func completedLocalLeaseRetirement(mode: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (task, original) = try completed(h)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        var record = original
+        let leaseID = UUID()
+        var claims = (record.resourceClaims ?? []).map { $0.leased(leaseID) }
+        record.resourceClaims = claims
+        var receiver = task
+        switch mode {
+        case "cancelled": record.cancellationRequested = true
+        case "settling": record.settlementInProgress = true
+        case "running": task.runs.first?.status = .running
+        case "failed": task.runs.first?.status = .failed
+        case "extraResource": claims.append(.init(taskID: task.id, resourceKey: h.rootURL.appendingPathComponent("uncaptured").path,
+            accessMode: .write, runMode: "task", leaseID: leaseID))
+        case "weakerAccess": record.resourceClaims?[0].accessMode = .readOnly
+        case "otherOwner":
+            receiver = h.makeTask(runtime: .claudeCode, goal: "Imported row", model: "test")
+            receiver.id = task.id
+        default: break
+        }
+        try save(record, h); try h.context.save()
+        let url = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID).recordURL
+        if mode == "missing" { try FileManager.default.removeItem(at: url) }
+        if mode == "corrupt" { try Data("invalid".utf8).write(to: url) }
+        var active: RuntimeExecutionOwnerStore.Lease?
+        if mode == "liveLease" { active = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID) }
+        defer { withExtendedLifetime(active) {} }
+        let bytes = try? Data(contentsOf: url)
+        let canRetire = (try? RuntimeResourceOwnership.canRetireLocalClaims(claims, task: receiver, context: h.context)) ?? false
+        #expect(canRetire == (mode == "completed"))
+        if ["completed", "cancelled", "settling", "running", "failed", "extraResource", "liveLease"].contains(mode) {
+            let queue = TaskQueue(poolSize: 0); queue.localResourceLocks = claims
+            queue.releaseResourceLocks(claims, task: task, modelContext: h.context)
+            #expect(queue.localResourceLocks.isEmpty == (mode == "completed"))
+            #expect(!queue.persistedResourceLocks.isEmpty)
+            let contender = TaskResourceLockClaim(taskID: UUID(), resourceKey: claims[0].resourceKey,
+                accessMode: .write, runMode: "unapproved", resourceKind: claims[0].resourceKind)
+            #expect(!queue.canAcquireResourceLocks([contender]))
+            if mode == "completed" {
+                let later = claims.map { $0.leased(UUID()) }
+                queue.localResourceLocks = later
+                queue.releaseResourceLocks(claims, task: task, modelContext: h.context)
+                #expect(queue.localResourceLocks == later)
+            }
+        }
+        #expect((try? Data(contentsOf: url)) == bytes)
     }
 
     private func completedRememberedWorkspace(_ h: HeadlessChatHarness, legacySource: Bool = false, cleanCrash: Bool = false) throws -> (AgentTask, AgentTask, TaskTurnRequest) {

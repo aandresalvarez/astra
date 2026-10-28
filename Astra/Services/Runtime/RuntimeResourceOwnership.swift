@@ -66,6 +66,29 @@ enum RuntimeResourceOwnership {
         return claims.filter { seen.insert($0).inserted }
     }
 
+    /// A completed worker can retire its process-local lease while its protected
+    /// receipt continues to reserve every resource. Keeping both copies leaves
+    /// an obsolete lease behind when a later turn replaces the current receipt.
+    /// This does not certify tool cleanup or release durable ownership.
+    static func canRetireLocalClaims(_ claims: [TaskResourceLockClaim], task: AgentTask,
+                                     context: ModelContext) throws -> Bool {
+        guard !claims.isEmpty, task.modelContext === context,
+              let record = try RuntimeTaskOwnerJournal.read(task: task, context: context),
+              retainsResources(record),
+              RuntimeCompletedUserTurnContinuation.hasCompletedTurn(record, task: task, context: context),
+              let durable = record.resourceClaims else { return false }
+        let lease = try RuntimeExecutionOwner.store(in: context).acquire(taskID: record.taskID, taskOwnerID: record.taskOwnerID)
+        defer { withExtendedLifetime(lease) {} }
+        guard try RuntimeTaskOwnerJournal.read(task: task, context: context) == record else { return false }
+        return claims.allSatisfy { claim in
+            claim.taskID == task.id && durable.contains { held in
+                held.taskID == task.id && held.resourceKind == claim.resourceKind
+                    && held.resourceKey == claim.resourceKey
+                    && (held.accessMode == .write || claim.accessMode == .readOnly)
+            }
+        }
+    }
+
     static func permitsRelease(_ claims: [TaskResourceLockClaim], store: RuntimeExecutionOwnerStore,
                                context: ModelContext? = nil) throws -> Bool {
         let retained = Set(try self.claims(in: store, context: context))

@@ -1836,10 +1836,14 @@ final class TaskQueue {
         reason: String? = nil
     ) {
         if let modelContext { refreshResourceOwnership(in: modelContext) }
-        if let store = resourceOwnershipStore {
-            guard (try? RuntimeResourceOwnership.permitsRelease(claims, store: store, context: modelContext)) == true else {
+        var durableOwnerRetained = false
+        if let store = resourceOwnershipStore,
+           (try? RuntimeResourceOwnership.permitsRelease(claims, store: store, context: modelContext)) != true {
+            guard !resourceOwnershipReadFailed, let task, let modelContext,
+                  (try? RuntimeResourceOwnership.canRetireLocalClaims(claims, task: task, context: modelContext)) == true else {
                 return
             }
+            durableOwnerRetained = true
         }
         var cancellationVerified = false
         if let task, let store = resourceOwnershipStore, let records = try? store.records() {
@@ -1848,7 +1852,8 @@ final class TaskQueue {
                 cancellationVerified = record.cancellationRequested == true && record.resourcesReleased == true
             }
         }
-        let releaseReason = reason ?? (cancellationVerified ? "cancelled_cleanup_verified" : nil)
+        let releaseReason = reason ?? (durableOwnerRetained ? "completed_turn_durable_owner_retained"
+            : (cancellationVerified ? "cancelled_cleanup_verified" : nil))
         let held = Set(localResourceLocks)
         let released = claims.filter { held.contains($0) }
         localResourceLocks.removeAll { released.contains($0) }
