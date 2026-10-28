@@ -203,28 +203,15 @@ private extension Connector {
             return self
         }
 
-        let scoped = Connector(
-            name: name,
-            serviceType: serviceType,
-            icon: icon,
-            connectorDescription: connectorDescription,
-            baseURL: baseURL,
-            authMethod: authMethod
-        )
-        scoped.id = id
-        scoped.credentialKeys = credentialKeys
-        scoped.credentialValues = credentialValues
-        scoped.configKeys = configKeys
-        scoped.configValues = configValues
+        // Narrow only the request's project scope. Keep the saved credential
+        // generation and legacy provenance exactly as the runtime launch does.
+        let scoped = TaskExecutionLaunchSnapshotApplicator.detachedConnector(self)
         if let index = scoped.configKeys.firstIndex(of: "JIRA_PROJECTS") {
             scoped.configValues[index] = requestedProjects.joined(separator: ",")
         } else {
             scoped.configKeys.append("JIRA_PROJECTS")
             scoped.configValues.append(requestedProjects.joined(separator: ","))
         }
-        scoped.isGlobal = isGlobal
-        scoped.testHTTPMethod = testHTTPMethod
-        scoped.notes = notes
         return scoped
     }
 

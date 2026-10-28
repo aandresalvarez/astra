@@ -29,9 +29,37 @@ enum ConnectorCredentialEditor {
         settingResolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
         persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws -> ConnectorCredentialSaveOutcome {
+        try save([key: value], on: account, modelContext: modelContext, allowUserInteraction: allowUserInteraction,
+            settingResolver: settingResolver, persist: persist, rewriteMirror: rewriteMirror)?.outcome ?? .saved
+    }
+
+    /// Several values in one generation, or none of them. Re-entering every
+    /// value this build can't read (`unreadableKeys`) is the only edit of such
+    /// an account that needn't copy one; one at a time, each save would stop
+    /// at the next. Returns the first value that wasn't saved, nil when all were.
+    static func save(
+        _ values: [String: String], on account: Connector, modelContext: ModelContext,
+        allowUserInteraction: Bool = true,
+        settingResolver: (any ConnectorSettingStorageResolving.Type)? = ConnectorSettingStorageSeam.resolver,
+        persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil,
+        vault: SecretStore = KeychainSecretStore()
+    ) throws -> (key: String, outcome: ConnectorCredentialSaveOutcome)? {
         try serializedAccount(account, modelContext: modelContext) {
-            try change(value, key: key, account: account, modelContext: modelContext,
-                allowUserInteraction: allowUserInteraction, settingResolver: settingResolver, persist: persist, rewriteMirror: rewriteMirror)
+            try change(values, removing: nil, account: account, modelContext: modelContext,
+                allowUserInteraction: allowUserInteraction, settingResolver: settingResolver, persist: persist,
+                rewriteMirror: rewriteMirror, vault: vault)
+        }
+    }
+
+    /// Saved keys whose values this build's Keychain access refuses (not
+    /// missing ones): what an earlier ad-hoc build stored, before the person
+    /// re-enters it. An explicit read per key; call it from an action or a
+    /// task, never from a view body.
+    static func unreadableKeys(of account: Connector, vault: SecretStore = KeychainSecretStore()) -> [String] {
+        guard !account.isStanfordOutlookMail else { return [] }
+        let facts = ConnectorSecretFacts(connector: account)
+        return Set(account.credentialKeys.map(ConnectorCredentialKey.canonical)).sorted().filter { key in
+            !key.isEmpty && ConnectorSecretSeam.required.readCredential(key: key, facts: facts, store: vault) == .unavailable
         }
     }
 
@@ -41,8 +69,9 @@ enum ConnectorCredentialEditor {
         persist: (ModelContext) throws -> Void = { try $0.save() }, rewriteMirror: ((Workspace) -> Bool)? = nil
     ) throws {
         _ = try serializedAccount(account, modelContext: modelContext) {
-            try change(nil, key: key, account: account, modelContext: modelContext,
-                allowUserInteraction: false, settingResolver: settingResolver, persist: persist, rewriteMirror: rewriteMirror)
+            try change([:], removing: key, account: account, modelContext: modelContext,
+                allowUserInteraction: false, settingResolver: settingResolver, persist: persist,
+                rewriteMirror: rewriteMirror, vault: KeychainSecretStore())
         }
     }
 
@@ -76,23 +105,28 @@ enum ConnectorCredentialEditor {
     }
 
     private static func change(
-        _ replacement: String?, key rawKey: String, account: Connector, modelContext: ModelContext,
+        _ rawReplacements: [String: String], removing rawRemoved: String?, account: Connector, modelContext: ModelContext,
         allowUserInteraction: Bool, settingResolver: (any ConnectorSettingStorageResolving.Type)?,
-        persist: (ModelContext) throws -> Void, rewriteMirror: ((Workspace) -> Bool)?
-    ) throws -> ConnectorCredentialSaveOutcome {
+        persist: (ModelContext) throws -> Void, rewriteMirror: ((Workspace) -> Bool)?, vault: SecretStore
+    ) throws -> (key: String, outcome: ConnectorCredentialSaveOutcome)? {
         guard account.modelContext === modelContext, !account.isDeleted else { throw Failure.changedAccount }
-        let key = ConnectorCredentialKey.canonical(rawKey)
-        guard !key.isEmpty else { throw Failure.invalidKey }
+        var replacements: [String: String] = [:]
+        for (rawKey, value) in rawReplacements {
+            let key = ConnectorCredentialKey.canonical(rawKey)
+            guard !key.isEmpty, replacements.updateValue(value, forKey: key) == nil else { throw Failure.invalidKey }
+        }
+        let removed = rawRemoved.map(ConnectorCredentialKey.canonical)
+        guard removed?.isEmpty != true, !replacements.isEmpty || removed != nil else { throw Failure.invalidKey }
         let scope = try workspaceScope(of: account, modelContext: modelContext)
         try requireReady(scope, modelContext: modelContext)
         guard !modelContext.hasChanges else { throw Failure.pendingEdits }
         let previous = Snapshot(account)
         let keeping = keepingKeys(of: account, settingResolver: settingResolver)
-            .subtracting(replacement == nil ? [key] : [])
+            .subtracting(removed.map { [$0] } ?? [])
         let isNew = modelContext.insertedModelsArray.contains { ($0 as? Connector) === account }
         let prepared = try ConnectorCredentialGenerationTransaction.prepare(account: account, isNew: isNew,
-            keeping: keeping, replacing: replacement == nil ? [] : [key], modelContext: modelContext,
-            legacyHandling: .preservePending)
+            keeping: keeping, replacing: Set(replacements.keys), modelContext: modelContext,
+            legacyHandling: .preservePending, vault: vault)
         var attemptedCommit = false
         do {
             // Recheck scope from fresh saved rows while the producer lease is
@@ -100,20 +134,23 @@ enum ConnectorCredentialEditor {
             let affected = scope.union(try workspaceScope(of: account, modelContext: modelContext))
             try requireReady(affected, modelContext: modelContext)
             prepared.apply(to: account)
-            retainCredentialFields(on: account, prepared: prepared, removing: replacement == nil ? key : nil)
+            retainCredentialFields(on: account, prepared: prepared, removing: removed)
             // An explicit secret edit settles the same key's legacy plain
             // alias too. Keeping it would create a second mutable owner or
             // silently restore a removed credential during a later migration.
-            let config = account.configKeys.indices.filter { !ConnectorCredentialKey.same(account.configKeys[$0], key) }
+            let edited = Set(replacements.keys).union(removed.map { [$0] } ?? [])
+            let config = account.configKeys.indices.filter { !edited.contains(ConnectorCredentialKey.canonical(account.configKeys[$0])) }
             let configValues = config.map { $0 < account.configValues.count ? account.configValues[$0] : "" }
             account.configKeys = config.map { account.configKeys[$0] }
             account.configValues = configValues
-            if let replacement {
+            for (key, replacement) in replacements.sorted(by: { $0.key < $1.key }) {
                 prepared.noteWriteAttempt()
                 let result = account.saveCredentialChecked(key: key, value: replacement, allowUserInteraction: allowUserInteraction)
                 guard result.isSaved else {
-                    previous.restore(account); prepared.discard()
-                    return result
+                    // The context was clean on entry. Restoring values alone still
+                    // leaves SwiftData dirty, which would block a corrected retry.
+                    previous.restore(account); PluginSavedStateRollback.finish(in: modelContext); prepared.discard()
+                    return (key, result)
                 }
             }
             account.updatedAt = Date()
@@ -128,11 +165,12 @@ enum ConnectorCredentialEditor {
             case .indeterminate(let id, _): throw PluginOperationProblem.commitUncertain(id)
             case .notCommitted: throw Failure.saveFailed
             }
-            return .saved
+            return nil
         } catch {
             guard !PluginOperationProblem.preventsRollback(error) else { throw error }
             if attemptedCommit { modelContext.rollback() }
             previous.restore(account)
+            PluginSavedStateRollback.finish(in: modelContext)
             prepared.discard()
             throw error
         }
