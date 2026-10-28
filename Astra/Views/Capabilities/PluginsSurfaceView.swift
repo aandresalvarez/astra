@@ -42,17 +42,54 @@ struct PluginsSurfaceView: View {
     @State private var pastedMCPTarget = ""
     @State private var mcpInstallRequest: MCPInstallChatRequest?
     @State private var approvalGeneration = 0
+    @ObservedObject private var sourceCoordinator = PluginSourceCoordinator.shared
+    @State private var credentialReadiness = PluginCredentialReadiness()
+    @State private var credentialRefresh = 0
+    @State private var loadedPackPolicy: PackResolvedPolicy?
+    @State private var loadedPackIDs: [String] = []
+
+    private struct PackPolicyRequest: Equatable {
+        let ids: [String]
+        let refresh: Int
+    }
+
+    private struct ReadinessRequest: Equatable {
+        let accounts: [PluginCredentialReadiness.Account]
+        let refresh: Int
+    }
+
+    private var readinessRequest: ReadinessRequest {
+        let bound = WorkspaceCapabilityActivation.activations(of: workspace).flatMap(\.bindings).compactMap(\.account)
+        let candidates = globalConnectors + workspace.connectors + bound
+            + (globalSkills + workspace.skills).flatMap(\.connectors)
+        var seen = Set<UUID>()
+        return ReadinessRequest(accounts: candidates.filter { !$0.isDeleted && seen.insert($0.id).inserted }
+            .map(PluginCredentialReadiness.Account.init).sorted { $0.id.uuidString < $1.id.uuidString }, refresh: credentialRefresh)
+    }
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
             workspace: workspace,
             globalSkills: globalSkills,
             globalConnectors: globalConnectors,
-            globalTools: globalTools
-        )
+            globalTools: globalTools,
+            packageDefinitions: catalog.packages + PluginCatalog.builtInPackages,
+            approvalRecords: approvalRecords,
+            packPolicy: policyContext.packPolicy
+        ).snapshotForPresentation()
     }
 
+    private var enabledPackIDs: [String] { WorkspaceCapabilityActivation.state(of: workspace).packIDs }
+
     private var policyContext: CapabilityCatalogPolicyContext {
+        CapabilityCatalogPolicyContext.currentUser(workspace: workspace, approvalRecords: approvalRecords,
+            packPolicy: (loadedPackIDs == enabledPackIDs ? loadedPackPolicy : nil)
+                ?? (enabledPackIDs.isEmpty ? .empty : .unresolvedEnabledPacks(Set(enabledPackIDs))))
+    }
+
+    // Actions re-read policy at the explicit commit boundary; presentation uses
+    // the loaded snapshot and never performs filesystem work in body.
+    private var actionPolicyContext: CapabilityCatalogPolicyContext {
         PluginCatalogApprovalState.policyContext(workspace: workspace, approvalRecords: approvalRecords)
     }
 
@@ -72,65 +109,11 @@ struct PluginsSurfaceView: View {
     /// The rows and their display, built in one pass so every action takes
     /// the same package and activation the row shows, and the accounts none
     /// of the listed rows shows.
-    private var surface: (state: PluginsSurfaceState, rows: [String: PluginRow], unusedAccounts: [Connector]) {
-        let context = policyContext
-        let currentCapabilities = capabilities
-        let googleConnected = googleAccountConnected
-        var rows: [String: PluginRow] = [:]
-        var inputs: [PluginsSurfacePresentation.Input] = []
-        for package in packages {
-            let packageState = CapabilityPackageState(package: package, workspace: workspace, capabilities: currentCapabilities)
-            let decision = CapabilityCatalogPolicy.decision(for: package, context: context)
-            let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
-            let listing = PluginsSurfacePresentation.listing(for: decision, isEnabled: packageState.isEnabled)
-            var input = PluginsSurfacePresentation.Input(
-                package: package,
-                isEnabled: packageState.isEnabled,
-                pendingSteps: packageState.connectorsNeedingAttention.count + packageState.missingConnectors.count
-                    + PluginsSurfacePresentation.pendingSetupChecks(for: package, statuses: statuses)
-                    + PluginsSurfacePresentation.pendingAccounts(for: package, googleAccountConnected: googleConnected).count,
-                isVisible: listing.isVisible,
-                isRemovable: Self.isRemovable(package),
-                blocker: listing.blocker,
-                awaitsUpdate: packageState.awaitsUpdate
-            )
-            input.unavailableReason = PluginsSurfacePresentation.unavailableReason(for: package)
-            input.origin = PluginSourceCoordinator.shared.origin(of: package)
-            // Any drift an Update would settle: version, digest, components
-            // or templates.
-            input.needsUpdate = activation.map {
-                PluginUpdateService.needsReconcile($0, to: package)
-                    || !PluginTemplateSync.isInSync(package, in: workspace)
-            } ?? false
-            inputs.append(input)
-            rows[package.id] = PluginRow(package: package, activation: activation, display: PluginsSurfacePresentation.makeState(
-                [input], query: ""
-            ).allRows.first ?? placeholderRow(package))
-        }
-        // An activation whose plugin the library no longer has is listed
-        // too, so it can be removed (`CapabilityUninstaller.forgetMissing`).
-        let libraryIDs = Set((catalog.packages + PluginCatalog.builtInPackages).map(\.id))
-        for input in PluginsSurfacePresentation.missingInputs(in: workspace, libraryIDs: libraryIDs, listedIDs: Set(rows.keys)) {
-            inputs.append(input)
-            rows[input.package.id] = PluginRow(package: input.package,
-                activation: WorkspaceCapabilityActivation.activation(for: input.package.id, in: workspace),
-                display: PluginsSurfacePresentation.makeState([input], query: "").allRows.first ?? placeholderRow(input.package))
-        }
-        let unusedAccounts = PluginsSurfacePresentation.unusedAccounts(
-            in: workspace,
-            workspaceConnectors: currentCapabilities.workspaceConnectors,
-            sharedConnectors: currentCapabilities.enabledGlobalConnectors,
-            listedPackages: inputs.filter(\.isVisible).map(\.package),
-            query: query
-        )
-        return (PluginsSurfacePresentation.makeState(inputs, query: query), rows, unusedAccounts)
-    }
-
-    private func placeholderRow(_ package: PluginPackage) -> PluginsSurfaceRow {
-        PluginsSurfaceRow(
-            id: package.id, name: package.name, icon: package.icon, subtitle: "",
-            pendingSteps: 0, isEnabled: false, isRemovable: false, verb: nil
-        )
+    private var surface: PluginsSurfaceProjection {
+        PluginsSurfaceProjection.make(workspace: workspace, capabilities: capabilities,
+            catalogPackages: catalog.packages + PluginCatalog.builtInPackages, context: policyContext,
+            credentialReadiness: credentialReadiness, statuses: statuses, query: query,
+            googleConnected: googleAccountConnected, isRemovable: Self.isRemovable)
     }
 
     var body: some View {
@@ -156,13 +139,14 @@ struct PluginsSurfaceView: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.statusError)
             }
-            PluginStateRecoverySection(onChanged: { errorMessage = nil; onCatalogChanged() }, onError: { errorMessage = $0 })
+            PluginStateRecoverySection(onChanged: { errorMessage = nil; sourceCoordinator.reload(); onCatalogChanged() }, onError: { errorMessage = $0 })
             let model = surface
             let current = model.state
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
-                        heldImportRows(CapabilityCatalogActionService().heldImports(in: workspace), hasActionNeeded: !current.actionNeeded.isEmpty)
+                        heldImportRows(CapabilityCatalogActionService().heldImports(in: workspace, installed: catalog.packages,
+                            provenance: sourceCoordinator.provenance, coordinator: sourceCoordinator), hasActionNeeded: !current.actionNeeded.isEmpty)
                         group("Action needed", current.actionNeeded, rows: model.rows)
                         group("Ready", current.ready, rows: model.rows)
                         group("Available", current.available, rows: model.rows)
@@ -191,6 +175,22 @@ struct PluginsSurfaceView: View {
         }
         .padding(16)
         .onDisappear { repairs.cancelAll() }
+        .task(id: readinessRequest) {
+            let request = readinessRequest
+            let read = Task.detached(priority: .utility) { PluginCredentialReadiness.load(request.accounts) }
+            let snapshot = await withTaskCancellationHandler { await read.value } onCancel: { read.cancel() }
+            guard !Task.isCancelled, request == readinessRequest else { return }
+            credentialReadiness = snapshot
+        }
+        .task(id: PackPolicyRequest(ids: enabledPackIDs, refresh: credentialRefresh)) {
+            let ids = enabledPackIDs
+            let policy = await Task.detached(priority: .utility) {
+                PackWorkspacePolicyProvider.resolvedPolicy(enabledPackIDs: ids)
+            }.value
+            guard !Task.isCancelled, ids == enabledPackIDs else { return }
+            loadedPackPolicy = policy
+            loadedPackIDs = ids
+        }
         .onAppear {
             expanded = PluginsSurfacePreferences.expandedPluginIDs(workspaceID: workspace.id)
             refreshApprovalRecords()
@@ -205,7 +205,7 @@ struct PluginsSurfaceView: View {
         .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshStatuses() }
         // A CLI's own state (Docker stopped, a logout in Terminal) changes
         // outside ASTRA: coming back to ASTRA scans again.
-        .rescansPrerequisitesOnActivation { refreshStatuses() }
+        .rescansPrerequisitesOnActivation { credentialRefresh += 1; refreshStatuses() }
         .onChange(of: expanded) { _, ids in
             PluginsSurfacePreferences.setExpandedPluginIDs(ids, workspaceID: workspace.id)
         }
@@ -213,12 +213,14 @@ struct PluginsSurfaceView: View {
             refreshApprovalRecords()
         }
         .onReceive(NotificationCenter.default.publisher(for: .capabilityCatalogPersistenceChanged)) { notification in
+            credentialRefresh += 1
             // A library change (an install, an import, a removal in another
             // window) reloads this surface's catalog snapshot; a workspace
             // change is observed through the model.
             if (notification.object as? CapabilityCatalogPersistenceChange)?.workspaceID == nil {
                 confirming = nil
                 catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+                sourceCoordinator.reload()
             }
             refreshStatuses()
         }
@@ -417,7 +419,7 @@ struct PluginsSurfaceView: View {
         let checkID = PluginManifestConverter.prerequisiteID(of: component)
         let failing = isEnabled ? position.flatMap { position in failingSetup(for: package).first { $0.position == position } } : nil
         let packageState = isEnabled && component.kind == .connector
-            ? CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
+            ? CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities, credentialReadiness: credentialReadiness)
             : nil
         // The account bound to this very component, so a renamed account
         // still gets its action and a second one of the service its own.
@@ -586,7 +588,7 @@ struct PluginsSurfaceView: View {
                 package,
                 workspace: workspace,
                 modelContext: modelContext,
-                policyContext: policyContext,
+                policyContext: actionPolicyContext,
                 traceID: AuditTrace.make("plugins-add")
             )
             expanded.insert(package.id)
@@ -608,7 +610,7 @@ struct PluginsSurfaceView: View {
                 sourceURL: sourceURL,
                 workspace: workspace,
                 modelContext: modelContext,
-                policyContext: policyContext,
+                policyContext: actionPolicyContext,
                 traceID: AuditTrace.make(enableHere ? "capability-create-enable" : "capability-create")
             )
             if result.approvalRecordChanged { refreshApprovalRecords() }

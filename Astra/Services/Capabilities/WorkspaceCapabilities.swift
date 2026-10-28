@@ -19,6 +19,7 @@ struct WorkspaceCapabilities {
     /// Body-path callers pass their cached policy here so capability resolution
     /// can apply pack visibility without triggering catalog I/O.
     let packPolicy: PackResolvedPolicy?
+    private var projectedResources: PluginRuntimeProjection?
 
     init(
         workspace: Workspace,
@@ -195,7 +196,15 @@ struct WorkspaceCapabilities {
     /// The enabled plugins' skills, tools and bound accounts, derived from
     /// this workspace's activations.
     var projection: PluginRuntimeProjection {
-        PluginRuntimeProjection.project(workspace: workspace, packages: enabledPackages)
+        projectedResources ?? PluginRuntimeProjection.project(workspace: workspace, packages: enabledPackages, definitions: packageDefinitions)
+    }
+
+    /// A single render owns these detached resources; ordinary runtime callers
+    /// retain live resolution. Never retain this across a workspace mutation.
+    func snapshotForPresentation() -> Self {
+        var copy = self
+        copy.projectedResources = projection
+        return copy
     }
 
     private var enabledPackageSkills: [Skill] {
