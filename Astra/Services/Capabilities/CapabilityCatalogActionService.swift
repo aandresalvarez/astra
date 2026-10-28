@@ -401,6 +401,12 @@ struct CapabilityCatalogActionService {
         try PluginOperations.setSetting(key, to: value, of: skill, package: package, in: workspace, modelContext: modelContext)
     }
 
+    /// Re-entry may replace unreadable values in several components together.
+    func setSettings(_ changes: [PluginOperations.SettingChange], package: PluginPackage,
+                     workspace: Workspace, modelContext: ModelContext) throws {
+        try PluginOperations.setSettings(changes, package: package, in: workspace, modelContext: modelContext)
+    }
+
     /// A new account for a connector component, bound in this workspace.
     @discardableResult
     func addAccount(
@@ -571,6 +577,7 @@ struct CapabilityCatalogActionService {
             case .saveFailed: fields["error_reason"] = "save_failed"
             case .notAdded: fields["error_reason"] = "not_added"
             case .updateRequired: fields["error_reason"] = "update_required"
+            case .invalidSettings: fields["error_reason"] = "invalid_settings"
             case .secretReadFailed: fields["error_reason"] = "secret_read_failed"
             case .secretSaveFailed: fields["error_reason"] = "secret_save_failed"
             }

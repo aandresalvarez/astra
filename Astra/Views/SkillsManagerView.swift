@@ -26,6 +26,7 @@ struct SkillEditorView: View {
     @State private var isAddingSecret = false
     @State private var secretSaveErrorMessage: String?
     @State private var secretRecoveryID: UUID?
+    @State private var unreadableSecretKeys: [String] = []
     @State private var pendingDestruction: PendingSkillDestruction?
     @FocusState private var isNameFocused: Bool
 
@@ -579,6 +580,11 @@ struct SkillEditorView: View {
                             .font(Stanford.caption(12))
                             .foregroundStyle(.secondary)
 
+                        if !unreadableSecretKeys.isEmpty {
+                            ConnectorCredentialReentrySection(keys: unreadableSecretKeys, subject: "skill") { reenterSecrets($0) }
+                                .id(skill.id)
+                        }
+
                         if !directSecretVars.isEmpty {
                             VStack(spacing: 4) {
                                 ForEach(directSecretVars, id: \.offset) { origIdx, key in
@@ -784,6 +790,10 @@ struct SkillEditorView: View {
             Text(destruction.message)
         }
         .onAppear { if skill.name == "New Skill" { isNameFocused = true } }
+        .task(id: skill.id) { refreshUnreadableSecretKeys() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshUnreadableSecretKeys()
+        }
         .onDisappear {
             guard skill.modelContext === modelContext, !skill.isDeleted else { return }
             skill.updatedAt = Date()
@@ -799,7 +809,27 @@ struct SkillEditorView: View {
             try SkillCredentialEditor.save(newEnvValue, forKey: key, on: skill, modelContext: modelContext)
             secretRecoveryID = nil
             cancelSecretEntry()
+            refreshUnreadableSecretKeys()
         } catch { showSecretError(error) }
+    }
+
+    /// One generation for every value this build can't read; see
+    /// `ConnectorCredentialReentrySection`. A plugin skill the migration left
+    /// as it was moves onto its plugin on the next launch.
+    private func reenterSecrets(_ values: [String: String]) -> Bool {
+        defer { refreshUnreadableSecretKeys() }
+        do {
+            WorkspacePersistenceCoordinator.flushPendingExport(workspace: workspace ?? skill.workspace, modelContext: modelContext)
+            try SkillCredentialEditor.save(values, on: skill, modelContext: modelContext)
+            secretSaveErrorMessage = nil
+            secretRecoveryID = nil
+            return true
+        } catch { showSecretError(error); return false }
+    }
+
+    /// Explicit reads, so on appear and after a secret change only.
+    private func refreshUnreadableSecretKeys() {
+        unreadableSecretKeys = SkillCredentialEditor.unreadableKeys(of: skill)
     }
 
     private func removeSecret(_ key: String) {
@@ -808,6 +838,7 @@ struct SkillEditorView: View {
             try SkillCredentialEditor.remove(key, from: skill, modelContext: modelContext)
             secretSaveErrorMessage = nil
             secretRecoveryID = nil
+            refreshUnreadableSecretKeys()
         } catch { showSecretError(error) }
     }
 
@@ -816,6 +847,7 @@ struct SkillEditorView: View {
             try SkillCredentialEditor.recover(id, modelContext: modelContext)
             secretRecoveryID = nil
             cancelSecretEntry()
+            refreshUnreadableSecretKeys()
         } catch {
             showSecretError(error)
             secretRecoveryID = id
@@ -823,6 +855,7 @@ struct SkillEditorView: View {
     }
 
     private func showSecretError(_ error: Error) {
+        refreshUnreadableSecretKeys()
         secretRecoveryID = nil
         if let problem = error as? PluginOperationProblem {
             if case .savedRecoveryPending(let id) = problem { secretRecoveryID = id }

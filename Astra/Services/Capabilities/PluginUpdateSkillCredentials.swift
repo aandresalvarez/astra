@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 /// One update's unpublished skill generations. The activation remains the
 /// durable owner; this preparation only retains rollback/commit resources.
@@ -9,13 +10,15 @@ import ASTRAModels
 final class PluginUpdateSkillCredentials {
     private let modelContext: ModelContext
     private let persistence: any SkillSecretPersisting.Type
+    private let vault: SecretStore
     private var prepared: [UUID: PluginCredentialGenerationTransaction] = [:]
     private(set) var released: Set<UUID> = []
     var producerLease: PluginCredentialProducerLease? { prepared.values.first?.producerLease }
 
-    init(modelContext: ModelContext, persistence: any SkillSecretPersisting.Type) {
+    init(modelContext: ModelContext, persistence: any SkillSecretPersisting.Type, vault: SecretStore = KeychainSecretStore()) {
         self.modelContext = modelContext
         self.persistence = persistence
+        self.vault = vault
     }
 
     /// Lazy: reviewed/withheld/no-op activations must not rotate a generation
@@ -28,7 +31,7 @@ final class PluginUpdateSkillCredentials {
         do {
             transaction = try PluginCredentialGenerationTransaction.prepareCopy(activation: activation,
                 workspaceID: workspace.id, modelContext: modelContext, skillName: package.name,
-                persistence: persistence, additionalComponents: components, producerLease: producerLease)
+                persistence: persistence, additionalComponents: components, producerLease: producerLease, vault: vault)
         } catch PluginOperations.OperationError.secretReadFailed(let key) {
             throw PluginUpdateService.UpdateError.secretReadFailed(component: package.name, key: key)
         } catch PluginOperations.OperationError.secretSaveFailed(let key) {

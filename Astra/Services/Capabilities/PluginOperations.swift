@@ -23,9 +23,11 @@ enum PluginOperations {
         case saveFailed
         case pendingEdits
         case updateRequired
+        case invalidSettings
 
         var errorDescription: String? {
             switch self {
+            case .invalidSettings: "Choose distinct settings from this plugin before saving."
             case .updateRequired: "Update the plugin before changing its settings or accounts."
             case .notAdded: "Add the plugin to this workspace first."
             case .secretReadFailed(let key): "Couldn't read \(key) from the Keychain. Check credential-storage access before retrying."
@@ -60,58 +62,6 @@ enum PluginOperations {
         if let value = activation.configuration(forComponent: componentID)[key] { return value }
         guard let index = skill.environmentKeys.firstIndex(of: key), index < skill.environmentValues.count else { return "" }
         return skill.environmentValues[index]
-    }
-
-    /// Publishes settings with a complete credential generation. Old values
-    /// are never overwritten or cleared before the matching domain receipt.
-    static func setSetting(
-        _ key: String, to value: String, of skill: PluginSkill, package: PluginPackage,
-        in workspace: Workspace, modelContext: ModelContext,
-        secrets: (any SkillSecretPersisting.Type)? = nil,
-        persist: (Workspace, ModelContext) throws -> Void = persistAndExport,
-        rewriteMirror: ((Workspace) -> Bool)? = nil
-    ) throws {
-        guard !modelContext.hasChanges else { throw OperationError.pendingEdits }
-        guard workspace.modelContext === modelContext, !workspace.isDeleted else { throw OperationError.workspaceChanged }
-        try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: modelContext)
-        let pluginID = package.id
-        guard let activation = WorkspaceCapabilityActivation.activation(for: pluginID, in: workspace) else {
-            throw OperationError.notAdded(pluginID: pluginID)
-        }
-        guard package.skills.contains(skill), !PluginRuntimeProjection.awaitsUpdate(activation, to: package) else {
-            throw OperationError.updateRequired
-        }
-        let componentID = CapabilityResourceOrigin.componentID(for: skill)
-        let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)
-        let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
-        let secret = Skill.isSecretEnvironmentKey(key)
-        let changesCredentials = secret || activation.secretSettingKeys.contains(settingKey)
-        let prepared: PluginCredentialGenerationTransaction?
-        if changesCredentials {
-            prepared = try PluginCredentialGenerationTransaction.prepare(activation: activation,
-                workspaceID: workspace.id, componentID: componentID, key: key,
-                replacement: secret && !value.isEmpty ? value : nil, skillName: skill.name,
-                modelContext: modelContext, persistence: secrets ?? SkillSecretSeam.required)
-        } else { prepared = nil }
-        if let prepared { WorkspaceCapabilityActivation.setCredentialNamespaceSeed(prepared.generation, on: activation) }
-        if secret {
-            WorkspaceCapabilityActivation.setConfigValue(nil, forKey: settingKey, on: activation)
-            WorkspaceCapabilityActivation.setSecretRecorded(!value.isEmpty, forKey: settingKey, on: activation)
-        } else {
-            WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: settingKey, on: activation)
-            WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
-        }
-        workspace.updatedAt = Date()
-        do {
-            try save(workspace, modelContext: modelContext, restoring: snapshot,
-                pluginIDs: [pluginID], rewriteMirror: rewriteMirror, persist: persist)
-            prepared?.completed(keeping: Set(PluginRuntimeProjection.secretNamespaces(of: activation, package: nil)))
-        } catch {
-            // A saved or uncertain cutover must retain both generations and
-            // their recovery intents. Only a proved noncommit can discard.
-            if !PluginOperationProblem.preventsRollback(error) { prepared?.discard() }
-            throw error
-        }
     }
 
     /// Saves the domain state; `save` couples it to a durable operation
@@ -304,7 +254,7 @@ enum PluginOperations {
 
     // MARK: - Private
 
-    private static func save(
+    static func save(
         _ workspace: Workspace,
         modelContext: ModelContext,
         restoring snapshot: WorkspaceCapabilityActivation.Snapshot,
