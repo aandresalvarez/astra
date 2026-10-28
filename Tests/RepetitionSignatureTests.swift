@@ -40,7 +40,7 @@ struct RepetitionSignatureTests {
         #expect(monitor.repetitionKilled == true)
     }
 
-    @Test("The same file-tool call and result repeated under one id still trip the breaker")
+    @Test("The same file-tool invocation repeated under one id still trips the breaker")
     func sameIDToolEventsStillRepeat() {
         let use = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
         for _ in 1...2 {
@@ -49,13 +49,31 @@ struct RepetitionSignatureTests {
         #expect(use.processEvent(.toolUse(name: "edit", id: "call_1", input: ["summary": "/tmp/plan.md"]), process: nil) == true)
         #expect(use.repetitionKilled == true)
 
-        let result = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
-        for _ in 1...2 {
-            #expect(result.processEvent(.toolResult(toolId: "call_1", content: "same output"), process: nil) == false)
-        }
-        #expect(result.processEvent(.toolResult(toolId: "call_1", content: "same output"), process: nil) == true)
-        #expect(result.repetitionKilled == true)
+    }
 
+    @Test("One pytest invocation can stream identical progress without becoming a loop")
+    func repeatedToolOutputIsProgress() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        #expect(!monitor.processEvent(.toolUse(name: "bash", id: "pytest",
+            input: ["command": "python3 -m pytest -q"]), process: nil))
+        for _ in 0..<100 {
+            #expect(!monitor.processEvent(.toolResult(toolId: "pytest", content: "."), process: nil))
+        }
+        #expect(!monitor.processEvent(.toolResult(toolId: "pytest", content: "100 passed"), process: nil))
+        #expect(!monitor.repetitionKilled)
+    }
+
+    @Test("Result chunks do not hide genuinely repeated tool invocations")
+    func resultsDoNotResetInvocationRepetition() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
+        for index in 1...2 {
+            #expect(!monitor.processEvent(.toolUse(name: "bash", id: "call_\(index)",
+                input: ["command": "pytest -q"]), process: nil))
+            #expect(!monitor.processEvent(.toolResult(toolId: "call_\(index)", content: "."), process: nil))
+        }
+        #expect(monitor.processEvent(.toolUse(name: "bash", id: "call_3",
+            input: ["command": "pytest -q"]), process: nil))
+        #expect(monitor.repetitionKilled)
     }
 
     // MARK: - Results carry their call id

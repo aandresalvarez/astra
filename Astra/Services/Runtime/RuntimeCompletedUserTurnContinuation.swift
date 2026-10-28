@@ -3,7 +3,7 @@ import SwiftData
 import ASTRACore
 import ASTRAModels
 
-/// Admission for a newly authored human instruction within the SAME logical
+/// Admission after a settled turn for a newly authored human instruction within the SAME logical
 /// owner. This never certifies tool cleanup, releases a reservation, or permits
 /// automatic replay. Uncertain earlier effects remain owned and recorded.
 @MainActor
@@ -14,7 +14,7 @@ enum RuntimeCompletedUserTurnContinuation {
               let request, request.modelContext === context, request.state.isActive,
               request.taskID == task.id else { return false }
         if RuntimeExecutionAdmission.resolve(request: request, task: task) == .userInstruction,
-           hasCompletedTurn(saved, task: task, context: context) { return true }
+           hasSettledTurn(saved, task: task, context: context) { return true }
         guard hasUnlaunchedPreparation(saved, task: task, context: context),
               request.kind == .followUp,
               let source = TaskHistoryRead.event(id: request.sourceEventID, in: task),
@@ -35,20 +35,29 @@ enum RuntimeCompletedUserTurnContinuation {
 
     static func hasCompletedTurn(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
                                  context: ModelContext) -> Bool {
-        completedBasis(saved, task: task, context: context, excluding: [])
+        settledBasis(saved, task: task, context: context, excluding: [], requiresSuccess: true)
+    }
+
+    /// Failure ends the provider turn without certifying completion of the
+    /// user's work. A new human message can continue the same reserved owner
+    /// once local execution and settlement have ended. Automatic recovery and
+    /// other tasks still need their original, stronger cleanup proof.
+    static func hasSettledTurn(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
+                               context: ModelContext) -> Bool {
+        settledBasis(saved, task: task, context: context, excluding: [], requiresSuccess: false)
     }
 
     static func hasUnlaunchedPreparation(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
                                         context: ModelContext) -> Bool {
         guard unlaunched(saved), let history = try? RuntimeExecutionOwner.store(in: context).retainedExecutions(of: saved),
-              let completedIndex = history.firstIndex(where: { completedState($0) }) else { return false }
-        let preparations = [saved] + Array(history.prefix(completedIndex))
+              let settledIndex = history.firstIndex(where: { settledState($0) }) else { return false }
+        let preparations = [saved] + Array(history.prefix(settledIndex))
         guard preparations.allSatisfy(unlaunched) else { return false }
         let ignored = Set(preparations.compactMap(\.runID))
-        return completedBasis(history[completedIndex], task: task, context: context, excluding: ignored)
+        return settledBasis(history[settledIndex], task: task, context: context, excluding: ignored, requiresSuccess: false)
     }
 
-    private static func completedState(_ saved: RuntimeExecutionOwnerRecord) -> Bool {
+    private static func settledState(_ saved: RuntimeExecutionOwnerRecord) -> Bool {
         // Settlement may have committed before finish() persisted .finished.
         // All run, barrier and process evidence is checked separately below.
         saved.state == .finished || saved.state == .stopped || saved.state == .unverified
@@ -62,10 +71,10 @@ enum RuntimeCompletedUserTurnContinuation {
             && saved.settlementLocalWorkStopped != false && saved.settlementToolsStopped != false
     }
 
-    private static func completedBasis(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
-                                       context: ModelContext, excluding ignored: Set<UUID>) -> Bool {
+    private static func settledBasis(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
+                                     context: ModelContext, excluding ignored: Set<UUID>, requiresSuccess: Bool) -> Bool {
         guard task.isLive, task.modelContext === context,
-              saved.taskID == task.id, completedState(saved),
+              saved.taskID == task.id, settledState(saved),
               saved.cancellationRequested != true,
               saved.settlementInProgress == false, saved.settlementLocalWorkStopped == true,
               saved.settlementToolsStopped == true,
@@ -74,7 +83,7 @@ enum RuntimeCompletedUserTurnContinuation {
               proof.process == saved.providerProcess, proof.reaped, proof.processGroupEmpty,
               proof.process.presence == .absent,
               let runID = saved.runID, let run = task.runs.first(where: { $0.id == runID }),
-              run.status == .completed, run.typedStopReason == .completed, run.completedAt != nil,
+              settledOutcome(run, requiresSuccess: requiresSuccess), run.completedAt != nil,
               task.runs.filter({ !ignored.contains($0.id) }).max(by: { $0.startedAt < $1.startedAt })?.id == runID,
               !task.runs.contains(where: { $0.status == .running && !ignored.contains($0.id) }),
               let snapshot = run.executionEnvironmentSnapshotJSON,
@@ -83,6 +92,16 @@ enum RuntimeCompletedUserTurnContinuation {
         // Imported event JSON cannot authorize a continuation. Every retained
         // receipt must still be readable from the protected journal.
         return (try? RuntimeExecutionOwner.store(in: context).retainedExecutions(of: saved)) != nil
+    }
+
+    private static func settledOutcome(_ run: TaskRun, requiresSuccess: Bool) -> Bool {
+        if run.status == .completed { return run.typedStopReason == .completed }
+        guard !requiresSuccess, let reason = run.typedStopReason,
+              reason != .completed, reason != .cancelled else { return false }
+        switch run.status {
+        case .failed, .timeout, .budgetExceeded: return true
+        case .running, .completed, .cancelled: return false
+        }
     }
 
     static func permits(task: AgentTask, request: TaskTurnRequest?, context: ModelContext) -> Bool {

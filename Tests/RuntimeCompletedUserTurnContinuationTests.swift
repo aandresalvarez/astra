@@ -35,6 +35,112 @@ struct RuntimeCompletedUserTurnContinuationTests {
         return try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
     }
 
+    @Test("A settled interrupted turn admits saved human input while retaining every fence", arguments:
+        [TaskRunStopReason.repetitionDetected, .timeout, .maxBudgetReached, .failed, .runtimeConnectionLost])
+    func interruptedTurnCanContinue(reason: TaskRunStopReason) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .copilotCLI, goal: "Preserve partial work", model: "test")
+        var previous = try completed(task, context: h.context)
+        let run = try #require(task.runs.first)
+        let status: RunStatus = reason == .timeout ? .timeout : reason == .maxBudgetReached ? .budgetExceeded : .failed
+        run.status = status; run.typedStopReason = reason; run.setOutput("Partial implementation and validation")
+        task.status = .failed
+        previous.state = .unverified; previous.inheritedToolUncertainty = true
+        try save(previous, context: h.context)
+        let request = try followUp(task, context: h.context)
+        _ = TaskTurnRequestStateMachine.transition(request, to: .waitingForResource,
+            blockingTaskID: task.id, blockerSummary: "Previous execution cleanup is not yet confirmed.")
+        try h.context.save()
+        _ = TaskTurnRequestRecoveryService.recoverInterruptedRequests(modelContext: h.context, autoExportWorkspaces: false)
+        #expect(request.state.isActive && request.runID == nil)
+        let permitted = RuntimeCompletedUserTurnContinuation.permits(task: task, request: request, context: h.context)
+        #expect(permitted)
+        guard permitted else { return }
+        #expect(RuntimeRecoveryPresentation.blockedMessage(task: task, context: h.context) == nil)
+        let queue = TaskQueue(poolSize: 0); queue.refreshResourceOwnership(in: h.context)
+        let previousClaims = previous.resourceClaims ?? []
+        queue.localResourceLocks = previousClaims
+        queue.releaseResourceLocks(previousClaims, task: task, modelContext: h.context)
+        #expect(queue.localResourceLocks.isEmpty)
+        #expect(!queue.persistedResourceLocks.isEmpty)
+        let claims = queue.resourceLockClaims(for: request, task: task, runMode: "continue")
+        #expect(!queue.canAcquireResourceLocks(claims))
+        #expect(queue.canAcquireResourceLocks(claims, task: task, context: h.context))
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context,
+            maxRunSeconds: 60, userRequest: request, resourceClaims: claims))
+        defer { owner.finish() }
+        #expect(owner.record.ownerID == previous.ownerID)
+        #expect(owner.record.inheritedToolUncertainty == true)
+        #expect(!owner.record.canReplace && owner.record.resourcesReleased == false)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).retainedExecutions(of: owner.record) == [previous])
+        #expect(run.status == status && run.typedStopReason == reason)
+        #expect(run.output == "Partial implementation and validation")
+        let other = h.makeTask(runtime: .claudeCode, goal: "Competing", model: "test")
+        #expect(RuntimeExecutionOwner.acquire(task: other, context: h.context, maxRunSeconds: 60) == nil)
+    }
+
+    @Test("Interrupted continuation still requires a bound stopped process and completed local settlement", arguments:
+        ["live", "group", "unreaped", "settling", "children", "noEnd", "unknownEnvironment", "cancelled", "archive", "retry"])
+    func interruptedTurnKeepsSafetyBoundaries(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .copilotCLI, goal: "Partial work", model: "test")
+        var receipt = try completed(task, context: h.context)
+        let run = try #require(task.runs.first)
+        run.status = .failed; run.typedStopReason = .repetitionDetected; task.status = .failed
+        receipt.state = .unverified
+        let request = try followUp(task, context: h.context)
+        switch fault {
+        case "live":
+            let live = try #require(RuntimeProcessIdentity.read(ProcessInfo.processInfo.processIdentifier))
+            receipt.providerProcess = live
+            receipt.stopProof = .init(executionID: receipt.executionID, process: live,
+                reaped: true, processGroupEmpty: true, toolsStopped: false,
+                remoteWorkExcluded: true, capturedAt: Date())
+        case "settling": receipt.settlementInProgress = true
+        case "children": receipt.settlementLocalWorkStopped = false
+        case "noEnd": run.completedAt = nil
+        case "unknownEnvironment": run.executionEnvironmentSnapshotJSON = nil
+        case "cancelled": receipt.cancellationRequested = true
+        case "archive": receipt.retainedExecutionHead = UUID()
+        case "retry": request.kind = .retry
+        default:
+            let proof = try #require(receipt.stopProof)
+            receipt.stopProof = .init(executionID: proof.executionID, process: proof.process,
+                reaped: fault != "unreaped", processGroupEmpty: fault != "group",
+                toolsStopped: false, remoteWorkExcluded: true, capturedAt: Date())
+        }
+        try save(receipt, context: h.context); try h.context.save()
+        #expect(!RuntimeCompletedUserTurnContinuation.permits(task: task, request: request, context: h.context))
+        #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context) == receipt)
+    }
+
+    @Test("The worker continues an interrupted task without changing its partial files or failed run")
+    func workerContinuesInterruptedTurn() async throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Partial implementation", model: "claude-opus-5")
+        var previous = try completed(task, context: h.context)
+        let interrupted = try #require(task.runs.first)
+        interrupted.status = .failed; interrupted.typedStopReason = .repetitionDetected
+        interrupted.setOutput("Preserved partial implementation")
+        task.status = .failed; previous.state = .unverified
+        try save(previous, context: h.context)
+        let partialFile = h.workspaceURL.appendingPathComponent("partial.sql")
+        try Data("select 1;\n".utf8).write(to: partialFile)
+        let path = try h.writeExecutable(named: "claude", script: HeadlessChatScenarioTests.claudeScript(body:
+            "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"Partial work is preserved.\",\"is_error\":false,\"num_turns\":1,\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}'"))
+        let worker = h.makeWorker(runtime: .claudeCode, executablePath: path, permissionPolicy: .autonomous)
+        _ = await h.continueTask(task: task, message: "What is the status of this work?", worker: worker)
+        #expect(task.status == .completed)
+        #expect(task.runs.count == 2)
+        #expect(interrupted.status == .failed && interrupted.typedStopReason == .repetitionDetected)
+        #expect(interrupted.output == "Preserved partial implementation")
+        #expect(try String(contentsOf: partialFile, encoding: .utf8) == "select 1;\n")
+        let saved = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(saved.ownerID == previous.ownerID && saved.inheritedToolUncertainty == true)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).retainedExecutions(of: saved) == [previous])
+    }
+
     @Test("New human input keeps the owner, claims and immutable prior proof; retries remain blocked")
     func retainedOwner() throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
