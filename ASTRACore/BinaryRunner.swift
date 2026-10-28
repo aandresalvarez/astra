@@ -216,7 +216,8 @@ public struct ProcessBinaryRunner: BinaryRunner {
         currentDirectory: String?,
         stdin: Data? = nil,
         maximumOutputBytes: Int? = nil,
-        terminateProcessGroup: Bool = false
+        terminateProcessGroup: Bool = false,
+        stopOnOutputLimit: Bool = false
     ) async -> RunResult {
         if terminateProcessGroup {
             return await runSpawnedProcessGroup(
@@ -226,7 +227,8 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 environment: environment,
                 currentDirectory: currentDirectory,
                 stdin: stdin,
-                maximumOutputBytes: maximumOutputBytes
+                maximumOutputBytes: maximumOutputBytes,
+                stopOnOutputLimit: stopOnOutputLimit
             )
         }
 
@@ -388,7 +390,8 @@ public struct ProcessBinaryRunner: BinaryRunner {
         environment: [String: String]?,
         currentDirectory: String?,
         stdin: Data?,
-        maximumOutputBytes: Int?
+        maximumOutputBytes: Int?,
+        stopOnOutputLimit: Bool
     ) async -> RunResult {
         let state = SpawnedProcessGroupRunState()
         return await withTaskCancellationHandler {
@@ -403,11 +406,20 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 let stdoutCollector = PipeCollector(maximumBytes: maximumOutputBytes)
                 let stderrCollector = PipeCollector(maximumBytes: maximumOutputBytes)
                 let startedAt = Date()
+                let stopIfOutputExceeded = {
+                    guard stopOnOutputLimit, stdoutCollector.wasTruncated || stderrCollector.wasTruncated else { return }
+                    state.finish(outcome: .exited(code: 1), stdout: stdoutCollector.string,
+                        stderr: stderrCollector.string, elapsedTime: Date().timeIntervalSince(startedAt),
+                        stdoutTruncated: stdoutCollector.wasTruncated, stderrTruncated: stderrCollector.wasTruncated)
+                    state.terminateRemainingProcessGroup()
+                }
                 stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
                     stdoutCollector.drainAvailable(from: handle)
+                    stopIfOutputExceeded()
                 }
                 stderrPipe.fileHandleForReading.readabilityHandler = { handle in
                     stderrCollector.drainAvailable(from: handle)
+                    stopIfOutputExceeded()
                 }
                 let cleanupPipes = {
                     stdoutPipe.fileHandleForReading.readabilityHandler = nil
@@ -526,7 +538,9 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     return
                 }
 
-                Task.detached {
+                // waitpid and the post-exit pipe drain block their thread.
+                // Keep each wait independent of shared worker-pool capacity.
+                ProcessWaitExecutor.submit {
                     var status = Int32(0)
                     while waitpid(pid, &status, 0) == -1 {
                         guard errno == EINTR else {

@@ -41,38 +41,3 @@ enum CapabilityPersistence {
         return .workspace(workspace.id)
     }
 }
-
-/// Snapshot of a workspace's capability-membership arrays. `ModelContext`
-/// rollback reverts pending object inserts/deletes, but NOT in-memory
-/// mutations to a persisted model's stored arrays — so enable/disable must
-/// restore these by hand on a save failure or the workspace is left listing
-/// resources that were never committed (or hiding ones never removed).
-struct WorkspaceCapabilityMembershipSnapshot {
-    private let enabledGlobalSkillIDs: [String]
-    private let enabledGlobalConnectorIDs: [String]
-    private let enabledGlobalToolIDs: [String]
-    private let enabledCapabilityIDs: [String]
-    private let installedPluginIDs: [String]
-    private let installedPluginVersions: [String]
-    private let updatedAt: Date
-
-    init(_ workspace: Workspace) {
-        enabledGlobalSkillIDs = workspace.enabledGlobalSkillIDs
-        enabledGlobalConnectorIDs = workspace.enabledGlobalConnectorIDs
-        enabledGlobalToolIDs = workspace.enabledGlobalToolIDs
-        enabledCapabilityIDs = workspace.enabledCapabilityIDs
-        installedPluginIDs = workspace.installedPluginIDs
-        installedPluginVersions = workspace.installedPluginVersions
-        updatedAt = workspace.updatedAt
-    }
-
-    func restore(to workspace: Workspace) {
-        workspace.enabledGlobalSkillIDs = enabledGlobalSkillIDs
-        workspace.enabledGlobalConnectorIDs = enabledGlobalConnectorIDs
-        workspace.enabledGlobalToolIDs = enabledGlobalToolIDs
-        workspace.enabledCapabilityIDs = enabledCapabilityIDs
-        workspace.installedPluginIDs = installedPluginIDs
-        workspace.installedPluginVersions = installedPluginVersions
-        workspace.updatedAt = updatedAt
-    }
-}

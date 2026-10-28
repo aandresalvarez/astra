@@ -10,7 +10,7 @@ struct CopilotSessionMetrics: Equatable {
     let durationMs: Int?
     let turns: Int?
 
-    var totalTokens: Int { inputTokens + outputTokens }
+    var totalTokens: Int { RuntimeUsageArithmetic.adding(inputTokens, outputTokens) }
 
     var event: AgentEvent {
         .stats(
@@ -67,6 +67,7 @@ enum CopilotSessionMetricsReader {
         taskID: UUID,
         modifiedSince: Date,
         fileManager: FileManager = .default,
+        metricsSince: Date? = nil,
         accepts: (_ sessionID: String, _ modifiedAt: Date) -> Bool
     ) -> CopilotSessionCandidate? {
         guard !copilotHome.isEmpty else { return nil }
@@ -108,7 +109,7 @@ enum CopilotSessionMetricsReader {
             guard lowerContent.contains(lowerTaskID) || lowerContent.contains(shortTaskID) else {
                 continue
             }
-            let metrics = finalStatsEvent(in: content).map { stats in
+            let metrics = finalStatsEvent(in: content, since: metricsSince).map { stats in
                 CopilotSessionMetrics(
                     sessionID: candidate.sessionID,
                     inputTokens: stats.input,
@@ -124,11 +125,22 @@ enum CopilotSessionMetricsReader {
         return nil
     }
 
-    private static func finalStatsEvent(in content: String) -> (input: Int, output: Int, cost: Double?, duration: Int?, turns: Int?)? {
+    private static func finalStatsEvent(in content: String, since: Date?) -> (input: Int, output: Int, cost: Double?, duration: Int?, turns: Int?)? {
         let lines = content.split(separator: "\n", omittingEmptySubsequences: true).reversed()
         for line in lines {
             guard line.contains(#""session.shutdown""#) || line.contains(#""modelMetrics""#) else {
                 continue
+            }
+            if let since {
+                guard let object = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
+                      let stamp = object["timestamp"] as? String else { continue }
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let fractional = formatter.date(from: stamp)
+                formatter.formatOptions = [.withInternetDateTime]
+                // A coarse timestamp in the launch second is ambiguous; never reuse it as current usage.
+                guard let date = fractional ?? formatter.date(from: stamp),
+                      date >= since else { continue }
             }
             let events = CopilotStreamEventParser.parseAgentEvents(line: String(line))
             for event in events {

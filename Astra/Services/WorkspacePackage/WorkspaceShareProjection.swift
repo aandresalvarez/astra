@@ -323,8 +323,10 @@ enum WorkspaceShareImporter {
         // installed-and-approved and packs to the recipient's catalog after apps
         // import. Enabled-GLOBAL sets are intentionally never populated — the DTO
         // cannot express them.
-        workspace.enabledCapabilityIDs = document.capabilityIDs
-        workspace.enabledPackIDs = document.packIDs
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.capabilityIDs = document.capabilityIDs
+            $0.packIDs = document.packIDs
+        }
         modelContext.insert(workspace)
 
         var connectorsByName: [String: Connector] = [:]

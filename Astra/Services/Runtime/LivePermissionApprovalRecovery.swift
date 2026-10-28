@@ -177,9 +177,12 @@ enum LivePermissionApprovalRecovery {
                                 persist: (() throws -> Void)? = nil) throws -> Int {
         // Validate every commit before creating any newer turn request. Recovery
         // itself must not make another approval of the same binding look stale.
+        let ownership = recoveringRestart ? RuntimeStartupRecoveryOwnership(context: modelContext) : nil
+        defer { withExtendedLifetime(ownership) {} }
         var groups: [BindingKey: [PendingApproval]] = [:]
         for event in events.sorted(by: { $0.timestamp < $1.timestamp }) {
             guard !event.isDeleted, let task = event.task,
+                  ownership?.claim(task.id) ?? true,
                   !task.events.contains(where: { $0.run?.id == event.run?.id
                       && $0.type == TaskEventTypes.System.runtimeReconciliationRequired.rawValue }),
                   !(recoveringRestart && event.run.map { RuntimeTurnSettlementService.hasUnsettledResult(task: task, run: $0) } == true),

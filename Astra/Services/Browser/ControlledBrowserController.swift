@@ -95,184 +95,6 @@ struct ControlledBrowserDebugTarget: Equatable {
     let debugPort: UInt16
 }
 
-struct ControlledBrowserCDPCapabilityReport: Equatable {
-    let browser: String
-    let protocolVersion: String
-    let domains: [String: Bool]
-    let errors: [String: String]
-
-    var jsonObject: [String: Any] {
-        [
-            "browser": browser,
-            "protocolVersion": protocolVersion,
-            "domains": domains,
-            "errors": errors
-        ]
-    }
-}
-
-enum ControlledBrowserCDPDiagnosticsFormatter {
-    static func diagnosticsObject(
-        url: String,
-        title: String,
-        events: [[String: Any]],
-        capabilities: ControlledBrowserCDPCapabilityReport
-    ) -> [String: Any] {
-        [
-            "ok": true,
-            "captureMode": "cdp_event_stream",
-            "url": url,
-            "title": title,
-            "capabilities": capabilities.jsonObject,
-            "consoleEvents": consoleEvents(from: events),
-            "navigationEvents": navigationEvents(from: events),
-            "networkEvents": networkEvents(from: events)
-        ]
-    }
-
-    private static func consoleEvents(from events: [[String: Any]]) -> [[String: Any]] {
-        events.compactMap { event in
-            let method = stringValue(event["method"])
-            let params = event["params"] as? [String: Any] ?? [:]
-            switch method {
-            case "Runtime.consoleAPICalled":
-                let args = params["args"] as? [[String: Any]] ?? []
-                let message = args.map { arg in
-                    stringValue(arg["value"]).isEmpty ? stringValue(arg["description"]) : stringValue(arg["value"])
-                }.joined(separator: " ")
-                return [
-                    "source": "cdp.Runtime.consoleAPICalled",
-                    "level": stringValue(params["type"]),
-                    "message": message
-                ]
-            case "Runtime.exceptionThrown":
-                let details = params["exceptionDetails"] as? [String: Any] ?? [:]
-                let exception = details["exception"] as? [String: Any] ?? [:]
-                return [
-                    "source": stringValue(details["url"]).isEmpty ? "cdp.Runtime.exceptionThrown" : stringValue(details["url"]),
-                    "level": "exception",
-                    "message": stringValue(details["text"]).isEmpty ? stringValue(exception["description"]) : stringValue(details["text"]),
-                    "line": intValue(details["lineNumber"]) ?? 0,
-                    "column": intValue(details["columnNumber"]) ?? 0
-                ]
-            case "Log.entryAdded":
-                let entry = params["entry"] as? [String: Any] ?? [:]
-                return [
-                    "source": stringValue(entry["url"]).isEmpty ? "cdp.Log.entryAdded" : stringValue(entry["url"]),
-                    "level": stringValue(entry["level"]),
-                    "message": stringValue(entry["text"]),
-                    "line": intValue(entry["lineNumber"]) ?? 0
-                ]
-            default:
-                return nil
-            }
-        }
-    }
-
-    private static func navigationEvents(from events: [[String: Any]]) -> [[String: Any]] {
-        events.compactMap { event in
-            let method = stringValue(event["method"])
-            let params = event["params"] as? [String: Any] ?? [:]
-            switch method {
-            case "Page.frameNavigated":
-                let frame = params["frame"] as? [String: Any] ?? [:]
-                return [
-                    "source": "cdp.Page.frameNavigated",
-                    "type": "frameNavigated",
-                    "url": stringValue(frame["url"])
-                ]
-            case "Page.domContentEventFired":
-                return ["source": "cdp.Page.domContentEventFired", "type": "DOMContentLoaded"]
-            case "Page.loadEventFired":
-                return ["source": "cdp.Page.loadEventFired", "type": "load"]
-            case "Page.lifecycleEvent":
-                return [
-                    "source": "cdp.Page.lifecycleEvent",
-                    "type": stringValue(params["name"]),
-                    "frameId": stringValue(params["frameId"])
-                ]
-            default:
-                return nil
-            }
-        }
-    }
-
-    private static func networkEvents(from events: [[String: Any]]) -> [[String: Any]] {
-        events.compactMap { event in
-            let method = stringValue(event["method"])
-            let params = event["params"] as? [String: Any] ?? [:]
-            switch method {
-            case "Network.responseReceived":
-                let response = params["response"] as? [String: Any] ?? [:]
-                let status = intValue(response["status"]) ?? 0
-                guard status >= 400 else { return nil }
-                return [
-                    "source": "cdp.Network.responseReceived",
-                    "type": stringValue(params["type"]).isEmpty ? "response" : stringValue(params["type"]),
-                    "method": "",
-                    "url": stringValue(response["url"]),
-                    "status": status
-                ]
-            case "Network.loadingFailed":
-                return [
-                    "source": "cdp.Network.loadingFailed",
-                    "type": stringValue(params["type"]).isEmpty ? "request" : stringValue(params["type"]),
-                    "method": "",
-                    "url": "",
-                    "error": stringValue(params["errorText"])
-                ]
-            default:
-                return nil
-            }
-        }
-    }
-
-    private static func stringValue(_ value: Any?) -> String {
-        if let string = value as? String { return string }
-        if let number = value as? NSNumber { return number.stringValue }
-        if let bool = value as? Bool { return bool ? "true" : "false" }
-        return ""
-    }
-
-    private static func intValue(_ value: Any?) -> Int? {
-        if let int = value as? Int { return int }
-        if let number = value as? NSNumber { return number.intValue }
-        if let string = value as? String { return Int(string) }
-        return nil
-    }
-}
-
-enum ControlledBrowserRunState: String, CaseIterable {
-    case idle
-    case launching
-    case running
-    case attached
-    case stopped
-    case failed
-
-    var label: String {
-        switch self {
-        case .idle: "Not launched"
-        case .launching: "Opening"
-        case .running: "Connected"
-        case .attached: "Connected"
-        case .stopped: "Stopped"
-        case .failed: "Needs attention"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .idle: "circle"
-        case .launching: "arrow.triangle.2.circlepath"
-        case .running: "checkmark.circle.fill"
-        case .attached: "link.circle.fill"
-        case .stopped: "stop.circle"
-        case .failed: "exclamationmark.triangle.fill"
-        }
-    }
-}
-
 @MainActor
 final class ControlledBrowserController: ObservableObject {
     @Published private(set) var isRunning = false
@@ -281,26 +103,74 @@ final class ControlledBrowserController: ObservableObject {
     @Published private(set) var currentURL = ""
     @Published private(set) var pageTitle = ""
     @Published private(set) var statusMessage = "Controlled browser not launched"
-    @Published private(set) var profilePath = ControlledBrowserController.defaultProfilePath
+    @Published private(set) var profilePath: String
     @Published private(set) var debugPort: UInt16?
     @Published private(set) var processID: pid_t?
     @Published private(set) var lastErrorMessage: String?
 
+    private var profileLease: ControlledBrowserProfileLease?
+    private var profileOwner = "draft-" + UUID().uuidString
+    private var lifecycleGeneration = UUID()
+    private var refreshGeneration = UUID()
+    private var launchOperation: Task<Void, Error>?
     private var process: Process?
     private var attachedProcessID: pid_t?
     private var diagnosticsClient: PersistentCDPDiagnosticsClient?
     private var diagnosticsPageID: String?
+    private let processDiscovery: @Sendable (String) async throws -> ControlledBrowserDebugTarget?
 
     var isLaunching: Bool {
         runState == .launching
     }
 
+    init(profilePath: String? = nil,
+         processDiscovery: @escaping @Sendable (String) async throws -> ControlledBrowserDebugTarget? = {
+             try await ControlledBrowserController.runningDebugTarget(profilePath: $0)
+         }) {
+        self.profilePath = profilePath ?? Self.defaultProfilePath
+        self.processDiscovery = processDiscovery
+    }
+
+    @discardableResult
+    func bindProfileOwner(_ owner: String) -> Bool {
+        guard owner != profileOwner else { return true }
+        guard launchOperation == nil else { return false }
+        do {
+            try profileLease?.transfer(to: owner)
+            profileOwner = owner
+            return true
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            statusMessage = error.localizedDescription
+            return false
+        }
+    }
+
     deinit {
+        launchOperation?.cancel()
         diagnosticsClient?.close()
-        process?.terminate()
+        profileLease?.terminateOwnedProcess()
+        profileLease?.releaseAfterExit()
+    }
+
+    private func acquireProfile() throws {
+        if profileLease == nil {
+            profileLease = try ControlledBrowserProfileLease.acquire(profilePath: profilePath, owner: profileOwner)
+        }
+    }
+
+    private func requireCurrentLifecycle(_ generation: UUID) throws {
+        try Task.checkCancellation()
+        guard lifecycleGeneration == generation else { throw CancellationError() }
+    }
+
+    private func requireCurrentRefresh(_ generation: UUID?) throws {
+        if let generation, refreshGeneration != generation { throw CancellationError() }
     }
 
     func launch(initialAddress: String? = nil) async {
+        guard !Task.isCancelled else { return }
+        let generation = lifecycleGeneration
         guard !isLaunching else {
             statusMessage = "Controlled browser is already opening"
             return
@@ -312,69 +182,74 @@ final class ControlledBrowserController: ObservableObject {
         do {
             let url = initialAddress.flatMap(ShelfBrowserAddress.normalizedURL(from:))
             try await ensureLaunched(initialURL: url)
+            try requireCurrentLifecycle(generation)
             if let url {
                 try await navigate(to: url)
             }
             try await refreshPageMetadata()
+            try requireCurrentLifecycle(generation)
             if runState == .launching {
                 runState = attachedProcessID == nil ? .running : .attached
             }
             statusMessage = "\(browserName ?? "Controlled browser") ready"
         } catch {
+            guard lifecycleGeneration == generation else { return }
             process = nil
             attachedProcessID = nil
             debugPort = nil
             processID = nil
             isRunning = false
-            runState = .failed
+            runState = error is ControlledBrowserProfileLease.Failure ? .waitingForProfile : .failed
             lastErrorMessage = error.localizedDescription
             statusMessage = error.localizedDescription
         }
     }
 
     func refreshStatus() async {
-        guard !isLaunching else { return }
-
-        if isRunning {
-            do {
-                try await refreshPageMetadata()
+        guard !Task.isCancelled, !isLaunching, launchOperation == nil else { return }
+        let generation = lifecycleGeneration
+        refreshGeneration = UUID()
+        let observation = refreshGeneration
+        do {
+            try acquireProfile()
+            if isRunning {
+                try await refreshPageMetadata(observation: observation)
+                try requireCurrentLifecycle(generation)
+                try requireCurrentRefresh(observation)
                 runState = attachedProcessID == nil ? .running : .attached
                 statusMessage = "\(browserName ?? "Controlled browser") ready"
                 lastErrorMessage = nil
                 return
-            } catch {
-                process = nil
-                attachedProcessID = nil
-                debugPort = nil
-                processID = nil
-                isRunning = false
-                currentURL = ""
-                pageTitle = ""
-                runState = .stopped
-                statusMessage = "Controlled browser is not reachable"
-                lastErrorMessage = error.localizedDescription
             }
+            if try await attachToExistingControlledBrowser(observation: observation) { return }
+            try requireCurrentLifecycle(generation)
+            try requireCurrentRefresh(observation)
+            guard profileLease?.canStartNewProcess == true else { throw ControlledBrowserProfileLease.Failure.unverified }
+            profileLease?.releaseAfterExit()
+            profileLease = nil
+            debugPort = nil
+            processID = nil
+            runState = .idle
+            lastErrorMessage = nil
+            statusMessage = "Controlled browser not launched"
+        } catch {
+            guard lifecycleGeneration == generation, refreshGeneration == observation else { return }
+            runState = error is ControlledBrowserProfileLease.Failure ? .waitingForProfile : .failed
+            lastErrorMessage = error.localizedDescription
+            statusMessage = error.localizedDescription
         }
-
-        if await attachToExistingControlledBrowser() {
-            return
-        }
-
-        debugPort = nil
-        processID = nil
-        runState = .idle
-        statusMessage = "Controlled browser not launched"
     }
 
     func stop() {
+        lifecycleGeneration = UUID()
+        launchOperation?.cancel()
+        launchOperation = nil
         diagnosticsClient?.close()
         diagnosticsClient = nil
         diagnosticsPageID = nil
-        if let process, process.isRunning {
-            process.terminate()
-        } else if let attachedProcessID {
-            Darwin.kill(attachedProcessID, SIGTERM)
-        }
+        profileLease?.terminateOwnedProcess()
+        profileLease?.releaseAfterExit()
+        profileLease = nil
         process = nil
         attachedProcessID = nil
         debugPort = nil
@@ -384,7 +259,7 @@ final class ControlledBrowserController: ObservableObject {
         pageTitle = ""
         runState = .stopped
         lastErrorMessage = nil
-        statusMessage = "Controlled browser stopped"
+        statusMessage = "Controlled browser is stopping. Its profile stays reserved until process exit is confirmed."
     }
 
     func navigate(to address: String) async throws {
@@ -798,8 +673,7 @@ final class ControlledBrowserController: ObservableObject {
             statusMessage = "\(browserName ?? "Controlled browser") shown"
             lastErrorMessage = nil
         } catch {
-            openWindow()
-            statusMessage = "Opened \(browserName ?? "controlled browser")"
+            statusMessage = error.localizedDescription
             lastErrorMessage = error.localizedDescription
         }
     }
@@ -848,19 +722,40 @@ final class ControlledBrowserController: ObservableObject {
     }
 
     private func ensureLaunched(initialURL: URL?) async throws {
+        try Task.checkCancellation()
+        let generation = lifecycleGeneration
+        if let launchOperation {
+            try await launchOperation.value
+            try requireCurrentLifecycle(generation)
+            return
+        }
+        // A refresh begun before this launch may still be awaiting discovery.
+        // It must not clear this operation's lease or publish older metadata.
+        refreshGeneration = UUID()
+        let operation = Task { @MainActor in
+            try await self.ensureLaunchedCore(initialURL: initialURL, generation: generation)
+        }
+        launchOperation = operation
+        defer { if generation == lifecycleGeneration { launchOperation = nil } }
+        try await operation.value
+        try requireCurrentLifecycle(generation)
+    }
+
+    private func ensureLaunchedCore(initialURL: URL?, generation: UUID) async throws {
+        try requireCurrentLifecycle(generation)
+        try acquireProfile()
         if process?.isRunning == true, debugPort != nil {
             do {
                 _ = try await currentPage()
+                try requireCurrentLifecycle(generation)
                 isRunning = true
                 processID = process?.processIdentifier
                 runState = .running
                 return
             } catch {
-                process?.terminate()
-                process = nil
-                debugPort = nil
-                processID = nil
-                isRunning = false
+                // An unreachable CDP endpoint is not proof that its browser
+                // stopped. Keep the lease and require an explicit stop.
+                throw error
             }
         }
 
@@ -868,10 +763,12 @@ final class ControlledBrowserController: ObservableObject {
         statusMessage = "Looking for an existing controlled browser"
         lastErrorMessage = nil
 
-        if await attachToExistingControlledBrowser() {
+        if try await attachToExistingControlledBrowser() {
             return
         }
 
+        try requireCurrentLifecycle(generation)
+        guard profileLease?.canStartNewProcess == true else { throw ControlledBrowserProfileLease.Failure.unverified }
         guard let candidate = ControlledBrowserCandidate.firstAvailable() else {
             throw ControlledBrowserError.browserNotFound
         }
@@ -884,9 +781,11 @@ final class ControlledBrowserController: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: candidate.executablePath)
         process.arguments = candidate.launchArguments(profilePath: profilePath, debugPort: port, initialURL: initialURL)
+        try profileLease?.beginLaunch()
         do {
             try process.run()
         } catch {
+            try profileLease?.launchFailedWithoutProcess()
             let detail = "\(error.localizedDescription) \(candidate.executablePath)"
             if MacOSPermissionDiagnostics.isLikelyAppManagementDenial(detail) {
                 throw ControlledBrowserError.commandFailed(
@@ -900,6 +799,8 @@ final class ControlledBrowserController: ObservableObject {
         }
 
         self.process = process
+        do { try profileLease?.recordLaunchedProcess(process.processIdentifier) }
+        catch { process.terminate(); throw error }
         attachedProcessID = nil
         debugPort = port
         processID = process.processIdentifier
@@ -910,10 +811,12 @@ final class ControlledBrowserController: ObservableObject {
 
         do {
             try await waitForDevTools()
+            try requireCurrentLifecycle(generation)
             runState = .running
             statusMessage = "\(candidate.name) controlled profile connected"
         } catch {
-            if await attachToExistingControlledBrowser() {
+            try requireCurrentLifecycle(generation)
+            if try await attachToExistingControlledBrowser() {
                 return
             }
             process.terminate()
@@ -1362,8 +1265,18 @@ final class ControlledBrowserController: ObservableObject {
         return object
     }
 
-    private func refreshPageMetadata() async throws {
+    func reportOperationFailure(_ error: Error) {
+        guard !(error is CancellationError), !Task.isCancelled else { return }
+        if error is ControlledBrowserProfileLease.Failure { runState = .waitingForProfile }
+        lastErrorMessage = error.localizedDescription
+        statusMessage = error.localizedDescription
+    }
+
+    private func refreshPageMetadata(observation: UUID? = nil) async throws {
+        let generation = lifecycleGeneration
         let page = try await currentPage()
+        try requireCurrentLifecycle(generation)
+        try requireCurrentRefresh(observation)
         currentURL = page.url
         pageTitle = page.title
     }
@@ -1397,7 +1310,9 @@ final class ControlledBrowserController: ObservableObject {
 
     @discardableResult
     private func sendCDPCommand(method: String, params: [String: Any]) async throws -> [String: Any] {
+        let generation = lifecycleGeneration
         let page = try await currentPage()
+        try requireCurrentLifecycle(generation)
         guard let webSocketURL = URL(string: page.webSocketDebuggerURL) else {
             throw ControlledBrowserError.invalidDevToolsResponse
         }
@@ -1415,6 +1330,10 @@ final class ControlledBrowserController: ObservableObject {
         let session = URLSession(configuration: configuration)
         let task = session.webSocketTask(with: webSocketURL)
         task.resume()
+        defer {
+            task.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
         let deadline = Date().addingTimeInterval(8)
         try await ControlledBrowserCDPTransport.sendWebSocketMessage(
             .string(json),
@@ -1423,10 +1342,7 @@ final class ControlledBrowserController: ObservableObject {
             operationName: "sending a browser command"
         )
 
-        defer {
-            task.cancel(with: .normalClosure, reason: nil)
-            session.invalidateAndCancel()
-        }
+        try requireCurrentLifecycle(generation)
 
         while true {
             let remaining = deadline.timeIntervalSinceNow
@@ -1438,6 +1354,7 @@ final class ControlledBrowserController: ObservableObject {
                 timeout: remaining,
                 operationName: "waiting for a browser command response"
             )
+            try requireCurrentLifecycle(generation)
             let data: Data
             switch message {
             case .data(let messageData):
@@ -1475,18 +1392,23 @@ final class ControlledBrowserController: ObservableObject {
     }
 
     private func currentPage() async throws -> DevToolsPage {
+        let generation = lifecycleGeneration
+        try requireCurrentLifecycle(generation)
         guard let debugPort else {
             throw ControlledBrowserError.missingDebugPort
         }
         var pages = try await devToolsPages(debugPort: debugPort)
+        try requireCurrentLifecycle(generation)
         if pages.isEmpty {
             try await createInspectablePage(debugPort: debugPort)
+            try requireCurrentLifecycle(generation)
             pages = try await devToolsPages(debugPort: debugPort)
         }
 
         let inspectablePages = pages.filter { $0.type == "page" && !$0.webSocketDebuggerURL.isEmpty }
         if inspectablePages.isEmpty {
             try await createInspectablePage(debugPort: debugPort)
+            try requireCurrentLifecycle(generation)
             pages = try await devToolsPages(debugPort: debugPort)
         }
 
@@ -1498,6 +1420,7 @@ final class ControlledBrowserController: ObservableObject {
         guard let page else {
             throw ControlledBrowserError.noInspectablePage
         }
+        try requireCurrentLifecycle(generation)
         return page
     }
 
@@ -1533,8 +1456,17 @@ final class ControlledBrowserController: ObservableObject {
         return try JSONDecoder().decode(DevToolsVersion.self, from: data)
     }
 
-    private func attachToExistingControlledBrowser() async -> Bool {
-        guard let target = await Self.runningDebugTarget(profilePath: profilePath) else { return false }
+    private func attachToExistingControlledBrowser(observation: UUID? = nil) async throws -> Bool {
+        try acquireProfile()
+        let generation = lifecycleGeneration
+        let target = try await processDiscovery(profilePath)
+        try requireCurrentLifecycle(generation)
+        try requireCurrentRefresh(observation)
+        guard let target else { return false }
+        guard profileLease?.acceptsExistingProcess(target.processID) == true else {
+            throw ControlledBrowserProfileLease.Failure.unownedProcess
+        }
+        try profileLease?.recordProcess(target.processID)
 
         debugPort = target.debugPort
         attachedProcessID = target.processID
@@ -1547,9 +1479,13 @@ final class ControlledBrowserController: ObservableObject {
         statusMessage = "Attached to existing controlled browser"
 
         do {
-            try await refreshPageMetadata()
+            try await refreshPageMetadata(observation: observation)
+            try requireCurrentLifecycle(generation)
+            try requireCurrentRefresh(observation)
             return true
         } catch {
+            try requireCurrentLifecycle(generation)
+            try requireCurrentRefresh(observation)
             debugPort = nil
             attachedProcessID = nil
             processID = nil
@@ -1569,67 +1505,11 @@ final class ControlledBrowserController: ObservableObject {
         UInt16.random(in: 42_000...62_000)
     }
 
-    nonisolated static func runningDebugTarget(profilePath: String) async -> ControlledBrowserDebugTarget? {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: runningDebugTargetSync(profilePath: profilePath))
-            }
+    nonisolated static func runningDebugTarget(profilePath: String) async throws -> ControlledBrowserDebugTarget? {
+        let result = await BlockingWork.run(qos: .utility) {
+            Result { try ControlledBrowserProcessDiscovery.find(profilePath: profilePath) }
         }
-    }
-
-    private nonisolated static func runningDebugTargetSync(profilePath: String) -> ControlledBrowserDebugTarget? {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-axo", "pid=,command="]
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-
-        let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else { return nil }
-        let output = String(data: outputData, encoding: .utf8) ?? ""
-        return runningDebugTarget(profilePath: profilePath, processList: output)
-    }
-
-    nonisolated static func runningDebugTarget(profilePath: String, processList: String) -> ControlledBrowserDebugTarget? {
-        let profileArgument = "--user-data-dir=\(profilePath)"
-        let portArgument = "--remote-debugging-port="
-        var matches: [(target: ControlledBrowserDebugTarget, isPrimaryBrowserProcess: Bool)] = []
-
-        for rawLine in processList.split(separator: "\n") {
-            let line = String(rawLine)
-            guard line.contains(profileArgument),
-                  let portRange = line.range(of: portArgument) else {
-                continue
-            }
-
-            let pidText = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
-            let portText = line[portRange.upperBound...].prefix(while: { $0.isNumber })
-            guard let pidText,
-                  let processID = pid_t(String(pidText)),
-                  let debugPort = UInt16(portText) else {
-                continue
-            }
-
-            let isPrimaryBrowserProcess = !line.contains(" --type=")
-                && ControlledBrowserCandidate.defaultCandidates.contains { candidate in
-                    line.contains(candidate.executablePath)
-                }
-            matches.append((
-                target: ControlledBrowserDebugTarget(processID: processID, debugPort: debugPort),
-                isPrimaryBrowserProcess: isPrimaryBrowserProcess
-            ))
-        }
-
-        return matches.first(where: \.isPrimaryBrowserProcess)?.target ?? matches.first?.target
+        return try result.get()
     }
 
     private nonisolated static func jsonObject(from json: String) throws -> [String: Any] {

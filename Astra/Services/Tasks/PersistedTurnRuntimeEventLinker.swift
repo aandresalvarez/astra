@@ -44,9 +44,10 @@ enum PersistedTurnRuntimeEventLinker {
             AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
             return RuntimeBegin(request: nil, persisted: false)
         }
-        guard request.taskID == task.id, request.state != .running || request.runID == run.id else {
+        guard (try? TaskTurnRequestOwnership.resolve(request, in: modelContext))?.persistentModelID == task.persistentModelID,
+              run.task?.persistentModelID == task.persistentModelID, request.state != .running || request.runID == run.id else {
             AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
-            return RuntimeBegin(request: request, persisted: false)
+            return RuntimeBegin(request: nil, persisted: false)
         }
         let transition = TaskTurnRequestStateMachine.transition(
             request,
@@ -92,6 +93,8 @@ enum PersistedTurnRuntimeEventLinker {
         forcedOutcome: (state: TaskTurnRequestState, reason: String)? = nil,
         in modelContext: ModelContext
     ) {
+        guard run.task?.persistentModelID == task.persistentModelID else { return }
+        if let request, (try? TaskTurnRequestOwnership.resolve(request, in: modelContext))?.persistentModelID != task.persistentModelID { return }
         let stagedAcknowledgements = LivePermissionApprovalRecovery.stageAcknowledgements(
             task: task, run: run, requestIDs: acknowledgedPermissionRequestIDs, modelContext: modelContext)
         guard let request else {
@@ -131,7 +134,7 @@ enum PersistedTurnRuntimeEventLinker {
         in modelContext: ModelContext
     ) -> Bool {
         if let eventID,
-           let event = task.events.first(where: { $0.id == eventID }) {
+           let event = sourceEvent(eventID, of: task, in: modelContext) {
             event.run = run
             TaskThreadChangeNotifier.post(taskID: task.id, source: "turn_request_admitted")
             return true
@@ -139,5 +142,11 @@ enum PersistedTurnRuntimeEventLinker {
         let event = TaskEvent(task: task, type: fallbackType, payload: fallbackPayload, run: run)
         TaskEventInsertionService.insert(event, into: modelContext)
         return false
+    }
+
+    /// One row by id, matched in the store rather than by faulting the task's
+    /// whole event relationship in to compare ids.
+    private static func sourceEvent(_ eventID: UUID, of task: AgentTask, in modelContext: ModelContext) -> TaskEvent? {
+        TaskHistoryRead.event(id: eventID, in: task)
     }
 }

@@ -90,7 +90,7 @@ public enum SSHConnectionManager {
 
     /// Projection must not migrate domain files as a side effect. Prefer the
     /// canonical file, falling back to the legacy location without moving it.
-    static func loadForExport(workspacePath: String) -> [SSHConnection] {
+    public static func loadForExport(workspacePath: String) -> [SSHConnection] {
         guard let path = connectionFilePaths(for: workspacePath).first(where: {
             FileManager.default.fileExists(atPath: $0)
         }) else { return [] }

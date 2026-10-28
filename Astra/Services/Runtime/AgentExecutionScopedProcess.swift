@@ -30,7 +30,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private var processID: pid_t = 0
     private var processGroupID: pid_t = 0
     private var running = false
+    private var reaped = false
+    private var reapedSuccessfully = false
+    private var reapedNaturallyWithSuccess = false
+    private var launchIdentity: RuntimeProcessIdentity?
+    private var stopRequested = false
     private var status: Int32 = 0
+    private var settlementScope: RuntimeSettlementExecutionScope?
+    private let settlementChildID = UUID()
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
@@ -61,6 +68,18 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     }
 
     var processIdentifier: Int32 { lock.withLock { processID } }
+    var executionIdentity: RuntimeProcessIdentity? { lock.withLock { launchIdentity } }
+    /// Captured at waitpid, before a late cancellation can change stopRequested.
+    var naturalSuccessfulExit: Bool { lock.withLock { reapedNaturallyWithSuccess } }
+
+    func stopProof(executionID: UUID, toolsStopped: Bool, remoteWorkExcluded: Bool) -> RuntimeExecutionStopProof? {
+        lock.withLock {
+            guard let identity = launchIdentity else { return nil }
+            let empty = processGroupID > 0 && kill(-processGroupID, 0) == -1 && errno == ESRCH
+            return .init(executionID: executionID, process: identity, reaped: reapedSuccessfully && !running,
+                processGroupEmpty: empty, toolsStopped: toolsStopped, remoteWorkExcluded: remoteWorkExcluded, capturedAt: Date())
+        }
+    }
 
     init(
         executablePath: String,
@@ -109,9 +128,12 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     }
 
     func run() throws {
+        settlementScope = RuntimeSettlementExecutionScope.current
+        try settlementScope?.begin(settlementChildID, cancel: { [weak self] in self?.terminate() })
         var spawned = false
         defer {
             if !spawned {
+                settlementScope?.didNotLaunch(settlementChildID)
                 // No reaper will run after a launch failure. Release the
                 // caller's callbacks here, including captures of this process.
                 stdoutFileHandle.readabilityHandler = nil
@@ -141,6 +163,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
                   operation: "posix_spawn_file_actions_addclose(stdout_read)")
         try check(posix_spawn_file_actions_addclose(&actions, stderrPipe.fileHandleForReading.fileDescriptor),
                   operation: "posix_spawn_file_actions_addclose(stderr_read)")
+        if stdoutPipe.fileHandleForWriting.fileDescriptor != STDOUT_FILENO {
+            try check(posix_spawn_file_actions_addclose(&actions, stdoutPipe.fileHandleForWriting.fileDescriptor),
+                      operation: "posix_spawn_file_actions_addclose(stdout_write)")
+        }
+        if stderrPipe.fileHandleForWriting.fileDescriptor != STDERR_FILENO {
+            try check(posix_spawn_file_actions_addclose(&actions, stderrPipe.fileHandleForWriting.fileDescriptor),
+                      operation: "posix_spawn_file_actions_addclose(stderr_write)")
+        }
         if let stdinPipe {
             try check(posix_spawn_file_actions_adddup2(&actions, stdinPipe.fileHandleForReading.fileDescriptor, STDIN_FILENO),
                       operation: "posix_spawn_file_actions_adddup2(stdin)")
@@ -151,6 +181,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         } else if stdinMode == .closed {
             try check(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0),
                       operation: "posix_spawn_file_actions_addopen(stdin)")
+        } else if ![stdoutPipe, stderrPipe].contains(where: {
+            $0.fileHandleForReading.fileDescriptor == STDIN_FILENO || $0.fileHandleForWriting.fileDescriptor == STDIN_FILENO
+        }), fcntl(STDIN_FILENO, F_GETFD) >= 0 {
+            // Preserve an open inherited stdin; if the parent already closed
+            // it, a new pipe may reuse fd 0. Do not inherit that pipe or ask
+            // spawn to inherit a descriptor our file actions just closed.
+            try check(posix_spawn_file_actions_addinherit_np(&actions, STDIN_FILENO),
+                      operation: "posix_spawn_file_actions_addinherit_np(stdin)")
         }
         try addWorkingDirectory(to: &actions)
 
@@ -189,10 +227,13 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         lock.lock()
         processID = childPID
         processGroupID = childPID
+        launchIdentity = RuntimeProcessIdentity.read(childPID)
         running = true
+        let cancelledDuringLaunch = stopRequested
         lock.unlock()
+        if cancelledDuringLaunch { terminate() }
 
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        ProcessWaitExecutor.submit { [weak self] in
             self?.reapProcess(pid: childPID)
         }
     }
@@ -203,10 +244,34 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     /// stdin pipe cannot notice an EOF it was never sent.
     @discardableResult
     func requestGracefulStop() -> Bool {
-        closeStdinChannel()
+        lock.withLock { stopRequested = true }
+        return closeStdinChannel()
+    }
+
+    /// Only our unreaped child can be resumed. The reaper and signal share the
+    /// lock, so PID reuse cannot turn a late recovery into a signal to another
+    /// process. No group signal, new process, prompt replay or tool retry occurs.
+    var suspendedProcessIdentifier: Int32? {
+        lock.withLock { isSuspendedChild() ? processID : nil }
+    }
+
+    func resumeSuspendedProcess(expectedPID: Int32) -> Bool {
+        lock.withLock {
+            guard processID == expectedPID, isSuspendedChild() else { return false }
+            return kill(processID, SIGCONT) == 0
+        }
+    }
+
+    private func isSuspendedChild() -> Bool {
+        guard running, !reaped, !stopRequested, processID > 0 else { return false }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        return proc_pidinfo(processID, PROC_PIDTBSDINFO, 0, &info, size) == size
+            && info.pbi_ppid == UInt32(getpid()) && info.pbi_status == UInt32(SSTOP)
     }
 
     func terminate() {
+        lock.withLock { stopRequested = true }
         let ids = currentIDs()
         guard ids.isRunning else { return }
 
@@ -245,9 +310,22 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private func reapProcess(pid: pid_t) {
         var waitStatus: Int32 = 0
         var result: pid_t
-        repeat {
-            result = waitpid(pid, &waitStatus, 0)
-        } while result == -1 && errno == EINTR
+        // Keep the child waitable until signalling has finished. A blocking
+        // waitpid outside the lock could reap and recycle its PID just before
+        // a recovery signal. Polling is private to the reaper, never the UI.
+        while true {
+            lock.lock()
+            result = waitpid(pid, &waitStatus, WNOHANG)
+            let retry = result == 0 || (result == -1 && errno == EINTR)
+            if !retry {
+                reaped = true
+                reapedSuccessfully = result == pid
+                reapedNaturallyWithSuccess = result == pid && Self.exitCode(from: waitStatus) == 0 && !stopRequested
+            }
+            lock.unlock()
+            if !retry { break }
+            usleep(50_000)
+        }
 
         let exitStatus: Int32
         if result == pid {
@@ -267,6 +345,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
         // Completion is one-shot. Worker parsers capture this process, so
         // keeping the callback here retains the whole run's output forever.
+        settlementScope?.stopped(settlementChildID,
+            proof: stopProof(executionID: settlementChildID, toolsStopped: false, remoteWorkExcluded: false))
         let completion = terminationHandler
         terminationHandler = nil
         completion?(self)

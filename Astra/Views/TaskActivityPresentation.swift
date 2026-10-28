@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 
 /// One small, derived presentation model for durable turn admission.
@@ -108,7 +109,7 @@ struct TaskActivityPresentation: Equatable, Sendable {
             return "Your message is saved and will run when a worker is available."
         case .waitingForResource:
             if let blocker = request?.blockerSummary, !blocker.isEmpty {
-                return "Your message is saved. \(blocker) is using this workspace."
+                return "Your message is saved. \(blocker)"
             }
             return "Your message is saved and will run when this workspace is available."
         case .starting:
@@ -179,6 +180,30 @@ struct TaskActivityPresentation: Equatable, Sendable {
     /// SwiftUI held 25 copies of it for diffing (63 MB, the largest object
     /// class in the process) while comparing the whole thing, including each
     /// `TaskTurnRequestSnapshot`'s JSON strings, on every graph update.
+    static func requestsByOwner(tasks: [AgentTask], requests: [TaskTurnRequest]) -> [PersistentIdentifier: [TaskTurnRequest]] {
+        var resolver = TaskTurnRequestOwnership.Resolver(candidates: tasks)
+        var result: [PersistentIdentifier: [TaskTurnRequest]] = [:]
+        for request in requests {
+            guard let task = resolver.resolve(request) else { continue }
+            result[task.persistentModelID, default: []].append(request)
+        }
+        return result
+    }
+
+    static func resolveByOwner(tasks: [AgentTask], requests: [TaskTurnRequest]) -> [PersistentIdentifier: TaskActivityPresentation] {
+        resolveByOwner(tasks: tasks, owned: requestsByOwner(tasks: tasks, requests: requests))
+    }
+
+    static func resolveByOwner(tasks: [AgentTask], owned: [PersistentIdentifier: [TaskTurnRequest]]) -> [PersistentIdentifier: TaskActivityPresentation] {
+        var result: [PersistentIdentifier: TaskActivityPresentation] = [:]
+        for task in tasks where task.status == .running || owned[task.persistentModelID] != nil {
+            let activity = resolve(taskID: task.id, taskStatus: task.status,
+                requests: (owned[task.persistentModelID] ?? []).map(\.snapshot))
+            if activity.kind != .idle { result[task.persistentModelID] = activity }
+        }
+        return result
+    }
+
     static func resolveByTaskID(
         tasks: [AgentTask],
         requests: [TaskTurnRequestSnapshot]
@@ -207,6 +232,14 @@ struct TaskActivityPresentation: Equatable, Sendable {
 /// cannot cause a chip to attach to the wrong bubble.
 struct TaskTurnMessageLifecyclePresentation: Equatable, Sendable {
     let requestID: UUID
+    private static func terminalDetail(_ reason: String?) -> String? {
+        switch reason {
+        case "task_owner_unresolved": "ASTRA cannot identify which imported copy owns this saved request. No new execution was started. Send a new message in the intended copy."
+        case "launch_policy_unreadable": "The saved launch settings could not be read. No new execution was started; send a new request with the intended settings."
+        default: reason
+        }
+    }
+
     let messageEventID: UUID
     let state: TaskTurnRequestState
     let title: String
@@ -290,7 +323,7 @@ struct TaskTurnMessageLifecyclePresentation: Equatable, Sendable {
                 messageEventID: request.messageEventID,
                 state: request.state,
                 title: ranBeforeFailing ? "Run failed" : "Couldn’t start",
-                detail: request.terminalReason,
+                detail: terminalDetail(request.terminalReason),
                 systemImage: "exclamationmark.triangle"
             )
         case .cancelled:
@@ -299,7 +332,7 @@ struct TaskTurnMessageLifecyclePresentation: Equatable, Sendable {
                 messageEventID: request.messageEventID,
                 state: request.state,
                 title: "Cancelled",
-                detail: request.terminalReason,
+                detail: terminalDetail(request.terminalReason),
                 systemImage: "minus.circle"
             )
         }

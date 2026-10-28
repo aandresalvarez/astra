@@ -721,6 +721,42 @@ struct AgentRuntimeLaunchPreflightTests {
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("GitHub") })
     }
 
+    @Test("Capability preflight launches past an unverified prerequisite and records it")
+    func capabilityPreflightRecordsUnverifiedPrerequisites() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Google Cloud", primaryPath: NSTemporaryDirectory())
+        let task = AgentTask(title: "Query BigQuery", goal: "Count the rows", workspace: workspace)
+        task.status = .running
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let result = AgentRuntimeLaunchPreflight.preflightCapabilitiesBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            prerequisiteStatuses: [
+                CommonCLIPrerequisites.gcloud.id: .unverified(
+                    path: "/opt/homebrew/bin/gcloud",
+                    detail: "No answer within 20s; not verified"
+                ),
+                CommonCLIPrerequisites.gcloudAuth.id: .healthy(
+                    path: "/opt/homebrew/bin/gcloud",
+                    version: "user@example.invalid"
+                )
+            ]
+        )
+
+        #expect(result.status == .capabilityRuntimeResourcesPassed)
+        #expect(result.auditFields["unverified_prerequisites"] == CommonCLIPrerequisites.gcloud.id)
+        #expect(task.status == .running)
+        #expect(run.stopReason.isEmpty)
+    }
+
     @Test("Only a required host tool blocks the launch when its helper is missing")
     func onlyRequiredHostControlToolBlocksLaunchWhenHelperMissing() throws {
         let container = try makeRuntimeComponentContainer()
@@ -1147,6 +1183,42 @@ struct AgentRuntimeRunPersistenceTests {
         #expect(fields["provider_version"] == "test-provider")
     }
 
+    @Test("Run telemetry follows pending event edits without counting another turn")
+    func fieldsFollowPendingRunEvidence() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Telemetry", goal: "Preserve event counts")
+        let run = TaskRun(task: task)
+        let olderRun = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        context.insert(olderRun)
+        let response = TaskEvent(task: task, type: "agent.response", payload: "current", run: run)
+        context.insert(response)
+        context.insert(TaskEvent(task: task, type: "error", payload: "older", run: olderRun))
+        context.insert(TaskEvent(task: task, type: "tool.use", payload: "unbound"))
+        try context.save()
+
+        let future = TaskEvent(task: task, type: "provider.future", payload: "pending", run: run)
+        context.insert(future)
+        let pending = AgentRuntimeRunPersistence.fields(task: task, run: run, phase: "run")
+        #expect(pending["event_count"] == "4")
+        #expect(pending["run_event_count"] == "2")
+        #expect(pending["response_event_count"] == "1")
+        #expect(pending["error_event_count"] == "0")
+        #expect(pending["tool_use_event_count"] == "0")
+        try context.save()
+
+        response.run = olderRun
+        #expect(AgentRuntimeRunPersistence.fields(task: task, run: run, phase: "run")["run_event_count"] == "1")
+        context.rollback()
+        #expect(AgentRuntimeRunPersistence.fields(task: task, run: run, phase: "run")["run_event_count"] == "2")
+        context.delete(future)
+        #expect(AgentRuntimeRunPersistence.fields(task: task, run: run, phase: "run")["run_event_count"] == "1")
+        context.rollback()
+        #expect(AgentRuntimeRunPersistence.fields(task: task, run: run, phase: "run")["run_event_count"] == "2")
+    }
+
     @Test("Finalize records terminal completion and unread state")
     func finalizePersistsTerminalState() async throws {
         let container = try makeRuntimeComponentContainer()
@@ -1509,7 +1581,8 @@ struct AgentRuntimeBudgetPolicyTests {
             run: run,
             modelContext: context,
             phase: "run",
-            budgetEnforcementMode: .warning
+            budgetEnforcementMode: .warning,
+            budget: AgentRuntimeBudgetSnapshot(task: task)
         )
 
         #expect(task.events.contains { $0.type == "budget.warning" && $0.run?.id == run.id })
@@ -1531,7 +1604,8 @@ struct AgentRuntimeBudgetPolicyTests {
             run: run,
             modelContext: context,
             phase: "run",
-            budgetEnforcementMode: .warning
+            budgetEnforcementMode: .warning,
+            budget: AgentRuntimeBudgetSnapshot(task: task)
         )
 
         #expect(!task.events.contains { $0.type == "budget.warning" })

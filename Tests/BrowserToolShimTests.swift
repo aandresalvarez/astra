@@ -72,8 +72,8 @@ struct BrowserToolShimTests {
         #expect(!script.contains("ASTRA_BROWSER_TOKEN"))
     }
 
-    @Test("Remote workspace ssh shim uses task-scoped known hosts")
-    func remoteWorkspaceSSHShimUsesTaskScopedKnownHosts() throws {
+    @Test("Remote workspace ssh shim preserves one known-host path through both parsers", arguments: ["plain", "space path", "single'quote", "double\"quote", "back\\slash"])
+    func remoteWorkspaceSSHShimUsesTaskScopedKnownHosts(pathComponent: String) throws {
         let schema = ASTRASchema.current
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
@@ -83,7 +83,7 @@ struct BrowserToolShimTests {
         )
         let context = container.mainContext
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("astra-ssh-shim-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("astra-ssh-shim-\(pathComponent)-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
@@ -126,7 +126,6 @@ struct BrowserToolShimTests {
 
         let script = try String(contentsOfFile: shimPath, encoding: .utf8)
         #expect(script.contains("UserKnownHostsFile="))
-        #expect(script.contains(knownHostsPath))
         #expect(!script.contains(hostKnownHosts.path))
 
         let process = Process()
@@ -144,7 +143,7 @@ struct BrowserToolShimTests {
         #expect(process.terminationStatus == 0)
         #expect(Array(lines.prefix(8)) == [
             "-o",
-            "UserKnownHostsFile=\(knownHostsPath)",
+            "UserKnownHostsFile=\"\(knownHostsPath.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\"",
             "-o",
             "GlobalKnownHostsFile=/dev/null",
             "-o",
@@ -153,5 +152,6 @@ struct BrowserToolShimTests {
             "CheckHostIP=no"
         ])
         #expect(Array(lines.suffix(2)) == ["deid-jsn-workbench", "hostname"])
+        #expect(RemoteWorkspaceJobRegistration.observationOptions(knownHostsPath: knownHostsPath)[1] == lines[1])
     }
 }

@@ -198,7 +198,7 @@ final class RuntimeSetupModel: ObservableObject {
             switch statuses[selectedRuntime] {
             case .none, .missingBinary:
                 return .needsInstall(selectedRuntime)
-            case .healthy, .unverified, .unauthenticated, .authorizationRequired, .unresponsive:
+            case .healthy, .unverified, .unauthenticated, .authorizationRequired, .unresponsive, .notChecked:
                 break
             }
             if runtimeBlockers.contains(where: Self.isAuthCheck) {

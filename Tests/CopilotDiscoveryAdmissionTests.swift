@@ -15,7 +15,8 @@ struct CopilotDiscoveryAdmissionTests {
         let invocations = harness.rootURL.appendingPathComponent("provider-calls")
         let executable = try harness.writeExecutable(named: "copilot", script: HeadlessChatScenarioTests.copilotScript(body: """
             echo called >> '\(invocations.path)'
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"content":"hello"}}'
+            printf '%s\\n' '{"type":"result","sessionId":"fixture-session","exitCode":0}'
             """))
         let task = harness.makeTask(runtime: .copilotCLI, goal: "Say hello", model: "gpt-5")
         let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: executable)

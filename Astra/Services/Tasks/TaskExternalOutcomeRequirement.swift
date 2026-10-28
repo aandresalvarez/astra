@@ -61,8 +61,20 @@ enum TaskExternalOutcomeRequirementResolver {
         return pendingGitHubPullRequest(
             task: task,
             targetRunID: targetRun.id,
-            events: task.events.map { TaskOutcomeEventRecord(event: $0) }
+            events: outcomeEvents(task: task, runID: targetRun.id)
         )
+    }
+
+    /// Typed requests require a receipt in their own run, but legacy failed
+    /// publications can be resolved by a later receipt anywhere in the task.
+    /// Keep that evidence without loading unrelated tool output.
+    @MainActor
+    static func outcomeEvents(task: AgentTask, runID: UUID) -> [TaskOutcomeEventRecord] {
+        let runEvents = TaskHistoryRead.events(for: task, runID: runID)
+        let otherReceipts = TaskHistoryRead.events(
+            for: task, ofTypes: [TaskExternalOutcomeEventTypes.publicationReceipt]
+        ).filter { $0.run?.id != runID }
+        return (runEvents + otherReceipts).map { TaskOutcomeEventRecord(event: $0) }
     }
 
     /// The same rule over event values the caller already holds, so a view

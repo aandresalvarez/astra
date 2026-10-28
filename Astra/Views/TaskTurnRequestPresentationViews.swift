@@ -107,6 +107,14 @@ extension TaskMainView {
                 help: "Stop the active run. Queued messages stay saved."
             )
         }()
+        let workspaceAction: TaskDecisionDockAction? = {
+            guard taskQueue != nil, taskActivityPresentation.kind == .waitingForResource,
+                  let dockRequest, dockRequest.kind == .initial, dockRequest.blockingTaskID != nil else { return nil }
+            return TaskDecisionDockAction(kind: .reviewWorkspaceContinuation,
+                title: "Review workspace", systemImage: "arrow.triangle.branch",
+                payload: dockRequest.id.uuidString,
+                help: "Review whether this saved request can continue the reserved workspace.")
+        }()
         return TaskDecisionDockPresentation(
             id: "turn-request-\(dockRequest?.id.uuidString ?? task.id.uuidString)",
             icon: taskActivityPresentation.sidebarSystemImage ?? "clock",
@@ -115,7 +123,7 @@ extension TaskMainView {
             summary: summary,
             metrics: [],
             details: [],
-            primaryAction: nil,
+            primaryAction: workspaceAction,
             secondaryActions: [cancelAction, stopAction].compactMap { $0 },
             overflowActions: [],
             prefersExpandedDetails: false

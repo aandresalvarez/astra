@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 /// The durable reason an execution request exists.
 public enum TaskExecutionRequestKind: String, Codable, CaseIterable, Sendable {
@@ -15,6 +16,9 @@ public enum TaskExecutionRequestKind: String, Codable, CaseIterable, Sendable {
 /// queryable columns on `TaskTurnRequest`.
 public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     public let version: Int
+    /// Local row identity, never portable authority when importing a snapshot.
+    /// Older requests omit it and require unambiguous task resolution.
+    public let taskOwnerID: PersistentIdentifier?
     public let reasoningEffort: String?
     public let runtimeExplicitlySelected: Bool
     public let maxTurns: Int
@@ -32,12 +36,51 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     /// Optional for backward compatibility with V16 requests written before
     /// turn-scoped capability admission was introduced.
     public let turnIntentSnapshot: TaskTurnIntentSnapshot?
+    /// The workspace's plugin activations at submission, so turning a plugin
+    /// off, on or changing its settings while the request waits does not
+    /// change what it runs with. Nil for requests written before activations
+    /// were frozen, which keep reading the live workspace.
+    public let pluginActivations: [PluginActivationRecord]?
+    /// The library definitions of the plugins those activations turn on, as
+    /// accepted at submission, so an Update while the request waits does not
+    /// change its skills and tools. Nil when the submitter froze none (and
+    /// for older requests): the launch reads the live library.
+    public let pluginDefinitions: [PluginPackage]?
+    /// The non-secret contents of the accounts those activations bind, so an
+    /// account edited or deleted while the request waits does not change what
+    /// it runs with. Nil for older requests, which read the live rows.
+    public let pluginAccounts: [PluginAccountRecord]?
+    /// Complete account inventory accepted by the submission service, including
+    /// independent accounts. Nil preserves the older partial snapshot contract.
+    public let accountInventory: TaskAccountInventorySnapshot?
+    /// Accepted independent tool roles. Values and enablement remain live;
+    /// this baseline prevents a later attachment from erasing an accepted role.
+    /// Nil keeps older requests' conservative late-attachment pruning.
+    public let standaloneToolIDs: [UUID]?
+    /// The contents of the authored rows those activations name as
+    /// overrides, so an override edited or deleted while the request waits
+    /// does not change what it runs with. Nil for older requests, which read
+    /// the live rows.
+    public let pluginOverrides: PluginOverrideRecords?
+    /// Independent authored selections, with complete accepted attachments.
+    /// Nil is the legacy live-row contract; an empty array means none accepted.
+    public let authoredSkills: [SkillLaunchRecord]?
+    public let pendingLegacyPluginState: WorkspaceCapabilityActivation.PendingLegacyState?
+    /// What Remove kept of the workspace's removed activations at
+    /// submission: the only record keeping their override rows out of
+    /// scope, which an Add while the request waits consumes. Nil for older
+    /// requests, which read the live record.
+    public let retiredPluginActivations: [RetiredPluginActivation]?
 
     public init(
         task: AgentTask,
-        turnIntentSnapshot: TaskTurnIntentSnapshot? = nil
+        turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
+        pluginDefinitions: [PluginPackage]? = nil,
+        accountInventory: TaskAccountInventorySnapshot? = nil
     ) {
         version = 1
+        taskOwnerID = task.launchSourceTaskOwnerID
+            ?? (task.persistentModelID.storeIdentifier == nil ? nil : task.persistentModelID)
         reasoningEffort = task.reasoningEffort
         runtimeExplicitlySelected = task.runtimeExplicitlySelected
         maxTurns = task.maxTurns
@@ -53,6 +96,17 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         skillSnapshotsJSON = task.skillSnapshotsJSON
         runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
         self.turnIntentSnapshot = turnIntentSnapshot
+        pluginActivations = task.workspace.map {
+            WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.forLaunch)
+        }
+        self.accountInventory = accountInventory
+        standaloneToolIDs = TaskStandaloneToolRoles.capture(for: task)
+        self.pluginDefinitions = pluginDefinitions
+        pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
+        pluginOverrides = task.workspace.map(PluginOverrideRecords.init(workspace:))
+        authoredSkills = SkillLaunchRecord.captureAuthored(for: task)
+        pendingLegacyPluginState = task.workspace.map(WorkspaceCapabilityActivation.pendingLegacyState(of:))
+        retiredPluginActivations = task.workspace.map(WorkspaceCapabilityActivation.retiredActivations(of:))
     }
 }
 
@@ -181,6 +235,8 @@ public final class TaskTurnRequest {
         kind: TaskExecutionRequestKind = .followUp,
         resourceClaims: [TaskExecutionResourceClaim] = [],
         turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
+        pluginDefinitions: [PluginPackage]? = nil,
+        accountInventory: TaskAccountInventorySnapshot? = nil,
         state: TaskTurnRequestState = .waitingForWorker,
         submittedAt: Date = Date()
     ) {
@@ -207,7 +263,9 @@ public final class TaskTurnRequest {
         self.tokenBudgetSnapshot = task.tokenBudget
         self.executionPolicySnapshotJSON = Self.encode(TaskExecutionPolicySnapshotV1(
             task: task,
-            turnIntentSnapshot: turnIntentSnapshot
+            turnIntentSnapshot: turnIntentSnapshot,
+            pluginDefinitions: pluginDefinitions,
+            accountInventory: accountInventory
         ))
         self.resourceClaimsJSON = Self.encode(resourceClaims) ?? "[]"
     }
@@ -228,6 +286,9 @@ public final class TaskTurnRequest {
         modelSnapshot = snapshot.modelSnapshot
         tokenBudgetSnapshot = snapshot.tokenBudgetSnapshot
         executionPolicySnapshotJSON = snapshot.executionPolicySnapshotJSON
+        executionPolicySnapshotJSON = TaskTurnOwnerBinding.rebinding(
+            executionPolicySnapshotJSON, to: task
+        )
         resourceClaimsJSON = snapshot.resourceClaimsJSON
     }
 
@@ -245,6 +306,11 @@ public final class TaskTurnRequest {
     /// source event (`user.message`). V16 allows any typed TaskEvent to own the
     /// request while retaining the on-disk column for lightweight migration.
     public var sourceEventID: UUID { messageEventID }
+
+    public var hasLegacyExecutionPolicy: Bool {
+        runtimeIDSnapshot == nil && modelSnapshot == nil && tokenBudgetSnapshot == nil
+            && TaskTurnOwnerBinding.isLegacyPolicy(executionPolicySnapshotJSON)
+    }
 
     public var executionPolicySnapshot: TaskExecutionPolicySnapshotV1? {
         Self.decode(TaskExecutionPolicySnapshotV1.self, from: executionPolicySnapshotJSON)

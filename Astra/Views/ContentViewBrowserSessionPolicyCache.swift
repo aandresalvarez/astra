@@ -14,6 +14,8 @@ struct BrowserSessionPolicy: Equatable {
 }
 
 struct BrowserSessionPolicySignature: Equatable {
+    var taskOwnerID: PersistentIdentifier? = nil
+    var workspaceOwnerID: PersistentIdentifier? = nil
     var taskID: UUID?
     var workspaceID: UUID?
     var environmentRevision: String
@@ -26,6 +28,8 @@ struct BrowserSessionPolicySignature: Equatable {
     init(
         taskID: UUID?,
         workspaceID: UUID? = nil,
+        taskOwnerID: PersistentIdentifier? = nil,
+        workspaceOwnerID: PersistentIdentifier? = nil,
         environmentRevision: String = "host",
         enabledCapabilityIDs: [String],
         approvalRevision: String,
@@ -33,6 +37,8 @@ struct BrowserSessionPolicySignature: Equatable {
         taskEventRevision: String,
         catalogPolicyRevision: String = ""
     ) {
+        self.taskOwnerID = taskOwnerID
+        self.workspaceOwnerID = workspaceOwnerID
         self.taskID = taskID
         self.workspaceID = workspaceID
         self.environmentRevision = environmentRevision
@@ -48,6 +54,8 @@ struct BrowserSessionPolicySignature: Equatable {
 
     var refreshKey: String {
         [
+            String(describing: taskOwnerID),
+            String(describing: workspaceOwnerID),
             taskID?.uuidString ?? "no-task",
             workspaceID?.uuidString ?? "no-workspace",
             environmentRevision,
@@ -177,13 +185,16 @@ struct BrowserSessionPolicyRefreshGate {
 /// "does the new session agree with the old one?" — in place of the one the
 /// audit below exists to answer.
 struct BrowserSessionPolicyPublication: Equatable {
+    var taskOwnerID: PersistentIdentifier? = nil
+    var workspaceOwnerID: PersistentIdentifier? = nil
     var taskID: UUID?
     var workspaceID: UUID?
     var policy: BrowserSessionPolicy
 
     /// Only a publication from the same session can be the `previous` one.
-    func policyForSession(taskID: UUID?, workspaceID: UUID?) -> BrowserSessionPolicy? {
-        guard self.taskID == taskID, self.workspaceID == workspaceID else { return nil }
+    func policyForSession(taskID: UUID?, workspaceID: UUID?, taskOwnerID: PersistentIdentifier? = nil, workspaceOwnerID: PersistentIdentifier? = nil) -> BrowserSessionPolicy? {
+        guard self.taskID == taskID, self.workspaceID == workspaceID,
+              self.taskOwnerID == taskOwnerID, self.workspaceOwnerID == workspaceOwnerID else { return nil }
         return policy
     }
 }
@@ -240,20 +251,22 @@ struct BrowserSessionPolicyRefreshAudit: Equatable {
 /// fingerprints and event payload inspection deliberately do not participate;
 /// they are captured only after this key schedules an asynchronous refresh.
 struct BrowserSessionPolicyRefreshTrigger: Equatable {
+    var taskOwnerID: PersistentIdentifier? = nil
+    var workspaceOwnerID: PersistentIdentifier? = nil
     var taskID: UUID?
     var workspaceID: UUID?
     var enabledCapabilityIDs: [String]
-    var taskCanvasRevision: String
     var taskRevision: String
     var workspaceRevision: String
     var environmentRevision: String
 
     var rawValue: String {
         [
+            String(describing: taskOwnerID),
+            String(describing: workspaceOwnerID),
             taskID?.uuidString ?? "no-task",
             workspaceID?.uuidString ?? "no-workspace",
             enabledCapabilityIDs.joined(separator: ","),
-            taskCanvasRevision,
             taskRevision,
             workspaceRevision,
             environmentRevision
@@ -353,11 +366,12 @@ enum BrowserSessionPolicyContext {
     }
 
     @MainActor
-    static func latestUserMessage(taskID: UUID, modelContext: ModelContext) -> UserMessage? {
+    static func latestUserMessage(task: AgentTask, modelContext: ModelContext) -> UserMessage? {
+        let owner = task.persistentModelID
         let userMessageType = TaskEventTypes.Conversation.userMessage.rawValue
         var descriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> { event in
-                event.type == userMessageType && event.task?.id == taskID
+                event.type == userMessageType && event.task?.persistentModelID == owner
             },
             sortBy: [
                 SortDescriptor(\TaskEvent.timestamp, order: .reverse),
@@ -369,18 +383,23 @@ enum BrowserSessionPolicyContext {
         return UserMessage(payload: event.payload, timestamp: event.timestamp, eventID: event.id)
     }
 
-    static func taskEventRevision(for task: AgentTask?) -> String {
+    static func taskPolicyRevision(for task: AgentTask?) -> String {
         guard let task else { return "no-task" }
         return [
             task.id.uuidString,
-            String(task.updatedAt.timeIntervalSince1970)
+            // Output, usage, title, unread and lifecycle timestamps do not
+            // change browser policy. User messages invalidate via the typed
+            // event projection; package/approval edits via notifications.
+            task.goal,
+            task.status == .draft ? "draft" : "accepted"
         ].joined(separator: "|")
     }
 
     @MainActor
-    static func hasRuns(taskID: UUID, modelContext: ModelContext) -> Bool {
+    static func hasRuns(task: AgentTask, modelContext: ModelContext) -> Bool {
+        let owner = task.persistentModelID
         var descriptor = FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { run in run.task?.id == taskID }
+            predicate: #Predicate<TaskRun> { run in run.task?.persistentModelID == owner }
         )
         descriptor.fetchLimit = 1
         return (try? modelContext.fetch(descriptor).isEmpty == false) ?? false
@@ -388,40 +407,32 @@ enum BrowserSessionPolicyContext {
 }
 
 struct BrowserSessionPolicyTaskProjection {
-    private var latestUserMessageByTask: [UUID: BrowserSessionPolicyContext.UserMessage] = [:]
+    private var latestUserMessageByTask: [PersistentIdentifier: BrowserSessionPolicyContext.UserMessage] = [:]
     private var eventRevisionByTask: [UUID: UUID] = [:]
 
     @MainActor
-    mutating func latestUserMessage(for taskID: UUID?, modelContext: ModelContext) -> String? {
-        guard let taskID else { return nil }
-        let latest = latestUserMessageByTask[taskID]
-            ?? BrowserSessionPolicyContext.latestUserMessage(taskID: taskID, modelContext: modelContext)
-        latestUserMessageByTask[taskID] = latest
+    mutating func latestUserMessage(for task: AgentTask?, modelContext: ModelContext) -> String? {
+        guard let task else { return nil }
+        let owner = task.persistentModelID
+        let latest = latestUserMessageByTask[owner]
+            ?? BrowserSessionPolicyContext.latestUserMessage(task: task, modelContext: modelContext)
+        latestUserMessageByTask[owner] = latest
         return latest?.payload
     }
 
     func revision(for task: AgentTask?) -> String {
-        guard let task else { return BrowserSessionPolicyContext.taskEventRevision(for: nil) }
-        return eventRevisionByTask[task.id]?.uuidString
-            ?? BrowserSessionPolicyContext.taskEventRevision(for: task)
+        guard let task else { return BrowserSessionPolicyContext.taskPolicyRevision(for: nil) }
+        return [String(describing: task.persistentModelID),
+            BrowserSessionPolicyContext.taskPolicyRevision(for: task),
+            eventRevisionByTask[task.id]?.uuidString ?? "no-user-event"
+        ].joined(separator: "|")
     }
 
     mutating func record(_ insertion: DurableTaskEventInsertion, selectedTaskID: UUID?) -> Bool {
         guard insertion.type == TaskEventTypes.Conversation.userMessage.rawValue else { return false }
-        let candidate = BrowserSessionPolicyContext.UserMessage(
-            payload: insertion.payload,
-            timestamp: insertion.timestamp,
-            eventID: insertion.eventID
-        )
-        if let current = latestUserMessageByTask[insertion.taskID] {
-            if candidate.timestamp > current.timestamp
-                || (candidate.timestamp == current.timestamp
-                    && candidate.eventID.uuidString > current.eventID.uuidString) {
-                latestUserMessageByTask[insertion.taskID] = candidate
-            }
-        } else {
-            latestUserMessageByTask[insertion.taskID] = candidate
-        }
+        // Notifications carry a portable UUID, not ownership. They invalidate
+        // the projection; only a fresh owner-scoped storage read supplies text.
+        latestUserMessageByTask.removeAll()
         eventRevisionByTask[insertion.taskID] = insertion.eventID
         return insertion.taskID == selectedTaskID
     }

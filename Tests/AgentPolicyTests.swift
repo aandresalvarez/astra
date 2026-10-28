@@ -1592,7 +1592,7 @@ struct RunPermissionManifestTests {
                 governance: .builtInApproved(riskLevel: .high)
             )
             let workspace = Workspace(name: "Docker Manifest", primaryPath: root.path)
-            workspace.enabledCapabilityIDs = [package.id]
+            workspace.testEnabledCapabilityIDs = [package.id]
             let task = AgentTask(
                 title: "Docker",
                 goal: "Check dbt inside Docker",
@@ -1706,7 +1706,7 @@ struct RunPermissionManifestTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
         let workspace = Workspace(name: "Host GitHub", primaryPath: root.path)
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         let pluginSkill = try #require(package.skills.first)
         let githubSkill = Skill(
             name: pluginSkill.name,
@@ -2382,6 +2382,7 @@ struct RunPermissionManifestTests {
             currentURL: "https://example.com",
             currentTitle: "Example",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID, sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2410,7 +2411,7 @@ struct RunPermissionManifestTests {
         let context = container.mainContext
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
         let workspace = Workspace(name: "GitHub Follow-up Policy", primaryPath: "/tmp/github-followup-policy")
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         let skill = Skill(
             name: "GitHub Agent",
             skillDescription: "x",
@@ -2564,7 +2565,7 @@ struct RunPermissionManifestTests {
             templates: [],
             governance: .builtInApproved(riskLevel: .high)
         )
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         let task = AgentTask(title: "MCP", goal: "Use MCP", workspace: workspace)
         let run = TaskRun(task: task)
         context.insert(workspace)

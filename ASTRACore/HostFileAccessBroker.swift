@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum HostFileAccessIntent: Equatable {
     case explicitUserSelection
@@ -59,6 +60,28 @@ public struct HostFileAccessBroker {
     /// another reason throws: the item may be there.
     public func itemType(at url: URL, intent: HostFileAccessIntent) throws -> FileAttributeType? {
         guard !shouldSkip(url, intent: intent) else { return nil }
+        // Recovery only needs the type. Foundation also reads extended
+        // attributes, which can block on cloud/network metadata for minutes.
+        // Preserve an injected filesystem's behavior rather than bypassing it.
+        if fileManager === FileManager.default {
+            var metadata = stat()
+            let code = url.path.withCString { path in
+                fstatat(AT_FDCWD, path, &metadata, 0) == 0 ? 0 : errno
+            }
+            guard code == 0 else {
+                if code == ENOENT || code == ENOTDIR { return nil }
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code),
+                              userInfo: [NSFilePathErrorKey: url.path])
+            }
+            switch metadata.st_mode & S_IFMT {
+            case S_IFDIR: return .typeDirectory
+            case S_IFREG: return .typeRegular
+            case S_IFSOCK: return .typeSocket
+            case S_IFCHR: return .typeCharacterSpecial
+            case S_IFBLK: return .typeBlockSpecial
+            default: return .typeUnknown
+            }
+        }
         do {
             return try fileManager.attributesOfItem(atPath: url.resolvingSymlinksInPath().path)[.type] as? FileAttributeType
         } catch {

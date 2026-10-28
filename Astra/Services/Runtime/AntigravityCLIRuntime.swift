@@ -451,7 +451,6 @@ enum AntigravityCLIRuntime {
         workspacePath: String,
         additionalPaths: [String],
         permissionPolicy: PermissionPolicy,
-        timeoutSeconds: TimeInterval,
         taskEnvironment: [String: String],
         providerHomeDirectory: String = "",
         pathPrefix: [String] = [],
@@ -480,7 +479,7 @@ enum AntigravityCLIRuntime {
         if structuredOutput {
             args += ["--output-format", "stream-json"]
         }
-        args += ["--print-timeout", printTimeoutArgument(timeoutSeconds)]
+        args += ["--print-timeout", printTimeoutArgument]
         // `--conversation <id>` reloads that conversation (verified: the second
         // turn reports `num_turns: 2` under the same id). agy only warns on an
         // unknown id and carries on in a fresh conversation, so only ids ASTRA
@@ -644,25 +643,94 @@ enum AntigravityCLIRuntime {
 
     /// Whether this `agy` understands `--output-format`. Older builds reject
     /// the flag outright and the run dies on launch, so the answer is probed
-    /// from `--help` (50 ms, no auth, no quota) during the readiness check and
-    /// cached — `buildCommand` only ever reads the cached verdict, since it
-    /// runs on the main actor and must not shell out.
+    /// from `--help` (50 ms, no auth, no quota) and cached per binary.
+    /// `buildCommand` only ever reads the cached verdict, since it runs on the
+    /// main actor and must not shell out; the launch asks ahead of it
+    /// (`warmStructuredOutputSupportBeforeLaunch`).
     ///
-    /// Unknown means plain text. That costs a run its token accounting until
-    /// the first readiness check lands, which is the harmless direction to be
-    /// wrong in; assuming support and being wrong fails the run outright.
+    /// Unknown means plain text. That costs a run its tool events, usage and
+    /// session id, which is the harmless direction to be wrong in; assuming
+    /// support and being wrong fails the run outright.
     static func structuredOutputSupported(
         executablePath: String,
         defaults: UserDefaults = .standard
     ) -> Bool {
+        cachedStructuredOutputVerdict(executablePath: executablePath, defaults: defaults) ?? false
+    }
+
+    /// The cached verdict for this exact binary, or nil when there is none:
+    /// never probed, or probed before agy last replaced itself.
+    static func cachedStructuredOutputVerdict(
+        executablePath: String,
+        defaults: UserDefaults = .standard
+    ) -> Bool? {
         guard let cached = defaults.string(forKey: AppStorageKeys.runtimeStructuredOutputKey(for: .antigravityCLI)),
-              let separator = cached.lastIndex(of: ":") else {
-            return false
+              let separator = cached.lastIndex(of: ":"),
+              String(cached[cached.startIndex..<separator]) == executableStamp(executablePath) else {
+            return nil
         }
-        let stamp = String(cached[cached.startIndex..<separator])
-        let verdict = String(cached[cached.index(after: separator)...])
-        guard stamp == executableStamp(executablePath) else { return false }
-        return verdict == "true"
+        return String(cached[cached.index(after: separator)...]) == "true"
+    }
+
+    /// Answers the `--output-format` question for the binary a launch is about
+    /// to run, before its command is built. agy updates itself in place
+    /// (`~/.local/bin/agy`), and every update misses the cached stamp. Before
+    /// this, only the model-availability check re-asked, and its refresh
+    /// signature ignores mtime, so every run after an update fell back to plain
+    /// text: no tool events and no session id, which left the idle and
+    /// semantic-progress watchdogs killing agents that were still working.
+    ///
+    /// Free on a stamp hit. On a miss the async runner bounds process execution
+    /// and pipe draining to 8 s, with bounded termination cleanup. A failed probe caches nothing, so
+    /// that launch runs in plain text and the next one asks again.
+    @discardableResult
+    static func warmStructuredOutputSupportBeforeLaunch(
+        executablePath: String,
+        providerHomeDirectory: String,
+        taskID: UUID? = nil,
+        defaults: UserDefaults = .standard,
+        timeoutSeconds: TimeInterval = 8
+    ) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        let executable = executablePath.isEmpty ? detectPath() : executablePath
+        if let verdict = cachedStructuredOutputVerdict(executablePath: executable, defaults: defaults) {
+            return verdict
+        }
+        // The verdict is one process-wide key. Inside a test process the shared
+        // domain belongs to the suites that seed it for their own fake binary;
+        // a parallel launch probing another suite's fake `agy` would overwrite
+        // it, and run that script once more than the suite expects. Tests that
+        // exercise this inject their own defaults, as for
+        // `CodexMCPPolicyService.answersAllowed`.
+        guard defaults !== UserDefaults.standard || !AppLogger.isRunningTests else { return false }
+        let authMode = resolvedAuthMode(defaults: defaults)
+        let adcProject = AntigravityADCProjectStore.load(defaults: defaults)
+        let startedAt = Date()
+        let stamp = executableStamp(executable)
+        let result = await ProcessBinaryRunner().run(
+            path: executable, args: ["--help"], timeout: timeoutSeconds,
+            environment: probeEnvironment(mode: authMode, adcProject: adcProject,
+                providerHomeDirectory: providerHomeDirectory, extraVariables: ["NO_COLOR": "1"]),
+            currentDirectory: nil, maximumOutputBytes: 1_048_576, terminateProcessGroup: true
+        )
+        let valid = result.isSuccess && !Task.isCancelled && !result.stdoutTruncated
+            && !result.stderrTruncated && stamp == executableStamp(executable)
+        let supported = valid && parseStructuredOutputSupport(result.stdout + "\n" + result.stderr)
+        if valid {
+            cacheStructuredOutputSupport(supported, executablePath: executable, defaults: defaults)
+        }
+        let cached = cachedStructuredOutputVerdict(executablePath: executable, defaults: defaults) != nil
+        AppLogger.audit(.runtimeProviderDetected, category: "Worker", taskID: taskID, fields: [
+            "runtime": AgentRuntimeID.antigravityCLI.rawValue,
+            "source": "structured_output_launch_probe",
+            "structured_output_supported": String(supported),
+            "verdict_cached": String(cached),
+            "timed_out": String(result.timedOut),
+            "cancelled": String(result.cancelled || Task.isCancelled),
+            "duration_ms": String(Int(Date().timeIntervalSince(startedAt) * 1000)),
+            "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable)
+        ], level: cached ? .info : .warning)
+        return supported
     }
 
     @discardableResult
@@ -673,12 +741,8 @@ enum AntigravityCLIRuntime {
         providerHomeDirectory: String = "",
         defaults: UserDefaults = .standard
     ) -> Bool {
-        let stamp = executableStamp(executablePath)
-        let key = AppStorageKeys.runtimeStructuredOutputKey(for: .antigravityCLI)
-        if let cached = defaults.string(forKey: key),
-           let separator = cached.lastIndex(of: ":"),
-           String(cached[cached.startIndex..<separator]) == stamp {
-            return String(cached[cached.index(after: separator)...]) == "true"
+        if let verdict = cachedStructuredOutputVerdict(executablePath: executablePath, defaults: defaults) {
+            return verdict
         }
         guard FileManager.default.isExecutableFile(atPath: executablePath),
               // `--help` lists flags whoever is signed in, so the route does
@@ -785,8 +849,40 @@ enum AntigravityCLIRuntime {
         return "Antigravity CLI is waiting for a permission approval ASTRA cannot answer directly: \(trimmed)\n"
     }
 
-    private static func printTimeoutArgument(_ timeoutSeconds: TimeInterval) -> String {
-        "\(max(1, Int(timeoutSeconds)))s"
+    /// `--print-timeout` bounds agy's whole turn, not its silence. When it
+    /// fires, agy abandons the turn mid-work, says so on stderr and exits 0.
+    /// ASTRA used to pass its idle timeout here (600 s by default), so every
+    /// Antigravity turn ended at ten minutes however busy it was, and was
+    /// recorded as completed. `0s` is agy's "wait until the turn completes".
+    /// It is spelled out rather than left to the default, so a build that
+    /// ships another default cannot bring a cap back. ASTRA's own watchdogs
+    /// bound the run: idle, semantic progress, and the wall-clock ceiling.
+    static let printTimeoutArgument = "0s"
+
+    /// agy ended the turn itself at its own print time limit. It still exits 0,
+    /// and in stream-json mode it still sends a SUCCESS `result` frame, so
+    /// stderr is the only place that says the turn was cut short. Observed:
+    /// `[agy] print timeout after 10m0s with turn in progress; returning partial output`,
+    /// sometimes followed by `terminating 1 background task(s) on exit`.
+    static func printTimeoutStop(stderr: String) -> AgentRuntimeProviderSelfStop? {
+        let range = NSRange(stderr.startIndex..<stderr.endIndex, in: stderr)
+        guard let marker = try? NSRegularExpression(
+                  pattern: #"(?i)print timeout after\s+(\S+)\s+with turn in progress"#
+              ),
+              let match = marker.firstMatch(in: stderr, range: range) else {
+            return nil
+        }
+        let limit = Range(match.range(at: 1), in: stderr).map { " after \(stderr[$0])" } ?? ""
+        var message = "Antigravity stopped this turn itself\(limit), at its own print time limit, while the agent was still working, and returned only partial output. ASTRA did not count the turn as complete. Use Resume, when available, or send a follow-up to continue. Retry can restart the original task and repeat work already performed."
+        if let background = try? NSRegularExpression(pattern: #"(?i)terminating\s+(\d+)\s+background task"#),
+           let terminated = background.firstMatch(in: stderr, range: range),
+           let count = Range(terminated.range(at: 1), in: stderr) {
+            message += " Antigravity also terminated \(stderr[count]) background task(s) the agent had started."
+        }
+        return AgentRuntimeProviderSelfStop(
+            reason: TaskRunStopReason.providerTurnTimeLimitReached.rawValue,
+            message: message
+        )
     }
 
     private static func runProbe(

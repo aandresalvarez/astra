@@ -362,6 +362,7 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
         case .stop,
              .stopRun,
              .cancelTurnRequest,
+             .reviewWorkspaceContinuation,
              .allowOnce,
              .allowSimilar,
              .reviewGitPublish,
@@ -378,7 +379,8 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
              .resume,
              .openArtifact,
              .reopenTask,
-             .switchRuntime:
+             .switchRuntime,
+             .runRepair:
             false
         }
     }
@@ -391,6 +393,8 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
             "StopActiveRunButton"
         case .cancelTurnRequest:
             "CancelTurnRequestButton"
+        case .reviewWorkspaceContinuation:
+            "ReviewWorkspaceContinuationButton"
         case .allowOnce, .approveResult, .dismissReview:
             "ApproveTaskButton"
         case .allowSimilar:
@@ -427,6 +431,8 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
             "DismissCorrectionButton"
         case .switchRuntime:
             "SwitchRuntimeButton"
+        case .runRepair:
+            "RunRepairButton"
         }
     }
 }

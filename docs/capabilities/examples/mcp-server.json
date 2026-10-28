@@ -51,20 +51,7 @@
     }
   ],
   "name": "Example MCP",
-  "prerequisites": [
-    {
-      "authHint": null,
-      "binary": "example-mcp-server",
-      "displayName": "Example MCP Server",
-      "installHint": "Install the server binary and make sure it is on PATH.",
-      "installURL": null,
-      "livenessArgs": [
-        "--version"
-      ],
-      "purpose": "Provides structured MCP tools for this capability.",
-      "semantic": null
-    }
-  ],
+  "prerequisites": [],
   "setupGuide": "Install the MCP server binary before enabling this package.",
   "skills": [],
   "sourceMetadata": {

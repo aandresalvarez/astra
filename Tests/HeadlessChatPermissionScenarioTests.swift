@@ -173,7 +173,7 @@ extension HeadlessChatScenarioTests {
         })
     }
 
-    @Test("Copilot hidden permission prompt pauses for user approval and can continue")
+    @Test("A new Copilot instruction uses approved access while retaining prior execution uncertainty")
     func copilotHiddenPermissionPromptPausesForUserApprovalAndCanContinue() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -230,6 +230,11 @@ extension HeadlessChatScenarioTests {
         #expect(firstRun.status == .failed)
         #expect(firstRun.stopReason == "permission_approval_required")
         #expect(task.events.contains { $0.type == "permission.approval.requested" })
+        let originalOwner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        #expect(originalOwner.stopProof?.reaped == true && originalOwner.stopProof?.processGroupEmpty == true)
+        if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: harness.context) {} else {
+            Issue.record("Approval without new human input authorized an unverified retry")
+        }
 
         _ = await harness.continueTask(
             task: task,
@@ -239,16 +244,18 @@ extension HeadlessChatScenarioTests {
         )
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
-        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
-        #expect(runs.count == 2)
+        #expect(task.runs.count == 2)
         #expect(!args.contains("--allow-all-tools"))
-        #expect(args.contains("write"))
-        #expect(args.contains("create"))
         #expect(task.status == .completed)
-        #expect(runs[1].output == "Wrote the approved story")
+        let owner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        #expect(owner.ownerID == originalOwner.ownerID)
+        #expect(owner.executionID != originalOwner.executionID)
+        #expect(try RuntimeExecutionOwner.store(in: harness.context).retainedExecutions(of: owner) == [originalOwner])
+        #expect(firstRun.status == .failed && firstRun.stopReason == "permission_approval_required")
+        #expect(!owner.canReplace && owner.resourcesReleased != true)
     }
 
-    @Test("UI approval resumes a Copilot runtime permission pause")
+    @Test("UI approval saves Copilot permission grants while cleanup stays unverified")
     func uiApprovalResumesCopilotRuntimePermissionPause() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -309,28 +316,12 @@ extension HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == "permission.approval.requested" })
         #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
 
-        let continuation = coordinator.approveTask(task)
-        let completed = await harness.waitUntil(task: task, timeoutSeconds: 20) { $0.status == .completed }
-        await continuation?.value
-
-        let args = try String(contentsOf: argsURL, encoding: .utf8)
-        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
-        #expect(completed)
-        #expect(runs.count == 2)
-        #expect(!args.contains("--allow-all-tools"))
-        #expect(args.contains("write"))
-        #expect(args.contains("create"))
-        #expect(runs.last?.output == "Approved through UI path")
+        let request = try await Self.approveWithoutReplacingUnverifiedExecution(
+            task: task, harness: harness, coordinator: coordinator, queue: queue, argsURL: argsURL)
         #expect(task.events.contains { $0.type == "task.approved" && $0.payload.contains("Runtime permission approved") })
         #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
-        let requests = try TaskTurnRequestRepository.requests(for: task, in: harness.context)
-        let request = try #require(requests.first)
         let sourceEvent = try #require(task.events.first { $0.id == request.sourceEventID })
         let source = try #require(ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent))
-        #expect(requests.count == 1)
-        #expect(request.kind == .followUp)
-        #expect(request.state == .completed)
-        #expect(request.runID == runs.last?.id)
         #expect(sourceEvent.type == TaskEventTypes.ExecutionRequest.permissionResume.rawValue)
         #expect(source.launchMode == .continuation)
         #expect(source.executionPolicyOverride != nil)
@@ -374,6 +365,9 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // The prior execution has an independently verified cleanup receipt.
+        // This fixture tests grant rendering, not provider stop evidence.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: true)
 
         let command = """
         set -euo pipefail
@@ -416,6 +410,8 @@ extension HeadlessChatScenarioTests {
 
         let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        defer { continuation?.cancel() }
+        try #require(completed)
         await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
@@ -476,6 +472,9 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // The prior execution has an independently verified cleanup receipt.
+        // This fixture tests grant rendering, not provider stop evidence.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: true)
 
         let permissionEvent = TaskEvent(
             task: task,
@@ -506,6 +505,8 @@ extension HeadlessChatScenarioTests {
 
         let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        defer { continuation?.cancel() }
+        try #require(completed)
         await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
@@ -552,6 +553,9 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // The prior execution has an independently verified cleanup receipt.
+        // This fixture tests grant rendering, not provider stop evidence.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: true)
 
         let command = """
         set -euo pipefail
@@ -588,6 +592,8 @@ extension HeadlessChatScenarioTests {
 
         let continuation = coordinator.approveSimilarRuntimePermissionForTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        defer { continuation?.cancel() }
+        try #require(completed)
         await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
@@ -701,6 +707,9 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // The prior execution has an independently verified cleanup receipt.
+        // This fixture tests grant rendering, not provider stop evidence.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: true)
         harness.context.insert(TaskEvent(
             task: task,
             type: "permission.approval.requested",
@@ -732,7 +741,9 @@ extension HeadlessChatScenarioTests {
         defer { queue.cancelAll() }
 
         let continuation = coordinator.approveSimilarRuntimePermissionForTask(task)
-        _ = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status != .pendingUser }
+        let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        defer { continuation?.cancel() }
+        try #require(completed)
         await continuation?.value
 
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
@@ -776,7 +787,7 @@ extension HeadlessChatScenarioTests {
         #expect(resumedRun.output == "Listed the open SS tickets")
     }
 
-    @Test("UI approval resumes a Claude ASTRA ask-first shell pause")
+    @Test("UI approval saves Claude shell grants without replacing uncertain tools")
     func uiApprovalResumesClaudeAstraAskFirstShellPause() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -830,28 +841,15 @@ extension HeadlessChatScenarioTests {
         #expect(approvalPayload.grants.contains(.shellCommand(executable: "curl", pattern: "*redcap.stanford.edu*")))
         #expect(approvalPayload.displayMessage.contains("Runtime grant: Bash(curl *redcap.stanford.edu*)"))
 
-        let continuation = coordinator.approveTask(task)
-        let completed = await harness.waitUntil(task: task, timeoutSeconds: 20) { $0.status == .completed }
-        await continuation?.value
-
-        let args = try String(contentsOf: argsURL, encoding: .utf8)
-        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
-        #expect(completed)
-        #expect(runs.count == 2)
-        #expect(args.contains("Bash(curl *redcap.stanford.edu*)"))
-        #expect(!args.contains("--dangerously-skip-permissions"))
-        let settingsURL = harness.workspaceURL
-            .appendingPathComponent(".claude", isDirectory: true)
-            .appendingPathComponent("settings.local.json")
-        let settingsData = try Data(contentsOf: settingsURL)
-        let settingsJSON = try #require(JSONSerialization.jsonObject(with: settingsData) as? [String: Any])
-        let permissions = try #require(settingsJSON["permissions"] as? [String: Any])
-        let allow = try #require(permissions["allow"] as? [String])
-        #expect(allow.contains("Bash(curl *redcap.stanford.edu*)"))
-        #expect(runs.last?.output == "Approved curl completed")
+        let request = try await Self.approveWithoutReplacingUnverifiedExecution(
+            task: task, harness: harness, coordinator: coordinator, queue: queue, argsURL: argsURL)
+        let sourceEvent = try #require(task.events.first { $0.id == request.sourceEventID })
+        let source = try #require(ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent))
+        #expect(source.executionPolicyOverride?.permissionGrants?.contains(.shellCommand(
+            executable: "curl", pattern: "*redcap.stanford.edu*")) == true)
     }
 
-    @Test("UI approval permits repeated Claude shell path request after resume")
+    @Test("UI approval saves a Claude shell path request without running it twice")
     func uiApprovalPermitsRepeatedClaudeShellPathRequestAfterResume() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -910,19 +908,13 @@ extension HeadlessChatScenarioTests {
             pattern: "dev/workspaces/test/.astra/tasks/bf0b91bc/ *"
         )))
 
-        let continuation = coordinator.approveTask(task)
-        let completed = await harness.waitUntil(task: task, timeoutSeconds: 20) { $0.status == .completed }
-        await continuation?.value
-
-        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
-        #expect(completed)
-        #expect(runs.count == 2)
-        #expect(runs.last?.stopReason == "completed")
-        #expect(runs.last?.output.contains("Approved ls completed") == true)
-        #expect(!task.events.contains {
-            $0.type == "permission.approval.requested"
-                && $0.run?.id == runs.last?.id
-        })
+        let request = try await Self.approveWithoutReplacingUnverifiedExecution(
+            task: task, harness: harness, coordinator: coordinator, queue: queue, argsURL: argsURL)
+        let sourceEvent = try #require(task.events.first { $0.id == request.sourceEventID })
+        let source = try #require(ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent))
+        #expect(source.executionPolicyOverride?.permissionGrants?.contains(.shellCommand(
+            executable: "ls", pattern: "dev/workspaces/test/.astra/tasks/bf0b91bc/ *")) == true)
+        #expect(!FileManager.default.fileExists(atPath: "\(taskFolder)/index.html"))
     }
 
     @Test("Claude Ask mode artifact write request pauses for approval instead of timing out")
@@ -1006,6 +998,9 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // The prior execution has an independently verified cleanup receipt.
+        // This fixture tests grant rendering, not provider stop evidence.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: true)
         harness.context.insert(TaskEvent(
             task: task,
             type: "permission.approval.requested",
@@ -1031,6 +1026,8 @@ extension HeadlessChatScenarioTests {
 
         let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        defer { continuation?.cancel() }
+        try #require(completed)
         await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
@@ -1077,6 +1074,9 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // The prior execution has an independently verified cleanup receipt.
+        // This fixture tests grant rendering, not provider stop evidence.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: true)
         let request = PermissionRequest.shell(command: "curl https://redcap.stanford.edu/api/", toolName: "Bash")
         let grants = [PermissionGrant.shellCommand(executable: "curl", pattern: "*")]
         harness.context.insert(TaskEvent(
@@ -1105,6 +1105,8 @@ extension HeadlessChatScenarioTests {
 
         let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        defer { continuation?.cancel() }
+        try #require(completed)
         await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
@@ -1168,6 +1170,9 @@ extension HeadlessChatScenarioTests {
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
         harness.context.insert(blockedRun)
+        // The prior execution has an independently verified cleanup receipt.
+        // This fixture tests grant rendering, not provider stop evidence.
+        try RuntimeRecoveryTestReceipt.install(task: task, run: blockedRun, context: harness.context, toolsStopped: true)
         let latestEvent = TaskEvent(
             task: task,
             type: "permission.approval.requested",
@@ -1196,6 +1201,8 @@ extension HeadlessChatScenarioTests {
 
         let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 60) { $0.status == .completed }
+        defer { continuation?.cancel() }
+        try #require(completed)
         await continuation?.value
 
         let args = try String(contentsOf: argsURL, encoding: .utf8)
@@ -1205,7 +1212,7 @@ extension HeadlessChatScenarioTests {
         #expect(!args.contains("--dangerously-skip-permissions"))
     }
 
-    @Test("Claude hidden permission prompt pauses for user approval and can continue")
+    @Test("Claude text-only denial can continue after verified native completion")
     func claudeHiddenPermissionPromptPausesForUserApprovalAndCanContinue() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -1250,6 +1257,10 @@ extension HeadlessChatScenarioTests {
         #expect(firstRun.stopReason == "permission_approval_required")
         #expect(task.events.contains { $0.type == "permission.approval.requested" })
 
+        // This denial is plain text followed by a native terminal result,
+        // with no tool execution frames and complete EOF. Cleanup is proved.
+        let previous = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        try #require(previous.canReplace)
         _ = await harness.continueTask(
             task: task,
             message: "The user approved the blocked permission.",
@@ -1263,6 +1274,36 @@ extension HeadlessChatScenarioTests {
         #expect(!args.contains("--dangerously-skip-permissions"))
         #expect(args.contains("Agent"))
         #expect(task.status == .completed)
-        #expect(runs[1].output == "Claude continued after approval")
+        #expect(runs.last?.output == "Claude continued after approval")
     }
+
+    @MainActor
+    private static func approveWithoutReplacingUnverifiedExecution(
+        task: AgentTask, harness: HeadlessChatHarness,
+        coordinator: TaskLifecycleCoordinator, queue: TaskQueue, argsURL: URL
+    ) async throws -> TaskTurnRequest {
+        let before = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        let argsBefore = try String(contentsOf: argsURL, encoding: .utf8)
+        let runIDs = task.runs.map(\.id)
+        let continuation = coordinator.approveTask(task)
+        defer { continuation?.cancel() }
+        let waiting = await harness.waitUntil(task: task, timeoutSeconds: 5) { _ in
+            (try? TaskTurnRequestRepository.requests(for: task, in: harness.context))?
+                .contains { $0.kind == .followUp && $0.state == .waitingForResource } == true
+        }
+        try #require(waiting)
+        let request = try #require(try TaskTurnRequestRepository.requests(for: task, in: harness.context)
+            .first { $0.kind == .followUp })
+        #expect(request.runID == nil)
+        #expect(request.blockerSummary?.contains("cleanup") == true)
+        #expect(task.runs.map(\.id) == runIDs)
+        #expect(try String(contentsOf: argsURL, encoding: .utf8) == argsBefore)
+        let after = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        #expect(after.executionID == before.executionID && after.ownerID == before.ownerID)
+        #expect(after.limits == before.limits && after.resourcesReleased != true)
+        try #require(await queue.cancelAllAndWait())
+        await continuation?.value
+        return request
+    }
+
 }

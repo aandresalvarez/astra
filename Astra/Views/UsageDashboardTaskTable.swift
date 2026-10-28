@@ -111,7 +111,8 @@ struct UsageDashboardTaskTable<Row: View>: NSViewRepresentable {
                 cell.identifier = cellID
             }
             cell.toolTip = task.title
-            cell.setAccessibilityLabel("\(task.title), \(task.status.rawValue.replacingOccurrences(of: "_", with: " ")), \(task.tokensUsed) tokens, \(String(format: "$%.2f", task.costUSD)), budget \(Int(task.budgetProgress * 100)) percent")
+            let budgetLabel = task.requestUsageReconciliationPending ? "request usage unconfirmed" : "latest request budget \(Int(task.budgetProgress * 100)) percent"
+            cell.setAccessibilityLabel("\(task.title), \(task.status.rawValue.replacingOccurrences(of: "_", with: " ")), \(task.tokensUsed) tokens, \(String(format: "$%.2f", task.costUSD)), \(budgetLabel)")
             return cell
         }
     }

@@ -21,10 +21,16 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
     /// which is inferred from a non-zero exit: Codex reports the failure and
     /// then exits 0, so without this the run's only honest signal is discarded.
     public static let agentReportedError: TaskRunStopReason = "agent_reported_error"
+    /// ASTRA lost its connection; this does not attest that external work stopped.
+    public static let runtimeConnectionLost: TaskRunStopReason = "runtime_connection_lost"
     public static let appRestarted: TaskRunStopReason = "app_restarted"
     public static let browserActionBudgetExceeded: TaskRunStopReason = "browser_action_budget_exceeded"
     public static let cancelled: TaskRunStopReason = "cancelled"
     public static let capabilityRuntimeResourcesMissing: TaskRunStopReason = "capability_runtime_resources_missing"
+    /// A plugin CLI's sign-in expired while the agent was using it (`gcloud`
+    /// "Reauthentication required"). The task view offers the sign-in, then
+    /// Resume; see `CLISessionExpiryClassifier`.
+    public static let capabilitySessionExpired: TaskRunStopReason = "capability_session_expired"
     public static let completed: TaskRunStopReason = "completed"
     public static let connectorPreflightFailed: TaskRunStopReason = "connector_preflight_failed"
     public static let credentialProjectionRequired: TaskRunStopReason = "credential_projection_required"
@@ -53,9 +59,17 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
     /// `AgentRuntimeWorker.isTerminalRuntimeStop` cannot classify and would
     /// therefore park in `pendingUser` as if it were awaiting review.
     public static let providerRunWallClockExceeded: TaskRunStopReason = "provider_run_wall_clock_exceeded"
+    /// The provider ended the turn itself at its own time limit, mid-work, and
+    /// exited as if it had finished (agy's `--print-timeout`). Terminal for the
+    /// same reason as the wall-clock ceiling: no approval changes the outcome.
+    public static let providerTurnTimeLimitReached: TaskRunStopReason = "provider_turn_time_limit_reached"
     public static let providerSemanticProgressStalled: TaskRunStopReason = "provider_semantic_progress_stalled"
     public static let providerActiveToolStalled: TaskRunStopReason = "provider_active_tool_stalled"
     public static let providerWorkspaceJobStalled: TaskRunStopReason = "provider_workspace_job_stalled"
+    public static let providerSupervisorStalled: TaskRunStopReason = "provider_supervisor_stalled"
+    public static let providerRecoveryFailed: TaskRunStopReason = "provider_recovery_failed"
+    public static let providerSupervisionInconclusive: TaskRunStopReason = "provider_supervision_inconclusive"
+    public static let providerSupervisionBudgetUnavailable: TaskRunStopReason = "provider_supervision_budget_unavailable"
     public static let providerPermissionDeniedAfterApproval: TaskRunStopReason = "provider_permission_denied_after_approval"
     public static let providerPermissionDeniedBroadPermissions: TaskRunStopReason = "provider_permission_denied_broad_permissions"
     public static let providerPermissionUnresumable: TaskRunStopReason = "provider_permission_unresumable"

@@ -158,7 +158,7 @@ struct RuntimeProcessEnvironmentTests {
         #expect(path.contains("/google-cloud-sdk/bin"))
         #expect(path.contains(".local/bin"))
         #expect(path.contains(".npm-global/bin"))
-        #expect(path.contains(".astra/tools"))
+        #expect(path.split(separator: ":").contains(Substring(RuntimePathResolver.astraToolsPath)))
     }
 
     @Test("Enriched environment preserves parent PATH components")

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Log Diagnostics")
@@ -1107,6 +1108,7 @@ struct LogDiagnosticsTests {
         #expect(issue?.affectedTasks == ["7E734355"])
         #expect(issue?.analysis.contains("visible output") == true)
         #expect(issue?.analysis.contains("file change") == true)
+        #expect(issue?.analysis.contains(TaskRequestBudget.exhaustedMessage) == true)
         #expect(issue?.evidence.contains { $0.contains("task_short=011185C8") || $0.contains("thread.snapshot_built") } == false)
         #expect(report.markdown.contains("Tasks with issues: 7E734355"))
         #expect(report.markdown.contains("Other tasks seen: 011185C8"))

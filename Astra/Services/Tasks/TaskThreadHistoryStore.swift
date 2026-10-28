@@ -34,6 +34,7 @@ actor TaskThreadHistoryStore {
     /// by rows the caller already holds plus at most one page of new rows.
     func initialPage(
         taskID: UUID,
+        ownerID: PersistentIdentifier? = nil,
         coveringEventCount: Int = 0,
         previousTotalEventCount: Int? = nil,
         coveringRunCount: Int = 0,
@@ -43,13 +44,15 @@ actor TaskThreadHistoryStore {
         // No `await` between the context and the return: the context must never
         // be alive across a suspension point.
         let context = makeContext()
+        let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: context)
         let growth: Int
         if let previousTotalEventCount {
-            let count = try context.fetchCount(FetchDescriptor<ASTRAModels.TaskEvent>(predicate: #Predicate { $0.task?.id == taskID }))
+            let count = try context.fetchCount(FetchDescriptor<ASTRAModels.TaskEvent>(predicate: #Predicate { $0.task?.persistentModelID == ownerID }))
             growth = min(eventPageSize, max(0, count - previousTotalEventCount))
         } else { growth = 0 }
         return try TaskThreadHistoryReader.initialPage(
             taskID: taskID,
+            ownerID: ownerID,
             modelContext: context,
             runPageSize: max(runPageSize, coveringRunCount),
             eventPageSize: max(eventPageSize, coveringEventCount + growth)
@@ -58,12 +61,14 @@ actor TaskThreadHistoryStore {
 
     func tailPage(
         taskID: UUID,
+        ownerID: PersistentIdentifier? = nil,
         since cursor: TaskThreadEventCursor,
         runPageSize: Int = TaskThreadHistoryReader.defaultRunPageSize,
         eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize
     ) throws -> TaskThreadHistoryTailPage {
         try TaskThreadHistoryReader.tailPage(
             taskID: taskID,
+            ownerID: ownerID,
             since: cursor,
             modelContext: makeContext(),
             runPageSize: runPageSize,
@@ -73,12 +78,14 @@ actor TaskThreadHistoryStore {
 
     func previousPage(
         taskID: UUID,
+        ownerID: PersistentIdentifier? = nil,
         before cursor: TaskThreadHistoryCursor,
         runPageSize: Int = TaskThreadHistoryReader.defaultRunPageSize,
         eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize
     ) throws -> TaskThreadHistoryPage {
         try TaskThreadHistoryReader.previousPage(
             taskID: taskID,
+            ownerID: ownerID,
             before: cursor,
             modelContext: makeContext(),
             runPageSize: runPageSize,
@@ -90,6 +97,7 @@ actor TaskThreadHistoryStore {
     /// above, this reads every run: turn numbers count the whole task.
     func fileTurns(
         taskID: UUID,
+        ownerID: PersistentIdentifier? = nil,
         taskFolder: String,
         workspacePath: String,
         executionPath: String? = nil,
@@ -98,6 +106,7 @@ actor TaskThreadHistoryStore {
     ) throws -> [TaskFileTurn] {
         guard let input = try TaskFileTurnsReader.input(
             taskID: taskID,
+            ownerID: ownerID,
             taskFolder: taskFolder,
             workspacePath: workspacePath,
             executionPath: executionPath,

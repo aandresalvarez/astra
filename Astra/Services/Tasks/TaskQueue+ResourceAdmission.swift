@@ -1,7 +1,23 @@
 import Foundation
+import SwiftData
+import ASTRACore
 import ASTRAModels
 
 extension TaskQueue {
+    @MainActor
+    func refreshResourceOwnership(in context: ModelContext) {
+        let store = RuntimeExecutionOwner.store(in: context)
+        resourceOwnershipStore = store
+        do {
+            try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: context)
+            persistedResourceLocks = try RuntimeResourceOwnership.claims(in: store, context: context)
+            resourceOwnershipReadFailed = false
+        } catch {
+            // Preserve the last known holds. Unreadable authority never grants admission.
+            resourceOwnershipReadFailed = true
+        }
+    }
+
     @MainActor
     func resourceAccess(for task: AgentTask) -> TaskResourceAccessMode {
         let access = TaskExecutionResourceAdmissionPolicy.effectiveWorkspaceAccess(
@@ -55,7 +71,7 @@ extension TaskQueue {
 
     @MainActor
     func canAcquireResourceLocks(_ claims: [TaskResourceLockClaim]) -> Bool {
-        !claims.isEmpty && TaskExecutionResourceBroker.canAcquire(
+        !resourceOwnershipReadFailed && !claims.isEmpty && TaskExecutionResourceBroker.canAcquire(
             claims,
             active: activeResourceLocks
         )
@@ -68,14 +84,55 @@ extension TaskQueue {
         dispatchedRequestIDs: Set<UUID>,
         activeTaskIDs: Set<UUID>
     ) -> Bool {
-        TaskExecutionResourceAdmissionPolicy.canAdmit(
+        let inherited = continuingOwnerClaims(task: candidate.task, request: candidate.request)
+        let excluded = workspaceContinuationClaims(task: candidate.task, request: candidate.request)
+        let available = activeResourceLocks.filter { claim in
+            !excluded.contains(claim) && (inherited.isEmpty || claim.taskID != candidate.task.id || claim.requestID == candidate.request.id)
+        }
+        return !resourceOwnershipReadFailed && TaskExecutionResourceAdmissionPolicy.canAdmit(
             candidate,
             in: projection,
             dispatchedRequestIDs: dispatchedRequestIDs,
             activeTaskIDs: activeTaskIDs,
-            activeClaims: activeResourceLocks,
+            activeClaims: available,
+            inheritedClaims: inherited,
             sandboxEnforcement: sandboxEnforcementProvider()
         )
+    }
+
+    @MainActor
+    func continuingOwnerClaims(task: AgentTask, request: TaskTurnRequest?) -> [TaskResourceLockClaim] {
+        guard !activeTasks.contains(task.id), let context = task.modelContext,
+              let saved = try? RuntimeExecutionOwner.existing(task: task, context: context),
+              RuntimeCompletedUserTurnContinuation.permits(saved, task: task, request: request, context: context)
+                || RuntimeWorkspaceContinuation.resumesPreparation(saved, task: task, request: request, context: context) else { return [] }
+        return saved.resourceClaims ?? []
+    }
+
+    @MainActor
+    private func workspaceContinuationClaims(task: AgentTask, request: TaskTurnRequest?) -> Set<TaskResourceLockClaim> {
+        guard !activeTasks.contains(task.id), let context = task.modelContext else { return [] }
+        do {
+            let saved = try RuntimeExecutionOwner.existing(task: task, context: context)
+            return try RuntimeWorkspaceContinuation.admission(task: task, request: request, previous: saved,
+                context: context)?.excludedClaims ?? []
+        } catch { return [] }
+    }
+
+    @MainActor
+    func canAcquireResourceLocks(_ claims: [TaskResourceLockClaim], task: AgentTask?, context: ModelContext?) -> Bool {
+        guard let task, let context else { return canAcquireResourceLocks(claims) }
+        let ids = Set(claims.compactMap(\.requestID))
+        guard ids.count == 1, let id = ids.first,
+              let request = try? TaskTurnRequestRepository.request(id: id, in: context) else {
+            return canAcquireResourceLocks(claims)
+        }
+        let inherited = continuingOwnerClaims(task: task, request: request)
+        let excluded = workspaceContinuationClaims(task: task, request: request)
+        let available = activeResourceLocks.filter { claim in
+            !excluded.contains(claim) && (inherited.isEmpty || claim.taskID != task.id || claim.requestID == id)
+        }
+        return !resourceOwnershipReadFailed && TaskExecutionResourceBroker.canAcquire(claims, active: available)
     }
 
     @MainActor
@@ -92,5 +149,77 @@ extension TaskQueue {
                 runMode: "probe"
             )
         ])
+    }
+
+    @MainActor
+    @discardableResult
+    func acquireResourceLockIfAvailable(
+        task: AgentTask,
+        resourceKey: String? = nil,
+        accessMode: TaskResourceAccessMode,
+        runMode: String,
+        modelContext: ModelContext? = nil
+    ) -> TaskResourceLockClaim? {
+        let claim = TaskResourceLockClaim(
+            taskID: task.id,
+            resourceKey: resourceKey ?? self.resourceKey(for: task),
+            accessMode: accessMode,
+            runMode: runMode
+        )
+        return acquireResourceLocksIfAvailable([claim], task: task, modelContext: modelContext)?.first
+    }
+
+    @MainActor
+    func releaseResourceLock(
+        _ claim: TaskResourceLockClaim,
+        task: AgentTask,
+        modelContext: ModelContext? = nil
+    ) {
+        releaseResourceLocks([claim], task: task, modelContext: modelContext)
+    }
+
+    /// The "Waiting for resource" text, naming the holding task from the store.
+    @MainActor
+    func resourceBlockerSummary(_ claims: [TaskResourceLockClaim], modelContext: ModelContext) -> String {
+        if resourceOwnershipReadFailed {
+            return "Waiting for recovery ownership to be readable. ASTRA cannot safely admit competing work."
+        }
+        let summary = TaskExecutionResourceBroker.blockerSummary(requested: claims, active: activeResourceLocks) { holderID in
+            try? modelContext.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == holderID })).first?.title
+        }
+        guard let conflict = TaskExecutionResourceBroker.firstConflict(requested: claims, active: activeResourceLocks),
+              persistedResourceLocks.contains(conflict.holder) else {
+            return summary
+        }
+        let holders = (try? resourceOwnershipStore?.records())?.filter { $0.resourceClaims?.contains(conflict.holder) == true } ?? []
+        let holder = holders.count == 1 ? holders.first : nil
+        let awaitingCleanup = holder == nil || holder?.cancellationRequested == true
+            || holder?.state == .unverified || holder?.appProcess.presence != .present
+            || (holder?.state == .finished && holder?.canReplace != true)
+        return summary + (awaitingCleanup ? " Previous execution cleanup is not yet confirmed." : "")
+    }
+
+    @MainActor
+    func recordResourceLockEvent(
+        type: String,
+        auditEvent: AuditEvent,
+        task: AgentTask,
+        claim: TaskResourceLockClaim,
+        status: String,
+        reason: String? = nil,
+        modelContext: ModelContext?,
+        autoExport: Bool = true
+    ) {
+        TaskResourceLockEventRecorder.record(
+            type: type,
+            auditEvent: auditEvent,
+            task: task,
+            claim: claim,
+            status: status,
+            reason: reason,
+            modelContext: modelContext,
+            activeClaims: activeResourceLocks,
+            autoExport: autoExport
+        )
     }
 }

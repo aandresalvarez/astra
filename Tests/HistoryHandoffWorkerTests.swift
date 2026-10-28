@@ -140,6 +140,7 @@ struct HistoryHandoffWorkerTests {
         let evidence = TaskEvent(task: task, type: "tool.result", payload: "ORIGINAL_TOOL_RESULT")
         context.insert(evidence)
         task.sessionId = "missing-signature-session"
+        try RuntimeRecoveryTestReceipt.install(task: task, run: task.runs.max { $0.startedAt < $1.startedAt }, context: context)
         task.status = .completed
         try context.save()
         let fake = FakeAgentProcessRunner()
@@ -152,7 +153,7 @@ struct HistoryHandoffWorkerTests {
         fake.onLaunch = { launchTask, runID in
             #expect(launchTask.modelContext == nil)
             lastRunID = runID
-            let reader = HostControlBrokerSessionRegistry.shared.historyReader(taskID: task.id, runID: runID)
+            let reader = HostControlBrokerSessionRegistry.shared.historyReader(taskID: task.id, runID: runID, ownerID: task.persistentModelID)
             let request = TaskHistoryReadRequest.parse(["event_id": evidence.id.uuidString])!
             boundReaderWorked = (try? reader?.readHistory(request)["payload"] as? String) == "ORIGINAL_TOOL_RESULT"
         }
@@ -164,12 +165,12 @@ struct HistoryHandoffWorkerTests {
         worker.claudePath = "/bin/sh"
         DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: context)
         await worker.continueSession(task: task, message: "Continue investigating", modelContext: context) { _ in }
-        #expect(fake.receivedPrompts.count == 1)
-        #expect(fake.receivedNativeSessions.first! == nil)
+        try #require(fake.receivedPrompts.count == 1)
+        #expect(try #require(fake.receivedNativeSessions.first) == nil)
         #expect(fake.receivedPrompts.first?.contains("TURN_1_EVIDENCE") == true)
         #expect(fake.receivedPrompts.first?.contains("Original task evidence") == true)
         #expect(boundReaderWorked)
-        #expect(HostControlBrokerSessionRegistry.shared.historyReader(taskID: task.id, runID: lastRunID) == nil)
+        #expect(HostControlBrokerSessionRegistry.shared.historyReader(taskID: task.id, runID: lastRunID, ownerID: task.persistentModelID) == nil)
 
         DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: context)
         await worker.continueSession(task: task, message: "Continue investigating", modelContext: context) { _ in }

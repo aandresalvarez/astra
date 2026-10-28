@@ -46,6 +46,16 @@ enum TaskFileIndex {
         workspacePath: String = "",
         fileManager: FileManager = .default
     ) -> [TaskFileItem] {
+        headerItems(fileChanges: runs.reversed().flatMap { $0.fileChanges.reversed() },
+                    generatedFilePaths: generatedFilePaths, inputs: inputs,
+                    taskFolder: taskFolder, workspacePath: workspacePath, fileManager: fileManager)
+    }
+
+    /// File-only facts avoid loading transcript output to build the header.
+    static func headerItems(
+        fileChanges: [StoredFileChange], generatedFilePaths: [String], inputs: [String],
+        taskFolder: String = "", workspacePath: String = "", fileManager: FileManager = .default
+    ) -> [TaskFileItem] {
         var seen = Set<String>()
         var items: [TaskFileItem] = []
 
@@ -68,10 +78,8 @@ enum TaskFileIndex {
             ))
         }
 
-        for run in runs.reversed() {
-            for change in run.fileChanges.reversed() {
-                append(path: change.path, source: sourceLabel(for: change), change: change)
-            }
+        for change in fileChanges {
+            append(path: change.path, source: sourceLabel(for: change), change: change)
         }
 
         for path in generatedFilePaths {

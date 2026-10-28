@@ -16,7 +16,6 @@ struct NativeContinuationResumeArgumentTests {
             workspacePath: "/tmp/workspace",
             additionalPaths: [],
             permissionPolicy: .restricted,
-            timeoutSeconds: 60,
             taskEnvironment: [:],
             resumeSessionID: resumeSessionID,
             permissionArguments: [],

@@ -20,6 +20,7 @@ actor StubBinaryRunner: BinaryRunner {
     /// its widely-shared `Equatable` conformance stay unchanged for every
     /// existing `Call(path:args:)` construction across other test files.
     private var environments: [[String: String]?] = []
+    private var timeouts: [TimeInterval] = []
 
     func setResponse(forKey key: String, result: RunResult) {
         responses[key] = result
@@ -30,19 +31,28 @@ actor StubBinaryRunner: BinaryRunner {
     /// Environments passed to each call, in the same order as `recordedCalls()`.
     func recordedEnvironments() -> [[String: String]?] { environments }
 
+    /// Timeouts passed to each call, in the same order as `recordedCalls()`.
+    func recordedTimeouts() -> [TimeInterval] { timeouts }
+
     nonisolated func run(
         path: String,
         args: [String],
         timeout: TimeInterval,
         environment: [String: String]?
     ) async -> RunResult {
-        await record(path: path, args: args, environment: environment)
+        await record(path: path, args: args, timeout: timeout, environment: environment)
         return await response(for: key(path: path, args: args))
     }
 
-    private func record(path: String, args: [String], environment: [String: String]?) {
+    private func record(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?
+    ) {
         calls.append(Call(path: path, args: args))
         environments.append(environment)
+        timeouts.append(timeout)
     }
 
     private func response(for key: String) -> RunResult {
@@ -153,13 +163,13 @@ struct EnvironmentHealthCheckerTests {
     @Test("Unresponsive when liveness exits non-zero")
     func unresponsive_nonZeroExit() async {
         let stub = await makeStub(responses: [
-            ("/usr/bin/env which broken",
+            ("/usr/bin/env which node",
              RunResult(outcome: .exited(code: 0), stdout: "/opt/broken\n", stderr: "")),
             ("/opt/broken --version",
              RunResult(outcome: .exited(code: 2), stdout: "", stderr: "dylib not found: libfoo"))
         ])
         let checker = EnvironmentHealthChecker(runner: stub)
-        let status = await checker.check(binary: "broken")
+        let status = await checker.check(binary: "node")
         guard case .unresponsive(let detail) = status else {
             Issue.record("Expected .unresponsive, got \(status)")
             return
@@ -171,13 +181,13 @@ struct EnvironmentHealthCheckerTests {
     @Test("Unresponsive when liveness fails to launch")
     func unresponsive_launchFailed() async {
         let stub = await makeStub(responses: [
-            ("/usr/bin/env which ghost",
+            ("/usr/bin/env which jq",
              RunResult(outcome: .exited(code: 0), stdout: "/var/tmp/ghost\n", stderr: "")),
             ("/var/tmp/ghost --version",
              RunResult(outcome: .launchFailed("permission denied"), stdout: "", stderr: ""))
         ])
         let checker = EnvironmentHealthChecker(runner: stub)
-        let status = await checker.check(binary: "ghost")
+        let status = await checker.check(binary: "jq")
         guard case .unresponsive(let detail) = status else {
             Issue.record("Expected .unresponsive, got \(status)")
             return
@@ -281,6 +291,84 @@ struct EnvironmentHealthCheckerTests {
         #expect(calls.count == 2)
         #expect(calls[0].args == ["which", "gcloud"])
         #expect(calls[1].args == ["--version"])
+    }
+
+    // MARK: Slow-start prerequisites
+
+    private static let gcloudWhich = (
+        "/usr/bin/env which gcloud",
+        RunResult(outcome: .exited(code: 0), stdout: "/opt/homebrew/bin/gcloud\n", stderr: "")
+    )
+    private static let gcloudCredentialRefresh = "/opt/homebrew/bin/gcloud config config-helper --format=value(credential.token_expiry)"
+
+    @Test("Slow-start prerequisite gets its own budget; no answer leaves it usable")
+    func slowStart_versionTimeoutIsUnverified() async {
+        let stub = await makeStub(responses: [
+            Self.gcloudWhich,
+            ("/opt/homebrew/bin/gcloud --version", RunResult(outcome: .timedOut, stdout: "", stderr: ""))
+        ])
+        let checker = EnvironmentHealthChecker(runner: stub)
+
+        let status = await checker.check(CommonCLIPrerequisites.gcloud)
+
+        guard case .unverified(let path, let detail) = status else {
+            Issue.record("Expected .unverified, got \(status)")
+            return
+        }
+        #expect(status.isUsable)
+        #expect(path == "/opt/homebrew/bin/gcloud")
+        #expect(detail == "No answer within 20s; not verified")
+        #expect(await stub.recordedTimeouts().last == CommonCLIPrerequisites.gcloudSlowStartTimeout)
+    }
+
+    @Test("Slow-start auth probe that gets no answer is not reported as signed out")
+    func slowStart_authTimeoutIsNotUnauthenticated() async {
+        let stub = await makeStub(responses: [
+            Self.gcloudWhich,
+            (Self.gcloudCredentialRefresh, RunResult(outcome: .timedOut, stdout: "", stderr: ""))
+        ])
+        let checker = EnvironmentHealthChecker(runner: stub)
+
+        let status = await checker.check(CommonCLIPrerequisites.gcloudAuth)
+
+        guard case .unverified = status else {
+            Issue.record("Expected .unverified, got \(status)")
+            return
+        }
+    }
+
+    @Test("Slow-start prerequisite still fails on a real answer")
+    func slowStart_realAnswersStillFail() async {
+        let stub = await makeStub(responses: [
+            Self.gcloudWhich,
+            (Self.gcloudCredentialRefresh, RunResult(outcome: .exited(code: 0), stdout: "\n", stderr: "")),
+            ("/opt/homebrew/bin/gcloud --version",
+             RunResult(outcome: .exited(code: 1), stdout: "", stderr: "ERROR: python not found"))
+        ])
+        let checker = EnvironmentHealthChecker(runner: stub)
+
+        #expect(await checker.check(CommonCLIPrerequisites.gcloudAuth) == .unauthenticated(detail: "no active account"))
+        let version = await checker.check(CommonCLIPrerequisites.gcloud)
+        guard case .unresponsive(let detail) = version else {
+            Issue.record("Expected .unresponsive, got \(version)")
+            return
+        }
+        #expect(detail.contains("exit 1"))
+    }
+
+    @Test("Prerequisite without a slow-start budget keeps the short timeout and fails on no answer")
+    func noSlowStart_timeoutIsUnresponsive() async {
+        let stub = await makeStub(responses: [
+            ("/usr/bin/env which gh",
+             RunResult(outcome: .exited(code: 0), stdout: "/opt/homebrew/bin/gh\n", stderr: "")),
+            ("/opt/homebrew/bin/gh --version", RunResult(outcome: .timedOut, stdout: "", stderr: ""))
+        ])
+        let checker = EnvironmentHealthChecker(runner: stub)
+
+        let status = await checker.check(CommonCLIPrerequisites.githubCLI)
+
+        #expect(status == .unresponsive(detail: "timed out after 3s"))
+        #expect(await stub.recordedTimeouts().last == EnvironmentHealthChecker.defaultLivenessTimeout)
     }
 }
 

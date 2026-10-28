@@ -21,9 +21,12 @@ public struct TaskCorrectiveWorkRecord {
 public enum TaskCorrectiveWorkQueries {
     @MainActor
     public static func latestCorrectiveSteps(for task: AgentTask) -> [TaskCorrectiveWorkRecord] {
+        latestCorrectiveSteps(in: TaskHistoryRead.events(for: task, ofTypes: correctiveTypes))
+    }
+
+    public static func latestCorrectiveSteps(in events: [TaskEvent]) -> [TaskCorrectiveWorkRecord] {
         var latestByID: [String: TaskCorrectiveWorkRecord] = [:]
-        for event in task.events
-            .filter({ isCorrectiveStepEvent($0.type) })
+        for event in events.filter({ correctiveTypes.contains($0.type) })
             .sorted(by: { $0.timestamp > $1.timestamp }) {
             guard let payload = decode(event.payload) else { continue }
             let stepID = normalizedCorrectiveStepID(payload)
@@ -40,6 +43,17 @@ public enum TaskCorrectiveWorkQueries {
         }
     }
 
+    public static func openCorrectiveSteps(in events: [TaskEvent]) -> [TaskCorrectiveWorkRecord] {
+        latestCorrectiveSteps(in: events).filter {
+            ["proposed", "approved", "task_created"].contains($0.payload.status)
+        }
+    }
+
+    private static let correctiveTypes: Set<String> = [
+        TaskCorrectiveEventTypes.stepCreated, TaskCorrectiveEventTypes.stepApproved,
+        TaskCorrectiveEventTypes.stepDismissed, TaskCorrectiveEventTypes.taskCreated
+    ]
+
     public static func correctiveStepID(planID: UUID, failedAssertionID: String) -> String {
         "corrective-\(planID.uuidString.prefix(8))-\(failedAssertionID)"
     }
@@ -53,10 +67,4 @@ public enum TaskCorrectiveWorkQueries {
         return try? JSONDecoder().decode(TaskCorrectiveStepPayload.self, from: data)
     }
 
-    private static func isCorrectiveStepEvent(_ type: String) -> Bool {
-        type == TaskCorrectiveEventTypes.stepCreated ||
-            type == TaskCorrectiveEventTypes.stepApproved ||
-            type == TaskCorrectiveEventTypes.stepDismissed ||
-            type == TaskCorrectiveEventTypes.taskCreated
-    }
 }

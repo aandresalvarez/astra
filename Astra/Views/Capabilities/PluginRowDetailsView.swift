@@ -1,0 +1,312 @@
+import SwiftUI
+import SwiftData
+import ASTRACore
+import ASTRAModels
+
+/// The expanded part of a `PluginRow` on the Plugins surface: what the
+/// plugin brings, its settings and accounts in this workspace, and the
+/// row's actions. Inline editing appears only here, after expansion
+/// (`docs/design-system/lean-ui-system.md`).
+///
+/// Every change goes through `CapabilityCatalogActionService`
+/// (`PluginsSurfaceFitnessTests`); destructive ones ask the surface for a
+/// confirmation first.
+struct PluginRowDetailsView<SetupRow: View>: View {
+    let row: PluginRow
+    let workspace: Workspace
+    /// A setup component, with the prerequisite position it checks
+    /// (`PluginManifestConverter.prerequisitePosition`).
+    let setupRow: (PluginComponent, Int?) -> SetupRow
+    let onEditAccount: (UUID) -> Void
+    let onConfirm: (PluginsSurfaceConfirmation) -> Void
+    let approvalRecords: [CapabilityApprovalRecord]
+    let policyContext: CapabilityCatalogPolicyContext
+    let onTurnOff: () -> Void
+    let onSetApproval: (CapabilityApprovalStatus) -> Void
+    let onUpdate: () -> Void
+    let onChanged: () -> Void
+    let onError: (String) -> Void
+
+    @Environment(\.modelContext) private var modelContext
+    @State private var settingDrafts = PluginSettingDrafts()
+
+    private var actions: CapabilityCatalogActionService { CapabilityCatalogActionService() }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !unreadableSettings.isEmpty {
+                ConnectorCredentialReentrySection(keys: unreadableSettings.map(\.field), subject: "plugin",
+                    labels: Dictionary(uniqueKeysWithValues: unreadableSettings.map { ($0.field, "\($0.skill.name) · \($0.key)") }),
+                    save: reenterSettings)
+                    .id(row.activation?.id)
+            }
+            ForEach(Array(row.package.skills.enumerated()), id: \.offset) { _, skill in
+                skillSection(skill)
+            }
+            ForEach(Array(row.package.connectors.enumerated()), id: \.offset) { _, connector in
+                if row.activation != nil { accountSection(connector) }
+            }
+            ForEach(Array(otherComponents.enumerated()), id: \.offset) { _, entry in
+                setupRow(entry.component, entry.position)
+            }
+            adminReview
+            footer
+        }
+        .onAppear(perform: loadDrafts)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loadDrafts() }
+        // An Update while the row stays open renames or adds settings: the
+        // drafts follow the activation and the definition.
+        .onChange(of: draftSource) { _, _ in loadDrafts() }
+    }
+
+    private var draftSource: PluginSettingDrafts.Source {
+        PluginSettingDrafts.source(package: row.package, activation: row.activation)
+    }
+
+    private var otherComponents: [(component: PluginComponent, position: Int?)] {
+        PluginsSurfacePresentation.expandedSetupComponents(for: row, in: workspace)
+    }
+
+    // MARK: - Skill settings
+
+    @ViewBuilder
+    private func skillSection(_ skill: PluginSkill) -> some View {
+        let recovering = Set(unreadableSettings.map(\.field))
+        let keys = PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation, package: row.package).filter {
+            !recovering.contains(PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: $0))
+        }
+        if !keys.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                componentHeader(skill.name, kind: "Skill")
+                ForEach(keys, id: \.self) { key in
+                    settingField(key, of: skill)
+                }
+            }
+        }
+    }
+
+    private func settingField(_ key: String, of skill: PluginSkill) -> some View {
+        let draftKey = PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: key)
+        let binding = Binding(get: { settingDrafts.values[draftKey] ?? "" }, set: { settingDrafts.values[draftKey] = $0 })
+        return HStack(spacing: 8) {
+            Text(key)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 160, alignment: .leading)
+            Group {
+                if Skill.isSecretEnvironmentKey(key) {
+                    SecretEntryField(key, text: binding)
+                } else {
+                    TextField(key, text: binding)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+            .controlSize(.small)
+            if let failure = settingDrafts.failures[draftKey] {
+                Text("Credential unavailable").font(.caption).foregroundStyle(.secondary).help(failure)
+                Button("Retry", action: loadDrafts).controlSize(.small)
+            }
+            Button("Save") { save(key, of: skill, value: settingDrafts.values[draftKey] ?? "") }
+                .controlSize(.small)
+                .disabled(!settingDrafts.canSave(draftKey, in: row.activation))
+        }
+    }
+
+    // MARK: - Accounts
+
+    @ViewBuilder
+    private func accountSection(_ connector: PluginConnector) -> some View {
+        let componentID = CapabilityResourceOrigin.componentID(for: connector)
+        let accounts = row.activation?.accounts(forComponent: componentID) ?? []
+        VStack(alignment: .leading, spacing: 4) {
+            componentHeader(connector.name, kind: "Account")
+            ForEach(accounts, id: \.id) { account in
+                // The workspace has one default per service, which may be
+                // another plugin's account: the binding says, not the order.
+                let isDefault = row.activation?.bindings.contains {
+                    !$0.isDeleted && $0.componentID == componentID && $0.account?.id == account.id && $0.isDefault
+                } ?? false
+                HStack(spacing: 8) {
+                    // The name this workspace knows it by: a colliding shared
+                    // account's binding alias, which the runtime uses too.
+                    Text(PluginsSurfacePresentation.accountTitle(account, in: workspace)).font(Stanford.ui(12))
+                    if !account.baseURL.isEmpty {
+                        Text(account.baseURL)
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    if isDefault {
+                        Text("Default").font(Stanford.caption(11)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if !isDefault {
+                        Button("Make default") { makeDefault(account, componentID: componentID) }
+                            .controlSize(.small)
+                            .disabled(!row.canChangeAccountBindings)
+                    }
+                    Button("Edit") { onEditAccount(account.id) }
+                        .controlSize(.small)
+                    Button("Delete", role: .destructive) {
+                        do {
+                            let scope = try PluginAccountDeletionScope.capture(account)
+                            onConfirm(.deleteAccount(packageID: row.package.id, scope: scope))
+                        } catch { onError(error.localizedDescription) }
+                    }
+                    .controlSize(.small)
+                }
+                .padding(.leading, 12)
+            }
+            if row.activation?.isEnabled == true {
+                Button(accounts.isEmpty ? "Add account" : "Add another account") { addAccount(connector) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(Stanford.lagunita)
+                    .padding(.leading, 12)
+                    .disabled(!row.canChangeAccountBindings)
+                if !row.canChangeAccountBindings {
+                    Text("Update the plugin before changing its accounts.")
+                        .font(.caption).foregroundStyle(.secondary).padding(.leading, 12)
+                }
+            }
+        }
+    }
+
+    // MARK: - Admin review
+
+    /// An admin's review of this version: Approve, Deprecate or Block, keyed
+    /// to its digest (the approval store records which one was reviewed).
+    @ViewBuilder
+    private var adminReview: some View {
+        if let review = PluginCatalogApprovalState.adminReviewState(
+            for: row.package, policyContext: policyContext, approvalRecords: approvalRecords
+        ) {
+            HStack(spacing: 8) {
+                Text("Review").font(Stanford.ui(13))
+                Text(review.digestLabel).font(Stanford.caption(11)).foregroundStyle(.secondary)
+                Spacer()
+                Button("Approve") { onSetApproval(.approved) }
+                    .disabled(review.record?.status == .approved)
+                Button("Deprecate") { onSetApproval(.deprecated) }
+                    .disabled(review.record?.status == .deprecated)
+                Button("Block", role: .destructive) { onSetApproval(.blocked) }
+                    .disabled(review.record?.status == .blocked)
+            }
+            .controlSize(.small)
+        }
+    }
+
+    // MARK: - Footer
+
+    private var footer: some View {
+        HStack {
+            if PluginsSurfacePresentation.showsTurnOff(row) {
+                // Turning off deletes nothing, so it asks nothing.
+                Toggle("On in this workspace", isOn: Binding(get: { true }, set: { if !$0 { onTurnOff() } }))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+            } else if !PluginsSurfacePresentation.offersTurnOff(row.package) {
+                Text("Edit or delete this skill in Skills.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+            }
+            if row.display.verb == .update {
+                Button("Update") { onUpdate() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(Stanford.lagunita)
+            }
+            Spacer()
+            // Remove reaches every workspace, so it is offered once the plugin
+            // is off here.
+            // A plugin the library no longer has runs nowhere: it is offered
+            // even while its activation is on.
+            if PluginsSurfacePresentation.showsRemove(row) {
+                Button("Remove", role: .destructive) {
+                    do {
+                        let scope = try PluginRemovalScope.capture(pluginID: row.id, modelContext: modelContext)
+                        onConfirm(.remove(source: PluginRemovalSource(row: row), scope: scope))
+                    } catch { onError(error.localizedDescription) }
+                }
+                    .controlSize(.small)
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private func componentHeader(_ name: String, kind: String) -> some View {
+        HStack(spacing: 8) {
+            Text(name).font(Stanford.ui(13))
+            Text(kind).font(Stanford.caption(11)).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Actions
+
+    private var unreadableSettings: [PluginOperations.SettingChange] {
+        guard settingDrafts.belongs(to: row.activation) else { return [] }
+        return row.package.skills.flatMap { skill in
+            PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation, package: row.package).compactMap { key in
+                let field = PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: key)
+                guard settingDrafts.failures[field] != nil, Skill.isSecretEnvironmentKey(key) else { return nil }
+                return PluginOperations.SettingChange(skill: skill, key: key, value: "")
+            }
+        }
+    }
+
+    private func reenterSettings(_ values: [String: String]) -> Bool {
+        let fields = unreadableSettings
+        guard !fields.isEmpty, fields.allSatisfy({ !(values[$0.field] ?? "").isEmpty }) else { return false }
+        do {
+            try actions.setSettings(fields.map {
+                PluginOperations.SettingChange(skill: $0.skill, key: $0.key, value: values[$0.field]!)
+            }, package: row.package, workspace: workspace, modelContext: modelContext)
+            loadDrafts()
+            onChanged()
+            return true
+        } catch {
+            loadDrafts()
+            onError(error.localizedDescription)
+            return false
+        }
+    }
+
+    private func loadDrafts() {
+        let snapshot = PluginSettingDrafts.load(package: row.package, activation: row.activation) { key, skill, activation in
+            try PluginOperations.setting(key, of: skill, in: activation)
+        }
+        settingDrafts = settingDrafts.reloading(from: snapshot)
+    }
+
+    private func save(_ key: String, of skill: PluginSkill, value: String) {
+        let field = PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: key)
+        guard settingDrafts.canSave(field, in: row.activation),
+              PluginsSurfacePresentation.settingKeys(of: skill, in: row.activation, package: row.package).contains(key) else { return }
+        do {
+            try actions.setSetting(key, to: value, of: skill, package: row.package, workspace: workspace, modelContext: modelContext)
+            onChanged()
+        } catch {
+            loadDrafts()
+            onError("Couldn't save \(key): \(error.localizedDescription)")
+        }
+    }
+
+    private func addAccount(_ connector: PluginConnector) {
+        do {
+            let account = try actions.addAccount(for: connector, of: row.package, workspace: workspace, modelContext: modelContext)
+            onChanged()
+            onEditAccount(account.id)
+        } catch {
+            onError("Couldn't add an account: \(error.localizedDescription)")
+        }
+    }
+
+    private func makeDefault(_ account: Connector, componentID: String) {
+        do {
+            try actions.makeDefault(account, componentID: componentID, package: row.package, workspace: workspace, modelContext: modelContext)
+            onChanged()
+        } catch {
+            onError("Couldn't change the default account: \(error.localizedDescription)")
+        }
+    }
+}

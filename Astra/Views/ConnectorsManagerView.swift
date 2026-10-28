@@ -150,7 +150,10 @@ struct ConnectorEditorView: View {
     @State private var editingCredentialKey: String?
     @State private var replacementCredentialValue = ""
     @State private var credentialSaveError: ConnectorCredentialSaveFailurePresentation?
+    @State private var credentialOperationError: String?
+    @State private var credentialRecoveryID: UUID?
     @State private var pendingCredentialSaveContext: PendingConnectorCredentialSaveContext?
+    @State private var unreadableCredentialKeys: [String] = []
     @State private var newListItem = ""
     @State private var testResult: (Bool, String)?
     @State private var isTesting = false
@@ -187,12 +190,21 @@ struct ConnectorEditorView: View {
                             .textFieldStyle(.roundedBorder)
 
                         HStack(spacing: 12) {
-                            Picker("Type", selection: $connector.serviceType) {
+                            // A plugin's account keeps its component's service.
+                            Picker("Type", selection: Binding(
+                                get: { connector.serviceType },
+                                set: { WorkspaceCapabilityActivation.changeService(of: connector, to: $0) }
+                            )) {
                                 ForEach(["jira", "github", "slack", "database", "rest_api", "confluence", "redcap", "stanford_outlook_mail", "custom"], id: \.self) { t in
                                     Text(Self.serviceLabel(t)).tag(t)
                                 }
                             }
                             .frame(width: 200)
+                            .disabled(!WorkspaceCapabilityActivation.canChangeService(of: connector))
+                            .help(WorkspaceCapabilityActivation.canChangeService(of: connector)
+                                ? "" : connector.isStanfordOutlookMail
+                                    ? "Outlook sign-in keeps this account's type fixed. Create another account for a different service."
+                                    : "A plugin uses this account for this service, so its type can't change.")
 
                             Picker("Auth", selection: $connector.authMethod) {
                                 ForEach(Self.authMethods(for: connector.serviceType), id: \.self) { a in
@@ -265,7 +277,7 @@ struct ConnectorEditorView: View {
                             isTesting ||
                             connector.baseURL.isEmpty ||
                             (connector.isStanfordOutlookMail
-                                ? !connector.hasOutlookRefreshToken
+                                ? !connector.hasOutlookAuthorization
                                 : (connector.authMethod != "none" && connector.credentialKeys.isEmpty))
                         )
                         .buttonStyle(.borderedProminent)
@@ -432,6 +444,17 @@ struct ConnectorEditorView: View {
                                 .font(Stanford.caption(12))
                                 .foregroundStyle(.secondary)
                         }
+                        if let credentialOperationError {
+                            Label(credentialOperationError, systemImage: "exclamationmark.triangle.fill")
+                                .font(Stanford.caption(12))
+                                .foregroundStyle(Stanford.poppy)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let credentialRecoveryID {
+                                Button("Finish recovery") { finishCredentialRecovery(credentialRecoveryID) }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                            }
+                        }
                         if let credentialSaveError {
                             ViewThatFits(in: .horizontal) {
                                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -445,136 +468,140 @@ struct ConnectorEditorView: View {
                             }
                         }
 
-                        if !connector.credentialKeys.isEmpty {
-                            VStack(spacing: 4) {
-                                // Identity is the position, not the key string: legacy data can
-                                // carry duplicate keys, and deriving the index via firstIndex(of:)
-                                // would then replace/remove the wrong secret.
-                                ForEach(Array(connector.credentialKeys.enumerated()), id: \.offset) { idx, key in
-                                    if idx > 0 {
-                                        SubtleDivider()
-                                    }
-                                    HStack(spacing: 8) {
-                                        Text(key)
-                                            .font(Stanford.ui(13, design: .monospaced))
-                                            .fontWeight(.medium)
-                                            .frame(minWidth: 100, alignment: .leading)
-
-                                        let inKeychain = KeychainService.exists(key: key, connector: connector)
-
-                                        if showSecrets {
-                                            let value = KeychainService.load(key: key, connector: connector)
-                                                ?? (idx < connector.credentialValues.count ? connector.credentialValues[idx] : "")
-                                            Text(value.isEmpty ? "(empty)" : value)
-                                                .font(Stanford.ui(13, design: .monospaced))
-                                                .foregroundStyle(value.isEmpty ? .tertiary : .secondary)
-                                                .lineLimit(1)
-                                        } else if inKeychain, SecretEntryPresentation.isIdentifierKey(key),
-                                                  let identity = KeychainService.load(key: key, connector: connector),
-                                                  !identity.isEmpty {
-                                            // An address or login is not a secret: show it so a
-                                            // typo is visible after saving, not only while typing.
-                                            Text(identity)
-                                                .font(Stanford.ui(13, design: .monospaced))
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                                .truncationMode(.middle)
-                                        } else {
-                                            HStack(spacing: 4) {
-                                                Text(String(repeating: "\u{2022}", count: 12))
-                                                    .font(Stanford.ui(13))
-                                                    .foregroundStyle(.secondary)
-                                                // P2: the header carries the count for stored secrets;
-                                                // only flag the exceptional row that still needs a value.
-                                                if !inKeychain {
-                                                    Image(systemName: "exclamationmark.triangle")
-                                                        .font(Stanford.ui(10))
-                                                        .foregroundStyle(Stanford.poppy)
-                                                        .help("Not yet in Keychain — re-enter value")
-                                                }
-                                            }
-                                        }
-
-                                        Spacer()
-
-                                        if editingCredentialKey == key {
-                                            SecretEntryField("value", text: $replacementCredentialValue)
-                                                .font(Stanford.ui(12, design: .monospaced))
-                                                .frame(maxWidth: 260)
-                                                .onSubmit { saveCredentialReplacement(for: key) }
-
-                                            Button("Save") {
-                                                saveCredentialReplacement(for: key)
-                                            }
-                                            .font(Stanford.caption(12))
-                                            .disabled(replacementCredentialValue.isEmpty)
-
-                                            Button("Cancel") {
-                                                cancelCredentialReplacement()
-                                            }
-                                            .font(Stanford.caption(12))
-                                            .buttonStyle(.plain)
-                                            .foregroundStyle(Stanford.coolGrey)
-                                        } else {
-                                            Button(inKeychain ? "Replace" : "Set Value") {
-                                                editingCredentialKey = key
-                                                replacementCredentialValue = ""
-                                                credentialSaveError = nil
-                                                pendingCredentialSaveContext = nil
-                                            }
-                                            .font(Stanford.caption(12))
-                                            .buttonStyle(.bordered)
-                                            .controlSize(.small)
-
-                                            Button {
-                                                pendingDeletion = PendingConnectorDeletion(
-                                                    title: "Remove secret “\(key)”?",
-                                                    message: "Remove the \(key) secret from \(connectorDisplayName)? This deletes its stored Keychain value.",
-                                                    confirmTitle: "Remove Secret"
-                                                ) {
-                                                    connector.removeCredential(at: idx)
-                                                }
-                                            } label: {
-                                                Image(systemName: "trash")
-                                                    .font(Stanford.ui(12))
-                                                    .foregroundStyle(Stanford.coolGrey)
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                    .padding(.vertical, 4)
-                                }
-                            }
-                        }
-
-                        if isAddingCredential {
-                            HStack(spacing: 6) {
-                                TextField("KEY", text: $newCredKey)
-                                    .textFieldStyle(.roundedBorder)
-                                    .font(Stanford.ui(13, design: .monospaced))
-                                    .frame(width: 140)
-                                SecretEntryField("value", text: $newCredValue)
-                                    .font(Stanford.ui(13, design: .monospaced))
-                                    .onSubmit { addCredential() }
-                                Button("Store secret") { addCredential() }
-                                    .disabled(newCredKey.trimmingCharacters(in: .whitespaces).isEmpty || newCredValue.isEmpty)
-                                Button("Cancel") {
-                                    cancelCredentialEntry()
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(Stanford.coolGrey)
-                            }
+                        if !unreadableCredentialKeys.isEmpty {
+                            ConnectorCredentialReentrySection(keys: unreadableCredentialKeys) { reenterCredentials($0) }
+                                .id(connector.id)
                         } else {
-                            Button {
-                                isAddingCredential = true
-                                credentialSaveError = nil
-                                pendingCredentialSaveContext = nil
-                            } label: {
-                                Label("New secret", systemImage: "plus.circle")
-                                    .font(Stanford.body(13))
+                            if !connector.credentialKeys.isEmpty {
+                                VStack(spacing: 4) {
+                                    // Legacy duplicate rows retain distinct UI identity. Removing
+                                    // a credential removes all markers for its canonical key.
+                                    ForEach(Array(connector.credentialKeys.enumerated()), id: \.offset) { idx, key in
+                                        if idx > 0 {
+                                            SubtleDivider()
+                                        }
+                                        HStack(spacing: 8) {
+                                            Text(key)
+                                                .font(Stanford.ui(13, design: .monospaced))
+                                                .fontWeight(.medium)
+                                                .frame(minWidth: 100, alignment: .leading)
+
+                                            let inKeychain = KeychainService.exists(key: key, connector: connector)
+
+                                            if showSecrets {
+                                                let value = KeychainService.load(key: key, connector: connector)
+                                                    ?? (idx < connector.credentialValues.count ? connector.credentialValues[idx] : "")
+                                                Text(value.isEmpty ? "(empty)" : value)
+                                                    .font(Stanford.ui(13, design: .monospaced))
+                                                    .foregroundStyle(value.isEmpty ? .tertiary : .secondary)
+                                                    .lineLimit(1)
+                                            } else if inKeychain, SecretEntryPresentation.isIdentifierKey(key),
+                                                      let identity = KeychainService.load(key: key, connector: connector),
+                                                      !identity.isEmpty {
+                                                // An address or login is not a secret: show it so a
+                                                // typo is visible after saving, not only while typing.
+                                                Text(identity)
+                                                    .font(Stanford.ui(13, design: .monospaced))
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                                    .truncationMode(.middle)
+                                            } else {
+                                                HStack(spacing: 4) {
+                                                    Text(String(repeating: "\u{2022}", count: 12))
+                                                        .font(Stanford.ui(13))
+                                                        .foregroundStyle(.secondary)
+                                                    // P2: the header carries the count for stored secrets;
+                                                    // only flag the exceptional row that still needs a value.
+                                                    if !inKeychain {
+                                                        Image(systemName: "exclamationmark.triangle")
+                                                            .font(Stanford.ui(10))
+                                                            .foregroundStyle(Stanford.poppy)
+                                                            .help("Not yet in Keychain — re-enter value")
+                                                    }
+                                                }
+                                            }
+
+                                            Spacer()
+
+                                            if editingCredentialKey == key {
+                                                SecretEntryField("value", text: $replacementCredentialValue)
+                                                    .font(Stanford.ui(12, design: .monospaced))
+                                                    .frame(maxWidth: 260)
+                                                    .onSubmit { saveCredentialReplacement(for: key) }
+
+                                                Button("Save") {
+                                                    saveCredentialReplacement(for: key)
+                                                }
+                                                .font(Stanford.caption(12))
+                                                .disabled(replacementCredentialValue.isEmpty)
+
+                                                Button("Cancel") {
+                                                    cancelCredentialReplacement()
+                                                }
+                                                .font(Stanford.caption(12))
+                                                .buttonStyle(.plain)
+                                                .foregroundStyle(Stanford.coolGrey)
+                                            } else {
+                                                Button(inKeychain ? "Replace" : "Set Value") {
+                                                    editingCredentialKey = key
+                                                    replacementCredentialValue = ""
+                                                    credentialSaveError = nil
+                                                    pendingCredentialSaveContext = nil
+                                                }
+                                                .font(Stanford.caption(12))
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.small)
+
+                                                Button {
+                                                    pendingDeletion = PendingConnectorDeletion(
+                                                        title: "Remove secret “\(key)”?",
+                                                        message: "Remove the \(key) secret from \(connectorDisplayName)? Queued tasks keep their accepted credentials until they finish.",
+                                                        confirmTitle: "Remove Secret"
+                                                    ) {
+                                                        removeCredential(key)
+                                                    }
+                                                } label: {
+                                                    Image(systemName: "trash")
+                                                        .font(Stanford.ui(12))
+                                                        .foregroundStyle(Stanford.coolGrey)
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+                                        }
+                                        .padding(.vertical, 4)
+                                    }
+                                }
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+
+                            if isAddingCredential {
+                                HStack(spacing: 6) {
+                                    TextField("KEY", text: $newCredKey)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(Stanford.ui(13, design: .monospaced))
+                                        .frame(width: 140)
+                                    SecretEntryField("value", text: $newCredValue)
+                                        .font(Stanford.ui(13, design: .monospaced))
+                                        .onSubmit { addCredential() }
+                                    Button("Store secret") { addCredential() }
+                                        .disabled(newCredKey.trimmingCharacters(in: .whitespaces).isEmpty || newCredValue.isEmpty)
+                                    Button("Cancel") {
+                                        cancelCredentialEntry()
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(Stanford.coolGrey)
+                                }
+                            } else {
+                                Button {
+                                    isAddingCredential = true
+                                    credentialSaveError = nil
+                                    pendingCredentialSaveContext = nil
+                                } label: {
+                                    Label("New secret", systemImage: "plus.circle")
+                                        .font(Stanford.body(13))
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
                         }
                     }
                     .padding(.vertical, 4)
@@ -679,7 +706,7 @@ struct ConnectorEditorView: View {
                     Button(role: .destructive) {
                         pendingDeletion = PendingConnectorDeletion(
                             title: "Delete \(connectorDisplayName)?",
-                            message: "Delete the connector \(connectorDisplayName)? This removes its configuration and any stored Keychain secrets. This cannot be undone.",
+                            message: "Delete the connector \(connectorDisplayName)? This removes its configuration and saved keys. Tasks already accepted may keep access until they finish or are cancelled. To revoke access, revoke the credentials with the provider. This cannot be undone.",
                             confirmTitle: "Delete Connector"
                         ) {
                             cancelOutlookSignIn()
@@ -701,6 +728,10 @@ struct ConnectorEditorView: View {
         .onChange(of: connector.serviceType) { _, newType in
             applyServiceDefaults(for: newType)
         }
+        .task(id: connector.id) { refreshUnreadableCredentialKeys() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshUnreadableCredentialKeys()
+        }
         .onDisappear {
             cancelOutlookSignIn()
             connector.updatedAt = Date()
@@ -708,6 +739,9 @@ struct ConnectorEditorView: View {
                 workspace: workspace ?? connector.workspace,
                 modelContext: modelContext
             )
+            // An account other workspaces carry (a binding, a shared list, a
+            // skill) is in their mirrors too.
+            PluginStateMirrors.exportAfterSave(workspace: workspace ?? connector.workspace, accounts: [connector], modelContext: modelContext)
         }
         .confirmationDialog(
             pendingDeletion?.title ?? "",
@@ -758,11 +792,11 @@ struct ConnectorEditorView: View {
 
                 HStack(spacing: 8) {
                     Label(
-                        connector.hasOutlookRefreshToken ? "Signed in" : "Not signed in",
-                        systemImage: connector.hasOutlookRefreshToken ? "checkmark.shield.fill" : "person.crop.circle.badge.exclamationmark"
+                        connector.hasOutlookAuthorization ? "Signed in" : "Not signed in",
+                        systemImage: connector.hasOutlookAuthorization ? "checkmark.shield.fill" : "person.crop.circle.badge.exclamationmark"
                     )
                     .font(Stanford.caption(12))
-                    .foregroundStyle(connector.hasOutlookRefreshToken ? Stanford.paloAltoGreen : Stanford.poppy)
+                    .foregroundStyle(connector.hasOutlookAuthorization ? Stanford.paloAltoGreen : Stanford.poppy)
 
                     if !connector.outlookDisplayName.isEmpty {
                         Text(connector.outlookDisplayName)
@@ -817,7 +851,7 @@ struct ConnectorEditorView: View {
                                 Text("Waiting for Sign-In")
                             }
                         } else {
-                            Label(connector.hasOutlookRefreshToken ? "Reconnect" : "Connect", systemImage: "person.crop.circle.badge.checkmark")
+                            Label(connector.hasStoredOutlookAuthorization ? "Reconnect" : "Connect", systemImage: "person.crop.circle.badge.checkmark")
                         }
                     }
                     .disabled(isOAuthSigningIn || connector.outlookClientID.isEmpty)
@@ -829,7 +863,7 @@ struct ConnectorEditorView: View {
                     } label: {
                         Label("Test", systemImage: "bolt.horizontal.circle")
                     }
-                    .disabled(!connector.hasOutlookRefreshToken || isTesting)
+                    .disabled(!connector.hasOutlookAuthorization || isTesting)
 
                     Button {
                         if isOAuthSigningIn {
@@ -840,7 +874,7 @@ struct ConnectorEditorView: View {
                     } label: {
                         Label(isOAuthSigningIn ? "Cancel" : "Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
                     }
-                    .disabled(!connector.hasOutlookRefreshToken && !isOAuthSigningIn)
+                    .disabled(!connector.hasStoredOutlookAuthorization && !isOAuthSigningIn)
 
                     Spacer()
 
@@ -874,70 +908,52 @@ struct ConnectorEditorView: View {
     private func startOutlookSignIn() {
         connector.applyStanfordOutlookDefaults(defaultTenant: false)
         cancelOutlookSignIn()
+        guard saveSharingChange() else {
+            oauthStatus = "Save this account's settings before signing in."
+            testResult = (false, oauthStatus)
+            return
+        }
+        let signIn: OutlookSignInSession
+        do { signIn = try OutlookSignInSession(account: connector) }
+        catch { oauthStatus = error.localizedDescription; testResult = (false, oauthStatus); return }
         let generation = UUID()
         oauthSignInGeneration = generation
         oauthDeviceCode = nil
         oauthStatus = "Requesting Microsoft sign-in code..."
         isOAuthSigningIn = true
         testResult = nil
-
         oauthSignInTask = Task {
             do {
-                let auth = StanfordOutlookMailAuthService()
-                let deviceCode = try await auth.startDeviceAuthorization(connector: connector)
-                await MainActor.run {
-                    guard oauthSignInGeneration == generation else { return }
-                    oauthDeviceCode = deviceCode
-                    oauthStatus = "A browser has opened. Complete Microsoft/Stanford sign-in, including Duo, then ASTRA will finish automatically."
-                    if let url = URL(string: deviceCode.verificationUri) {
-                        NSWorkspace.shared.open(url)
-                    }
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(deviceCode.userCode, forType: .string)
-                }
-                let token = try await auth.pollForToken(connector: connector, deviceCode: deviceCode)
+                let deviceCode = try await signIn.start()
                 try Task.checkCancellation()
-                let savedToken = await MainActor.run {
-                    guard oauthSignInGeneration == generation else { return false }
-                    return auth.saveTokenResponse(token, connector: connector, allowUserInteraction: true)
-                }
-                guard savedToken else {
-                    await MainActor.run {
-                        guard oauthSignInGeneration == generation else { return }
-                        oauthStatus = "Microsoft sign-in completed, but ASTRA could not save the OAuth tokens to Keychain. Allow ASTRA to access its Keychain item, then sign in again."
-                        testResult = (false, oauthStatus)
-                        isOAuthSigningIn = false
-                        oauthSignInTask = nil
-                    }
-                    return
-                }
-                let me = try await StanfordOutlookMailGraphService().testConnection(connector: connector)
-                await MainActor.run {
-                    guard oauthSignInGeneration == generation else { return }
-                    let identity = me.mail ?? me.userPrincipalName ?? connector.outlookEmail
-                    oauthStatus = identity.isEmpty ? "Connected to Microsoft Graph." : "Connected as \(identity)."
-                    testResult = (true, oauthStatus)
-                    oauthDeviceCode = nil
-                    isOAuthSigningIn = false
-                    oauthSignInTask = nil
-                    saveSharingChange()
-                }
+                guard oauthSignInGeneration == generation else { throw CancellationError() }
+                oauthDeviceCode = deviceCode
+                oauthStatus = "A browser has opened. Complete Microsoft/Stanford sign-in, including Duo, then ASTRA will finish automatically."
+                if let url = URL(string: deviceCode.verificationUri), url.scheme == "https" { NSWorkspace.shared.open(url) }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(deviceCode.userCode, forType: .string)
+                let verified = try await signIn.finish(deviceCode: deviceCode)
+                try Task.checkCancellation()
+                guard oauthSignInGeneration == generation else { throw CancellationError() }
+                try signIn.publish(verified, on: connector, modelContext: modelContext, allowUserInteraction: true)
+                let identity = verified.identity.mail ?? verified.identity.userPrincipalName ?? ""
+                oauthStatus = identity.isEmpty ? "Connected to Microsoft Graph." : "Connected as \(identity)."
+                testResult = (true, oauthStatus)
+                oauthDeviceCode = nil
+                isOAuthSigningIn = false
+                oauthSignInTask = nil
             } catch is CancellationError {
-                await MainActor.run {
-                    guard oauthSignInGeneration == generation else { return }
-                    oauthDeviceCode = nil
-                    oauthStatus = "Sign-in cancelled."
-                    isOAuthSigningIn = false
-                    oauthSignInTask = nil
-                }
+                guard oauthSignInGeneration == generation else { return }
+                oauthDeviceCode = nil
+                oauthStatus = "Sign-in cancelled."
+                isOAuthSigningIn = false
+                oauthSignInTask = nil
             } catch {
-                await MainActor.run {
-                    guard oauthSignInGeneration == generation else { return }
-                    oauthStatus = error.localizedDescription
-                    testResult = (false, error.localizedDescription)
-                    isOAuthSigningIn = false
-                    oauthSignInTask = nil
-                }
+                guard oauthSignInGeneration == generation else { return }
+                oauthStatus = error.localizedDescription
+                testResult = (false, oauthStatus)
+                isOAuthSigningIn = false
+                oauthSignInTask = nil
             }
         }
     }
@@ -983,11 +999,13 @@ struct ConnectorEditorView: View {
 
     private func signOutOutlook() {
         cancelOutlookSignIn()
-        connector.clearOutlookOAuthState()
-        oauthDeviceCode = nil
-        oauthStatus = "Signed out and removed stored OAuth tokens for this account."
-        testResult = nil
-        saveSharingChange()
+        guard saveSharingChange() else { return }
+        do {
+            try OutlookAuthorizationEditor.signOut(connector, modelContext: modelContext)
+            oauthDeviceCode = nil
+            oauthStatus = "Signed out in ASTRA. Tasks already accepted keep their authorization."
+            testResult = nil
+        } catch { showCredentialOperationError(error) }
     }
 
     private func duplicateOutlookAccount() {
@@ -1003,6 +1021,8 @@ struct ConnectorEditorView: View {
         copy.workspace = workspace
         copy.skill = connector.skill
         copy.applyStanfordOutlookDefaults()
+        copy.credentialNamespaceID = UUID()
+        copy.outlookCredentialFormat = OutlookCredentialIdentity.generationFormat
         copy.setConfigValue(StanfordOutlookMail.tenantDomainKey, value: connector.outlookTenantDomain)
         modelContext.insert(copy)
         onDuplicate?(copy)
@@ -1018,11 +1038,7 @@ struct ConnectorEditorView: View {
     private func addCredential() {
         let key = newCredKey.trimmingCharacters(in: .whitespaces).uppercased()
         guard !key.isEmpty, !newCredValue.isEmpty else { return }
-        let outcome = connector.saveCredentialChecked(
-            key: key,
-            value: newCredValue,
-            allowUserInteraction: true
-        )
+        guard let outcome = storeCredential(newCredValue, key: key) else { return }
         guard outcome.isSaved else {
             credentialSaveError = presentation(for: outcome, key: key)
             pendingCredentialSaveContext = .newCredential
@@ -1031,8 +1047,108 @@ struct ConnectorEditorView: View {
         credentialSaveError = nil
         pendingCredentialSaveContext = nil
         testResult = nil
-        saveSharingChange()
         cancelCredentialEntry()
+    }
+
+    /// The form binds metadata directly to the model. Commit those normal
+    /// form edits before entering the credential transaction, whose clean-context
+    /// guard must still reject unsettled domain saves.
+    private func savePendingConnectorFormChanges() throws {
+        guard modelContext.hasChanges else { return }
+        try ConnectorCredentialEditor.requireReady(
+            try ConnectorCredentialEditor.workspaceScope(of: connector, modelContext: modelContext),
+            modelContext: modelContext)
+        guard CapabilityPersistence.saveResourceMutation(workspace: workspace ?? connector.workspace,
+            isGlobal: connector.isGlobal, modelContext: modelContext) else {
+            throw ConnectorCredentialEditor.Failure.saveFailed
+        }
+        PluginStateMirrors.exportAfterSave(workspace: workspace ?? connector.workspace,
+            accounts: [connector], modelContext: modelContext)
+    }
+
+    private func storeCredential(_ value: String, key: String) -> ConnectorCredentialSaveOutcome? {
+        do {
+            try savePendingConnectorFormChanges()
+            let result = try ConnectorCredentialEditor.save(value, forKey: key, on: connector,
+                modelContext: modelContext, allowUserInteraction: true)
+            credentialOperationError = nil
+            credentialRecoveryID = nil
+            refreshUnreadableCredentialKeys()
+            return result
+        } catch { showCredentialOperationError(error); return nil }
+    }
+
+    /// One generation for every value this build can't read; see
+    /// `ConnectorCredentialReentrySection`.
+    private func reenterCredentials(_ values: [String: String]) -> Bool {
+        defer { refreshUnreadableCredentialKeys() }
+        do {
+            try savePendingConnectorFormChanges()
+            let failure = try ConnectorCredentialEditor.save(values, on: connector,
+                modelContext: modelContext, allowUserInteraction: true)
+            // The section keeps what was typed, so its own Save is the retry.
+            credentialSaveError = nil
+            pendingCredentialSaveContext = nil
+            credentialRecoveryID = nil
+            credentialOperationError = failure.map { presentation(for: $0.outcome, key: $0.key).message }
+            if failure == nil {
+                testResult = nil
+                cancelCredentialReplacement()
+                cancelCredentialEntry()
+            }
+            return failure == nil
+        } catch { showCredentialOperationError(error); return false }
+    }
+
+    /// Explicit reads, so on appear and after a credential change only.
+    private func refreshUnreadableCredentialKeys() {
+        unreadableCredentialKeys = ConnectorCredentialEditor.unreadableKeys(of: connector)
+    }
+
+    private func removeCredential(_ key: String) {
+        do {
+            try savePendingConnectorFormChanges()
+            try ConnectorCredentialEditor.remove(key, from: connector, modelContext: modelContext)
+            refreshUnreadableCredentialKeys()
+            credentialOperationError = nil
+            credentialRecoveryID = nil
+            credentialSaveError = nil
+            pendingCredentialSaveContext = nil
+            testResult = nil
+        } catch { showCredentialOperationError(error) }
+    }
+
+    private func finishCredentialRecovery(_ id: UUID) {
+        do {
+            try ConnectorCredentialEditor.recover(id, modelContext: modelContext)
+            refreshUnreadableCredentialKeys()
+            credentialOperationError = nil
+            credentialRecoveryID = nil
+            testResult = nil
+        } catch {
+            showCredentialOperationError(error)
+            // A temporary read/lock failure still owes this same recovery;
+            // it must not turn the button into another credential write.
+            if !(error is ConnectorCredentialEditor.Failure) { credentialRecoveryID = id }
+        }
+    }
+
+    private func showCredentialOperationError(_ error: Error) {
+        // A refused copy can reveal unreadable keys after the initial probe.
+        // Offer their batch replacement immediately, without reopening the editor.
+        refreshUnreadableCredentialKeys()
+        credentialSaveError = nil
+        pendingCredentialSaveContext = nil
+        credentialRecoveryID = nil
+        if let problem = error as? PluginOperationProblem {
+            switch problem {
+            case .savedRecoveryPending(let id):
+                credentialRecoveryID = id
+                credentialOperationError = problem.localizedDescription
+            case .commitUncertain:
+                credentialOperationError = ConnectorCredentialEditor.Failure.restartRequired.localizedDescription
+            }
+        } else { credentialOperationError = error.localizedDescription }
     }
 
     private func cancelCredentialEntry() {
@@ -1047,11 +1163,7 @@ struct ConnectorEditorView: View {
     private func saveCredentialReplacement(for key: String) {
         let normalizedKey = key.trimmingCharacters(in: .whitespaces).uppercased()
         guard !normalizedKey.isEmpty, !replacementCredentialValue.isEmpty else { return }
-        let outcome = connector.saveCredentialChecked(
-            key: normalizedKey,
-            value: replacementCredentialValue,
-            allowUserInteraction: true
-        )
+        guard let outcome = storeCredential(replacementCredentialValue, key: normalizedKey) else { return }
         guard outcome.isSaved else {
             credentialSaveError = presentation(for: outcome, key: normalizedKey)
             pendingCredentialSaveContext = .replacement(key: normalizedKey)
@@ -1060,7 +1172,6 @@ struct ConnectorEditorView: View {
         credentialSaveError = nil
         pendingCredentialSaveContext = nil
         testResult = nil
-        saveSharingChange()
         cancelCredentialReplacement()
     }
 
@@ -1162,18 +1273,23 @@ struct ConnectorEditorView: View {
 
     private func duplicateForWorkspace() {
         guard let workspace else { return }
-        let copy = CapabilitySharing.duplicateForWorkspace(connector, in: workspace)
-        modelContext.insert(copy)
-        onDuplicate?(copy)
-        saveSharingChange()
+        do {
+            let copy = try ConnectorCredentialDuplication.duplicate(connector, in: workspace, modelContext: modelContext)
+            credentialOperationError = nil
+            credentialRecoveryID = nil
+            onDuplicate?(copy)
+        } catch { showCredentialOperationError(error) }
     }
 
-    private func saveSharingChange() {
-        CapabilityPersistence.saveResourceMutation(
+    @discardableResult
+    private func saveSharingChange() -> Bool {
+        guard CapabilityPersistence.saveResourceMutation(
             workspace: workspace ?? connector.workspace,
             isGlobal: connector.isGlobal,
             modelContext: modelContext
-        )
+        ) else { return false }
+        PluginStateMirrors.exportAfterSave(workspace: workspace ?? connector.workspace, accounts: [connector], modelContext: modelContext)
+        return true
     }
 
     private func applyServiceDefaults(for type: String) {

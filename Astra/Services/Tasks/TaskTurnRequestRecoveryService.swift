@@ -4,8 +4,8 @@ import ASTRAModels
 import ASTRAPersistence
 
 /// Reconciles durable turn admissions after an app restart. Worker and
-/// resource-lock ownership are process-local, so no request may remain
-/// admitted or running once a new process owns the store.
+/// resource-lock ownership are process-local. An execution with a durable
+/// unresolved owner is preserved until its termination can be established.
 @MainActor
 enum TaskTurnRequestRecoveryService {
     struct Summary: Equatable {
@@ -23,6 +23,10 @@ enum TaskTurnRequestRecoveryService {
     ) -> Summary {
         let requests: [TaskTurnRequest]
         do {
+            // Repair a proved tool-free host completion before deciding whether
+            // its saved follow-up lost an unresolved connection on restart.
+            try RuntimeHostNoToolReceiptReconciliation.reconcile(
+                in: RuntimeExecutionOwner.store(in: modelContext), context: modelContext)
             // The table is append-only; recovery only ever acts on active
             // (non-terminal) rows, so bound the fetch at the store rather
             // than pulling the full history into memory to filter it.
@@ -36,6 +40,8 @@ enum TaskTurnRequestRecoveryService {
         }
         guard !requests.isEmpty else { return Summary() }
 
+        let ownership = RuntimeStartupRecoveryOwnership(context: modelContext)
+        defer { withExtendedLifetime(ownership) {} }
         var summary = Summary()
         var affectedWorkspaces: [UUID: Workspace] = [:]
         // Resolve the owning task via the scalar `taskID` (there is no
@@ -43,18 +49,17 @@ enum TaskTurnRequestRecoveryService {
         // task ids the active requests actually reference — not every
         // `AgentTask` row in the store.
         let taskIDs = Array(Set(requests.map(\.taskID)))
-        let tasksByID = Dictionary(
-            ((try? modelContext.fetch(
-                FetchDescriptor<AgentTask>(predicate: #Predicate { taskIDs.contains($0.id) })
-            )) ?? []).map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        let tasksByID = Dictionary(grouping: ((try? modelContext.fetch(
+            FetchDescriptor<AgentTask>(predicate: #Predicate { taskIDs.contains($0.id) })
+        )) ?? []), by: \.id)
+        var resolver = TaskTurnRequestOwnership.Resolver(candidates: tasksByID.values.flatMap { $0 })
         for request in requests {
-            guard let task = tasksByID[request.taskID] else {
+            guard ownership.claim(request.taskID) else { continue }
+            guard let task = resolver.resolve(request) else {
                 _ = TaskTurnRequestStateMachine.transition(
                     request,
                     to: .failed,
-                    terminalReason: "missing_task",
+                    terminalReason: tasksByID[request.taskID]?.isEmpty == false ? "task_owner_unresolved" : "missing_task",
                     at: recoveredAt
                 )
                 summary.terminalized += 1
@@ -122,6 +127,16 @@ enum TaskTurnRequestRecoveryService {
                     )
                     if requeued.changed { summary.returnedToWaiting += 1 }
                 }
+            } else if !RuntimeCompletedUserTurnContinuation.permits(task: task, request: request, context: modelContext),
+                      RuntimeExecutionOwner.preserveUnresolvedSession(task: task, context: modelContext, reportStatus: false) {
+                // The app's connection ended; the execution itself is still unverified.
+                // Keeping this admission "running" would show a false spinner and
+                // consume a queue slot forever. The protected execution owner still
+                // blocks every replacement, independently of this request outcome.
+                let transition = TaskTurnRequestStateMachine.transition(
+                    request, to: .failed, terminalReason: "runtime_connection_lost",
+                    at: recoveredAt)
+                if transition.changed { summary.terminalized += 1 }
             } else if request.state == .running {
                 // No terminal run to mirror — the run (if any) never finished.
                 // Worker ownership is process-local, so a running turn cannot

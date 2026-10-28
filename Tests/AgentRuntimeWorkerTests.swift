@@ -693,7 +693,7 @@ struct TaskDeliverableExpectationTests {
 @MainActor
 struct AgentFileChangeDetectorTests {
     @Test("Inferred file changes ignore provider cache files")
-    func inferredFileChangesIgnoreProviderCacheFiles() throws {
+    func inferredFileChangesIgnoreProviderCacheFiles() async throws {
         let container = try makeContainer()
         let context = container.mainContext
         let workspacePath = NSTemporaryDirectory() + "file-change-runtime-cache-\(UUID().uuidString)"
@@ -715,7 +715,7 @@ struct AgentFileChangeDetectorTests {
         let report = URL(fileURLWithPath: workspacePath).appendingPathComponent("report.md")
         try "# Report".write(to: report, atomically: true, encoding: .utf8)
 
-        AgentFileChangeDetector.appendInferredFileChanges(
+        await AgentFileChangeDetector.appendInferredFileChanges(
             to: run,
             task: task,
             modelContext: context,
@@ -1891,6 +1891,8 @@ struct BuildPromptTests {
             currentURL: "https://outlook.office.com/mail/",
             currentTitle: "Outlook",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -1939,6 +1941,8 @@ struct BuildPromptTests {
             currentURL: "https://outlook.cloud.microsoft/mail/inbox/id/example",
             currentTitle: "Outlook",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -1967,6 +1971,8 @@ struct BuildPromptTests {
             currentURL: "https://drive.google.com/drive/home",
             currentTitle: "Google Drive",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -1977,6 +1983,7 @@ struct BuildPromptTests {
             currentURL: nil,
             currentTitle: nil,
             taskID: nil,
+            sessionID: UUID(),
             isPresented: false,
             isEnabled: true
         )
@@ -1990,7 +1997,7 @@ struct BuildPromptTests {
         #expect(!prompt.contains("http://127.0.0.1:49153"))
         #expect(prompt.contains("astra-browser google-drive-open"))
         #expect(prompt.contains("respects the selected browser engine"))
-        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id, ownerID: ShelfBrowserOwner(task).modelID)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
     }
 
     @Test("Prompt and environment keep enabled Shelf browser when panel is hidden")
@@ -2008,6 +2015,8 @@ struct BuildPromptTests {
             currentURL: "http://127.0.0.1:47831/",
             currentTitle: "Validation",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2016,6 +2025,8 @@ struct BuildPromptTests {
             currentURL: "http://127.0.0.1:47831/",
             currentTitle: "Validation",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: false,
             isEnabled: true
         )
@@ -2026,7 +2037,7 @@ struct BuildPromptTests {
         #expect(prompt.contains("Shelf Browser Session:"))
         #expect(prompt.contains("ASTRA_BROWSER_URL"))
         #expect(prompt.contains("http://127.0.0.1:47831/"))
-        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id, ownerID: ShelfBrowserOwner(task).modelID)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
     }
 
     @Test("Standalone artifact prompt omits hidden empty Shelf browser bridge")
@@ -2048,6 +2059,8 @@ struct BuildPromptTests {
             currentURL: nil,
             currentTitle: nil,
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: false,
             isEnabled: true
         )
@@ -2057,7 +2070,7 @@ struct BuildPromptTests {
         let environment = AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task)
         let scope = TaskCapabilityResolver(task: task).promptScope()
 
-        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id, ownerID: ShelfBrowserOwner(task).modelID)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
         #expect(!prompt.contains("Shelf Browser Session:"))
         #expect(!prompt.contains("ASTRA_BROWSER_URL"))
         #expect(environment["ASTRA_BROWSER_URL"] == nil)
@@ -2079,6 +2092,8 @@ struct BuildPromptTests {
             currentURL: "https://example.com",
             currentTitle: "Example",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: false
         )
@@ -2107,13 +2122,15 @@ struct BuildPromptTests {
             currentURL: "https://example.com",
             currentTitle: "Example",
             taskID: attachedTask.id,
+            taskOwnerID: ShelfBrowserOwner(attachedTask).modelID,
+            sessionID: attachedTask.id,
             isPresented: true,
             isEnabled: true
         )
         defer { ShelfBrowserBridgeRegistry.shared.reset() }
 
-        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: attachedTask.id)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
-        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: otherTask.id).isEmpty)
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: attachedTask.id, ownerID: ShelfBrowserOwner(attachedTask).modelID)["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
+        #expect(ShelfBrowserBridgeRegistry.shared.environmentVariables(for: otherTask.id, ownerID: ShelfBrowserOwner(otherTask).modelID).isEmpty)
 
         let prompt = AgentPromptBuilder.buildPrompt(for: otherTask)
 
@@ -2136,13 +2153,15 @@ struct BuildPromptTests {
             currentURL: "https://example.com",
             currentTitle: "Example",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             accessToken: "ASTRA_TEST_BROWSER_TOKEN",
             isPresented: true,
             isEnabled: true
         )
         defer { ShelfBrowserBridgeRegistry.shared.reset() }
 
-        let environment = ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id)
+        let environment = ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id, ownerID: ShelfBrowserOwner(task).modelID)
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
 
         #expect(environment["ASTRA_BROWSER_URL"] == "http://127.0.0.1:49152")
@@ -2381,35 +2400,7 @@ struct ControlledBrowserTests {
         #expect(script.contains("[redacted-sensitive-input]"))
     }
 
-    @Test("existing controlled profile process parser finds DevTools port")
-    func existingControlledProfileProcessParserFindsDevToolsPort() {
-        let processList = """
-          99935 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-address=127.0.0.1 --remote-debugging-port=60007 --user-data-dir=/tmp/Astra Dev/ControlledBrowser/Default --new-window
-          99942 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --user-data-dir=/tmp/Astra Dev/ControlledBrowser/Default
-        """
 
-        let target = ControlledBrowserController.runningDebugTarget(
-            profilePath: "/tmp/Astra Dev/ControlledBrowser/Default",
-            processList: processList
-        )
-
-        #expect(target == ControlledBrowserDebugTarget(processID: 99_935, debugPort: 60_007))
-    }
-
-    @Test("existing controlled profile parser prefers the primary browser process")
-    func existingControlledProfileParserPrefersPrimaryBrowserProcess() {
-        let processList = """
-          39917 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/147.0.7727.56/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --user-data-dir=/tmp/Astra Dev/ControlledBrowser/Default --remote-debugging-port=60007
-          99935 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-address=127.0.0.1 --remote-debugging-port=60007 --user-data-dir=/tmp/Astra Dev/ControlledBrowser/Default --no-first-run --new-window
-        """
-
-        let target = ControlledBrowserController.runningDebugTarget(
-            profilePath: "/tmp/Astra Dev/ControlledBrowser/Default",
-            processList: processList
-        )
-
-        #expect(target == ControlledBrowserDebugTarget(processID: 99_935, debugPort: 60_007))
-    }
 }
 
 @Suite("Cardinal Key Client Certificate")

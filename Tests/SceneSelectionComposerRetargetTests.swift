@@ -6,6 +6,31 @@ import ASTRAModels
 @MainActor
 @Suite("SceneSelectionModel composer retarget")
 struct SceneSelectionComposerRetargetTests {
+    @Test("Workspace configuration opens home for an empty workspace instead of the implicit composer")
+    func configurationOpensEmptyWorkspaceHome() {
+        let empty = workspace("Empty configuration")
+        let model = SceneSelectionModel()
+        model.composeTask(workspace: empty)
+        model.openWorkspaceConfiguration(empty)
+        #expect(model.isShowingWorkspaceConfiguration)
+        #expect(!model.isComposingTask)
+        #expect(model.newTaskComposerWorkspaceID == nil)
+    }
+
+    @Test("Configuration intent is cleared when composing or restoring an empty workspace")
+    func configurationDoesNotReplaceOtherWorkspaceIntents() {
+        let empty = workspace("Empty configuration")
+        let model = SceneSelectionModel()
+        model.openWorkspaceConfiguration(empty)
+        model.composeTask(workspace: empty)
+        #expect(!model.isShowingWorkspaceConfiguration)
+        #expect(model.newTaskComposerWorkspaceID == empty.id)
+        model.openWorkspaceConfiguration(empty)
+        model.restoreWorkspace(empty)
+        #expect(!model.isShowingWorkspaceConfiguration)
+        #expect(model.newTaskComposerWorkspaceID == empty.id)
+    }
+
     @Test("Retargeting moves the open composer to another workspace")
     func retargetKeepsComposerOpen() {
         let first = workspace("First")

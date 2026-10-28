@@ -56,6 +56,14 @@ struct TaskPresentationStateTests {
         #expect(closed.composerLabel == TaskPresentationState.closedColumnTitle)
     }
 
+    @Test("Budget guidance distinguishes Retry from a new request")
+    func budgetGuidancePreservesRequestScope() {
+        let presentation = TaskPresentationState.reviewPresentation(status: .budgetExceeded, isClosed: false)
+        #expect(presentation.decisionDetail == TaskRequestBudget.exhaustedMessage)
+        #expect(presentation.composerHelp == TaskRequestBudget.exhaustedMessage)
+        #expect(TaskRequestBudget.exhaustedMessage.contains("Retry keeps the remaining allowance"))
+    }
+
     @Test("pending user is input state not closed state")
     func pendingUserNeedsInput() {
         let presentation = TaskPresentationState.reviewPresentation(status: .pendingUser, isClosed: false)

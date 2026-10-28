@@ -90,7 +90,7 @@ final class NativeResumeEmptyTurnGate: @unchecked Sendable {
             return !(summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .unknown(_, let type, _):
             return type.lowercased() != "thinking"
-        case .control, .started, .thinking, .stats:
+        case .control, .started, .thinking, .stats, .usageMetadata:
             return false
         }
     }
@@ -105,57 +105,77 @@ final class NativeResumeEmptyTurnGate: @unchecked Sendable {
 /// none, it is recorded on its own once the re-run ends.
 final class DiscardedAttemptUsage: @unchecked Sendable {
     private let lock = NSLock()
-    private var input = 0
-    private var output = 0
+    private var tokens: (input: Int, output: Int)?
     private var cost: Double?
-    private var applied = false
+    private var tokensApplied = false
+    private var costApplied = false
 
     /// Tokens (input plus output) the discarded attempt spent.
     var totalTokens: Int {
         lock.lock()
         defer { lock.unlock() }
-        return input + output
+        return RuntimeUsageArithmetic.adding(tokens?.input ?? 0, tokens?.output ?? 0)
     }
 
     /// Takes the attempt's final usage, which is cumulative within its process.
     func record(from events: [AgentEvent]) {
-        let final = events.reversed().compactMap { event -> (Int, Int, Double?)? in
-            if case .stats(let input, let output, let cost, _, _) = event { return (input, output, cost) }
-            return nil
-        }.first
-        guard let final else { return }
         lock.lock()
-        input = final.0
-        output = final.1
-        cost = final.2
-        lock.unlock()
+        defer { lock.unlock() }
+        for event in events {
+            switch event {
+            case .stats(let input, let output, let cost, _, _):
+                tokens = (input, output)
+                if let cost { self.cost = cost }
+            case .usageMetadata(let cost, _, _):
+                if let cost { self.cost = cost }
+            default:
+                break
+            }
+        }
     }
 
     func apply(to events: [AgentRuntimeRecordedEvent]) -> [AgentRuntimeRecordedEvent] {
         lock.lock()
         defer { lock.unlock() }
-        guard input + output > 0 || cost != nil else { return events }
+        guard tokens != nil || cost != nil else { return events }
         return events.map { recorded in
-            guard case .agent(.stats(let eventInput, let eventOutput, let eventCost, let duration, let turns)) = recorded else {
+            switch recorded {
+            case .agent(.stats(let eventInput, let eventOutput, let eventCost, let duration, let turns)):
+                tokensApplied = true
+                costApplied = cost != nil
+                return .agent(.stats(
+                    inputTokens: RuntimeUsageArithmetic.adding(eventInput, tokens?.input ?? 0),
+                    outputTokens: RuntimeUsageArithmetic.adding(eventOutput, tokens?.output ?? 0),
+                    costUSD: addingCost(to: eventCost),
+                    durationMs: duration,
+                    turns: turns
+                ))
+            case .agent(.usageMetadata(let eventCost, let duration, let turns)):
+                costApplied = cost != nil
+                return .agent(.usageMetadata(costUSD: addingCost(to: eventCost), durationMs: duration, turns: turns))
+            default:
                 return recorded
             }
-            applied = true
-            return .agent(.stats(
-                inputTokens: eventInput + input,
-                outputTokens: eventOutput + output,
-                costUSD: eventCost.map { $0 + (cost ?? 0) } ?? cost,
-                durationMs: duration,
-                turns: turns
-            ))
         }
+    }
+
+    private func addingCost(to current: Double?) -> Double? {
+        current.map { min(Double.greatestFiniteMagnitude, $0 + (cost ?? 0)) } ?? cost
     }
 
     /// The discarded attempt's usage as an event of its own, when the re-run never reported any.
     func unappliedEvents() -> [AgentRuntimeRecordedEvent] {
         lock.lock()
         defer { lock.unlock() }
-        guard !applied, input + output > 0 || cost != nil else { return [] }
-        applied = true
-        return [.agent(.stats(inputTokens: input, outputTokens: output, costUSD: cost, durationMs: nil, turns: nil))]
+        let remainingCost = costApplied ? nil : cost
+        if let tokens, !tokensApplied {
+            tokensApplied = true
+            costApplied = true
+            return [.agent(.stats(inputTokens: tokens.input, outputTokens: tokens.output,
+                costUSD: remainingCost, durationMs: nil, turns: nil))]
+        }
+        guard let remainingCost else { return [] }
+        costApplied = true
+        return [.agent(.usageMetadata(costUSD: remainingCost, durationMs: nil, turns: nil))]
     }
 }

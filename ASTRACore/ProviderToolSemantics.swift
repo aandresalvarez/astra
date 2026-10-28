@@ -10,7 +10,7 @@ public enum ProviderToolSemantics {
             return "bash"
         }
         switch lower {
-        case "shell", "command_execution":
+        case "shell", "command_execution", "shelltoolcall":
             return "bash"
         case "view":
             return "read"

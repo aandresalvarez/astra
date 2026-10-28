@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 
 final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
     static let shared = ShelfBrowserBridgeRegistry()
@@ -16,104 +17,70 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         }
     }
 
+    private struct Registration {
+        var isLaunchSelected: Bool
+        var owner: ShelfBrowserOwner?
+        var endpoint: String?
+        var currentURL: String?
+        var currentTitle: String?
+        var backend: String
+        var accessToken: String?
+        var isPresented: Bool
+        var isEnabled: Bool
+        var enabledBrowserAdapters: [String]
+    }
+
     private let lock = NSLock()
-    private var endpoint: String?
-    private var currentURL: String?
-    private var currentTitle: String?
-    private var backend = "embedded WebKit"
-    private var taskID: UUID?
-    private var accessToken: String?
-    private var isPresented = false
-    private var isEnabled = false
-    private var enabledBrowserAdapters: [String] = []
+    private var sessions: [UUID: Registration] = [:]
 
-    private init() {}
+    init() {}
 
+    /// Every instance owns only its registration. Background updates and
+    /// teardown cannot replace or erase another window/session's endpoint.
     func update(
-        endpoint: String?,
-        currentURL: String?,
-        currentTitle: String?,
-        backend: String = "embedded WebKit",
-        taskID: UUID?,
-        accessToken: String? = nil,
-        isPresented: Bool,
-        isEnabled: Bool,
-        enabledBrowserAdapters: [String] = []
+        endpoint: String?, currentURL: String?, currentTitle: String?,
+        backend: String = "embedded WebKit", taskID: UUID?,
+        taskOwnerID: PersistentIdentifier? = nil, sessionID: UUID,
+        accessToken: String? = nil, isPresented: Bool, isEnabled: Bool,
+        enabledBrowserAdapters: [String] = [], isLaunchSelected: Bool = true
     ) {
         lock.lock()
-        if !isPresented, taskID == nil, self.taskID != nil, self.isPresented {
-            let activeTaskID = self.taskID
-            let fields = [
-                "event": "inactive_unbound_update_ignored",
-                "incoming_has_endpoint": String(endpoint != nil),
-                "incoming_has_current_url": String(currentURL?.isEmpty == false),
-                "active_task_id": self.taskID?.uuidString ?? "",
-                "active_has_endpoint": String(self.endpoint != nil),
-                "active_has_current_url": String(self.currentURL?.isEmpty == false),
-                "backend": backend
-            ]
-            lock.unlock()
-            AppLogger.audit(
-                .shelfBrowserContext,
-                category: "Browser",
-                taskID: activeTaskID,
-                fields: fields,
-                level: .debug
-            )
-            return
-        }
-
-        self.endpoint = endpoint
-        self.currentURL = currentURL
-        self.currentTitle = currentTitle
-        self.backend = backend
-        self.taskID = taskID
-        self.accessToken = accessToken
-        self.isPresented = isPresented
-        self.isEnabled = isEnabled
-        self.enabledBrowserAdapters = normalizedAdapterList(enabledBrowserAdapters)
-        lock.unlock()
+        defer { lock.unlock() }
+        sessions[sessionID] = Registration(
+            isLaunchSelected: isLaunchSelected,
+            owner: taskID.map { ShelfBrowserOwner(taskID: $0, modelID: taskOwnerID) },
+            endpoint: endpoint, currentURL: currentURL, currentTitle: currentTitle,
+            backend: backend, accessToken: accessToken, isPresented: isPresented,
+            isEnabled: isEnabled, enabledBrowserAdapters: normalizedAdapterList(enabledBrowserAdapters))
     }
 
     func reset() {
         lock.lock()
-        resetLocked()
+        sessions.removeAll()
         lock.unlock()
     }
 
-    /// Reset only if the registry currently points at `taskID`. Used when a
-    /// non-active session is torn down/evicted so it cannot clobber the
-    /// registration belonging to the session an agent is actively driving.
-    func resetIfActive(taskID: UUID?) {
+    func remove(sessionID: UUID) {
         lock.lock()
-        guard self.taskID == taskID else {
-            lock.unlock()
-            return
-        }
-        resetLocked()
+        sessions.removeValue(forKey: sessionID)
         lock.unlock()
     }
 
-    private func resetLocked() {
-        endpoint = nil
-        currentURL = nil
-        currentTitle = nil
-        backend = "embedded WebKit"
-        taskID = nil
-        accessToken = nil
-        isPresented = false
-        isEnabled = false
-        enabledBrowserAdapters = []
-    }
-
-    func environmentVariables(for taskID: UUID) -> [String: String] {
+    private func registration(for owner: ShelfBrowserOwner) -> Registration? {
         lock.lock()
         defer { lock.unlock() }
-        guard isEnabled, self.taskID == taskID, let endpoint else { return [:] }
-        var variables = [
-            "ASTRA_BROWSER_URL": endpoint
-        ]
-        if let accessToken, !accessToken.isEmpty {
+        let matches = sessions.values.filter { $0.owner == owner && $0.isLaunchSelected }
+        // More than one window may show the same task. No arbitrary endpoint
+        // may become runtime authority when ownership is ambiguous.
+        guard matches.count == 1 else { return nil }
+        return matches.first
+    }
+
+    func environmentVariables(for taskID: UUID, ownerID: PersistentIdentifier? = nil) -> [String: String] {
+        guard let state = registration(for: ShelfBrowserOwner(taskID: taskID, modelID: ownerID)),
+              state.isEnabled, let endpoint = state.endpoint else { return [:] }
+        var variables = ["ASTRA_BROWSER_URL": endpoint]
+        if let accessToken = state.accessToken, !accessToken.isEmpty {
             variables["ASTRA_BROWSER_TOKEN"] = accessToken
         }
         if BrowserFailureDebugCapture.isEnabledByDefault() {
@@ -122,37 +89,25 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         return variables
     }
 
-    func promptState(for taskID: UUID, enabledBrowserAdapters override: [String]? = nil) -> PromptState {
-        lock.lock()
-        let boundTaskID = self.taskID
-        let isPresented = self.isPresented
-        let isEnabled = self.isEnabled
-        let hasEndpoint = endpoint != nil
-        let hasCurrentURL = currentURL?.isEmpty == false
-        let storedAdapterIDs = enabledBrowserAdapters
-        lock.unlock()
-
-        return PromptState(
-            isEnabled: isEnabled,
-            isPresented: isPresented,
-            isTaskBound: boundTaskID == taskID,
-            hasEndpoint: hasEndpoint,
-            hasCurrentURL: hasCurrentURL,
-            enabledBrowserAdapters: override.map(normalizedAdapterList) ?? storedAdapterIDs
-        )
+    func promptState(for taskID: UUID, ownerID: PersistentIdentifier? = nil,
+                     enabledBrowserAdapters override: [String]? = nil) -> PromptState {
+        let state = registration(for: ShelfBrowserOwner(taskID: taskID, modelID: ownerID))
+        return PromptState(isEnabled: state?.isEnabled ?? false,
+            isPresented: state?.isPresented ?? false, isTaskBound: state != nil,
+            hasEndpoint: state?.endpoint != nil, hasCurrentURL: state?.currentURL?.isEmpty == false,
+            enabledBrowserAdapters: override.map(normalizedAdapterList) ?? state?.enabledBrowserAdapters ?? [])
     }
 
-    func promptContext(for taskID: UUID, enabledBrowserAdapters override: [String]? = nil) -> String? {
-        lock.lock()
-        let endpoint = endpoint
-        let currentURL = currentURL
-        let currentTitle = currentTitle
-        let backend = backend
-        let boundTaskID = self.taskID
-        let isVisible = isPresented
-        let shouldExpose = isEnabled
-        let storedAdapterIDs = enabledBrowserAdapters
-        lock.unlock()
+    func promptContext(for taskID: UUID, ownerID: PersistentIdentifier? = nil,
+                       enabledBrowserAdapters override: [String]? = nil) -> String? {
+        let state = registration(for: ShelfBrowserOwner(taskID: taskID, modelID: ownerID))
+        let endpoint = state?.endpoint
+        let currentURL = state?.currentURL
+        let currentTitle = state?.currentTitle
+        let backend = state?.backend ?? "embedded WebKit"
+        let isVisible = state?.isPresented ?? false
+        let shouldExpose = state?.isEnabled ?? false
+        let storedAdapterIDs = state?.enabledBrowserAdapters ?? []
         let adapterIDs = override.map(normalizedAdapterList) ?? storedAdapterIDs
         let hasGoogleDriveAdapter = adapterIDs.contains(BrowserSiteAdapterID.googleDrive)
         let currentHost = currentURL.flatMap { URL(string: $0)?.host?.lowercased() } ?? ""
@@ -160,13 +115,13 @@ final class ShelfBrowserBridgeRegistry: @unchecked Sendable {
         let shouldSurfaceGoogleDriveHelper = hasGoogleDriveAdapter || isGoogleDriveOrDocsPage
         let hasGitHubAdapter = adapterIDs.contains(BrowserSiteAdapterID.github)
 
-        let isTaskBound = boundTaskID == taskID
+        let isTaskBound = state != nil
         let isExposed = shouldExpose && isTaskBound && endpoint != nil
         AppLogger.audit(.shelfBrowserContext, category: "Browser", taskID: taskID, fields: [
             "event": "prompt_context_requested",
             "exposed": String(isExposed),
             "is_presented": String(isVisible),
-            "is_enabled": String(isEnabled),
+            "is_enabled": String(shouldExpose),
             "is_task_bound": String(isTaskBound),
             "has_endpoint": String(endpoint != nil),
             "has_current_url": String(currentURL?.isEmpty == false),

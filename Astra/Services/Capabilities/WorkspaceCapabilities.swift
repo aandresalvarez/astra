@@ -19,6 +19,7 @@ struct WorkspaceCapabilities {
     /// Body-path callers pass their cached policy here so capability resolution
     /// can apply pack visibility without triggering catalog I/O.
     let packPolicy: PackResolvedPolicy?
+    private var projectedResources: PluginRuntimeProjection?
 
     init(
         workspace: Workspace,
@@ -56,8 +57,37 @@ struct WorkspaceCapabilities {
         })
     }
 
+    /// A row an activation names as a component's override is on exactly
+    /// while that activation is (the projection brings it in), so it never
+    /// counts as one of the workspace's own, nor as a shared row the
+    /// workspace lists: a list may still name it (the Shared Library turns
+    /// one on), and that must not keep it on after its plugin is off.
     var activeSkills: [Skill] {
-        uniqueSkills(workspaceSkills + enabledGlobalSkills + enabledPackageSkills)
+        let overriding = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
+        let ambient = (workspaceSkills + enabledGlobalSkills).filter {
+            !overriding.contains($0.id) && WorkspaceCapabilityActivation.permitsPendingLegacyResource($0.originPackageID, id: $0.id,
+                shared: $0.isGlobal, kind: .skill, in: workspace)
+        }
+        return uniqueSkills(ambient + enabledPackageSkills)
+    }
+
+    /// The skills a routine or a template's defaults can name: the ones the
+    /// scheduler resolves when the routine fires, plugin skills included, so
+    /// nothing offered for selection drops out of the run.
+    static func routineSkills(in workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
+        WorkspaceCapabilities(workspace: workspace, globalSkills: globalSkills).activeSkills
+    }
+
+    /// The same, against a catalog an editor loaded once
+    /// (`RoutineSkillCatalog`), so its `body` never scans the library.
+    static func routineSkills(in workspace: Workspace, globalSkills: [Skill], catalog: RoutineSkillCatalog) -> [Skill] {
+        WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            packageDefinitions: catalog.packages,
+            approvalRecords: catalog.approvalRecords,
+            packPolicy: catalog.packPolicy
+        ).activeSkills
     }
 
     var workspaceConnectors: [Connector] {
@@ -82,13 +112,42 @@ struct WorkspaceCapabilities {
         let attached = activeSkills.flatMap(\.connectors).filter { connector in
             if connector.isGlobal {
                 return enabledGlobalIDs.contains(connector.id.uuidString)
-                    || enabledPackageConnectorSpecs.contains {
-                        CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector)
-                    }
             }
             return connector.workspace?.id == workspace.id
         }
-        return uniqueConnectors(workspaceConnectors + attached + enabledGlobalConnectors + enabledPackageConnectors)
+        // An account is in scope only through its binding, so turning its
+        // plugin off, removing the plugin or dropping the component takes it
+        // out: a row bound here, or a workspace row a plugin created. A
+        // shared row this workspace listed itself stays an authored choice
+        // (`bindingOnlyAccountIDs`, as the runtime does in
+        // `TaskCapabilityResolver.allConnectors`).
+        let bindingOnly = WorkspaceCapabilityActivation.bindingOnlyAccountIDs(of: workspace)
+        let authored = (workspaceConnectors + attached).filter { !Self.isPluginAccount($0) }
+            + enabledGlobalConnectors
+        return uniqueConnectors(authored.filter { !bindingOnly.contains($0.id) } + projection.connectors)
+    }
+
+    /// A workspace row a plugin created for one of its connector components,
+    /// while an activation binds it or its plugin is still added there (a
+    /// dropped component's account stays out). A stamped row nothing owns,
+    /// one the migration couldn't bind or one Remove left stamped because
+    /// its credentials couldn't be copied out, is the person's.
+    static func isPluginAccount(_ connector: Connector) -> Bool {
+        let pluginID = (connector.originPackageID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !connector.isGlobal, !pluginID.isEmpty else { return false }
+        if connector.accountBindings.contains(where: { !$0.isDeleted && $0.activation.map { !$0.isDeleted } == true }) {
+            return true
+        }
+        return connector.workspace.map {
+            WorkspaceCapabilityActivation.activation(for: pluginID, in: $0) != nil
+                || WorkspaceCapabilityActivation.isPluginOriginDisabled(pluginID, in: $0)
+        } ?? false
+    }
+
+    /// Connector rows bound as accounts to any of this workspace's
+    /// activations, on or off.
+    var boundAccountIDs: Set<UUID> {
+        WorkspaceCapabilityActivation.boundAccountIDs(of: workspace)
     }
 
     var workspaceTools: [LocalTool] {
@@ -109,8 +168,13 @@ struct WorkspaceCapabilities {
     }
 
     var activeTools: [LocalTool] {
-        let attached = activeSkills.flatMap(\.localTools)
-        return uniqueTools(workspaceTools + attached + enabledGlobalTools + enabledPackageTools)
+        let overriding = WorkspaceCapabilityActivation.overridingRowIDs(of: workspace)
+        let ambient = (workspaceTools + activeSkills.flatMap(\.localTools) + enabledGlobalTools)
+            .filter {
+                !overriding.contains($0.id) && WorkspaceCapabilityActivation.permitsPendingLegacyResource($0.originPackageID, id: $0.id,
+                    shared: $0.isGlobal, kind: .tool, in: workspace)
+            }
+        return uniqueTools(ambient + projection.tools)
     }
 
     private var enabledPackages: [PluginPackage] {
@@ -129,45 +193,22 @@ struct WorkspaceCapabilities {
         )
     }
 
-    private var enabledPackageSkillSpecs: [PluginSkill] {
-        enabledPackages.flatMap(\.skills)
+    /// The enabled plugins' skills, tools and bound accounts, derived from
+    /// this workspace's activations.
+    var projection: PluginRuntimeProjection {
+        projectedResources ?? PluginRuntimeProjection.project(workspace: workspace, packages: enabledPackages, definitions: packageDefinitions)
     }
 
-    private var enabledPackageConnectorSpecs: [PluginConnector] {
-        enabledPackages.flatMap(\.connectors)
-    }
-
-    private var enabledPackageToolSpecs: [PluginLocalTool] {
-        enabledPackages.flatMap(\.localTools)
+    /// A single render owns these detached resources; ordinary runtime callers
+    /// retain live resolution. Never retain this across a workspace mutation.
+    func snapshotForPresentation() -> Self {
+        var copy = self
+        copy.projectedResources = projection
+        return copy
     }
 
     private var enabledPackageSkills: [Skill] {
-        let specs = enabledPackageSkillSpecs
-        let candidates = workspaceSkills + availableGlobalSkills
-        let directlyMatched = specs.isEmpty ? [] : candidates.filter { skill in
-            specs.contains { CapabilityRuntimeResourceMatcher.skillMatches($0, skill: skill) }
-        }
-        let resourceOwners = (enabledPackageConnectors.compactMap(\.skill) + enabledPackageTools.compactMap(\.skill))
-            .filter { skill in
-                candidates.contains { $0.id == skill.id }
-            }
-        return uniqueSkills(directlyMatched + resourceOwners)
-    }
-
-    private var enabledPackageConnectors: [Connector] {
-        let specs = enabledPackageConnectorSpecs
-        guard !specs.isEmpty else { return [] }
-        return sortedConnectors((workspaceConnectors + availableGlobalConnectors).filter { connector in
-            specs.contains { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
-        })
-    }
-
-    private var enabledPackageTools: [LocalTool] {
-        let specs = enabledPackageToolSpecs
-        guard !specs.isEmpty else { return [] }
-        return sortedTools((workspaceTools + availableGlobalTools).filter { tool in
-            specs.contains { CapabilityRuntimeResourceMatcher.toolMatches($0, tool: tool) }
-        })
+        projection.skills
     }
 
     private func uniqueSkills(_ skills: [Skill]) -> [Skill] {

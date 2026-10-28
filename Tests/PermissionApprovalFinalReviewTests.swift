@@ -7,6 +7,55 @@ import ASTRAPersistence
 @testable import ASTRA
 
 extension PermissionApprovalContinuationTests {
+    @Test("Legacy recovery sees pending unknown request kinds and keeps strict timestamp boundaries")
+    func legacyRecoverySeesFutureRequestKinds() throws {
+        let fixture = try Fixture(disk: true)
+        defer { fixture.cleanup() }
+        _ = try fixture.blockedRequest(completed: true, legacy: true)
+        TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: fixture.task)
+        _ = TaskRuntimePermissionGrants.record(grants: [.credential(label: fixture.label)], providerID: .codexCLI,
+            task: fixture.task, modelContext: fixture.context, source: "legacy-approval")
+        try fixture.context.save()
+        let approval = try #require(TaskHistoryRead.events(for: fixture.task, ofTypes: ["permission.approval.requested"]).first)
+        #expect(LegacyApprovedPermissionContinuation.isAvailable(task: fixture.task))
+        SwiftDataTaskRollbackPreparation.prepare(fixture.task)
+        let newer = TaskEvent(task: fixture.task, type: "execution.request.future_kind", payload: "new request")
+        newer.timestamp = approval.timestamp
+        fixture.context.insert(newer)
+        #expect(LegacyApprovedPermissionContinuation.isAvailable(task: fixture.task))
+        newer.timestamp = approval.timestamp.addingTimeInterval(1)
+        #expect(!LegacyApprovedPermissionContinuation.isAvailable(task: fixture.task))
+        fixture.context.rollback()
+        #expect(LegacyApprovedPermissionContinuation.isAvailable(task: fixture.task))
+        let denial = TaskEvent(task: fixture.task, type: TaskEventTypes.Tool.permissionRequestResolved.rawValue,
+            payload: PermissionRequestResolution(requestID: "connector-credentials-\(fixture.connectorID.uuidString.lowercased())",
+                approved: false, toolName: "Jira").payloadString)
+        fixture.context.insert(denial)
+        #expect(!LegacyApprovedPermissionContinuation.isAvailable(task: fixture.task))
+        fixture.context.delete(denial)
+        #expect(LegacyApprovedPermissionContinuation.isAvailable(task: fixture.task))
+        fixture.context.rollback()
+        #expect(LegacyApprovedPermissionContinuation.isAvailable(task: fixture.task))
+    }
+
+    @Test("Legacy payload lookup uses the latest matching run and respects pending deletion")
+    func legacyPayloadRunSelectionStaysCurrent() throws {
+        let fixture = try Fixture(disk: true)
+        defer { fixture.cleanup() }
+        _ = try fixture.blockedRequest(completed: true, legacy: true)
+        let approval = try #require(TaskHistoryRead.events(for: fixture.task, ofTypes: ["permission.approval.requested"]).first)
+        #expect(!TaskPermissionContinuation.isFutureUse(payload: approval.payload, task: fixture.task))
+        let laterRun = TaskRun(task: fixture.task)
+        laterRun.typedStopReason = .completed
+        fixture.context.insert(laterRun)
+        let repeated = TaskEvent(task: fixture.task, type: "permission.approval.requested", payload: approval.payload, run: laterRun)
+        repeated.timestamp = approval.timestamp.addingTimeInterval(1)
+        fixture.context.insert(repeated)
+        #expect(TaskPermissionContinuation.isFutureUse(payload: approval.payload, task: fixture.task))
+        fixture.context.delete(repeated)
+        #expect(!TaskPermissionContinuation.isFutureUse(payload: approval.payload, task: fixture.task))
+    }
+
     @Test("Legacy recovery still requires current saved authority and never overrides a denial",
           arguments: ["missing-grant", "denied", "cancelled", "closed", "new-turn", "runtime-mismatch", "future-use"])
     func legacyRecoveryRejectsIneligibleRequests(reason: String) throws {
@@ -252,6 +301,7 @@ extension PermissionApprovalContinuationTests {
         await channel.recordAcknowledgements()
         #expect(channel.acknowledgedPermissionRequestIDs.isEmpty)
         let request = try #require(try TaskTurnRequestRepository.requests(for: fixture.task, in: fixture.context).first)
+        try RuntimeRecoveryTestReceipt.install(task: fixture.task, run: run, context: fixture.context)
         let tests = RuntimeTurnSettlementTests()
         let captured = tests.checkpoint(fixture, request: request)
         try RuntimeTurnSettlementService.capture(captured, task: fixture.task, run: run, modelContext: fixture.context)

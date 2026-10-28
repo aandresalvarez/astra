@@ -308,7 +308,12 @@ enum TaskRuntimePermissionOpenRequestStore {
     }
 
     private static func unresolvedCompatibilityEntries(for task: AgentTask) -> [Entry] {
-        let events = task.events.filter { !$0.isDeleted }
+        // Older tasks have no typed state. This fallback is also read while
+        // drawing the decision dock, so do not fault every tool event each
+        // time the task changes. Keep pending resolutions in the same context.
+        let events = TaskHistoryRead.records(for: task, ofTypes: [
+            "permission.approval.requested", "permission.request.resolved", "task.approved"
+        ])
         var entries: [Entry] = []
         for event in events.filter({ $0.type == "permission.approval.requested" })
             .sorted(by: { $0.timestamp < $1.timestamp }) {

@@ -218,7 +218,7 @@ struct TaskMainView: View {
     @State private var scheduleStatusMessage: TaskScopedStatusMessage?
     @State private var isShowingFilesPopover = false
     @State private var isShowingDiagnosticsPopover = false
-    @State private var headerFileItemsCache: [TaskFileItem] = []
+    @State private var headerFileItemsCache: (scope: TaskAttachmentHistoryScope, items: [TaskFileItem])?
     /// Not `private`: refreshed from `TaskMainViewTaskFolderCaches.swift`.
     @State var diagnosticFileGroupsCache: [TaskDiagnosticFileGroup] = []
     @State var runFileChangeCountsCache = TaskRunVisibleFileChangeCounts()
@@ -229,6 +229,7 @@ struct TaskMainView: View {
     /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
     @State var decisionArtifactPathsCache: [String] = []
     @State var decisionOutcomeCache = TaskDecisionOutcomeCache()
+    @State private var deliverableIntentMemo = TaskDeliverableIntentMemo()
     /// Not `private`: refreshed from `TaskMainViewMissionControl.swift`.
     @State var missionControlSnapshotCache = TaskMissionControlSnapshot.empty
     @State var missionControlStateRevision = 0
@@ -270,6 +271,7 @@ struct TaskMainView: View {
     @State private var sensitiveDataSwitchPrompt = RuntimeSensitiveDataSwitchPrompt()
     @State private var isPreparingGitPublishProposal = false
     @State private var gitPublishPreparationError: String?
+    @StateObject private var repairActionPresentation = TaskRepairActionPresentation()
     @FocusState private var isComposerFocused: Bool
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -434,11 +436,14 @@ struct TaskMainView: View {
         return "count=\(itemCount)#last=\(lastItemID)#latest=\(latestOutputCount)#status=\(latestStatus)"
     }
 
-    var body: some View {
+    // Separate compiler boundaries keep the transcript, sheets and lifecycle
+    // modifiers from being inferred as one deeply nested SwiftUI expression.
+    private var taskPresentation: some View {
         let dockPresentation = taskDecisionDockPresentation
         let decisionDockVisible = dockPresentation != nil
 
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
+            RemoteWorkspaceJobsView(task: task)
             mainContent(decisionDockVisible: decisionDockVisible)
                 .frame(maxHeight: .infinity, alignment: .top)
 
@@ -518,6 +523,10 @@ struct TaskMainView: View {
                 onCancel: { gitPublishProposal = nil }
             )
         }
+    }
+
+    private var taskReviewSurface: some View {
+        taskPresentation
         .taskGitHubReviewPublication(
             state: githubReviewPublication,
             task: task,
@@ -534,6 +543,7 @@ struct TaskMainView: View {
             onResolved: { threadViewModel.refreshSnapshot(for: task) }
         )
         .runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)
+        .taskRepairNotice(repairActionPresentation, taskID: task.id, runID: latestRun?.id)
         .alert("Couldn’t Fork Conversation", isPresented: isForkCreationErrorPresented) {
             Button("OK", role: .cancel) { forkCreationError = nil }
         } message: {
@@ -544,10 +554,14 @@ struct TaskMainView: View {
         } message: {
             Text(gitPublishPreparationError ?? "The draft pull request proposal could not be prepared.")
         }
+    }
+
+    var body: some View {
+        taskReviewSurface
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
-        .task(id: task.id) {
+        .task(id: task.persistentModelID) {
             await initializeDisplayedTaskState()
         }
         .task(id: planStateCacheRefreshTrigger) {
@@ -589,7 +603,7 @@ struct TaskMainView: View {
         .onDisappear {
             pendingPlanStateRefreshTask?.cancel()
             // Here, not in the next task's setup: `ContentView` keys this
-            // view with `.id(task.id)`, so that setup runs against fresh
+            // view with `.id(task.persistentModelID)`, so that setup runs against fresh
             // `@State` and cannot reach the outgoing task's handle.
             pendingContextStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
@@ -600,6 +614,7 @@ struct TaskMainView: View {
                 loadSSHConnections()
             }
         }
+        .onChange(of: isPlanMode) { cancelComposerSubmission() }
         .onChange(of: claudeAvailableModels) {
             deferTaskViewMutation {
                 alignTaskModelWithRuntime()
@@ -1021,7 +1036,8 @@ struct TaskMainView: View {
     /// off-main by `recomputeHeaderFileItems()` only when the inputs change.
     /// See the UI responsiveness audit (Cluster 2).
     private var headerFileItems: [TaskFileItem] {
-        headerFileItemsCache
+        guard headerFileItemsCache?.scope == TaskAttachmentHistoryScope(task: task) else { return [] }
+        return headerFileItemsCache?.items ?? []
     }
 
     /// Cheap, syscall-free signature of the inputs that determine the header
@@ -1030,7 +1046,7 @@ struct TaskMainView: View {
         let runChangePaths = currentThreadSnapshot.sortedRuns.flatMap { run in
             run.fileChanges.map(\.path)
         }
-        return (runChangePaths
+        return ([TaskAttachmentHistoryScope(task: task).signature] + runChangePaths
             + threadViewModel.generatedFilePaths
             + task.inputs
             + currentThreadSnapshot.sortedEvents.filter {
@@ -1040,34 +1056,27 @@ struct TaskMainView: View {
     }
 
     private func recomputeHeaderFileItems() async {
-        let runs = currentThreadSnapshot.sortedRuns
-        let generatedFilePaths = threadViewModel.generatedFilePaths
         let inputs = task.inputs
         let access = TaskWorkspaceAccess(task: task)
         let taskFolder = access.taskFolder
         let workspacePath = access.effectiveWorkspacePath
-        let taskID = task.id
+        let scope = TaskAttachmentHistoryScope(task: task)
         let container = modelContext.container
-        let items = await Task.detached(priority: .userInitiated) {
-            let indexed = TaskFileIndex.headerItems(
-                runs: runs,
-                generatedFilePaths: generatedFilePaths,
-                inputs: inputs,
-                taskFolder: taskFolder,
-                workspacePath: workspacePath
-            )
-            do {
-                let context = ModelContext(container)
-                let paths = try TaskAttachmentFilesReader.paths(taskID: taskID, modelContext: context)
-                return TaskAttachmentFilesReader.merging(paths: paths, with: indexed)
-            } catch {
-                AppLogger.error("Attachment history could not be read: \(error.localizedDescription)", category: "UI")
-                return indexed
-            }
-        }.value
-        // Under `.task(id:)`: don't apply a result whose inputs are now stale.
-        guard !Task.isCancelled else { return }
-        headerFileItemsCache = items
+        let read = Task.detached(priority: .userInitiated) {
+            let context = ModelContext(container)
+            context.autosaveEnabled = false
+            return try TaskHeaderFilesReader.items(scope: scope, inputs: inputs, taskFolder: taskFolder,
+                workspacePath: workspacePath, modelContext: context)
+        }
+        do {
+            let items = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
+            guard !Task.isCancelled, scope == TaskAttachmentHistoryScope(task: task) else { return }
+            headerFileItemsCache = (scope, items)
+        } catch is CancellationError {
+            return
+        } catch {
+            AppLogger.error("Task files could not be read: \(error.localizedDescription)", category: "UI")
+        }
     }
 
     private var headerTextShelfFileItems: [TaskFileItem] {
@@ -1638,7 +1647,7 @@ struct TaskMainView: View {
                     }
                 }
                 .task(id: threadViewModel.appliedSnapshotReadiness) {
-                    guard threadViewModel.appliedSnapshotReadiness.isReady(for: task.id),
+                    guard threadViewModel.appliedSnapshotReadiness.isReady(for: task),
                           await waitForViewUpdateBoundary() else { return }
                     recordTranscriptReadinessIfAvailable()
                 }
@@ -1661,7 +1670,7 @@ struct TaskMainView: View {
     }
 
     private func recordTranscriptReadinessIfAvailable() {
-        guard threadViewModel.appliedSnapshotReadiness.isReady(for: task.id) else { return }
+        guard threadViewModel.appliedSnapshotReadiness.isReady(for: task) else { return }
         TaskOpenResponsivenessTelemetry.transcriptBecameReady(
             task: task,
             snapshot: currentThreadSnapshot,
@@ -1701,7 +1710,7 @@ struct TaskMainView: View {
                 .padding(.horizontal, 14)
         }
 
-        TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task.id)) { conversationItemsList(decisionDockVisible: decisionDockVisible) }
+        TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task)) { conversationItemsList(decisionDockVisible: decisionDockVisible) }
     }
 
     // Fetch turn-request snapshots once per body pass, not per `.userMessage`
@@ -1888,7 +1897,7 @@ struct TaskMainView: View {
     }
 
     private var currentSnapshotMatchesTaskHistory: Bool {
-        threadViewModel.appliedSnapshotReadiness.isReady(for: task.id)
+        threadViewModel.appliedSnapshotReadiness.isReady(for: task)
     }
 
     private func scrollChatToBottomAfterLayout(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -2283,9 +2292,11 @@ struct TaskMainView: View {
         if presentation.files.count > 0 {
             parts.append("\(presentation.files.count) \(presentation.files.count == 1 ? "file" : "files")")
         }
-        if shouldShowBudgetTokenCount(run) {
-            let used = max(task.tokensUsed, run.tokensUsed)
-            parts.append("Budget \(Formatters.formatTokens(used))/\(Formatters.formatTokens(task.tokenBudget))")
+        if run.requestUsageReconciliationPending {
+            parts.append("Request usage unconfirmed")
+        } else if shouldShowBudgetTokenCount(run) {
+            let used = run.requestBudgetTokensUsed
+            parts.append("Request budget \(Formatters.formatTokens(used))/\(Formatters.formatTokens(run.requestTokenCeiling))")
         }
         if let duration = runFooterDurationLabel(run, now: now) {
             parts.append(duration)
@@ -2322,9 +2333,9 @@ struct TaskMainView: View {
     }
 
     private func shouldShowBudgetTokenCount(_ run: TaskRunSnapshot) -> Bool {
-        guard task.tokenBudget > 0 else { return false }
-        let used = max(task.tokensUsed, run.tokensUsed)
-        return task.status == .budgetExceeded || Double(used) >= Double(task.tokenBudget) * 0.8
+        guard run.requestTokenCeiling > 0, run.requestTokenCeiling != Int.max else { return false }
+        let used = run.requestBudgetTokensUsed
+        return run.status == .budgetExceeded || Double(used) >= Double(run.requestTokenCeiling) * 0.8
     }
 
     private func runActivityDisclosure(
@@ -3463,38 +3474,37 @@ struct TaskMainView: View {
         currentThreadSnapshot.latestRun
     }
 
-    /// The structured launch-block payload for the latest run, if any was
-    /// recorded — scoped to that specific run via `TaskEventSnapshot.runID`,
-    /// not the whole thread's error history.
-    private var latestRunLaunchBlock: TaskRunLaunchBlockPayload? {
-        guard let runID = latestRun?.id else { return nil }
-        return sortedEvents
-            .last { $0.runID == runID && $0.type == TaskEventTypes.System.runtimeLaunchBlocked.rawValue }
-            .flatMap { TaskRunLaunchBlockPayload.decode(from: $0.payload) }
-    }
-
     private var taskReviewPresentation: TaskReviewPresentation {
         TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
     }
 
     private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
-        // A queued follow-up must not hide a LIVE permission request: the
-        // provider is still waiting on an approve/deny decision, and that
-        // dock's Approve/Deny/Stop controls are unreachable from the waiting
-        // dock. Only prefer the waiting dock when no permission decision is
-        // outstanding.
-        if !runtimePermissionState.hasOpenApprovalRequest,
-           let waitingPresentation = taskTurnWaitingDockPresentation {
+        let permission = runtimePermissionState
+        let recoveryBlockMessage = RuntimeRecoveryPresentation.blockedMessage(task: task, context: modelContext)
+        // Preserve a live permission decision, but keep Cancel request
+        // reachable when an older disconnected execution blocks this message.
+        if let waitingPresentation = RuntimeRecoveryPresentation.queuedRequestDock(
+            taskTurnWaitingDockPresentation,
+            hasOpenApprovalRequest: permission.hasOpenApprovalRequest,
+            blockedMessage: recoveryBlockMessage
+        ) {
             return waitingPresentation
         }
+        let reviewInput = PendingTaskReviewSnapshotInput(
+            task: task, snapshot: currentThreadSnapshot,
+            deliveredRequestFollowUpRunID: decisionOutcomeCache.deliveredRequestFollowUpRunID,
+            artifactRequirement: deliverableIntentMemo.requiresArtifact(for: task)
+        )
+        let pendingReview = permission.hasOpenApprovalRequest
+            ? PendingTaskReviewState.none : PendingTaskReviewPolicy.reviewState(for: reviewInput)
         return TaskDecisionDockContextBuilder.build(TaskDecisionDockContextBuilder.Input(
             status: task.status,
             isClosed: task.isDone,
             review: taskReviewPresentation,
             mission: missionControlPresentation,
             verification: currentVerificationPresentation,
-            pendingReviewState: pendingTaskReviewState,
-            runtimePermission: runtimePermissionState,
+            pendingReviewState: pendingReview,
+            runtimePermission: permission,
             hasApprovedPermissionContinuation: LegacyApprovedPermissionContinuation.isAvailable(task: task),
             hasGitPublishRequest: shouldOfferGitPublishReview,
             githubReviewPath: decisionOutcomeCache.githubReviewPath,
@@ -3505,8 +3515,8 @@ struct TaskMainView: View {
             canOpenPlan: onOpenPlan != nil,
             isPlanCanvasVisible: isPlanCanvasVisible,
             canRunApprovedPlan: taskQueue != nil,
-            latestRunHasNoUsableResult: latestRunHasNoUsableResult,
-            completedTaskNeedsArtifactAttention: completedTaskNeedsArtifactAttention,
+            latestRunHasNoUsableResult: pendingReview.dismissalReason == .noUsableResult || pendingReview.dismissalReason == .missingRequiredArtifact,
+            completedTaskNeedsArtifactAttention: PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(reviewInput),
             canCancel: onCancelTask != nil,
             canRun: onRunTask != nil,
             canApprove: onApproveTask != nil,
@@ -3516,9 +3526,11 @@ struct TaskMainView: View {
             canToggleDone: canToggleTaskDoneFromDecisionDock,
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
-            launchBlock: latestRunLaunchBlock,
+            launchBlock: TaskRunStopEvidence.launchBlock(events: sortedEvents, runID: latestRun?.id),
+            repair: TaskRunStopEvidence.presentationRepair(events: sortedEvents, runID: latestRun?.id, task: task),
             artifactPaths: taskDecisionArtifactPaths,
-            extraDetails: taskDecisionExtraDetails
+            extraDetails: taskDecisionExtraDetails,
+            recoveryBlockMessage: recoveryBlockMessage
         ))
     }
 
@@ -3723,30 +3735,6 @@ struct TaskMainView: View {
         runtimePermissionState.canApproveSimilarForTask
     }
 
-    private var latestRunHasNoUsableResult: Bool {
-        pendingTaskDismissalReason == .noUsableResult ||
-            pendingTaskDismissalReason == .missingRequiredArtifact
-    }
-
-    private var pendingTaskDismissalReason: PendingTaskDismissalReason? {
-        pendingTaskReviewState.dismissalReason
-    }
-
-    private var pendingTaskReviewState: PendingTaskReviewState {
-        guard !hasOpenRuntimePermissionApprovalRequest else { return .none }
-        return PendingTaskReviewPolicy.reviewState(for: pendingTaskReviewSnapshotInput)
-    }
-
-    private var completedTaskNeedsArtifactAttention: Bool {
-        PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(
-            pendingTaskReviewSnapshotInput
-        )
-    }
-
-    private var pendingTaskReviewSnapshotInput: PendingTaskReviewSnapshotInput {
-        PendingTaskReviewSnapshotInput(task: task, snapshot: currentThreadSnapshot, deliveredRequestFollowUpRunID: decisionOutcomeCache.deliveredRequestFollowUpRunID)
-    }
-
     private var composerPlaceholder: String {
         switch task.status {
         case .queued: return "Type to refine this task (moves back to draft)..."
@@ -3848,6 +3836,10 @@ struct TaskMainView: View {
             onCancelTask?(task)
         case .stopRun:
             taskQueue?.stopActiveRun(task: task, modelContext: modelContext)
+        case .reviewWorkspaceContinuation:
+            guard let requestID = action.payload.flatMap(UUID.init), let taskQueue else { return }
+            TaskWorkspaceContinuationPrompt.present(task: task, requestID: requestID,
+                queue: taskQueue, context: modelContext)
         case .cancelTurnRequest:
             guard let requestID = action.payload.flatMap(UUID.init) else { return }
             taskQueue?.cancelTurnRequest(id: requestID, workspace: task.workspace, modelContext: modelContext)
@@ -3883,6 +3875,8 @@ struct TaskMainView: View {
             onRetryTask?(task)
         case .resume:
             onResumeTask?(task)
+        case .runRepair:
+            repairActionPresentation.start(events: sortedEvents, runID: latestRun?.id, task: task)
         case .reportProblem:
             reportCurrentFailure()
         case .openArtifact:
@@ -4102,7 +4096,8 @@ struct TaskMainView: View {
             },
             onToggleSkill: { skill, enabled in
                 if enabled {
-                    if !task.skills.contains(where: { $0.id == skill.id }) {
+                    if !task.skills.contains(where: { $0.id == skill.id }),
+                       !AgentTask.storableSkills([skill], in: task.workspace).isEmpty {
                         task.skills.append(skill)
                     }
                 } else {
@@ -4180,7 +4175,7 @@ struct TaskMainView: View {
                         .padding(.top, composerAttachments.isEmpty ? TaskComposerPresentation.inputTopPadding : TaskComposerPresentation.inputTopPaddingWithAttachments)
                         .padding(.bottom, TaskComposerPresentation.inputBottomPadding)
                         .focused(composerFocus)
-                        .onSubmit {
+                        .onComposerSubmit {
                             if showSlashMenu && !visibleSlashOptions.isEmpty {
                                 selectSlashOption()
                             } else {
@@ -4219,6 +4214,8 @@ struct TaskMainView: View {
                 Color.clear
                     .frame(height: 2)
 
+                ComposerSubmissionStatus(intent: composerDraft.submissionIntent)
+
                 TaskComposerTextReader(draft: composerDraft) { text in
                     let previewRequest = eligibilityPreviewRequest(text)
                     toolbar.composing(
@@ -4228,9 +4225,18 @@ struct TaskMainView: View {
                     )
                     .runtimeEligibilityPreview(
                         previewRequest,
-                        state: Bindable(composerDraft).eligibilityPreviewState
-                    )
+                        state: Bindable(composerDraft).eligibilityPreviewState,
+                        submissionIntent: composerDraft.submissionIntent
+                    ) { evaluatedRequest, allowed in
+                        guard composerDraft.submissionIntent.consume(
+                            evaluatedRequest: evaluatedRequest,
+                            currentRequest: runtimeEligibilityPreviewRequest,
+                            allowed: allowed
+                        ) else { return }
+                        sendMessage()
+                    }
                 }
+
             }
             .background(composerFill)
             .clipShape(composerShape)
@@ -4601,7 +4607,9 @@ struct TaskMainView: View {
 
         // Attach skills by name
         if let skillNames = json["skills"] as? [String] {
-            let matchedIDs = workspace.skills.filter { skillNames.contains($0.name) }.map { $0.id.uuidString }
+            let globalSkills = (try? modelContext.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))) ?? []
+            let matchedIDs = WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills)
+                .filter { skillNames.contains($0.name) }.map { $0.id.uuidString }
             schedule.skillIDs = matchedIDs
         }
 
@@ -4659,6 +4667,10 @@ struct TaskMainView: View {
         onOpenPlan?(task)
     }
 
+    private func cancelComposerSubmission() {
+        composerDraft.submissionIntent.cancel()
+    }
+
     private func sendMessage() {
         let sendAction = TaskComposerCoordinator.sendAction(
             messageText: composerDraft.text,
@@ -4672,9 +4684,11 @@ struct TaskMainView: View {
             return
         }
         if sendAction.launchesProviderWork,
-           !selectedComposerRuntimeCanExecuteRequest {
-            return
-        }
+           !composerDraft.submissionIntent.canSubmitOrWait(
+                request: runtimeEligibilityPreviewRequest,
+                state: composerDraft.eligibilityPreviewState,
+                canExecute: selectedComposerRuntimeCanExecuteRequest
+           ) { return }
         shouldScrollAfterUserMessage = true
 
         switch sendAction {
@@ -4800,46 +4814,19 @@ struct TaskMainView: View {
             ])
             onMoveToDraft?(task)
         } else if [.running, .pendingUser, .completed, .failed, .budgetExceeded, .cancelled].contains(task.status), let taskQueue {
-            // Persist the user's turn before waiting for a worker or the
-            // workspace lock. The runtime links this existing event to its run
-            // on admission instead of inserting a duplicate message.
-            let submission = TaskTurnSubmissionService.submit(
+            let continuation = TaskConversationContinuationService.continueConversation(
                 message: msg,
                 attachmentPaths: attachmentPaths,
-                for: task,
-                into: modelContext
-            )
-            guard case let .success(savedTurn) = submission else {
-                AppLogger.audit(.runtimePersistenceSummary, category: "UI", taskID: task.id, fields: [
-                    "operation": "turn_submission",
-                    "result": "failed"
-                ], level: .error)
-                return
-            }
-            composerDraft.text = ""
-            attachedFiles = []
-            if task.isDone { task.isDone = false } // reopen: sidebar review/unread predicates gate on !isDone
-            if task.status != .running {
-                let interruptionSummary = TaskRunLifecycleService.cancelTask(
-                    task,
-                    modelContext: modelContext,
-                    source: .supersededByNewRun
-                )
-                if interruptionSummary.runsUpdated > 0 {
-                    AppLogger.audit(.taskInterrupted, category: "UI", taskID: task.id, fields: [
-                        "source": TaskRunInterruptionSource.supersededByNewRun.auditSource,
-                        "running_runs_cancelled": String(interruptionSummary.runsUpdated),
-                        "next_action": "continue_session"
-                    ], level: .warning)
-                }
-            }
-            logTaskCapabilityContext(source: "task_continue_chat", traceID: traceID)
-            recordCurrentTaskPolicyIfNeeded(source: "task_continue_chat")
-            taskQueue.signalExecutionRequest(
-                id: savedTurn.requestID,
                 task: task,
+                policyLevel: currentTaskPolicyLevel,
+                source: "task_continue_chat",
+                traceID: traceID,
+                taskQueue: taskQueue,
                 modelContext: modelContext
             )
+            guard case .success = continuation else { return }
+            composerDraft.text = ""
+            attachedFiles = []
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
             TaskEventInsertionService.insert(event, attachmentPaths: attachmentPaths, into: modelContext)
@@ -4933,14 +4920,16 @@ struct TaskMainView: View {
         taskSkipPermissions = level == .autonomous
     }
 
+    private var currentTaskPolicyLevel: AgentPolicyLevel {
+        taskSkipPermissions ? AgentPolicyLevel.autonomous : AgentPolicyLevel.normalized(taskPolicyLevelRaw)
+    }
+
     private func recordCurrentTaskPolicyIfNeeded(source: String) {
-        let level = taskSkipPermissions ? AgentPolicyLevel.autonomous : AgentPolicyLevel.normalized(taskPolicyLevelRaw)
-        guard TaskPolicyStore.latestSelectedLevel(for: task) != level else { return }
-        TaskPolicyStore.recordSelection(
-            level: level,
+        TaskConversationContinuationService.recordPolicyLevelIfChanged(
+            currentTaskPolicyLevel,
             task: task,
-            modelContext: modelContext,
-            source: source
+            source: source,
+            modelContext: modelContext
         )
     }
 

@@ -13,6 +13,11 @@ public struct StreamSystemEvent: Decodable {
     public let prompt: String?
     public let uuid: String?
     public let status: String?
+    public let rate_limit_info: StreamRateLimitInfo?
+}
+
+public struct StreamRateLimitInfo: Decodable {
+    public let status: String?
 }
 
 public struct StreamUsage: Decodable {
@@ -27,6 +32,11 @@ public struct StreamUsage: Decodable {
     public let cacheCreationInputTokens: Int?
     public let cacheReadTokens: Int?
     public let cacheWriteTokens: Int?
+    var hasTokenCounts: Bool {
+        [input_tokens, output_tokens, inputTokens, outputTokens, cachedInputTokens,
+         cache_read_input_tokens, cache_creation_input_tokens, cacheReadInputTokens,
+         cacheCreationInputTokens, cacheReadTokens, cacheWriteTokens].contains { $0 != nil }
+    }
 }
 
 public struct StreamContentBlock: Decodable {
@@ -226,7 +236,9 @@ public enum StreamEventParser {
 
     private static let transientSystemSubtypes: Set<String> = [
         "post_turn_summary",
-        "status"
+        "status",
+        "thinking_tokens",
+        "commands_changed"
     ]
 
     public static func parse(line: String) -> ParsedEvent? {
@@ -249,6 +261,13 @@ public enum StreamEventParser {
         }
 
         switch baseEvent.type {
+        case "rate_limit_event":
+            // Quota telemetry is neither tool progress nor a run result.
+            guard let status = baseEvent.rate_limit_info?.status,
+                  ["allowed", "allowed_warning", "rejected"].contains(status) else {
+                return .recognized([.unknown(type: "rate_limit_event.unrecognized_status")])
+            }
+            return .recognized([.control(type: "rate_limit_event.\(status)")])
         case "system":
             let agentTaskTypes: Set<String> = ["in_process_teammate", "local_agent"]
             if baseEvent.subtype == "task_started",
@@ -351,15 +370,20 @@ public enum StreamEventParser {
 
             if let modelUsage = event.modelUsage {
                 for (_, entry) in modelUsage {
-                    totalInput += (entry.inputTokens ?? 0) + (entry.cacheReadInputTokens ?? 0) + (entry.cacheCreationInputTokens ?? 0)
-                    totalOutput += entry.outputTokens ?? 0
+                    totalInput = ProviderUsageArithmetic.sum([totalInput, entry.inputTokens ?? 0, entry.cacheReadInputTokens ?? 0, entry.cacheCreationInputTokens ?? 0])
+                    totalOutput = ProviderUsageArithmetic.adding(totalOutput, entry.outputTokens ?? 0)
                 }
             } else if let usage = event.usage {
                 totalInput = totalInputTokens(from: usage)
                 totalOutput = totalOutputTokens(from: usage)
             }
 
-            return .recognized([.result(
+            let hasTokenCounts = event.modelUsage.map { entries in
+                entries.values.contains { [$0.inputTokens, $0.outputTokens, $0.cacheReadInputTokens, $0.cacheCreationInputTokens].contains { $0 != nil } }
+            } ?? (event.usage?.hasTokenCounts ?? false)
+            let zeroReport: [ParsedEvent] = totalInput == 0 && totalOutput == 0 && hasTokenCounts
+                ? [.usage(totalInputTokens: 0, totalOutputTokens: 0)] : []
+            return .recognized(zeroReport + [.result(
                 text: event.result,
                 costUSD: event.total_cost_usd,
                 totalInputTokens: totalInput,
@@ -463,7 +487,7 @@ public enum StreamEventParser {
     private static func parsedUsageEvent(from usage: StreamUsage) -> ParsedEvent? {
         let totalInput = totalInputTokens(from: usage)
         let totalOutput = totalOutputTokens(from: usage)
-        guard totalInput > 0 || totalOutput > 0 else { return nil }
+        guard usage.hasTokenCounts else { return nil }
         return .usage(totalInputTokens: totalInput, totalOutputTokens: totalOutput)
     }
 
@@ -479,11 +503,11 @@ public enum StreamEventParser {
             ?? usage.cacheWriteTokens
             ?? 0
 
-        return uncachedInput + cachedInput + cacheReadInput + cacheCreationInput
+        return ProviderUsageArithmetic.sum([uncachedInput, cachedInput, cacheReadInput, cacheCreationInput])
     }
 
     private static func totalOutputTokens(from usage: StreamUsage) -> Int {
-        usage.output_tokens ?? usage.outputTokens ?? 0
+        max(0, usage.output_tokens ?? usage.outputTokens ?? 0)
     }
 
     private static func extractAgentName(from description: String?) -> String? {

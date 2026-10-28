@@ -245,7 +245,7 @@ struct TaskThreadArchitectureFitnessTests {
             .deletingLastPathComponent()
         let taskMainView = try source("Astra/Views/TaskMainView.swift", root: root)
         #expect(taskMainView.contains(
-            "TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task.id))"
+            "TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task))"
         ))
     }
 
@@ -270,7 +270,9 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!taskMainView.contains("pendingMutations(task:"))
         #expect(taskMainView.contains(".task(id: decisionOutcomeInputSignature)"))
         #expect(outcomes.contains("threadViewModel.appliedSnapshotRevision"))
-        #expect(outcomes.contains("pendingMutations(taskID: task.id, in: modelContext)"))
+        #expect(outcomes.contains("pendingMutations(task: task)"))
+        let mutations = try source("Astra/Services/Tasks/ConnectorMutationRequirement.swift", root: root)
+        #expect(mutations.contains("TaskHistoryRead.records(for: task, ofTypes: resolutionEventTypes)"))
         #expect(!outcomes.contains("task.events"))
         #expect(!outcomes.contains("task.runs"))
     }
@@ -558,19 +560,21 @@ struct TaskThreadArchitectureFitnessTests {
         )
         let dockSource = String(taskMainView[dockStart.lowerBound..<dockEnd.lowerBound])
 
-        // `TaskMainView` is a SwiftUI view and not directly instantiable in
-        // headless tests, so — matching the source-scan style already used
-        // above for this same property — assert the queued-follow-up
-        // waiting dock only preempts `TaskDecisionDockContextBuilder.build`
-        // (which is what actually renders Approve/Deny/Stop) when no
-        // permission request is open. Without this guard, a follow-up
-        // queued behind a running provider that then raises a live
-        // permission request leaves the user unable to approve, deny, or
-        // stop without first cancelling every queued message.
-        #expect(dockSource.contains("!runtimePermissionState.hasOpenApprovalRequest"))
-        let guardRange = try #require(dockSource.range(of: "!runtimePermissionState.hasOpenApprovalRequest"))
+        // The view delegates queued-message priority to the tested recovery
+        // policy. Live permissions retain Approve/Deny/Stop; a stale permission
+        // on a disconnected, blocked owner must retain Cancel request instead.
+        // Behavioral coverage lives in TaskDecisionDockPresentationTests and
+        // RuntimeCleanupAuthorizationTests. Here verify the SwiftUI wiring uses
+        // the same current permission and recovery state before returning early.
+        let stateRange = try #require(dockSource.range(of: "let permission = runtimePermissionState"))
+        let guardRange = try #require(dockSource.range(of: "RuntimeRecoveryPresentation.queuedRequestDock("))
         let waitingReturnRange = try #require(dockSource.range(of: "return waitingPresentation"))
+        #expect(stateRange.lowerBound < guardRange.lowerBound)
         #expect(guardRange.lowerBound < waitingReturnRange.lowerBound)
+        let selection = dockSource[guardRange.lowerBound..<waitingReturnRange.lowerBound]
+        #expect(selection.contains("hasOpenApprovalRequest: permission.hasOpenApprovalRequest"))
+        #expect(selection.contains("blockedMessage: recoveryBlockMessage"))
+        #expect(dockSource.contains("runtimePermission: permission"))
     }
 
     /// `NSRegularExpression(pattern:)` compiles an ICU program every call, and

@@ -84,9 +84,9 @@ struct CumulativeSessionUsageTests {
         #expect(task.tokensUsed == 600 + 350)
     }
 
-    @Test("Only Antigravity, Copilot and Codex declare cumulative session usage")
+    @Test("Claude, Antigravity, Copilot and Codex declare cumulative session usage")
     func descriptorFlags() {
-        let cumulative: Set<AgentRuntimeID> = [.copilotCLI, .antigravityCLI, .codexCLI]
+        let cumulative: Set<AgentRuntimeID> = [.claudeCode, .copilotCLI, .antigravityCLI, .codexCLI]
         for runtime in [AgentRuntimeID.claudeCode, .codexCLI, .copilotCLI, .antigravityCLI, .cursorCLI, .openCodeCLI] {
             let flag = AgentRuntimeAdapterRegistry.adapter(for: runtime).descriptor.reportsCumulativeSessionUsage
             #expect(flag == cumulative.contains(runtime), "\(runtime.rawValue)")

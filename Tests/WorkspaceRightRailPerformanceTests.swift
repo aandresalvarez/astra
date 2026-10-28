@@ -11,7 +11,7 @@ struct WorkspaceRightRailPerformanceTests {
     @Test("GitHub read-only mode preserves GitHub-origin behavior skill semantics")
     func githubReadOnlyModeUsesBehaviorSkillOrigin() {
         let workspace = makeWorkspace(name: "Origin semantics")
-        workspace.enabledCapabilityIDs = []
+        workspace.testEnabledCapabilityIDs = []
         let task = AgentTask(title: "Inspect", goal: "Inspect the proposed change")
         task.workspace = workspace
         let skill = Skill(name: "Change reviewer", allowedTools: ["Read"])
@@ -92,7 +92,7 @@ struct WorkspaceRightRailPerformanceTests {
     @Test("Bounded host-control input fails closed for package-backed resolution")
     func boundedHostControlInputFailsClosedForPackageBackedResolution() {
         let workspace = makeWorkspace(name: "Pruning semantics")
-        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        workspace.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let task = AgentTask(title: "Summarize notes", goal: "Summarize local meeting notes")
         task.workspace = workspace
         var githubPackage = browserAdapterPackage(
@@ -237,10 +237,10 @@ struct WorkspaceRightRailPerformanceTests {
         let context = container.mainContext
         let task = AgentTask(title: "Draft", goal: "Draft")
         context.insert(task)
-        #expect(!BrowserSessionPolicyContext.hasRuns(taskID: task.id, modelContext: context))
+        #expect(!BrowserSessionPolicyContext.hasRuns(task: task, modelContext: context))
         context.insert(TaskRun(task: task))
         try context.save()
-        #expect(BrowserSessionPolicyContext.hasRuns(taskID: task.id, modelContext: context))
+        #expect(BrowserSessionPolicyContext.hasRuns(task: task, modelContext: context))
     }
 
     @Test("Browser policy task projection keeps the newest durable user event")
@@ -263,7 +263,7 @@ struct WorkspaceRightRailPerformanceTests {
         context.insert(initial)
 
         var projection = BrowserSessionPolicyTaskProjection()
-        #expect(projection.latestUserMessage(for: task.id, modelContext: context) == "newest durable context")
+        #expect(projection.latestUserMessage(for: task, modelContext: context) == "newest durable context")
 
         let olderInsertion = DurableTaskEventInsertion(
             taskID: task.id,
@@ -274,8 +274,28 @@ struct WorkspaceRightRailPerformanceTests {
         )
         let invalidated = projection.record(olderInsertion, selectedTaskID: task.id)
         #expect(invalidated)
-        #expect(projection.latestUserMessage(for: task.id, modelContext: context) == "newest durable context")
-        #expect(projection.revision(for: task) == olderInsertion.eventID.uuidString)
+        #expect(projection.latestUserMessage(for: task, modelContext: context) == "newest durable context")
+        #expect(projection.revision(for: task).hasSuffix(olderInsertion.eventID.uuidString))
+        let previousRevision = projection.revision(for: task)
+        task.goal = "Updated request after the user event"
+        #expect(projection.revision(for: task) != previousRevision)
+    }
+
+    @Test("Browser policy ignores streaming updates but observes request and admission changes")
+    @MainActor
+    func browserPolicyRevisionTracksSemanticInputs() {
+        let task = AgentTask(title: "Review", goal: "Review local files")
+        task.status = .running
+        let initial = BrowserSessionPolicyContext.taskPolicyRevision(for: task)
+        task.updatedAt = Date().addingTimeInterval(10)
+        task.title = "Generated title"
+        task.status = .completed
+        #expect(BrowserSessionPolicyContext.taskPolicyRevision(for: task) == initial)
+        task.goal = "Review a different request"
+        let changedGoal = BrowserSessionPolicyContext.taskPolicyRevision(for: task)
+        #expect(changedGoal != initial)
+        task.status = .draft
+        #expect(BrowserSessionPolicyContext.taskPolicyRevision(for: task) != changedGoal)
     }
 
     @Test("Browser policy refresh gate fails closed and rejects stale results")
@@ -321,7 +341,6 @@ struct WorkspaceRightRailPerformanceTests {
             taskID: taskID,
             workspaceID: UUID(uuidString: "dddddddd-dddd-dddd-dddd-dddddddddddd")!,
             enabledCapabilityIDs: ["github"],
-            taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:1",
             environmentRevision: "environment:1"
@@ -331,7 +350,6 @@ struct WorkspaceRightRailPerformanceTests {
             taskID: taskID,
             workspaceID: stable.workspaceID,
             enabledCapabilityIDs: ["github"],
-            taskCanvasRevision: "canvas:1",
             taskRevision: "task:3",
             workspaceRevision: "workspace:1",
             environmentRevision: "environment:1"
@@ -340,7 +358,6 @@ struct WorkspaceRightRailPerformanceTests {
             taskID: taskID,
             workspaceID: stable.workspaceID,
             enabledCapabilityIDs: ["github", "jira"],
-            taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:1",
             environmentRevision: "environment:1"
@@ -349,7 +366,6 @@ struct WorkspaceRightRailPerformanceTests {
             taskID: taskID,
             workspaceID: UUID(uuidString: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")!,
             enabledCapabilityIDs: ["github"],
-            taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:2",
             environmentRevision: "environment:1"
@@ -358,7 +374,6 @@ struct WorkspaceRightRailPerformanceTests {
             taskID: taskID,
             workspaceID: stable.workspaceID,
             enabledCapabilityIDs: ["github"],
-            taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:1",
             environmentRevision: "environment:2"
@@ -577,7 +592,7 @@ struct WorkspaceRightRailPerformanceTests {
         #expect(cache.matches(timestampOnlySignature))
         #expect(cache.snapshot(for: timestampOnlySignature) != nil)
 
-        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
         let changedSignature = CapabilityRailSnapshotSignature(
             workspace: workspace,
             globalSkills: [globalSkill],
@@ -661,13 +676,13 @@ struct WorkspaceRightRailPerformanceTests {
     func capabilityRailSignaturePreservesInstalledPluginVersionPairings() {
         let firstWorkspace = makeWorkspace(name: "Installed Plugins")
         firstWorkspace.id = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
-        firstWorkspace.installedPluginIDs = ["plugin-b", "plugin-a"]
-        firstWorkspace.installedPluginVersions = ["2.0.0", "1.0.0"]
+        firstWorkspace.testInstalledPluginIDs = ["plugin-b", "plugin-a"]
+        firstWorkspace.testInstalledPluginVersions = ["2.0.0", "1.0.0"]
 
         let secondWorkspace = makeWorkspace(name: "Installed Plugins")
         secondWorkspace.id = firstWorkspace.id
-        secondWorkspace.installedPluginIDs = ["plugin-a", "plugin-b"]
-        secondWorkspace.installedPluginVersions = ["2.0.0", "1.0.0"]
+        secondWorkspace.testInstalledPluginIDs = ["plugin-a", "plugin-b"]
+        secondWorkspace.testInstalledPluginVersions = ["2.0.0", "1.0.0"]
 
         let firstSignature = CapabilityRailSnapshotSignature(
             workspace: firstWorkspace,

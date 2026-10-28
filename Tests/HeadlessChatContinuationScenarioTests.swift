@@ -7,6 +7,22 @@ import ASTRAPersistence
 import ASTRACore
 
 extension HeadlessChatScenarioTests {
+    /// Launch probes intentionally skip UserDefaults.standard in tests. Bind
+    /// this fixture's advertised JSON capability to its exact binary stamp,
+    /// restoring the shared test-domain value after the scenario finishes.
+    static func enableContinuationFixtureStructuredOutput(executablePath: String) -> () -> Void {
+        let key = AppStorageKeys.runtimeStructuredOutputKey(for: .antigravityCLI)
+        let previous = UserDefaults.standard.object(forKey: key)
+        AntigravityCLIRuntime.cacheStructuredOutputSupport(true, executablePath: executablePath)
+        return {
+            if let previous {
+                UserDefaults.standard.set(previous, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+    }
+
     @Test("Changing runtime from Claude to Copilot starts a clean provider run")
     func changingRuntimeFromClaudeToCopilotStartsCleanProviderRun() async throws {
         let harness = try HeadlessChatHarness()
@@ -24,9 +40,10 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"type":"session.mcp_servers_loaded","session":{"id":"copilot-session-1","model":"gpt-5"}}'
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Copilot follow-up answer"}}'
+            printf '%s\\n' '{"type":"session.mcp_servers_loaded","data":{"servers":[]},"session":{"id":"copilot-session-1","model":"gpt-5"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"content":"Copilot follow-up answer"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":4,"output_tokens":6},"duration_ms":9,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"copilot-session-1","exitCode":0}'
             exit 0
             """)
         )
@@ -42,7 +59,7 @@ extension HeadlessChatScenarioTests {
         _ = await harness.continueTask(task: task, message: "Continue with Copilot", worker: worker)
 
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
-        #expect(runs.count == 2)
+        try #require(runs.count == 2)
         #expect(runs[0].runtimeID == AgentRuntimeID.claudeCode.rawValue)
         #expect(runs[0].providerSessionId == "claude-session-1")
         #expect(runs[1].runtimeID == AgentRuntimeID.copilotCLI.rawValue)
@@ -246,8 +263,8 @@ extension HeadlessChatScenarioTests {
         #expect(task.status == .completed)
     }
 
-    @Test("Claude no-progress follow-up starts a clean provider session")
-    func claudeNoProgressFollowUpStartsCleanProviderSession() async throws {
+    @Test("Claude no-progress follow-up retains uncertainty after verified local termination")
+    func claudeNoProgressFollowUpRetainsProtection() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
 
@@ -276,15 +293,26 @@ extension HeadlessChatScenarioTests {
 
         let task = harness.makeTask(runtime: .claudeCode, goal: "Create a standalone artifact", model: "claude-sonnet-4-6")
         let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
-        worker.timeoutSeconds = 2
+        // Keep the normal launch/probe allowance: this test checks admission
+        // after the watchdog stops the provider, not a two-second cold launch.
+        worker.timeoutSeconds = 10
 
         _ = await harness.execute(task: task, worker: worker)
 
         let failedRun = try #require(task.runs.first)
-        #expect(failedRun.status == .failed)
-        #expect(failedRun.stopReason == "provider_no_semantic_progress")
+        let watchdogStopped = failedRun.status == .failed && failedRun.stopReason == "provider_no_semantic_progress"
+        #expect(watchdogStopped)
+        guard watchdogStopped else { return }
         #expect(failedRun.output.isEmpty)
         #expect(task.sessionId == "stuck-claude-session")
+        let originalOwner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        #expect(originalOwner.stopProof?.reaped == true)
+        #expect(originalOwner.stopProof?.processGroupEmpty == true)
+        #expect(!originalOwner.canReplace)
+        if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: harness.context) {} else {
+            Issue.record("An automatic retry bypassed the missing tool-cleanup proof")
+        }
+        worker.timeoutSeconds = 30
 
         _ = await harness.continueTask(
             task: task,
@@ -301,8 +329,18 @@ extension HeadlessChatScenarioTests {
         #expect(rawArgs.contains("User's follow-up request:\nContinue with a clean retry"))
         #expect(task.sessionId == "clean-claude-session")
         #expect(task.runs.count == 2)
-        #expect(task.runs.sorted { $0.startedAt < $1.startedAt }.last?.output == "Recovered answer")
         #expect(task.status == .completed)
+        #expect(try String(contentsOf: countFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) == "2")
+        let retainedOwner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        #expect(retainedOwner.ownerID == originalOwner.ownerID)
+        #expect(retainedOwner.executionID != originalOwner.executionID)
+        #expect(try RuntimeExecutionOwner.store(in: harness.context).retainedExecutions(of: retainedOwner) == [originalOwner])
+        #expect(failedRun.status == .failed && failedRun.stopReason == "provider_no_semantic_progress")
+        #expect(retainedOwner.resourcesReleased != true)
+        #expect(!retainedOwner.canReplace)
+        let followUp = try #require(try TaskTurnRequestRepository.requests(for: task, in: harness.context).last)
+        #expect(followUp.runID == task.runs.max(by: { $0.startedAt < $1.startedAt })?.id)
+        #expect(followUp.state == .completed)
     }
 
     @Test("Claude launch prompt prunes irrelevant Graph Mail capability for artifact task")
@@ -382,9 +420,10 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"type":"session.mcp_servers_loaded","session":{"id":"copilot-session-1","model":"gpt-5"}}'
-            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Copilot first answer"}}'
+            printf '%s\\n' '{"type":"session.mcp_servers_loaded","data":{"servers":[]},"session":{"id":"copilot-session-1","model":"gpt-5"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"content":"Copilot first answer"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
+            printf '%s\\n' '{"type":"result","sessionId":"copilot-session-1","exitCode":0}'
             exit 0
             """)
         )
@@ -411,7 +450,7 @@ extension HeadlessChatScenarioTests {
         _ = await harness.continueTask(task: task, message: "Continue with Claude", worker: worker)
 
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
-        #expect(runs.count == 2)
+        try #require(runs.count == 2)
         #expect(runs[0].runtimeID == AgentRuntimeID.copilotCLI.rawValue)
         #expect(runs[0].providerSessionId == "copilot-session-1")
         #expect(runs[1].runtimeID == AgentRuntimeID.claudeCode.rawValue)
@@ -447,11 +486,12 @@ extension HeadlessChatScenarioTests {
                 count=$((count + 1))
                 printf '%s' "$count" > \(Self.shQuote(countFile.path))
                 if [ "$count" = "1" ]; then
-                  printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"The capital of France is Paris."}}'
+                  printf '%s\\n' '{"type":"assistant.message","data":{"content":"The capital of France is Paris."}}'
                 else
-                  printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Follow-up answer"}}'
+                  printf '%s\\n' '{"type":"assistant.message","data":{"content":"Follow-up answer"}}'
                 fi
                 printf '%s\\n' '{"type":"usage","usage":{"input_tokens":5,"output_tokens":5},"duration_ms":5,"turns":1}'
+                printf '%s\\n' '{"type":"result","sessionId":"copilot-context-session","exitCode":0}'
                 exit 0
                 """,
                 argsFile: argsFile
@@ -463,6 +503,7 @@ extension HeadlessChatScenarioTests {
 
         _ = await harness.execute(task: task, worker: worker)
         #expect(task.runs.first?.output == "The capital of France is Paris.")
+        try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context)?.canReplace == true)
 
         // Clear args file so we only capture turn 2
         try? FileManager.default.removeItem(at: argsFile)
@@ -541,7 +582,7 @@ extension HeadlessChatScenarioTests {
             fi
             printf '%s\\n' "$@" > '\(argsFile.path)'
             printf '%s\\n' '{"type":"thread.started","thread_id":"codex-thread-1"}'
-            printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Codex answer"}}'
+            printf '%s\\n' '{"type":"item.completed","item":{"id":"answer-1","type":"agent_message","text":"Codex answer"}}'
             # Codex reports the thread's running total, which a resume restores.
             if [ "$2" = "resume" ]; then
               printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":9,"output_tokens":10}}'
@@ -558,6 +599,7 @@ extension HeadlessChatScenarioTests {
         _ = await harness.execute(task: task, worker: worker)
         #expect(task.sessionId == "codex-thread-1")
         #expect(task.runs.first?.providerSessionId == "codex-thread-1")
+        try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context)?.canReplace == true)
 
         _ = await harness.continueTask(task: task, message: "Continue from the prior thread", worker: worker)
 
@@ -575,6 +617,7 @@ extension HeadlessChatScenarioTests {
         #expect(rawArgs.contains("User's follow-up request:\nContinue from the prior thread"))
         #expect(task.runs.count == 2)
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        try #require(runs.count == 2)
         #expect(runs[0].tokensUsed == 12)
         // The resumed run records what its own turn added to the thread total: 9/10 - 5/7.
         #expect(runs[1].tokensUsed == 7)
@@ -594,21 +637,28 @@ extension HeadlessChatScenarioTests {
             script: """
             #!/bin/sh
             if [ "$1" = "--version" ]; then
-              printf '%s\\n' '1.0.3'
+              printf '%s\\n' '1.4.7'
+              exit 0
+            fi
+            if [ "$1" = "--help" ]; then
+              printf '%s\\n' '  --output-format  Output format for print mode (text, json, stream-json)'
               exit 0
             fi
             printf '%s\\n' "$@" > '\(argsFile.path)'
             count="$(cat '\(countFile.path)' 2>/dev/null || echo 0)"
             count=$((count + 1))
             printf '%s' "$count" > '\(countFile.path)'
+            printf '%s\\n' '{"event":"init","conversation_id":"agy-context-session","init":{"model":"Gemini 3.5 Flash"}}'
             if [ "$count" = "1" ]; then
-              printf '%s\\n' 'Water boils at 100 degrees Celsius.'
+              printf '%s\\n' '{"event":"result","result":{"status":"SUCCESS","response":"Water boils at 100 degrees Celsius.","num_turns":1}}'
             else
-              printf '%s\\n' 'Follow-up Antigravity answer'
+              printf '%s\\n' '{"event":"result","result":{"status":"SUCCESS","response":"Follow-up Antigravity answer","num_turns":1}}'
             fi
             exit 0
             """
         )
+        let restoreStructuredOutput = Self.enableContinuationFixtureStructuredOutput(executablePath: antigravityPath)
+        defer { restoreStructuredOutput() }
 
         let task = harness.makeTask(
             runtime: .antigravityCLI,
@@ -619,10 +669,12 @@ extension HeadlessChatScenarioTests {
 
         _ = await harness.execute(task: task, worker: worker)
         #expect(task.runs.first?.output.trimmingCharacters(in: .whitespacesAndNewlines) == "Water boils at 100 degrees Celsius.")
+        try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context)?.canReplace == true)
 
         _ = await harness.continueTask(task: task, message: "What about in Fahrenheit?", worker: worker)
 
         let turn2Args = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(turn2Args.contains("--output-format") && turn2Args.contains("stream-json"))
         #expect(turn2Args.contains("water boil") || turn2Args.contains("temperature"))
         #expect(turn2Args.contains("Fahrenheit"))
         #expect(turn2Args.contains("100 degrees") || turn2Args.contains("100"))
@@ -649,8 +701,9 @@ extension HeadlessChatScenarioTests {
             named: "copilot",
             script: Self.copilotScript(
                 body: """
-                printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Cross-provider follow-up done"}}'
+                printf '%s\\n' '{"type":"assistant.message","data":{"content":"Cross-provider follow-up done"}}'
                 printf '%s\\n' '{"type":"usage","usage":{"input_tokens":5,"output_tokens":5},"duration_ms":5,"turns":1}'
+                printf '%s\\n' '{"type":"result","sessionId":"copilot-cross-session","exitCode":0}'
                 exit 0
                 """,
                 argsFile: copilotArgsFile
@@ -673,9 +726,10 @@ extension HeadlessChatScenarioTests {
         #expect(copilotArgs.contains("pi") || copilotArgs.contains("Pi"))
         #expect(copilotArgs.contains("3.14159"))
         #expect(copilotArgs.contains("pi squared") || copilotArgs.contains("Now calculate"))
-        #expect(task.runs.count == 2)
-        #expect(task.runs.sorted { $0.startedAt < $1.startedAt }[0].runtimeID == AgentRuntimeID.claudeCode.rawValue)
-        #expect(task.runs.sorted { $0.startedAt < $1.startedAt }[1].runtimeID == AgentRuntimeID.copilotCLI.rawValue)
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        try #require(runs.count == 2)
+        #expect(runs[0].runtimeID == AgentRuntimeID.claudeCode.rawValue)
+        #expect(runs[1].runtimeID == AgentRuntimeID.copilotCLI.rawValue)
         #expect(task.status == .completed)
     }
 
@@ -696,7 +750,7 @@ extension HeadlessChatScenarioTests {
             goal: "list my open prs in the astra repo",
             model: "composer-2.5-fast"
         )
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let githubSkill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read", "Glob", "Grep"],
@@ -756,7 +810,7 @@ extension HeadlessChatScenarioTests {
             goal: "read Jira issue STAR-123",
             model: "composer-2.5-fast"
         )
-        task.workspace?.enabledCapabilityIDs = ["custom-jira-host-control"]
+        task.workspace?.testEnabledCapabilityIDs = ["custom-jira-host-control"]
         let jiraSkill = Skill(
             name: "Jira Host Control",
             allowedTools: ["Read", "Glob", "Grep"],
@@ -934,7 +988,7 @@ extension HeadlessChatScenarioTests {
         )
 
         let task = harness.makeTask(runtime: .cursorCLI, goal: "List my open PRs", model: "composer-2.5-fast")
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let skill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read"],
@@ -993,7 +1047,7 @@ extension HeadlessChatScenarioTests {
         )
 
         let task = harness.makeTask(runtime: .cursorCLI, goal: "List my open PRs", model: "composer-2.5-fast")
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let skill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read"],
@@ -1044,7 +1098,7 @@ extension HeadlessChatScenarioTests {
             goal: "List my open PRs in the astra repo",
             model: "composer-2.5-fast"
         )
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let githubSkill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read", "Glob", "Grep"],
@@ -1124,7 +1178,7 @@ extension HeadlessChatScenarioTests {
         // Cursor CLI via ComposerToolbar's runtime picker before this task is
         // created/enqueued (quickRun / runApprovedPlan / createTaskFromSpec).
         task.runtimeExplicitlySelected = true
-        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        task.workspace?.testEnabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let githubSkill = Skill(
             name: "GitHub Agent",
             allowedTools: ["Read", "Glob", "Grep"],
@@ -1339,7 +1393,7 @@ extension HeadlessChatScenarioTests {
         _ = await harness.continueTask(task: task, message: "Tell me more", worker: worker)
 
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
-        #expect(runs.count == 2)
+        try #require(runs.count == 2)
         #expect(runs[0].runtimeID == AgentRuntimeID.claudeCode.rawValue)
         #expect(runs[0].output == "Initial Claude answer")
         #expect(runs[0].providerSessionId == "claude-resume-sess")
@@ -1362,20 +1416,27 @@ extension HeadlessChatScenarioTests {
             script: """
             #!/bin/sh
             if [ "$1" = "--version" ]; then
-              printf '%s\\n' '1.0.3'
+              printf '%s\\n' '1.4.7'
+              exit 0
+            fi
+            if [ "$1" = "--help" ]; then
+              printf '%s\\n' '  --output-format  Output format for print mode (text, json, stream-json)'
               exit 0
             fi
             count="$(cat \(Self.shQuote(countFile.path)) 2>/dev/null || echo 0)"
             count=$((count + 1))
             printf '%s' "$count" > \(Self.shQuote(countFile.path))
+            printf '%s\\n' '{"event":"init","conversation_id":"agy-continue-session","init":{"model":"Gemini 3.5 Flash"}}'
             if [ "$count" = "1" ]; then
-              printf '%s\\n' 'Initial Antigravity answer'
+              printf '%s\\n' '{"event":"result","result":{"status":"SUCCESS","response":"Initial Antigravity answer","num_turns":1}}'
             else
-              printf '%s\\n' 'Antigravity follow-up answer'
+              printf '%s\\n' '{"event":"result","result":{"status":"SUCCESS","response":"Antigravity follow-up answer","num_turns":1}}'
             fi
             exit 0
             """
         )
+        let restoreStructuredOutput = Self.enableContinuationFixtureStructuredOutput(executablePath: antigravityPath)
+        defer { restoreStructuredOutput() }
 
         let task = harness.makeTask(
             runtime: .antigravityCLI,
@@ -1387,11 +1448,12 @@ extension HeadlessChatScenarioTests {
         _ = await harness.execute(task: task, worker: worker)
         #expect(task.status == .completed)
         #expect(task.runs.count == 1)
+        try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context)?.canReplace == true)
 
         _ = await harness.continueTask(task: task, message: "Elaborate on that", worker: worker)
 
         let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
-        #expect(runs.count == 2)
+        try #require(runs.count == 2)
         #expect(runs[0].runtimeID == AgentRuntimeID.antigravityCLI.rawValue)
         #expect(runs[0].output.trimmingCharacters(in: .whitespacesAndNewlines) == "Initial Antigravity answer")
         #expect(runs[1].runtimeID == AgentRuntimeID.antigravityCLI.rawValue)

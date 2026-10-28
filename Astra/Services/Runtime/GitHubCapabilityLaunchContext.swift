@@ -18,7 +18,7 @@ enum GitHubCapabilityLaunchContext {
             readiness = "GitHub CLI authentication is not ready: \(detail)"
         case .authorizationRequired(let detail, _):
             readiness = "The authenticated account still requires external authorization: \(detail)"
-        case .unresponsive(let detail):
+        case .unresponsive(let detail), .notChecked(let detail):
             readiness = "ASTRA could not verify GitHub CLI access: \(detail)"
         case .missingBinary:
             readiness = "GitHub CLI is not installed or executable."

@@ -33,6 +33,7 @@ struct TaskSidebarContainerView: View {
     @Binding var selectedWorkspace: Workspace?
     /// Opens the new-task composer in the given workspace, or, with `nil`, in the selected one.
     let onNewTask: (Workspace?) -> Void
+    let onOpenWorkspaceConfiguration: (Workspace) -> Void
     let onRunQueue: () -> Void
     let onRunTask: (AgentTask) -> Void
     var onToggleDone: ((AgentTask) -> Void)?
@@ -49,14 +50,9 @@ struct TaskSidebarContainerView: View {
     var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     var selectedWorkspaceApp: WorkspaceApp?
 
-    private var taskActivities: [UUID: TaskActivityPresentation] {
-        TaskActivityPresentation.resolveByTaskID(
-            tasks: taskStore.tasks,
-            requests: turnRequests.map(\.snapshot)
-        )
-    }
-
     var body: some View {
+        let ownedRequests = TaskActivityPresentation.requestsByOwner(tasks: taskStore.tasks, requests: turnRequests)
+        let taskActivities = TaskActivityPresentation.resolveByOwner(tasks: taskStore.tasks, owned: ownedRequests)
         TaskSidebarView(
             appUpdateController: appUpdateController,
             tasks: taskStore.tasks,
@@ -66,8 +62,9 @@ struct TaskSidebarContainerView: View {
             workspaces: workspaces,
             selectedWorkspace: $selectedWorkspace,
             taskActivities: taskActivities,
-            activityRequests: Dictionary(grouping: turnRequests, by: \.taskID),
+            activityRequests: ownedRequests,
             onNewTask: onNewTask,
+            onOpenWorkspaceConfiguration: onOpenWorkspaceConfiguration,
             onRunQueue: onRunQueue,
             onRunTask: onRunTask,
             onToggleDone: onToggleDone,
@@ -353,10 +350,11 @@ struct TaskSidebarView: View {
     let workspaces: [Workspace]
     @Binding var selectedWorkspace: Workspace?
     /// Derived from request snapshots by the container; never mutates turn state.
-    var taskActivities: [UUID: TaskActivityPresentation] = [:]
-    var activityRequests: [UUID: [TaskTurnRequest]] = [:]
+    var taskActivities: [PersistentIdentifier: TaskActivityPresentation] = [:]
+    var activityRequests: [PersistentIdentifier: [TaskTurnRequest]] = [:]
     /// Opens the new-task composer in the given workspace, or, with `nil`, in the selected one.
     let onNewTask: (Workspace?) -> Void
+    let onOpenWorkspaceConfiguration: (Workspace) -> Void
     let onRunQueue: () -> Void
     let onRunTask: (AgentTask) -> Void
     var onToggleDone: ((AgentTask) -> Void)?
@@ -481,7 +479,7 @@ struct TaskSidebarView: View {
         let rebuilt = SidebarTaskIndex(
             tasks: tasks,
             searchText: searchText,
-            taskActivities: taskActivities,
+            ownerActivities: taskActivities,
             stickyUnreadTaskID: taskIndex.heldUnreadRank(forSelected: selectedTask?.id)
         )
         guard animated, let animation = disclosureAnimation else {
@@ -679,7 +677,7 @@ struct TaskSidebarView: View {
         }
         .onChange(of: schedulesVersion) { rebuildSchedules() }
         .onChange(of: selectedWorkspace?.id) { handleSelectedWorkspaceChanged() }
-        .onChange(of: selectedTask?.id) { handleSelectedTaskChanged() }
+        .onChange(of: selectedTask?.persistentModelID) { handleSelectedTaskChanged() }
         .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
         .accessibilityIdentifier("TaskSidebar")
@@ -738,7 +736,7 @@ struct TaskSidebarView: View {
                         pinnedEmptyDropTarget
                             .transition(.opacity)
                     } else {
-                        ForEach(visiblePinnedTasks) { task in
+                        ForEach(visiblePinnedTasks, id: \.persistentModelID) { task in
                             pinnedTaskRow(for: task)
                         }
 
@@ -885,8 +883,8 @@ struct TaskSidebarView: View {
     }
 
     private func pinnedTaskRow(for task: AgentTask) -> some View {
-        let isSelected = selectedTask?.id == task.id
-        let isHovered = hoveredTaskID == task.id
+        let isSelected = selectedTask?.persistentModelID == task.persistentModelID
+        let isHovered = hoveredTaskID == task.persistentModelID
         let workspaceHoverHelp = SidebarPinnedTaskPresentation.workspaceHoverHelp(
             workspaceName: task.workspace?.name
         )
@@ -909,7 +907,7 @@ struct TaskSidebarView: View {
                     isSelected: isSelected,
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
-                    requests: activityRequests[task.id] ?? [],
+                    requests: activityRequests[task.persistentModelID] ?? [],
                     titleHelp: workspaceHoverHelp,
                     showsPinIndicator: false
                 )
@@ -935,7 +933,7 @@ struct TaskSidebarView: View {
             .animation(hoverAnimation, value: showsHoverChrome)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onHover { updateTaskHover($0, id: task.id) }
+        .onHover { updateTaskHover($0, id: task.persistentModelID) }
         .contextMenu {
             Button {
                 withAnimation(disclosureAnimation) {
@@ -967,7 +965,7 @@ struct TaskSidebarView: View {
                 unreadHeader(count: taskIndex.unreadTasks.count)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(visibleUnreadTasks) { task in
+                    ForEach(visibleUnreadTasks, id: \.persistentModelID) { task in
                         topLevelTaskRow(for: task)
                     }
 
@@ -1021,7 +1019,7 @@ struct TaskSidebarView: View {
     }
 
     private func topLevelTaskRow(for task: AgentTask) -> some View {
-        let isHovered = hoveredTaskID == task.id
+        let isHovered = hoveredTaskID == task.persistentModelID
 
         return SidebarTaskFocusGroup(isHovered: isHovered) { isKeyboardFocused in
             Button {
@@ -1029,11 +1027,11 @@ struct TaskSidebarView: View {
             } label: {
                 SidebarThreadRow(
                     task: task,
-                    isSelected: selectedTask?.id == task.id,
+                    isSelected: selectedTask?.persistentModelID == task.persistentModelID,
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
                     subtitle: task.workspace?.name,
-                    requests: activityRequests[task.id] ?? []
+                    requests: activityRequests[task.persistentModelID] ?? []
                 )
                 // Install the source on the task surface, independently of
                 // the trailing menu's native tracking and focus gestures.
@@ -1054,7 +1052,7 @@ struct TaskSidebarView: View {
                 .padding(.trailing, SidebarTaskAccessoryPresentation.trailingPadding)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onHover { updateTaskHover($0, id: task.id) }
+        .onHover { updateTaskHover($0, id: task.persistentModelID) }
         .contextMenu {
             pinToggleButton(for: task)
 
@@ -1281,7 +1279,7 @@ struct TaskSidebarView: View {
                 // Rows stay direct children of the enclosing `LazyVStack` —
                 // wrapping them in a container would build every row up
                 // front, and this list is deliberately uncapped.
-                ForEach(visibleTasks) { task in
+                ForEach(visibleTasks, id: \.persistentModelID) { task in
                     topLevelTaskRow(for: task)
                         .padding(.horizontal, SidebarLeanPresentation.workspaceSectionHorizontalInset)
                 }
@@ -1426,7 +1424,7 @@ struct TaskSidebarView: View {
                         emptyWorkspaceRow(for: workspace)
                     } else if hasTasks {
                         if showGroupLabels { SidebarGroupLabel(text: "Tasks") }
-                        ForEach(visibleTasks) { task in
+                        ForEach(visibleTasks, id: \.persistentModelID) { task in
                             compactTaskRow(
                                 for: task,
                                 contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding
@@ -1497,7 +1495,7 @@ struct TaskSidebarView: View {
 
     @State private var workspacePendingRemoval: Workspace?
     @State private var hoveredWorkspaceID: UUID?
-    @State private var hoveredTaskID: UUID?
+    @State private var hoveredTaskID: PersistentIdentifier?
     @State private var hoveredScheduleID: UUID?
 
     // `.onHover` exit events are not ordered against the next row's enter
@@ -1512,7 +1510,7 @@ struct TaskSidebarView: View {
         }
     }
 
-    private func updateTaskHover(_ hovering: Bool, id: UUID) {
+    private func updateTaskHover(_ hovering: Bool, id: PersistentIdentifier) {
         if hovering {
             hoveredTaskID = id
         } else if hoveredTaskID == id {
@@ -1721,7 +1719,7 @@ struct TaskSidebarView: View {
     private func workspaceActions(for workspace: Workspace) -> WorkspaceSidebarActions {
         WorkspaceSidebarActions(
             newTask: { startNewTask(in: workspace) },
-            openConfiguration: { openWorkspace(workspace) },
+            openConfiguration: { openWorkspaceConfiguration(workspace) },
             toggleStarred: { toggleStarred(for: workspace) },
             rename: { onRenameWorkspace?(workspace) },
             remove: { workspacePendingRemoval = workspace }
@@ -1733,9 +1731,8 @@ struct TaskSidebarView: View {
         onNewTask(workspace)
     }
 
-    private func openWorkspace(_ workspace: Workspace) {
-        selectedTask = nil
-        selectedWorkspace = workspace
+    private func openWorkspaceConfiguration(_ workspace: Workspace) {
+        onOpenWorkspaceConfiguration(workspace)
         ensureWorkspaceExpanded(workspace)
     }
 
@@ -1848,7 +1845,7 @@ struct TaskSidebarView: View {
         attemptCount: Int = 1,
         contentLeadingPadding: CGFloat = 12
     ) -> some View {
-        let isHovered = hoveredTaskID == task.id
+        let isHovered = hoveredTaskID == task.persistentModelID
 
         return SidebarTaskFocusGroup(isHovered: isHovered) { isKeyboardFocused in
             Button {
@@ -1856,12 +1853,12 @@ struct TaskSidebarView: View {
             } label: {
                 SidebarThreadRow(
                     task: task,
-                    isSelected: selectedTask?.id == task.id,
+                    isSelected: selectedTask?.persistentModelID == task.persistentModelID,
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
                     contentLeadingPadding: contentLeadingPadding,
                     attemptCount: attemptCount,
-                    requests: activityRequests[task.id] ?? []
+                    requests: activityRequests[task.persistentModelID] ?? []
                 )
                 // Install the source on the task surface, independently of
                 // the trailing menu's native tracking and focus gestures.
@@ -1878,7 +1875,7 @@ struct TaskSidebarView: View {
                 .padding(.trailing, SidebarTaskAccessoryPresentation.trailingPadding)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onHover { updateTaskHover($0, id: task.id) }
+        .onHover { updateTaskHover($0, id: task.persistentModelID) }
         .contextMenu {
             pinToggleButton(for: task)
 
@@ -2060,7 +2057,7 @@ struct TaskSidebarView: View {
         // behind a running run is only retractable here, since the running
         // Cancel stops the run and every request. Retract just the saved
         // request rather than cancelling the whole task.
-        if let activity = taskActivities[task.id],
+        if let activity = taskActivities[task.persistentModelID],
            let requestID = activity.cancellableQueuedRequest?.id {
             Button {
                 taskQueue.cancelTurnRequest(
@@ -2077,7 +2074,7 @@ struct TaskSidebarView: View {
         // terminal status, but retrying then would race the pending admission
         // into out-of-order or duplicate execution.
         if task.status == .failed || task.status == .cancelled || task.status == .budgetExceeded,
-           (taskActivities[task.id]?.kind ?? .idle) == .idle {
+           (taskActivities[task.persistentModelID]?.kind ?? .idle) == .idle {
             Button {
                 onRetryTask?(task)
             } label: {

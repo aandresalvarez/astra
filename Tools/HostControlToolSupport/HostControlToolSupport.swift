@@ -2,116 +2,6 @@ import Darwin
 import Foundation
 import MCPServerKit
 
-public struct HostControlToolConfiguration: Equatable, Sendable {
-    public static let knownToolNames: Set<String> = ["github", "gcloud", "bq", "ssh", "jira", "redcap", "history"]
-
-    public var githubExecutable: String
-    public var gcloudExecutable: String
-    public var bigQueryExecutable: String
-    public var sshExecutable: String
-    public var allowedSSHAliases: [String]
-    public var sshRoute: HostControlSSHRoute?
-    public var sshRouteTargets: [String]
-    public var allowedTools: Set<String>
-    public var currentDirectory: String
-    /// Where a brokered tool writes output it must not return inline.
-    ///
-    /// No fallback. It used to fall back to `currentDirectory`, which is
-    /// normally the workspace the agent is working in — usually a git checkout,
-    /// so a REDCap export landing there was one `git add .` from committing
-    /// subject data. A tool that has nowhere sanctioned to put its output must
-    /// fail rather than choose somewhere.
-    public var taskFolder: String
-    public var diagnosticsHostPath: String
-    public var taskID: String
-    public var runID: String
-    public var connectorsJSON: String
-    public var environment: [String: String]
-
-    public init(
-        githubExecutable: String = "gh",
-        gcloudExecutable: String = "gcloud",
-        bigQueryExecutable: String = "bq",
-        sshExecutable: String = "ssh",
-        allowedSSHAliases: [String] = [],
-        sshRoute: HostControlSSHRoute? = nil,
-        sshRouteTargets: [String] = [],
-        allowedTools: Set<String> = knownToolNames,
-        currentDirectory: String = "",
-        taskFolder: String = "",
-        diagnosticsHostPath: String = "",
-        taskID: String = "unknown-task",
-        runID: String = "unknown-run",
-        connectorsJSON: String = #"{"connectors":[]}"#,
-        environment: [String: String] = [:]
-    ) {
-        self.githubExecutable = Self.clean(githubExecutable) ?? "gh"
-        self.gcloudExecutable = Self.clean(gcloudExecutable) ?? "gcloud"
-        self.bigQueryExecutable = Self.clean(bigQueryExecutable) ?? "bq"
-        self.sshExecutable = Self.clean(sshExecutable) ?? "ssh"
-        self.allowedSSHAliases = Self.deduplicated(allowedSSHAliases.compactMap(Self.clean))
-        self.sshRoute = sshRoute
-        self.sshRouteTargets = Self.deduplicated(sshRouteTargets.compactMap(Self.clean))
-        let normalizedTools = Set(allowedTools.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
-            .intersection(Self.knownToolNames)
-        self.allowedTools = normalizedTools
-        self.currentDirectory = Self.clean(currentDirectory) ?? ""
-        self.taskFolder = Self.clean(taskFolder) ?? ""
-        self.diagnosticsHostPath = Self.clean(diagnosticsHostPath) ?? ""
-        self.taskID = Self.clean(taskID) ?? "unknown-task"
-        self.runID = Self.clean(runID) ?? "unknown-run"
-        self.connectorsJSON = Self.clean(connectorsJSON) ?? #"{"connectors":[]}"#
-        self.environment = environment
-    }
-
-    public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> HostControlToolConfiguration {
-        HostControlToolConfiguration(
-            githubExecutable: clean(env["ASTRA_HOST_CONTROL_GH_EXECUTABLE"]) ?? "gh",
-            gcloudExecutable: clean(env["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"]) ?? "gcloud",
-            bigQueryExecutable: clean(env["ASTRA_HOST_CONTROL_BQ_EXECUTABLE"]) ?? "bq",
-            sshExecutable: clean(env["ASTRA_HOST_CONTROL_SSH_EXECUTABLE"]) ?? "ssh",
-            allowedSSHAliases: splitList(env["ASTRA_HOST_CONTROL_ALLOWED_SSH_ALIASES"]),
-            sshRoute: HostControlSSHRoute(wireValue: env[HostControlSSHRoute.environmentKey]),
-            sshRouteTargets: (env[HostControlSSHRoute.targetsEnvironmentKey] ?? "").split(separator: "\n").map(String.init),
-            allowedTools: allowedToolSet(env["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"]),
-            currentDirectory: clean(env["ASTRA_HOST_CONTROL_CURRENT_DIRECTORY"]) ?? "",
-            taskFolder: clean(env["ASTRA_HOST_CONTROL_TASK_FOLDER"]) ?? "",
-            diagnosticsHostPath: clean(env["ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST"]) ?? "",
-            taskID: clean(env["ASTRA_HOST_CONTROL_TASK_ID"]) ?? "unknown-task",
-            runID: clean(env["ASTRA_HOST_CONTROL_RUN_ID"]) ?? "unknown-run",
-            connectorsJSON: clean(env["ASTRA_CONNECTORS"]) ?? #"{"connectors":[]}"#,
-            environment: env
-        )
-    }
-
-    public var connectorManifest: HostControlConnectorManifest {
-        (try? JSONDecoder().decode(HostControlConnectorManifest.self, from: Data(connectorsJSON.utf8)))
-            ?? HostControlConnectorManifest(connectors: [])
-    }
-
-    private static func splitList(_ value: String?) -> [String] {
-        (value ?? "")
-            .split(separator: ",")
-            .map(String.init)
-            .compactMap(clean)
-    }
-
-    private static func allowedToolSet(_ value: String?) -> Set<String> {
-        guard value != nil else { return knownToolNames }
-        return Set(splitList(value).map { $0.lowercased() }).intersection(knownToolNames)
-    }
-
-    private static func deduplicated(_ values: [String]) -> [String] {
-        var seen: Set<String> = []
-        return values.filter { seen.insert($0).inserted }
-    }
-
-    private static func clean(_ value: String?) -> String? {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? nil : trimmed
-    }
-}
-
 public struct HostControlConnectorManifest: Codable, Equatable, Sendable {
     public var connectors: [HostControlConnector]
 
@@ -131,6 +21,8 @@ public struct HostControlConnector: Codable, Equatable, Sendable {
     public var env: [String: String]
     public var credentials: [String: String]
     public var config: [String: String]
+    /// The workspace's default account of its service; absent in older manifests.
+    public var isDefault: Bool? = nil
 }
 
 public struct HostControlCommandResult: Equatable, Sendable {
@@ -325,6 +217,12 @@ private final class HostControlScopedProcess: @unchecked Sendable {
 
         try addPipe(stdoutPipe, targetDescriptor: STDOUT_FILENO, actions: &actions, operation: "stdout")
         try addPipe(stderrPipe, targetDescriptor: STDERR_FILENO, actions: &actions, operation: "stderr")
+        if ![stdoutPipe, stderrPipe, parentLifetimePipe].contains(where: {
+            $0.fileHandleForReading.fileDescriptor == STDIN_FILENO || $0.fileHandleForWriting.fileDescriptor == STDIN_FILENO
+        }), fcntl(STDIN_FILENO, F_GETFD) >= 0 {
+            try check(posix_spawn_file_actions_addinherit_np(&actions, STDIN_FILENO),
+                      operation: "posix_spawn_file_actions_addinherit_np(stdin)")
+        }
         try check(
             posix_spawn_file_actions_adddup2(
                 &actions,
@@ -359,7 +257,7 @@ private final class HostControlScopedProcess: @unchecked Sendable {
         try check(
             posix_spawnattr_setflags(
                 &attr,
-                Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)
+                Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_CLOEXEC_DEFAULT)
             ),
             operation: "posix_spawnattr_setflags"
         )
@@ -404,9 +302,14 @@ private final class HostControlScopedProcess: @unchecked Sendable {
         running = true
         lock.unlock()
 
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        // The broker deliberately has no dependency on ASTRA's permission
+        // core. Keep its blocking wait independent of shared worker capacity.
+        let reaper = Thread { [weak self] in
             self?.reapProcess(pid: childPID)
         }
+        reaper.name = "ASTRA host process wait"
+        reaper.qualityOfService = .utility
+        reaper.start()
     }
 
     func terminate() {
@@ -783,7 +686,10 @@ public final class HostControlToolDiagnosticsRecorder: @unchecked Sendable {
         self.fileManager = fileManager
     }
 
-    func record(toolName: String, summary: String, result: HostControlCommandResult?) {
+    func record(
+        toolName: String, summary: String, result: HostControlCommandResult?,
+        durationMilliseconds: Double? = nil, statusCode: Int? = nil
+    ) {
         let redactedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
         write(HostControlDiagnosticRecord(
             timestamp: Self.timestamp(),
@@ -794,7 +700,9 @@ public final class HostControlToolDiagnosticsRecorder: @unchecked Sendable {
             summary: redactedSummary.isEmpty ? nil : redactedSummary,
             exitCode: result?.exitCode,
             timedOut: result?.timedOut ?? false,
-            stderrTail: Self.tail(result?.stderr ?? "")
+            stderrTail: Self.tail(result?.stderr ?? ""),
+            durationMilliseconds: durationMilliseconds,
+            statusCode: statusCode
         ))
     }
 
@@ -841,6 +749,8 @@ private struct HostControlDiagnosticRecord: Codable {
     var exitCode: Int32?
     var timedOut: Bool
     var stderrTail: String?
+    var durationMilliseconds: Double?
+    var statusCode: Int?
 }
 
 public final class HostControlMCPServer {
@@ -853,6 +763,7 @@ public final class HostControlMCPServer {
     /// ASTRA's side of a write: the only way a request here can lead to one.
     /// Nil in the standalone helper, where every write waits for review.
     private let externalActionRequester: (any BrokeredExternalActionRequesting)?
+    private let mailReader: (any BrokeredMailReading)?
     private let processLimits: HostControlProcessLimits
     private lazy var server = MCPServer(
         name: "astra-host-control",
@@ -871,18 +782,24 @@ public final class HostControlMCPServer {
         withholdingObserver: BrokeredCredentialWithholdingObserving? = nil,
         processLimits: HostControlProcessLimits = .standard,
         historyReader: (any TaskHistoryReading)? = nil,
-        externalActionRequester: (any BrokeredExternalActionRequesting)? = nil
+        externalActionRequester: (any BrokeredExternalActionRequesting)? = nil,
+        mailReader: (any BrokeredMailReading)? = nil
     ) {
         let cancellationRegistry = HostControlOperationCancellationRegistry()
         self.configuration = configuration
         self.historyReader = historyReader
         self.externalActionRequester = externalActionRequester
+        self.mailReader = mailReader
         self.cancellationRegistry = cancellationRegistry
         self.processRunner = processRunner ?? HostControlProcessRunner(
             limits: processLimits,
             cancellationRegistry: cancellationRegistry
         )
-        self.diagnosticsRecorder = diagnosticsRecorder
+        // The in-app broker and standalone helper share this boundary, for
+        // every provider and transport. No destination means no disk writes.
+        self.diagnosticsRecorder = diagnosticsRecorder ?? (
+            configuration.diagnosticsHostPath.isEmpty ? nil : HostControlToolDiagnosticsRecorder(configuration: configuration)
+        )
         self.withholdingObserver = withholdingObserver
         self.processLimits = processLimits
     }
@@ -893,6 +810,7 @@ public final class HostControlMCPServer {
 
     public func cancelActiveOperations() {
         cancellationRegistry.cancelAll()
+        mailReader?.cancelPendingReads()
     }
 
     private func handleToolCall(_ call: MCPToolCall) -> MCPServerReply {
@@ -903,6 +821,8 @@ public final class HostControlMCPServer {
         }
         let arguments = call.arguments
         switch normalizedToolName {
+        case "mail":
+            return MailReadHostControlPolicy.handle(arguments: arguments, reader: mailReader, configuration: configuration)
         case "history":
             return TaskHistoryHostControlPolicy.handle(arguments: arguments, reader: historyReader)
         case "github":
@@ -1338,6 +1258,7 @@ public final class HostControlMCPServer {
                 argumentDescription: "Help-only bq arguments, for example [\"--help\"], [\"help\"], or [\"version\"]. Resource listing, display, query, export, load, delete, copy, table mutation, and job commands are denied."
             ),
             TaskHistoryHostControlPolicy.schema,
+            MailReadHostControlPolicy.schema,
             sshSchema(),
             jiraSchema(),
             REDCapHostControlPolicy.toolSchema(timeoutDescription: timeoutDescription(kind: "request"))

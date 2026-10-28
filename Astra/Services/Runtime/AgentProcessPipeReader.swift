@@ -8,6 +8,8 @@ final class AgentProcessPipeReader: @unchecked Sendable {
     private let handle: FileHandle
     private let lock = NSLock()
     private var finished = false
+    private var reachedEOF = false
+    private var readFailed = false
 
     init(_ handle: FileHandle) {
         self.handle = handle
@@ -23,16 +25,19 @@ final class AgentProcessPipeReader: @unchecked Sendable {
     /// Called after disabling readability callbacks and reaping the provider.
     /// A callback already queued may still execute, but cannot deliver more
     /// output after this final drain or touch the closed descriptor.
-    func finish(consume: (Data) -> Void) {
+    @discardableResult
+    func finish(consume: (Data) -> Void) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard !finished else { return }
+        guard !finished else { return reachedEOF && !readFailed }
         finished = true
         drainAvailable(consume: consume)
         try? handle.close()
+        return reachedEOF && !readFailed
     }
 
     private func drainAvailable(consume: (Data) -> Void) {
+        guard !reachedEOF else { return }
         let fd = handle.fileDescriptor
         var chunk = [UInt8](repeating: 0, count: 65_536)
         // More than the pipe's capacity, but finite even if an escaped writer
@@ -41,9 +46,12 @@ final class AgentProcessPipeReader: @unchecked Sendable {
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let ready = poll(&descriptor, 1, 0)
             if ready < 0, errno == EINTR { continue }
+            if ready < 0 { readFailed = true }
             guard ready > 0 else { return }
             let count = read(fd, &chunk, chunk.count)
             if count < 0, errno == EINTR { continue }
+            if count < 0 { readFailed = true }
+            if count == 0 { reachedEOF = true }
             guard count > 0 else { return }
             consume(Data(chunk[..<count]))
         }

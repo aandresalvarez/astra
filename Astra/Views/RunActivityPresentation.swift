@@ -56,7 +56,7 @@ struct RunIssuePresentation: Identifiable, Hashable, Sendable {
             severity = .warning
         case "budget.exceeded":
             title = "Budget exceeded"
-            summary = "This task exceeded its budget. Resume with a higher budget or retry with a narrower request."
+            summary = TaskRequestBudget.exhaustedMessage
             severity = .error
         case "permission.approval.requested":
             let approval = RuntimePermissionApprovalText(payload: payload)

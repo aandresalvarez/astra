@@ -46,7 +46,7 @@ struct CopilotSessionDiscoveryTests {
         let usage = #"{"inputTokens":\#(input),"outputTokens":\#(output),"cacheReadTokens":0,"cacheWriteTokens":0}"#
         try [
             #"{"type":"user.message","data":{"content":"Task thread: \#(fixture.task.id.uuidString)"}}"#,
-            #"{"type":"session.shutdown","data":{"totalApiDurationMs":42,"modelMetrics":{"gpt-5":{"requests":{"count":1,"cost":1},"usage":\#(usage)}}}}"#
+            #"{"type":"session.shutdown","timestamp":"\#(ISO8601DateFormatter().string(from: modifiedAt))","data":{"totalApiDurationMs":42,"modelMetrics":{"gpt-5":{"requests":{"count":1,"cost":1},"usage":\#(usage)}}}}"#
         ].joined(separator: "\n").write(toFile: eventsPath, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: eventsPath)
     }
@@ -82,7 +82,7 @@ struct CopilotSessionDiscoveryTests {
         #expect(fixture.run.providerSessionId == "fresh-session")
         #expect(fixture.task.sessionId == "fresh-session")
         #expect(fixture.run.tokensUsed == 25)
-        #expect(statsEvents(fixture.task).isEmpty)
+        #expect(statsEvents(fixture.task).count == 1)
     }
 
     @Test("A fresh launch neither adopts nor bills a session last written before it started")

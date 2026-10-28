@@ -61,7 +61,7 @@ struct TaskCapabilityResolverTests {
         #expect(snapshot.providerLaunch.prunedForBrowserTask)
         #expect(!snapshot.providerLaunch.behaviorSkills.map(\.name).contains("GitHub Agent"))
         #expect(!snapshot.providerLaunch.localTools.contains { $0.command == "gh" })
-        workspace.enabledCapabilityIDs = []
+        workspace.testEnabledCapabilityIDs = []
         task.goal = "Use GitHub to list PRs"
         try context.save()
 
@@ -76,7 +76,7 @@ struct TaskCapabilityResolverTests {
         let context = container.mainContext
 
         let workspace = Workspace(name: "Jira Host Control", primaryPath: "/tmp/jira-host-control")
-        workspace.enabledCapabilityIDs = ["custom-jira-host-control"]
+        workspace.testEnabledCapabilityIDs = ["custom-jira-host-control"]
         context.insert(workspace)
 
         let jiraSkill = Skill(
@@ -109,8 +109,9 @@ struct TaskCapabilityResolverTests {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
 
+        // The skill under test is pinned as an authored row; turning the
+        // built-in Jira plugin on would project its own skill beside it.
         let workspace = Workspace(name: "Jira REST", primaryPath: "/tmp/jira-rest")
-        workspace.enabledCapabilityIDs = ["jira-workflow"]
         context.insert(workspace)
 
         let jiraSkill = Skill(
@@ -275,7 +276,7 @@ struct TaskCapabilityResolverTests {
         let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
 
         let workspace = Workspace(name: "Starr Data Lake", primaryPath: "/tmp/starr-data-lake")
-        workspace.enabledCapabilityIDs = [jiraPackage.id]
+        workspace.testEnabledCapabilityIDs = [jiraPackage.id]
         context.insert(workspace)
 
         let jiraSkill = Skill(
@@ -898,22 +899,14 @@ struct TaskCapabilityResolverTests {
         #expect(!gcloudInstructions.contains("Use the GCP_PROJECT environment variable when set"))
     }
 
-    @Test("Enabled package IDs resolve runtime resources even when activation IDs drift")
+    @Test("An enabled plugin reaches the account bound to it, whatever its name")
     func enabledPackageIDResolvesResourcesWhenActivationIDsDrift() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
 
         let workspace = Workspace(name: "Package Drift", primaryPath: "/tmp/package-drift")
-        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
         context.insert(workspace)
-
-        let jiraSkill = Skill(
-            name: "Jira Agent",
-            allowedTools: ["Read", "Bash"],
-            behaviorInstructions: "Use Jira REST API."
-        )
-        jiraSkill.isGlobal = true
-        context.insert(jiraSkill)
 
         let jiraConnector = Connector(
             name: "Jira-new",
@@ -923,8 +916,9 @@ struct TaskCapabilityResolverTests {
             authMethod: "none"
         )
         jiraConnector.isGlobal = true
-        jiraConnector.skill = jiraSkill
         context.insert(jiraConnector)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(jiraConnector, toComponent: "connector:jira:jira", of: activation)
 
         let task = AgentTask(
             title: "Use Jira",
@@ -1185,14 +1179,14 @@ struct TaskCapabilityResolverTests {
         #expect(!connectorsEnv.contains(#""credentials":{""#))
     }
 
-    @Test("Enabled package uses matched local tool owner when package skill name changed")
+    @Test("An enabled plugin projects its current skill and tool, ignoring legacy rows")
     func enabledPackageUsesMatchedLocalToolOwnerWhenPackageSkillNameChanged() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
         let graphPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "stanford-healthcare-graph-mail" })
 
         let workspace = Workspace(name: "Graph Mail Rename", primaryPath: "/tmp/graph-mail-rename")
-        workspace.enabledCapabilityIDs = [graphPackage.id]
+        workspace.testEnabledCapabilityIDs = [graphPackage.id]
         context.insert(workspace)
 
         let legacySkill = Skill(
@@ -1222,8 +1216,9 @@ struct TaskCapabilityResolverTests {
         try context.save()
 
         let resolver = TaskCapabilityResolver(task: task)
-        #expect(resolver.allBehaviorSkills.map(\.name) == ["Stanford Graph Mail Agent"])
-        #expect(resolver.allLocalTools.map(\.command) == ["stanford-graph-mail"])
+        #expect(resolver.allBehaviorSkills.map(\.name) == graphPackage.skills.map(\.name))
+        #expect(resolver.allLocalTools.map(\.command) == graphPackage.localTools.map(\.command))
+        #expect(!resolver.allLocalTools.contains { $0.id == graphTool.id })
 
         let issues = CapabilityRuntimeIntegrityService.issues(
             for: task,
@@ -1555,23 +1550,15 @@ struct TaskCapabilityResolverTests {
         #expect(issue.message.contains("disabled in this workspace"))
     }
 
-    @Test("Runtime integrity passes when enabled package resources resolve through package ID")
+    @Test("Runtime integrity passes when the enabled plugin's account is bound")
     func runtimeIntegrityPassesForResolvedEnabledPackageResources() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
         let jiraPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
 
         let workspace = Workspace(name: "Resolved Package", primaryPath: "/tmp/resolved-package")
-        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
         context.insert(workspace)
-
-        let jiraSkill = Skill(
-            name: "Jira Agent",
-            allowedTools: ["Read", "Bash"],
-            behaviorInstructions: "Use Jira REST API."
-        )
-        jiraSkill.isGlobal = true
-        context.insert(jiraSkill)
 
         let jiraConnector = Connector(
             name: "Configured Jira",
@@ -1581,8 +1568,9 @@ struct TaskCapabilityResolverTests {
             authMethod: "none"
         )
         jiraConnector.isGlobal = true
-        jiraConnector.skill = jiraSkill
         context.insert(jiraConnector)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(jiraConnector, toComponent: "connector:jira:jira", of: activation)
 
         let task = AgentTask(
             title: "Use Jira",
@@ -1621,7 +1609,7 @@ struct TaskCapabilityResolverTests {
             templates: [],
             governance: .localDraft()
         )
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         context.insert(workspace)
         let task = AgentTask(title: "Use draft", goal: "Run draft capability", workspace: workspace)
         context.insert(task)
@@ -1648,7 +1636,7 @@ struct TaskCapabilityResolverTests {
     private func makeGitHubEnabledWorkspace(in context: ModelContext, name: String) throws -> (Workspace, PluginPackage) {
         let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
         let workspace = Workspace(name: name, primaryPath: "/tmp/\(name)")
-        workspace.enabledCapabilityIDs = [githubPackage.id]
+        workspace.testEnabledCapabilityIDs = [githubPackage.id]
         context.insert(workspace)
 
         let githubSkill = Skill(
@@ -1863,7 +1851,7 @@ struct TaskCapabilityResolverTests {
         )
 
         let workspace = Workspace(name: "Google Drive Integrity", primaryPath: "/tmp/google-drive-integrity")
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         context.insert(workspace)
 
         let task = AgentTask(
@@ -1897,7 +1885,7 @@ struct TaskCapabilityResolverTests {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "github-roster", primaryPath: "/tmp/github-roster")
-        workspace.enabledCapabilityIDs = ["github-workflow"]
+        workspace.testEnabledCapabilityIDs = ["github-workflow"]
         context.insert(workspace)
         try context.save()
 
@@ -1949,7 +1937,7 @@ struct TaskCapabilityResolverTests {
                 command: "astra-test-missing-mcp-binary-\(UUID().uuidString)"
             )
         ]
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         context.insert(workspace)
         let task = AgentTask(title: "Use MCP", goal: "Run MCP capability", workspace: workspace)
         context.insert(task)
@@ -2015,6 +2003,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://drive.google.com/drive/home",
             currentTitle: "Google Drive",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2069,6 +2059,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "about:blank",
             currentTitle: "Preview",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2425,7 +2417,7 @@ struct TaskCapabilityResolverTests {
         let context = container.mainContext
 
         let workspace = Workspace(name: "Drive Browser Workspace", primaryPath: "/tmp/drive-browser-workspace")
-        workspace.enabledCapabilityIDs = ["google-drive-browser"]
+        workspace.testEnabledCapabilityIDs = ["google-drive-browser"]
         context.insert(workspace)
 
         let task = AgentTask(
@@ -2464,13 +2456,15 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://drive.google.com/drive/home",
             currentTitle: "Google Drive",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true,
             enabledBrowserAdapters: adapters
         )
         defer { ShelfBrowserBridgeRegistry.shared.reset() }
 
-        let prompt = ShelfBrowserBridgeRegistry.shared.promptContext(for: task.id)
+        let prompt = ShelfBrowserBridgeRegistry.shared.promptContext(for: task.id, ownerID: ShelfBrowserOwner(task).modelID)
         #expect(prompt?.contains("Enabled browser site adapters: googleDrive") == true)
         #expect(prompt?.contains("astra-browser google-drive-open") == true)
     }
@@ -2496,6 +2490,8 @@ struct TaskCapabilityResolverTests {
             currentURL: nil,
             currentTitle: nil,
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: false,
             isEnabled: true,
             enabledBrowserAdapters: [BrowserSiteAdapterID.github]
@@ -2542,6 +2538,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://example.com/dashboard",
             currentTitle: "Dashboard",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2575,6 +2573,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://example.com/dashboard",
             currentTitle: "Dashboard",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2594,7 +2594,7 @@ struct TaskCapabilityResolverTests {
     @Test("Browser adapters require runnable catalog policy")
     func browserAdaptersRequireRunnableCatalogPolicy() throws {
         let workspace = Workspace(name: "Draft Browser Workspace", primaryPath: "/tmp/draft-browser-workspace")
-        workspace.enabledCapabilityIDs = ["draft-drive-browser"]
+        workspace.testEnabledCapabilityIDs = ["draft-drive-browser"]
         var draftPackage = PluginPackage(
             id: "draft-drive-browser",
             name: "Draft Drive Browser",
@@ -2645,7 +2645,7 @@ struct TaskCapabilityResolverTests {
     @Test("Pack capability filters load approval store when package governance can be approval-overridden")
     func packCapabilityFiltersLoadApprovalStoreWhenPackageGovernanceCanBeApprovalOverridden() throws {
         let workspace = Workspace(name: "Approved Draft Workspace", primaryPath: "/tmp/approved-draft-workspace")
-        workspace.enabledCapabilityIDs = ["draft-approved-tool"]
+        workspace.testEnabledCapabilityIDs = ["draft-approved-tool"]
         let draftPackage = PluginPackage(
             id: "draft-approved-tool",
             name: "Draft Approved Tool",
@@ -2737,7 +2737,7 @@ struct TaskCapabilityResolverTests {
             browserAdapters: ["unknownAdapter"],
             governance: .builtInApproved(riskLevel: .high)
         )
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         context.insert(workspace)
         let task = AgentTask(title: "Use browser", goal: "Use unknown adapter", workspace: workspace)
         context.insert(task)
@@ -2808,6 +2808,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://example.atlassian.net/browse/STAR-123",
             currentTitle: "STAR-123 - Jira",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2876,6 +2878,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://outlook.cloud.microsoft/mail/inbox/id/example",
             currentTitle: "Outlook",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )

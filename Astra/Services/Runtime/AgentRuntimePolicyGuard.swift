@@ -276,6 +276,18 @@ struct AgentRuntimePolicyGuard: Sendable {
             return nil
         }
 
+        if isShellTool(toolName), let command = observed.command {
+            guard let equivalents = RemoteWorkspaceJobPolicyEquivalence.sshEquivalents(of: command) else {
+                return AgentRuntimePolicyViolation(reason: "The remote job command could not be checked safely",
+                    toolName: toolName, detail: observed.summary)
+            }
+            for equivalent in equivalents {
+                if let violation = validateDeniedSSHEquivalent(equivalent, toolName: toolName, summary: observed.summary) {
+                    return violation
+                }
+            }
+        }
+
         if toolMatches(toolName, command: observed.command, candidates: manifest.providerRender.deniedTools) {
             return AgentRuntimePolicyViolation(
                 reason: "The tool is explicitly denied by the effective ASTRA policy",
@@ -668,6 +680,26 @@ struct AgentRuntimePolicyGuard: Sendable {
             reason: "The shell command matches a denied command pattern",
             toolName: toolName,
             detail: trimmedCommand
+        )
+    }
+
+    /// A remote job start is `ssh <target> <command>` run detached, so any
+    /// rule that would deny that ssh command denies the job too
+    /// (docs/specs/2026-10-21-ssh-remote-managed-jobs.md). Only denials: asking
+    /// and allowing stay with the literal command, which asks under Ask.
+    private func validateDeniedSSHEquivalent(_ equivalent: String, toolName: String, summary: String?) -> AgentRuntimePolicyViolation? {
+        if toolMatches(toolName, command: equivalent, candidates: manifest.providerRender.deniedTools) {
+            return AgentRuntimePolicyViolation(
+                reason: "The remote job runs `\(equivalent)`, which the effective ASTRA policy denies",
+                toolName: toolName,
+                detail: summary
+            )
+        }
+        guard validateDeniedShellCommand(command: equivalent, toolName: toolName) != nil else { return nil }
+        return AgentRuntimePolicyViolation(
+            reason: "The remote job runs `\(equivalent)`, which matches a denied command pattern",
+            toolName: toolName,
+            detail: summary
         )
     }
 

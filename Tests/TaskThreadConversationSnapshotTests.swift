@@ -1401,7 +1401,7 @@ extension TaskThreadSnapshotTests {
         let input = TaskThreadSnapshotInput(task: task)
         let snapshot = TaskThreadSnapshot(input: input)
 
-        #expect(input.events.count == 1_201)
+        #expect(input.events.count == TaskThreadHistoryReader.defaultEventPageSize + 1)
         #expect(snapshot.latestAgentPlanItems.map(\.text) == ["Keep this plan"])
         #expect(snapshot.protocolState(for: run).todoItems.map(\.text) == ["Keep this plan"])
     }
@@ -1623,16 +1623,23 @@ extension TaskThreadSnapshotTests {
     func executorStampsBuildCompletionBeforeTheMainActorHop() async throws {
         let executor = TaskThreadSnapshotBuildExecutor()
         let input = TaskThreadSnapshotInput(goal: "Hop", createdAt: .now, events: [], runs: [])
+        let completed = DispatchSemaphore(value: 0)
         let build = Task.detached {
-            try await executor.build(
+            defer { completed.signal() }
+            return try await executor.build(
                 input: input,
                 fields: [:],
                 responsivenessContext: nil,
                 admittedAt: DispatchTime.now().uptimeNanoseconds
             )
         }
-        // Occupy the main actor while the detached build runs and finishes, so
-        // its result cannot be delivered here until the block ends.
+        defer { build.cancel() }
+        // Wait for completion while holding the main actor. Under CI load the
+        // detached build may start late, so sleeping immediately after launch
+        // does not establish that any of the sleep belongs to the delivery hop.
+        try #require(completed.wait(timeout: .now() + 10) == .success)
+        // The build has now finished, but its result cannot be delivered to
+        // this main-actor caller until the deliberate block ends.
         blockCallingMainThread(forSeconds: 0.3)
         let outcome = try await build.value
 
