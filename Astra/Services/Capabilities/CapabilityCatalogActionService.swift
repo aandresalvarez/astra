@@ -577,6 +577,7 @@ struct CapabilityCatalogActionService {
             case .saveFailed: fields["error_reason"] = "save_failed"
             case .notAdded: fields["error_reason"] = "not_added"
             case .updateRequired: fields["error_reason"] = "update_required"
+            case .invalidSettings: fields["error_reason"] = "invalid_settings"
             case .secretReadFailed: fields["error_reason"] = "secret_read_failed"
             case .secretSaveFailed: fields["error_reason"] = "secret_save_failed"
             }
