@@ -206,7 +206,7 @@ enum ExecutionRequestSubmissionService {
         let origin: TaskExecutionSourcePayloadV1?
         do {
             let request = try continuation.flatMap { binding in
-                try TaskTurnRequestRepository.requests(for: task, in: modelContext).last { $0.runID == binding.runID }
+                try TaskTurnRequestRepository.origin(for: task, runID: binding.runID, in: modelContext)
             }
             origin = request.flatMap { request in task.events.first { $0.id == request.sourceEventID } }
                 .flatMap(decodeSourcePayload)
@@ -419,14 +419,22 @@ enum ExecutionRequestSubmissionService {
         let origin: TaskTurnRequest?
         let originSnapshot: AgentTaskLaunchSnapshot?
         do {
+            // Capture a permanent identity before accepting a durable request.
+            // Existing tasks take no extra save; a new unsaved draft is saved
+            // before preparation, source events or admission side effects.
+            if task.persistentModelID.storeIdentifier == nil {
+                try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(
+                    workspace: task.workspace, modelContext: modelContext, taskID: task.id,
+                    auditFields: ["operation": "persist_submission_task_owner"])
+            }
             nextSequence = try TaskTurnRequestRepository.nextSequence(for: task, in: modelContext)
             origin = try permissionContinuation.flatMap { binding in
-                try TaskTurnRequestRepository.requests(for: task, in: modelContext).last { $0.runID == binding.runID }
+                try TaskTurnRequestRepository.origin(for: task, runID: binding.runID, in: modelContext)
             }
             originSnapshot = origin.flatMap { TaskExecutionLaunchSnapshotApplicator.snapshot(request: $0, from: task) }
             // Legacy requests have no snapshot. An existing but unreadable
             // snapshot must never turn into today's mutable launch settings.
-            if origin?.executionPolicySnapshotJSON != nil, originSnapshot == nil { return .failure(.emptySource) }
+            if origin?.hasLegacyExecutionPolicy == false, originSnapshot == nil { return .failure(.emptySource) }
         } catch {
             return .failure(.persistenceFailed(String(describing: type(of: error))))
         }
@@ -459,7 +467,9 @@ enum ExecutionRequestSubmissionService {
             submittedAt: date
         )
         if let origin, let snapshot = originSnapshot {
-            let frozenTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+            let projection = DetachedLaunchProjection(snapshot, from: task)
+            defer { withExtendedLifetime(projection) {} }
+            let frozenTask = projection.task
             // Task authority can grow through this approval; execution settings
             // remain those the originating turn actually accepted.
             frozenTask.runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON

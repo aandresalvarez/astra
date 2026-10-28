@@ -208,6 +208,43 @@ struct TaskExternalOutcomeRequirementTests {
         #expect(fromRecords == TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run))
     }
 
+    @Test("A later receipt outside the run resolves legacy failures and pending edits respect rollback",
+          arguments: [false, true], [false, true])
+    func legacyReceiptsOutsideRun(unbound: Bool, durableFailure: Bool) throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Publish", goal: "Create a pull request")
+        let run = TaskRun(task: task)
+        let laterRun = TaskRun(task: task)
+        context.insert(task); context.insert(run); context.insert(laterRun)
+        let failure: TaskEvent
+        if durableFailure {
+            failure = TaskEvent.structuredPayloadEvent(
+                task: task, type: TaskExternalOutcomeEventTypes.publicationFailed,
+                payload: TaskRequiredExternalOutcomeFailure(version: 1, kind: .githubPullRequest,
+                    runID: run.id, sourceEventID: nil, message: "gh pr create failed"), run: run)
+        } else {
+            failure = TaskEvent.structuredPayloadEvent(
+                task: task, type: TaskEventTypes.Tool.resultFailed.rawValue,
+                payload: ToolResultFailurePayload(toolID: "bash", message: "gh pr create failed"), run: run)
+        }
+        failure.timestamp = Date(timeIntervalSince1970: 1000)
+        context.insert(failure)
+        let receipt = TaskEvent(task: task, type: TaskExternalOutcomeEventTypes.publicationReceipt,
+                                payload: "{}", run: unbound ? nil : laterRun)
+        receipt.timestamp = Date(timeIntervalSince1970: 900)
+        context.insert(receipt); try context.save()
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) != nil)
+        receipt.timestamp = Date(timeIntervalSince1970: 1001)
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) == nil)
+        #expect(TaskExternalOutcomeFailureClassifier.pendingGitHubPullRequestFailure(task: task, run: run) == nil)
+        context.rollback()
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) != nil)
+        receipt.timestamp = Date(timeIntervalSince1970: 1001)
+        try context.save()
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) == nil)
+    }
+
     private func record(_ event: TaskEvent) -> TaskOutcomeEventRecord {
         TaskOutcomeEventRecord(
             id: event.id,

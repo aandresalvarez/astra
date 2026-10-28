@@ -201,6 +201,7 @@ enum TaskInferredValidationService {
         task.runs.max(by: { $0.startedAt < $1.startedAt })
     }
 
+    @MainActor
     private static func hasValidationContractEvidence(for task: AgentTask) -> Bool {
         let validationContractEvents: Set<String> = [
             TaskValidationEventTypes.contractCreated,
@@ -209,15 +210,16 @@ enum TaskInferredValidationService {
             TaskValidationEventTypes.contractFailed,
             TaskValidationEventTypes.contractOverridden
         ]
-        return task.events.contains { validationContractEvents.contains($0.type) }
+        return !TaskHistoryRead.events(for: task, ofTypes: validationContractEvents).isEmpty
     }
 
+    @MainActor
     private static func hasTerminalDeliverableVerification(for task: AgentTask) -> Bool {
         let terminalDeliverableEvents: Set<String> = [
             TaskDeliverableVerificationEventTypes.passed,
             TaskDeliverableVerificationEventTypes.failed
         ]
-        return task.events.contains { terminalDeliverableEvents.contains($0.type) }
+        return !TaskHistoryRead.events(for: task, ofTypes: terminalDeliverableEvents).isEmpty
     }
 
     @MainActor

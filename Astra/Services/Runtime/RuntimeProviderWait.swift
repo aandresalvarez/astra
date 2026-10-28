@@ -6,7 +6,8 @@ import Foundation
 final class RuntimeProviderWait {
     let owner: RuntimeExecutionOwner
     private(set) var retired = false
-    private var producer: Task<Void, Never>?
+    // Producer completion can outlive the retired consumer.
+    private(set) var producer: Task<Void, Never>?
     private var continuation: CheckedContinuation<AgentProcessResult, Never>?
 
     init(owner: RuntimeExecutionOwner) { self.owner = owner }

@@ -52,10 +52,11 @@ extension TaskQueue {
     /// Captures the leases `taskID` holds at cancel time. Only those ids can be
     /// reclaimed, so a later admission of the same task is never touched.
     @MainActor
-    func scheduleWedgedLeaseRelease(for taskID: UUID, modelContext: ModelContext?) {
+    func scheduleWedgedLeaseRelease(for taskID: UUID, ownerID: PersistentIdentifier, modelContext: ModelContext?) {
+        if let assignment = taskWorkerMap[taskID], assignment.ownerID != ownerID { return }
         let leaseIDs = Set(activeResourceLocks.filter { $0.taskID == taskID }.compactMap(\.leaseID))
         wedgedLeaseReclaimer.schedule(taskID: taskID, leaseIDs: leaseIDs) { [weak self] leases in
-            self?.releaseWedgedLeases(leases, taskID: taskID, modelContext: modelContext)
+            self?.releaseWedgedLeases(leases, taskID: taskID, ownerID: ownerID, modelContext: modelContext)
         }
     }
 
@@ -63,14 +64,16 @@ extension TaskQueue {
     /// unwinds normally, restores hooks, and publishes release before the queue
     /// admits any competitor. Unknown local/remote work retains the fence.
     @MainActor
-    func releaseWedgedLeases(_ leaseIDs: Set<UUID>, taskID: UUID, modelContext: ModelContext?) {
+    func releaseWedgedLeases(_ leaseIDs: Set<UUID>, taskID: UUID, ownerID: PersistentIdentifier? = nil, modelContext: ModelContext?) {
         guard let modelContext else { return }
         refreshResourceOwnership(in: modelContext)
         let stranded = activeResourceLocks.filter { $0.taskID == taskID && $0.leaseID.map(leaseIDs.contains) == true }
         guard !stranded.isEmpty else { return }
-        if let worker = worker(forTaskID: taskID), let generation = worker.cancellationGeneration,
+        let candidates = (try? modelContext.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))) ?? []
+        let selected = ownerID.map { id in candidates.filter { $0.persistentModelID == id } } ?? candidates
+        guard selected.count == 1, let task = selected.first else { return }
+        if let worker = worker(for: task), let generation = worker.cancellationGeneration,
            worker.retireCancelledExecution(generation: generation) { return }
-        guard let task = try? modelContext.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })).first else { return }
         let message = "Cancellation is still being checked. ASTRA cannot confirm that the previous execution and its tools stopped; shared resources remain reserved. Other tasks using those resources will wait."
         if !task.events.contains(where: { $0.type == "system.info" && $0.payload == message }) {
             RuntimeExecutionOwner.report(message, task: task, context: modelContext)

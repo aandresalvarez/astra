@@ -27,6 +27,9 @@ public enum ValidationStrategy: String, Codable, CaseIterable, Sendable {
 
 @Model
 public final class AgentTask {
+    /// Provenance of an unmanaged launch view, copied only from its source.
+    /// Never persisted or exported; a restored/imported task owns its own row.
+    @Transient public var launchSourceTaskOwnerID: PersistentIdentifier? = nil
     public var id: UUID
     public var title: String
     public var goal: String

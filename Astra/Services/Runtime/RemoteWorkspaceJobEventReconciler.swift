@@ -11,7 +11,10 @@ enum RemoteWorkspaceJobEventReconciler {
         guard task.isLive, task.modelContext === context else { return }
         let pending = job.pendingTransitions ?? []
         guard !pending.isEmpty else { return }
-        let existing = Set(task.events.map(\.id))
+        let existing = Set(TaskHistoryRead.events(for: task, ofTypes: [
+            TaskEventTypes.System.remoteJobCancellation.rawValue,
+            TaskEventTypes.System.remoteJobObserved.rawValue
+        ]).map(\.id))
         var inserted: [TaskEvent] = []
         for transition in pending where !existing.contains(transition.id) {
             let event = TaskEvent(task: task,

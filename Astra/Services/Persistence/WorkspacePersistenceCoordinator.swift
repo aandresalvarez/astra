@@ -201,7 +201,8 @@ public enum WorkspacePersistenceCoordinator {
     @discardableResult
     static func enqueueSavedAutoExport(workspace: Workspace, modelContext: ModelContext,
                                       writer: WorkspaceAutoExportWriter = .shared,
-                                      reader: WorkspaceSavedAutoExport = .shared) -> Task<Void, Never>? {
+                                      reader: WorkspaceSavedAutoExport = .shared,
+                                      completion: (@MainActor (Bool) -> Void)? = nil) -> Task<Void, Never>? {
         let workspaceID = workspace.id
         let ticket = WorkspaceAutoExportGate.shared.beginRead(for: workspaceID.uuidString)
         let lease = WorkspaceSavedExportLease(context: modelContext, workspace: workspace, ticket: ticket)
@@ -220,14 +221,21 @@ public enum WorkspacePersistenceCoordinator {
         let target = WorkspaceConfigManager.autoExportTarget(for: workspace.primaryPath)
         guard let url = target.url else {
             logSkippedExport(workspace: workspace, reason: target.reason)
+            completion?(false)
             return nil
         }
         // Register before dispatch, ordered with deletion on the saving actor.
-        guard registerMirror(path: workspace.primaryPath, workspaceID: workspaceID, modelContext: modelContext) else { return nil }
+        guard registerMirror(path: workspace.primaryPath, workspaceID: workspaceID, modelContext: modelContext) else {
+            completion?(false)
+            return nil
+        }
         savedExports[workspaceID]?.task = Task { @MainActor in
-            defer { withExtendedLifetime(lease) {} }
-            guard !Task.isCancelled else { return }
             var written = false
+            defer {
+                completion?(written)
+                withExtendedLifetime(lease) {}
+            }
+            guard !Task.isCancelled else { return }
             if let prepared = await reader.prepareForExport(source: source,
                 workspaceID: workspaceID, url: url, lease: lease),
                !Task.isCancelled, let publication = lease.promote() {
@@ -242,6 +250,20 @@ public enum WorkspacePersistenceCoordinator {
             }
         }
         return savedExports[workspaceID]?.task
+    }
+
+    /// Writes only durable state using the background projection reader. The
+    /// acknowledgement belongs to this actual write, never to an empty queue
+    /// or a completed task (both can also mean cancellation or failed setup).
+    public static func exportSavedMirrorNow(workspace: Workspace, modelContext: ModelContext) async -> Bool {
+        guard !Task.isCancelled, !modelContext.hasChanges else { return false }
+        if shouldSkipAutoExport() { return true }
+        if workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        let written = await withCheckedContinuation { continuation in
+            enqueueSavedAutoExport(workspace: workspace, modelContext: modelContext,
+                completion: { continuation.resume(returning: $0) })
+        }
+        return written && !Task.isCancelled
     }
 
     private static func registerMirror(path: String, workspaceID: UUID, modelContext: ModelContext) -> Bool {

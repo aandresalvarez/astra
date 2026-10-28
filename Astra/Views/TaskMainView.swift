@@ -561,7 +561,7 @@ struct TaskMainView: View {
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
-        .task(id: task.id) {
+        .task(id: task.persistentModelID) {
             await initializeDisplayedTaskState()
         }
         .task(id: planStateCacheRefreshTrigger) {
@@ -603,7 +603,7 @@ struct TaskMainView: View {
         .onDisappear {
             pendingPlanStateRefreshTask?.cancel()
             // Here, not in the next task's setup: `ContentView` keys this
-            // view with `.id(task.id)`, so that setup runs against fresh
+            // view with `.id(task.persistentModelID)`, so that setup runs against fresh
             // `@State` and cannot reach the outgoing task's handle.
             pendingContextStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
@@ -1647,7 +1647,7 @@ struct TaskMainView: View {
                     }
                 }
                 .task(id: threadViewModel.appliedSnapshotReadiness) {
-                    guard threadViewModel.appliedSnapshotReadiness.isReady(for: task.id),
+                    guard threadViewModel.appliedSnapshotReadiness.isReady(for: task),
                           await waitForViewUpdateBoundary() else { return }
                     recordTranscriptReadinessIfAvailable()
                 }
@@ -1670,7 +1670,7 @@ struct TaskMainView: View {
     }
 
     private func recordTranscriptReadinessIfAvailable() {
-        guard threadViewModel.appliedSnapshotReadiness.isReady(for: task.id) else { return }
+        guard threadViewModel.appliedSnapshotReadiness.isReady(for: task) else { return }
         TaskOpenResponsivenessTelemetry.transcriptBecameReady(
             task: task,
             snapshot: currentThreadSnapshot,
@@ -1710,7 +1710,7 @@ struct TaskMainView: View {
                 .padding(.horizontal, 14)
         }
 
-        TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task.id)) { conversationItemsList(decisionDockVisible: decisionDockVisible) }
+        TaskThreadLoadingGate(isLoading: !threadViewModel.appliedSnapshotReadiness.isReady(for: task)) { conversationItemsList(decisionDockVisible: decisionDockVisible) }
     }
 
     // Fetch turn-request snapshots once per body pass, not per `.userMessage`
@@ -1897,7 +1897,7 @@ struct TaskMainView: View {
     }
 
     private var currentSnapshotMatchesTaskHistory: Bool {
-        threadViewModel.appliedSnapshotReadiness.isReady(for: task.id)
+        threadViewModel.appliedSnapshotReadiness.isReady(for: task)
     }
 
     private func scrollChatToBottomAfterLayout(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -3836,6 +3836,10 @@ struct TaskMainView: View {
             onCancelTask?(task)
         case .stopRun:
             taskQueue?.stopActiveRun(task: task, modelContext: modelContext)
+        case .reviewWorkspaceContinuation:
+            guard let requestID = action.payload.flatMap(UUID.init), let taskQueue else { return }
+            TaskWorkspaceContinuationPrompt.present(task: task, requestID: requestID,
+                queue: taskQueue, context: modelContext)
         case .cancelTurnRequest:
             guard let requestID = action.payload.flatMap(UUID.init) else { return }
             taskQueue?.cancelTurnRequest(id: requestID, workspace: task.workspace, modelContext: modelContext)

@@ -11,7 +11,9 @@ enum RuntimeExecutionAdmission {
     @MainActor
     static func resolve(request: TaskTurnRequest?, task: AgentTask) -> Self {
         guard let request, request.taskID == task.id,
-              let source = task.events.first(where: { $0.id == request.sourceEventID }) else { return .recovery }
+              let source = TaskHistoryRead.event(id: request.sourceEventID, in: task) else { return .recovery }
+        if let context = task.modelContext,
+           (try? TaskTurnRequestOwnership.resolve(request, in: context))?.persistentModelID != task.persistentModelID { return .recovery }
         if source.type == TaskEventTypes.Conversation.userMessage.rawValue, request.kind == .followUp {
             // The source-to-run link survives requeue/restart even when the
             // request's current-attempt fields are cleared. Replaying that

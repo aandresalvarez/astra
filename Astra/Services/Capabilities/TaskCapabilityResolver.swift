@@ -1029,7 +1029,7 @@ struct TaskCapabilityResolver {
         shelfAvailabilityPolicy: ShelfAvailabilityPolicy? = nil
     ) -> Bool {
         guard canPresentBrowserShelf(for: task, shelfAvailabilityPolicy: shelfAvailabilityPolicy) else { return false }
-        let state = ShelfBrowserBridgeRegistry.shared.promptState(for: task.id)
+        let state = ShelfBrowserBridgeRegistry.shared.promptState(for: task.id, ownerID: ShelfBrowserOwner(task).modelID)
         guard state.isExposed else { return false }
         if state.isPresented || state.hasCurrentURL {
             return true

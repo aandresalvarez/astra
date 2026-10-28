@@ -12,11 +12,13 @@ enum TaskWorkerHandoffService {
         modelContext: ModelContext,
         discoveredFiles: [TaskOutputDiscoveredFile]? = nil
     ) -> TaskEvent? {
-        if task.events.contains(where: { $0.type == TaskHandoffEventTypes.created && $0.run?.id == run.id }) {
+        let runEvents = TaskHistoryRead.events(for: task, runID: run.id)
+            .sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
+        if runEvents.contains(where: { $0.type == TaskHandoffEventTypes.created }) {
             return nil
         }
 
-        let payload = makePayload(task: task, run: run, discoveredFiles: discoveredFiles)
+        let payload = makePayload(task: task, run: run, runEvents: runEvents, discoveredFiles: discoveredFiles)
         let event = TaskEvent(task: task, type: TaskHandoffEventTypes.created, payload: encode(payload), run: run)
         modelContext.insert(event)
         AppLogger.audit(.handoffCreated, category: "Worker", taskID: task.id, fields: [
@@ -40,9 +42,9 @@ enum TaskWorkerHandoffService {
     private static func makePayload(
         task: AgentTask,
         run: TaskRun,
+        runEvents: [TaskEvent],
         discoveredFiles: [TaskOutputDiscoveredFile]?
     ) -> TaskWorkerHandoffPayload {
-        let runEvents = task.events.filter { $0.run?.id == run.id }
         let completedWork = completedWorkFacts(task: task, run: run, runEvents: runEvents)
         let unfinishedWork = unfinishedWorkFacts(task: task)
         let blockers = blockerFacts(run: run, runEvents: runEvents)

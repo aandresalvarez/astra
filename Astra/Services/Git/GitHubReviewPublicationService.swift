@@ -467,11 +467,9 @@ enum GitHubReviewPublicationRequirement {
     }
 
     private static func userMessages(task: AgentTask) -> [TaskEvent] {
-        task.events
-            .filter {
-                $0.type == TaskEventTypes.Conversation.userMessage.rawValue
-                    || $0.type == TaskPlanConversationEventTypes.userMessage
-            }
+        TaskHistoryRead.events(for: task, ofTypes: [
+            TaskEventTypes.Conversation.userMessage.rawValue, TaskPlanConversationEventTypes.userMessage
+        ])
             .sorted { lhs, rhs in
                 lhs.timestamp == rhs.timestamp
                     ? lhs.id.uuidString < rhs.id.uuidString

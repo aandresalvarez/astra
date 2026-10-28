@@ -16,8 +16,14 @@ final class TaskQueue {
     private(set) var isStopping = false
     private var processingScheduleGeneration = 0
     private let requestTaskRegistry: ExecutionRequestTaskRegistry
-    /// Track which worker is running which task (by task ID)
-    private(set) var taskWorkerMap: [UUID: AgentRuntimeWorker] = [:]
+    /// UUID remains a conservative scheduling fence. Access to the worker
+    /// requires the exact local task row, including across imported copies.
+    struct WorkerAssignment {
+        let task: AgentTask
+        let worker: AgentRuntimeWorker
+        var ownerID: PersistentIdentifier { task.persistentModelID }
+    }
+    private(set) var taskWorkerMap: [UUID: WorkerAssignment] = [:]
 
     var activeTasks: Set<UUID> = []
     /// Track exclusive/shared resource ownership so write-capable work cannot
@@ -106,16 +112,16 @@ final class TaskQueue {
         // Resolve every owning task in one fetch rather than per request —
         // the scalar `taskID` back-reference has no relationship to join on.
         let taskIDs = Array(Set(requests.map(\.taskID)))
-        let tasksByID = Dictionary(
+        let tasksByID = Dictionary(grouping:
             ((try? modelContext.fetch(
                 FetchDescriptor<AgentTask>(predicate: #Predicate { taskIDs.contains($0.id) })
-            )) ?? []).map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+            )) ?? []), by: \.id)
 
+
+        var resolver = TaskTurnRequestOwnership.Resolver(candidates: tasksByID.values.flatMap { $0 })
         var hasReplayableRequest = false
         for request in requests {
-            guard let task = tasksByID[request.taskID] else {
+            guard let task = resolver.resolve(request) else {
                 _ = TaskTurnRequestStateMachine.transition(
                     request,
                     to: .failed,
@@ -232,7 +238,7 @@ final class TaskQueue {
             return Task {}
         }
         guard let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext),
-              request.taskID == task.id,
+              (try? TaskTurnRequestOwnership.resolve(request, in: modelContext))?.persistentModelID == task.persistentModelID,
               request.state.isActive else {
             return Task {}
         }
@@ -260,10 +266,20 @@ final class TaskQueue {
     }
 
     /// Get the worker assigned to a specific task
-    func worker(forTaskID taskID: UUID) -> AgentRuntimeWorker? { taskWorkerMap[taskID] }
+    func worker(forTaskID taskID: UUID, ownerID: PersistentIdentifier) -> AgentRuntimeWorker? {
+        guard let assignment = taskWorkerMap[taskID], assignment.ownerID == ownerID else { return nil }
+        return assignment.worker
+    }
 
     func worker(for task: AgentTask) -> AgentRuntimeWorker? {
-        taskWorkerMap[task.id]
+        worker(forTaskID: task.id, ownerID: task.persistentModelID)
+    }
+
+    private func availableWorker(for task: AgentTask) -> AgentRuntimeWorker? {
+        if let assignment = taskWorkerMap[task.id] {
+            return assignment.ownerID == task.persistentModelID ? assignment.worker : nil
+        }
+        return nextAvailableWorker()
     }
 
     /// Apply settings to all workers in the pool
@@ -387,7 +403,7 @@ final class TaskQueue {
 
         if executionRequestID != nil {
             guard let executionRequest,
-                  executionRequest.taskID == task.id,
+                  (try? TaskTurnRequestOwnership.resolve(executionRequest, in: modelContext))?.persistentModelID == task.persistentModelID,
                   transitionPersistedTurn(
                     executionRequest,
                     to: .admitted,
@@ -412,7 +428,7 @@ final class TaskQueue {
         }
 
         activeTasks.insert(task.id)
-        taskWorkerMap[task.id] = worker
+        taskWorkerMap[task.id] = WorkerAssignment(task: task, worker: worker)
         AppLogger.audit(.taskAssigned, category: "Queue", taskID: task.id, fields: [
             "worker_index": String(workerIndex(worker) + 1),
             "pool_size": String(poolSize)
@@ -456,138 +472,6 @@ final class TaskQueue {
                 processQueueIfIdle(modelContext: modelContext)
             }
         }
-    }
-
-    /// Route a completed schedule-spawned task's results based on the schedule's resultMode.
-    @MainActor
-    func routeScheduleResult(task: AgentTask, scheduleID: UUID, modelContext: ModelContext) {
-        let descriptor = FetchDescriptor<TaskSchedule>(
-            predicate: #Predicate<TaskSchedule> { $0.id == scheduleID }
-        )
-        guard let schedule = try? modelContext.fetch(descriptor).first else { return }
-
-        guard RuntimeTurnSettlementService.stageScheduleRouting(task: task, scheduleID: scheduleID,
-            modelContext: modelContext) else { return }
-
-        let lastRun = task.runs.sorted { $0.startedAt < $1.startedAt }.last
-        let outputSummary = String((lastRun?.output ?? "No output").prefix(500))
-        let statusStr = task.status.rawValue
-
-        switch schedule.resultMode {
-        case .sameThread:
-            if let sourceTaskID = schedule.sourceTaskID {
-                let sourceDescriptor = FetchDescriptor<AgentTask>(
-                    predicate: #Predicate<AgentTask> { $0.id == sourceTaskID }
-                )
-                if let sourceTask = try? modelContext.fetch(sourceDescriptor).first {
-                    mergeSameThreadScheduleResult(
-                        from: task,
-                        into: sourceTask,
-                        schedule: schedule,
-                        latestRun: lastRun,
-                        modelContext: modelContext
-                    )
-
-                    if task.id != sourceTask.id {
-                        for artifact in task.artifacts {
-                            artifact.task = sourceTask
-                        }
-                        // Preserve the completed scheduled child as the hidden
-                        // owner of its immutable request/source/run ledger.
-                        // The source thread receives copied presentation data,
-                        // but history identity is never rewritten or deleted.
-                        task.isDone = true
-                    }
-                } else {
-                    let event = TaskEvent(
-                        task: task,
-                        eventType: TaskEventTypes.System.info,
-                        payload: "Original same-thread task was not found. This run stayed as an independent task."
-                    )
-                    modelContext.insert(event)
-                }
-            }
-            schedule.appendRunResult(status: statusStr, summary: outputSummary, taskID: task.id)
-
-        case .newTask:
-            // Task already exists independently — nothing extra to do
-            break
-
-        case .scheduleLog:
-            schedule.appendRunResult(status: statusStr, summary: outputSummary, taskID: task.id)
-        }
-
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: schedule.workspace, modelContext: modelContext)
-    }
-
-    @MainActor
-    func mergeSameThreadScheduleResult(
-        from scheduledTask: AgentTask,
-        into sourceTask: AgentTask,
-        schedule: TaskSchedule,
-        latestRun: TaskRun?,
-        modelContext: ModelContext
-    ) {
-        let sourceMessage = TaskEvent(
-            task: sourceTask,
-            eventType: TaskEventTypes.Conversation.userMessage,
-            payload: Self.sameThreadSchedulePrompt(schedule: schedule, fallbackGoal: scheduledTask.goal)
-        )
-        sourceMessage.timestamp = latestRun?.startedAt ?? Date()
-        TaskEventInsertionService.insert(sourceMessage, into: modelContext)
-
-        if let latestRun {
-            let copiedRun = TaskRun(task: sourceTask)
-            copiedRun.status = latestRun.status
-            copiedRun.startedAt = latestRun.startedAt
-            copiedRun.completedAt = latestRun.completedAt
-            copiedRun.tokensUsed = latestRun.tokensUsed
-            copiedRun.inputTokens = latestRun.inputTokens
-            copiedRun.outputTokens = latestRun.outputTokens
-            copiedRun.exitCode = latestRun.exitCode
-            copiedRun.setOutput(latestRun.output)
-            copiedRun.costUSD = latestRun.costUSD
-            copiedRun.fileChangesJSON = latestRun.fileChangesJSON
-            copiedRun.stopReason = latestRun.stopReason
-            modelContext.insert(copiedRun)
-
-            sourceTask.tokensUsed = RuntimeUsageArithmetic.adding(sourceTask.tokensUsed, latestRun.tokensUsed)
-            sourceTask.costUSD += latestRun.costUSD
-            sourceTask.completedAt = latestRun.completedAt
-            sourceTask.updatedAt = latestRun.completedAt ?? Date()
-        } else {
-            let fallbackEvent = TaskEvent(
-                task: sourceTask,
-                type: "schedule.result",
-                payload: "**\(schedule.name)** — \(Self.dateFormatter.string(from: Date()))\nStatus: \(scheduledTask.status.rawValue)\n\nNo output was captured."
-            )
-            modelContext.insert(fallbackEvent)
-            sourceTask.updatedAt = Date()
-        }
-
-        TaskStateMachine.mirrorScheduleResultStatus(
-            sourceTask: sourceTask,
-            scheduledTask: scheduledTask,
-            modelContext: modelContext,
-            at: sourceTask.updatedAt
-        )
-        sourceTask.isDone = false
-    }
-
-    private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d, h:mm a"
-        return f
-    }()
-
-    private static func sameThreadSchedulePrompt(schedule: TaskSchedule, fallbackGoal: String) -> String {
-        let trimmedGoal = schedule.effectiveGoal.trimmingCharacters(in: .whitespacesAndNewlines)
-        let goal = trimmedGoal.isEmpty ? fallbackGoal : trimmedGoal
-        return """
-        Routine run: \(schedule.name)
-
-        \(goal)
-        """
     }
 
     /// Continue a session on the worker that originally ran the task
@@ -644,7 +528,7 @@ final class TaskQueue {
         }
 
         // Try to find the original worker, or use any available one
-        guard taskWorkerMap[task.id] != nil || hasAvailableWorker else {
+        guard availableWorker(for: task) != nil else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "no_worker_for_continue"
             ], level: .warning)
@@ -672,7 +556,7 @@ final class TaskQueue {
             releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
         }
 
-        guard let worker = taskWorkerMap[task.id] ?? nextAvailableWorker() else {
+        guard let worker = availableWorker(for: task) else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "no_worker_for_continue_after_resource_lock"
             ], level: .warning)
@@ -686,7 +570,7 @@ final class TaskQueue {
         }
 
         markContinuationLaunchAdmitted(task, modelContext: modelContext)
-        taskWorkerMap[task.id] = worker
+        taskWorkerMap[task.id] = WorkerAssignment(task: task, worker: worker)
         await worker.continueSession(
             task: task,
             message: message,
@@ -719,7 +603,7 @@ final class TaskQueue {
         onEvent: @escaping (ParsedEvent) -> Void
     ) async -> Bool {
         guard let request = try? TaskTurnRequestRepository.request(id: requestID, in: modelContext),
-              request.taskID == task.id,
+              (try? TaskTurnRequestOwnership.resolve(request, in: modelContext))?.persistentModelID == task.persistentModelID,
               request.state.isActive,
               let sourceEvent = TaskHistoryRead.record(id: request.sourceEventID, in: task) else {
             return false
@@ -841,7 +725,7 @@ final class TaskQueue {
                 await waitForTurnAdmissionSignal(taskID: task.id)
                 continue
             }
-            guard let worker = taskWorkerMap[task.id] ?? nextAvailableWorker() else {
+            guard let worker = availableWorker(for: task) else {
                 releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
                 _ = transitionPersistedTurn(
                     request,
@@ -868,7 +752,7 @@ final class TaskQueue {
                 failPersistedTurn(request, reason: "admission_persist_failed", modelContext: modelContext)
                 return false
             }
-            taskWorkerMap[task.id] = worker
+            taskWorkerMap[task.id] = WorkerAssignment(task: task, worker: worker)
             activeTasks.insert(task.id)
             // Promote the task to .running before handing off, exactly like the
             // legacy continuation path (markContinuationLaunchAdmitted). The
@@ -1001,9 +885,7 @@ final class TaskQueue {
         let taskID = request.taskID
         let persisted: Bool
         if state.isTerminal {
-            let workspace = (try? modelContext.fetch(
-                FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
-            ))?.first?.workspace
+            let workspace = (try? TaskTurnRequestOwnership.resolve(request, in: modelContext))?.workspace
             persisted = WorkspacePersistenceCoordinator.saveAndAutoExport(
                 workspace: workspace,
                 modelContext: modelContext,
@@ -1188,7 +1070,7 @@ final class TaskQueue {
 
         if executionRequestID != nil {
             guard let executionRequest,
-                  executionRequest.taskID == task.id,
+                  (try? TaskTurnRequestOwnership.resolve(executionRequest, in: modelContext))?.persistentModelID == task.persistentModelID,
                   transitionPersistedTurn(
                     executionRequest,
                     to: .admitted,
@@ -1213,7 +1095,7 @@ final class TaskQueue {
         }
 
         activeTasks.insert(task.id)
-        taskWorkerMap[task.id] = worker
+        taskWorkerMap[task.id] = WorkerAssignment(task: task, worker: worker)
         AppLogger.audit(.taskAssigned, category: "Queue", taskID: task.id, fields: [
             "worker_index": String(workerIndex(worker) + 1),
             "pool_size": String(poolSize),
@@ -1548,12 +1430,16 @@ final class TaskQueue {
               request.state.isActive else {
             return
         }
-        let tasks = try? modelContext.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
-        guard let task = tasks?.first, request.taskID == task.id else {
-            failPersistedTurn(request, reason: "task_missing", modelContext: modelContext)
+        guard let task = try? TaskTurnRequestOwnership.resolve(request, in: modelContext),
+              task.id == taskID else {
+            failPersistedTurn(request, reason: "task_owner_unresolved", modelContext: modelContext)
             return
         }
         let launchSnapshot = TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task)
+        guard launchSnapshot != nil || request.hasLegacyExecutionPolicy else {
+            failPersistedTurn(request, reason: "launch_policy_unreadable", modelContext: modelContext)
+            return
+        }
         let resourceAccess = resourceAccess(for: request, task: task)
         guard let sourceEvent = TaskHistoryRead.record(id: request.sourceEventID, in: task) else {
             failPersistedTurn(request, reason: "source_event_missing", modelContext: modelContext)
@@ -1661,8 +1547,8 @@ final class TaskQueue {
         if let context = modelContext ?? storeSession?.modelContext {
             RemoteWorkspaceJobMonitor.shared.requestCancellation(task: task, context: context)
         }
-        scheduleWedgedLeaseRelease(for: task.id, modelContext: modelContext ?? storeSession?.modelContext)
-        if let worker = taskWorkerMap[task.id] {
+        scheduleWedgedLeaseRelease(for: task.id, ownerID: task.persistentModelID, modelContext: modelContext ?? storeSession?.modelContext)
+        if let worker = worker(for: task) {
             worker.cancel()
             AppLogger.audit(.taskCancelled, category: "Queue", taskID: task.id)
         }
@@ -1811,8 +1697,8 @@ final class TaskQueue {
         for worker in workers {
             worker.cancel()
         }
-        for (taskID, _) in taskWorkerMap {
-            scheduleWedgedLeaseRelease(for: taskID, modelContext: storeSession?.modelContext)
+        for (taskID, assignment) in taskWorkerMap {
+            scheduleWedgedLeaseRelease(for: taskID, ownerID: assignment.ownerID, modelContext: storeSession?.modelContext)
         }
         let cancelledDispatchIDs = dispatchedRequestIDs
         requestTaskRegistry.cancelOwnedTasks()
@@ -1879,7 +1765,7 @@ final class TaskQueue {
                 if let idx = workers.lastIndex(where: { !$0.isRunning }) {
                     let worker = workers[idx]
                     // Clean up any task mapping
-                    taskWorkerMap = taskWorkerMap.filter { $0.value !== worker }
+                    taskWorkerMap = taskWorkerMap.filter { $0.value.worker !== worker }
                     workers.remove(at: idx)
                     removed += 1
                 } else {
@@ -1898,7 +1784,7 @@ final class TaskQueue {
 
     @MainActor
     private func finishWorker(_ worker: AgentRuntimeWorker, taskID: UUID) {
-        guard taskWorkerMap[taskID] === worker else { return }
+        guard taskWorkerMap[taskID]?.worker === worker else { return }
         taskWorkerMap.removeValue(forKey: taskID)
         activeTasks.remove(taskID)
         if worker.requiresReplacement, let index = workers.firstIndex(where: { $0 === worker }) {
@@ -1922,7 +1808,7 @@ final class TaskQueue {
         modelContext: ModelContext? = nil
     ) -> [TaskResourceLockClaim]? {
         if let modelContext { refreshResourceOwnership(in: modelContext) }
-        guard canAcquireResourceLocks(claims) else { return nil }
+        guard canAcquireResourceLocks(claims, task: task, context: modelContext) else { return nil }
         localResourceLocks.append(contentsOf: claims)
         guard let task else { return claims }
         waitingResourceLocks.removeValue(forKey: task.id)
@@ -1950,15 +1836,24 @@ final class TaskQueue {
         reason: String? = nil
     ) {
         if let modelContext { refreshResourceOwnership(in: modelContext) }
-        if let store = resourceOwnershipStore {
-            guard (try? RuntimeResourceOwnership.permitsRelease(claims, store: store, context: modelContext)) == true else {
+        var durableOwnerRetained = false
+        if let store = resourceOwnershipStore,
+           (try? RuntimeResourceOwnership.permitsRelease(claims, store: store, context: modelContext)) != true {
+            guard !resourceOwnershipReadFailed, let task, let modelContext,
+                  (try? RuntimeResourceOwnership.canRetireLocalClaims(claims, task: task, context: modelContext)) == true else {
                 return
             }
+            durableOwnerRetained = true
         }
-        let cancellationVerified = task.flatMap { task in
-            try? resourceOwnershipStore?.read(taskID: task.id)
-        }.map { $0.cancellationRequested == true && $0.resourcesReleased == true } ?? false
-        let releaseReason = reason ?? (cancellationVerified ? "cancelled_cleanup_verified" : nil)
+        var cancellationVerified = false
+        if let task, let store = resourceOwnershipStore, let records = try? store.records() {
+            let matches = records.filter { $0.taskOwnerID == task.persistentModelID }
+            if matches.count == 1, let record = matches.first {
+                cancellationVerified = record.cancellationRequested == true && record.resourcesReleased == true
+            }
+        }
+        let releaseReason = reason ?? (durableOwnerRetained ? "completed_turn_durable_owner_retained"
+            : (cancellationVerified ? "cancelled_cleanup_verified" : nil))
         let held = Set(localResourceLocks)
         let released = claims.filter { held.contains($0) }
         localResourceLocks.removeAll { released.contains($0) }

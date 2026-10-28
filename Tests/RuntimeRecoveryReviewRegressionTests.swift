@@ -14,7 +14,8 @@ enum RuntimeRecoveryTestReceipt {
                         toolsStopped: Bool = true) throws -> RuntimeExecutionOwnerRecord {
         let dead = RuntimeProcessIdentity(pid: Int32.max, startedSeconds: 1, startedMicroseconds: 1)
         let executionID = UUID()
-        let value = RuntimeExecutionOwnerRecord(taskID: task.id, ownerID: UUID(), executionID: executionID,
+        if task.persistentModelID.storeIdentifier == nil { try context.save() }
+        var value = RuntimeExecutionOwnerRecord(taskID: task.id, ownerID: UUID(), executionID: executionID,
             runID: run?.id, appProcess: dead, providerProcess: dead,
             runtime: task.resolvedRuntimeID.rawValue, sessionID: task.sessionId,
             state: toolsStopped ? .stopped : .unverified,
@@ -22,7 +23,8 @@ enum RuntimeRecoveryTestReceipt {
                 turnsRemaining: 4, secondsRemaining: 60, tokensSpent: max(400, task.tokensUsed), costSpent: 0.1),
             stopProof: .init(executionID: executionID, process: dead, reaped: true, processGroupEmpty: true,
                 toolsStopped: toolsStopped, remoteWorkExcluded: true, capturedAt: Date()), resourceClaims: [], updatedAt: Date())
-        let lease = try RuntimeExecutionOwner.store(in: context).acquire(taskID: task.id)
+        value.taskOwnerID = task.persistentModelID
+        let lease = try RuntimeExecutionOwner.store(in: context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
         try lease.save(value)
         return value
     }
@@ -142,7 +144,7 @@ struct RuntimeRecoveryReviewRegressionTests {
         finished.inheritedToolUncertainty = true
         finished.stopProof = .init(executionID: finished.executionID, process: previous.providerProcess!,
             reaped: true, processGroupEmpty: true, toolsStopped: true, remoteWorkExcluded: true, capturedAt: Date())
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(finished) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(finished) }
         #expect(!finished.canAcceptUserTurn && !finished.canReplace)
         if case .blocked = RuntimeExecutionOwner.retryDecision(task: task, context: h.context) {} else { Issue.record("Old tools were forgotten") }
 
@@ -156,7 +158,7 @@ struct RuntimeRecoveryReviewRegressionTests {
         let run = TaskRun(task: task); h.context.insert(run)
         var saved = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context)
         saved.state = state; saved.settlementLocalWorkStopped = false
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(saved) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(saved) }
         #expect(!saved.canRecoverPreparation && !saved.canAcceptUserTurn && !saved.canReplace)
         #expect(RuntimeExecutionOwner.acquireSettlement(task: task, run: run, context: h.context).owner == nil)
         #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, newUserTurn: true) == nil)
@@ -173,7 +175,7 @@ struct RuntimeRecoveryReviewRegressionTests {
         saved.stopProof = nil
         saved.inheritedToolUncertainty = fault == "inherited"
         saved.settlementToolsStopped = fault == "settlement" ? false : nil
-        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id); try lease.save(saved) }
+        do { let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(saved) }
         #expect(!saved.canRecoverPreparation)
         #expect(RuntimeResourceOwnership.retainsResources(saved))
         #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60) == nil)
@@ -227,7 +229,7 @@ struct RuntimeRecoveryReviewRegressionTests {
         let (run, request) = try tests.runningTurn(fixture)
         tests.approval(fixture, run: run)
         try fixture.context.save()
-        var busy: RuntimeExecutionOwnerStore.Lease? = try RuntimeExecutionOwner.store(in: fixture.context).acquire(taskID: fixture.task.id)
+        var busy: RuntimeExecutionOwnerStore.Lease? = try RuntimeExecutionOwner.store(in: fixture.context).acquire(taskID: fixture.task.id, taskOwnerID: fixture.task.persistentModelID)
         let eventCount = fixture.task.events.count
         RuntimeTurnSettlementRecoveryService.prepare(modelContext: fixture.context, autoExport: false)
         #expect(!TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: fixture.context, autoExportWorkspaces: false).hasChanges)
@@ -277,7 +279,7 @@ struct RuntimeRecoveryReviewRegressionTests {
         let checkpoint = tests.checkpoint(fixture, request: request)
         try RuntimeTurnSettlementService.capture(checkpoint, task: fixture.task, run: run, modelContext: fixture.context)
         do {
-            let lease = try RuntimeExecutionOwner.store(in: fixture.context).acquire(taskID: fixture.task.id)
+            let lease = try RuntimeExecutionOwner.store(in: fixture.context).acquire(taskID: fixture.task.id, taskOwnerID: fixture.task.persistentModelID)
             var saved = try #require(try lease.read())
             saved.settlementInProgress = true
             try lease.save(saved)
@@ -286,7 +288,7 @@ struct RuntimeRecoveryReviewRegressionTests {
         let result = await RuntimeTurnSettlementService.settle(checkpoint: checkpoint, task: fixture.task, run: run,
             modelContext: fixture.context, verdictPersistence: {
                 #expect(throws: (any Error).self) {
-                    _ = try RuntimeExecutionOwner.store(in: fixture.context).acquire(taskID: fixture.task.id)
+                    _ = try RuntimeExecutionOwner.store(in: fixture.context).acquire(taskID: fixture.task.id, taskOwnerID: fixture.task.persistentModelID)
                 }
                 try fixture.context.save()
                 persisted = true

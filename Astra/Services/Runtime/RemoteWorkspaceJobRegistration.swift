@@ -18,14 +18,15 @@ enum RemoteWorkspaceJobRegistration {
     static func prepare(task: AgentTask, runID: UUID, owner: RuntimeExecutionOwner,
                         context: ModelContext, connections: [RemoteWorkspaceJobConnection]) throws -> RemoteWorkspaceJobConfiguration {
         let receipt = owner.record
-        guard receipt.taskID == task.id, receipt.runID == runID, owner.isActive,
+        guard receipt.taskID == task.id, receipt.taskOwnerID == (task.launchSourceTaskOwnerID ?? task.persistentModelID),
+              let receiptURL = owner.receiptURL, receipt.runID == runID, owner.isActive,
               receipt.cancellationRequested != true, receipt.limits.secondsRemaining > 0,
               receipt.limits.turnsRemaining > 0, receipt.limits.tokensRemaining > 0 else {
             throw RemoteWorkspaceJobError.invalidArgument("No active execution owner is available for remote jobs.")
         }
         let root = directory(taskID: task.id, executionID: receipt.executionID, context: context)
         let binding = RemoteWorkspaceJobOwnerBinding(
-            receiptPath: RuntimeExecutionOwner.store(in: context).root.appendingPathComponent(task.id.uuidString + ".json").path,
+            receiptPath: receiptURL.path,
             taskID: task.id.uuidString, runID: runID.uuidString,
             ownerID: receipt.ownerID.uuidString, executionID: receipt.executionID.uuidString)
         var configuration = RemoteWorkspaceJobConfiguration(recordRootPath: root.appendingPathComponent("jobs").path,
@@ -44,6 +45,17 @@ enum RemoteWorkspaceJobRegistration {
 
     static func load(task: AgentTask, context: ModelContext) throws -> RemoteWorkspaceJobConfiguration? {
         guard let owner = try RuntimeExecutionOwner.existing(task: task, context: context) else { return nil }
+        return try load(task: task, owner: owner, context: context)
+    }
+
+    static func loadAll(task: AgentTask, context: ModelContext) throws -> [RemoteWorkspaceJobConfiguration] {
+        guard let owner = try RuntimeExecutionOwner.existing(task: task, context: context) else { return [] }
+        let executions = [owner] + (try RuntimeExecutionOwner.store(in: context).retainedExecutions(of: owner))
+        return try executions.compactMap { try load(task: task, owner: $0, context: context) }
+    }
+
+    private static func load(task: AgentTask, owner: RuntimeExecutionOwnerRecord,
+                             context: ModelContext) throws -> RemoteWorkspaceJobConfiguration? {
         let root = directory(taskID: task.id, executionID: owner.executionID, context: context)
         let url = root.appendingPathComponent("configuration.json")
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -60,12 +72,30 @@ enum RemoteWorkspaceJobRegistration {
               configuration.observationSSHOptions == observationOptions(task: task) else {
             throw RemoteWorkspaceJobError.invalidArgument("Remote jobs belong to a different execution. The reservation is preserved.")
         }
-        let current = RemoteWorkspaceJobShim.offeredConnections(task: task, targets: configuration.connections.map(\.target))
-        guard current == configuration.connections else {
+        guard matchesSavedConnections(configuration.connections, task: task) else {
             throw RemoteWorkspaceJobError.invalidArgument("The SSH connection changed. Restore the original connection to inspect its jobs safely.")
         }
         return configuration
     }
+    /// Older registrations always quoted shell words, including plain aliases.
+    /// Compare the destination argv and stable identity before accepting either
+    /// rendering; never rewrite the saved registration or migrate SSH settings.
+    private static func matchesSavedConnections(_ saved: [RemoteWorkspaceJobConnection], task: AgentTask) -> Bool {
+        guard let workspace = task.workspace else { return saved.isEmpty }
+        let current = SSHConnectionManager.loadForExport(workspacePath: workspace.primaryPath)
+        var seen = Set<String>()
+        return saved.allSatisfy { item in
+            let matches = current.filter { $0.id.uuidString == item.id }
+            guard seen.insert(item.id).inserted, matches.count == 1, let connection = matches.first,
+                  item.name == connection.displayLabel,
+                  item.arguments == connection.sshDestinationArguments(expandingTilde: true) else { return false }
+            let legacy = connection.sshDestinationArguments(expandingTilde: false).map {
+                "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            }.joined(separator: " ")
+            return item.target == RemoteWorkspaceSSHRoute.connectTarget(for: connection) || item.target == legacy
+        }
+    }
+
     static func observationOptions(task: AgentTask) -> [String] {
         let path = URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder)
             .appendingPathComponent(".runtime-ssh/known_hosts").path

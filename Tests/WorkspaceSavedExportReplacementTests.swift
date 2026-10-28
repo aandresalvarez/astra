@@ -36,6 +36,43 @@ struct WorkspaceSavedExportReplacementTests {
         return (root, container, workspace)
     }
 
+    @Test("Saved mirror acknowledgement reports a real write, including writer self-retirement")
+    func savedMirrorAcknowledgement() async throws {
+        let (root, container, workspace) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(await WorkspacePersistenceCoordinator.exportSavedMirrorNow(
+            workspace: workspace, modelContext: container.mainContext))
+        let url = try #require(WorkspaceConfigManager.autoExportTarget(for: root.path).url)
+        #expect(try WorkspaceConfigManager.loadConfig(from: url).name == workspace.name)
+        workspace.name = "Unsaved editor value"
+        #expect(await !WorkspacePersistenceCoordinator.exportSavedMirrorNow(
+            workspace: workspace, modelContext: container.mainContext))
+        #expect(container.mainContext.hasChanges)
+        #expect(try WorkspaceConfigManager.loadConfig(from: url).name == "Prior committed")
+    }
+
+    @Test("A canceled or failed write never acknowledges credential cleanup", arguments: [false, true])
+    func failedSavedMirrorAcknowledgement(cancel: Bool) async throws {
+        let (root, container, workspace) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = try #require(WorkspaceConfigManager.autoExportTarget(for: root.path).url)
+        let latch = ProjectionWriteLatch()
+        defer { Task { await latch.release() } }
+        var results: [Bool] = []
+        let job = try #require(WorkspacePersistenceCoordinator.enqueueSavedAutoExport(
+            workspace: workspace, modelContext: container.mainContext,
+            writer: WorkspaceAutoExportWriter(beforeWrite: { await latch.pause() }),
+            completion: { results.append($0) }))
+        try await latch.waitForArrival()
+        #expect(results.isEmpty)
+        if cancel { job.cancel() }
+        else { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+        await latch.release(); await job.value
+        #expect(results == [false])
+        if !cancel { try FileManager.default.removeItem(at: url) }
+        WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: container.mainContext)
+    }
+
     @Test("A failed explicit write preserves the queued committed projection without a termination drain",
           arguments: [false, true], ["encoding", "staging", "rename"])
     func failedExplicitReplacement(existingMirror: Bool, failure: String) async throws {

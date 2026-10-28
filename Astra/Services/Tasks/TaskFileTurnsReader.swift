@@ -27,6 +27,7 @@ enum TaskFileTurnsReader {
 
     static func input(
         taskID: UUID,
+        ownerID: PersistentIdentifier? = nil,
         taskFolder: String,
         workspacePath: String,
         executionPath: String? = nil,
@@ -34,22 +35,23 @@ enum TaskFileTurnsReader {
         pendingRuns: [PendingRun] = [],
         modelContext: ModelContext
     ) throws -> TaskFileTurnsInput? {
-        var taskDescriptor = FetchDescriptor<AgentTask>(predicate: #Predicate<AgentTask> { $0.id == taskID })
+        let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
+        var taskDescriptor = FetchDescriptor<AgentTask>(predicate: #Predicate<AgentTask> { $0.persistentModelID == ownerID })
         taskDescriptor.fetchLimit = 1
         guard let task = try modelContext.fetch(taskDescriptor).first else { return nil }
 
         let runs = try modelContext.fetch(FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { $0.task?.id == taskID }
+            predicate: #Predicate<TaskRun> { $0.task?.persistentModelID == ownerID }
         ))
         let userMessage = TaskEventTypes.Conversation.userMessage.rawValue
         let planUserMessage = TaskPlanConversationEventTypes.userMessage
         let messages = try modelContext.fetch(FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> {
-                $0.task?.id == taskID && ($0.type == userMessage || $0.type == planUserMessage)
+                $0.task?.persistentModelID == ownerID && ($0.type == userMessage || $0.type == planUserMessage)
             }
         ))
         var artifactDescriptor = FetchDescriptor<Artifact>(
-            predicate: #Predicate<Artifact> { $0.task?.id == taskID }
+            predicate: #Predicate<Artifact> { $0.task?.persistentModelID == ownerID }
         )
         // A tool write stores the file's whole content on its row; only the
         // path and time are needed, and one task has over 13,000 rows.
@@ -65,20 +67,25 @@ enum TaskFileTurnsReader {
         var fork = (folder: taskFolder, createdAt: task.createdAt)
         var ancestorID = task.forkedFromID
         while let id = ancestorID, visited.insert(id).inserted {
+            let workspaceOwnerID = task.workspace?.persistentModelID
+            var ancestorDescriptor = FetchDescriptor<AgentTask>(predicate: #Predicate<AgentTask> {
+                $0.id == id && $0.workspace?.persistentModelID == workspaceOwnerID
+            })
+            ancestorDescriptor.fetchLimit = 2
+            let ancestors = try modelContext.fetch(ancestorDescriptor)
+            guard ancestors.count == 1, let ancestor = ancestors.first else { break }
             forkCopies.append(copiedFiles(inForkFolder: fork.folder))
             let ancestorFolder = WorkspaceFileLayout.readableTaskFolder(workspacePath: workspacePath, taskID: id)
             inheritedTaskFolders.append(ancestorFolder)
+            let ancestorOwnerID = ancestor.persistentModelID
             let forkedAt = fork.createdAt
             var ancestorArtifacts = FetchDescriptor<Artifact>(
-                predicate: #Predicate<Artifact> { $0.task?.id == id && $0.createdAt <= forkedAt }
+                predicate: #Predicate<Artifact> { $0.task?.persistentModelID == ancestorOwnerID && $0.createdAt <= forkedAt }
             )
             ancestorArtifacts.propertiesToFetch = [\.path, \.createdAt]
             artifacts += try modelContext.fetch(ancestorArtifacts)
-            var ancestorDescriptor = FetchDescriptor<AgentTask>(predicate: #Predicate<AgentTask> { $0.id == id })
-            ancestorDescriptor.fetchLimit = 1
-            let ancestor = try modelContext.fetch(ancestorDescriptor).first
-            fork = (ancestorFolder, ancestor?.createdAt ?? .distantPast)
-            ancestorID = ancestor?.forkedFromID
+            fork = (ancestorFolder, ancestor.createdAt)
+            ancestorID = ancestor.forkedFromID
         }
 
         return TaskFileTurnsInput(

@@ -2003,6 +2003,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://drive.google.com/drive/home",
             currentTitle: "Google Drive",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2057,6 +2059,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "about:blank",
             currentTitle: "Preview",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2452,13 +2456,15 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://drive.google.com/drive/home",
             currentTitle: "Google Drive",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true,
             enabledBrowserAdapters: adapters
         )
         defer { ShelfBrowserBridgeRegistry.shared.reset() }
 
-        let prompt = ShelfBrowserBridgeRegistry.shared.promptContext(for: task.id)
+        let prompt = ShelfBrowserBridgeRegistry.shared.promptContext(for: task.id, ownerID: ShelfBrowserOwner(task).modelID)
         #expect(prompt?.contains("Enabled browser site adapters: googleDrive") == true)
         #expect(prompt?.contains("astra-browser google-drive-open") == true)
     }
@@ -2484,6 +2490,8 @@ struct TaskCapabilityResolverTests {
             currentURL: nil,
             currentTitle: nil,
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: false,
             isEnabled: true,
             enabledBrowserAdapters: [BrowserSiteAdapterID.github]
@@ -2530,6 +2538,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://example.com/dashboard",
             currentTitle: "Dashboard",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2563,6 +2573,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://example.com/dashboard",
             currentTitle: "Dashboard",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2796,6 +2808,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://example.atlassian.net/browse/STAR-123",
             currentTitle: "STAR-123 - Jira",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )
@@ -2864,6 +2878,8 @@ struct TaskCapabilityResolverTests {
             currentURL: "https://outlook.cloud.microsoft/mail/inbox/id/example",
             currentTitle: "Outlook",
             taskID: task.id,
+            taskOwnerID: ShelfBrowserOwner(task).modelID,
+            sessionID: task.id,
             isPresented: true,
             isEnabled: true
         )

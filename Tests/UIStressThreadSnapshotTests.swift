@@ -91,16 +91,16 @@ struct UIStressThreadSnapshotTests {
 
         #expect(input.totalEventCount == 30_000)
         #expect(input.totalRunCount == 150)
-        #expect(input.runs.count == 50)
-        #expect(input.events.count <= 1_200)
-        #expect(input.omittedRunCount == 100)
+        #expect(input.runs.count == TaskThreadHistoryReader.defaultRunPageSize)
+        #expect(input.events.count <= TaskThreadHistoryReader.defaultEventPageSize)
+        #expect(input.omittedRunCount == 150 - TaskThreadHistoryReader.defaultRunPageSize)
         #expect(input.omittedEventCount == input.totalEventCount - input.events.count)
         // Locally ~120ms for 30k events; this bounds the main-thread capture
         // cost for a very long live task.
         #expect(elapsed < .seconds(5), "windowing took \(elapsed) for \(input.totalEventCount) events")
 
         let snapshot = TaskThreadSnapshot(input: input)
-        #expect(snapshot.sortedRuns.count == 50)
+        #expect(snapshot.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize)
         #expect(snapshot.sortedEvents.count == input.events.count)
 
         let timestamps = snapshot.sortedEvents.map(\.timestamp)
@@ -143,7 +143,7 @@ struct UIStressThreadSnapshotTests {
 
         let first = TaskThreadSnapshot(input: TaskThreadSnapshotInput(task: task))
         let second = TaskThreadSnapshot(input: TaskThreadSnapshotInput(task: task))
-        #expect(first.sortedEvents.count <= 1_200)
+        #expect(first.sortedEvents.count <= TaskThreadHistoryReader.defaultEventPageSize)
         #expect(first.sortedEvents.map(\.id) == second.sortedEvents.map(\.id),
                 "same-instant events must not reorder between rebuilds of the same state")
     }
@@ -208,7 +208,7 @@ struct UIStressThreadSnapshotTests {
                 run: run
             ))
         }
-        for index in 0..<1_188 {
+        for index in 0..<(TaskThreadHistoryReader.defaultEventPageSize - 12) {
             events.append(makeEvent(
                 task: task,
                 type: "agent.response",
@@ -220,8 +220,8 @@ struct UIStressThreadSnapshotTests {
         task.events = events
 
         let input = TaskThreadSnapshotInput(task: task)
-        #expect(input.totalEventCount == 1_200)
-        #expect(input.events.count == 1_200)
+        #expect(input.totalEventCount == TaskThreadHistoryReader.defaultEventPageSize)
+        #expect(input.events.count == TaskThreadHistoryReader.defaultEventPageSize)
         #expect(input.omittedEventCount == 0)
         let snapshot = TaskThreadSnapshot(input: input)
         #expect(Self.toolResultCounts(byRun: snapshot)[run.id] == 12)
@@ -235,7 +235,7 @@ struct UIStressThreadSnapshotTests {
         task.runs.last?.setOutput(String(repeating: "Streaming answer prose. ", count: 4_000))
 
         let input = TaskThreadSnapshotInput(task: task)
-        #expect(input.events.count <= 1_200)
+        #expect(input.events.count <= TaskThreadHistoryReader.defaultEventPageSize)
 
         var snapshot: TaskThreadSnapshot?
         let elapsed = ContinuousClock().measure {
@@ -259,7 +259,7 @@ struct UIStressThreadSnapshotTests {
             input = TaskThreadSnapshotInput(task: task)
         }
         #expect(input?.totalEventCount == 100_000)
-        #expect((input?.events.count ?? .max) <= 1_200)
+        #expect((input?.events.count ?? .max) <= TaskThreadHistoryReader.defaultEventPageSize)
         #expect(elapsed < .seconds(20), "100k-event capture took \(elapsed)")
     }
 
@@ -293,7 +293,7 @@ struct UIStressThreadSnapshotTests {
         case .success:
             // A race where the build wins is legal; it must still be a
             // complete, well-formed snapshot.
-            #expect((try? outcome.get())?.snapshot.sortedRuns.count == 50)
+            #expect((try? outcome.get())?.snapshot.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize)
         }
     }
 

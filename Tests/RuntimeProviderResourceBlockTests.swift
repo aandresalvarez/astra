@@ -23,7 +23,7 @@ struct RuntimeProviderResourceBlockTests {
         // its global scan hint before publishing that ambiguous record so
         // parallel tests do not inherit its quarantine.
         if missingClaims { RuntimeProviderResourceRegistry.unregister(store.root) }
-        let lease = try store.acquire(taskID: task.id)
+        let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
         try lease.save(record)
         return record
     }
@@ -63,7 +63,7 @@ struct RuntimeProviderResourceBlockTests {
         #expect(found.localizedDescription.contains(record.taskID.uuidString))
         #expect(found.localizedDescription.contains("shared-settings.json"))
         #expect(found.localizedDescription.contains("will not restart automatically"))
-        #expect(try store.read(taskID: record.taskID) == record)
+        #expect(try store.read(taskID: record.taskID, taskOwnerID: record.taskOwnerID) == record)
     }
 
     @Test("A blocked production runner never plans or launches and preserves its explanation after reopen")
@@ -105,7 +105,7 @@ struct RuntimeProviderResourceBlockTests {
         try h.context.save()
         #expect(task.status == .pendingUser && run.status == .failed)
         #expect(owner.record.state == .notStarted && owner.persistedResourceRelease)
-        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: previous.taskID) == previous)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: previous.taskID, taskOwnerID: previous.taskOwnerID) == previous)
         let message = try #require(RuntimeRecoveryPresentation.blockedMessage(task: task, context: h.context))
         #expect(message == result.runtimeStopMessage)
         #expect(!message.contains("Agent exited") && !message.contains("error 0"))

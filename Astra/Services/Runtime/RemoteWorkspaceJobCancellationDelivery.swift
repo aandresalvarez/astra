@@ -39,7 +39,9 @@ enum RemoteWorkspaceJobCancellationDelivery {
 
     static func pending(context: ModelContext) throws -> [RemoteWorkspaceJobConfiguration] {
         var result: [RemoteWorkspaceJobConfiguration] = []
-        for owner in try RuntimeExecutionOwner.store(in: context).records() {
+        let authority = RuntimeExecutionOwner.store(in: context)
+        let executions = try authority.records().flatMap { [$0] + (try authority.retainedExecutions(of: $0)) }
+        for owner in executions {
             let root = RemoteWorkspaceJobRegistration.directory(taskID: owner.taskID, executionID: owner.executionID, context: context)
             let url = root.appendingPathComponent("cancellation.json")
             guard FileManager.default.fileExists(atPath: url.path) else { continue }

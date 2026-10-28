@@ -241,7 +241,7 @@ struct TaskThreadViewModelTests {
     }
 
     @MainActor
-    @Test("ViewModel starts with default 50-run window")
+    @Test("ViewModel starts with default run page")
     func viewModelStartsWithDefaultWindow() async {
         let vm = TaskThreadViewModel()
         let task = makeTask(goal: "test")
@@ -261,8 +261,8 @@ struct TaskThreadViewModelTests {
             Issue.record("Snapshot should be built after reset")
             return
         }
-        #expect(snapshot.sortedRuns.count == 50)
-        #expect(snapshot.omittedRunCount == 50)
+        #expect(snapshot.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize)
+        #expect(snapshot.omittedRunCount == 100 - TaskThreadHistoryReader.defaultRunPageSize)
         #expect(snapshot.latestRun?.output == "run 99")
         #expect(vm.appliedSnapshotRevision > 0)
         #expect(vm.appliedSnapshotTaskID == task.id)
@@ -498,20 +498,23 @@ struct TaskThreadViewModelTests {
         }
 
         vm.reset(for: task)
-        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 50 })
+        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize })
 
-        #expect(vm.snapshot?.sortedRuns.count == 50)
-        #expect(vm.snapshot?.omittedRunCount == 100)
+        #expect(vm.snapshot?.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize)
+        #expect(vm.snapshot?.omittedRunCount == 150 - TaskThreadHistoryReader.defaultRunPageSize)
 
         vm.expandWindow(for: task)
-        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 100 })
+        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 2 * TaskThreadHistoryReader.defaultRunPageSize })
 
-        #expect(vm.snapshot?.sortedRuns.count == 100)
-        #expect(vm.snapshot?.omittedRunCount == 50)
+        #expect(vm.snapshot?.sortedRuns.count == 2 * TaskThreadHistoryReader.defaultRunPageSize)
+        #expect(vm.snapshot?.omittedRunCount == 150 - 2 * TaskThreadHistoryReader.defaultRunPageSize)
         #expect(vm.snapshot?.latestRun?.output == "run 149")
 
-        vm.expandWindow(for: task)
-        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 150 })
+        for page in 3...13 {
+            vm.expandWindow(for: task)
+            let expected = min(150, page * TaskThreadHistoryReader.defaultRunPageSize)
+            _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == expected })
+        }
 
         #expect(vm.snapshot?.sortedRuns.count == 150)
         #expect(vm.snapshot?.omittedRunCount == 0)
@@ -561,17 +564,17 @@ struct TaskThreadViewModelTests {
         }
 
         vm.reset(for: task)
-        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 50 })
-        #expect(vm.snapshot?.sortedRuns.count == 50)
+        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize })
+        #expect(vm.snapshot?.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize)
 
         vm.expandWindow(for: task)
-        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 100 })
-        #expect(vm.snapshot?.sortedRuns.count == 100)
+        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 2 * TaskThreadHistoryReader.defaultRunPageSize })
+        #expect(vm.snapshot?.sortedRuns.count == 2 * TaskThreadHistoryReader.defaultRunPageSize)
 
         vm.reset(for: task)
-        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 50 })
-        #expect(vm.snapshot?.sortedRuns.count == 50)
-        #expect(vm.snapshot?.omittedRunCount == 70)
+        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize })
+        #expect(vm.snapshot?.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize)
+        #expect(vm.snapshot?.omittedRunCount == 120 - TaskThreadHistoryReader.defaultRunPageSize)
     }
 
     @MainActor
@@ -598,7 +601,7 @@ struct TaskThreadViewModelTests {
         }
 
         vm.reset(for: task)
-        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 50 })
+        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize })
 
         let firstStats = TaskThreadViewModel.snapshotCacheStatsForTesting
         #expect(firstStats.entryCount == 1)
@@ -609,8 +612,8 @@ struct TaskThreadViewModelTests {
         vm.reset(for: task)
 
         let secondStats = TaskThreadViewModel.snapshotCacheStatsForTesting
-        #expect(vm.snapshot?.sortedRuns.count == 50)
-        #expect(vm.snapshot?.omittedRunCount == 170)
+        #expect(vm.snapshot?.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize)
+        #expect(vm.snapshot?.omittedRunCount == 220 - TaskThreadHistoryReader.defaultRunPageSize)
         #expect(secondStats.entryCount == 1)
         #expect(secondStats.hitCount == 1)
         #expect(secondStats.missCount == 1)

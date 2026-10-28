@@ -95,7 +95,7 @@ final class ShelfBrowserSessionStore: ObservableObject {
         _sharedSession = created
         return created
     }
-    private var taskSessions: BoundedSessionRegistry<UUID, ShelfBrowserSession>
+    private var taskSessions: BoundedSessionRegistry<ShelfBrowserOwner, ShelfBrowserSession>
     /// Soft cap on live per-task WebKit sessions. Each session holds a
     /// WKWebView (its own WebContent process) plus a localhost bridge listener,
     /// so without a cap every task ever browsed in a window leaks one until the
@@ -117,44 +117,68 @@ final class ShelfBrowserSessionStore: ObservableObject {
         for taskID: UUID?,
         pinnedToTask: Bool,
         enabledBrowserAdapters: [String],
-        githubReadOnlyMode: Bool = false
+        githubReadOnlyMode: Bool = false,
+        taskOwnerID: PersistentIdentifier? = nil
     ) -> ShelfBrowserSession {
-        guard pinnedToTask, let taskID else {
-            sharedSession.bindToTask(taskID)
+        let owner = taskID.map { ShelfBrowserOwner(taskID: $0, modelID: taskOwnerID) }
+        guard pinnedToTask, let taskID, let owner else {
+            if !sharedSession.bindToTask(taskID, ownerID: taskOwnerID) {
+                sharedSession.teardown()
+                _sharedSession = sessionFactory()
+                sharedSession.ownershipNotice = "The previous task is finishing a browser operation. This task has a separate Browser session."
+                sharedSession.bindToTask(taskID, ownerID: taskOwnerID)
+            }
+            selectForLaunch(sharedSession, owner: owner)
             sharedSession.setEnabledBrowserAdapters(enabledBrowserAdapters)
             sharedSession.setGitHubReadOnlyMode(githubReadOnlyMode)
             return sharedSession
         }
 
-        if let session = taskSessions.session(for: taskID) {
-            session.bindToTask(taskID)
+        if let session = taskSessions.session(for: owner) {
+            session.bindToTask(taskID, ownerID: taskOwnerID)
+            selectForLaunch(session, owner: owner)
             session.setEnabledBrowserAdapters(enabledBrowserAdapters)
             session.setGitHubReadOnlyMode(githubReadOnlyMode)
             return session
         }
 
         let session = sessionFactory()
-        session.bindToTask(taskID)
+        session.bindToTask(taskID, ownerID: taskOwnerID)
         session.setEnabledBrowserAdapters(enabledBrowserAdapters)
         session.setGitHubReadOnlyMode(githubReadOnlyMode)
-        taskSessions.insert(session, for: taskID)
+        taskSessions.insert(session, for: owner)
+        selectForLaunch(session, owner: owner)
         // Only sweep when the dict actually grew (new task), so the hot
         // `session(for:)` path stays cheap during view updates.
-        evictIdleSessionsIfNeeded(keeping: taskID)
+        evictIdleSessionsIfNeeded(keeping: owner)
         return session
     }
 
     /// Tear down and drop the session bound to `taskID` (e.g. on task delete).
-    func releaseSession(for taskID: UUID) {
-        guard let session = taskSessions.removeValue(forKey: taskID) else { return }
-        session.teardown()
+    func releaseSession(for taskID: UUID, ownerID: PersistentIdentifier? = nil) {
+        let owner = ShelfBrowserOwner(taskID: taskID, modelID: ownerID)
+        taskSessions.removeValue(forKey: owner)?.teardown()
+        if _sharedSession?.boundOwner == owner {
+            _sharedSession?.teardown()
+            _sharedSession = nil
+        }
+    }
+
+    private func selectForLaunch(_ selected: ShelfBrowserSession, owner: ShelfBrowserOwner?) {
+        for session in taskSessions.values where session.boundOwner == owner {
+            session.setLaunchSelected(session === selected)
+        }
+        if let shared = _sharedSession, shared.boundOwner == owner {
+            shared.setLaunchSelected(shared === selected)
+        }
+        selected.setLaunchSelected(true)
     }
 
     /// Evict the least-recently-used *evictable* sessions when over the cap.
     /// Never evicts the kept/presented session or one a background agent is
     /// driving (see ShelfBrowserSession.isEvictable). If everything over the
     /// cap is busy, the cap is exceeded rather than risk interrupting work.
-    private func evictIdleSessionsIfNeeded(keeping keepTaskID: UUID?) {
+    private func evictIdleSessionsIfNeeded(keeping keepTaskID: ShelfBrowserOwner?) {
         taskSessions.evictIfNeeded(
             keeping: keepTaskID,
             canEvict: evictionEligibility,
@@ -167,27 +191,30 @@ final class ShelfBrowserSessionStore: ObservableObject {
         pinnedToTask: Bool,
         isPresented: Bool,
         enabledBrowserAdapters: [String] = [],
-        githubReadOnlyMode: Bool = false
+        githubReadOnlyMode: Bool = false,
+        taskOwnerID: PersistentIdentifier? = nil
     ) -> Bool {
+        let owner = ShelfBrowserOwner(taskID: taskID, modelID: taskOwnerID)
         // Don't force-create a shared session just to inspect it: if one was
         // never made, there is no draft page to promote. Short-circuit on the
         // backing before touching the lazy accessor.
         guard pinnedToTask,
-              !taskSessions.contains(taskID),
+              !taskSessions.contains(owner),
               let existingShared = _sharedSession,
               existingShared.hasDisplayablePage || existingShared.isLoading else {
             return false
         }
 
-        existingShared.bindToTask(taskID)
+        guard existingShared.bindToTask(taskID, ownerID: taskOwnerID) else { return false }
         existingShared.setEnabledBrowserAdapters(enabledBrowserAdapters)
         existingShared.setGitHubReadOnlyMode(githubReadOnlyMode)
         existingShared.setPresented(isPresented)
-        taskSessions.insert(existingShared, for: taskID)
+        taskSessions.insert(existingShared, for: owner)
+        selectForLaunch(existingShared, owner: owner)
         // Drop the backing so the next shared access lazily mints a fresh draft
         // rather than eagerly rebuilding a WebView the user may never reopen.
         _sharedSession = nil
-        evictIdleSessionsIfNeeded(keeping: taskID)
+        evictIdleSessionsIfNeeded(keeping: owner)
         return true
     }
 
@@ -196,7 +223,8 @@ final class ShelfBrowserSessionStore: ObservableObject {
         taskID: UUID?,
         pinnedToTask: Bool,
         enabledBrowserAdapters: [String] = [],
-        githubReadOnlyMode: Bool = false
+        githubReadOnlyMode: Bool = false,
+        taskOwnerID: PersistentIdentifier? = nil
     ) {
         // Touch the backing, not the lazy accessor — hiding sessions must never
         // force-create a shared WebView that was never opened.
@@ -207,21 +235,22 @@ final class ShelfBrowserSessionStore: ObservableObject {
 
         // Presentation changes are a safe moment to reclaim idle, off-screen
         // sessions (isEvictable guards against tearing down agent-driven ones).
-        evictIdleSessionsIfNeeded(keeping: pinnedToTask ? taskID : nil)
+        evictIdleSessionsIfNeeded(keeping: pinnedToTask ? taskID.map { ShelfBrowserOwner(taskID: $0, modelID: taskOwnerID) } : nil)
 
         guard isPresented else { return }
         session(
             for: taskID,
             pinnedToTask: pinnedToTask,
             enabledBrowserAdapters: enabledBrowserAdapters,
-            githubReadOnlyMode: githubReadOnlyMode
+            githubReadOnlyMode: githubReadOnlyMode,
+            taskOwnerID: taskOwnerID
         ).setPresented(true)
     }
 
     var taskSessionCountForTesting: Int { taskSessions.count }
 
-    func hasTaskSessionForTesting(_ taskID: UUID) -> Bool {
-        taskSessions.contains(taskID)
+    func hasTaskSessionForTesting(_ taskID: UUID, ownerID: PersistentIdentifier? = nil) -> Bool {
+        taskSessions.contains(ShelfBrowserOwner(taskID: taskID, modelID: ownerID))
     }
 }
 

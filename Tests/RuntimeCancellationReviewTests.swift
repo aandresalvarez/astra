@@ -18,7 +18,7 @@ struct RuntimeCancellationReviewTests {
         let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: UUID().uuidString)
         record.providerSharedStateKey = key.rawValue
         record.providerSharedStateReleased = false
-        do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         let root = h.rootURL.appendingPathComponent("provider-leases")
         let reference = RuntimeProviderOwnershipReference(journalRoot: store.root.path, taskID: task.id, ownerID: record.ownerID)
         do {
@@ -28,11 +28,13 @@ struct RuntimeCancellationReviewTests {
         // Direct kernel acquisition has no knowledge of a process-local registry.
         let next = try await ProviderSharedStateProcessLock.acquire(key, root: root)
         #expect(throws: (any Error).self) { try next.handoff(key, reference: nil, prepare: {}) }
-        let receiptURL = store.root.appendingPathComponent(task.id.uuidString + ".json")
-        try FileManager.default.removeItem(at: receiptURL)
+        do {
+            let saved = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
+            try FileManager.default.removeItem(at: saved.recordURL)
+        }
         #expect(throws: (any Error).self) { try next.handoff(key, reference: nil, prepare: {}) }
         record.providerSharedStateReleased = true
-        do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         try next.handoff(key, reference: nil, prepare: {})
     }
 
@@ -102,7 +104,7 @@ struct RuntimeCancellationReviewTests {
         await gate.release(first)
         let second = try await waiting.value
         #expect(owner.record.providerSharedStateReleased == false)
-        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: task.id)?.providerSharedStateReleased == false)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: task.id, taskOwnerID: task.persistentModelID)?.providerSharedStateReleased == false)
         #expect(owner.releaseProviderSharedState())
         await gate.release(second)
     }
@@ -117,7 +119,8 @@ struct RuntimeCancellationReviewTests {
         h.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
             payload: TaskEvent.payloadString(record, fallback: "{}")))
         let store = RuntimeExecutionOwner.store(in: h.context)
-        try FileManager.default.removeItem(at: store.root.appendingPathComponent(task.id.uuidString + ".json"))
+        let receipt = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
+        try FileManager.default.removeItem(at: receipt.recordURL)
         #expect(throws: (any Error).self) { try RuntimeResourceOwnership.claims(in: store, context: h.context) }
     }
 
@@ -130,7 +133,7 @@ struct RuntimeCancellationReviewTests {
         var record = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context, toolsStopped: true)
         record.resourceClaims = nil
         let store = RuntimeExecutionOwner.store(in: h.context)
-        do { let lease = try store.acquire(taskID: task.id); try lease.save(record) }
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         let admission = RuntimeExecutionOwner.acquireSettlement(task: task, run: run, context: h.context)
         let owner = try #require(admission.owner)
         #expect(owner.record.resourceClaims?.isEmpty == false)
