@@ -658,6 +658,7 @@ struct AgentRuntimeProcessLaunchContext {
     let phase: RunPhase
     let contextText: String
     let nativeContinuationSessionID: String?
+    let copilotRepositoryInstructionMode: CopilotRepositoryInstructionMode
     let runID: UUID?
     let liveApprovalsEnabled: Bool
     let launchResourcePlan: TaskLaunchResourcePlan?
@@ -686,6 +687,7 @@ struct AgentRuntimeProcessLaunchContext {
         phase: RunPhase = .run,
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
+        copilotRepositoryInstructionMode: CopilotRepositoryInstructionMode = .guidance,
         runID: UUID? = nil,
         liveApprovalsEnabled: Bool = false,
         launchResourcePlan: TaskLaunchResourcePlan? = nil,
@@ -705,6 +707,7 @@ struct AgentRuntimeProcessLaunchContext {
         self.phase = phase
         self.contextText = contextText
         self.nativeContinuationSessionID = nativeContinuationSessionID
+        self.copilotRepositoryInstructionMode = copilotRepositoryInstructionMode
         self.runID = runID
         self.liveApprovalsEnabled = liveApprovalsEnabled
         self.launchResourcePlan = launchResourcePlan
@@ -735,6 +738,7 @@ struct AgentRuntimeProcessLaunchContext {
             phase: phase,
             contextText: contextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
+            copilotRepositoryInstructionMode: copilotRepositoryInstructionMode,
             runID: runID,
             liveApprovalsEnabled: liveApprovalsEnabled,
             launchResourcePlan: launchResourcePlan,
@@ -2021,6 +2025,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             askFirstTools: surfacedAskFirstTools,
             additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
             reasoningEffort: reasoningEffort, resumeSessionID: context.nativeContinuationSessionID,
+            disableCustomInstructions: context.copilotRepositoryInstructionMode == .guidance,
             diagnosticLogDirectory: diagnosticLogDirectory,
             permissionArguments: permissionArguments
         )
@@ -2045,7 +2050,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let taskProviderAllowed = providerAllowed.filter { tool in
             !artifactBootstrapToolNames.contains(ProviderArtifactBootstrapPolicy.normalizedToolName(tool))
         }
-        let commandPlannedFields = CopilotLaunchDiagnostics.commandPlannedFields(
+        var commandPlannedFields = CopilotLaunchDiagnostics.commandPlannedFields(
             id: id,
             phase: context.phase,
             model: model,
@@ -2069,6 +2074,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             dockerCredentialProjectionCount: executionEnvironment.effectiveCredentialProjections.count,
             browserBridgeMetadata: browserBridgeMetadata
         )
+        commandPlannedFields["repository_instruction_mode"] = context.copilotRepositoryInstructionMode.rawValue
+        commandPlannedFields["custom_instructions_disabled"] = String(plan.arguments.contains("--no-custom-instructions"))
 
         return AgentRuntimeProcessLaunchPlan(
             runtime: id,

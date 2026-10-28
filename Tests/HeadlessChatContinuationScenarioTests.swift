@@ -7,6 +7,51 @@ import ASTRAPersistence
 import ASTRACore
 
 extension HeadlessChatScenarioTests {
+    @Test("Switching Copilot repository rules to guidance replaces the native session and preserves work and history")
+    func copilotInstructionPolicyChangeStartsFreshSession() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+        let argsFile = harness.rootURL.appendingPathComponent("instruction-policy-args.txt")
+        let executable = try harness.writeExecutable(named: "copilot", script: Self.copilotScript(body: """
+        printf '%s\\n' '{"type":"session.mcp_servers_loaded","data":{"servers":[]},"session":{"id":"policy-session","model":"gpt-5"}}'
+        printf '%s\\n' '{"type":"assistant.message","data":{"content":"Saved implementation remains available."}}'
+        printf '%s\\n' '{"type":"result","sessionId":"policy-session","exitCode":0}'
+        exit 0
+        """, argsFile: argsFile))
+        let guide = harness.workspaceURL.appendingPathComponent(".github/copilot-instructions.md")
+        try FileManager.default.createDirectory(at: guide.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "Never use git commands.".write(to: guide, atomically: true, encoding: .utf8)
+        let work = harness.workspaceURL.appendingPathComponent("saved-work.sql")
+        let original = Data("select 'preserved';".utf8)
+        try original.write(to: work)
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "Summarize the saved implementation", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: executable, permissionPolicy: .autonomous)
+        worker.timeoutSeconds = 30
+        worker.providerSessionStoreHome = harness.rootURL.path
+        var settings = AgentRuntimeProviderSettings(copilotRepositoryInstructionMode: .strict)
+        settings.setExecutablePath(executable, for: .copilotCLI)
+        settings.setHomeDirectory(harness.rootURL.appendingPathComponent("copilot-home").path, for: .copilotCLI)
+        worker.setProviderSettings(settings)
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.sessionId == "policy-session")
+        let oldRun = try #require(task.runs.first)
+        let oldOutput = oldRun.output
+        try FileManager.default.createDirectory(at: harness.rootURL.appendingPathComponent(".copilot/session-state/policy-session"), withIntermediateDirectories: true)
+        settings.copilotRepositoryInstructionMode = .guidance
+        worker.setProviderSettings(settings)
+        _ = await harness.continueTask(task: task, message: "Explain the saved work using repository rules as guidance.", worker: worker)
+        let args = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(args.contains("--no-custom-instructions"))
+        #expect(!args.contains("--resume="))
+        #expect(args.contains("advisory project context"))
+        #expect(args.contains("Never use git commands."))
+        #expect(args.contains(oldOutput))
+        #expect(task.runs.count == 2)
+        #expect(oldRun.output == oldOutput)
+        #expect(try Data(contentsOf: work) == original)
+        #expect(task.status == .completed)
+    }
+
     /// Launch probes intentionally skip UserDefaults.standard in tests. Bind
     /// this fixture's advertised JSON capability to its exact binary stamp,
     /// restoring the shared test-domain value after the scenario finishes.

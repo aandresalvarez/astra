@@ -345,7 +345,8 @@ final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
         prompt: String, task: AgentTask, workspacePath: String, executablePath: String, homeDirectory: String,
         permissionPolicy: PermissionPolicy, executionPolicy: AgentRuntimeExecutionPolicy, permissionManifest: RunPermissionManifest?,
         budgetEnforcementMode: BudgetEnforcementMode, timeoutSeconds: TimeInterval, phase: RunPhase, contextText: String,
-        nativeContinuationSessionID: String?, runID: UUID?, launchResourcePlan: TaskLaunchResourcePlan?,
+        nativeContinuationSessionID: String?, copilotRepositoryInstructionMode: CopilotRepositoryInstructionMode,
+        runID: UUID?, launchResourcePlan: TaskLaunchResourcePlan?,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?, runtimeRequirements: TaskRuntimeRequirementSet?,
         liveApprovalsEnabled: Bool, noSemanticProgressTimeoutSeconds: TimeInterval?, maxRunSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?, onLine: @escaping (String, Bool) -> Void

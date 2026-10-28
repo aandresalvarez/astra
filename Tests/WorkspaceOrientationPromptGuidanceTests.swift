@@ -162,7 +162,7 @@ struct WorkspaceOrientationPromptGuidanceTests {
         let load = try #require(source.range(of: "WorkspaceOrientationPromptGuidance.load(directory: executionPath)"))
         let cancellationGuard = try #require(source.range(of: "guard !cancellationRequested, task.status != .cancelled"))
         let resources = try #require(source.range(of: "TaskLaunchResourceResolver.resolve("))
-        let fallback = try #require(source.range(of: "let promptWithoutResume = workspaceOrientation.appending(to: prompt) + historyGuidance"))
+        let fallback = try #require(source.range(of: "let orientedPrompt = workspaceOrientation.appending(to: prompt) + historyGuidance"))
         let nativeResume = try #require(source.range(of: "prompt = autoSendGuidance(AgentContinuationPrompt.build("))
         let finalAppend = try #require(source.range(of: "prompt = workspaceOrientation.appending(to: prompt) + historyGuidance"))
 

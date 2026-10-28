@@ -1682,7 +1682,7 @@ struct CopilotWorkerExecutionTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR"
           exit 0
         fi
         if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
@@ -1731,7 +1731,7 @@ struct CopilotWorkerExecutionTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR"
           exit 0
         fi
         if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
@@ -1809,7 +1809,7 @@ struct CopilotWorkerExecutionTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR"
           exit 0
         fi
         if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
@@ -1879,7 +1879,7 @@ struct CopilotWorkerExecutionTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR"
           exit 0
         fi
         if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
@@ -1957,7 +1957,7 @@ struct CopilotWorkerExecutionTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR"
           exit 0
         fi
         if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
@@ -2033,7 +2033,7 @@ struct CopilotWorkerExecutionTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR"
           exit 0
         fi
         if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
@@ -2093,7 +2093,7 @@ struct CopilotWorkerExecutionTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR"
           exit 0
         fi
         if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
@@ -2151,7 +2151,7 @@ struct CopilotWorkerExecutionTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR"
           exit 0
         fi
         if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
@@ -2234,7 +2234,7 @@ struct CopilotWorkerExecutionTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR"
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR"
           exit 0
         fi
         if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
@@ -2296,7 +2296,7 @@ struct CopilotWorkerExecutionTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR --allow-all-tools"
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR --allow-all-tools"
           exit 0
         fi
         if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
@@ -2352,7 +2352,7 @@ struct CopilotWorkerExecutionTests {
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
-          echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR --allow-all-tools"
+          echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR --allow-all-tools"
           exit 0
         fi
         if [ "$1" = "--version" ] || [ "$1" = "version" ]; then

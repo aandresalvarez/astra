@@ -41,6 +41,7 @@ struct ProviderLaunchSignaturePayload: Codable, Equatable {
     /// Left out of the value when absent, so workspaces without SSH keep the
     /// signatures they already recorded.
     var remoteSSHRoute: String? = nil
+    var repositoryInstructionContract: String? = nil
 
     var signatureValue: String {
         [
@@ -72,6 +73,7 @@ struct ProviderLaunchSignaturePayload: Codable, Equatable {
             "environment=\(executionEnvironmentFingerprint ?? WorkspaceExecutionEnvironment.host.signatureFingerprint)",
             "readOnlyResources=\(readOnlyResourceContractDigest ?? "none")"
         ].joined(separator: "\u{1f}") + (remoteSSHRoute.map { "\u{1f}ssh=\($0)" } ?? "")
+            + (repositoryInstructionContract.map { "\u{1f}repositoryInstructions=\($0)" } ?? "")
     }
 }
 
@@ -84,7 +86,8 @@ enum ProviderLaunchSignatureService {
         manifest: RunPermissionManifest,
         contextText: String,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot,
-        launchResourcePlan: TaskLaunchResourcePlan
+        launchResourcePlan: TaskLaunchResourcePlan,
+        repositoryInstructionContract: String? = nil
     ) -> ProviderLaunchSignaturePayload {
         let scope = capabilityResolutionSnapshot.scope(.providerLaunch(contextText: contextText))
         let supportTools = manifest.providerRender.runtimeSupportTools.map { descriptor in
@@ -147,7 +150,8 @@ enum ProviderLaunchSignatureService {
             readOnlyResourceContractDigest: readOnlyResourceContract.isRequired
                 ? readOnlyResourceContract.digest
                 : nil,
-            remoteSSHRoute: launchResourcePlan.remoteSSHRoute?.signatureComponent
+            remoteSSHRoute: launchResourcePlan.remoteSSHRoute?.signatureComponent,
+            repositoryInstructionContract: repositoryInstructionContract
         )
     }
 

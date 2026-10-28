@@ -38,6 +38,7 @@ protocol AgentRuntimeProcessRunning: AnyObject {
         phase: RunPhase,
         contextText: String,
         nativeContinuationSessionID: String?,
+        copilotRepositoryInstructionMode: CopilotRepositoryInstructionMode,
         runID: UUID?,
         launchResourcePlan: TaskLaunchResourcePlan?,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,
@@ -413,6 +414,9 @@ final class AgentRuntimeProcessRunner {
                 appliedBoundarySurfaces.insert(.workspaceContainer)
             }
         }
+        if let block = CopilotRepositoryInstructions.launchBlock(for: plan) {
+            return .blocked(block)
+        }
         if let block = HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan) {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
                 "runtime": plan.runtime.rawValue,
@@ -705,6 +709,7 @@ final class AgentRuntimeProcessRunner {
         phase: RunPhase = .run,
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
+        copilotRepositoryInstructionMode: CopilotRepositoryInstructionMode = .guidance,
         runID: UUID? = nil,
         launchResourcePlan: TaskLaunchResourcePlan? = nil,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
@@ -729,6 +734,7 @@ final class AgentRuntimeProcessRunner {
             phase: phase,
             contextText: contextText,
             nativeContinuationSessionID: nativeContinuationSessionID,
+            copilotRepositoryInstructionMode: copilotRepositoryInstructionMode,
             runID: runID,
             liveApprovalsEnabled: liveApprovalsEnabled && onInteractiveAsk != nil,
             launchResourcePlan: launchResourcePlan,
