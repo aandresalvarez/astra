@@ -99,7 +99,7 @@ struct RightRailAppFixtureTests {
             let package = PluginPackage(id: id, name: "QA " + name, icon: "terminal",
                 description: "Synthetic rail repair fixture; no account or credentials.", author: "ASTRA QA",
                 category: "QA", tags: [], version: "1.0.0", skills: [], connectors: [], localTools: [], templates: [],
-                prerequisites: [.init(binary: binaries.appendingPathComponent(id).path, displayName: "QA " + name,
+                prerequisites: [.init(binary: binaries.appendingPathComponent(id).path, livenessArgs: [], displayName: "QA " + name,
                     purpose: "Synthetic readiness signal", installHint: "Run `/usr/bin/printf QA_\(name.uppercased())_ONLY`.")])
             try library.install(package)
             let stored = try #require(library.installedPackage(id: id))

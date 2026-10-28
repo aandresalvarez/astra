@@ -62,6 +62,32 @@ struct WorkspaceRailOutputPresentationTests {
         #expect(outputs.files.first { $0.path == generated }?.destination == .browser)
     }
 
+    @Test("Files and Outputs deduplicate generated paths and recorded changes through symlink aliases")
+    func aliasesDescribeOneFile() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("actual")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let alias = root.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: folder)
+        let file = folder.appendingPathComponent("report.md")
+        try "Synthetic output".write(to: file, atomically: true, encoding: .utf8)
+        let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = container.mainContext
+        let task = AgentTask(title: "Alias", goal: "One output")
+        context.insert(task)
+        let run = TaskRun(task: task)
+        run.appendHostFileChanges([.init(path: alias.appendingPathComponent("report.md").path, changeType: "Write")])
+        context.insert(run)
+        try context.save()
+        let files = try TaskHeaderFilesReader.facts(scope: .init(task: task), inputs: [],
+            taskFolder: folder.path, workspacePath: root.path, modelContext: context)
+        #expect(files.items.count == 1)
+        #expect(files.items.first?.change?.kind == .write)
+        #expect(WorkspaceRailOutputPresentation.facts(from: files).files.count == 1)
+    }
+
     @Test("Folder discovery, deletions and unknown provenance do not become Outputs")
     func outputEvidence() {
         let facts = WorkspaceRailOutputPresentation.facts(from: .init(items: [

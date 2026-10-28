@@ -40,8 +40,22 @@ enum TaskHeaderFilesReader {
         try Task.checkCancellation()
         let indexed = TaskFileIndex.headerItems(fileChanges: changes, generatedFilePaths: generated,
             inputs: inputs, taskFolder: taskFolder, workspacePath: workspacePath)
-        return Facts(items: TaskAttachmentFilesReader.merging(paths: paths, with: indexed),
+        return Facts(items: try uniqueFiles(TaskAttachmentFilesReader.merging(paths: paths, with: indexed)),
                      userProvidedPaths: try providedPaths(inputs + paths, discovered: generated))
+    }
+
+    /// Recorded changes take precedence over discovery and supplied files. Keep
+    /// that order and provenance when discovery uses a resolved filesystem path.
+    private static func uniqueFiles(_ items: [TaskFileItem]) throws -> [TaskFileItem] {
+        var identities: Set<String> = []
+        var result: [TaskFileItem] = []
+        for item in items {
+            try Task.checkCancellation()
+            let identity = URL(fileURLWithPath: Facts.pathIdentity(item.path))
+                .resolvingSymlinksInPath().standardizedFileURL.path
+            if identities.insert(identity).inserted { result.append(item) }
+        }
+        return result
     }
 
     /// Discovery resolves symlinks. Keep the same identity for supplied files
