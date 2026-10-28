@@ -135,10 +135,12 @@ struct PanelLayoutGeometryTests {
 
     @Test("Inspector column width matches the production constant")
     func inspectorColumnWidthConstant() {
-        #expect(PanelLayoutGeometry.inspectorMinColumnWidth == 340)
-        #expect(PanelLayoutGeometry.inspectorColumnWidth == 392)
-        #expect(PanelLayoutGeometry.inspectorDefaultMaxColumnWidth == 420)
-        #expect(PanelLayoutGeometry.inspectorMaxColumnWidth == 460)
+        // One-line rows (rail v2) read at 300; the tokens live with the rail.
+        #expect(PanelLayoutGeometry.inspectorMinColumnWidth == 300)
+        #expect(PanelLayoutGeometry.inspectorColumnWidth == 340)
+        #expect(PanelLayoutGeometry.inspectorDefaultMaxColumnWidth == 380)
+        #expect(PanelLayoutGeometry.inspectorMaxColumnWidth == 420)
+        #expect(PanelLayoutGeometry.inspectorColumnWidth == WorkspaceRailSectionPresentation.Layout.columnWidth)
     }
 
     @Test("Main window opens wide enough for sidebar and right panel")
@@ -456,9 +458,9 @@ struct PanelLayoutGeometryTests {
 
     @Test("Inspector docked width uses viewport-relative clamp")
     func inspectorDockedWidthClamp() {
-        #expect(PanelLayoutGeometry.inspectorDockedColumnWidth(for: 1_000) == 340)
-        #expect(PanelLayoutGeometry.inspectorDockedColumnWidth(for: 1_600) == 384)
-        #expect(PanelLayoutGeometry.inspectorDockedColumnWidth(for: 2_000) == 420)
+        #expect(PanelLayoutGeometry.inspectorDockedColumnWidth(for: 1_000) == 300)
+        #expect(PanelLayoutGeometry.inspectorDockedColumnWidth(for: 1_500) == 360)
+        #expect(PanelLayoutGeometry.inspectorDockedColumnWidth(for: 2_000) == 380)
     }
 
     @Test("Resizable inspector width preserves detail minimum and user max")
@@ -467,7 +469,7 @@ struct PanelLayoutGeometryTests {
             500,
             detailAreaWidth: 1_000,
             minimumDetailWidth: 480
-        ) == 460)
+        ) == 420)
         #expect(PanelLayoutGeometry.inspectorResizableColumnWidth(
             500,
             detailAreaWidth: 850,
@@ -477,17 +479,17 @@ struct PanelLayoutGeometryTests {
             200,
             detailAreaWidth: 1_200,
             minimumDetailWidth: 480
-        ) == 340)
+        ) == 300)
     }
 
     @Test("Inspector becomes overlay when docked layout would squeeze detail")
     func inspectorOverlayBreakpoint() {
         #expect(PanelLayoutGeometry.shouldOverlayInspector(
-            detailAreaWidth: 819,
+            detailAreaWidth: 779,
             minimumDetailWidth: 480
         ) == true)
         #expect(PanelLayoutGeometry.shouldOverlayInspector(
-            detailAreaWidth: 820,
+            detailAreaWidth: 780,
             minimumDetailWidth: 480
         ) == false)
     }
@@ -496,7 +498,7 @@ struct PanelLayoutGeometryTests {
     func inspectorOverlayWidthClamp() {
         #expect(PanelLayoutGeometry.inspectorOverlayWidth(for: 300) == 280)
         #expect(abs(PanelLayoutGeometry.inspectorOverlayWidth(for: 380) - 349.6) < 0.01)
-        #expect(PanelLayoutGeometry.inspectorOverlayWidth(for: 900) == 420)
+        #expect(PanelLayoutGeometry.inspectorOverlayWidth(for: 900) == 380)
     }
 
     // MARK: - clampedShelfWidth (bug regression: detail must not collapse to 0)
