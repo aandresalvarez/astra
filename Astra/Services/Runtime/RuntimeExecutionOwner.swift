@@ -132,22 +132,26 @@ final class RuntimeExecutionOwner {
             let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
             let claims = resourceClaims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(
                 for: nil, task: task, runMode: "runtime", fallbackAccess: .write, sandboxEnforcement: .off)
+            let protectedPrevious = try lease.read()
+            let previous = protectedPrevious.map { reconciledCompletion($0, task: task) }
+            let workspaceAdmission = try RuntimeWorkspaceContinuation.admission(task: task, request: userRequest, previous: previous, context: context, claims: claims)
+            defer { withExtendedLifetime(workspaceAdmission) {} }
             let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
-            guard TaskExecutionResourceBroker.canAcquire(claims, active: held) else {
+            guard TaskExecutionResourceBroker.canAcquire(claims, active: held.filter { workspaceAdmission?.excludedClaims.contains($0) != true }) else {
                 report(TaskExecutionResourceBroker.blockerSummary(requested: claims, active: held)
                     + " Previous execution cleanup is not yet confirmed.", task: task, context: context, pause: true)
                 return nil
             }
-            let previous = try lease.read().map { reconciledCompletion($0, task: task) }
             guard previous == nil || previous?.taskID == task.id else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
             if previous == nil, requiresExistingReceipt(task) {
                 report("The saved execution receipt is missing. ASTRA preserved this task and blocked replacement work.", task: task, context: context, pause: true)
                 return nil
             }
             let legacyRun = previous == nil ? RuntimeRecoveryLegacyReconciliation.settledRun(of: task) : nil
-            let continuesOwner = previous.map {
+            let resumesWorkspace = workspaceAdmission != nil && previous.map { RuntimeWorkspaceContinuation.resumesPreparation($0, task: task, request: userRequest, context: context) } == true
+            let continuesOwner = resumesWorkspace || (previous.map {
                 RuntimeCompletedUserTurnContinuation.permits($0, task: task, request: userRequest, context: context)
-            } ?? false
+            } ?? false)
             if let previous {
                 if previous.cancellationRequested == true, previous.resourcesReleased != true,
                    !previous.canReplace, !previous.canRecoverPreparation {
@@ -166,8 +170,8 @@ final class RuntimeExecutionOwner {
             // A separately authored request gets its own limits after verified
             // cleanup, including when the prior request exhausted its budget.
             // Retry and approved continuations keep the same request's limits.
-            let resumesPreparation = continuesOwner && previous?.continuingUserRequestID == userRequest?.id
-                && previous.map { RuntimeCompletedUserTurnContinuation.hasUnlaunchedPreparation($0, task: task, context: context) } == true
+            let resumesPreparation = resumesWorkspace || (continuesOwner && previous?.continuingUserRequestID == userRequest?.id
+                && previous.map { RuntimeCompletedUserTurnContinuation.hasUnlaunchedPreparation($0, task: task, context: context) } == true)
             let startsNewRequest = (continuesOwner && !resumesPreparation) || (newUserRequest && previous?.canAcceptUserTurn == true)
             let recovering = previous != nil && !startsNewRequest
             let configuration = launchTask ?? task
@@ -184,10 +188,12 @@ final class RuntimeExecutionOwner {
             if resumesPreparation { record.runID = previous?.runID }
             record.taskOwnerID = task.persistentModelID
             record.legacyReferenceOwnerID = previous?.legacyReferenceOwnerID ?? previous?.ownerID
-            record.inheritedToolUncertainty = previous?.hasUnverifiedTools
+            record.inheritedToolUncertainty = workspaceAdmission != nil || previous?.hasUnverifiedTools == true
+            record.workspaceContinuationRequestID = workspaceAdmission?.authorization.requestID ?? previous?.workspaceContinuationRequestID
+            if workspaceAdmission != nil { record.continuingUserRequestID = userRequest?.id }
             record.resourceClaims = claims
             if continuesOwner, let previous {
-                try store.retain(previous)
+                try store.retain(protectedPrevious ?? previous)
                 record.retainedExecutionHead = previous.executionID
                 record.continuingUserRequestID = userRequest?.id
                 record.retainedProviderSharedStateKeys = Array(Set((previous.retainedProviderSharedStateKeys ?? [])
@@ -197,6 +203,9 @@ final class RuntimeExecutionOwner {
             }
             record.resourcesReleased = false
             record.legacySettledRunID = legacyRun?.id
+            if let workspaceAdmission, workspaceAdmission.needsPersistence {
+                try RuntimeWorkspaceContinuation.persist(workspaceAdmission.authorization, task: task, lease: lease, context: context)
+            }
             try lease.save(record) // fail closed before any worker/provider side effect
             active.insert(key)
             if let legacyRun { reportLegacyReconciliation(legacyRun, record: record, task: task, context: context) }

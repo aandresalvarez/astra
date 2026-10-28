@@ -72,12 +72,30 @@ enum RemoteWorkspaceJobRegistration {
               configuration.observationSSHOptions == observationOptions(task: task) else {
             throw RemoteWorkspaceJobError.invalidArgument("Remote jobs belong to a different execution. The reservation is preserved.")
         }
-        let current = RemoteWorkspaceJobShim.offeredConnections(task: task, targets: configuration.connections.map(\.target))
-        guard current == configuration.connections else {
+        guard matchesSavedConnections(configuration.connections, task: task) else {
             throw RemoteWorkspaceJobError.invalidArgument("The SSH connection changed. Restore the original connection to inspect its jobs safely.")
         }
         return configuration
     }
+    /// Older registrations always quoted shell words, including plain aliases.
+    /// Compare the destination argv and stable identity before accepting either
+    /// rendering; never rewrite the saved registration or migrate SSH settings.
+    private static func matchesSavedConnections(_ saved: [RemoteWorkspaceJobConnection], task: AgentTask) -> Bool {
+        guard let workspace = task.workspace else { return saved.isEmpty }
+        let current = SSHConnectionManager.loadForExport(workspacePath: workspace.primaryPath)
+        var seen = Set<String>()
+        return saved.allSatisfy { item in
+            let matches = current.filter { $0.id.uuidString == item.id }
+            guard seen.insert(item.id).inserted, matches.count == 1, let connection = matches.first,
+                  item.name == connection.displayLabel,
+                  item.arguments == connection.sshDestinationArguments(expandingTilde: true) else { return false }
+            let legacy = connection.sshDestinationArguments(expandingTilde: false).map {
+                "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            }.joined(separator: " ")
+            return item.target == RemoteWorkspaceSSHRoute.connectTarget(for: connection) || item.target == legacy
+        }
+    }
+
     static func observationOptions(task: AgentTask) -> [String] {
         let path = URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder)
             .appendingPathComponent(".runtime-ssh/known_hosts").path
