@@ -18,7 +18,7 @@ enum RemoteWorkspaceJobRegistration {
     static func prepare(task: AgentTask, runID: UUID, owner: RuntimeExecutionOwner,
                         context: ModelContext, connections: [RemoteWorkspaceJobConnection]) throws -> RemoteWorkspaceJobConfiguration {
         let receipt = owner.record
-        guard receipt.taskID == task.id, receipt.taskOwnerID == task.persistentModelID,
+        guard receipt.taskID == task.id, receipt.taskOwnerID == (task.launchSourceTaskOwnerID ?? task.persistentModelID),
               let receiptURL = owner.receiptURL, receipt.runID == runID, owner.isActive,
               receipt.cancellationRequested != true, receipt.limits.secondsRemaining > 0,
               receipt.limits.turnsRemaining > 0, receipt.limits.tokensRemaining > 0 else {
@@ -45,6 +45,17 @@ enum RemoteWorkspaceJobRegistration {
 
     static func load(task: AgentTask, context: ModelContext) throws -> RemoteWorkspaceJobConfiguration? {
         guard let owner = try RuntimeExecutionOwner.existing(task: task, context: context) else { return nil }
+        return try load(task: task, owner: owner, context: context)
+    }
+
+    static func loadAll(task: AgentTask, context: ModelContext) throws -> [RemoteWorkspaceJobConfiguration] {
+        guard let owner = try RuntimeExecutionOwner.existing(task: task, context: context) else { return [] }
+        let executions = [owner] + (try RuntimeExecutionOwner.store(in: context).retainedExecutions(of: owner))
+        return try executions.compactMap { try load(task: task, owner: $0, context: context) }
+    }
+
+    private static func load(task: AgentTask, owner: RuntimeExecutionOwnerRecord,
+                             context: ModelContext) throws -> RemoteWorkspaceJobConfiguration? {
         let root = directory(taskID: task.id, executionID: owner.executionID, context: context)
         let url = root.appendingPathComponent("configuration.json")
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }

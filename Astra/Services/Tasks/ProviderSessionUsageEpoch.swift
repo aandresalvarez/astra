@@ -48,13 +48,13 @@ enum ProviderSessionUsageEpoch {
               let session = run.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
               !session.isEmpty else { return .zero }
         if runtime == .claudeCode {
-            if task.events.contains(where: { $0.run?.id == run.id && $0.type == resetEventType }) { return .zero }
+            if TaskHistoryRead.events(for: task, ofTypes: [resetEventType]).contains(where: { $0.run?.id == run.id }) { return .zero }
             return ClaudeSessionUsageEvidence.baseline(for: run, task: task)
         }
         let earlier = task.runs.filter { $0.id != run.id && $0.runtimeID == run.runtimeID
             && $0.providerSessionId == session && $0.startedAt < run.startedAt }
         guard !earlier.isEmpty else { return .zero }
-        let resetRunIDs = Set(task.events.filter { $0.type == resetEventType }.compactMap { $0.run?.id })
+        let resetRunIDs = Set(TaskHistoryRead.events(for: task, ofTypes: [resetEventType]).compactMap { $0.run?.id })
         guard !resetRunIDs.contains(run.id) else { return .zero }
         let epochStart = earlier.filter { resetRunIDs.contains($0.id) }.map(\.startedAt).max()
         let epoch = epochStart.map { start in earlier.filter { $0.startedAt >= start } } ?? earlier
@@ -81,13 +81,13 @@ enum ProviderSessionUsageEpoch {
         if baseline.reconciliationPending { ClaudeSessionUsageEvidence.markUnconfirmed(task: task, run: run, context: modelContext) }
         if baseline.reportedInput != nil, input < baseline.input || output < baseline.output {
             let message = "Usage remains approximate because earlier turns have estimates rather than provider reports. ASTRA kept conservative historical totals; this request's limit uses the confirmed usage baseline."
-            if !task.events.contains(where: { $0.run?.id == run.id && $0.type == TaskEventTypes.System.info.rawValue && $0.payload == message }) {
+            if !TaskHistoryRead.events(for: task, ofTypes: [TaskEventTypes.System.info.rawValue]).contains(where: { $0.run?.id == run.id && $0.payload == message }) {
                 modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: message, run: run))
             }
         }
         let nativeZeroReset = run.runtimeID == AgentRuntimeID.claudeCode.rawValue
             && (input < baseline.input || output < baseline.output)
-            && task.events.contains { event in
+            && TaskHistoryRead.events(for: task, ofTypes: [ClaudeSessionUsageEvidence.eventType]).contains { event in
                 guard let snapshot = ClaudeSessionUsageEvidence.snapshot(event: event, run: run) else { return false }
                 return snapshot.input == input && snapshot.output == output
             }

@@ -9,6 +9,7 @@ extension TaskQueue {
         let store = RuntimeExecutionOwner.store(in: context)
         resourceOwnershipStore = store
         do {
+            try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: context)
             persistedResourceLocks = try RuntimeResourceOwnership.claims(in: store, context: context)
             resourceOwnershipReadFailed = false
         } catch {
@@ -83,14 +84,40 @@ extension TaskQueue {
         dispatchedRequestIDs: Set<UUID>,
         activeTaskIDs: Set<UUID>
     ) -> Bool {
-        !resourceOwnershipReadFailed && TaskExecutionResourceAdmissionPolicy.canAdmit(
+        let inherited = continuingOwnerClaims(task: candidate.task, request: candidate.request)
+        let available = activeResourceLocks.filter {
+            inherited.isEmpty || $0.taskID != candidate.task.id || $0.requestID == candidate.request.id
+        }
+        return !resourceOwnershipReadFailed && TaskExecutionResourceAdmissionPolicy.canAdmit(
             candidate,
             in: projection,
             dispatchedRequestIDs: dispatchedRequestIDs,
             activeTaskIDs: activeTaskIDs,
-            activeClaims: activeResourceLocks,
+            activeClaims: available,
+            inheritedClaims: inherited,
             sandboxEnforcement: sandboxEnforcementProvider()
         )
+    }
+
+    @MainActor
+    func continuingOwnerClaims(task: AgentTask, request: TaskTurnRequest?) -> [TaskResourceLockClaim] {
+        guard !activeTasks.contains(task.id), let context = task.modelContext,
+              let saved = try? RuntimeExecutionOwner.existing(task: task, context: context),
+              RuntimeCompletedUserTurnContinuation.permits(saved, task: task, request: request, context: context) else { return [] }
+        return saved.resourceClaims ?? []
+    }
+
+    @MainActor
+    func canAcquireResourceLocks(_ claims: [TaskResourceLockClaim], task: AgentTask?, context: ModelContext?) -> Bool {
+        guard let task, let context else { return canAcquireResourceLocks(claims) }
+        let ids = Set(claims.compactMap(\.requestID))
+        guard ids.count == 1, let id = ids.first,
+              let request = try? TaskTurnRequestRepository.request(id: id, in: context),
+              !continuingOwnerClaims(task: task, request: request).isEmpty else {
+            return canAcquireResourceLocks(claims)
+        }
+        let available = activeResourceLocks.filter { $0.taskID != task.id || $0.requestID == id }
+        return !resourceOwnershipReadFailed && TaskExecutionResourceBroker.canAcquire(claims, active: available)
     }
 
     @MainActor

@@ -208,21 +208,16 @@ enum AgentRuntimeRunPersistence {
         persistedArtifactCount: Int = 0
     ) -> [String: String] {
         let start = DispatchTime.now().uptimeNanoseconds
-        // One pass. This was six — a `filter` to select the run's events, then
-        // five more over the result, one per type — across a SwiftData
-        // relationship that has to be faulted in each time. On a task with tens
-        // of thousands of events that is the difference between a telemetry
-        // helper and a stall on the finalize path.
-        var eventCount = 0
+        // Count the relationship without reading every historical event's properties.
+        // Only the current run needs typed counts on the finalization path.
+        let eventCount = task.events.count
         var runEventCount = 0
         var responseEventCount = 0
         var thinkingEventCount = 0
         var toolUseEventCount = 0
         var toolResultEventCount = 0
         var errorEventCount = 0
-        for event in task.events {
-            eventCount += 1
-            guard event.run?.id == run.id else { continue }
+        for event in TaskHistoryRead.events(for: task, runID: run.id) {
             runEventCount += 1
             switch event.type {
             case "agent.response": responseEventCount += 1

@@ -2,7 +2,8 @@ import ASTRAModels
 
 @MainActor
 struct AgentRuntimeExecutionContext {
-    let task: AgentTask
+    private let projection: DetachedLaunchProjection
+    var task: AgentTask { projection.task }
     let executionPath: String
     let shouldCleanupIsolation: Bool
 
@@ -11,13 +12,13 @@ struct AgentRuntimeExecutionContext {
         executionPath: String,
         shouldCleanupIsolation: Bool
     ) -> AgentRuntimeExecutionContext {
-        let executionTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(
+        let projection = DetachedLaunchProjection(
             AgentTaskLaunchSnapshot(task: launchTask),
             from: launchTask
         )
-        executionTask.executionRootPath = executionPath
+        projection.task.executionRootPath = executionPath
         return AgentRuntimeExecutionContext(
-            task: executionTask,
+            projection: projection,
             executionPath: executionPath,
             shouldCleanupIsolation: shouldCleanupIsolation && TaskWorktreeBinding.payload(for: launchTask) == nil
         )

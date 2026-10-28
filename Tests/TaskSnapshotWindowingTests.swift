@@ -8,8 +8,8 @@ import ASTRACore
 extension TaskThreadSnapshotTests {
     // MARK: - Progressive window expansion
 
-    @Test("Default window keeps last 50 runs and reports omitted count")
-    func defaultWindowKeepsLast50Runs() {
+    @Test("Default window keeps the newest page of runs and reports omitted count")
+    func defaultWindowKeepsNewestRunPage() {
         let task = makeTask()
         task.createdAt = Date(timeIntervalSince1970: 0)
 
@@ -24,12 +24,12 @@ extension TaskThreadSnapshotTests {
         let input = TaskThreadSnapshotInput(task: task)
         let snapshot = TaskThreadSnapshot(input: input)
 
-        #expect(input.runs.count == 50)
-        #expect(input.omittedRunCount == 50)
+        #expect(input.runs.count == TaskThreadHistoryReader.defaultRunPageSize)
+        #expect(input.omittedRunCount == 100 - TaskThreadHistoryReader.defaultRunPageSize)
         #expect(input.totalRunCount == 100)
-        #expect(snapshot.sortedRuns.count == 50)
+        #expect(snapshot.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize)
         #expect(snapshot.latestRun?.output == "run 99")
-        #expect(snapshot.sortedRuns.first?.output == "run 50")
+        #expect(snapshot.sortedRuns.first?.output == "run \(100 - TaskThreadHistoryReader.defaultRunPageSize)")
         #expect(!snapshot.sortedRuns.contains { $0.output == "run 0" })
     }
 
@@ -218,12 +218,12 @@ extension TaskThreadSnapshotTests {
 
         #expect(input.totalRunCount == 250)
         #expect(input.totalEventCount == 5_000)
-        #expect(input.runs.count == 50)
-        #expect(input.events.count <= 1_200)
-        #expect(input.omittedRunCount == 200)
+        #expect(input.runs.count == TaskThreadHistoryReader.defaultRunPageSize)
+        #expect(input.events.count <= TaskThreadHistoryReader.defaultEventPageSize)
+        #expect(input.omittedRunCount == 250 - TaskThreadHistoryReader.defaultRunPageSize)
         #expect(input.omittedEventCount >= 3_800)
-        #expect(snapshot.sortedRuns.count == 50)
-        #expect(snapshot.sortedEvents.count <= 1_200)
+        #expect(snapshot.sortedRuns.count == TaskThreadHistoryReader.defaultRunPageSize)
+        #expect(snapshot.sortedEvents.count <= TaskThreadHistoryReader.defaultEventPageSize)
     }
 
     @Test("Dismissal for the latest run survives the bounded transcript window")

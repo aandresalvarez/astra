@@ -56,8 +56,11 @@ struct TaskThreadHistoryTailPage: Sendable {
 /// entry point takes the caller's `ModelContext` and returns only `Sendable`
 /// snapshots, so a managed model can never escape the isolation that fetched it.
 enum TaskThreadHistoryReader {
-    static let defaultRunPageSize = 50
-    static let defaultEventPageSize = 1_200
+    // The transcript uses an eager stack to avoid a selectable-text layout
+    // livelock. Keep its initial render small; older history remains available
+    // through the existing cursor, without changing stored or execution history.
+    static let defaultRunPageSize = TaskThreadHistoryPagePolicy.runCount
+    static let defaultEventPageSize = TaskThreadHistoryPagePolicy.eventCount
 
     static func initialPage(
         taskID: UUID,

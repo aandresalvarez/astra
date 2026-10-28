@@ -15,7 +15,7 @@ enum ClaudeSessionUsageEvidence {
         guard snapshot.isValid, run.runtimeID == AgentRuntimeID.claudeCode.rawValue,
               run.providerSessionId == snapshot.sessionID,
               let data = try? encoder.encode(snapshot), let payload = String(data: data, encoding: .utf8),
-              !task.events.contains(where: { $0.run?.id == run.id && $0.type == eventType && $0.payload == payload }) else { return }
+              !TaskHistoryRead.events(for: task, ofTypes: [eventType]).contains(where: { $0.run?.id == run.id && $0.payload == payload }) else { return }
         context.insert(TaskEvent(task: task, type: eventType, payload: payload, run: run))
     }
 
@@ -38,7 +38,7 @@ enum ClaudeSessionUsageEvidence {
             return .init(reconciliationPending: true, costIsConfirmed: false)
         }
         let byID = Dictionary(uniqueKeysWithValues: earlier.map { ($0.id, $0) })
-        let events = task.events.filter { $0.type == eventType && $0.run.map { byID[$0.id] != nil } == true }.sorted {
+        let events = TaskHistoryRead.events(for: task, ofTypes: [eventType]).filter { $0.run.map { byID[$0.id] != nil } == true }.sorted {
             guard let lhs = $0.run, let rhs = $1.run else { return $0.id.uuidString < $1.id.uuidString }
             if lhs.id != rhs.id { return TaskRun.isChronologicallyOrdered(lhs, rhs) }
             if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
@@ -61,7 +61,7 @@ enum ClaudeSessionUsageEvidence {
     }
 
     static func markUnconfirmed(task: AgentTask, run: TaskRun, context: ModelContext) {
-        guard !task.events.contains(where: { $0.run?.id == run.id && $0.type == uncertainEventType }) else { return }
+        guard !TaskHistoryRead.events(for: task, ofTypes: [uncertainEventType]).contains(where: { $0.run?.id == run.id }) else { return }
         context.insert(TaskEvent(task: task, type: uncertainEventType,
             payload: "Earlier Claude usage lacks a complete native session snapshot. This request's usage remains unconfirmed; ASTRA kept its execution allowance conservative and preserved the historical records and any unconfirmed cost.", run: run))
     }

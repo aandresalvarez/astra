@@ -46,6 +46,7 @@ enum TaskExecutionResourceAdmissionPolicy {
         dispatchedRequestIDs: Set<UUID>,
         activeTaskIDs: Set<UUID>,
         activeClaims: [TaskResourceLockClaim],
+        inheritedClaims: [TaskResourceLockClaim] = [],
         sandboxEnforcement: ExecutionSandboxEnforcement = .bestEffort
     ) -> Bool {
         let claims = lockClaims(
@@ -61,9 +62,17 @@ enum TaskExecutionResourceAdmissionPolicy {
         guard claims.isEmpty || TaskExecutionResourceBroker.canAcquire(claims, active: activeClaims) else {
             return false
         }
+        // Keeping an existing reservation is not a new FIFO acquisition.
+        // New/wider resources still queue behind earlier competing requests.
+        let newlyAcquired = claims.filter { claim in
+            !inheritedClaims.contains { prior in
+                prior.resourceKind == claim.resourceKind && prior.resourceKey == claim.resourceKey
+                    && (prior.accessMode == .write || claim.accessMode == .readOnly)
+            }
+        }
         return earlierCompetingClaim(
             for: candidate,
-            claims: claims,
+            claims: newlyAcquired,
             in: projection,
             dispatchedRequestIDs: dispatchedRequestIDs,
             activeTaskIDs: activeTaskIDs,

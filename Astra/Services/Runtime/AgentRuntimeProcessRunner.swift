@@ -1214,7 +1214,9 @@ final class AgentRuntimeProcessRunner {
                 )
                 processEvidence.processExited(naturally: proc.naturalSuccessfulExit, stdoutEOF: stdoutEOF)
                 processResult.executionStopProof = proc.stopProof(executionID: executionID,
-                    toolsStopped: processEvidence.toolsStopped, remoteWorkExcluded: remoteWorkExcluded)
+                    toolsStopped: processEvidence.toolsStopped,
+                    remoteWorkExcluded: remoteWorkExcluded ||
+                        (!plan.executionEnvironment.providerRunsInsideContainer && processEvidence.toolsStopped))
                 processResult.executionTurnsSpent = max(1, monitor.turnCount)
                 processResult.executionTokensSpent = monitor.recoveryTokensConsumed(estimatedInputTokens: estimatedInputTokens)
                 processResult.executionSecondsSpent = ProcessInfo.processInfo.systemUptime - processStartedAt

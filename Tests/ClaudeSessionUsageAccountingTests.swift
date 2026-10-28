@@ -3,6 +3,7 @@ import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 
 @Suite("Claude native session usage accounting", .serialized)
@@ -31,6 +32,35 @@ struct ClaudeSessionUsageAccountingTests {
             adapter.recordWorkerStreamEvent(event, mode: mode, task: task, run: run,
                 modelContext: context, recordingState: AgentEventRecordingState())
         }
+    }
+
+    @Test("Usage queries honor pending evidence deletion, resets and rollback in a persistent store")
+    func pendingUsageEvidenceAndReset() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        h.context.autosaveEnabled = false
+        let task = h.makeTask(runtime: .claudeCode, goal: "Usage", model: "test")
+        let prior = run(h, task: task, at: 1), next = run(h, task: task, at: 2)
+        let snapshot = try #require(ClaudeSessionUsageSnapshot(line: result(input: 500, output: 100, cost: 0.1)))
+        ClaudeSessionUsageEvidence.record(snapshot, task: task, run: prior, context: h.context)
+        ClaudeSessionUsageEvidence.record(snapshot, task: task, run: prior, context: h.context)
+        let evidence = try #require(TaskHistoryRead.events(for: task, ofTypes: [ClaudeSessionUsageEvidence.eventType]).first)
+        #expect(TaskHistoryRead.events(for: task, ofTypes: [ClaudeSessionUsageEvidence.eventType]).count == 1)
+        try h.context.save()
+        let expected = ProviderSessionUsageBaseline(input: 500, output: 100, cost: 0.1)
+        #expect(ProviderSessionUsageEpoch.baseline(for: next, in: task) == expected)
+        SwiftDataTaskRollbackPreparation.prepare(task)
+        h.context.delete(evidence)
+        #expect(ProviderSessionUsageEpoch.baseline(for: next, in: task).reconciliationPending)
+        h.context.rollback()
+        #expect(ProviderSessionUsageEpoch.baseline(for: next, in: task) == expected)
+        SwiftDataTaskRollbackPreparation.prepare(task)
+        h.context.insert(TaskEvent(task: task, type: ProviderSessionUsageEpoch.resetEventType, payload: "reset", run: next))
+        #expect(ProviderSessionUsageEpoch.baseline(for: next, in: task) == .zero)
+        h.context.rollback()
+        #expect(ProviderSessionUsageEpoch.baseline(for: next, in: task) == expected)
+        ClaudeSessionUsageEvidence.markUnconfirmed(task: task, run: next, context: h.context)
+        ClaudeSessionUsageEvidence.markUnconfirmed(task: task, run: next, context: h.context)
+        #expect(TaskHistoryRead.events(for: task, ofTypes: [ClaudeSessionUsageEvidence.uncertainEventType]).count == 1)
     }
 
     @Test("Resumed live counters and native terminal totals charge only the new request after reopen")

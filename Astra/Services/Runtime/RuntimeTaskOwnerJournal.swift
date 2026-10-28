@@ -34,7 +34,7 @@ enum RuntimeTaskOwnerJournal {
         let taskID = record.taskID
         let tasks = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
         let owners = tasks.filter { task in
-            task.events.contains { event in
+            TaskHistoryRead.events(for: task, ofTypes: [TaskEventTypes.System.runtimeExecutionOwnership.rawValue]).contains { event in
                 guard event.type == TaskEventTypes.System.runtimeExecutionOwnership.rawValue,
                       let audit = try? JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: Data(event.payload.utf8)) else { return false }
                 return audit.taskID == record.taskID && audit.ownerID == record.ownerID

@@ -1808,7 +1808,7 @@ final class TaskQueue {
         modelContext: ModelContext? = nil
     ) -> [TaskResourceLockClaim]? {
         if let modelContext { refreshResourceOwnership(in: modelContext) }
-        guard canAcquireResourceLocks(claims) else { return nil }
+        guard canAcquireResourceLocks(claims, task: task, context: modelContext) else { return nil }
         localResourceLocks.append(contentsOf: claims)
         guard let task else { return claims }
         waitingResourceLocks.removeValue(forKey: task.id)

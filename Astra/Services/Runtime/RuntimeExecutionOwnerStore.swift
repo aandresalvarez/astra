@@ -98,6 +98,64 @@ final class RuntimeExecutionOwnerStore {
             }
     }
 
+    /// Called only under the task lease, before publishing a successor. A
+    /// crash between these writes retains the old authority; retry is idempotent.
+    func retain(_ record: RuntimeExecutionOwnerRecord) throws {
+        let directory = retainedDirectory(taskID: record.taskID, ownerID: record.ownerID)
+        try validateRetainedDirectory(taskID: record.taskID, ownerID: record.ownerID, create: true)
+        let url = directory.appendingPathComponent(record.executionID.uuidString + ".json")
+        if let existing = try Self.read(url) {
+            // A pre-upgrade crash may have retained this exact receipt before
+            // publishing its successor. Binding the current legacy journal must
+            // not rewrite or invalidate that immutable, still-unattributed copy.
+            var attributed = existing
+            if attributed.taskOwnerID == nil { attributed.taskOwnerID = record.taskOwnerID }
+            guard attributed == record else { throw Failure.unreadable }
+            return
+        }
+        let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else { throw Failure.unsafePath }
+        // Lease owns the descriptor and performs the same atomic, synced write
+        // as the current journal. Admission already holds the per-task lock.
+        let writer = Lease(descriptor: fd, recordURL: url, taskID: record.taskID, taskOwnerID: record.taskOwnerID)
+        try writer.save(record)
+    }
+
+    func retainedExecutions(of record: RuntimeExecutionOwnerRecord) throws -> [RuntimeExecutionOwnerRecord] {
+        var result: [RuntimeExecutionOwnerRecord] = []
+        var head = record.retainedExecutionHead
+        if head != nil { try validateRetainedDirectory(taskID: record.taskID, ownerID: record.ownerID, create: false) }
+        var seen: Set<UUID> = [record.executionID]
+        while let id = head {
+            guard seen.insert(id).inserted,
+                  let previous = try Self.read(retainedDirectory(taskID: record.taskID, ownerID: record.ownerID)
+                    .appendingPathComponent(id.uuidString + ".json")),
+                  previous.taskID == record.taskID, previous.ownerID == record.ownerID,
+                  previous.taskOwnerID == nil || previous.taskOwnerID == record.taskOwnerID,
+                  previous.executionID == id else { throw Failure.unreadable }
+            result.append(previous); head = previous.retainedExecutionHead
+        }
+        return result
+    }
+
+    private func validateRetainedDirectory(taskID: UUID, ownerID: UUID, create: Bool) throws {
+        var path = root
+        for component in ["", "retained", taskID.uuidString, ownerID.uuidString] {
+            if !component.isEmpty { path.appendPathComponent(component) }
+            if create && !component.isEmpty {
+                guard mkdir(path.path, 0o700) == 0 || errno == EEXIST else { throw Failure.unsafePath }
+            }
+            var info = stat()
+            guard lstat(path.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+                  info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { throw Failure.unsafePath }
+        }
+    }
+
+    private func retainedDirectory(taskID: UUID, ownerID: UUID) -> URL {
+        root.appendingPathComponent("retained").appendingPathComponent(taskID.uuidString)
+            .appendingPathComponent(ownerID.uuidString)
+    }
+
     func read(taskID: UUID, taskOwnerID: PersistentIdentifier? = nil) throws -> RuntimeExecutionOwnerRecord? {
         let record = try Self.read(recordURL(taskID, owner: taskOwnerID))
         guard record == nil || (record?.taskID == taskID && (taskOwnerID == nil || record?.taskOwnerID == taskOwnerID)) else {
@@ -112,7 +170,7 @@ final class RuntimeExecutionOwnerStore {
         let digest = SHA256.hash(data: try encoder.encode(owner)).map { String(format: "%02x", $0) }.joined()
         return root.appendingPathComponent(id.uuidString + "-" + digest + ".json")
     }
-    private static func read(_ url: URL) throws -> RuntimeExecutionOwnerRecord? {
+    static func read(_ url: URL) throws -> RuntimeExecutionOwnerRecord? {
         let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else {
             if errno == ENOENT { return nil }
@@ -121,7 +179,8 @@ final class RuntimeExecutionOwnerStore {
         defer { close(fd) }
         var info = stat()
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
-              info.st_uid == getuid(), info.st_size > 0, info.st_size <= 32_768 else { throw Failure.unreadable }
+              info.st_uid == getuid(), info.st_mode & 0o077 == 0, info.st_nlink == 1,
+              info.st_size > 0, info.st_size <= 32_768 else { throw Failure.unreadable }
         var bytes = [UInt8](repeating: 0, count: Int(info.st_size))
         guard Darwin.read(fd, &bytes, bytes.count) == bytes.count else { throw Failure.unreadable }
         do { return try JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: Data(bytes)) }

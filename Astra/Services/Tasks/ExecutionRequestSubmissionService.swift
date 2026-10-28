@@ -467,7 +467,9 @@ enum ExecutionRequestSubmissionService {
             submittedAt: date
         )
         if let origin, let snapshot = originSnapshot {
-            let frozenTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+            let projection = DetachedLaunchProjection(snapshot, from: task)
+            defer { withExtendedLifetime(projection) {} }
+            let frozenTask = projection.task
             // Task authority can grow through this approval; execution settings
             // remain those the originating turn actually accepted.
             frozenTask.runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON

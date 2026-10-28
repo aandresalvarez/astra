@@ -14,17 +14,17 @@ enum LegacyApprovedPermissionContinuation {
         guard task.status == .completed, !task.isDone,
               !TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task),
               let run = task.runs.max(by: { $0.startedAt < $1.startedAt }),
-              let event = task.events.filter({ $0.type == "permission.approval.requested" && $0.run?.id == run.id })
+              let event = TaskHistoryRead.events(for: task, ofTypes: ["permission.approval.requested"]).filter({ $0.run?.id == run.id })
                 .max(by: { $0.timestamp < $1.timestamp }),
               let approval = PermissionApprovalEventPayload.decoded(from: event.payload),
               !TaskPermissionContinuation.isFutureUse(payload: event.payload, task: task),
               approval.requestID?.hasPrefix(BrokeredCredentialApprovalRecord.offerRequestIDPrefix) == true,
               approval.providerID == TaskPermissionContinuation.runtime(forRunID: run.id, task: task),
-              !task.events.contains(where: {
+              !TaskHistoryRead.events(for: task, ofTypes: ["user.message"], orTypePrefix: "execution.request.").contains(where: {
                   ($0.type.hasPrefix("execution.request.") && $0.timestamp > event.timestamp)
                       || ($0.type == "user.message" && $0.timestamp > run.startedAt)
               }) else { return nil }
-        let latestResolution = task.events.filter {
+        let latestResolution = TaskHistoryRead.events(for: task, ofTypes: [TaskEventTypes.Tool.permissionRequestResolved.rawValue]).filter {
             !$0.isDeleted && $0.type == TaskEventTypes.Tool.permissionRequestResolved.rawValue
                 && $0.timestamp >= event.timestamp
                 && PermissionRequestResolution.decode(from: $0.payload)?.requestID == approval.requestID

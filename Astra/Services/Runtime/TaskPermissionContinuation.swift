@@ -60,7 +60,7 @@ enum TaskPermissionContinuation {
         if let behavior = approval.behavior { return behavior == .futureUse }
         guard approval.requestID?.hasPrefix(BrokeredCredentialApprovalRecord.offerRequestIDPrefix) == true else { return false }
         let run = approval.continuation.flatMap { binding in task.runs.first { $0.id == binding.runID } }
-            ?? task.events.filter { !$0.isDeleted && $0.payload == payload }
+            ?? TaskHistoryRead.events(for: task, matchingPayload: payload)
                 .max(by: { $0.timestamp < $1.timestamp })?.run
         return run?.typedStopReason != .permissionApprovalRequired
     }

@@ -88,6 +88,28 @@ struct ImportedTaskExecutionOwnershipTests {
         #expect(try store.records().count == 1)
     }
 
+    @Test("A retained lineage cannot switch to an imported copy with the same portable identity")
+    func retainedLineageRejectsForeignOwner() throws {
+        let (container, a, b) = try fixture()
+        let store = RuntimeExecutionOwner.store(in: container.mainContext)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        var previous = try receipt(a, spent: 700)
+        previous.taskOwnerID = a.persistentModelID
+        do {
+            let lease = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID)
+            try lease.save(previous)
+            try store.retain(previous)
+        }
+        var successor = previous
+        successor.executionID = UUID(); successor.retainedExecutionHead = previous.executionID
+        successor.taskOwnerID = b.persistentModelID
+        #expect(throws: (any Error).self) { try store.retainedExecutions(of: successor) }
+        #expect(throws: (any Error).self) {
+            var foreign = previous; foreign.taskOwnerID = b.persistentModelID
+            try store.retain(foreign)
+        }
+    }
+
     @Test("A rejected temporary owner does not leak its kernel lock")
     func invalidOwnerReleasesLock() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

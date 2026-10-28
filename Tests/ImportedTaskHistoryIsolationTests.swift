@@ -240,7 +240,8 @@ struct ImportedTaskHistoryIsolationTests {
         let (container, a, b) = try fixture()
         let context = container.mainContext
         a.status = .running; b.status = .running
-        for offset in 0..<1204 {
+        let seededCount = TaskThreadHistoryPagePolicy.eventCount + 4
+        for offset in 0..<seededCount {
             let event = TaskEvent(task: a, type: "user.message", payload: "A \(offset)")
             event.timestamp = Date(timeIntervalSince1970: Double(offset))
             context.insert(event)
@@ -277,7 +278,9 @@ struct ImportedTaskHistoryIsolationTests {
         await newLoad.value
         await vm.waitForPendingWorkForTesting()
         #expect(vm.historyLoadState == .idle)
-        #expect(vm.snapshot?.sortedEvents.count == 1206)
+        #expect(vm.snapshot?.sortedEvents.count == seededCount + 2)
+        #expect(!vm.hasEarlierHistory)
+        #expect(vm.snapshot?.sortedEvents.contains { $0.payload == "Imported" } == false)
         #expect(vm.snapshot?.sortedEvents.contains { $0.payload == "A new tail" } == true)
     }
 }

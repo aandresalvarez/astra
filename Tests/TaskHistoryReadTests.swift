@@ -190,6 +190,119 @@ struct TaskHistoryReadTests {
         #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: f.task, runtime: .codexCLI) == ["own"])
     }
 
+    @Test("Prefix and payload queries preserve ownership with duplicate UUIDs and pending edits")
+    func narrowedRecoveryQueriesStayOwned() throws {
+        let f = try Fixture()
+        f.context.autosaveEnabled = false
+        let duplicate = AgentTask(title: "Copy", goal: "g", workspace: f.workspace)
+        duplicate.id = f.task.id
+        f.context.insert(duplicate)
+        let own = TaskEvent(task: f.task, type: "execution.request.future_kind", payload: "same")
+        let other = TaskEvent(task: duplicate, type: own.type, payload: own.payload)
+        other.id = own.id
+        f.context.insert(own); f.context.insert(other)
+        try f.context.save()
+        #expect(TaskHistoryRead.events(for: f.task, ofTypes: ["user.message"], orTypePrefix: "execution.request.").map(\.persistentModelID) == [own.persistentModelID])
+        #expect(TaskHistoryRead.events(for: f.task, matchingPayload: "same").map(\.persistentModelID) == [own.persistentModelID])
+        SwiftDataTaskRollbackPreparation.prepare(f.task)
+        own.payload = "edited"
+        #expect(TaskHistoryRead.events(for: f.task, matchingPayload: "same").isEmpty)
+        #expect(TaskHistoryRead.events(for: f.task, matchingPayload: "edited").map(\.id) == [own.id])
+        f.context.rollback()
+        #expect(TaskHistoryRead.events(for: f.task, matchingPayload: "same").map(\.persistentModelID) == [own.persistentModelID])
+    }
+
+    @Test("Detached task recovery queries keep their relationship fallback")
+    func detachedRecoveryQueries() {
+        let task = AgentTask(title: "Detached", goal: "g")
+        let request = TaskEvent(task: task, type: "execution.request.future_kind", payload: "same")
+        let unrelated = TaskEvent(task: task, type: "tool.result", payload: "unrelated")
+        task.events = [request, unrelated]
+        #expect(TaskHistoryRead.events(for: task, ofTypes: ["user.message"], orTypePrefix: "execution.request.").map(\.id) == [request.id])
+        #expect(TaskHistoryRead.events(for: task, matchingPayload: "same").map(\.id) == [request.id])
+    }
+
+    @Test("Run reads preserve unknown events, owner identity, pending relinks and rollback")
+    func runQueriesStayCurrent() throws {
+        let f = try Fixture(); f.context.autosaveEnabled = false
+        let duplicate = AgentTask(title: "Copy", goal: "g", workspace: f.workspace)
+        duplicate.id = f.task.id; f.context.insert(duplicate)
+        let run = TaskRun(task: f.task), other = TaskRun(task: duplicate), next = TaskRun(task: f.task)
+        other.id = run.id
+        [run, other, next].forEach { f.context.insert($0) }
+        let own = TaskEvent(task: f.task, type: "future.evidence", payload: "own", run: run)
+        let copied = TaskEvent(task: duplicate, type: own.type, payload: "copy", run: other)
+        copied.id = own.id
+        f.context.insert(own); f.context.insert(copied)
+        try f.context.save()
+        #expect(TaskHistoryRead.events(for: f.task, runID: run.id).map(\.persistentModelID) == [own.persistentModelID])
+        SwiftDataTaskRollbackPreparation.prepare(f.task)
+        own.run = next
+        #expect(TaskHistoryRead.events(for: f.task, runID: run.id).isEmpty)
+        #expect(TaskHistoryRead.events(for: f.task, runID: next.id).map(\.id) == [own.id])
+        f.context.rollback()
+        #expect(TaskHistoryRead.events(for: f.task, runID: run.id).map(\.id) == [own.id])
+        SwiftDataTaskRollbackPreparation.prepare(f.task)
+        f.context.delete(own)
+        #expect(TaskHistoryRead.events(for: f.task, runID: run.id).isEmpty)
+        f.context.rollback()
+        #expect(TaskHistoryRead.events(for: f.task, runID: run.id).map(\.persistentModelID) == [own.persistentModelID])
+        let detached = AgentTask(title: "Detached", goal: "g")
+        let detachedRun = TaskRun(task: detached)
+        let detachedEvent = TaskEvent(task: detached, type: "future.evidence", payload: "d", run: detachedRun)
+        detached.events = [detachedEvent]
+        #expect(TaskHistoryRead.events(for: detached, runID: detachedRun.id).map(\.id) == [detachedEvent.id])
+    }
+
+    @Test("Run summaries retain unknown evidence and deterministic capped lists without other owners")
+    func runSummaryKeepsAllEvidenceKinds() throws {
+        let f = try Fixture()
+        let run = TaskRun(task: f.task), earlier = TaskRun(task: f.task)
+        f.context.insert(run); f.context.insert(earlier)
+        let duplicate = AgentTask(title: "Copy", goal: "g", workspace: f.workspace)
+        duplicate.id = f.task.id; f.context.insert(duplicate)
+        let copyRun = TaskRun(task: duplicate); copyRun.id = run.id; f.context.insert(copyRun)
+        f.context.insert(TaskEvent(task: duplicate, type: "future.evidence", payload: "https://copy.invalid", run: copyRun))
+        f.context.insert(TaskEvent(task: f.task, type: "future.evidence", payload: "https://earlier.invalid", run: earlier))
+        for n in (0..<25).reversed() {
+            let event = TaskEvent(task: f.task, type: "future.evidence", payload: "https://domain\(n).invalid/path", run: run)
+            event.timestamp = Date(timeIntervalSince1970: Double(n))
+            f.context.insert(event)
+        }
+        for n in (0..<15).reversed() {
+            let event = TaskEvent(task: f.task, type: "tool.use", payload: "Using tool: Bash: printf \(n)", run: run)
+            event.timestamp = Date(timeIntervalSince1970: Double(100 + n))
+            f.context.insert(event)
+        }
+        try f.context.save()
+        AgentPolicyManifestService.recordPostRunSummary(task: f.task, run: run, modelContext: f.context)
+        let event = try #require(TaskHistoryRead.events(for: f.task, ofTypes: [AgentPolicyManifestService.summaryEventType]).first)
+        let summary = try #require(JSONSerialization.jsonObject(with: Data(event.payload.utf8)) as? [String: Any])
+        #expect(summary["toolUseCount"] as? Int == 15)
+        #expect(summary["commandsRun"] as? [String] == (0..<12).map { "printf \($0)" })
+        #expect(summary["externalDomains"] as? [String] == (0..<20).map { "domain\($0).invalid" })
+    }
+
+    @Test("Publication intent observes pending retractions, both message kinds, ties and rollback")
+    func publicationIntentRemainsLive() throws {
+        let f = try Fixture(); f.context.autosaveEnabled = false
+        let request = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+            payload: "Post the PR review comments https://github.com/example/repo/pull/12")
+        request.id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        request.timestamp = Date(timeIntervalSince1970: 1000)
+        f.context.insert(request); try f.context.save()
+        #expect(GitHubReviewPublicationRequirement.postingRequest(task: f.task)?.eventID == request.id)
+        SwiftDataTaskRollbackPreparation.prepare(f.task)
+        let retract = TaskEvent(task: f.task, type: TaskPlanConversationEventTypes.userMessage,
+            payload: "Do not post the PR review comments")
+        retract.id = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        retract.timestamp = request.timestamp
+        f.context.insert(retract)
+        #expect(GitHubReviewPublicationRequirement.postingRequest(task: f.task) == nil)
+        f.context.rollback()
+        #expect(GitHubReviewPublicationRequirement.postingRequest(task: f.task)?.eventID == request.id)
+    }
+
     // MARK: - Fixture
 
     struct Answers: Equatable {

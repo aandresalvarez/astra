@@ -23,6 +23,10 @@ enum TaskTurnRequestRecoveryService {
     ) -> Summary {
         let requests: [TaskTurnRequest]
         do {
+            // Repair a proved tool-free host completion before deciding whether
+            // its saved follow-up lost an unresolved connection on restart.
+            try RuntimeHostNoToolReceiptReconciliation.reconcile(
+                in: RuntimeExecutionOwner.store(in: modelContext), context: modelContext)
             // The table is append-only; recovery only ever acts on active
             // (non-terminal) rows, so bound the fetch at the store rather
             // than pulling the full history into memory to filter it.
@@ -123,7 +127,8 @@ enum TaskTurnRequestRecoveryService {
                     )
                     if requeued.changed { summary.returnedToWaiting += 1 }
                 }
-            } else if RuntimeExecutionOwner.preserveUnresolvedSession(task: task, context: modelContext, reportStatus: false) {
+            } else if !RuntimeCompletedUserTurnContinuation.permits(task: task, request: request, context: modelContext),
+                      RuntimeExecutionOwner.preserveUnresolvedSession(task: task, context: modelContext, reportStatus: false) {
                 // The app's connection ended; the execution itself is still unverified.
                 // Keeping this admission "running" would show a false spinner and
                 // consume a queue slot forever. The protected execution owner still
