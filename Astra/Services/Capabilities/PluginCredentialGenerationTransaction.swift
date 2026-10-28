@@ -15,13 +15,34 @@ struct PluginCredentialGenerationTransaction {
     private let outbox: PluginSecretCleanupOutbox?
     private let persistence: any SkillSecretPersisting.Type
 
+    struct Replacement {
+        let component: String
+        let key: String
+        let value: String?
+        var field: String { PluginActivation.settingKey(componentID: component, key: key) }
+    }
+
+    static func prepare(
+        activation: PluginActivation, workspaceID: UUID, replacements: [Replacement], skillName: String,
+        modelContext: ModelContext, persistence: any SkillSecretPersisting.Type,
+        vault: SecretStore = KeychainSecretStore()
+    ) throws -> Self {
+        guard Set(replacements.map(\.field)).count == replacements.count else {
+            throw PluginOperations.OperationError.invalidSettings
+        }
+        return try stage(activation: activation, workspaceID: workspaceID, modelContext: modelContext,
+            replacing: replacements, additionalComponents: [], producerLease: nil, skillName: skillName,
+            persistence: persistence, vault: vault)
+    }
+
     static func prepare(
         activation: PluginActivation, workspaceID: UUID, componentID: String, key: String,
         replacement: String?, skillName: String, modelContext: ModelContext,
         persistence: any SkillSecretPersisting.Type
     ) throws -> Self {
         try stage(activation: activation, workspaceID: workspaceID, modelContext: modelContext,
-            replacing: (componentID, key, replacement), additionalComponents: [], producerLease: nil, skillName: skillName, persistence: persistence)
+            replacing: [Replacement(component: componentID, key: key, value: replacement)], additionalComponents: [], producerLease: nil, skillName: skillName,
+            persistence: persistence, vault: KeychainSecretStore())
     }
 
     /// Add and reconciliation may touch several keys or rename components.
@@ -29,47 +50,51 @@ struct PluginCredentialGenerationTransaction {
     static func prepareCopy(
         activation: PluginActivation, workspaceID: UUID, modelContext: ModelContext,
         skillName: String, persistence: any SkillSecretPersisting.Type,
-        additionalComponents: Set<String> = [], producerLease: PluginCredentialProducerLease? = nil
+        additionalComponents: Set<String> = [], producerLease: PluginCredentialProducerLease? = nil,
+        vault: SecretStore = KeychainSecretStore()
     ) throws -> Self {
         try stage(activation: activation, workspaceID: workspaceID, modelContext: modelContext,
-            replacing: nil, additionalComponents: additionalComponents, producerLease: producerLease, skillName: skillName, persistence: persistence)
+            replacing: [], additionalComponents: additionalComponents, producerLease: producerLease, skillName: skillName,
+            persistence: persistence, vault: vault)
     }
 
     private static func stage(
         activation: PluginActivation, workspaceID: UUID, modelContext: ModelContext,
-        replacing: (component: String, key: String, value: String?)?, additionalComponents: Set<String>,
+        replacing: [Replacement], additionalComponents: Set<String>,
         producerLease: PluginCredentialProducerLease?, skillName: String,
-        persistence: any SkillSecretPersisting.Type
+        persistence: any SkillSecretPersisting.Type, vault: SecretStore
     ) throws -> Self {
         guard activation.modelContext === modelContext, activation.workspace?.id == workspaceID,
               !activation.isDeleted else { throw PluginOperations.OperationError.workspaceChanged }
         let heldLease = try PluginCredentialProducerLease.acquire(modelContext: modelContext, reusing: producerLease)
         let generation = UUID().uuidString
-        let changed = replacing.map { PluginActivation.settingKey(componentID: $0.component, key: $0.key) }
+        let changed = Set(replacing.map(\.field))
         struct Write { let key: String; let component: String; let value: String; let explicit: Bool }
         var writes: [Write] = []
-        for setting in Set(activation.secretSettingKeys).sorted() where setting != changed {
+        for setting in Set(activation.secretSettingKeys).sorted() where !changed.contains(setting) {
             guard let component = PluginActivation.componentID(ofSettingKey: setting) else {
                 throw PluginOperations.OperationError.storeUnreadable
             }
             let name = String(setting.dropFirst(component.count + 1))
             let source = PluginRuntimeProjection.credentialID(of: activation, componentID: component)
-            switch persistence.readSecretValue(key: name, skillID: source, store: KeychainSecretStore()) {
+            switch persistence.readSecretValue(key: name, skillID: source, store: vault) {
             case .value(let value): writes.append(Write(key: name, component: component, value: value, explicit: false))
             case .missing: break // Preserve an already-unconfigured field, not a read failure.
             case .unavailable: throw PluginOperations.OperationError.secretReadFailed(key: name)
             }
         }
-        if let replacing, let value = replacing.value {
-            writes.append(Write(key: replacing.key, component: replacing.component, value: value, explicit: true))
+        for replacement in replacing.sorted(by: { $0.field < $1.field }) {
+            if let value = replacement.value {
+                writes.append(Write(key: replacement.key, component: replacement.component, value: value, explicit: true))
+            }
         }
         func destination(_ component: String) -> UUID {
             PluginActivation.credentialID(workspaceID: workspaceID, pluginID: activation.pluginID, componentID: component,
                 runtimeSeed: activation.namespaceSeed, generation: generation)
         }
         var released = Set(PluginRuntimeProjection.secretNamespaces(of: activation, package: nil))
-        if let replacing {
-            released.insert(PluginRuntimeProjection.credentialID(of: activation, componentID: replacing.component))
+        for replacement in replacing {
+            released.insert(PluginRuntimeProjection.credentialID(of: activation, componentID: replacement.component))
         }
         let namespaces = Set(writes.map { destination($0.component) }).union(additionalComponents.map(destination))
         let outbox = PluginSecretCleanupOutbox(for: modelContext)

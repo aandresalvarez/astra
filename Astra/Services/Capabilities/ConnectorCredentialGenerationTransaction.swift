@@ -24,7 +24,8 @@ final class ConnectorCredentialGenerationTransaction {
             case .legacyFieldsNeedReview: return "Review this account's unmatched legacy fields before migrating its credentials."
             case .legacySourceNotSaved: return "Save this account's legacy fields before migrating its credentials."
             case .changedAccount: return "The account changed before its credentials could be prepared. Retry."
-            case .readFailed(let key): return "Couldn't read the saved \(key). Unlock the credential store and retry."
+            case .readFailed(let key):
+                return "ASTRA can't read the saved \(key). If an earlier build of ASTRA saved it, re-enter it; otherwise unlock the credential store and retry."
             case .copyFailed(let key): return "Couldn't preserve the saved \(key) for this account. Retry."
             case .conflictingLegacyValues(let key):
                 return "There are different saved values for \(key). Replace or remove that credential before migrating this account."
@@ -82,7 +83,8 @@ final class ConnectorCredentialGenerationTransaction {
         copying sourceAccount: Connector? = nil,
         outlookChange: OutlookCredentialGenerationPreparation.Change = .preserve,
         allowOutlookUserInteraction: Bool = false,
-        lease: ConnectorCredentialGenerationJournal.Lease? = nil
+        lease: ConnectorCredentialGenerationJournal.Lease? = nil,
+        vault: SecretStore = KeychainSecretStore()
     ) throws -> Self {
         guard account.modelContext === modelContext, !account.isDeleted else { throw Failure.changedAccount }
         let journal = try ConnectorCredentialGenerationJournal(modelContext: modelContext)
@@ -165,7 +167,7 @@ final class ConnectorCredentialGenerationTransaction {
                     return LegacyField(key: stored.configKeys[index],
                         value: index < stored.configValues.count ? stored.configValues[index] : "")
                 } : []
-                switch ConnectorSecretSeam.required.readCredential(key: key, facts: source, store: KeychainSecretStore()) {
+                switch ConnectorSecretSeam.required.readCredential(key: key, facts: source, store: vault) {
                 case .value(let value):
                     if case .reject = settingConflicts,
                        plainFields.contains(where: { !$0.value.isEmpty && $0.value != value }) {
@@ -190,6 +192,10 @@ final class ConnectorCredentialGenerationTransaction {
                         legacyValues.append((key, value))
                         settledSettingFields += plainFields
                     }
+                // Items in ASTRA's keychain trust only the binary that wrote
+                // them, so a rebuilt ad-hoc ASTRA lands here for every value
+                // an earlier build saved. Copying the rest would publish a
+                // generation without this value; replacing it is the way out.
                 case .unavailable: throw Failure.readFailed(key)
                 }
             }

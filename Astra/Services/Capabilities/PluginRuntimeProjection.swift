@@ -485,7 +485,8 @@ struct PluginRuntimeProjection {
     /// Current credential requirements for status surfaces. Retired markers
     /// remain on the durable account, but runtime and readiness ignore them.
     static func requiredCredentialKeys(
-        of account: Connector, package: PluginPackage, boundAccountIDs: [String: Set<UUID>]?
+        of account: Connector, package: PluginPackage, boundAccountIDs: [String: Set<UUID>]?,
+        definitions: [PluginPackage]? = nil
     ) -> [String] {
         guard let origin = account.originPackageID, !origin.isEmpty else { return account.credentialKeys }
         let bindings = package.connectors.filter { spec in
@@ -496,7 +497,7 @@ struct PluginRuntimeProjection {
         }
         let declarations = bindings.compactMap { spec in
             creatorDeclaration(of: account, originID: origin, binding: spec, in: package,
-                creator: { id in CapabilityRuntimeResourceMatcher.packageDefinitions().first { $0.id == id } })
+                creator: { id in (definitions ?? CapabilityRuntimeResourceMatcher.packageDefinitions()).first { $0.id == id } })
         }
         let declared = Set(declarations.flatMap {
             PluginConnectorFieldTrust.asStored($0.spec, in: $0.package).credentialHints.map { ConnectorCredentialKey.canonical($0.key) }

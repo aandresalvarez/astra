@@ -107,6 +107,9 @@ struct SkillCredentialEditorTests {
             #expect(saved.secretNamespaceID == namespace)
             #expect(saved.environmentVariables["API_TOKEN"] == "accepted-authored-token")
             #expect(try reopened.mainContext.fetch(FetchDescriptor<PluginOperationReceipt>()).isEmpty)
+            #expect(!env.context.hasChanges)
+            try SkillCredentialEditor.save("corrected-token", forKey: "API_TOKEN", on: env.skill, modelContext: env.context)
+            #expect(env.skill.environmentVariables["API_TOKEN"] == "corrected-token")
         }
     }
 
