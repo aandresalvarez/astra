@@ -12,8 +12,16 @@ enum RuntimeResourceOwnership {
 
     static func claims(in store: RuntimeExecutionOwnerStore, context: ModelContext? = nil, excluding taskID: UUID? = nil, excludingOwner: PersistentIdentifier? = nil) throws -> [TaskResourceLockClaim] {
         let records = try store.records()
+        // Resolve legacy attribution without mutating it, including during queue
+        // projection before the receiver acquires its real execution lease.
+        var legacyOwners: [UUID: PersistentIdentifier] = [:]
+        if let context {
+            for record in records where record.taskOwnerID == nil {
+                legacyOwners[record.taskID] = try? RuntimeTaskOwnerJournal.legacyOwner(record, context: context)
+            }
+        }
         var claims: [TaskResourceLockClaim] = []
-        for record in records where !(record.taskID == taskID && record.taskOwnerID == excludingOwner) && retainsResources(record) {
+        for record in records where !(record.taskID == taskID && (record.taskOwnerID ?? legacyOwners[record.taskID]) == excludingOwner) && retainsResources(record) {
             if let captured = record.resourceClaims { claims += captured; continue }
             // Pre-upgrade receipts have no captured resource identity. Only a
             // verifiably ended owner can be omitted; unknown ownership blocks.
@@ -27,10 +35,6 @@ enum RuntimeResourceOwnership {
             // current receipt to its unique local row, just as journal reads do;
             // older audit projections of that same row are not extra owners.
             // Ambiguous/imported rows keep their fallback fences.
-            var legacyOwners: [UUID: PersistentIdentifier] = [:]
-            for record in records where record.taskOwnerID == nil {
-                legacyOwners[record.taskID] = try? RuntimeTaskOwnerJournal.legacyOwner(record, context: context)
-            }
             let type = "runtime.execution_ownership"
             let events = try context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.type == type }))
             let audits: [(TaskEvent, RuntimeExecutionOwnerRecord)] = events.compactMap { event in

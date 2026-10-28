@@ -132,7 +132,8 @@ final class RuntimeExecutionOwner {
             let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
             let claims = resourceClaims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(
                 for: nil, task: task, runMode: "runtime", fallbackAccess: .write, sandboxEnforcement: .off)
-            let previous = try lease.read().map { reconciledCompletion($0, task: task) }
+            let protectedPrevious = try lease.read()
+            let previous = protectedPrevious.map { reconciledCompletion($0, task: task) }
             let workspaceAdmission = try RuntimeWorkspaceContinuation.admission(task: task, request: userRequest, previous: previous, context: context, claims: claims)
             defer { withExtendedLifetime(workspaceAdmission) {} }
             let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
@@ -192,7 +193,7 @@ final class RuntimeExecutionOwner {
             if workspaceAdmission != nil { record.continuingUserRequestID = userRequest?.id }
             record.resourceClaims = claims
             if continuesOwner, let previous {
-                try store.retain(previous)
+                try store.retain(protectedPrevious ?? previous)
                 record.retainedExecutionHead = previous.executionID
                 record.continuingUserRequestID = userRequest?.id
                 record.retainedProviderSharedStateKeys = Array(Set((previous.retainedProviderSharedStateKeys ?? [])

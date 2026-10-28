@@ -9,8 +9,8 @@ import ASTRAModels
 @MainActor
 enum RuntimeWorkspaceContinuationScope {
     static func inherited(task: AgentTask, request: TaskTurnRequest, context: ModelContext,
-                          claims: [TaskResourceLockClaim]?) throws -> RuntimeWorkspaceContinuationAuthorization? {
-        guard RuntimeWorkspaceContinuation.isInitialInstruction(request, task: task, context: context),
+                          claims: [TaskResourceLockClaim]?, previous: RuntimeExecutionOwnerRecord?) throws -> RuntimeWorkspaceContinuationAuthorization? {
+        guard RuntimeWorkspaceContinuation.isNewManualInstruction(request, task: task, previous: previous, context: context),
               let workspace = task.workspace else { return nil }
         let store = RuntimeExecutionOwner.store(in: context)
         let roots = try store.workspaceAuthorizations(workspaceOwnerID: workspace.persistentModelID).filter {
@@ -20,12 +20,12 @@ enum RuntimeWorkspaceContinuationScope {
         guard !roots.isEmpty else { return nil }
         let requested = claims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(for: request, task: task,
             runMode: "workspace_continuation", sandboxEnforcement: .off)
-        let held = try RuntimeResourceOwnership.claims(in: store, context: context)
+        let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
         guard !TaskExecutionResourceBroker.canAcquire(requested, active: held) else { return nil }
-        var proposed = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: context)
+        var proposed = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: context, previous: previous)
         for root in roots {
             proposed.inheritedAuthorizationID = root.requestID
-            if try validates(proposed, task: task, request: request, context: context, claims: claims) {
+            if try validates(proposed, task: task, request: request, context: context, claims: claims, previous: previous) {
                 return proposed
             }
         }
@@ -34,7 +34,7 @@ enum RuntimeWorkspaceContinuationScope {
 
     static func validates(_ authorization: RuntimeWorkspaceContinuationAuthorization, task: AgentTask,
                           request: TaskTurnRequest, context: ModelContext,
-                          claims: [TaskResourceLockClaim]?) throws -> Bool {
+                          claims: [TaskResourceLockClaim]?, previous: RuntimeExecutionOwnerRecord?) throws -> Bool {
         let store = RuntimeExecutionOwner.store(in: context)
         guard let rootID = authorization.inheritedAuthorizationID else {
             guard let scope = authorization.workspaceScope else { return true } // old request-only decision
@@ -48,10 +48,18 @@ enum RuntimeWorkspaceContinuationScope {
               originalOwner.workspace?.id == scope.workspaceID,
               let original = try TaskTurnRequestRepository.request(id: root.requestID, in: context),
               original.state == .completed else { return false }
-        for source in authorization.sources {
+        let receiver = previous.map { RuntimeWorkspaceContinuationAuthorization.Source(taskOwnerID: task.persistentModelID, receipt: $0) }
+        for source in authorization.sources + [receiver].compactMap({ $0 }) {
             let receipt = source.receipt
             // Exact acknowledged receipts remain valid, including legacy owners.
-            if root.sources.contains(source) { continue }
+            if root.sources.contains(where: { original in
+                guard original.taskOwnerID == source.taskOwnerID else { return false }
+                var acknowledged = original.receipt
+                // A verified legacy attribution is the only compatible metadata
+                // difference; identity, limits, claims and stop proof stay exact.
+                if acknowledged.taskOwnerID == nil { acknowledged.taskOwnerID = receipt.taskOwnerID }
+                return acknowledged == receipt
+            }) { continue }
             // New receipts must come from a task actually admitted through this
             // same protected decision, never from copied event JSON or a UUID alone.
             guard let sourceID = receipt.workspaceContinuationRequestID,

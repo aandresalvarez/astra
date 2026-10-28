@@ -55,14 +55,16 @@ enum RuntimeWorkspaceContinuation {
 
     /// Preview is advisory. authorize and runtime acquisition re-read under
     /// kernel leases; changing a holder while the dialog is open invalidates it.
-    static func preview(task: AgentTask, request: TaskTurnRequest, context: ModelContext) throws -> RuntimeWorkspaceContinuationAuthorization {
-        guard isInitialInstruction(request, task: task, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+    static func preview(task: AgentTask, request: TaskTurnRequest, context: ModelContext,
+                        previous: RuntimeExecutionOwnerRecord? = nil) throws -> RuntimeWorkspaceContinuationAuthorization {
+        guard isNewManualInstruction(request, task: task, previous: previous, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
         let store = RuntimeExecutionOwner.store(in: context)
-        guard try RuntimeTaskOwnerJournal.read(task: task, context: context) == nil,
-              !RuntimeExecutionOwner.requiresExistingReceipt(task) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        let saved = try RuntimeTaskOwnerJournal.read(task: task, context: context)
+        guard saved == previous,
+              previous != nil || !RuntimeExecutionOwner.requiresExistingReceipt(task) else { throw RuntimeExecutionOwnerStore.Failure.busy }
         let requested = TaskExecutionResourceAdmissionPolicy.lockClaims(for: request, task: task,
             runMode: "workspace_continuation", sandboxEnforcement: .off)
-        let held = try RuntimeResourceOwnership.claims(in: store, context: context)
+        let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
         let conflicts = held.filter { !TaskExecutionResourceBroker.canAcquire(requested, active: [$0]) }
         guard !requested.isEmpty, !conflicts.isEmpty else { throw RuntimeExecutionOwnerStore.Failure.busy }
         let records = try store.records()
@@ -125,19 +127,22 @@ enum RuntimeWorkspaceContinuation {
             auditFields: ["operation": "authorize_workspace_continuation"])
     }
 
-    static func admission(task: AgentTask, request: TaskTurnRequest?, previous: RuntimeExecutionOwnerRecord?,
+    static func admission(task: AgentTask, request: TaskTurnRequest?, previous logicalPrevious: RuntimeExecutionOwnerRecord?,
                           context: ModelContext, claims: [TaskResourceLockClaim]? = nil) throws -> Admission? {
         guard let request else { return nil }
         let store = RuntimeExecutionOwner.store(in: context)
-        let authorizationID = previous?.workspaceContinuationRequestID ?? request.id
+        // Identity and lineage use the protected bytes, not the owner's in-memory
+        // projection of a clean crash from stopped to finished.
+        let previous = try RuntimeTaskOwnerJournal.read(task: task, context: context)
+        guard previous?.executionID == logicalPrevious?.executionID,
+              previous?.ownerID == logicalPrevious?.ownerID else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        // Refresh an old task's grant for a genuinely new human turn: holders
+        // admitted since its last turn must also be covered by the root decision.
+        let inherited = try RuntimeWorkspaceContinuationScope.inherited(task: task, request: request,
+            context: context, claims: claims, previous: previous)
+        let authorizationID = inherited?.requestID ?? previous?.workspaceContinuationRequestID ?? request.id
         let savedAuthorization = try store.workspaceContinuation(requestID: authorizationID)
-        let authorization: RuntimeWorkspaceContinuationAuthorization
-        if let savedAuthorization { authorization = savedAuthorization }
-        else {
-            guard previous == nil,
-                  let inherited = try RuntimeWorkspaceContinuationScope.inherited(task: task, request: request, context: context, claims: claims) else { return nil }
-            authorization = inherited
-        }
+        guard let authorization = savedAuthorization ?? inherited else { return nil }
         guard authorization.taskID == task.id, authorization.taskOwnerID == task.persistentModelID,
               authorization.requestID == authorizationID, request.state.isActive,
               let original = try TaskTurnRequestRepository.request(id: authorizationID, in: context),
@@ -146,11 +151,13 @@ enum RuntimeWorkspaceContinuation {
               isManualSource(original, task: task),
               (try? TaskTurnRequestOwnership.resolve(request, in: context))?.persistentModelID == task.persistentModelID else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         guard try RuntimeWorkspaceContinuationScope.validates(authorization, task: task, request: request,
-            context: context, claims: claims) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+            context: context, claims: claims, previous: previous) else { throw RuntimeExecutionOwnerStore.Failure.busy }
         if let previous {
-            guard previous.workspaceContinuationRequestID == authorizationID,
-                  resumesPreparation(previous, task: task, request: request, context: context)
-                    || RuntimeCompletedUserTurnContinuation.permits(previous, task: task, request: request, context: context) else { return nil }
+            let freshInherited = authorization.inheritedAuthorizationID != nil && authorization.requestID == request.id
+                && isNewManualInstruction(request, task: task, previous: previous, context: context)
+            guard freshInherited || (previous.workspaceContinuationRequestID == authorizationID
+                && (resumesPreparation(previous, task: task, request: request, context: context)
+                    || RuntimeCompletedUserTurnContinuation.permits(previous, task: task, request: request, context: context))) else { return nil }
         } else {
             guard isInitialInstruction(request, task: task, context: context) else { return nil }
         }
@@ -166,7 +173,7 @@ enum RuntimeWorkspaceContinuation {
     static func resumesPreparation(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
                                    request: TaskTurnRequest?, context: ModelContext) -> Bool {
         guard let request, saved.workspaceContinuationRequestID == request.id,
-              saved.continuingUserRequestID == request.id, request.kind == .initial, request.state.isActive,
+              saved.continuingUserRequestID == request.id, request.state.isActive,
               saved.taskOwnerID == task.persistentModelID, saved.taskID == task.id,
               saved.state == .preparing || saved.state == .notStarted,
               saved.providerProcess == nil, saved.stopProof == nil, saved.cancellationRequested != true,
@@ -174,14 +181,23 @@ enum RuntimeWorkspaceContinuation {
               saved.settlementToolsStopped != false,
               isManualSource(request, task: task),
               let source = TaskHistoryRead.event(id: request.sourceEventID, in: task),
-              source.type == TaskEventTypes.ExecutionRequest.initial.rawValue,
               source.run == nil || source.run?.id == saved.runID,
               request.runID == nil || request.runID == saved.runID,
               request.startedAt == nil || (saved.runID != nil && request.runID == saved.runID) else { return false }
         return (try? TaskTurnRequestOwnership.resolve(request, in: context))?.persistentModelID == task.persistentModelID
     }
 
+    static func isNewManualInstruction(_ request: TaskTurnRequest, task: AgentTask,
+                                       previous: RuntimeExecutionOwnerRecord?, context: ModelContext) -> Bool {
+        guard let previous else { return isInitialInstruction(request, task: task, context: context) }
+        return RuntimeExecutionAdmission.resolve(request: request, task: task) == .userInstruction
+            && RuntimeCompletedUserTurnContinuation.hasCompletedTurn(previous, task: task, context: context)
+    }
+
     static func isManualSource(_ request: TaskTurnRequest, task: AgentTask) -> Bool {
+        if request.kind == .followUp {
+            return TaskHistoryRead.event(id: request.sourceEventID, in: task)?.type == TaskEventTypes.Conversation.userMessage.rawValue
+        }
         guard request.kind == .initial,
               let source = TaskHistoryRead.event(id: request.sourceEventID, in: task),
               source.type == TaskEventTypes.ExecutionRequest.initial.rawValue,

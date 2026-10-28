@@ -422,6 +422,7 @@ struct RuntimeWorkspaceContinuationTests {
         let policy = AgentRuntimeExecutionPolicy.default.withRemoteSSHRoute(
             RemoteWorkspaceSSHRoute(targets: ["fixture@unused.example.test"], route: .nativeShell))
         var previous: AgentTask?
+        var sequence: [AgentTask] = []
         for index in 1...4 {
             let task = h.makeTask(runtime: .claudeCode, goal: "Task \(index)", model: "claude-opus-5")
             if let previous { task.workspace = previous.workspace }
@@ -448,11 +449,40 @@ struct RuntimeWorkspaceContinuationTests {
             let receipt = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
             #expect(receipt.stopProof?.toolsStopped == false && receipt.resourcesReleased == false)
             previous = task
+            sequence.append(task)
+        }
+        for index in [1, 2, 1, 0] {
+            let task = sequence[index]
+            let before = task.runs.count
+            let worker = h.makeWorker(runtime: .claudeCode, executablePath: executable, permissionPolicy: .autonomous)
+            _ = await h.continueTask(task: task, message: "Return to task \(index)", worker: worker, executionPolicy: policy)
+            #expect(task.status == .completed)
+            #expect(task.runs.count == before + 1)
         }
     }
 
-    private func completedRememberedWorkspace(_ h: HeadlessChatHarness) throws -> (AgentTask, AgentTask, TaskTurnRequest) {
-        let (old, _) = try completed(h)
+    private func completedRememberedWorkspace(_ h: HeadlessChatHarness, legacySource: Bool = false, cleanCrash: Bool = false) throws -> (AgentTask, AgentTask, TaskTurnRequest) {
+        let (old, original) = try completed(h)
+        if cleanCrash {
+            var receipt = original; receipt.state = .stopped; receipt.inheritedToolUncertainty = false
+            receipt.resourcesReleased = false
+            let proof = try #require(receipt.stopProof)
+            receipt.stopProof = .init(executionID: proof.executionID, process: proof.process,
+                reaped: true, processGroupEmpty: true, toolsStopped: true, remoteWorkExcluded: true, capturedAt: proof.capturedAt)
+            try save(receipt, h)
+        }
+        if legacySource {
+            let store = RuntimeExecutionOwner.store(in: h.context)
+            do {
+                let lease = try store.acquire(taskID: old.id, taskOwnerID: old.persistentModelID)
+                try FileManager.default.removeItem(at: lease.recordURL)
+            }
+            var legacy = original; legacy.taskOwnerID = nil
+            do { let lease = try store.acquire(taskID: old.id); try lease.save(legacy) }
+            h.context.insert(TaskEvent(task: old, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+                payload: TaskEvent.payloadString(legacy)))
+            try h.context.save()
+        }
         let (task, request) = try next(h, after: old)
         let proposed = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: h.context)
         try RuntimeWorkspaceContinuation.authorize(proposed, task: task, request: request, context: h.context, rememberWorkspace: true)
@@ -549,6 +579,62 @@ struct RuntimeWorkspaceContinuationTests {
         defer { owner.finish() }
         #expect(owner.record.workspaceContinuationRequestID == nil)
         #expect(try RuntimeExecutionOwner.store(in: h.context).workspaceContinuation(requestID: request.id) == nil)
+    }
+
+
+    @Test("Returning to an acknowledged task requires a new human instruction and preserves preparation", arguments:
+        ["valid", "legacy", "cleanCrash", "ownChanged", "cancelled", "retry", "consumed", "liveOther", "preflight", "savedGrant"])
+    func returningTaskFences(mode: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (old, b, _) = try completedRememberedWorkspace(h, legacySource: mode == "legacy", cleanCrash: mode == "cleanCrash")
+        let submission = try ExecutionRequestSubmissionService.submitFollowUp(message: "A new instruction", for: old, into: h.context).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context))
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        var live: RuntimeExecutionOwnerStore.Lease?
+        defer { withExtendedLifetime(live) {} }
+        switch mode {
+        case "ownChanged":
+            var changed = try #require(try RuntimeExecutionOwner.existing(task: old, context: h.context))
+            changed.limits.tokensSpent += 1; try save(changed, h)
+        case "cancelled": _ = TaskTurnRequestStateMachine.transition(request, to: .cancelled)
+        case "retry": request.kind = .retry
+        case "consumed": TaskHistoryRead.event(id: request.sourceEventID, in: old)?.run = old.runs.first
+        case "liveOther": live = try store.acquire(taskID: b.id, taskOwnerID: b.persistentModelID)
+        case "savedGrant":
+            let previous = try #require(try RuntimeExecutionOwner.existing(task: old, context: h.context))
+            let grant = try #require(try RuntimeWorkspaceContinuationScope.inherited(task: old, request: request,
+                context: h.context, claims: nil, previous: previous))
+            let lease = try store.acquire(taskID: old.id, taskOwnerID: old.persistentModelID)
+            try lease.saveWorkspaceContinuation(grant)
+        default: break
+        }
+        try h.context.save()
+        if mode == "legacy" || mode == "cleanCrash" {
+            let url: URL
+            if mode == "legacy" { url = store.root.appendingPathComponent(old.id.uuidString + ".json") }
+            else { url = try store.acquire(taskID: old.id, taskOwnerID: old.persistentModelID).recordURL }
+            let bytes = try Data(contentsOf: url)
+            let queue = TaskQueue(poolSize: 0); queue.refreshResourceOwnership(in: h.context)
+            let claims = queue.resourceLockClaims(for: request, task: old, runMode: "follow_up", sandboxEnforcement: .off)
+            #expect(queue.canAcquireResourceLocks(claims, task: old, context: h.context))
+            #expect(try Data(contentsOf: url) == bytes)
+        }
+        let candidate = RuntimeExecutionOwner.acquire(task: old, context: h.context, maxRunSeconds: 60, userRequest: request)
+        if ["ownChanged", "cancelled", "retry", "consumed", "liveOther"].contains(mode) {
+            #expect(candidate == nil); return
+        }
+        guard let owner = candidate else { Issue.record("Returning task failed for \(mode)"); return }
+        owner.chargePreparation(seconds: 3)
+        let limits = owner.record.limits
+        #expect(owner.record.workspaceContinuationRequestID == request.id)
+        owner.finish()
+        if mode == "preflight" {
+            let again = RuntimeExecutionOwner.acquire(task: old, context: h.context, maxRunSeconds: 900, userRequest: request)
+            guard let resumed = again else { Issue.record("Interrupted follow-up could not resume"); return }
+            defer { resumed.finish() }
+            #expect(resumed.record.limits == limits)
+            #expect(resumed.record.workspaceContinuationRequestID == request.id)
+        }
     }
 
 }
