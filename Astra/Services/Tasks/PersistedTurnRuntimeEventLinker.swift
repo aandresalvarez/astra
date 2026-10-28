@@ -44,9 +44,10 @@ enum PersistedTurnRuntimeEventLinker {
             AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
             return RuntimeBegin(request: nil, persisted: false)
         }
-        guard request.taskID == task.id, request.state != .running || request.runID == run.id else {
+        guard (try? TaskTurnRequestOwnership.resolve(request, in: modelContext))?.persistentModelID == task.persistentModelID,
+              run.task?.persistentModelID == task.persistentModelID, request.state != .running || request.runID == run.id else {
             AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
-            return RuntimeBegin(request: request, persisted: false)
+            return RuntimeBegin(request: nil, persisted: false)
         }
         let transition = TaskTurnRequestStateMachine.transition(
             request,
@@ -92,6 +93,8 @@ enum PersistedTurnRuntimeEventLinker {
         forcedOutcome: (state: TaskTurnRequestState, reason: String)? = nil,
         in modelContext: ModelContext
     ) {
+        guard run.task?.persistentModelID == task.persistentModelID else { return }
+        if let request, (try? TaskTurnRequestOwnership.resolve(request, in: modelContext))?.persistentModelID != task.persistentModelID { return }
         let stagedAcknowledgements = LivePermissionApprovalRecovery.stageAcknowledgements(
             task: task, run: run, requestIDs: acknowledgedPermissionRequestIDs, modelContext: modelContext)
         guard let request else {

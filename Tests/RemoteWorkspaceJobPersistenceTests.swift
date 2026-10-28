@@ -11,6 +11,85 @@ import WorkspaceToolSupport
 @Suite("Remote job owner and event persistence", .serialized)
 @MainActor
 struct RemoteWorkspaceJobPersistenceTests {
+    @Test("Polling selects only current registered executions and discovers new registrations")
+    func monitorDoesNotLoadUnrelatedTasks() throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        for index in 0..<200 {
+            _ = h.makeTask(runtime: .claudeCode, goal: "Unrelated \(index)", model: "test")
+        }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Registered", model: "test")
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60))
+        defer { owner.finish() }
+        let run = TaskRun(task: task); h.context.insert(run)
+        try owner.bind(run: run); try owner.prepareLaunch()
+        try h.context.save()
+        #expect(try RemoteWorkspaceJobMonitorSession.registeredTasks(context: h.context).isEmpty)
+        // A prior execution's registration does not make this execution a
+        // polling candidate. Registration is discovered afresh on each tick.
+        let oldRoot = RemoteWorkspaceJobRegistration.directory(taskID: task.id,
+            executionID: UUID(), context: h.context)
+        try FileManager.default.createDirectory(at: oldRoot, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: oldRoot.appendingPathComponent("configuration.json"))
+        #expect(try RemoteWorkspaceJobMonitorSession.registeredTasks(context: h.context).isEmpty)
+        _ = try RemoteWorkspaceJobRegistration.prepare(task: task, runID: run.id,
+            owner: owner, context: h.context, connections: [])
+        #expect(try RemoteWorkspaceJobMonitorSession.registeredTasks(context: h.context).map(\.persistentModelID) == [task.persistentModelID])
+    }
+
+    @Test("SSH preparation follows a detached execution task's persistent source owner")
+    func detachedExecutionKeepsItsOwner() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Detached SSH", model: "test")
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60))
+        defer { owner.finish() }
+        let run = TaskRun(task: task); h.context.insert(run)
+        try owner.bind(run: run); try owner.prepareLaunch()
+        let execution = AgentRuntimeExecutionContext.make(launchTask: task,
+            executionPath: h.workspaceURL.path, shouldCleanupIsolation: false)
+        #expect(execution.task.persistentModelID != task.persistentModelID)
+        #expect(execution.task.launchSourceTaskOwnerID == task.persistentModelID)
+        let config = try RemoteWorkspaceJobRegistration.prepare(task: execution.task, runID: run.id,
+            owner: owner, context: h.context, connections: [])
+        #expect(try RemoteWorkspaceJobRegistration.load(task: task, context: h.context) == config)
+
+        let other = h.makeTask(runtime: .claudeCode, goal: "Imported copy", model: "test")
+        other.id = task.id; try h.context.save()
+        let foreign = AgentRuntimeExecutionContext.make(launchTask: other,
+            executionPath: h.workspaceURL.path, shouldCleanupIsolation: false)
+        #expect(throws: (any Error).self) {
+            try RemoteWorkspaceJobRegistration.prepare(task: foreign.task, runID: run.id,
+                owner: owner, context: h.context, connections: [])
+        }
+        #expect(try RemoteWorkspaceJobMonitorSession.registeredTasks(context: h.context).map(\.persistentModelID) == [task.persistentModelID])
+    }
+
+    @Test("Retained executions remain observable but their old helpers cannot launch")
+    func retainedRegistrations() throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Retained jobs", model: "test")
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60))
+        let run = TaskRun(task: task); h.context.insert(run)
+        try owner.bind(run: run); try owner.prepareLaunch()
+        let config = try RemoteWorkspaceJobRegistration.prepare(task: task, runID: run.id,
+            owner: owner, context: h.context, connections: [])
+        owner.finish()
+        let authority = RuntimeExecutionOwner.store(in: h.context)
+        let previous = try #require(try authority.read(taskID: task.id, taskOwnerID: task.persistentModelID))
+        do {
+            let lease = try authority.acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
+            try authority.retain(previous)
+            var next = previous; next.executionID = UUID(); next.runID = UUID()
+            next.retainedExecutionHead = previous.executionID
+            try lease.save(next)
+        }
+        #expect(try RemoteWorkspaceJobRegistration.load(task: task, context: h.context) == nil)
+        #expect(try RemoteWorkspaceJobRegistration.loadAll(task: task, context: h.context) == [config])
+        #expect(try RemoteWorkspaceJobMonitorSession.registeredTasks(context: h.context).map(\.id) == [task.id])
+        #expect(throws: (any Error).self) { try config.ownerBinding?.validateLaunch() }
+    }
+
     @Test("Registration follows the final execution ID and retains its time allowance")
     func finalExecutionIdentity() throws {
         let h = try HeadlessChatHarness(persistentStore: true)
@@ -24,6 +103,8 @@ struct RemoteWorkspaceJobPersistenceTests {
         try owner.prepareLaunch()
         #expect(owner.record.executionID != preparingID)
         let config = try RemoteWorkspaceJobRegistration.prepare(task: task, runID: run.id, owner: owner, context: h.context, connections: [])
+        #expect(config.ownerBinding?.receiptPath == owner.receiptURL?.path)
+        #expect(FileManager.default.fileExists(atPath: try #require(config.ownerBinding?.receiptPath)))
         #expect(config.ownerBinding?.executionID == owner.record.executionID.uuidString)
         #expect(config.maximumJobSeconds == 45)
         #expect(try RemoteWorkspaceJobRegistration.load(task: task, context: h.context) == config)
@@ -85,6 +166,18 @@ struct RemoteWorkspaceJobPersistenceTests {
         #expect(RemoteWorkspaceJobMonitor.shared.requestCancellation(task: task, jobID: scenario == 2 ? job.jobID : nil, context: h.context, deliver: { saved in
             delivered.withLock { $0 = saved.ownerBinding == config.ownerBinding }
         }))
+        // Move the old registration into retained lineage before the outbox
+        // reopens. Cancellation must survive both a new turn and task deletion.
+        owner.finish()
+        let authority = RuntimeExecutionOwner.store(in: h.context)
+        let previous = try #require(try authority.read(taskID: task.id, taskOwnerID: task.persistentModelID))
+        do {
+            let lease = try authority.acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
+            try authority.retain(previous)
+            var successor = previous; successor.executionID = UUID()
+            successor.retainedExecutionHead = previous.executionID
+            try lease.save(successor)
+        }
         h.context.delete(task); try h.context.save(); try FileManager.default.removeItem(at: trust)
         if scenario == 0 { try store.create(job) }
         var lateJob = job
@@ -102,7 +195,7 @@ struct RemoteWorkspaceJobPersistenceTests {
         // A worker's finalizer may run after deletion. It updates only the
         // durable owner and must neither fault nor resurrect deleted models.
         owner.finish()
-        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: owner.record.taskID)?.limits == owner.record.limits)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: owner.record.taskID, taskOwnerID: owner.record.taskOwnerID)?.limits == owner.record.limits)
         #expect(owner.record.stopProof == nil)
         #expect(owner.record.resourcesReleased != true)
         #expect(try h.context.fetch(FetchDescriptor<AgentTask>()).isEmpty)

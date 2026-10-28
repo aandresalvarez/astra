@@ -55,7 +55,7 @@ enum ShelfBrowserPromptSection {
         }
         let override = enabledBrowserAdapters.isEmpty ? nil : enabledBrowserAdapters
         guard let browserContext = ShelfBrowserBridgeRegistry.shared.promptContext(
-            for: task.id,
+            for: task.id, ownerID: ShelfBrowserOwner(task).modelID,
             enabledBrowserAdapters: override
         ) else { return [] }
 

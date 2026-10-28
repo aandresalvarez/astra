@@ -188,7 +188,7 @@ struct TaskThreadHistoryConcurrencyTests {
         let viewModel = TaskThreadViewModel()
         viewModel.reset(for: task, modelContext: context)
         await viewModel.waitForPendingWorkForTesting()
-        #expect(viewModel.snapshot?.sortedEvents.count == 1_200)
+        #expect(viewModel.snapshot?.sortedEvents.count == TaskThreadHistoryReader.defaultEventPageSize)
         #expect(viewModel.hasEarlierHistory)
 
         var didInterleave = false
@@ -214,7 +214,14 @@ struct TaskThreadHistoryConcurrencyTests {
         // before the earlier events exist.
         #expect(loadStateDuringEarlierPage == .loading)
         // Holding the apply back must not lose the tail read's rows.
+        #expect(viewModel.snapshot?.sortedEvents.count == 2 * TaskThreadHistoryReader.defaultEventPageSize)
+        #expect(viewModel.hasEarlierHistory)
+        for _ in 0..<10 where viewModel.hasEarlierHistory {
+            viewModel.loadEarlierHistory(for: task)
+            await viewModel.waitForPendingWorkForTesting()
+        }
         #expect(viewModel.snapshot?.sortedEvents.count == 1_205)
+        #expect(Set(viewModel.snapshot?.sortedEvents.map(\.id) ?? []).count == 1_205)
         #expect(!viewModel.hasEarlierHistory)
         #expect(viewModel.historyLoadState == .idle)
     }
@@ -234,7 +241,7 @@ struct TaskThreadHistoryConcurrencyTests {
         let viewModel = TaskThreadViewModel()
         viewModel.reset(for: task, modelContext: context)
         await viewModel.waitForPendingWorkForTesting()
-        #expect(viewModel.snapshot?.sortedEvents.count == 1_200)
+        #expect(viewModel.snapshot?.sortedEvents.count == TaskThreadHistoryReader.defaultEventPageSize)
         #expect(viewModel.hasEarlierHistory)
 
         let streamed = TaskEvent(task: task, type: "user.message", payload: "streamed while paging")
@@ -267,7 +274,7 @@ struct TaskThreadHistoryConcurrencyTests {
         }
         // ...but the streamed row merged before the failure, and dropping its
         // apply is the same silent stall as a frozen transcript.
-        #expect(viewModel.snapshot?.sortedEvents.count == 1_201)
+        #expect(viewModel.snapshot?.sortedEvents.count == TaskThreadHistoryReader.defaultEventPageSize + 1)
         #expect(viewModel.snapshot?.sortedEvents.last?.payload == "streamed while paging")
 
         // Retry still re-issues the earlier page rather than the latest one.
@@ -275,7 +282,14 @@ struct TaskThreadHistoryConcurrencyTests {
         await viewModel.waitForPendingWorkForTesting()
 
         #expect(viewModel.historyLoadState == .idle)
+        #expect(viewModel.snapshot?.sortedEvents.count == 2 * TaskThreadHistoryReader.defaultEventPageSize + 1)
+        #expect(viewModel.hasEarlierHistory)
+        for _ in 0..<10 where viewModel.hasEarlierHistory {
+            viewModel.loadEarlierHistory(for: task)
+            await viewModel.waitForPendingWorkForTesting()
+        }
         #expect(viewModel.snapshot?.sortedEvents.count == 1_206)
+        #expect(Set(viewModel.snapshot?.sortedEvents.map(\.id) ?? []).count == 1_206)
         #expect(!viewModel.hasEarlierHistory)
     }
 

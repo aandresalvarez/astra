@@ -1183,6 +1183,42 @@ struct AgentRuntimeRunPersistenceTests {
         #expect(fields["provider_version"] == "test-provider")
     }
 
+    @Test("Run telemetry follows pending event edits without counting another turn")
+    func fieldsFollowPendingRunEvidence() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Telemetry", goal: "Preserve event counts")
+        let run = TaskRun(task: task)
+        let olderRun = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        context.insert(olderRun)
+        let response = TaskEvent(task: task, type: "agent.response", payload: "current", run: run)
+        context.insert(response)
+        context.insert(TaskEvent(task: task, type: "error", payload: "older", run: olderRun))
+        context.insert(TaskEvent(task: task, type: "tool.use", payload: "unbound"))
+        try context.save()
+
+        let future = TaskEvent(task: task, type: "provider.future", payload: "pending", run: run)
+        context.insert(future)
+        let pending = AgentRuntimeRunPersistence.fields(task: task, run: run, phase: "run")
+        #expect(pending["event_count"] == "4")
+        #expect(pending["run_event_count"] == "2")
+        #expect(pending["response_event_count"] == "1")
+        #expect(pending["error_event_count"] == "0")
+        #expect(pending["tool_use_event_count"] == "0")
+        try context.save()
+
+        response.run = olderRun
+        #expect(AgentRuntimeRunPersistence.fields(task: task, run: run, phase: "run")["run_event_count"] == "1")
+        context.rollback()
+        #expect(AgentRuntimeRunPersistence.fields(task: task, run: run, phase: "run")["run_event_count"] == "2")
+        context.delete(future)
+        #expect(AgentRuntimeRunPersistence.fields(task: task, run: run, phase: "run")["run_event_count"] == "1")
+        context.rollback()
+        #expect(AgentRuntimeRunPersistence.fields(task: task, run: run, phase: "run")["run_event_count"] == "2")
+    }
+
     @Test("Finalize records terminal completion and unread state")
     func finalizePersistsTerminalState() async throws {
         let container = try makeRuntimeComponentContainer()

@@ -97,7 +97,7 @@ extension HeadlessChatScenarioTests {
             var prior = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context)
             prior.state = state
             do {
-                let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id)
+                let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
                 try lease.save(prior)
             }
             task.tokenBudget = 300_000
@@ -190,7 +190,7 @@ extension HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == "budget.exceeded" })
         let run = try #require(task.runs.max { $0.startedAt < $1.startedAt })
         #expect(run.tokensUsed == 120_000)
-        let receipt = try #require(try RuntimeExecutionOwner.store(in: h.context).read(taskID: task.id))
+        let receipt = try #require(try RuntimeExecutionOwner.store(in: h.context).read(taskID: task.id, taskOwnerID: task.persistentModelID))
         #expect(receipt.limits.tokenCeiling == 200_000)
         #expect(receipt.limits.tokensSpent == 120_000)
     }

@@ -80,7 +80,11 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var sessions: [SessionKey: HostControlBrokerSession] = [:]
-    private var historyReaders: [SessionKey: any TaskHistoryReading] = [:]
+    private struct HistoryKey: Hashable {
+        let session: SessionKey
+        let ownerID: PersistentIdentifier
+    }
+    private var historyReaders: [HistoryKey: any TaskHistoryReading] = [:]
     private var mailReaders: [SessionKey: any BrokeredMailReading] = [:]
     private var externalActionRequesters: [SessionKey: any BrokeredExternalActionRequesting] = [:]
 
@@ -99,21 +103,21 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
     }
 
     /// Bind the durable store before handing a detached execution task to a provider.
-    func bindHistory(container: ModelContainer, taskID: UUID, runID: UUID) {
+    func bindHistory(container: ModelContainer, taskID: UUID, runID: UUID, ownerID: PersistentIdentifier) {
         lock.lock()
-        historyReaders[sessionKey(taskID: taskID, runID: runID)] = TaskHistoryEvidenceReader(container: container, taskID: taskID)
+        historyReaders[HistoryKey(session: sessionKey(taskID: taskID, runID: runID), ownerID: ownerID)] = TaskHistoryEvidenceReader(container: container, taskID: taskID, ownerID: ownerID)
         lock.unlock()
     }
 
-    func historyReader(taskID: UUID, runID: UUID?) -> (any TaskHistoryReading)? {
+    func historyReader(taskID: UUID, runID: UUID?, ownerID: PersistentIdentifier) -> (any TaskHistoryReading)? {
         lock.lock()
         defer { lock.unlock() }
-        return historyReaders[sessionKey(taskID: taskID, runID: runID)]
+        return historyReaders[HistoryKey(session: sessionKey(taskID: taskID, runID: runID), ownerID: ownerID)]
     }
 
-    func unbindHistory(taskID: UUID, runID: UUID) {
+    func unbindHistory(taskID: UUID, runID: UUID, ownerID: PersistentIdentifier) {
         lock.lock()
-        historyReaders.removeValue(forKey: sessionKey(taskID: taskID, runID: runID))
+        historyReaders.removeValue(forKey: HistoryKey(session: sessionKey(taskID: taskID, runID: runID), ownerID: ownerID))
         lock.unlock()
     }
 
@@ -185,12 +189,13 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         environment.merge(hostEnvironment) { _, brokerValue in brokerValue }
 
         let configuration = HostControlToolConfiguration.fromEnvironment(environment)
-        let reader = historyReader(taskID: task.id, runID: runID)
+        let historyOwnerID = task.launchSourceTaskOwnerID ?? task.persistentModelID
+        let reader = historyReader(taskID: task.id, runID: runID, ownerID: historyOwnerID)
         let session = HostControlBrokerSession(
             configuration: configuration,
             expectedHelperPath: expectedHelperPath,
             withholdingObserver: BrokeredCredentialWithholdingRecorder(taskID: task.id, runID: runID),
-            historyReader: reader ?? task.modelContext.map { TaskHistoryEvidenceReader(container: $0.container, taskID: task.id) },
+            historyReader: reader ?? task.modelContext.map { TaskHistoryEvidenceReader(container: $0.container, taskID: task.id, ownerID: historyOwnerID) },
             externalActionRequester: externalActionRequester(taskID: task.id, runID: runID),
             mailReader: mailReader(taskID: task.id, runID: runID)
         )

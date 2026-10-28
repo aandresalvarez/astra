@@ -9,6 +9,7 @@ extension TaskQueue {
         let store = RuntimeExecutionOwner.store(in: context)
         resourceOwnershipStore = store
         do {
+            try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: context)
             persistedResourceLocks = try RuntimeResourceOwnership.claims(in: store, context: context)
             resourceOwnershipReadFailed = false
         } catch {
@@ -83,14 +84,55 @@ extension TaskQueue {
         dispatchedRequestIDs: Set<UUID>,
         activeTaskIDs: Set<UUID>
     ) -> Bool {
-        !resourceOwnershipReadFailed && TaskExecutionResourceAdmissionPolicy.canAdmit(
+        let inherited = continuingOwnerClaims(task: candidate.task, request: candidate.request)
+        let excluded = workspaceContinuationClaims(task: candidate.task, request: candidate.request)
+        let available = activeResourceLocks.filter { claim in
+            !excluded.contains(claim) && (inherited.isEmpty || claim.taskID != candidate.task.id || claim.requestID == candidate.request.id)
+        }
+        return !resourceOwnershipReadFailed && TaskExecutionResourceAdmissionPolicy.canAdmit(
             candidate,
             in: projection,
             dispatchedRequestIDs: dispatchedRequestIDs,
             activeTaskIDs: activeTaskIDs,
-            activeClaims: activeResourceLocks,
+            activeClaims: available,
+            inheritedClaims: inherited,
             sandboxEnforcement: sandboxEnforcementProvider()
         )
+    }
+
+    @MainActor
+    func continuingOwnerClaims(task: AgentTask, request: TaskTurnRequest?) -> [TaskResourceLockClaim] {
+        guard !activeTasks.contains(task.id), let context = task.modelContext,
+              let saved = try? RuntimeExecutionOwner.existing(task: task, context: context),
+              RuntimeCompletedUserTurnContinuation.permits(saved, task: task, request: request, context: context)
+                || RuntimeWorkspaceContinuation.resumesPreparation(saved, task: task, request: request, context: context) else { return [] }
+        return saved.resourceClaims ?? []
+    }
+
+    @MainActor
+    private func workspaceContinuationClaims(task: AgentTask, request: TaskTurnRequest?) -> Set<TaskResourceLockClaim> {
+        guard !activeTasks.contains(task.id), let context = task.modelContext else { return [] }
+        do {
+            let saved = try RuntimeExecutionOwner.existing(task: task, context: context)
+            return try RuntimeWorkspaceContinuation.admission(task: task, request: request, previous: saved,
+                context: context)?.excludedClaims ?? []
+        } catch { return [] }
+    }
+
+    @MainActor
+    func canAcquireResourceLocks(_ claims: [TaskResourceLockClaim], task: AgentTask?, context: ModelContext?) -> Bool {
+        guard let task, let context else { return canAcquireResourceLocks(claims) }
+        let ids = Set(claims.compactMap(\.requestID))
+        guard ids.count == 1, let id = ids.first,
+              let request = try? TaskTurnRequestRepository.request(id: id, in: context) else {
+            return canAcquireResourceLocks(claims)
+        }
+        let inherited = continuingOwnerClaims(task: task, request: request)
+        let excluded = workspaceContinuationClaims(task: task, request: request)
+        let available = activeResourceLocks.filter { claim in
+            !excluded.contains(claim) && (inherited.isEmpty || claim.taskID != task.id || claim.requestID == id)
+        }
+        return !resourceOwnershipReadFailed && TaskExecutionResourceBroker.canAcquire(claims, active: available)
     }
 
     @MainActor
@@ -149,7 +191,8 @@ extension TaskQueue {
               persistedResourceLocks.contains(conflict.holder) else {
             return summary
         }
-        let holder = try? resourceOwnershipStore?.read(taskID: conflict.holder.taskID)
+        let holders = (try? resourceOwnershipStore?.records())?.filter { $0.resourceClaims?.contains(conflict.holder) == true } ?? []
+        let holder = holders.count == 1 ? holders.first : nil
         let awaitingCleanup = holder == nil || holder?.cancellationRequested == true
             || holder?.state == .unverified || holder?.appProcess.presence != .present
             || (holder?.state == .finished && holder?.canReplace != true)

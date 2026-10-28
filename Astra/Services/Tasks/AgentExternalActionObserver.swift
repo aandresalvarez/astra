@@ -129,8 +129,7 @@ enum AgentExternalActionObserver {
         policyLevel: AgentPolicyLevel
     ) -> [Observation] {
         guard !ExternalActionPolicy.asksUser(for: .agentCommand, level: policyLevel) else { return [] }
-        let runEvents = task.events
-            .filter { $0.run?.id == run.id }
+        let runEvents = TaskHistoryRead.events(for: task, runID: run.id)
             .sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
         let alreadyRecorded = Set(runEvents.compactMap { event -> UUID? in
             guard event.type == eventType, let data = event.payload.data(using: .utf8) else { return nil }

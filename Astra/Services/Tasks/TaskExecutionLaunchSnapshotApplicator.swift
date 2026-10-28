@@ -110,6 +110,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         }
         let task = AgentTask(title: source.title, goal: source.goal, workspace: workspace)
         task.id = source.id
+        task.launchSourceTaskOwnerID = source.launchSourceTaskOwnerID ?? source.persistentModelID
         task.inputs = source.inputs
         task.constraints = source.constraints
         task.acceptanceCriteria = source.acceptanceCriteria

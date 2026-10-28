@@ -22,12 +22,12 @@ enum ProviderUsageEvidence {
     }
 
     static func hasReport(run: TaskRun, task: AgentTask) -> Bool {
-        task.events.contains { $0.run?.id == run.id && $0.type == "task.stats" && Report(payload: $0.payload) != nil }
+        TaskHistoryRead.events(for: task, ofTypes: ["task.stats"]).contains { $0.run?.id == run.id && Report(payload: $0.payload) != nil }
     }
 
     static func measuredBaseline(runs: [TaskRun], task: AgentTask) -> (input: Int, output: Int)? {
         let ids = Set(runs.map(\.id))
-        let events = task.events.filter { $0.type == "task.stats" && $0.run.map { ids.contains($0.id) } == true }
+        let events = TaskHistoryRead.events(for: task, ofTypes: ["task.stats"]).filter { $0.run.map { ids.contains($0.id) } == true }
         let estimated = Set(events.filter { $0.payload.hasPrefix("estimated tokens:") }.compactMap { $0.run?.id })
         guard !estimated.isEmpty else { return nil }
         // The last raw cumulative report is a lower bound when later turns have

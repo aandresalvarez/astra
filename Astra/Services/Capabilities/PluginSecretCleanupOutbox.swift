@@ -118,6 +118,29 @@ struct PluginSecretCleanupOutbox {
         settle(pending, keys: keys, modelContext: modelContext, outbox: outbox, secrets: secrets, clean: cleaner(secrets), producerLease: heldLease)
     }
 
+    /// Startup counterpart: keep the producer lease while the saved mirror
+    /// projection yields, then capture live owners and requests from a fresh
+    /// context. Failed/superseded writes retain every pending secret.
+    static func resumePendingAsync(modelContext: ModelContext,
+                                   outbox: PluginSecretCleanupOutbox? = nil,
+                                   secrets: (any SkillSecretPersisting.Type)? = nil,
+                                   rewriteMirrors: ((ModelContext) async -> ModelContext?)? = nil) async {
+        let outbox = outbox ?? PluginSecretCleanupOutbox(for: modelContext)
+        guard WorkspaceRecoveryTrust.allowsCleanup,
+              let pending = try? outbox?.pending(), let keys = try? outbox?.pendingKeys(),
+              !pending.isEmpty || !keys.isEmpty else { return }
+        let heldLease: PluginCredentialProducerLease?
+        do { heldLease = try PluginCredentialProducerLease.acquire(modelContext: modelContext) }
+        catch { return }
+        defer { withExtendedLifetime(heldLease) {} }
+        let rewrite = rewriteMirrors ?? { await CredentialCleanupStartupMirrors.rewrite(modelContext: $0) }
+        guard let saved = await rewrite(modelContext), !Task.isCancelled,
+              WorkspaceRecoveryTrust.allowsCleanup,
+              let current = try? outbox?.pending(), let currentKeys = try? outbox?.pendingKeys() else { return }
+        settle(current, keys: currentKeys, modelContext: saved, outbox: outbox,
+            secrets: secrets, clean: cleaner(secrets), producerLease: heldLease)
+    }
+
     /// Settles the recorded single secrets among `keys` (secret settings a
     /// definition declares that their activation doesn't record) before the
     /// definition is accepted: a value a failed cleanup left there would

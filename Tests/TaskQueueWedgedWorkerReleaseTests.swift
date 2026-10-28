@@ -18,7 +18,8 @@ private final class WedgedProcessRunner: AgentRuntimeProcessRunning {
     @MainActor func configureExecutionOwner(_ owner: RuntimeExecutionOwner?) { self.owner = owner }
     private var lateLines: [UUID: (String, Bool) -> Void] = [:]
 
-    func cancel() {}
+    private(set) var cancellationCount = 0
+    func cancel() { cancellationCount += 1 }
 
     func isHostControlBrokerAvailable() -> Bool { true }
 
@@ -150,6 +151,27 @@ struct TaskQueueWedgedWorkerReleaseTests {
             _ = TestWorkspaceStoreCleanup.schedule(context: context,
                 roots: [root, RuntimeExecutionOwner.store(in: context).root])
         }
+    }
+
+    @Test("Cancelling an imported copy cannot cancel the worker of the original")
+    func cancellingCopyDoesNotReachOriginalWorker() async throws {
+        let fixture = try Fixture(grace: .seconds(60))
+        defer { fixture.runner.drain(); fixture.cleanup() }
+        fixture.next.id = fixture.wedged.id
+        try fixture.context.save()
+        let first = try fixture.submitTurn(fixture.wedged)
+        #expect(await eventually { fixture.runner.launchedTaskIDs.contains(fixture.wedged.id) })
+        let calls = fixture.runner.cancellationCount
+        #expect(fixture.queue.worker(for: fixture.wedged) != nil)
+        #expect(fixture.queue.worker(for: fixture.next) == nil)
+        fixture.queue.cancel(task: fixture.next, modelContext: fixture.context)
+        #expect(fixture.runner.cancellationCount == calls)
+        #expect(first.request.state == .running)
+        #expect(fixture.queue.wedgedLeaseReclaimer.pendingCount == 0)
+        fixture.queue.cancel(task: fixture.wedged, modelContext: fixture.context)
+        #expect(fixture.runner.cancellationCount > calls)
+        fixture.runner.drain()
+        _ = await first.admission.value
     }
 
     /// Polls rather than timing out on wall clock: a loaded suite stretches

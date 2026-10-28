@@ -20,9 +20,10 @@ enum RuntimeTurnOutcomeService {
         // run-tests branch that reads it — it copies every run and event of
         // the task, which on a long task cost more than the rest of the
         // outcome.
-        let validationTask = checkpoint.launchSnapshot.validationStrategy == .runTests
-            ? TaskExecutionLaunchSnapshotApplicator.detachedTask(checkpoint.launchSnapshot, from: task)
+        let validationProjection = checkpoint.launchSnapshot.validationStrategy == .runTests
+            ? DetachedLaunchProjection(checkpoint.launchSnapshot, from: task)
             : nil
+        defer { withExtendedLifetime(validationProjection) {} }
         let executionPath = checkpoint.executionPath
         let launchPermissionPolicy = checkpoint.permissionPolicy
         let timeoutSeconds = checkpoint.timeoutSeconds
@@ -150,8 +151,7 @@ enum RuntimeTurnOutcomeService {
                         // detached task also carries the executionRootPath the
                         // run actually used, so tests execute where it ran.
                         let testResult = await ValidationService.runTests(
-                            task: validationTask
-                                ?? TaskExecutionLaunchSnapshotApplicator.detachedTask(checkpoint.launchSnapshot, from: task),
+                            task: validationProjection!.task,
                             commandRunner: ShellValidationCommandRunner(
                                 sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement
                             )

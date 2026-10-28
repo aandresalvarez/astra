@@ -45,6 +45,7 @@ public enum TaskEventPayloadDecodeError: Error, Equatable, CustomStringConvertib
 
 public enum TaskEventTypes {
     public enum Task {
+        public static let historyImported: TaskEventType = "task.history.imported"
         public static let started: TaskEventType = "task.started"
         public static let completed: TaskEventType = "task.completed"
         public static let cancelled: TaskEventType = "task.cancelled"
@@ -214,6 +215,7 @@ public enum TaskEventTypes {
         public static let runtimeSupervision: TaskEventType = "runtime.supervision"
         public static let runtimeSupervisionUsage: TaskEventType = "runtime.supervision.usage"
         public static let runtimeExecutionOwnership: TaskEventType = "runtime.execution_ownership"
+        public static let runtimeWorkspaceContinuationAuthorized: TaskEventType = "runtime.workspace_continuation_authorized"
         public static let runtimeRecovery: TaskEventType = "runtime.recovery"
         public static let runtimeOutcomePrepared: TaskEventType = "runtime.outcome.prepared"
         public static let runtimeChainedWorkDispatched: TaskEventType = "runtime.chained_work.dispatched"
@@ -338,12 +340,14 @@ public enum TaskEventTypes {
     ]
 
     private static let systemTypes: Set<TaskEventType> = [
+        Task.historyImported,
         System.remoteJobObserved,
         System.remoteJobCancellation,
         System.runtimeSupervision,
         System.runtimeSupervisionUsage,
         System.runtimeRecovery,
         System.runtimeExecutionOwnership,
+        System.runtimeWorkspaceContinuationAuthorized,
         System.runtimeSettlementStarted,
         System.runtimeOutcomePrepared,
         System.runtimeChainedWorkDispatched,

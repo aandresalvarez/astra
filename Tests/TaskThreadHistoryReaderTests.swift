@@ -37,8 +37,8 @@ struct TaskThreadHistoryReaderTests {
 
         let page = try TaskThreadHistoryReader.initialPage(taskID: task.id, modelContext: context)
 
-        #expect(page.runs.count == 50)
-        #expect(page.events.count == 1_200)
+        #expect(page.runs.count == TaskThreadHistoryReader.defaultRunPageSize)
+        #expect(page.events.count == TaskThreadHistoryReader.defaultEventPageSize)
         #expect(page.totalRunCount == 75)
         #expect(page.totalEventCount == 1_300)
         #expect(page.cursor.hasEarlierRuns)
@@ -402,8 +402,8 @@ struct TaskThreadHistoryReaderTests {
         let page = try TaskThreadHistoryReader.initialPage(taskID: task.id, modelContext: context)
         let elapsed = started.duration(to: clock.now)
 
-        #expect(page.runs.count == 50)
-        #expect(page.stateAnchors.count == 50 * types.count)
+        #expect(page.runs.count == TaskThreadHistoryReader.defaultRunPageSize)
+        #expect(page.stateAnchors.count == TaskThreadHistoryReader.defaultRunPageSize * types.count)
         #expect(elapsed < .seconds(2))
     }
 
@@ -586,7 +586,7 @@ struct TaskThreadHistoryReaderTests {
         let page = try TaskThreadHistoryReader.initialPage(taskID: task.id, modelContext: context)
         let elapsed = started.duration(to: clock.now)
 
-        #expect(page.events.count == 1_200)
+        #expect(page.events.count == TaskThreadHistoryReader.defaultEventPageSize)
         #expect(page.totalEventCount == 5_000)
         #expect(elapsed < .seconds(2))
     }
@@ -628,11 +628,13 @@ struct StorageBackedTaskThreadViewModelTests {
         let initial = viewModel.snapshot
 
         #expect(initial?.omittedRunCount == 0)
-        #expect(initial?.omittedEventCount == 5)
+        #expect(initial?.omittedEventCount == 1_205 - TaskThreadHistoryReader.defaultEventPageSize)
         #expect(viewModel.hasEarlierHistory)
 
-        viewModel.loadEarlierHistory(for: task)
-        await viewModel.waitForPendingWorkForTesting()
+        for _ in 0..<10 where viewModel.hasEarlierHistory {
+            viewModel.loadEarlierHistory(for: task)
+            await viewModel.waitForPendingWorkForTesting()
+        }
         let complete = viewModel.snapshot
 
         #expect(complete?.sortedEvents.count == 1_205)
@@ -746,7 +748,7 @@ struct StorageBackedTaskThreadViewModelTests {
         let viewModel = TaskThreadViewModel()
         viewModel.reset(for: firstTask, modelContext: context)
         await viewModel.waitForPendingWorkForTesting()
-        #expect(viewModel.snapshot?.omittedEventCount == 5)
+        #expect(viewModel.snapshot?.omittedEventCount == 1_205 - TaskThreadHistoryReader.defaultEventPageSize)
 
         viewModel.loadEarlierHistory(for: firstTask)
         viewModel.reset(for: secondTask, modelContext: context)
@@ -786,7 +788,7 @@ struct StorageBackedTaskThreadViewModelTests {
         #expect(viewModel.historyFullReadCountForTesting == 1)
         #expect(viewModel.historyTailReadCountForTesting == 5)
         #expect(viewModel.historyReadCountForTesting == 6)
-        #expect(viewModel.snapshot?.sortedEvents.count == 605)
+        #expect(viewModel.snapshot?.sortedEvents.count == min(600, TaskThreadHistoryReader.defaultEventPageSize) + 5)
     }
 
     @Test("Coalesced stream chunk is re-read by the tail because its timestamp moves forward")
@@ -918,12 +920,14 @@ struct StorageBackedTaskThreadViewModelTests {
         let viewModel = TaskThreadViewModel()
         viewModel.reset(for: task, modelContext: context)
         await viewModel.waitForPendingWorkForTesting()
-        #expect(viewModel.snapshot?.sortedEvents.count == 1_200)
+        #expect(viewModel.snapshot?.sortedEvents.count == TaskThreadHistoryReader.defaultEventPageSize)
         #expect(viewModel.hasEarlierHistory)
 
-        // The user pages back to the top.
-        viewModel.loadEarlierHistory(for: task)
-        await viewModel.waitForPendingWorkForTesting()
+        // The user pages back to the top; every smaller page stays reachable.
+        for _ in 0..<10 where viewModel.hasEarlierHistory {
+            viewModel.loadEarlierHistory(for: task)
+            await viewModel.waitForPendingWorkForTesting()
+        }
         #expect(viewModel.snapshot?.sortedEvents.count == 1_250)
         #expect(!viewModel.hasEarlierHistory)
 
@@ -1096,9 +1100,12 @@ struct StorageBackedTaskThreadViewModelTests {
         let viewModel = TaskThreadViewModel()
         viewModel.reset(for: task, modelContext: context)
         await viewModel.waitForPendingWorkForTesting()
-        viewModel.loadEarlierHistory(for: task)
-        await viewModel.waitForPendingWorkForTesting()
+        for _ in 0..<10 where viewModel.hasEarlierHistory {
+            viewModel.loadEarlierHistory(for: task)
+            await viewModel.waitForPendingWorkForTesting()
+        }
         #expect(viewModel.snapshot?.sortedEvents.count == 1_205)
+        #expect(Set(viewModel.snapshot?.sortedEvents.map(\.id) ?? []).count == 1_205)
 
         let appended = TaskEvent(task: task, type: "user.message", payload: "newest")
         appended.timestamp = Date(timeIntervalSince1970: 2_000)

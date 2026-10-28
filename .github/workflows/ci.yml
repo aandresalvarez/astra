@@ -37,6 +37,12 @@ jobs:
       - name: Run focused Swift protection suites
         run: script/prepush.sh
 
+      - name: Verify process progress with one cooperative worker
+        timeout-minutes: 5
+        env:
+          LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
+        run: script/swift_test.sh --filter 'ProcessWaitExecutorTests|ProcessDescriptorIsolationTests|ProcessBinaryRunnerTests|SpawnedChildSignalStateTests|OpenCodeRunnerCompletionTests|OpenCodeCompletionProofTests|HostControlParentDeathSupervisorTests'
+
   full-swift-test-suite:
     name: Full Swift test suite
     # Runs on every trigger the workflow supports (pull_request, push to

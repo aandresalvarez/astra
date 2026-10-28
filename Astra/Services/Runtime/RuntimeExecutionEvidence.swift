@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SwiftData
 import ASTRAModels
 
 /// OS identities, not bare PIDs or a model's judgment, fence recovered work.
@@ -48,6 +49,8 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
         case notStarted, preparing, launching, working, waitingForInput, finished, stopped, unverified
     }
     let taskID: UUID
+    var taskOwnerID: PersistentIdentifier? = nil
+    var legacyReferenceOwnerID: UUID? = nil
     let ownerID: UUID
     var executionID: UUID
     var runID: UUID?
@@ -67,6 +70,17 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     var providerSharedStateReleased: Bool? = nil
     var resourcesReleased: Bool? = nil
     var cancellationRequested: Bool? = nil
+    /// The pre-journal run that `RuntimeRecoveryLegacyReconciliation` admitted this owner on.
+    var legacySettledRunID: UUID? = nil
+    /// Original protected evidence retained when an unused SSH route was the only fence.
+    var hostNoToolReconciliationOriginalProof: RuntimeExecutionStopProof? = nil
+    /// Linked immutable receipts retained by an explicit continuation. Cleanup
+    /// uncertainty and reservations belong to the logical owner across turns.
+    var retainedExecutionHead: UUID? = nil
+    var retainedProviderSharedStateKeys: [String]? = nil
+    var continuingUserRequestID: UUID? = nil
+    /// Protected, request-scoped user permission to continue a reserved workspace.
+    var workspaceContinuationRequestID: UUID? = nil
     var automaticRestarts = 0
     var updatedAt: Date
 

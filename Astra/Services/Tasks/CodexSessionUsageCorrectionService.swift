@@ -106,14 +106,17 @@ enum CodexSessionUsageCorrectionService {
         batchSize: Int = CodexSessionUsageCorrectionService.batchSize
     ) async -> Outcome {
         guard batchSize > 0 else { return Outcome() }
+        // Establish stable row identities before keyset paging or receipt attribution.
+        do { if modelContext.hasChanges { try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: nil, modelContext: modelContext) } }
+        catch { log(stage: "flush_failed", outcome: Outcome(), error: error); return Outcome() }
         // Keyset paging on `startedAt`: an offset would skip or repeat rows when the context
         // holds unsaved changes, which a fetch merges in ahead of the stored rows. Runs added
         // during the pass start after the cursor.
         let codex: String? = AgentRuntimeID.codexCLI.rawValue
         var cursor: Date?
         var strictlyAfterCursor = false
-        var seenAtCursor = Set<UUID>()
-        var visited = Set<UUID>()
+        var seenAtCursor = Set<PersistentIdentifier>()
+        var visited = Set<PersistentIdentifier>()
         var outcome = Outcome()
         while true {
             var descriptor = codexSessionRuns
@@ -131,7 +134,7 @@ enum CodexSessionUsageCorrectionService {
                 log(stage: "fetch_failed", outcome: outcome, error: error)
                 return outcome
             }
-            var fresh = page.filter { $0.startedAt != cursor || !seenAtCursor.contains($0.id) }
+            var fresh = page.filter { $0.startedAt != cursor || !seenAtCursor.contains($0.persistentModelID) }
             if fresh.isEmpty {
                 guard page.count == batchSize, let start = cursor else { break }
                 // More than a page of runs share the cursor's start time, so `>=` keeps returning
@@ -140,7 +143,7 @@ enum CodexSessionUsageCorrectionService {
                     $0.runtimeID == codex && $0.providerSessionId != nil && $0.startedAt == start
                 })
                 do {
-                    fresh = try modelContext.fetch(group).filter { !seenAtCursor.contains($0.id) }
+                    fresh = try modelContext.fetch(group).filter { !seenAtCursor.contains($0.persistentModelID) }
                 } catch {
                     log(stage: "fetch_failed", outcome: outcome, error: error)
                     return outcome
@@ -151,11 +154,11 @@ enum CodexSessionUsageCorrectionService {
                 if let last = fresh.last?.startedAt {
                     if last != cursor { seenAtCursor = [] }
                     cursor = last
-                    seenAtCursor.formUnion(fresh.filter { $0.startedAt == last }.map(\.id))
+                    seenAtCursor.formUnion(fresh.filter { $0.startedAt == last }.map(\.persistentModelID))
                 }
             }
             // A task is corrected whole, from whichever of its runs a page reaches first.
-            let tasks = fresh.compactMap(\.task).filter { visited.insert($0.id).inserted }
+            let tasks = fresh.compactMap(\.task).filter { visited.insert($0.persistentModelID).inserted }
             for task in tasks {
                 let result: TaskResult
                 do {
@@ -262,11 +265,11 @@ enum CodexSessionUsageCorrectionService {
         }
         defer { withExtendedLifetime(lease) {} }
 
-        let taskID = task.id
+        let ownerID = task.persistentModelID
         let stats = TaskEventTypes.Task.stats.rawValue
         let reset = ProviderSessionUsageEpoch.resetEventType
         let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> { $0.task?.id == taskID && ($0.type == stats || $0.type == reset) },
+            predicate: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID && ($0.type == stats || $0.type == reset) },
             sortBy: [SortDescriptor(\TaskEvent.timestamp)]
         ))
         let evidence = reportEvidence(events)

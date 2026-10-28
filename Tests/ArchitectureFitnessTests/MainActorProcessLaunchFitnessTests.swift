@@ -19,8 +19,7 @@ import Testing
 struct MainActorProcessLaunchFitnessTests {
     /// `file#function`, each with why it has not moved yet.
     static let grandfathered: [String: String] = [
-        "Astra/Services/Browser/ControlledBrowserController.swift#ensureLaunched": "spawns the browser without waiting; main-actor controller",
-        "Astra/Services/Browser/ControlledBrowserController.swift#runningDebugTargetSync": "called through a dispatch hop by its async wrapper",
+        "Astra/Services/Browser/ControlledBrowserController.swift#ensureLaunchedCore": "same existing browser spawn, now serialized by ensureLaunched; does not wait on the child",
         "Astra/Services/Diagnostics/LogDiagnosticsService.swift#createZipArchive": "diagnostics export",
         "Astra/Services/Feedback/FeedbackEvidenceBuilder.swift#createDeterministicArchive": "feedback export",
         "Astra/Services/Feedback/FeedbackManualExportService.swift#archiveEntries": "feedback export",
@@ -77,6 +76,9 @@ struct MainActorProcessLaunchFitnessTests {
             func onMain() async {
                 let process = Process()
             }
+            func stopOnly() {
+                lease.terminateOwnedProcess()
+            }
             func afterClosedBoundary() async {
                 await BlockingWork.run {
                     return 1
@@ -124,7 +126,7 @@ struct MainActorProcessLaunchFitnessTests {
         let lines = text.components(separatedBy: "\n")
         func indent(_ line: String) -> Int { line.prefix { $0 == " " }.count }
         var sites: [Site] = []
-        for (index, line) in lines.enumerated() where line.contains("Process()") {
+        for (index, line) in lines.enumerated() where line.range(of: #"\bProcess\(\)"#, options: .regularExpression) != nil {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.hasPrefix("//") else { continue }
             let depth = indent(line)

@@ -29,7 +29,7 @@ struct ShelfFileTurnsView: View {
     @State private var fullyShownTurns: Set<Int> = []
 
     private struct RefreshKey: Equatable {
-        let taskID: UUID
+        let ownerID: PersistentIdentifier
         let updatedAt: Date
         let refreshToken: Int
     }
@@ -68,7 +68,7 @@ struct ShelfFileTurnsView: View {
             }
         }
         // `updatedAt` moves whenever a run records a change or finishes.
-        .task(id: RefreshKey(taskID: task.id, updatedAt: task.updatedAt, refreshToken: refreshToken)) {
+        .task(id: RefreshKey(ownerID: task.persistentModelID, updatedAt: task.updatedAt, refreshToken: refreshToken)) {
             await reload()
         }
         .accessibilityIdentifier("FilesShelfTurnsList")
@@ -264,7 +264,7 @@ struct ShelfFileTurnsView: View {
         // they are rather than saving everything the context holds.
         let pendingRuns = (modelContext.insertedModelsArray + modelContext.changedModelsArray)
             .compactMap { $0 as? TaskRun }
-            .filter { $0.task?.id == task.id }
+            .filter { !$0.isDeleted && $0.task?.persistentModelID == task.persistentModelID }
             .map(TaskFileTurnsReader.PendingRun.init)
         let access = TaskWorkspaceAccess(task: task)
         let additionalRoots = ([task.workspace?.primaryPath].compactMap { $0 } + (task.workspace?.additionalPaths ?? []))
@@ -273,6 +273,7 @@ struct ShelfFileTurnsView: View {
         let started = Date()
         let loaded = (try? await store.fileTurns(
             taskID: task.id,
+            ownerID: task.persistentModelID,
             taskFolder: access.taskFolder,
             workspacePath: access.effectiveWorkspacePath,
             executionPath: access.codeWorkingDirectory,

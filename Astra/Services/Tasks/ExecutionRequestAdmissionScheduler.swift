@@ -31,27 +31,27 @@ enum ExecutionRequestAdmissionScheduler {
         let tasks = try modelContext.fetch(
             FetchDescriptor<AgentTask>(predicate: #Predicate { taskIDs.contains($0.id) })
         )
-        let tasksByID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let tasksByID = Dictionary(grouping: tasks, by: \.id)
 
         // Sequence is the durable task-local FIFO authority. Timestamps order
         // the head request from each task globally, but must never let a later
         // sequence overtake an earlier turn after import/clock adjustment.
-        var headsByTaskID: [UUID: Candidate] = [:]
+        var headsByTaskID: [PersistentIdentifier: Candidate] = [:]
         var missing: [TaskTurnRequest] = []
         for request in requests {
-            guard let task = tasksByID[request.taskID] else {
+            guard let task = TaskTurnRequestOwnership.resolve(request, among: tasksByID[request.taskID] ?? []) else {
                 missing.append(request)
                 continue
             }
             let candidate = Candidate(request: request, task: task)
-            if let current = headsByTaskID[request.taskID] {
+            if let current = headsByTaskID[task.persistentModelID] {
                 if request.sequence < current.request.sequence
                     || (request.sequence == current.request.sequence
                         && request.submittedAt < current.request.submittedAt) {
-                    headsByTaskID[request.taskID] = candidate
+                    headsByTaskID[task.persistentModelID] = candidate
                 }
             } else {
-                headsByTaskID[request.taskID] = candidate
+                headsByTaskID[task.persistentModelID] = candidate
             }
         }
         let ordered = headsByTaskID.values.sorted {

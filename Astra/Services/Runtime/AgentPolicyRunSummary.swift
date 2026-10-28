@@ -16,7 +16,11 @@ import ASTRAModels
 extension AgentPolicyManifestService {
     @MainActor
     static func recordPostRunSummary(task: AgentTask, run: TaskRun, modelContext: ModelContext) {
-        let runEvents = task.events.filter { $0.run?.id == run.id }
+        // Relationship/fetch order is unspecified. Keep capped summary lists
+        // deterministic while retaining every event kind as evidence.
+        let runEvents = TaskHistoryRead.events(for: task, runID: run.id).sorted {
+            $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp
+        }
         let manifest = latestManifest(in: runEvents)
         let deniedActionValues = deniedActions(from: runEvents)
         let explicitDeniedEventCount = runEvents.filter {

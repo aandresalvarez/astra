@@ -14,6 +14,7 @@ final class RuntimeExecutionOwner {
     private var lease: RuntimeExecutionOwnerStore.Lease?
     private(set) var record: RuntimeExecutionOwnerRecord
     let isRecovery: Bool
+    var receiptURL: URL? { lease?.recordURL }
     var remoteWorkExcluded = false
     private let task: AgentTask
     private let context: ModelContext
@@ -43,7 +44,7 @@ final class RuntimeExecutionOwner {
     }
 
     static func existing(task: AgentTask, context: ModelContext) throws -> RuntimeExecutionOwnerRecord? {
-        let record = try store(in: context).read(taskID: task.id)
+        let record = try RuntimeTaskOwnerJournal.read(task: task, context: context)
         guard record == nil || record?.taskID == task.id else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         return record.map { reconciledCompletion($0, task: task) }
     }
@@ -63,8 +64,10 @@ final class RuntimeExecutionOwner {
     static func requiresExistingReceipt(_ task: AgentTask) -> Bool {
         // An audit event can require verification, but can never grant a lease.
         // A restored database must not treat a missing sidecar as a fresh task.
-        if task.events.contains(where: { $0.type == TaskEventTypes.System.runtimeExecutionOwnership.rawValue }) { return true }
-        return !task.runs.isEmpty || task.hasProviderSession
+        if !TaskHistoryRead.events(for: task, ofTypes: [TaskEventTypes.System.runtimeExecutionOwnership.rawValue]).isEmpty { return true }
+        guard !task.runs.isEmpty || task.hasProviderSession else { return false }
+        // History from before the journal is admitted only on an older app's own settlement.
+        return RuntimeRecoveryLegacyReconciliation.settledRun(of: task) == nil
     }
 
     static func inspection(task: AgentTask, context: ModelContext) throws -> RuntimeSessionInspection? {
@@ -77,7 +80,7 @@ final class RuntimeExecutionOwner {
     /// Read first, before Retry changes usage, enqueues a turn or resets state.
     static func retryDecision(task: AgentTask, context: ModelContext) -> RetryDecision {
         do {
-            let lease = try store(in: context).acquire(taskID: task.id)
+            let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
             defer { withExtendedLifetime(lease) {} }
             guard let record = try existing(task: task, context: context) else {
                 if requiresExistingReceipt(task) {
@@ -118,6 +121,7 @@ final class RuntimeExecutionOwner {
 
     static func acquire(task: AgentTask, context: ModelContext, maxRunSeconds: TimeInterval,
                         newUserTurn: Bool = false, newUserRequest: Bool = false, launchTask: AgentTask? = nil,
+                        userRequest: TaskTurnRequest? = nil,
                         resourceClaims: [TaskResourceLockClaim]? = nil) -> RuntimeExecutionOwner? {
         let key = key(taskID: task.id, context: context)
         do {
@@ -125,21 +129,29 @@ final class RuntimeExecutionOwner {
             let store = store(in: context)
             let admission = try store.acquireAdmission()
             defer { withExtendedLifetime(admission) {} }
+            let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
             let claims = resourceClaims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(
                 for: nil, task: task, runMode: "runtime", fallbackAccess: .write, sandboxEnforcement: .off)
-            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id)
-            guard TaskExecutionResourceBroker.canAcquire(claims, active: held) else {
+            let protectedPrevious = try lease.read()
+            let previous = protectedPrevious.map { reconciledCompletion($0, task: task) }
+            let workspaceAdmission = try RuntimeWorkspaceContinuation.admission(task: task, request: userRequest, previous: previous, context: context, claims: claims)
+            defer { withExtendedLifetime(workspaceAdmission) {} }
+            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
+            guard TaskExecutionResourceBroker.canAcquire(claims, active: held.filter { workspaceAdmission?.excludedClaims.contains($0) != true }) else {
                 report(TaskExecutionResourceBroker.blockerSummary(requested: claims, active: held)
                     + " Previous execution cleanup is not yet confirmed.", task: task, context: context, pause: true)
                 return nil
             }
-            let lease = try store.acquire(taskID: task.id)
-            let previous = try lease.read().map { reconciledCompletion($0, task: task) }
             guard previous == nil || previous?.taskID == task.id else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
             if previous == nil, requiresExistingReceipt(task) {
                 report("The saved execution receipt is missing. ASTRA preserved this task and blocked replacement work.", task: task, context: context, pause: true)
                 return nil
             }
+            let legacyRun = previous == nil ? RuntimeRecoveryLegacyReconciliation.settledRun(of: task) : nil
+            let resumesWorkspace = workspaceAdmission != nil && previous.map { RuntimeWorkspaceContinuation.resumesPreparation($0, task: task, request: userRequest, context: context) } == true
+            let continuesOwner = resumesWorkspace || (previous.map {
+                RuntimeCompletedUserTurnContinuation.permits($0, task: task, request: userRequest, context: context)
+            } ?? false)
             if let previous {
                 if previous.cancellationRequested == true, previous.resourcesReleased != true,
                    !previous.canReplace, !previous.canRecoverPreparation {
@@ -149,7 +161,7 @@ final class RuntimeExecutionOwner {
                 }
                 let abandonedBeforeLaunch = previous.canRecoverPreparation
                 guard previous.canReplace || abandonedBeforeLaunch
-                    || (newUserTurn && previous.canAcceptUserTurn) else {
+                    || (newUserTurn && previous.canAcceptUserTurn) || continuesOwner else {
                     report(replacementBlockedMessage(previous, inspection: .inspect(previous, ownedHere: false)), task: task, context: context, pause: true)
                     return nil
                 }
@@ -158,7 +170,9 @@ final class RuntimeExecutionOwner {
             // A separately authored request gets its own limits after verified
             // cleanup, including when the prior request exhausted its budget.
             // Retry and approved continuations keep the same request's limits.
-            let startsNewRequest = newUserRequest && previous?.canAcceptUserTurn == true
+            let resumesPreparation = resumesWorkspace || (continuesOwner && previous?.continuingUserRequestID == userRequest?.id
+                && previous.map { RuntimeCompletedUserTurnContinuation.hasUnlaunchedPreparation($0, task: task, context: context) } == true)
+            let startsNewRequest = (continuesOwner && !resumesPreparation) || (newUserRequest && previous?.canAcceptUserTurn == true)
             let recovering = previous != nil && !startsNewRequest
             let configuration = launchTask ?? task
             let limits = recovering ? previous!.limits : RuntimeRecoveryLimits(
@@ -166,14 +180,35 @@ final class RuntimeExecutionOwner {
                 turnsRemaining: configuration.maxTurns > 0 ? configuration.maxTurns : Int.max,
                 secondsRemaining: maxRunSeconds > 0 ? maxRunSeconds : .greatestFiniteMagnitude,
                 tokensSpent: 0, costSpent: 0)
-            var record = RuntimeExecutionOwnerRecord(taskID: task.id, ownerID: UUID(), executionID: UUID(),
+            var record = RuntimeExecutionOwnerRecord(taskID: task.id, ownerID: continuesOwner ? previous!.ownerID : UUID(), executionID: UUID(),
                 appProcess: app, runtime: recovering ? previous!.runtime : task.resolvedRuntimeID.rawValue, sessionID: recovering ? previous?.sessionID : nil,
                 state: .preparing, limits: limits, automaticRestarts: recovering ? previous!.automaticRestarts : 0, updatedAt: Date())
-            record.inheritedToolUncertainty = previous?.hasUnverifiedTools
+            // Keep the source/run binding if preparation is interrupted again
+            // before the worker binds its new attempt. No launch has occurred.
+            if resumesPreparation { record.runID = previous?.runID }
+            record.taskOwnerID = task.persistentModelID
+            record.legacyReferenceOwnerID = previous?.legacyReferenceOwnerID ?? previous?.ownerID
+            record.inheritedToolUncertainty = workspaceAdmission != nil || previous?.hasUnverifiedTools == true
+            record.workspaceContinuationRequestID = workspaceAdmission?.authorization.requestID ?? previous?.workspaceContinuationRequestID
+            if workspaceAdmission != nil { record.continuingUserRequestID = userRequest?.id }
             record.resourceClaims = claims
+            if continuesOwner, let previous {
+                try store.retain(protectedPrevious ?? previous)
+                record.retainedExecutionHead = previous.executionID
+                record.continuingUserRequestID = userRequest?.id
+                record.retainedProviderSharedStateKeys = Array(Set((previous.retainedProviderSharedStateKeys ?? [])
+                    + [previous.providerSharedStateKey].compactMap { $0 })).sorted()
+                record.resourceClaims = RuntimeCompletedUserTurnContinuation.retainingClaims(previous,
+                    additional: claims, requestID: userRequest?.id)
+            }
             record.resourcesReleased = false
+            record.legacySettledRunID = legacyRun?.id
+            if let workspaceAdmission, workspaceAdmission.needsPersistence {
+                try RuntimeWorkspaceContinuation.persist(workspaceAdmission.authorization, task: task, lease: lease, context: context)
+            }
             try lease.save(record) // fail closed before any worker/provider side effect
             active.insert(key)
+            if let legacyRun { reportLegacyReconciliation(legacyRun, record: record, task: task, context: context) }
             return .init(key: key, lease: lease, record: record, isRecovery: recovering, task: task, context: context)
         } catch RuntimeExecutionOwnerStore.Failure.busy {
             report("The existing execution owner is still active. No competing attempt was started.", task: task, context: context)
@@ -201,7 +236,7 @@ final class RuntimeExecutionOwner {
             let store = store(in: context)
             let admission = try store.acquireAdmission()
             defer { withExtendedLifetime(admission) {} }
-            let lease = try store.acquire(taskID: task.id)
+            let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
             let saved: RuntimeExecutionOwnerRecord?
             do { saved = try lease.read() } catch { return .unresolved(lease) }
             if let saved, saved.taskID != task.id || saved.runID != run.id { return .deferred }
@@ -210,7 +245,7 @@ final class RuntimeExecutionOwner {
                   saved.cancellationRequested != true || saved.canReplace else { return .unresolved(lease) }
             let claims = resourceClaims ?? saved.resourceClaims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(
                 for: nil, task: task, runMode: "settlement", fallbackAccess: .write, sandboxEnforcement: .off)
-            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id)
+            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
             guard TaskExecutionResourceBroker.canAcquire(claims, active: held) else { return .deferred }
             saved.resourceClaims = claims
             saved.resourcesReleased = false
@@ -332,7 +367,11 @@ final class RuntimeExecutionOwner {
             record.providerSharedStateReleased = true
         }
         let unresolved = record.resourcesReleased != true && record.providerProcess != nil
-        try? save(unresolved ? "The provider exited, but ASTRA cannot confirm that its execution and tools stopped. Its resources remain reserved; new work and recovery must wait. The result, context and remaining limits are preserved." : nil)
+        let acceptsInstruction = task.isLive && RuntimeCompletedUserTurnContinuation.hasCompletedTurn(record, task: task, context: context)
+        let message = acceptsInstruction
+            ? "This turn finished. You can send a new instruction in this task. Earlier tool effects remain unverified, so ASTRA keeps this task's resource reservations; automatic recovery stays blocked."
+            : "The provider exited, but ASTRA cannot confirm that its execution and tools stopped. Its resources remain reserved; new work and recovery must wait. The result, context and remaining limits are preserved."
+        try? save(unresolved ? message : nil)
     }
 
     var isActive: Bool { lease != nil && !writeFailed }
@@ -355,7 +394,7 @@ final class RuntimeExecutionOwner {
     }
 
     var providerOwnershipReference: RuntimeProviderOwnershipReference {
-        .init(journalRoot: Self.store(in: context).root.path, taskID: record.taskID, ownerID: record.ownerID)
+        .init(journalRoot: Self.store(in: context).root.path, taskID: record.taskID, ownerID: record.ownerID, taskOwnerID: record.taskOwnerID)
     }
 
     func bindProviderSharedState(_ key: AgentRuntimeSharedStateKey) throws {
@@ -365,6 +404,24 @@ final class RuntimeExecutionOwner {
         record.providerSharedStateKey = key.rawValue
         record.providerSharedStateReleased = false
         try save(nil)
+    }
+
+    /// The journal now holds this task's first receipt. Its ownership event makes the
+    /// task tracked at once, so a lost receipt blocks it instead of reconciling again.
+    private static func reportLegacyReconciliation(_ run: TaskRun, record: RuntimeExecutionOwnerRecord,
+                                                   task: AgentTask, context: ModelContext) {
+        guard task.isLive, task.modelContext === context else { return }
+        context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: TaskEvent.payloadString(record, fallback: "{}")))
+        AppLogger.audit(.workerLegacyExecutionReconciled, category: "Worker", taskID: task.id, fields: [
+            "settled_run_id": run.id.uuidString,
+            "settled_stop_reason": run.stopReason,
+            "run_count": String(task.runs.count),
+            "has_session_id": String(task.hasProviderSession),
+            "runtime": record.runtime
+        ])
+        report("Earlier runs of this task finished under an older ASTRA version that kept no execution receipt. Each one ended, ran on this Mac, and belonged to an app session that has since exited, so ASTRA now tracks this task's execution.",
+            task: task, context: context)
     }
 
     private static func replacementBlockedMessage(_ record: RuntimeExecutionOwnerRecord, inspection: RuntimeSessionInspection) -> String {

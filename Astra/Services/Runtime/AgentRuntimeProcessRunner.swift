@@ -1214,7 +1214,9 @@ final class AgentRuntimeProcessRunner {
                 )
                 processEvidence.processExited(naturally: proc.naturalSuccessfulExit, stdoutEOF: stdoutEOF)
                 processResult.executionStopProof = proc.stopProof(executionID: executionID,
-                    toolsStopped: processEvidence.toolsStopped, remoteWorkExcluded: remoteWorkExcluded)
+                    toolsStopped: processEvidence.toolsStopped,
+                    remoteWorkExcluded: remoteWorkExcluded ||
+                        (!plan.executionEnvironment.providerRunsInsideContainer && processEvidence.toolsStopped))
                 processResult.executionTurnsSpent = max(1, monitor.turnCount)
                 processResult.executionTokensSpent = monitor.recoveryTokensConsumed(estimatedInputTokens: estimatedInputTokens)
                 processResult.executionSecondsSpent = ProcessInfo.processInfo.systemUptime - processStartedAt
@@ -1859,7 +1861,7 @@ final class AgentRuntimeProcessRunner {
         BrokeredConnectorEnvironment.strip(from: &taskEnv, capabilityScope: capabilityScope)
         if capabilityScope.exposesBrowserBridge ||
             TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
-            for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {
+            for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id, ownerID: ShelfBrowserOwner(task).modelID) {
                 guard isBrowserBridgeEnvKeyAllowed(key) else {
                     AppLogger.audit(.capabilityChatContext, category: "Capabilities", taskID: task.id, fields: [
                         "source": "browser_bridge_env",

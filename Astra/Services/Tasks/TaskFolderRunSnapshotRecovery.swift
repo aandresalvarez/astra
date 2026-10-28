@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SwiftData
 import ASTRACore
 import ASTRAModels
@@ -69,7 +70,7 @@ extension TaskFolderRunSnapshot {
         do {
             // Created only where nothing is: anything already there must be a
             // real directory, which `isBaselineDirectory` checks below.
-            if (try? FileManager.default.attributesOfItem(atPath: directory.path)) == nil {
+            if baselineItemMode(at: directory) == nil {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             }
             guard isBaselineDirectory(directory, taskFolder: baseline.root.standardized) else { return false }
@@ -97,9 +98,9 @@ extension TaskFolderRunSnapshot {
     /// records removals under its paths, so either would let a run's record
     /// claim files it never saw.
     static func loadBaseline(at url: URL, runID: UUID) -> BaselineLoad {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return .missing }
+        guard let mode = baselineItemMode(at: url) else { return .missing }
         let taskFolder = url.deletingLastPathComponent().deletingLastPathComponent()
-        guard attributes[.type] as? FileAttributeType == .typeRegular,
+        guard mode == S_IFREG,
               let data = try? HostFileAccessBroker().readData(
                   at: url,
                   maxBytes: maximumBaselineBytes + 1,
@@ -140,11 +141,22 @@ extension TaskFolderRunSnapshot {
     /// `diagnostics/` a provider replaced with a symlink could send a baseline
     /// write, or a removal, anywhere on the host: nothing here follows one.
     static func isBaselineDirectory(_ directory: URL, taskFolder: String) -> Bool {
-        // `attributesOfItem` does not follow a symlink in the last component.
-        guard (try? FileManager.default.attributesOfItem(atPath: directory.path))?[.type] as? FileAttributeType
-            == .typeDirectory else { return false }
+        guard baselineItemMode(at: directory) == S_IFDIR else { return false }
         let root = URL(fileURLWithPath: taskFolder, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL.path
         return directory.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(root + "/")
+    }
+
+    /// Type-only metadata avoids extended-attribute reads during startup and
+    /// run settlement. lstat preserves the no-follow rule for provider-writable
+    /// diagnostics directories and baseline files; failures remain unusable.
+    private static func baselineItemMode(at url: URL) -> mode_t? {
+        var metadata = stat()
+        let result = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return lstat(path, &metadata)
+        }
+        guard result == 0 else { return nil }
+        return metadata.st_mode & S_IFMT
     }
 
     /// Removes the run's baseline once what it compared is durable: the run

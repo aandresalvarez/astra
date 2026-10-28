@@ -162,14 +162,21 @@ struct TaskThreadHistoryOffloadTests {
         let viewModel = TaskThreadViewModel()
         viewModel.reset(for: task, modelContext: context)
         await viewModel.waitForPendingWorkForTesting()
-        #expect(viewModel.snapshot?.sortedEvents.count == 1_200)
+        #expect(viewModel.snapshot?.sortedEvents.count == TaskThreadHistoryReader.defaultEventPageSize)
         #expect(viewModel.hasEarlierHistory)
 
         viewModel.loadEarlierHistory(for: task)
         #expect(viewModel.historyLoadState == .loading)
         await viewModel.waitForPendingWorkForTesting()
 
+        #expect(viewModel.snapshot?.sortedEvents.count == 2 * TaskThreadHistoryReader.defaultEventPageSize)
+        #expect(viewModel.hasEarlierHistory)
+        for _ in 0..<10 where viewModel.hasEarlierHistory {
+            viewModel.loadEarlierHistory(for: task)
+            await viewModel.waitForPendingWorkForTesting()
+        }
         #expect(viewModel.snapshot?.sortedEvents.count == 1_205)
+        #expect(Set(viewModel.snapshot?.sortedEvents.map(\.id) ?? []).count == 1_205)
         #expect(!viewModel.hasEarlierHistory)
         #expect(viewModel.historyLoadState == .idle)
     }

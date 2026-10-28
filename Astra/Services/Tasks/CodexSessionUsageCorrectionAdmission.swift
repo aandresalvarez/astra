@@ -9,7 +9,7 @@ import ASTRAPersistence
 @MainActor
 enum CodexSessionUsageCorrectionAdmission {
     static func acquire(task: AgentTask, context: ModelContext) throws -> RuntimeExecutionOwnerStore.Lease {
-        let lease = try RuntimeExecutionOwner.store(in: context).acquire(taskID: task.id)
+        let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
         guard task.status != .running, task.status != .queued,
               !task.runs.contains(where: { $0.status == .running }),
               !(try TaskTurnRequestRepository.requests(for: task, in: context)).contains(where: { $0.state.isActive }) else {
