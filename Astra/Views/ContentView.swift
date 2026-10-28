@@ -2536,6 +2536,7 @@ struct ContentView: View {
             }
             rightPanel.setActiveCanvasItem(nextCanvasItem)
             workspaceCanvasPreferenceService.apply(.transient, item: nextCanvasItem, for: selectedTask)
+            if recordsTransition { screenTransitionCoordinator.stateCommitted() }
         }
     }
 
