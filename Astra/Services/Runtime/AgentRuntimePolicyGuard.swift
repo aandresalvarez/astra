@@ -171,7 +171,8 @@ struct AgentRuntimePolicyGuard: Sendable {
         // of returning .ask here (which Auto would auto-approve — a bypass).
         let toolName = rawTool.trimmingCharacters(in: .whitespacesAndNewlines)
         let command = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let path = rawPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = ProviderToolSemantics.requiresStructuredFilePath(toolName)
+            ? rawPath : rawPath?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Route through the guard's own post-hoc evaluation so the live
         // decision is identical to what would terminate the run otherwise — no
@@ -291,6 +292,17 @@ struct AgentRuntimePolicyGuard: Sendable {
         if toolMatches(toolName, command: observed.command, candidates: manifest.providerRender.deniedTools) {
             return AgentRuntimePolicyViolation(
                 reason: "The tool is explicitly denied by the effective ASTRA policy",
+                toolName: toolName,
+                detail: observed.summary
+            )
+        }
+
+        // An approval cannot make an ambiguous native path safe. Validate its
+        // shape before ask/allow, but leave explicit denials above authoritative.
+        if ProviderToolSemantics.requiresStructuredFilePath(toolName),
+           ProviderReadFileInput.validatedPath(observed.path) == nil {
+            return AgentRuntimePolicyViolation(
+                reason: "ASTRA could not validate the file path for this tool",
                 toolName: toolName,
                 detail: observed.summary
             )

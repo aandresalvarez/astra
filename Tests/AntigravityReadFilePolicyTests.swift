@@ -29,6 +29,8 @@ struct AntigravityReadFilePolicyTests {
         "{}", #"{"Path":null}"#, #"{"Path":123}"#, #"{"Path":{}}"#,
         #"{"Path":[]}"#, #"{"Path":""}"#, #"{"Path":"  "}"#,
         #"{"Path":"bad\u0000path"}"#, #"{"path":"/tmp/astra-policy-guard/a"}"#,
+        #"{"Path":"/tmp/astra-policy-guard/a "}"#, #"{"Path":" /tmp/astra-policy-guard/a"}"#,
+        #"{"Path":"/tmp/astra-policy-guard/a\n"}"#,
         #"{"Path":"/tmp/outside","file_path":"/tmp/astra-policy-guard/a"}"#,
         #"{"Path":"/tmp/astra-policy-guard/a","path":"/tmp/outside"}"#,
         #"{"input":{"Path":"/tmp/astra-policy-guard/a"}}"#,
@@ -38,9 +40,12 @@ struct AntigravityReadFilePolicyTests {
     func invalidNativePath(summary: String) {
         let event = ParsedEvent.toolUse(name: "read_file", id: "read", input: ["summary": summary])
         #expect(PolicyObservedEvent(providerEvent: event)?.path == nil)
-        let violation = AgentRuntimePolicyGuard(manifest: manifest()).violation(for: event)
-        #expect(violation != nil)
-        #expect(violation?.requiresApproval == false)
+        for policy in [AgentPolicy.preset(.review), AgentPolicy(level: .custom, allowedTools: [], askFirstTools: ["Read"])] {
+            let violation = AgentRuntimePolicyGuard(manifest: manifest(policy: policy)).violation(for: event)
+            #expect(violation != nil)
+            #expect(violation?.requiresApproval == false)
+            #expect(violation?.approvalGrants.isEmpty == true)
+        }
     }
 
     @Test("An external read asks for its actual path", arguments: [
@@ -79,6 +84,57 @@ struct AntigravityReadFilePolicyTests {
         #expect(violation?.requiresApproval == true)
     }
 
+    @Test("Whitespace must not redirect a native read to another file during validation")
+    func whitespaceSymlink() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspaceURL = root.appendingPathComponent("workspace")
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let external = root.appendingPathComponent("outside.txt")
+        try "external".write(to: external, atomically: true, encoding: .utf8)
+        try "internal".write(to: workspaceURL.appendingPathComponent("spec.txt"), atomically: true, encoding: .utf8)
+        let link = workspaceURL.appendingPathComponent("spec.txt ")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: external)
+        var manifest = manifest()
+        manifest.workspacePath = workspaceURL.path
+        let event = try frame(parameters: ["Path": link.path])
+        #expect(PolicyObservedEvent(providerEvent: event)?.path == nil)
+        let guardrail = AgentRuntimePolicyGuard(manifest: manifest)
+        #expect(guardrail.violation(for: event)?.requiresApproval == false)
+        #expect(guardrail.disposition(toolName: "read_file", command: nil, path: link.path) == .denied)
+    }
+
+    @Test("A malformed read is denied before an ask-first decision", arguments: [
+        Optional<String>.none, "", " \t", "/tmp/astra-policy-guard/a ", " /tmp/astra-policy-guard/a", "a\0b"
+    ])
+    func malformedAskFirst(path: String?) {
+        let policy = AgentPolicy(level: .custom, allowedTools: [], askFirstTools: ["Read"])
+        let manifest = manifest(policy: policy)
+        let guardrail = AgentRuntimePolicyGuard(manifest: manifest)
+        #expect(guardrail.disposition(toolName: "read_file", command: nil, path: path) == .denied)
+        for mode in [PermissionPolicy.restricted, .interactive, .autonomous] {
+            if case .deny = AutoApprovalClassifier.decide(toolName: "read_file", command: nil,
+                path: path, permissionPolicy: mode, manifest: manifest) {} else {
+                Issue.record("Malformed native paths must not be approved or forwarded for approval")
+            }
+        }
+    }
+
+    @Test("Malformed input does not override an explicit policy denial")
+    func malformedExplicitDenial() throws {
+        let policy = AgentPolicy(level: .custom, allowedTools: [], askFirstTools: ["Read"], deniedTools: ["Read"])
+        let violation = AgentRuntimePolicyGuard(manifest: manifest(policy: policy)).violation(for: try frame(parameters: [:]))
+        #expect(violation?.reason.contains("explicitly denied") == true)
+    }
+
+    @Test("A valid native path still honors an ask-first read rule")
+    func validAskFirst() throws {
+        let policy = AgentPolicy(level: .custom, allowedTools: [], askFirstTools: ["Read"])
+        let guardrail = AgentRuntimePolicyGuard(manifest: manifest(policy: policy))
+        #expect(guardrail.disposition(toolName: "read_file", command: nil, path: workspace + "/a") == .ask)
+        #expect(guardrail.violation(for: try frame(parameters: ["Path": workspace + "/a"]))?.requiresApproval == true)
+    }
+
     @Test("Custom policy does not acquire read permission implicitly")
     func customWithoutRead() throws {
         let manifest = manifest(policy: AgentPolicy(level: .custom, allowedTools: []))
@@ -103,6 +159,8 @@ struct AntigravityReadFilePolicyTests {
         #expect(guardrail.disposition(toolName: "read_file", command: nil, path: nil) == .denied)
         #expect(guardrail.disposition(toolName: "read_file", command: nil, path: workspace + "/a") == .allowed)
         #expect(guardrail.disposition(toolName: "read_file", command: nil, path: "/tmp/outside/a") == .ask)
+        #expect(guardrail.violation(for: .toolUse(name: "read_file", id: "spaces",
+            input: ["Path": workspace + "/spec with spaces.txt"])) == nil)
     }
 
     @Test("Interactive input uses the same native path contract")
@@ -112,6 +170,7 @@ struct AntigravityReadFilePolicyTests {
         }
         #expect(request(["Path": workspace + "/a"]).pathText == workspace + "/a")
         #expect(request(["Path": NSNull()]).pathText == nil)
+        #expect(request(["Path": workspace + "/a "]).pathText == nil)
         #expect(request(["Path": "/tmp/outside/a", "path": workspace + "/a"]).pathText == nil)
     }
 
