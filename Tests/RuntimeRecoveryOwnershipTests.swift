@@ -191,7 +191,10 @@ struct RuntimeRecoveryOwnershipTests {
         first.finish() // admission/preflight failed without launching
         let next = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 999))
         defer { next.finish() }
-        #expect(next.record.limits == previous.limits)
+        var remaining = previous.limits
+        remaining.secondsRemaining = first.record.limits.secondsRemaining
+        #expect(remaining.secondsRemaining < previous.limits.secondsRemaining && remaining.secondsRemaining > 0)
+        #expect(next.record.limits == remaining)
         task.sessionId = nil
         next.restoreSession(for: .codexCLI)
         #expect(task.sessionId == nil)

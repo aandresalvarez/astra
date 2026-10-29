@@ -82,6 +82,7 @@ final class AgentRuntimeProcessRunner {
     private var supervisionContext: RuntimeSupervisionContext?
     private var activeSupervision: RuntimeSupervisionSession?
     private var activeRecovery: RuntimeRecoverySession?
+    var providerStateWaitTimeoutSeconds: TimeInterval = 120
     private var supervisionPreparation: Task<RuntimeSupervisionFiles, Never>?
     @MainActor func configureSupervision(_ context: RuntimeSupervisionContext?) { supervisionContext = context }
     let homeAccessCancellation = RuntimeHomeAccessCancellationGate()
@@ -721,6 +722,10 @@ final class AgentRuntimeProcessRunner {
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         let launchPreparationStarted = ProcessInfo.processInfo.systemUptime
+        let preparationOwner = executionOwner
+        defer {
+            if preparationOwner?.record.providerProcess == nil { preparationOwner?.chargeElapsedPreparation() }
+        }
         let launchContext = AgentRuntimeProcessLaunchContext(
             prompt: prompt,
             task: task,
@@ -805,7 +810,9 @@ final class AgentRuntimeProcessRunner {
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             let sharedStateLease: AgentRuntimeSharedStateLease
             do {
-                sharedStateLease = try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey, owner: executionOwner)
+                try executionOwner?.waitingForProviderState(sharedStateKey)
+                sharedStateLease = try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey, owner: executionOwner,
+                    timeoutSeconds: min(providerStateWaitTimeoutSeconds, executionOwner?.remainingWallTime ?? maxRunSeconds ?? 120))
             } catch is CancellationError {
                 return AgentProcessResult(
                     exitCode: -1,
@@ -813,6 +820,10 @@ final class AgentRuntimeProcessRunner {
                     runtimeStopReason: "cancelled",
                     runtimeStopMessage: "Task cancelled before acquiring provider shared state."
                 )
+            } catch let timeout as RuntimeProviderStateWaitTimeout {
+                return AgentProcessResult(exitCode: -1, error: timeout.localizedDescription,
+                    runtimeStopReason: RuntimeProviderStateWaitTimeout.stopReason,
+                    runtimeStopMessage: timeout.localizedDescription)
             } catch let block as RuntimeProviderResourceRegistry.Block {
                 return AgentProcessResult(exitCode: -1, error: block.message,
                     runtimeStopReason: RuntimeProviderResourceRegistry.Block.stopReason,
@@ -935,8 +946,8 @@ final class AgentRuntimeProcessRunner {
 
         let owner = executionOwner
         let preparationSeconds = max(0, ProcessInfo.processInfo.systemUptime - preparationStartedAt)
-        owner?.chargePreparation(seconds: preparationSeconds)
-        let maxRunSeconds = maxRunSeconds.map { max(0, $0 - preparationSeconds) }
+        owner?.chargeElapsedPreparation()
+        let maxRunSeconds = maxRunSeconds.map { max(0, min($0 - preparationSeconds, owner?.remainingWallTime ?? $0)) }
         if owner != nil, (maxRunSeconds ?? 0) <= 0 || owner?.record.limits.secondsRemaining == 0 {
             return AgentProcessResult(exitCode: -1, runtimeStopReason: "recovery_limits_exhausted",
                 runtimeStopMessage: "The remaining execution time expired before launch.", budgetExceeded: true)
