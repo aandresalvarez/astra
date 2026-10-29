@@ -501,7 +501,8 @@ enum WorkspaceDeletionCleanupService {
         // a stable endpoint or package namespace under a new ID, so
         // connector ownership is per namespace.
         let ready = record.connectors.filter { !requests.holdsAccount($0) && !mirrored.holdsAccount($0) }
-        let ownership = ConnectorCredentialCleanup.Ownership(connectors, retained: retained)
+        guard let archived = ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: modelContext) else { return false }
+        let ownership = ConnectorCredentialCleanup.Ownership(connectors, retained: retained + archived)
         let attempted = cleanConnectors.map { $0(ready, ownership) } ?? ConnectorCredentialCleanup.run(ready, ownership: ownership)
         var cleared = ready.count == record.connectors.count && attempted
         for skill in record.skills where !liveSkills.contains(skill.skillID) && !retainedSkillIDs.contains(skill.skillID) {

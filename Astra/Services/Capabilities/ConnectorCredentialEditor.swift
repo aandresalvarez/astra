@@ -51,10 +51,9 @@ enum ConnectorCredentialEditor {
         }
     }
 
-    /// Saved keys whose values this build's Keychain access refuses (not
-    /// missing ones): what an earlier ad-hoc build stored, before the person
-    /// re-enters it. An explicit read per key; call it from an action or a
-    /// task, never from a view body.
+    /// Saved keys whose vault reads are refused, rather than missing: denied
+    /// bootstrap access and an older item's ACL both produce this outcome.
+    /// An explicit read per key; call from an action or task, never a view body.
     static func unreadableKeys(of account: Connector, vault: SecretStore = KeychainSecretStore()) -> [String] {
         guard !account.isStanfordOutlookMail else { return [] }
         let facts = ConnectorSecretFacts(connector: account)
@@ -84,6 +83,21 @@ enum ConnectorCredentialEditor {
             _ = PluginOperationRecovery.resumePending(modelContext: modelContext, only: id)
             guard try PluginOperationCommit.read(id, container: modelContext.container)?.completedAt != nil
             else { throw PluginOperationProblem.savedRecoveryPending(id) }
+        }
+    }
+
+    static func canRecoverJournal(modelContext: ModelContext) -> Bool {
+        (try? ConnectorCredentialGenerationJournal(modelContext: modelContext)?.canRecoverEditing()) == true
+    }
+
+    /// Preserve the unverifiable journal before accepting any new credential
+    /// edits. This action never reads/writes the vault or changes account rows.
+    static func recoverJournal(on account: Connector, modelContext: ModelContext) throws {
+        guard !modelContext.hasChanges else { throw Failure.pendingEdits }
+        try serializedAccount(account, modelContext: modelContext) {
+            guard let journal = try ConnectorCredentialGenerationJournal(modelContext: modelContext) else { return }
+            let lease = try journal.acquireLease()
+            try journal.recoverEditing(lease: lease)
         }
     }
 

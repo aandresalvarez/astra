@@ -1,11 +1,7 @@
 import SwiftUI
 
-/// Saved values this build of ASTRA can't read. Items in ASTRA's keychain
-/// trust only the build that wrote them, and changing that list takes the
-/// keychain's own password, which only ASTRA holds, so no macOS prompt can
-/// add a rebuilt ASTRA. The values are re-entered instead, all at once: a save
-/// copies every value it keeps and can't copy one it can't read
-/// (`ConnectorCredentialEditor.save`, `SkillCredentialEditor.save`).
+/// Unavailable reads can mean denied vault access or an older item's ACL.
+/// Replacements are saved together, with Keychain UI allowed by that gesture.
 struct ConnectorCredentialReentrySection: View {
     let keys: [String]
     /// What the values let the person keep using: "account" or "skill".
@@ -21,9 +17,7 @@ struct ConnectorCredentialReentrySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label(keys.count == 1
-                  ? "ASTRA can't read this saved secret. An earlier build saved it; re-enter it to keep using this \(subject)."
-                  : "ASTRA can't read these saved secrets. An earlier build saved them; re-enter them together to keep using this \(subject).",
+            Label(Self.message(keyCount: keys.count, subject: subject),
                   systemImage: "exclamationmark.triangle.fill")
                 .font(Stanford.caption(12))
                 .foregroundStyle(Stanford.poppy)
@@ -52,5 +46,11 @@ struct ConnectorCredentialReentrySection: View {
 
     private func submit() {
         if save(values.filter { keys.contains($0.key) && !$0.value.isEmpty }) { values = [:] }
+    }
+
+    static func message(keyCount: Int, subject: String) -> String {
+        let description = keyCount == 1 ? "this saved secret" : "these saved secrets"
+        let replacement = keyCount == 1 ? "Re-enter it" : "Re-enter them together"
+        return "ASTRA can't read \(description). \(replacement) to keep using this \(subject). If macOS asks for Keychain access when saving, allow ASTRA to continue."
     }
 }

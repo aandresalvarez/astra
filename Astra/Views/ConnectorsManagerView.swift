@@ -152,6 +152,7 @@ struct ConnectorEditorView: View {
     @State private var credentialSaveError: ConnectorCredentialSaveFailurePresentation?
     @State private var credentialOperationError: String?
     @State private var credentialRecoveryID: UUID?
+    @State private var credentialJournalRecoveryAvailable = false
     @State private var pendingCredentialSaveContext: PendingConnectorCredentialSaveContext?
     @State private var unreadableCredentialKeys: [String] = []
     @State private var newListItem = ""
@@ -454,6 +455,14 @@ struct ConnectorEditorView: View {
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
                             }
+                        }
+                        if credentialJournalRecoveryAvailable {
+                            Text("Recover credential editing to continue. Existing secrets will be kept.")
+                                .font(Stanford.caption(12))
+                                .foregroundStyle(.secondary)
+                            Button("Recover credential editing") { recoverCredentialJournal() }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
                         }
                         if let credentialSaveError {
                             ViewThatFits(in: .horizontal) {
@@ -1103,6 +1112,16 @@ struct ConnectorEditorView: View {
     /// Explicit reads, so on appear and after a credential change only.
     private func refreshUnreadableCredentialKeys() {
         unreadableCredentialKeys = ConnectorCredentialEditor.unreadableKeys(of: connector)
+        credentialJournalRecoveryAvailable = ConnectorCredentialEditor.canRecoverJournal(modelContext: modelContext)
+    }
+
+    private func recoverCredentialJournal() {
+        do {
+            try ConnectorCredentialEditor.recoverJournal(on: connector, modelContext: modelContext)
+            credentialOperationError = nil
+            credentialRecoveryID = nil
+            refreshUnreadableCredentialKeys()
+        } catch { showCredentialOperationError(error) }
     }
 
     private func removeCredential(_ key: String) {
