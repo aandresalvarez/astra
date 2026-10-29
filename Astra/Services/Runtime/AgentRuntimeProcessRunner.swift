@@ -69,7 +69,7 @@ final class AgentRuntimeProcessRunner {
            sharedStateOwnerID == previous.record.ownerID {
             // Runs after the worker's synchronous finish/cleanup defers.
             Task { @MainActor in
-                guard previous.persistedResourceRelease else { return }
+                guard previous.providerLaunchGateCanRelease else { return }
                 await AgentRuntimeSharedStateGate.shared.release(lease)
                 if self.sharedStateLease == lease { self.sharedStateLease = nil }
             }

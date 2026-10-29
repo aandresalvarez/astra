@@ -691,10 +691,24 @@ enum AntigravityCLIRuntime {
         defaults: UserDefaults = .standard,
         timeoutSeconds: TimeInterval = 8
     ) async -> Bool {
-        guard !Task.isCancelled else { return false }
+        await probeStructuredOutputSupportBeforeLaunch(executablePath: executablePath,
+            providerHomeDirectory: providerHomeDirectory, taskID: taskID, defaults: defaults,
+            timeoutSeconds: timeoutSeconds).supported
+    }
+
+    struct LaunchProbeResult {
+        let supported: Bool
+        let stopped: Bool
+    }
+
+    static func probeStructuredOutputSupportBeforeLaunch(
+        executablePath: String, providerHomeDirectory: String, taskID: UUID? = nil,
+        defaults: UserDefaults = .standard, timeoutSeconds: TimeInterval = 8
+    ) async -> LaunchProbeResult {
+        guard !Task.isCancelled else { return .init(supported: false, stopped: true) }
         let executable = executablePath.isEmpty ? detectPath() : executablePath
         if let verdict = cachedStructuredOutputVerdict(executablePath: executable, defaults: defaults) {
-            return verdict
+            return .init(supported: verdict, stopped: true)
         }
         // The verdict is one process-wide key. Inside a test process the shared
         // domain belongs to the suites that seed it for their own fake binary;
@@ -702,7 +716,7 @@ enum AntigravityCLIRuntime {
         // it, and run that script once more than the suite expects. Tests that
         // exercise this inject their own defaults, as for
         // `CodexMCPPolicyService.answersAllowed`.
-        guard defaults !== UserDefaults.standard || !AppLogger.isRunningTests else { return false }
+        guard defaults !== UserDefaults.standard || !AppLogger.isRunningTests else { return .init(supported: false, stopped: true) }
         let authMode = resolvedAuthMode(defaults: defaults)
         let adcProject = AntigravityADCProjectStore.load(defaults: defaults)
         let startedAt = Date()
@@ -711,9 +725,10 @@ enum AntigravityCLIRuntime {
             path: executable, args: ["--help"], timeout: timeoutSeconds,
             environment: probeEnvironment(mode: authMode, adcProject: adcProject,
                 providerHomeDirectory: providerHomeDirectory, extraVariables: ["NO_COLOR": "1"]),
-            currentDirectory: nil, maximumOutputBytes: 1_048_576, terminateProcessGroup: true
+            currentDirectory: nil, maximumOutputBytes: 1_048_576, terminateProcessGroup: true,
+            verifyProcessGroupStop: true
         )
-        let valid = result.isSuccess && !Task.isCancelled && !result.stdoutTruncated
+        let valid = result.isSuccess && result.processGroupStopped == true && !Task.isCancelled && !result.stdoutTruncated
             && !result.stderrTruncated && stamp == executableStamp(executable)
         let supported = valid && parseStructuredOutputSupport(result.stdout + "\n" + result.stderr)
         if valid {
@@ -730,7 +745,7 @@ enum AntigravityCLIRuntime {
             "duration_ms": String(Int(Date().timeIntervalSince(startedAt) * 1000)),
             "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable)
         ], level: cached ? .info : .warning)
-        return supported
+        return .init(supported: supported, stopped: result.processGroupStopped == true)
     }
 
     @discardableResult

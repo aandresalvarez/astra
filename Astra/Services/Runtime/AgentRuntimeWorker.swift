@@ -403,17 +403,17 @@ final class AgentRuntimeWorker {
 
         await CodexMCPPolicyService.warmBeforeLaunch(configuration: runtimeConfiguration)
         guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
-            settlePrelaunchCancellation(task: task, modelContext: modelContext)
+            settlePrelaunchCancellation(task: task, modelContext: modelContext, request: request)
             return
         }
         if selectedRuntime == .copilotCLI {
             guard let capabilities = await prepareCopilotCapabilities(
-                executablePath: launchSettings.executablePath, task: task, modelContext: modelContext
+                executablePath: launchSettings.executablePath, task: task, modelContext: modelContext, request: request
             ) else { return }
             executionPolicy.copilotCapabilityResolution = capabilities
         }
         guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
-            settlePrelaunchCancellation(task: task, modelContext: modelContext)
+            settlePrelaunchCancellation(task: task, modelContext: modelContext, request: request)
             return
         }
         let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
@@ -556,14 +556,13 @@ final class AgentRuntimeWorker {
         }
         if selectedRuntime == .antigravityCLI {
             // agy updates itself in place; ask again before its command is built.
-            await antigravityLaunchPreparation.prepare(
+            guard await RuntimePrelaunchCancellation.prepareAntigravity(antigravityLaunchPreparation,
                 executablePath: launchSettings.executablePath,
                 homeDirectory: launchSettings.homeDirectory,
-                taskID: task.id
-            )
+                task: task, run: run, request: request, owner: executionOwner, context: modelContext) else { return }
         }
         guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
-            settlePrelaunchCancellation(task: task, modelContext: modelContext)
+            settlePrelaunchCancellation(task: task, modelContext: modelContext, request: request)
             return
         }
 
@@ -1447,16 +1446,16 @@ final class AgentRuntimeWorker {
         processRunner.cancel()
     }
     @MainActor
-    private func settlePrelaunchCancellation(task: AgentTask, modelContext: ModelContext) {
-        if task.status != .cancelled {
-            TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        }
+    private func settlePrelaunchCancellation(task: AgentTask, modelContext: ModelContext,
+                                            request: TaskTurnRequest?, localWorkStopped: Bool = true) {
+        guard let owner = currentExecutionOwner else { return }
+        RuntimePrelaunchCancellation.settle(task: task, request: request, owner: owner,
+            context: modelContext, localWorkStopped: localWorkStopped)
     }
 
     @MainActor
     private func prepareCopilotCapabilities(
-        executablePath: String, task: AgentTask, modelContext: ModelContext
+        executablePath: String, task: AgentTask, modelContext: ModelContext, request: TaskTurnRequest?
     ) async -> CopilotCapabilityResolution? {
         guard FileManager.default.isExecutableFile(atPath: executablePath) else {
             return .unavailable("Copilot executable is missing or is not executable.")
@@ -1472,13 +1471,13 @@ final class AgentRuntimeWorker {
                 try await preparation.value
             } onCancel: { preparation.cancel() }
             guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
-                settlePrelaunchCancellation(task: task, modelContext: modelContext)
+                settlePrelaunchCancellation(task: task, modelContext: modelContext, request: request)
                 return nil
             }
             return .answered(capabilities)
         } catch {
             if cancellationRequested || Task.isCancelled || error is CancellationError || task.status == .cancelled {
-                settlePrelaunchCancellation(task: task, modelContext: modelContext)
+                settlePrelaunchCancellation(task: task, modelContext: modelContext, request: request)
                 return nil
             }
             // Admission owns durable launch blocks and their TaskRun history,
