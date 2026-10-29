@@ -168,6 +168,24 @@ struct SettingsRuntimeTab: View {
                 settingsDivider
                 SensitiveDataApprovalRow(runtime: runtime)
                     .id(runtime)
+                if runtime == .copilotCLI {
+                    settingsDivider
+                    Picker("Repository instructions", selection: Binding(
+                        get: { RuntimeProviderSettingsStore.copilotRepositoryInstructionMode().rawValue },
+                        set: { value in
+                            RuntimeProviderSettingsStore.setCopilotRepositoryInstructionMode(CopilotRepositoryInstructionMode(rawValue: value) ?? .guidance)
+                            runtimeProviderSettingsRevision = UserDefaults.standard.integer(forKey: AppStorageKeys.runtimeProviderSettingsRevision)
+                        }
+                    )) {
+                        ForEach(CopilotRepositoryInstructionMode.allCases) { mode in
+                            Text(mode.label).tag(mode.rawValue)
+                        }
+                    }
+                    Text(RuntimeProviderSettingsStore.copilotRepositoryInstructionMode().explanation)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 // Capability-gated, so it stays outside the provider branch
                 // above: Claude declares `supportsReasoningEffort` too, and
                 // nesting this in the `else` hid the picker from the one

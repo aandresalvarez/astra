@@ -29,7 +29,7 @@ enum CopilotAdapterFixture {
 
     static func helpText(supportsAdditionalMCPConfig: Bool = true) -> String {
         let mcpConfigHelp = supportsAdditionalMCPConfig ? " --additional-mcp-config CONFIG" : ""
-        return "--allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL\(mcpConfigHelp)"
+        return "--allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --effort LEVEL\(mcpConfigHelp)"
     }
 
 }

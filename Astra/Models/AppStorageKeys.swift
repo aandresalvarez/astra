@@ -49,6 +49,7 @@ public enum AppStorageKeys {
     public static let defaultRuntimeID = "defaultRuntimeID"
     public static let defaultModel = "defaultModel"
     public static let defaultReasoningEffort = "astra.defaultReasoningEffort.v1"
+    public static let copilotRepositoryInstructionMode = "astra.copilot.repositoryInstructionMode.v1"
     public static let defaultAgentPolicyLevel = "astra.policy.defaultLevel.v1"
     public static let workspacesRoot = "workspacesRoot"
     public static let timeoutSeconds = "timeoutSeconds"

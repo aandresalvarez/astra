@@ -16,6 +16,7 @@ enum RuntimeProviderSettingsStore {
         defaults: UserDefaults = .standard
     ) -> AgentRuntimeProviderSettings {
         var settings = AgentRuntimeProviderSettings()
+        settings.copilotRepositoryInstructionMode = copilotRepositoryInstructionMode(defaults: defaults)
         for runtime in runtimes {
             settings.setExecutablePath(executablePath(for: runtime, defaults: defaults), for: runtime)
             settings.setHomeDirectory(homeDirectory(for: runtime, defaults: defaults), for: runtime)
@@ -29,6 +30,15 @@ enum RuntimeProviderSettingsStore {
     static func executablePath(for runtime: AgentRuntimeID, defaults: UserDefaults = .standard) -> String {
         defaults.string(forKey: executablePathKey(for: runtime))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    static func copilotRepositoryInstructionMode(defaults: UserDefaults = .standard) -> CopilotRepositoryInstructionMode {
+        CopilotRepositoryInstructionMode(rawValue: defaults.string(forKey: AppStorageKeys.copilotRepositoryInstructionMode) ?? "") ?? .guidance
+    }
+
+    static func setCopilotRepositoryInstructionMode(_ mode: CopilotRepositoryInstructionMode, defaults: UserDefaults = .standard) {
+        defaults.set(mode.rawValue, forKey: AppStorageKeys.copilotRepositoryInstructionMode)
+        bumpRevision(defaults: defaults)
     }
 
     static func setExecutablePath(
@@ -78,7 +88,8 @@ enum RuntimeProviderSettingsStore {
                 [
                     runtime.rawValue,
                     executablePath(for: runtime, defaults: defaults),
-                    homeDirectory(for: runtime, defaults: defaults)
+                    homeDirectory(for: runtime, defaults: defaults),
+                    runtime == .copilotCLI ? copilotRepositoryInstructionMode(defaults: defaults).rawValue : ""
                 ].joined(separator: "=")
             }
             .joined(separator: "\u{1F}")

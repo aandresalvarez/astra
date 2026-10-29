@@ -18,7 +18,7 @@ extension HeadlessChatScenarioTests {
         #!/bin/sh
         if [ "$1" = "help" ]; then
           cat <<'HELP'
-        --output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR
+        --output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR
         --available-tools=TOOLS --excluded-tools=TOOLS
         --allow-all-tools required for non-interactive mode
         HELP

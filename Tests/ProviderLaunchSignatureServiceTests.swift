@@ -5,6 +5,19 @@ import ASTRACore
 
 @Suite("Provider launch signature")
 struct ProviderLaunchSignatureServiceTests {
+    @Test("Legacy provider sessions and changed instruction modes require a fresh handoff")
+    func repositoryInstructionModeInvalidatesNativeSession() throws {
+        let legacy = signature(resourceDigest: nil)
+        var guidance = legacy
+        guidance.repositoryInstructionContract = "copilot-repository-instructions-v1:guidance:hash"
+        var strict = guidance
+        strict.repositoryInstructionContract = "copilot-repository-instructions-v1:strict:hash"
+        #expect(legacy.signatureValue != guidance.signatureValue)
+        #expect(strict.signatureValue != guidance.signatureValue)
+        let decoded = try JSONDecoder().decode(ProviderLaunchSignaturePayload.self, from: JSONEncoder().encode(legacy))
+        #expect(decoded.repositoryInstructionContract == nil)
+        #expect(decoded.signatureValue == legacy.signatureValue)
+    }
     @Test("Read-only resource changes invalidate provider-native continuation identity")
     func readOnlyResourceChangesInvalidateNativeContinuationIdentity() throws {
         let original = signature(resourceDigest: "resource-a")
@@ -21,34 +34,6 @@ struct ProviderLaunchSignatureServiceTests {
     }
 
     private func signature(resourceDigest: String?) -> ProviderLaunchSignaturePayload {
-        ProviderLaunchSignaturePayload(
-            version: 1,
-            runtimeID: AgentRuntimeID.codexCLI.rawValue,
-            model: "gpt-5.5",
-            policyLevel: "standard",
-            policyScope: "task",
-            providerAdapterVersion: 1,
-            permissionMode: "restricted",
-            allowedTools: [],
-            askFirstTools: [],
-            deniedTools: [],
-            allowedShellPatterns: [],
-            askFirstShellPatterns: [],
-            deniedShellPatterns: [],
-            allowedURLPatterns: [],
-            deniedURLPatterns: [],
-            runtimeSupportTools: [],
-            scopedSkillIDs: [],
-            scopedSkillNames: [],
-            scopedConnectorDescriptors: [],
-            scopedLocalToolCommands: [],
-            environmentKeyNames: [],
-            credentialLabels: [],
-            mcpServerIDs: [],
-            browserAdapters: [],
-            promptSchemaVersion: "context_capsule_v2",
-            executionEnvironmentFingerprint: WorkspaceExecutionEnvironment.host.signatureFingerprint,
-            readOnlyResourceContractDigest: resourceDigest
-        )
+        ProviderLaunchSignatureFixture.make(resourceDigest: resourceDigest)
     }
 }

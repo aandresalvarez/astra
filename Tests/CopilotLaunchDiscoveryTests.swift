@@ -62,7 +62,7 @@ struct CopilotLaunchDiscoveryTests {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
         let release = harness.rootURL.appendingPathComponent("release")
-        let help = #"echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR""#
+        let help = #"echo "--output-format=FORMAT --stream=MODE --no-ask-user --no-custom-instructions --secret-env-vars=VAR""#
         func copilotScript(help helpBody: String, answer: String, inputTokens: Int) -> String {
             """
             #!/bin/sh

@@ -54,7 +54,8 @@ struct ProviderLaunchCapabilityScopeTests {
                 for: task,
                 manifest: manifest,
                 contextText: providerLaunchContextText,
-                capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan
+                capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan,
+                repositoryInstructionContract: repositoryInstructions?.signatureComponent
             )
             """
         ))
