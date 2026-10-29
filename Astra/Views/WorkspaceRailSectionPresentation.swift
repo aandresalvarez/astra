@@ -75,6 +75,8 @@ enum WorkspaceRailSectionPresentation {
         var changedFileCount: Int = 0
         var aheadCount: Int = 0
         var behindCount: Int = 0
+        /// Readiness is supplied by WorkspaceGitViewModel, not inferred from counts.
+        var canStartPullRequest: Bool = false
         /// A label for the open pull request (`#552 · draft`), when one exists.
         var openPullRequestLabel: String? = nil
         var executionEnvironment: ExecutionEnvironment = .local
@@ -358,8 +360,8 @@ enum WorkspaceRailSectionPresentation {
     }
 
     /// Verbs are a button footer, rendered only when something is actionable.
-    /// An open pull request is a row, not a footer: with nothing left to
-    /// commit or push the footer is empty.
+    /// A clean, published branch can still create a PR. An existing PR is a
+    /// row, so it needs no footer when no commit or push remains.
     static func footerActions(_ facts: EnvironmentFacts) -> [String] {
         guard facts.branch != nil else { return [] }
         var actions: [String] = []
@@ -368,7 +370,7 @@ enum WorkspaceRailSectionPresentation {
         } else if facts.aheadCount > 0 {
             actions.append(pushAction)
         }
-        if !actions.isEmpty, facts.openPullRequestLabel == nil {
+        if facts.openPullRequestLabel == nil, !actions.isEmpty || facts.canStartPullRequest {
             actions.append(createPullRequestAction)
         }
         return actions

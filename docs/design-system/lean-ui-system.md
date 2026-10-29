@@ -360,9 +360,11 @@ Expanded state:
 
 The Environment box holds source control and containers as row groups: its
 state (folders, runs-in, repository, branch, checkout, changes) reads as quiet
-key-value rows; its verbs live in a button footer (see 5a) that renders only
-when something can be committed, pushed or pulled. A clean, pushed checkout
-shows rows and no buttons. Collapsed, the box is one line that still names
+key-value rows; its verbs live in a button footer (see 5a) driven by available
+actions. A clean, published checkout without an existing PR shows `Create PR`
+when the Git model reports it ready; it does not show a disabled commit button.
+A clean checkout with an existing PR or no available action shows only rows.
+Collapsed, the box is one line that still names
 the repository, branch and working-tree state, so it is truthful about
 uncommitted or unpushed work.
 

@@ -257,6 +257,34 @@ struct WorkspaceRailSectionPresentationTests {
         #expect(clean.tone == .neutral)
     }
 
+    @MainActor
+    @Test("A clean published feature branch keeps Create PR in the footer")
+    func cleanPublishedBranchKeepsPullRequestAction() {
+        let viewModel = WorkspaceGitViewModel()
+        viewModel.currentBranch = "feature/report"
+        viewModel.hasRemote = true
+        viewModel.hasUpstream = true
+        #expect(viewModel.canStartPullRequest)
+        var facts = ownerEnvironment()
+        facts.branch = viewModel.currentBranch
+        facts.canStartPullRequest = viewModel.canStartPullRequest
+        #expect(Rail.footerActions(facts) == ["Create PR"])
+        #expect(WorkspaceGitPanelPresentation.footerActions(for: viewModel) == Rail.footerActions(facts))
+
+        facts.openPullRequestLabel = "#42"
+        viewModel.openPullRequest = .init(number: 42, url: "https://github.com/example/repo/pull/42",
+                                         title: "Report", isDraft: false, state: "OPEN")
+        #expect(Rail.footerActions(facts).isEmpty)
+        #expect(WorkspaceGitPanelPresentation.footerActions(for: viewModel) == Rail.footerActions(facts))
+        facts.openPullRequestLabel = nil
+        viewModel.openPullRequest = nil
+        viewModel.hasUpstream = false
+        facts.canStartPullRequest = viewModel.canStartPullRequest
+        #expect(!facts.canStartPullRequest)
+        #expect(Rail.footerActions(facts).isEmpty)
+        #expect(WorkspaceGitPanelPresentation.footerActions(for: viewModel) == Rail.footerActions(facts))
+    }
+
     @Test("the verbs footer appears only when something is actionable")
     func footerAppearsOnlyWhenActionable() {
         #expect(Rail.footerActions(ownerEnvironment()) == [])

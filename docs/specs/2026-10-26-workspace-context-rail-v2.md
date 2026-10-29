@@ -132,9 +132,10 @@ row into one section of key/value rows:
 Verbs stay in a button footer per lean rule 5a, but the footer renders only
 when something is actionable: `Commit & push` with uncommitted changes, `Push`
 with commits ahead and a clean tree, and `Create PR` beside either until a
-pull request exists. An open pull request is a row, not a footer, so a clean,
-pushed checkout with an open PR shows no buttons. A clean checkout shows no
-buttons.
+pull request exists. A clean, published branch without a PR also shows
+`Create PR` on its own when the Git model reports it ready. An open pull
+request is a row, not a footer, so a clean, pushed checkout with an open PR
+shows no buttons. Readiness comes from the Git model, not the branch name.
 
 `+` menu: `Add folder…`, `Connect a server…`, `Run in a container…`. This is
 where Remote access is discovered. It is never a row that says it is missing.
@@ -230,7 +231,7 @@ empty column. The reduction comes entirely from inside the boxes.
 | `Instructions · Main task guidance is set · Edit` | `Instructions · <first line> · Edit` |
 | `Google Cloud · Built-in: 1 skill, 1 connector, 3 tools` | `Google Cloud` |
 | `No active capabilities · Add capability` (empty box) | no box; `Add… → Add capability…` at the rail foot |
-| `Changes · Clean` + disabled `Commit & push` + `Create PR` | `Branch · main`, no footer on a clean checkout |
+| `Changes · Clean` + disabled `Commit & push` + `Create PR` | Clean branch: `Create PR` alone when eligible; no footer when no action remains |
 | `Show all (3)` / `Hide` | section chevron |
 | `Needs setup` pill + `Sign in` button | `Sign in` button only |
 | `Repository · Show controls` | `Environment` expanded by default |
@@ -297,8 +298,8 @@ rebuild splits sections into their own files rather than editing in place.
    changes, ahead/behind, pull request, container) feed the box's rows and
    collapsed summary. Row order: folders, remote, runs-in (the container
    picker when containers exist, otherwise a plain `Local`), then source
-   control, whose verbs footer renders only with something to commit, push or
-   pull. The box header carries one refresh control for both scans. Git rows
+   control, whose verbs footer includes `Create PR` for an eligible clean,
+   published branch. The box header carries one refresh control for both scans. Git rows
    are one line (scope and path in the Repository tooltip, the worktree
    caption in the Changes tooltip, counts neutral); container rows are
    key/value (`Provider · Host`), with `Build` and `Switch` as verbs and a
@@ -354,7 +355,7 @@ connection, one blocked capability, and uncommitted changes.
 
 ## Open questions
 
-1. Should the Environment verbs footer hide on a clean checkout (recommended;
-   the current screenshot shows a disabled `Commit & push` beside `Create PR`
-   on a clean tree), or always show `Create PR` disabled?
+1. Resolved: on a clean checkout, show `Create PR` when eligible and no PR
+   exists. Hide the commit button when there is no work to commit or push;
+   hide the footer when no action or contextual status remains.
 2. Is Outputs wanted in this cycle, or later?
