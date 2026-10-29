@@ -2,12 +2,57 @@ import AppKit
 import SwiftUI
 import Testing
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
+import SwiftData
 @testable import ASTRA
 
 @Suite("Rail row ownership", .serialized)
 @MainActor
 struct RailRowOwnershipTests {
     private typealias Rail = WorkspaceRailSectionPresentation
+
+    @Test("Collapsed headers expose their summary to assistive technology")
+    func collapsedHeaderSummary() {
+        #expect(RailBoxHeader.accessibilityValue(isExpanded: false, summary: "3 files") == "Collapsed, 3 files")
+        #expect(RailBoxHeader.accessibilityValue(isExpanded: true, summary: "3 files") == "Expanded")
+        #expect(RailBoxHeader.accessibilityValue(isExpanded: false, summary: "  ") == "Collapsed")
+    }
+
+    @Test("An empty Folder row chooses the primary folder; configured rows expand details")
+    func emptyFolderAction() throws {
+        var choices = 0, toggles = 0
+        let view = RailFolderRows(rows: [], isExpanded: false,
+            onToggle: { toggles += 1 }, onChoosePrimary: { choices += 1 }) { EmptyView() }
+        let empty = try #require(Rail.environmentBox(.init(primaryPath: "")).rows.first { $0.kind == .folder })
+        view.activate(empty)
+        #expect(choices == 1 && toggles == 0)
+        let configured = try #require(Rail.environmentBox(.init(primaryPath: "/tmp/root")).rows.first { $0.kind == .folder })
+        view.activate(configured)
+        #expect(choices == 1 && toggles == 1)
+    }
+
+    @Test("Primary-folder choice persists, cancellation preserves it and cleanup reservations refuse it")
+    func primaryFolderChoice() throws {
+        let store = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let workspace = Workspace(name: "Empty", primaryPath: "")
+        store.mainContext.insert(workspace)
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        #expect(WorkspaceRailFolderPicker.choose(.primary, for: workspace) { _ in nil } == .unchanged)
+        #expect(workspace.primaryPath.isEmpty)
+        let reservation = try #require(TaskWorktreeCheckoutReservation.acquire(path))
+        #expect(WorkspaceRailFolderPicker.choose(.primary, for: workspace) { _ in path } == .refused(path: path))
+        #expect(workspace.primaryPath.isEmpty)
+        TaskWorktreeCheckoutReservation.release(reservation)
+        #expect(WorkspaceRailFolderPicker.choose(.primary, for: workspace) { _ in path } == .updated)
+        try store.mainContext.save()
+        let reloaded = try #require(ModelContext(store).fetch(FetchDescriptor<Workspace>()).first)
+        #expect(reloaded.primaryPath == path)
+        #expect(reloaded.additionalPaths.isEmpty)
+        #expect(WorkspaceRailFolderPicker.choose(.primary, for: workspace) { _ in nil } == .unchanged)
+        #expect(workspace.primaryPath == path)
+    }
 
     @Test("Capability identity survives readiness reorder and rename")
     func capabilityIdentity() throws {
@@ -56,7 +101,7 @@ struct RailRowOwnershipTests {
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: VStack {
-            RailFolderRows(rows: rows, isExpanded: true, onToggle: {}) {
+            RailFolderRows(rows: rows, isExpanded: true, onToggle: {}, onChoosePrimary: {}) {
                 Text("Shared editor").onAppear { mounts += 1 }
             }
         }.frame(width: 340))

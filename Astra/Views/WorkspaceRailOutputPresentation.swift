@@ -7,15 +7,23 @@ enum WorkspaceRailOutputPresentation {
     private typealias Rail = WorkspaceRailSectionPresentation
 
     static func facts(from files: TaskHeaderFilesReader.Facts) -> WorkspaceRailSectionPresentation.OutputFacts {
-        Rail.OutputFacts(files: files.items.compactMap { item in
-            guard !item.isDirectory else { return nil }
+        let produced = files.items.filter { item in
+            guard !item.isDirectory else { return false }
             if let change = item.change {
-                guard change.kind != .removed else { return nil }
+                return change.kind != .removed
             } else {
-                guard item.source == "output",
-                      !files.userProvidedPaths.contains(TaskHeaderFilesReader.Facts.pathIdentity(item.path)) else { return nil }
+                return item.source == "output"
+                    && !files.userProvidedPaths.contains(TaskHeaderFilesReader.Facts.pathIdentity(item.path))
             }
-            return Rail.OutputFile(path: item.path, destination: destination(item.destination))
+        }
+        func date(_ item: TaskFileItem) -> Date {
+            files.activityDates[TaskHeaderFilesReader.Facts.pathIdentity(item.path)] ?? item.change?.timestamp ?? .distantPast
+        }
+        return Rail.OutputFacts(files: produced.sorted {
+            let left = date($0), right = date($1)
+            return left == right ? $0.path < $1.path : left > right
+        }.map { item in
+            Rail.OutputFile(path: item.path, destination: destination(item.destination))
         })
     }
 

@@ -34,6 +34,12 @@ struct ConfiguredStatusDot: View {
 /// collapsed, and a trailing `+` for the box's own adds. The title and chevron
 /// toggle; the `+` is a separate target.
 struct RailBoxHeader: View {
+    static func accessibilityValue(isExpanded: Bool, summary: String) -> String {
+        if isExpanded { return "Expanded" }
+        let summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? "Collapsed" : "Collapsed, \(summary)"
+    }
+
     let title: String
     let isExpanded: Bool
     let collapsedSummary: String
@@ -77,7 +83,7 @@ struct RailBoxHeader: View {
             .buttonStyle(.plain)
             .help(isExpanded ? "Collapse \(title)" : "Expand \(title)")
             .accessibilityLabel(title)
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityValue(Self.accessibilityValue(isExpanded: isExpanded, summary: collapsedSummary))
 
             if isBusy {
                 ProgressView()

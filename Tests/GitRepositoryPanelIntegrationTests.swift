@@ -87,6 +87,7 @@ struct GitRepositoryPanelIntegrationTests {
         var upstream = false
         var remote = false
         var unpushedCount = 0
+        var branchLog = ""
         var aheadBehind: (ahead: Int, behind: Int)?
         var worktrees: [GitWorktreeInfo] = []
         var pullRequestLookupResult: GitHubPullRequestLookupResult = .none
@@ -95,6 +96,9 @@ struct GitRepositoryPanelIntegrationTests {
         /// one in flight. Tests block on this rather than on a clock.
         let lookupGate = GitPanelOperationGate()
         var diffStatsGate: GitPanelOperationGate?
+        var createGate: GitPanelOperationGate?
+        var createFailure: GitHubCLIError?
+        private(set) var createCallCount = 0
 
         func acquireIndexGuard() -> Bool {
             acquiredIndexGuardCount += 1
@@ -186,7 +190,7 @@ struct GitRepositoryPanelIntegrationTests {
             limit: Int,
             maxBytes: Int
         ) async -> String {
-            ""
+            branchLog
         }
 
         func getBranchDiffStat(at repoPath: String, base: String, branch: String, maxBytes: Int) async -> String {
@@ -226,7 +230,10 @@ struct GitRepositoryPanelIntegrationTests {
             body: String,
             ghPathOverride: String?
         ) async throws -> String {
-            "https://github.com/example/repo/pull/1"
+            createCallCount += 1
+            await createGate?.noteStarted()
+            if let createFailure { throw createFailure }
+            return "https://github.com/example/repo/pull/1"
         }
 
         func createPullRequest(
@@ -1000,6 +1007,139 @@ struct GitRepositoryPanelIntegrationTests {
         #expect(fakeGit.pullRequestLookupCallCount == 2)
         #expect(!viewModel.pullRequestLookupAuthBlocked)
         #expect(viewModel.openPullRequest?.number == 42)
+    }
+}
+
+private struct RailDraftAuthor: GitCommitMessageGenerating, GitPullRequestGenerating {
+    var gate: GitPanelOperationGate?
+    var shouldFail = false
+    func suggestCommitMessage(repoPath: String, diff: String, recentSubjects: [String]) async throws -> CommitSuggestion {
+        .init(subject: "Synthetic", body: "", type: "test")
+    }
+    func suggestPullRequest(repoPath: String, branch: String, base: String, log: String, diffStat: String) async throws -> PRSuggestion {
+        await gate?.noteStarted()
+        if shouldFail { throw GitAuthoringError.invalidOutput("Synthetic late failure") }
+        return .init(title: "Synthetic draft", body: "Review this isolated change")
+    }
+}
+
+extension GitRepositoryPanelIntegrationTests {
+    @MainActor
+    @Test("A draft completed with Environment folded presents when the Git controls mount")
+    func completedDraftPresentsOnMount() async throws {
+        let (vm, fake, repo, workspace) = try makePullRequestLookupPanel("folded-draft", result: .none)
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        let store = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        store.mainContext.autosaveEnabled = false
+        store.mainContext.insert(workspace)
+        try store.mainContext.save()
+        vm.hasUpstream = true; fake.branchLog = "Synthetic change"
+        vm.authoringServiceFactory = { RailDraftAuthor() }
+        // No mounted observer when the helper completes: this is the folded
+        // Environment path that an onChange-only sheet loses.
+        await vm.suggestPullRequest()
+        let draft = try #require(vm.presentablePRDraft)
+        let intents = NewTaskWorktreeIntentStore()
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 700),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: WorkspaceGitSectionView(viewModel: vm, workspace: workspace)
+            .environment(\.newTaskWorktreeIntents, intents).modelContainer(store))
+        window.contentView = host
+        RailHostedFixtureLifetime.keepAlive(store, store.mainContext, host, window, vm, intents)
+        defer { window.contentView = nil; window.close(); vm.pauseRefresh() }
+        host.layoutSubtreeIfNeeded(); window.orderBack(nil)
+        try await waitForRail { window.attachedSheet != nil }
+        #expect(vm.presentablePRDraft?.id == draft.id)
+        vm.dismissPRDraft(id: draft.id)
+        try await waitForRail { window.attachedSheet == nil }
+        await vm.waitForPendingRefresh()
+    }
+
+    @MainActor
+    @Test("A folded draft cannot cross branch, checkout or imported task owner", arguments: ["branch", "checkout", "workspace", "task"])
+    func draftRejectsChangedContext(change: String) async throws {
+        let (vm, fake, repo, workspace) = try makePullRequestLookupPanel("draft-context", result: .none)
+        let other = try makeTempDir("other-context")
+        defer { try? FileManager.default.removeItem(atPath: repo); try? FileManager.default.removeItem(atPath: other) }
+        vm.hasUpstream = true; fake.branchLog = "Synthetic change"
+        vm.authoringServiceFactory = { RailDraftAuthor() }
+        let store = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        store.mainContext.autosaveEnabled = false
+        store.mainContext.insert(workspace)
+        let firstTask = AgentTask(title: "First", goal: "First", workspace: workspace)
+        let importedTask = AgentTask(title: "Imported", goal: "Imported", workspace: workspace)
+        importedTask.id = firstTask.id
+        store.mainContext.insert(firstTask); store.mainContext.insert(importedTask)
+        try store.mainContext.save()
+        vm.setWorkspaceForTesting(workspace, selectedTask: firstTask)
+        await vm.suggestPullRequest()
+        let draft = try #require(vm.presentablePRDraft)
+        switch change {
+        case "branch": vm.currentBranch = "feature/other"
+        case "checkout": vm.activeWorkingPath = other
+        case "workspace":
+            let otherOwner = Workspace(name: "Imported", primaryPath: repo)
+            otherOwner.id = workspace.id
+            vm.setWorkspaceForTesting(otherOwner)
+        default: vm.setWorkspaceForTesting(workspace, selectedTask: importedTask)
+        }
+        #expect(vm.presentablePRDraft == nil)
+        #expect(vm.prDraft == nil)
+        vm.createPullRequest(with: draft.suggestion, context: draft.context)
+        #expect(vm.errorMessage?.contains("repository or task changed") == true)
+        vm.errorMessage = nil
+        vm.openPullRequestURL(with: draft.suggestion, context: draft.context)
+        #expect(vm.errorMessage?.contains("repository or task changed") == true)
+        #expect(!vm.isSuggestingPR)
+        await vm.waitForPendingRefresh()
+    }
+
+    @MainActor
+    @Test("An in-flight helper cannot deliver a draft or error after a context switch", arguments: [false, true])
+    func lateDraftIsDiscarded(fails: Bool) async throws {
+        let (vm, fake, repo, _) = try makePullRequestLookupPanel("late-draft", result: .none)
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        vm.hasUpstream = true; fake.branchLog = "Synthetic change"
+        let gate = GitPanelOperationGate()
+        await gate.gate(call: 1)
+        vm.authoringServiceFactory = { RailDraftAuthor(gate: gate, shouldFail: fails) }
+        let generation = Task { await vm.suggestPullRequest() }
+        await gate.waitForStart(1)
+        vm.currentBranch = "feature/other"
+        vm.errorMessage = "Current task message"
+        await gate.openGate()
+        await generation.value
+        #expect(vm.prDraft == nil)
+        #expect(!vm.isSuggestingPR)
+        #expect(vm.errorMessage == "Current task message")
+    }
+
+    @MainActor
+    @Test("A late creation result never publishes the old PR or error in the new context", arguments: [false, true])
+    func lateCreationPreservesCurrentPanel(fails: Bool) async throws {
+        let (vm, fake, repo, _) = try makePullRequestLookupPanel("late-create", result: .none)
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        vm.hasUpstream = true; fake.branchLog = "Synthetic change"
+        vm.authoringServiceFactory = { RailDraftAuthor() }
+        await vm.suggestPullRequest()
+        let draft = try #require(vm.presentablePRDraft)
+        let gate = GitPanelOperationGate()
+        await gate.gate(call: 1)
+        fake.createGate = gate
+        if fails { fake.createFailure = .commandFailed("Synthetic late error") }
+        vm.createPullRequest(with: draft.suggestion, context: draft.context)
+        await gate.waitForStart(1)
+        vm.currentBranch = "feature/other"
+        vm.errorMessage = "Current task message"
+        await gate.openGate()
+        try await waitForRail { !vm.isSuggestingPR }
+        #expect(vm.openPullRequest == nil)
+        #expect(vm.errorMessage == "Current task message")
+        #expect(fake.createCallCount == 1)
+        #expect(fake.pullRequestLookupCallCount == 0)
     }
 }
 

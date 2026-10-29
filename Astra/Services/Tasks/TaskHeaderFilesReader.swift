@@ -9,6 +9,9 @@ enum TaskHeaderFilesReader {
     struct Facts: Sendable {
         var items: [TaskFileItem]
         var userProvidedPaths: Set<String> = []
+        /// Recorded activity (including snapshot observations), or the file's
+        /// modification date when no record exists. Independent of provenance.
+        var activityDates: [String: Date] = [:]
 
         static func pathIdentity(_ path: String) -> String {
             URL(fileURLWithPath: TaskFileIndex.normalizedPath(path)).standardizedFileURL.path
@@ -27,11 +30,18 @@ enum TaskHeaderFilesReader {
         let descriptor = FetchDescriptor<TaskRun>(predicate: #Predicate { $0.task?.id == taskID },
             sortBy: [SortDescriptor(\TaskRun.startedAt, order: .reverse), SortDescriptor(\TaskRun.id, order: .reverse)])
         var changes: [StoredFileChange] = []
+        var recordedDates: [String: Date] = [:]
         try modelContext.enumerate(descriptor, batchSize: 128) { run in
             try Task.checkCancellation()
             guard !run.isDeleted, let owner = run.task, !owner.isDeleted,
                   owner.persistentModelID == scope.ownerID else { return }
-            changes.append(contentsOf: run.fileChanges.reversed())
+            let allChanges = run.allFileChanges
+            changes.append(contentsOf: allChanges.reversed().filter { !$0.kind.isObserved })
+            for change in allChanges {
+                try Task.checkCancellation()
+                let identity = canonicalPath(change.path)
+                recordedDates[identity] = max(recordedDates[identity] ?? .distantPast, change.timestamp)
+            }
         }
         try Task.checkCancellation()
         let paths = try TaskAttachmentFilesReader.paths(scope: scope, modelContext: modelContext)
@@ -40,8 +50,20 @@ enum TaskHeaderFilesReader {
         try Task.checkCancellation()
         let indexed = TaskFileIndex.headerItems(fileChanges: changes, generatedFilePaths: generated,
             inputs: inputs, taskFolder: taskFolder, workspacePath: workspacePath)
-        return Facts(items: try uniqueFiles(TaskAttachmentFilesReader.merging(paths: paths, with: indexed)),
-                     userProvidedPaths: try providedPaths(inputs + paths, discovered: generated))
+        let items = try uniqueFiles(TaskAttachmentFilesReader.merging(paths: paths, with: indexed))
+        var dates: [String: Date] = [:]
+        for item in items {
+            try Task.checkCancellation()
+            let date = recordedDates[canonicalPath(item.path)]
+                ?? (try? URL(fileURLWithPath: item.path).resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            dates[Facts.pathIdentity(item.path)] = date
+        }
+        return Facts(items: items, userProvidedPaths: try providedPaths(inputs + paths, discovered: generated),
+                     activityDates: dates)
+    }
+
+    private static func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: Facts.pathIdentity(path)).resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     /// Recorded changes take precedence over discovery and supplied files. Keep
@@ -51,8 +73,7 @@ enum TaskHeaderFilesReader {
         var result: [TaskFileItem] = []
         for item in items {
             try Task.checkCancellation()
-            let identity = URL(fileURLWithPath: Facts.pathIdentity(item.path))
-                .resolvingSymlinksInPath().standardizedFileURL.path
+            let identity = canonicalPath(item.path)
             if identities.insert(identity).inserted { result.append(item) }
         }
         return result

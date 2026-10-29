@@ -735,7 +735,8 @@ struct WorkspaceRightRailView: View {
         RailFolderRows(
             rows: rows.filter { $0.kind == .folder },
             isExpanded: expandedWorkspaceSetupItems.contains(.folders),
-            onToggle: { toggleWorkspaceSetupItem(.folders) }
+            onToggle: { toggleWorkspaceSetupItem(.folders) },
+            onChoosePrimary: { chooseWorkspaceFolder(.primary) }
         ) { foldersSetupDetails }
     }
 
@@ -1765,17 +1766,13 @@ struct WorkspaceRightRailView: View {
     }
 
     private func addExtraFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a folder the agent can also read from or execute in"
-        panel.prompt = "Add Folder"
-        if panel.runModal() == .OK, let url = panel.url {
-            let outcome = WorkspaceConfiguredRoots.addAdditionalPaths([url.path], to: workspace)
-            folderRefusal = outcome.refusalMessage
-            if outcome == .updated { markWorkspaceConfigurationChanged() }
-        }
+        chooseWorkspaceFolder(.additional)
+    }
+
+    private func chooseWorkspaceFolder(_ purpose: WorkspaceRailFolderPicker.Purpose) {
+        let outcome = WorkspaceRailFolderPicker.choose(purpose, for: workspace)
+        folderRefusal = outcome.refusalMessage
+        if outcome == .updated { markWorkspaceConfigurationChanged() }
     }
 
     private func addMemory() {

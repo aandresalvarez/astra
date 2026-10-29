@@ -34,6 +34,7 @@ struct RightRailAppFixtureTests {
             root: workspaces.appendingPathComponent("Rail Bravo").path, runs: 0, environment: docker, context: context)
         let imported = Workspace(name: "Rail Imported", primaryPath: workspaces.appendingPathComponent("Rail Imported").path)
         context.insert(imported)
+        context.insert(Workspace(name: "Rail Empty", primaryPath: ""))
         let copy = try task("IMPORTED outputs", workspace: imported, root: imported.primaryPath,
             runs: 7, environment: .host, context: context)
         copy.id = first.id; copy.updatedAt = first.updatedAt
@@ -57,6 +58,16 @@ struct RightRailAppFixtureTests {
                 try "# Rail output\n\(task.title) — synthetic QA only.".write(to: markdown, atomically: true, encoding: .utf8)
                 let run = try #require(task.runs.first)
                 run.appendHostFileChanges([.init(path: html.path, changeType: "Write"), .init(path: markdown.path, changeType: "Write")])
+                if task === first {
+                    for index in 0..<9 {
+                        let file = URL(fileURLWithPath: folder).appendingPathComponent("older-output-\(index).md")
+                        try "Older synthetic output".write(to: file, atomically: true, encoding: .utf8)
+                        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 100)], ofItemAtPath: file.path)
+                    }
+                    let newest = URL(fileURLWithPath: folder).appendingPathComponent("z-newest-output.md")
+                    try "Newest synthetic output".write(to: newest, atomically: true, encoding: .utf8)
+                    try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: newest.path)
+                }
             }
             try TaskContextStateManager.refresh(task: task)
         }

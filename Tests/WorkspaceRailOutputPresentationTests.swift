@@ -8,6 +8,48 @@ import ASTRAPersistence
 @Suite("Rail output provenance")
 @MainActor
 struct WorkspaceRailOutputPresentationTests {
+    @Test("Outputs use recorded recency across aliases before filesystem dates and the eight-row limit")
+    func newestOutputsFirst() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("outputs")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let alias = root.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: folder)
+        let store = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = store.mainContext
+        context.autosaveEnabled = false
+        let task = AgentTask(title: "Recency", goal: "Newest output first")
+        context.insert(task)
+        let names = (0..<9).map { "a\($0).md" } + ["z-newest.md", "input.md"]
+        for name in names {
+            let file = folder.appendingPathComponent(name)
+            try "Synthetic output".write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: name == "z-newest.md" ? 300 : 100)], ofItemAtPath: file.path)
+        }
+        task.inputs = [folder.appendingPathComponent("input.md").path]
+        let run = TaskRun(task: task)
+        // Snapshot observations supply dates, never new provenance. The input
+        // remains excluded even though its observation is the most recent.
+        run.appendHostFileChanges([
+            .init(path: folder.appendingPathComponent("a0.md").path, changeType: "Write", timestamp: Date(timeIntervalSince1970: 50)),
+            .init(path: alias.appendingPathComponent("a0.md").path, changeType: "modified", timestamp: Date(timeIntervalSince1970: 400)),
+            .init(path: task.inputs[0], changeType: "modified", timestamp: Date(timeIntervalSince1970: 500)),
+            .init(path: folder.appendingPathComponent("a1.md").path, changeType: "Write", timestamp: Date(timeIntervalSince1970: 25))
+        ])
+        context.insert(run)
+        try context.save()
+        let files = try TaskHeaderFilesReader.facts(scope: .init(task: task), inputs: task.inputs,
+            taskFolder: folder.path, workspacePath: root.path, modelContext: context)
+        let outputs = WorkspaceRailOutputPresentation.facts(from: files)
+        let ordered = outputs.files.map { URL(fileURLWithPath: $0.path).lastPathComponent }
+        #expect(ordered == ["a0.md", "z-newest.md", "a2.md", "a3.md", "a4.md", "a5.md", "a6.md", "a7.md", "a8.md", "a1.md"])
+        #expect(files.items.first { $0.name == "a0.md" }?.change?.kind == .write)
+        let box = try #require(WorkspaceRailSectionPresentation.outputsBox(outputs))
+        #expect(box.rows.prefix(2).map(\.title) == ["a0.md", "z-newest.md"])
+    }
+
     @Test("The real reader keeps inputs in Files but only produced files in Outputs")
     func readerProvenance() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -70,7 +70,6 @@ struct WorkspaceGitSectionView: View {
 
     @State private var isChangesDrawerExpanded = false
     @State private var showCommitSheet = false
-    @State private var showPRDraftSheet = false
     @State private var showRepositoryPopover = false
     @State private var showLocationPopover = false
     @State private var showPRCommentsPopover = false
@@ -90,29 +89,21 @@ struct WorkspaceGitSectionView: View {
             .task(id: repositorySetupSignature) {
                 await clearRepositoryPresentationAfterViewUpdate()
             }
-            .onChange(of: viewModel.prDraft) { _, newValue in
-                showPRDraftSheet = newValue != nil
-            }
-            .sheet(isPresented: $showPRDraftSheet, onDismiss: {
-                viewModel.dismissPRDraft()
-            }) {
-                if let draft = viewModel.prDraft {
-                    PRDraftSheet(
-                        draft: draft,
-                        onCreate: { edited in
-                            viewModel.createPullRequest(with: edited)
-                            showPRDraftSheet = false
-                        },
-                        onOpenInBrowser: { edited in
-                            viewModel.openPullRequestURL(with: edited)
-                            showPRDraftSheet = false
-                        },
-                        onCancel: {
-                            viewModel.dismissPRDraft()
-                            showPRDraftSheet = false
-                        }
-                    )
-                }
+            .sheet(item: prDraftBinding) { draft in
+                PRDraftSheet(
+                    draft: draft.suggestion,
+                    onCreate: { edited in
+                        viewModel.createPullRequest(with: edited, context: draft.context)
+                        viewModel.dismissPRDraft(id: draft.id)
+                    },
+                    onOpenInBrowser: { edited in
+                        viewModel.openPullRequestURL(with: edited, context: draft.context)
+                        viewModel.dismissPRDraft(id: draft.id)
+                    },
+                    onCancel: {
+                        viewModel.dismissPRDraft(id: draft.id)
+                    }
+                )
             }
             .sheet(isPresented: $showCommitSheet) {
                 CommitSheet(viewModel: viewModel, onDismiss: {
@@ -142,6 +133,15 @@ struct WorkspaceGitSectionView: View {
             .sheet(isPresented: $viewModel.isManagingWorktrees) {
                 WorktreeSheet(viewModel: viewModel)
             }
+    }
+
+    /// The model owns the pending draft, so remounting after folding presents
+    /// an already-completed draft without waiting for another value change.
+    private var prDraftBinding: Binding<WorkspaceGitViewModel.PullRequestDraft?> {
+        let id = viewModel.presentablePRDraft?.id
+        return Binding(get: { viewModel.presentablePRDraft }, set: { value in
+            if value == nil, let id { viewModel.dismissPRDraft(id: id) }
+        })
     }
 
     private var panelContent: some View {
