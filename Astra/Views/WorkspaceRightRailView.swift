@@ -35,184 +35,20 @@ private struct RightRailScrollMetricsPreferenceKey: PreferenceKey {
     }
 }
 
-private enum CapabilityRailGroupStyle: Equatable {
-    case attention
-    case ready
-    case draft
-}
-
+/// The inline editors a rail row can expand to; the expansion key for
+/// `expandedWorkspaceSetupItems`.
 private enum WorkspaceSetupItem: Hashable {
     case instructions
     case memory
     case folders
     case remoteAccess
     case routines
-}
 
-struct WorkspaceFolderDetailRowPresentation: Equatable {
-    let title: String
-    let subtitle: String
-    let path: String
-    let copyPathHelp: String
-    let canRemove: Bool
-    let showsPathInBody: Bool
-}
-
-enum WorkspaceSetupChecklistPresentation {
-    static let sectionTitle = "Workspace setup"
-    static let missingGroupTitle = "Needs setup"
-    static let referenceGroupTitle = "Reference"
-    static let configuredGroupTitle = "Configured"
-    static let configuredSummaryTitle = "Configured items"
-    static let configuredSummaryActionTitle = "Show all"
-    static let configuredSummaryIcon = "checkmark.circle"
-    static let supportsInlineExpansion = true
-    static let supportsInlineEditing = true
-    static let supportsMemoryRemoval = true
-    static let supportsFolderRemoval = true
-    static let usesCapabilitySummaryRowPattern = true
-    static let collapsesConfiguredRowsByDefault = true
-    static let showsPerRowStatusInCollapsedState = false
-    static let collapsedDisclosureIcon = "chevron.right"
-    static let expandedDisclosureIcon = "chevron.down"
-    static let detailPreviewLimit = 4
-    static let folderAccessTitle = "Folder access"
-    static let addFolderActionTitle = "Add folder"
-    static let workspaceRootReferenceTitle = "Workspace root"
-    static let workspaceRootReferenceRole = "Reference"
-    static let workspaceRootFolderSubtitle = "Workspace root"
-    static let additionalFolderSubtitle = "Additional folder"
-    static let copyFolderPathHelp = "Copy folder path"
-    static let showsFolderPathInDetailRows = false
-    static let missingWorkspaceRootSubtitle = "No workspace root selected."
-    static let referenceOnlyFolderSubtitle = "Workspace root only"
-
-    enum State: Equatable {
-        case configured
-        case reference
-        case missing
-
-        var label: String {
-            switch self {
-            case .configured: "Configured"
-            case .reference: "Reference"
-            case .missing: "Missing"
-            }
+    var section: WorkspaceRailSectionPresentation.Section {
+        switch self {
+        case .instructions, .memory, .routines: .context
+        case .folders, .remoteAccess: .environment
         }
-    }
-
-    static func summary(configured: Int, total: Int) -> String {
-        configured == 0 ? "Empty" : "\(configured) of \(total) configured"
-    }
-
-    static func shouldShowWorkspaceRootMissingMessage(primaryPath: String) -> Bool {
-        WorkspacePathPresentation.standardizedPath(primaryPath).isEmpty
-    }
-
-    static func userConfiguredFolderDescriptors(_ additionalPaths: [String]) -> [WorkspacePathDescriptor] {
-        userConfiguredFolderDescriptors(primaryPath: "", additionalPaths: additionalPaths)
-    }
-
-    static func userConfiguredFolderDescriptors(
-        primaryPath: String,
-        additionalPaths: [String]
-    ) -> [WorkspacePathDescriptor] {
-        let rootPath = WorkspacePathPresentation.standardizedPath(primaryPath)
-        let folderPaths = additionalPaths.filter { rawPath in
-            let folderPath = WorkspacePathPresentation.standardizedPath(rawPath)
-            return rootPath.isEmpty || folderPath != rootPath
-        }
-        return WorkspacePathPresentation.descriptors(primaryPath: "", additionalPaths: folderPaths)
-    }
-
-    static func userConfiguredFolderCount(_ additionalPaths: [String]) -> Int {
-        userConfiguredFolderDescriptors(additionalPaths).count
-    }
-
-    static func userConfiguredFolderCount(primaryPath: String, additionalPaths: [String]) -> Int {
-        userConfiguredFolderDescriptors(primaryPath: primaryPath, additionalPaths: additionalPaths).count
-    }
-
-    static func remainingAdditionalPaths(
-        afterRemovingFolderMatching path: String,
-        from additionalPaths: [String]
-    ) -> [String] {
-        let removedPath = WorkspacePathPresentation.standardizedPath(path)
-        guard !removedPath.isEmpty else { return additionalPaths }
-        return additionalPaths.filter { rawPath in
-            WorkspacePathPresentation.standardizedPath(rawPath) != removedPath
-        }
-    }
-
-    static func folderDetailRow(for descriptor: WorkspacePathDescriptor) -> WorkspaceFolderDetailRowPresentation {
-        WorkspaceFolderDetailRowPresentation(
-            title: descriptor.title,
-            subtitle: descriptor.role == .primary ? workspaceRootFolderSubtitle : additionalFolderSubtitle,
-            path: descriptor.path,
-            copyPathHelp: copyFolderPathHelp,
-            canRemove: descriptor.role == .additional,
-            showsPathInBody: showsFolderPathInDetailRows
-        )
-    }
-
-    static func folderState(primaryPath: String, additionalPaths: [String]) -> State {
-        guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else { return .missing }
-        return userConfiguredFolderCount(primaryPath: primaryPath, additionalPaths: additionalPaths) > 0
-            ? State.configured
-            : State.reference
-    }
-
-    static func folderSubtitle(primaryPath: String, additionalPaths: [String]) -> String {
-        guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else {
-            return missingWorkspaceRootSubtitle
-        }
-        let count = userConfiguredFolderCount(primaryPath: primaryPath, additionalPaths: additionalPaths)
-        guard count > 0 else { return referenceOnlyFolderSubtitle }
-        return "\(count) added \(count == 1 ? "folder" : "folders")"
-    }
-
-    /// Count metadata shown beneath the noun-first configured summary title.
-    static func configuredCountSubtitle(_ count: Int) -> String {
-        "\(count) configured"
-    }
-
-    /// Disclosure verb that names how many rows it reveals, so the affordance is
-    /// honest about its payload. Only ever rendered for count >= 2.
-    static func showAllActionTitle(_ count: Int) -> String {
-        "Show all (\(count))"
-    }
-
-    static func configuredPreview(_ names: [String], limit: Int = 3) -> String {
-        let cleanNames = names
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard !cleanNames.isEmpty else { return "No configured items" }
-
-        let visible = cleanNames.prefix(limit)
-        let remaining = cleanNames.count - visible.count
-        let prefix = visible.joined(separator: ", ")
-        return remaining > 0 ? "\(prefix) +\(remaining)" : prefix
-    }
-
-    static func overflowSummary(
-        total: Int,
-        visible: Int,
-        singular: String,
-        plural: String
-    ) -> String? {
-        let remaining = total - visible
-        guard remaining > 0 else { return nil }
-        return "\(remaining) more \(remaining == 1 ? singular : plural)"
-    }
-}
-
-enum WorkspaceContextIconography {
-    static let headerIcon = "info.circle"
-
-    static func capabilityIcon(name: String, fallback: String) -> String {
-        CapabilityIconPresentation
-            .make(name: name, fallbackSystemName: fallback)
-            .legacySystemName
     }
 }
 
@@ -228,6 +64,9 @@ struct WorkspaceRightRailView: View {
     var onOpenCapabilityPackage: ((String) -> Void)?
     var onTaskCreated: ((AgentTask) -> Void)?
     var onOpenWorkspaceFile: ((String) -> Void)?
+    /// Opens a task output in the shelf that renders its kind (HTML in the
+    /// browser, tables in Query, everything else in Files).
+    var onOpenGeneratedFile: ((String) -> Void)?
     var onNewSSHConnection: (() -> Void)?
     var onEditSSHConnection: ((SSHConnection) -> Void)?
     var sshReloadTrigger: Int = 0
@@ -247,13 +86,7 @@ struct WorkspaceRightRailView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
-    @State private var isContextCollapsed = true
-    @State private var isAccessCollapsed = true
-    @State private var isSchedulesSectionCollapsed = false
     @State private var sshConnections: [SSHConnection] = []
-    @State private var isToolsExpanded = false
-    @State private var isTemplatesExpanded = false
-    @State private var isConfiguredWorkspaceSetupExpanded = false
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
     @State private var draftWorkspaceInstructions = ""
@@ -273,10 +106,18 @@ struct WorkspaceRightRailView: View {
     @State private var prerequisiteScan = PrerequisiteScanSnapshot()
     private var capabilityPrerequisiteStatuses: [String: HealthStatus] { prerequisiteScan.statuses }
     @StateObject private var repairs = PluginRepairCoordinator()
+    @StateObject private var gitViewModel = WorkspaceGitViewModel()
+    @StateObject private var dockerViewModel = WorkspaceDockerViewModel()
+    /// The selected task's file facts, read off the main actor from their
+    /// persisted owner (runs' file changes and the task folder), as the task
+    /// header does. Keyed by scope so a stale task never shows another's files.
+    @State private var outputFilesCache: (scope: TaskAttachmentHistoryScope, files: TaskHeaderFilesReader.Facts)?
+    @State private var isLoadingOutputs = false
+    @State private var outputsRefreshTick = 0
     @State private var showsTopRailScrollShadow = false
     @State private var showsBottomRailScrollShadow = false
-    @State private var isReadyCapabilitiesExpanded = false
-    @State private var isDraftCapabilitiesExpanded = false
+    /// Boxes the user collapsed in this workspace; every box starts expanded.
+    @State private var collapsedBoxes: Set<WorkspaceRailSectionPresentation.Section> = []
     @State private var hasGitRepositories = false
     @State private var hasDockerEnvironments = false
 
@@ -333,7 +174,7 @@ struct WorkspaceRightRailView: View {
 
     private var liveBody: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
+            overlayCloseBar
 
             GeometryReader { viewport in
                 ScrollView {
@@ -395,18 +236,6 @@ struct WorkspaceRightRailView: View {
         isCompact ? 8 : Stanford.railListSpacing
     }
 
-    private var capabilityGroupSpacing: CGFloat {
-        isCompact ? CapabilityRailLayout.compactGroupSpacing : CapabilityRailLayout.regularGroupSpacing
-    }
-
-    private var panelSpacing: CGFloat {
-        isCompact ? CapabilityRailLayout.compactPanelSpacing : CapabilityRailLayout.regularPanelSpacing
-    }
-
-    private var sectionContentSpacing: CGFloat {
-        isCompact ? CapabilityRailLayout.compactSectionContentSpacing : CapabilityRailLayout.regularSectionContentSpacing
-    }
-
     private var disclosureAnimation: Animation? {
         AstraMotion.disclosure(reduceMotion: reduceMotion)
     }
@@ -427,28 +256,16 @@ struct WorkspaceRightRailView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: showsBottomRailScrollShadow)
     }
 
-    // MARK: - Workspace Identity Anchor
+    // MARK: - Overlay close
 
-    private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: WorkspaceContextIconography.headerIcon)
-                .font(Stanford.ui(WorkspaceRightRailPresentation.headerIconFontSize, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: WorkspaceRightRailPresentation.headerIconFrame, height: WorkspaceRightRailPresentation.headerIconFrame)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Workspace Context")
-                    .font(Stanford.ui(WorkspaceRightRailPresentation.headerTitleFontSize, weight: .semibold))
-                    .lineLimit(1)
-                Text(workspace.name)
-                    .font(Stanford.caption(WorkspaceRightRailPresentation.headerSubtitleFontSize))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
-
-            if let onDismiss {
+    /// The rail has no header: the toolbar button names and toggles it, and
+    /// the sidebar carries the workspace name. In overlay mode a thin bar
+    /// keeps only the close control.
+    @ViewBuilder
+    private var overlayCloseBar: some View {
+        if let onDismiss {
+            HStack {
+                Spacer(minLength: 0)
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
                         .font(Stanford.ui(10, weight: .semibold))
@@ -460,10 +277,9 @@ struct WorkspaceRightRailView: View {
                 .help("Close Workspace Context")
                 .accessibilityLabel("Close Workspace Context")
             }
+            .padding(.top, 8)
+            .padding(.horizontal, isCompact ? 14 : 12)
         }
-        .padding(.top, isCompact ? 14 : 12)
-        .padding(.horizontal, isCompact ? 18 : 16)
-        .padding(.bottom, isCompact ? 14 : 10)
     }
 
     // MARK: - Unified Configure Panel
@@ -484,50 +300,19 @@ struct WorkspaceRightRailView: View {
             isDraft: isDraftCapability
         )
 
-        // Once setup is complete the panel leads with the capabilities the
-        // workspace actually uses; while setup is pending it stays directly under
-        // the repository so onboarding is not buried. See sectionOrder(_:).
-        let order = WorkspaceRightRailPresentation.sectionOrder(hasPendingSetup: workspaceSetupMissingCount > 0)
-        let capabilitiesIndex = order.firstIndex(of: CapabilityRailSectionPresentation.sectionTitle) ?? Int.max
-        let setupIndex = order.firstIndex(of: WorkspaceSetupChecklistPresentation.sectionTitle) ?? Int.max
-        let leadWithCapabilities = capabilitiesIndex < setupIndex
+        let boxes = railBoxes(snapshot)
+        let capabilityItemsByID = Dictionary(
+            snapshot.items.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
-        return VStack(alignment: .leading, spacing: panelSpacing) {
-            if hasGitRepositories {
-                floatingContextSection {
-                    WorkspaceGitSectionView(
-                        workspace: workspace,
-                        selectedTask: selectedTask,
-                        isCompact: isCompact,
-                        onTaskCreated: onTaskCreated,
-                        onOpenWorkspaceFile: onOpenWorkspaceFile
-                    )
-                }
-            }
-
-            if hasDockerEnvironments {
-                floatingContextSection {
-                    WorkspaceDockerSectionView(
-                        workspace: workspace,
-                        selectedTask: selectedTask,
-                        isCompact: isCompact
-                    )
-                }
-            }
-
-            if leadWithCapabilities {
-                capabilityHealthPanel(snapshot)
-                floatingContextSection {
-                    workspaceSetupChecklistPanel
-                }
-            } else {
-                floatingContextSection {
-                    workspaceSetupChecklistPanel
-                }
-                capabilityHealthPanel(snapshot)
-            }
-        }
+        return railContent(boxes: boxes, capabilityItems: capabilityItemsByID)
         .tint(Stanford.lagunita)
+        .modifier(WorkspaceRailEnvironmentLifecycle(
+            git: gitViewModel, docker: dockerViewModel, workspace: workspace,
+            selectedTask: selectedTask, hasGitRepositories: hasGitRepositories,
+            hasDockerEnvironments: showsDockerEnvironment
+        ))
         .onDisappear { repairs.cancelAll() }
         .onAppear {
             loadSSHConnections()
@@ -539,6 +324,7 @@ struct WorkspaceRightRailView: View {
             checkDockerEnvironments()
         }
         .task(id: signature) { rebuildCapabilityRailSnapshot(for: signature) }
+        .task(id: outputsSignature) { await recomputeOutputFiles() }
         .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshCapabilityPrerequisiteStatuses() } // one checkout's repairs
         .onChange(of: isConfigurationPresented) { _, presented in
             if !presented { refreshCapabilityPrerequisiteStatuses() }
@@ -576,7 +362,7 @@ struct WorkspaceRightRailView: View {
         .onChange(of: sshReloadTrigger) {
             loadSSHConnections()
             if !sshConnections.isEmpty {
-                isAccessCollapsed = false
+                expandDetail(.remoteAccess)
             }
         }
         // Approval state is cached into @State (see refreshApprovedCapabilities)
@@ -588,19 +374,7 @@ struct WorkspaceRightRailView: View {
                 refreshApprovedCapabilities()
             }
         }
-        .onChange(of: isConfiguredWorkspaceSetupExpanded) { _, value in
-            RailDisclosureStore.setBool(value, workspaceDisclosureID, .configuredSetupExpanded)
-        }
-        .onChange(of: isReadyCapabilitiesExpanded) { _, value in
-            RailDisclosureStore.setBool(value, workspaceDisclosureID, .readyCapabilitiesExpanded)
-        }
-        .onChange(of: isDraftCapabilitiesExpanded) { _, value in
-            RailDisclosureStore.setBool(value, workspaceDisclosureID, .draftCapabilitiesExpanded)
-        }
-        .alert("Capability could not be updated", isPresented: Binding(
-            get: { capabilityError != nil },
-            set: { if !$0 { capabilityError = nil } }
-        )) {
+        .alert("Capability could not be updated", isPresented: capabilityErrorBinding) {
             Button("OK", role: .cancel) { capabilityError = nil }
         } message: {
             Text(capabilityError ?? "")
@@ -608,18 +382,46 @@ struct WorkspaceRightRailView: View {
         .workspaceFolderRefusalAlert($folderRefusal)
     }
 
-    private func floatingContextSection<Content: View>(
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
-
-        return content()
-            .padding(isCompact ? CapabilityRailLayout.compactSectionPadding : CapabilityRailLayout.regularSectionPadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(shape.fill(floatingSectionFill))
-            .overlay {
-                shape.stroke(floatingSectionStroke, lineWidth: 1)
+    /// The cards and boxes themselves; the panel's lifecycle modifiers hang
+    /// off `configurePanel`.
+    private func railContent(boxes: [Rail.Box], capabilityItems: [String: RailCapabilityItem]) -> some View {
+        VStack(alignment: .leading, spacing: WorkspaceRailSectionPresentation.Layout.boxSpacing) {
+            ForEach(boxes, id: \.section) { box in
+                railBox(box, capabilityItems: capabilityItems)
             }
+
+            railAddChip(boxes)
+        }
+        .confirmationDialog(
+            pendingRailDeletion?.title ?? "",
+            isPresented: pendingRailDeletionBinding,
+            titleVisibility: .visible,
+            presenting: pendingRailDeletion
+        ) { deletion in
+            Button(deletion.confirmTitle, role: .destructive) {
+                deletion.perform()
+                pendingRailDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingRailDeletion = nil
+            }
+        } message: { deletion in
+            Text(deletion.message)
+        }
+    }
+
+    private var pendingRailDeletionBinding: Binding<Bool> {
+        Binding(
+            get: { pendingRailDeletion != nil },
+            set: { presented in if !presented { pendingRailDeletion = nil } }
+        )
+    }
+
+    private var capabilityErrorBinding: Binding<Bool> {
+        Binding(
+            get: { capabilityError != nil },
+            set: { if !$0 { capabilityError = nil } }
+        )
     }
 
     private var floatingSectionFill: Color {
@@ -632,321 +434,443 @@ struct WorkspaceRightRailView: View {
         Stanford.borderRest
     }
 
-    private func capabilityHealthPanel(_ snapshot: CapabilityRailSnapshot) -> some View {
-        floatingContextSection {
-            VStack(alignment: .leading, spacing: sectionContentSpacing) {
-                rightRailSectionHeader(CapabilityRailSectionPresentation.sectionTitle) {
-                    capabilityAddButton
-                }
+    // MARK: - Rail boxes
 
-                capabilityList(snapshot)
+    private typealias Rail = WorkspaceRailSectionPresentation
+
+    private var showsDockerEnvironment: Bool {
+        WorkspaceRailEnvironmentLifecycle.needsContainerRows(
+            workspaceHasContainers: hasDockerEnvironments, task: selectedTask
+        )
+    }
+
+    private var environmentFacts: Rail.EnvironmentFacts {
+        var facts = Rail.EnvironmentFacts(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths,
+            remoteServerNames: sshConnections.map { $0.name.isEmpty ? $0.host : $0.name }
+        )
+        if hasGitRepositories, gitViewModel.selectedRepository != nil {
+            facts.repositoryName = gitViewModel.selectedRepositoryName
+            facts.repositoryPath = gitViewModel.selectedRepositoryFullPath
+            facts.hasMultipleRepositories = gitViewModel.repositories.count > 1
+            let branch = gitViewModel.currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+            facts.branch = branch.isEmpty || branch == "unknown" ? nil : branch
+            facts.changedFileCount = gitViewModel.statusFiles.count
+            facts.aheadCount = gitViewModel.pushableCommitCount
+            facts.behindCount = gitViewModel.behind
+            facts.canStartPullRequest = gitViewModel.canStartPullRequest
+            facts.openPullRequestLabel = gitViewModel.openPullRequest.map {
+                "#\($0.number)" + ($0.isDraft ? " · draft" : "")
+            }
+        }
+        if showsDockerEnvironment, dockerViewModel.selectedEnvironment.isContainerized {
+            facts.executionEnvironment = .container(name: dockerViewModel.selectedEnvironment.displayName)
+        }
+        return facts
+    }
+
+    private var contextFacts: Rail.ContextFacts {
+        Rail.ContextFacts(
+            instructions: workspace.instructions,
+            memoryCount: workspace.memories.count,
+            routineTitles: workspace.schedules.sorted { $0.name < $1.name }.map(\.name)
+        )
+    }
+
+    private func capabilityFacts(_ items: [RailCapabilityItem]) -> [Rail.CapabilityFacts] {
+        items.map { item in
+            Rail.CapabilityFacts(
+                id: item.id,
+                name: capabilityDisplayName(item.name),
+                isBlocked: item.readiness.level == .needsAttention,
+                blockedVerb: item.repair?.verb,
+                isDraft: isDraftCapability(item)
+            )
+        }
+    }
+
+    /// The boxes the rail renders, in the model's fixed order.
+    private func railBoxes(_ snapshot: CapabilityRailSnapshot) -> [Rail.Box] {
+        Rail.boxes(
+            environment: environmentFacts,
+            context: contextFacts,
+            capabilities: capabilityFacts(snapshot.items),
+            outputs: outputFacts
+        )
+    }
+
+    // MARK: Outputs
+
+    /// What the selected task produced: its file facts minus the inputs the
+    /// user attached and any folder, newest first as the reader lists them.
+    private var outputFacts: Rail.OutputFacts {
+        guard let selectedTask,
+              let cache = outputFilesCache,
+              cache.scope == TaskAttachmentHistoryScope(task: selectedTask) else {
+            return Rail.OutputFacts()
+        }
+        return WorkspaceRailOutputPresentation.facts(from: cache.files)
+    }
+
+    private var outputsSignature: WorkspaceRailOutputPresentation.ReadKey {
+        .init(task: selectedTask, refreshTick: outputsRefreshTick)
+    }
+
+    private func recomputeOutputFiles() async {
+        guard let task = selectedTask else {
+            outputFilesCache = nil
+            return
+        }
+        let inputs = task.inputs
+        let access = TaskWorkspaceAccess(task: task)
+        let taskFolder = access.taskFolder
+        let workspacePath = access.effectiveWorkspacePath
+        let scope = TaskAttachmentHistoryScope(task: task)
+        let container = modelContext.container
+        isLoadingOutputs = true
+        defer { isLoadingOutputs = false }
+        let read = Task.detached(priority: .userInitiated) {
+            let context = ModelContext(container)
+            context.autosaveEnabled = false
+            return try TaskHeaderFilesReader.facts(
+                scope: scope, inputs: inputs, taskFolder: taskFolder,
+                workspacePath: workspacePath, modelContext: context
+            )
+        }
+        do {
+            let items = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
+            guard !Task.isCancelled, let current = selectedTask, scope == TaskAttachmentHistoryScope(task: current) else { return }
+            outputFilesCache = (scope, items)
+        } catch is CancellationError {
+            return
+        } catch {
+            AppLogger.error("Task outputs could not be read: \(error.localizedDescription)", category: "UI")
+        }
+    }
+
+    private func openOutput(_ path: String) {
+        (onOpenGeneratedFile ?? onOpenWorkspaceFile)?(path)
+    }
+
+    private func railBox(_ box: Rail.Box, capabilityItems: [String: RailCapabilityItem]) -> some View {
+        let isExpanded = isBoxExpanded(box)
+        return railBoxSection {
+            VStack(alignment: .leading, spacing: 0) {
+                RailBoxHeader(
+                    title: box.title,
+                    isExpanded: isExpanded,
+                    collapsedSummary: box.collapsedSummary,
+                    addActions: availableAddActions(box.addActions),
+                    isBusy: boxIsBusy(box.section),
+                    onRefresh: boxRefreshAction(box.section),
+                    onToggle: { toggleBox(box.section) },
+                    onAdd: { perform($0) }
+                )
+
+                if isExpanded {
+                    if box.section == .environment {
+                        environmentRows(box)
+                    } else {
+                        ForEach(box.rows) { row in
+                            railRow(row, capabilityItems: capabilityItems)
+                        }
+                    }
+                    if box.section == .context,
+                       isMemoryComposerVisible,
+                       !box.rows.contains(where: { $0.kind == .memory }) {
+                        firstMemoryComposerRow
+                    }
+                }
             }
         }
     }
 
-    private func rightRailSectionHeader<Trailing: View>(
-        _ title: String,
-        summary: String? = nil,
-        @ViewBuilder trailing: () -> Trailing
-    ) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(title)
-                .font(Stanford.ui(CapabilityRailLayout.sectionTitleFontSize, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .layoutPriority(1)
-
-            if let summary {
-                Text(summary)
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color.primary.opacity(0.055))
-                    .clipShape(Capsule())
+    /// Where it is (folders, remote), where it runs (the container rows, or a
+    /// plain `Local`), then source control, whose verbs footer closes the box.
+    /// The model's repository, branch and pull-request rows are rendered by
+    /// the git row group, which owns their pickers and sheets.
+    @ViewBuilder
+    private func environmentRows(_ box: Rail.Box) -> some View {
+        folderRows(box.rows)
+        ForEach(box.rows.filter { $0.kind != .folder }) { row in
+            switch row.kind {
+            case .folder:
+                EmptyView()
+            case .remote:
+                detailRow(row, item: .remoteAccess) { remoteAccessSetupDetails }
+            case .runsIn:
+                if !showsDockerEnvironment {
+                    RailKeyValueRow(row: row)
+                }
+            case .repository, .branch, .pullRequest, .instructions, .memory, .routines, .capability, .output, .outputsOverflow:
+                EmptyView()
             }
-
-            Spacer(minLength: 0)
-            trailing()
         }
+
+        if showsDockerEnvironment {
+            WorkspaceDockerSectionView(
+                viewModel: dockerViewModel,
+                workspace: workspace,
+                selectedTask: selectedTask,
+                isCompact: isCompact
+            )
+        }
+
+        if hasGitRepositories {
+            WorkspaceGitSectionView(
+                viewModel: gitViewModel,
+                workspace: workspace,
+                selectedTask: selectedTask,
+                isCompact: isCompact,
+                onTaskCreated: onTaskCreated,
+                onOpenWorkspaceFile: onOpenWorkspaceFile
+            )
+        }
+    }
+
+    private var environmentIsRefreshing: Bool {
+        (hasGitRepositories && gitViewModel.isSyncing) || (showsDockerEnvironment && dockerViewModel.isRefreshing)
+    }
+
+    private func boxIsBusy(_ section: Rail.Section) -> Bool {
+        switch section {
+        case .environment: environmentIsRefreshing
+        case .outputs: isLoadingOutputs
+        case .context, .capabilities: false
+        }
+    }
+
+    /// Boxes whose facts come from scans carry a refresh control; the others'
+    /// facts are the workspace's own and stay current by themselves.
+    private func boxRefreshAction(_ section: Rail.Section) -> (() -> Void)? {
+        switch section {
+        case .environment: return environmentRefreshAction
+        case .outputs: return { outputsRefreshTick += 1 }
+        case .context, .capabilities: return nil
+        }
+    }
+
+    /// Re-reads the facts that come from scans; nil when the box holds only
+    /// folders, which the workspace itself keeps current.
+    private var environmentRefreshAction: (() -> Void)? {
+        guard hasGitRepositories || showsDockerEnvironment else { return nil }
+        return {
+            Task {
+                if hasGitRepositories { await gitViewModel.scanRepositories() }
+                if showsDockerEnvironment { await dockerViewModel.refresh() }
+            }
+        }
+    }
+
+    private func railBoxSection<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
+        return content()
+            .padding(.top, Rail.Layout.boxPaddingTop)
+            .padding(.horizontal, Rail.Layout.boxPaddingHorizontal)
+            .padding(.bottom, Rail.Layout.boxPaddingBottom)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(shape.fill(floatingSectionFill))
+            .overlay { shape.stroke(floatingSectionStroke, lineWidth: 1) }
     }
 
     @ViewBuilder
-    private var capabilityAddButton: some View {
-        if let onManageCapabilities {
-            Button(action: onManageCapabilities) {
-                HStack(spacing: 4) {
-                    if CapabilityRailSectionPresentation.addActionShowsPlusIcon {
-                        Image(systemName: "plus")
-                            .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .semibold))
-                    }
-
-                    VStack(alignment: .trailing, spacing: 1) {
-                        Text(CapabilityRailSectionPresentation.addActionTitle)
-                            .font(Stanford.ui(CapabilityRailLayout.sectionActionFontSize, weight: .semibold))
-                            .lineLimit(1)
-
-                        if !CapabilityRailSectionPresentation.addActionSubtitle.isEmpty {
-                            Text(CapabilityRailSectionPresentation.addActionSubtitle)
-                                .font(Stanford.caption(CapabilityRailLayout.sectionActionSubtitleFontSize))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-                .foregroundStyle(Stanford.lagunita)
+    private func railRow(_ row: Rail.Row, capabilityItems: [String: RailCapabilityItem]) -> some View {
+        switch row.kind {
+        case .capability(let id):
+            if let item = capabilityItems[id] {
+                capabilityRailRow(item)
             }
-            .buttonStyle(.plain)
-            .help(CapabilityRailSectionPresentation.addActionHelp)
-            .accessibilityLabel("Add capability")
+        case .folder:
+            RailKeyValueRow(row: row)
+        case .remote:
+            detailRow(row, item: .remoteAccess) { remoteAccessSetupDetails }
+        case .instructions:
+            detailRow(row, item: .instructions, onAction: { expandDetail(.instructions) }) { instructionsSetupDetails }
+        case .memory:
+            detailRow(row, item: .memory) { memorySetupDetails }
+        case .routines:
+            detailRow(row, item: .routines) { routinesSetupDetails }
+        case .output(let path):
+            RailKeyValueRow(row: row, help: path, onTap: { openOutput(path) })
+        case .outputsOverflow(_, let firstHiddenPath):
+            RailKeyValueRow(row: row, help: "Open the Files shelf", onTap: { onOpenWorkspaceFile?(firstHiddenPath) })
+        case .repository, .branch, .runsIn, .pullRequest:
+            RailKeyValueRow(row: row)
         }
     }
 
-    private func capabilityList(_ snapshot: CapabilityRailSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: capabilityGroupSpacing + 2) {
-            if snapshot.items.isEmpty {
-                CapabilityEmptyPrompt(
-                    title: "No active capabilities",
-                    description: "Add skills, tools, and connectors from the library.",
-                    actionTitle: "Add capability",
-                    action: onManageCapabilities
-                )
-            } else {
-                if !snapshot.attentionItems.isEmpty {
-                    capabilityGroup(
-                        "Action needed",
-                        count: snapshot.attentionItems.count,
-                        style: .attention,
-                        items: snapshot.attentionItems
-                    )
-                }
-
-                if !snapshot.readyItems.isEmpty {
-                    capabilitySummaryGroup(
-                        "Ready",
-                        items: snapshot.readyItems,
-                        style: .ready,
-                        isExpanded: $isReadyCapabilitiesExpanded,
-                        summaryTitle: capabilityPreview(snapshot.readyItems),
-                        summarySubtitle: CapabilityRailSectionPresentation.readySummarySubtitle(count: snapshot.readyItems.count)
-                    )
-                }
-
-                if !snapshot.draftItems.isEmpty {
-                    capabilitySummaryGroup(
-                        "Drafts",
-                        items: snapshot.draftItems,
-                        style: .draft,
-                        isExpanded: $isDraftCapabilitiesExpanded,
-                        summaryTitle: capabilityPreview(snapshot.draftItems),
-                        summarySubtitle: CapabilityRailSectionPresentation.draftSummarySubtitle(count: snapshot.draftItems.count)
-                    )
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func capabilityPreview(_ items: [RailCapabilityItem]) -> String {
-        CapabilityRailSectionPresentation.previewList(items.map { capabilityDisplayName($0.name) })
-    }
-
-    private func capabilitySummaryIcon(for style: CapabilityRailGroupStyle) -> String {
-        switch style {
-        case .attention:
-            return "exclamationmark.triangle.fill"
-        case .ready:
-            return "checkmark.circle"
-        case .draft:
-            return "doc.text"
-        }
-    }
-
-
-    private func capabilitySummaryTint(for style: CapabilityRailGroupStyle) -> Color {
-        switch style {
-        case .attention:
-            return Stanford.poppy
-        case .ready, .draft:
-            return Stanford.lagunita
-        }
-    }
-
-    private func capabilitySummaryGroup(
-        _ title: String,
-        items: [RailCapabilityItem],
-        style: CapabilityRailGroupStyle,
-        isExpanded: Binding<Bool>,
-        summaryTitle: String,
-        summarySubtitle: String
+    /// A key/value row that expands in place to one of the inline editors.
+    private func detailRow<Details: View>(
+        _ row: Rail.Row,
+        item: WorkspaceSetupItem,
+        onAction: (() -> Void)? = nil,
+        @ViewBuilder details: () -> Details
     ) -> some View {
-        // A "Show all (1)" summary that collapses a single row hides nothing worth
-        // hiding, so a lone item always renders expanded (the N >= 2 rule).
-        let showsExpanded = isExpanded.wrappedValue || items.count < 2
-
-        return VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
-            capabilityGroupHeader(title, count: items.count, style: style)
-
-            if showsExpanded {
-                capabilityRows(items, style: style)
-                if items.count >= 2 {
-                    Button {
-                        withAnimation(disclosureAnimation) {
-                            isExpanded.wrappedValue = false
-                        }
-                    } label: {
-                        Text(WorkspaceRightRailPresentation.hideActionTitle)
-                            .font(Stanford.caption(11).weight(.medium))
-                            .foregroundStyle(Stanford.lagunita)
-                            .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
-                            .padding(.vertical, 2)
-                    }
-                    .buttonStyle(.plain)
-                }
-            } else {
-                CapabilitySummaryRow(
-                    icon: capabilitySummaryIcon(for: style),
-                    iconColor: capabilitySummaryTint(for: style),
-                    title: summaryTitle,
-                    subtitle: summarySubtitle,
-                    actionTitle: CapabilityRailSectionPresentation.showAllActionTitle(count: items.count),
-                    action: {
-                        withAnimation(disclosureAnimation) {
-                            isExpanded.wrappedValue = true
-                        }
-                    }
-                )
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func capabilityGroupHeader(
-        _ title: String,
-        count _: Int,
-        style: CapabilityRailGroupStyle
-    ) -> some View {
-        return HStack(spacing: 8) {
-            if style == .attention, CapabilityRailSectionPresentation.attentionGroupShowsWarningIcon {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(Stanford.ui(12, weight: .semibold))
-                    .foregroundStyle(Stanford.poppy)
-            }
-
-            Text(title)
-                .font(Stanford.caption(CapabilityRailLayout.groupHeadingFontSize).weight(.semibold))
-                .foregroundStyle(capabilityGroupHeaderForeground(style))
-
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 4)
-    }
-
-    private func capabilityGroup(
-        _ title: String,
-        count: Int,
-        style: CapabilityRailGroupStyle,
-        items: [RailCapabilityItem]
-    ) -> some View {
-        VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
-            capabilityGroupHeader(title, count: count, style: style)
-            capabilityRows(items, style: style)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func capabilityRows(_ items: [RailCapabilityItem], style: CapabilityRailGroupStyle) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Stanford.railCompactCardCornerRadius, style: .continuous)
-
-        return VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                capabilityRow(item)
-
-                if index < items.count - 1 {
-                    SubtleDivider()
-                        .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
-                        .padding(.trailing, CapabilityRailLayout.dividerTrailingPadding(isCompact: isCompact))
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            if CapabilityRailLayout.usesNestedGroupChrome {
-                shape.fill(capabilityGroupFill(style))
-            }
-        }
-        .overlay {
-            if CapabilityRailLayout.usesNestedGroupChrome {
-                shape.stroke(capabilityGroupStroke(style), lineWidth: 1)
+        let isExpanded = expandedWorkspaceSetupItems.contains(item)
+        return VStack(alignment: .leading, spacing: isExpanded ? 6 : 0) {
+            RailKeyValueRow(
+                row: row,
+                isExpanded: isExpanded,
+                help: rowHelp(row),
+                onTap: { toggleWorkspaceSetupItem(item) },
+                onAction: onAction ?? { toggleWorkspaceSetupItem(item) }
+            )
+            if isExpanded {
+                details()
+                    .padding(.leading, Self.detailLeadingPadding)
+                    .padding(.trailing, 4)
+                    .padding(.bottom, 8)
             }
         }
     }
 
-    private func capabilityGroupHeaderForeground(_ style: CapabilityRailGroupStyle) -> Color {
-        if style == .attention, CapabilityRailSectionPresentation.attentionGroupUsesWarningTint {
-            return Stanford.poppy
-        }
-
-        return .secondary
+    private static var detailLeadingPadding: CGFloat {
+        Rail.Layout.leadingIconFrame + 8 + 6
     }
 
-    private func capabilityGroupFill(_ style: CapabilityRailGroupStyle) -> Color {
-        switch style {
-        case .attention:
-            return Stanford.poppy.opacity(0.035)
-        case .ready:
-            return Color.primary.opacity(0.018)
-        case .draft:
-            return Color.primary.opacity(0.018)
-        }
+    private func rowHelp(_ row: Rail.Row) -> String? { row.representedPath }
+
+    private func folderRows(_ rows: [Rail.Row]) -> some View {
+        RailFolderRows(
+            rows: rows.filter { $0.kind == .folder },
+            isExpanded: expandedWorkspaceSetupItems.contains(.folders),
+            onToggle: { toggleWorkspaceSetupItem(.folders) },
+            onChoosePrimary: { chooseWorkspaceFolder(.primary) }
+        ) { foldersSetupDetails }
     }
 
-    private func capabilityGroupStroke(_ style: CapabilityRailGroupStyle) -> Color {
-        switch style {
-        case .attention:
-            return Stanford.poppy.opacity(Stanford.strokeActive)
-        case .ready:
-            return Stanford.borderSubtle
-        case .draft:
-            return Stanford.borderSubtle
+    /// The first memory is composed under a transient Memory row, since the
+    /// row itself appears only once a memory exists.
+    private var firstMemoryComposerRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            RailKeyValueRow(row: Rail.Row(kind: .memory, systemImage: "text.badge.checkmark", title: "Memory"))
+            memoryComposer
+                .padding(.leading, Self.detailLeadingPadding)
+                .padding(.trailing, 4)
+                .padding(.bottom, 8)
         }
     }
 
-    private func capabilityRow(_ item: RailCapabilityItem) -> some View {
-        let isHighlighted = item.readiness.level == .needsAttention
+    private func capabilityRailRow(_ item: RailCapabilityItem) -> some View {
         let repairPhase = item.repair.flatMap { repairs.phase(for: $0, owner: item.id) }
+        let isBlocked = item.readiness.level == .needsAttention && !isDraftCapability(item)
+        // The repair verb is the whole signal for a blocked capability; one
+        // without a repair of its own opens its details under "Set up".
+        let repairVerb: String? = isBlocked ? (item.repair?.verb ?? Rail.defaultBlockedVerb) : nil
 
         return CapabilityRailRow(
             icon: WorkspaceContextIconography.capabilityIcon(name: item.name, fallback: item.icon),
             brand: item.brand,
             title: capabilityDisplayName(item.name),
             subtitle: capabilityListSubtitle(for: item),
-            color: item.color,
             readiness: item.readiness,
             statusLabel: capabilityBadgeTitle(for: item),
-            statusColor: capabilityBadgeColor(for: item),
             isEnabled: item.isEnabled,
             isCompact: isCompact,
-            repairVerb: item.repair?.verb,
+            repairVerb: repairVerb,
             repairGuidance: CapabilityRailRow.repairGuidance(for: item.repair),
             repairStatus: item.repair.flatMap { repairs.statusText(for: $0, owner: item.id) },
             repairIsChecking: repairPhase == .waiting,
-            onRepair: { if let repair = item.repair { repairs.start(repair, owner: item.id) { refreshCapabilityPrerequisiteStatuses() } } },
+            onRepair: {
+                if let repair = item.repair {
+                    repairs.start(repair, owner: item.id) { refreshCapabilityPrerequisiteStatuses() }
+                } else {
+                    openCapabilityConfiguration(item)
+                }
+            },
             contextualRepair: contextualRepair(for: item),
             onOpen: { openCapabilityConfiguration(item) }
         )
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, CapabilityRailLayout.groupHorizontalPadding(isCompact: isCompact))
-        .padding(.leading, isHighlighted ? 14 : 0)
-        .padding(.vertical, isCompact ? 3 : 4)
-        .overlay(alignment: .leading) {
-            if isHighlighted {
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(Stanford.poppy)
-                    .frame(width: 2, height: 52)
-                    .padding(.leading, 2)
+        .id(CapabilityRailRepair.confirmationIdentity(for: item.repair, owner: item.id))
+    }
+
+    // MARK: Box disclosure
+
+    private func isBoxExpanded(_ box: Rail.Box) -> Bool {
+        box.forcesExpansion || !collapsedBoxes.contains(box.section)
+    }
+
+    private func toggleBox(_ section: Rail.Section) {
+        withAnimation(disclosureAnimation) {
+            if collapsedBoxes.contains(section) {
+                collapsedBoxes.remove(section)
+            } else {
+                collapsedBoxes.insert(section)
             }
+        }
+        RailDisclosureStore.setBool(
+            !collapsedBoxes.contains(section),
+            workspaceDisclosureID,
+            Self.disclosureToggle(for: section)
+        )
+    }
+
+    private static func disclosureToggle(for section: Rail.Section) -> RailDisclosureStore.Toggle {
+        switch section {
+        case .environment: .environmentExpanded
+        case .context: .contextExpanded
+        case .capabilities: .capabilitiesExpanded
+        case .outputs: .outputsExpanded
+        }
+    }
+
+    /// Opens an inline editor, and the box that holds it.
+    private func expandDetail(_ item: WorkspaceSetupItem) {
+        withAnimation(disclosureAnimation) {
+            collapsedBoxes.remove(item.section)
+            _ = expandedWorkspaceSetupItems.insert(item)
+        }
+    }
+
+    // MARK: Adds
+
+    private func availableAddActions(_ actions: [Rail.AddAction]) -> [Rail.AddAction] {
+        actions.filter { addHandler(for: $0) != nil }
+    }
+
+    private func perform(_ action: Rail.AddAction) {
+        addHandler(for: action)?()
+    }
+
+    /// `runInContainer` has no handler until the Environment box absorbs the
+    /// Container card, so it is left out of every menu.
+    private func addHandler(for action: Rail.AddAction) -> (() -> Void)? {
+        switch action {
+        case .addCapability:
+            return onManageCapabilities
+        case .addMemory:
+            return { showMemoryComposer() }
+        case .newRoutine:
+            return onNewSchedule
+        case .addFolder:
+            return {
+                expandDetail(.folders)
+                addExtraFolder()
+            }
+        case .connectServer:
+            return onNewSSHConnection
+        case .runInContainer:
+            return nil
+        }
+    }
+
+    private func showMemoryComposer() {
+        expandDetail(.memory)
+        isMemoryComposerVisible = true
+    }
+
+    /// The rail-level `Add…`: absent boxes' adds first, then the present
+    /// boxes' adds, so the first capability is one tap away with no box.
+    @ViewBuilder
+    private func railAddChip(_ boxes: [Rail.Box]) -> some View {
+        let actions = availableAddActions(Rail.railAddActions(for: boxes))
+        if !actions.isEmpty {
+            HStack {
+                RailAddMenuButton(actions: actions, style: .chip, onAdd: perform)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 6)
         }
     }
 
@@ -965,33 +889,16 @@ struct WorkspaceRightRailView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// A passive trailing label. Blocked state is carried by the repair
+    /// button, never by a label, so only drafts and restored items get one.
     private func capabilityBadgeTitle(for item: RailCapabilityItem) -> String? {
-        if let statusLabel = item.presentation.statusLabel {
-            return statusLabel
-        }
-
         if item.name.localizedCaseInsensitiveContains("(Restored)") {
             return "Restored"
         }
-
-        if item.name.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare("New Skill") == .orderedSame {
-            return "Draft"
+        if isDraftCapability(item) {
+            return Rail.draftLabel
         }
-
         return nil
-    }
-
-    private func capabilityBadgeColor(for item: RailCapabilityItem) -> Color {
-        if item.readiness.level == .needsAttention {
-            return Stanford.poppy
-        }
-        if item.name.localizedCaseInsensitiveContains("(Restored)") {
-            return .secondary
-        }
-        if item.name.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare("New Skill") == .orderedSame {
-            return Stanford.poppy
-        }
-        return readinessColor(for: item.readiness, isEnabled: item.isEnabled)
     }
 
     private func capabilityListSubtitle(for item: RailCapabilityItem) -> String {
@@ -1308,18 +1215,6 @@ struct WorkspaceRightRailView: View {
         }
     }
 
-    private func readinessColor(for readiness: CapabilityReadiness, isEnabled: Bool) -> Color {
-        guard isEnabled else { return Color.secondary.opacity(0.45) }
-        switch readiness.level {
-        case .ready:
-            return Stanford.paloAltoGreen
-        case .needsAttention:
-            return Stanford.poppy
-        case .inactive:
-            return Color.secondary.opacity(0.45)
-        }
-    }
-
     private func browserAdapterDisplayName(_ adapter: String) -> String {
         switch BrowserSiteAdapterID.normalized(adapter) {
         case BrowserSiteAdapterID.googleDrive:
@@ -1330,348 +1225,6 @@ struct WorkspaceRightRailView: View {
             return normalized
         case .none:
             return adapter.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
-
-    // MARK: - Connector Subsection
-
-    // MARK: - Tools & Templates Pills
-
-    @ViewBuilder
-
-    // MARK: - Context Section
-
-    private var workspaceSetupChecklistPanel: some View {
-        VStack(alignment: .leading, spacing: sectionContentSpacing) {
-            rightRailSectionHeader(WorkspaceSetupChecklistPresentation.sectionTitle) {
-                EmptyView()
-            }
-
-            VStack(alignment: .leading, spacing: capabilityGroupSpacing + 2) {
-                if workspaceSetupMissingCount > 0 {
-                    workspaceSetupGroup(WorkspaceSetupChecklistPresentation.missingGroupTitle) {
-                        workspaceSetupRows(for: .missing)
-                    }
-                }
-
-                if workspaceSetupReferenceCount > 0 {
-                    workspaceSetupGroup(WorkspaceSetupChecklistPresentation.referenceGroupTitle) {
-                        workspaceSetupRows(for: .reference)
-                    }
-                }
-
-                if workspaceSetupConfiguredCount > 0 {
-                    workspaceSetupConfiguredGroup
-                }
-            }
-        }
-        .confirmationDialog(
-            pendingRailDeletion?.title ?? "",
-            isPresented: Binding(
-                get: { pendingRailDeletion != nil },
-                set: { presented in if !presented { pendingRailDeletion = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: pendingRailDeletion
-        ) { deletion in
-            Button(deletion.confirmTitle, role: .destructive) {
-                deletion.perform()
-                pendingRailDeletion = nil
-            }
-            Button("Cancel", role: .cancel) {
-                pendingRailDeletion = nil
-            }
-        } message: { deletion in
-            Text(deletion.message)
-        }
-    }
-
-    private var workspaceSetupConfiguredGroup: some View {
-        // A lone configured item renders expanded — a "Show all (1)" summary that
-        // hides a single row is self-undermining, so the N >= 2 rule applies here
-        // exactly as it does for capabilities.
-        let count = workspaceSetupConfiguredCount
-        let showsExpanded = isConfiguredWorkspaceSetupExpanded || count < 2
-
-        return workspaceSetupGroup(WorkspaceSetupChecklistPresentation.configuredGroupTitle) {
-            if showsExpanded {
-                workspaceSetupRows(for: .configured)
-                if count >= 2 {
-                    Button {
-                        withAnimation(disclosureAnimation) {
-                            isConfiguredWorkspaceSetupExpanded = false
-                        }
-                    } label: {
-                        Text(WorkspaceRightRailPresentation.hideActionTitle)
-                            .font(Stanford.caption(11).weight(.medium))
-                            .foregroundStyle(Stanford.lagunita)
-                            .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
-                            .padding(.vertical, 2)
-                    }
-                    .buttonStyle(.plain)
-                }
-            } else {
-                // Noun-first: the configured item names are the title, the count is
-                // metadata, and the accent-coloured verb carries the disclosure.
-                CapabilitySummaryRow(
-                    icon: WorkspaceSetupChecklistPresentation.configuredSummaryIcon,
-                    iconColor: Stanford.statusHealthy,
-                    title: workspaceSetupConfiguredPreview,
-                    subtitle: WorkspaceSetupChecklistPresentation.configuredCountSubtitle(count),
-                    actionTitle: WorkspaceSetupChecklistPresentation.showAllActionTitle(count),
-                    action: {
-                        withAnimation(disclosureAnimation) {
-                            isConfiguredWorkspaceSetupExpanded = true
-                        }
-                    }
-                )
-            }
-        }
-    }
-
-    private func workspaceSetupGroup<Content: View>(
-        _ title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: isCompact ? 8 : 10) {
-            capabilityGroupHeader(title, count: 0, style: .ready)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private func workspaceSetupRows(for state: WorkspaceSetupChecklistPresentation.State) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            let rows = workspaceSetupRowItems(for: state)
-            ForEach(Array(rows.enumerated()), id: \.element) { index, item in
-                workspaceSetupRow(for: item)
-
-                if index < rows.count - 1 {
-                    checklistDivider()
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func workspaceSetupRowItems(for state: WorkspaceSetupChecklistPresentation.State) -> [WorkspaceSetupItem] {
-        var items: [WorkspaceSetupItem] = []
-        if workspaceSetupState(for: .instructions) == state { items.append(.instructions) }
-        if workspaceSetupState(for: .memory) == state { items.append(.memory) }
-        if workspaceSetupState(for: .folders) == state { items.append(.folders) }
-        if workspaceSetupState(for: .remoteAccess) == state { items.append(.remoteAccess) }
-        if !workspace.schedules.isEmpty, state == .configured { items.append(.routines) }
-        return items
-    }
-
-    private var workspaceSetupConfiguredPreview: String {
-        WorkspaceSetupChecklistPresentation.configuredPreview(
-            workspaceSetupRowItems(for: .configured).map(workspaceSetupTitle(for:))
-        )
-    }
-
-    private func workspaceSetupTitle(for item: WorkspaceSetupItem) -> String {
-        switch item {
-        case .instructions:
-            return "Instructions"
-        case .memory:
-            return "Memory"
-        case .folders:
-            return WorkspaceSetupChecklistPresentation.folderAccessTitle
-        case .remoteAccess:
-            return "Remote access"
-        case .routines:
-            return "Routines"
-        }
-    }
-
-    private func workspaceSetupState(for item: WorkspaceSetupItem) -> WorkspaceSetupChecklistPresentation.State {
-        switch item {
-        case .instructions:
-            hasWorkspaceInstructions ? .configured : .missing
-        case .memory:
-            workspace.memories.isEmpty ? .missing : .configured
-        case .folders:
-            WorkspaceSetupChecklistPresentation.folderState(
-                primaryPath: workspace.primaryPath,
-                additionalPaths: workspace.additionalPaths
-            )
-        case .remoteAccess:
-            sshConnections.isEmpty ? .missing : .configured
-        case .routines:
-            .configured
-        }
-    }
-
-    @ViewBuilder
-    private func workspaceSetupRow(for item: WorkspaceSetupItem) -> some View {
-        switch item {
-        case .instructions:
-            workspaceSetupChecklistRow(
-                item: .instructions,
-                icon: "text.quote",
-                title: "Instructions",
-                subtitle: hasWorkspaceInstructions ? "Main task guidance is set" : "Guidance for how tasks run",
-                state: workspaceSetupState(for: .instructions),
-                actionTitle: hasWorkspaceInstructions ? "Edit" : "Write",
-                action: {
-                    withAnimation(disclosureAnimation) {
-                        _ = expandedWorkspaceSetupItems.insert(.instructions)
-                    }
-                }
-            ) {
-                instructionsSetupDetails
-            }
-        case .memory:
-            workspaceSetupChecklistRow(
-                item: .memory,
-                icon: "text.badge.checkmark",
-                title: "Memory",
-                subtitle: workspace.memories.isEmpty
-                    ? "Details the agent remembers"
-                    : "\(workspace.memories.count) saved \(workspace.memories.count == 1 ? "detail" : "details")",
-                state: workspaceSetupState(for: .memory),
-                actionTitle: "Add",
-                action: {
-                    withAnimation(disclosureAnimation) {
-                        _ = expandedWorkspaceSetupItems.insert(.memory)
-                        isMemoryComposerVisible = true
-                    }
-                }
-            ) {
-                memorySetupDetails
-            }
-        case .folders:
-            workspaceSetupChecklistRow(
-                item: .folders,
-                icon: "folder",
-                title: WorkspaceSetupChecklistPresentation.folderAccessTitle,
-                subtitle: WorkspaceSetupChecklistPresentation.folderSubtitle(
-                    primaryPath: workspace.primaryPath,
-                    additionalPaths: workspace.additionalPaths
-                ),
-                state: workspaceSetupState(for: .folders),
-                actionTitle: "Add",
-                action: {
-                    withAnimation(disclosureAnimation) {
-                        _ = expandedWorkspaceSetupItems.insert(.folders)
-                    }
-                    addExtraFolder()
-                }
-            ) {
-                foldersSetupDetails
-            }
-        case .remoteAccess:
-            workspaceSetupChecklistRow(
-                item: .remoteAccess,
-                icon: "network",
-                title: "Remote access",
-                subtitle: sshConnections.isEmpty
-                    ? "Servers the agent can reach"
-                    : "\(sshConnections.count) configured \(sshConnections.count == 1 ? "server" : "servers")",
-                state: workspaceSetupState(for: .remoteAccess),
-                actionTitle: sshConnections.isEmpty ? "Connect" : "Add",
-                action: onNewSSHConnection
-            ) {
-                remoteAccessSetupDetails
-            }
-        case .routines:
-            workspaceSetupChecklistRow(
-                item: .routines,
-                icon: "arrow.triangle.2.circlepath",
-                title: "Routines",
-                subtitle: "\(workspace.schedules.count) scheduled \(workspace.schedules.count == 1 ? "routine" : "routines")",
-                state: .configured,
-                actionTitle: "Add",
-                action: onNewSchedule
-            ) {
-                routinesSetupDetails
-            }
-        }
-    }
-
-    private func workspaceSetupChecklistRow<Details: View>(
-        item: WorkspaceSetupItem,
-        icon: String,
-        title: String,
-        subtitle: String,
-        state: WorkspaceSetupChecklistPresentation.State,
-        actionTitle: String?,
-        action: (() -> Void)?,
-        @ViewBuilder details: () -> Details
-    ) -> some View {
-        let isExpanded = expandedWorkspaceSetupItems.contains(item)
-
-        return VStack(alignment: .leading, spacing: isExpanded ? 8 : 0) {
-            HStack(alignment: .center, spacing: 10) {
-                Button {
-                    toggleWorkspaceSetupItem(item)
-                } label: {
-                    HStack(alignment: .center, spacing: CapabilityRailLayout.leadingIconSpacing) {
-                        Image(systemName: icon)
-                            .font(Stanford.ui(CapabilityRailLayout.leadingIconFontSize, weight: .medium))
-                            .foregroundStyle(setupChecklistIconColor(for: state))
-                            .frame(width: CapabilityRailLayout.leadingIconFrame)
-                            .overlay(alignment: .bottomTrailing) {
-                                if state == .configured {
-                                    ConfiguredStatusDot()
-                                }
-                            }
-
-                        VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
-                            Text(title)
-                                .font(Stanford.ui(CapabilityRailLayout.rowTitleFontSize, weight: .semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-
-                            Text(subtitle)
-                                .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .help(subtitle)
-                        }
-                        .layoutPriority(1)
-
-                        Spacer(minLength: 10)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.setupRowMinHeight, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                if let actionTitle, let action {
-                    Button(action: action) {
-                        Text(actionTitle)
-                            .font(Stanford.caption(CapabilityRailLayout.rowActionFontSize).weight(.medium))
-                            .foregroundStyle(Stanford.lagunita)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
-                    .buttonStyle(.plain)
-                    .layoutPriority(2)
-                }
-
-                Button {
-                    toggleWorkspaceSetupItem(item)
-                } label: {
-                    Image(systemName: isExpanded
-                        ? WorkspaceSetupChecklistPresentation.expandedDisclosureIcon
-                        : WorkspaceSetupChecklistPresentation.collapsedDisclosureIcon)
-                        .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 12, height: 22)
-                }
-                .buttonStyle(.plain)
-            }
-
-            if isExpanded {
-                details()
-                    .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
-                    .padding(.trailing, 4)
-                    .padding(.bottom, 8)
-            }
         }
     }
 
@@ -1773,32 +1326,32 @@ struct WorkspaceRightRailView: View {
 
     private var foldersSetupDetails: some View {
         VStack(alignment: .leading, spacing: 8) {
-            let isWorkspaceRootMissing = WorkspaceSetupChecklistPresentation
+            let isWorkspaceRootMissing = WorkspaceFolderPresentation
                 .shouldShowWorkspaceRootMissingMessage(primaryPath: workspace.primaryPath)
             let rootDescriptor = WorkspacePathPresentation.descriptors(
                 primaryPath: workspace.primaryPath,
                 additionalPaths: []
             ).first
-            let additionalDescriptors = WorkspaceSetupChecklistPresentation
+            let additionalDescriptors = WorkspaceFolderPresentation
                 .userConfiguredFolderDescriptors(
                     primaryPath: workspace.primaryPath,
                     additionalPaths: workspace.additionalPaths
                 )
 
             if isWorkspaceRootMissing {
-                setupEmptyDetail(WorkspaceSetupChecklistPresentation.missingWorkspaceRootSubtitle)
+                setupEmptyDetail(WorkspaceFolderPresentation.missingWorkspaceRootSubtitle)
             }
 
             if !isWorkspaceRootMissing, let rootDescriptor {
                 setupFolderRow(
-                    WorkspaceSetupChecklistPresentation.folderDetailRow(for: rootDescriptor),
+                    WorkspaceFolderPresentation.folderDetailRow(for: rootDescriptor),
                     removeAction: nil
                 )
             }
 
             ForEach(additionalDescriptors) { descriptor in
                 setupFolderRow(
-                    WorkspaceSetupChecklistPresentation.folderDetailRow(for: descriptor),
+                    WorkspaceFolderPresentation.folderDetailRow(for: descriptor),
                     removeAction: { removeAdditionalPaths(matching: descriptor.path) }
                 )
             }
@@ -1809,7 +1362,7 @@ struct WorkspaceRightRailView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "plus")
                         .font(Stanford.ui(10, weight: .semibold))
-                    Text(WorkspaceSetupChecklistPresentation.addFolderActionTitle)
+                    Text(WorkspaceFolderPresentation.addFolderActionTitle)
                         .font(Stanford.caption(11).weight(.medium))
                 }
                 .foregroundStyle(Stanford.lagunita)
@@ -1819,7 +1372,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private var remoteAccessSetupDetails: some View {
-        let limit = WorkspaceSetupChecklistPresentation.detailPreviewLimit
+        let limit = WorkspaceRightRailPresentation.detailPreviewLimit
         let visibleConnections = Array(sshConnections.prefix(limit))
 
         return VStack(alignment: .leading, spacing: 7) {
@@ -1848,7 +1401,7 @@ struct WorkspaceRightRailView: View {
 
     private var routinesSetupDetails: some View {
         let sortedSchedules = workspace.schedules.sorted { $0.name < $1.name }
-        let limit = WorkspaceSetupChecklistPresentation.detailPreviewLimit
+        let limit = WorkspaceRightRailPresentation.detailPreviewLimit
         let visibleSchedules = Array(sortedSchedules.prefix(limit))
 
         return VStack(alignment: .leading, spacing: 7) {
@@ -2041,7 +1594,7 @@ struct WorkspaceRightRailView: View {
         singular: String,
         plural: String
     ) -> some View {
-        if let summary = WorkspaceSetupChecklistPresentation.overflowSummary(
+        if let summary = WorkspaceRightRailPresentation.overflowSummary(
             total: total,
             visible: visible,
             singular: singular,
@@ -2052,33 +1605,6 @@ struct WorkspaceRightRailView: View {
                 .foregroundStyle(Stanford.lagunita)
         }
     }
-
-    private func checklistDivider() -> some View {
-        SubtleDivider()
-            .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
-    }
-
-    private func setupChecklistIconColor(for _: WorkspaceSetupChecklistPresentation.State) -> Color {
-        Stanford.lagunita
-    }
-
-    private var workspaceSetupConfiguredCount: Int {
-        workspaceSetupRowItems(for: .configured).count
-    }
-
-    private var workspaceSetupReferenceCount: Int {
-        workspaceSetupRowItems(for: .reference).count
-    }
-
-    private var workspaceSetupMissingCount: Int {
-        workspaceSetupRowItems(for: .missing).count
-    }
-
-    // MARK: - Access Section
-
-    // MARK: - Routines Content
-
-    // MARK: - Collapsible Section Helpers
 
     private func markWorkspaceConfigurationChanged() {
         workspace.updatedAt = Date()
@@ -2145,10 +1671,7 @@ struct WorkspaceRightRailView: View {
         didRecentlySaveWorkspaceInstructions = true
         markWorkspaceConfigurationChanged()
 
-        withAnimation(disclosureAnimation) {
-            _ = expandedWorkspaceSetupItems.insert(.instructions)
-            isConfiguredWorkspaceSetupExpanded = !savedInstructions.isEmpty
-        }
+        expandDetail(.instructions)
     }
 
     private func clearDraftWorkspaceInstructions() {
@@ -2158,7 +1681,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private func removeAdditionalPaths(matching path: String) {
-        let remaining = WorkspaceSetupChecklistPresentation.remainingAdditionalPaths(
+        let remaining = WorkspaceFolderPresentation.remainingAdditionalPaths(
             afterRemovingFolderMatching: path,
             from: workspace.additionalPaths
         )
@@ -2231,40 +1754,25 @@ struct WorkspaceRightRailView: View {
     }
 
     private func applyConfigureDefaults() {
-        isAccessCollapsed = sshConnections.isEmpty && workspace.additionalPaths.isEmpty
-        isSchedulesSectionCollapsed = workspace.schedules.isEmpty
-        isContextCollapsed = false
-        isToolsExpanded = false
-        isTemplatesExpanded = false
         isMemoryComposerVisible = false
         syncInstructionDraftFromWorkspace()
         expandedWorkspaceSetupItems = []
 
-        // Restore the section expand/collapse choices the user made last time in
-        // this workspace, so the panel does not forget its layout every session.
-        isConfiguredWorkspaceSetupExpanded = RailDisclosureStore.bool(
-            workspaceDisclosureID, .configuredSetupExpanded, default: false
-        )
-        isReadyCapabilitiesExpanded = RailDisclosureStore.bool(
-            workspaceDisclosureID, .readyCapabilitiesExpanded, default: false
-        )
-        isDraftCapabilitiesExpanded = RailDisclosureStore.bool(
-            workspaceDisclosureID, .draftCapabilitiesExpanded, default: false
-        )
+        // Restore the box expand/collapse choices the user made last time in
+        // this workspace, so the rail does not forget its layout every session.
+        collapsedBoxes = Set(Rail.sectionOrder.filter { section in
+            !RailDisclosureStore.bool(workspaceDisclosureID, Self.disclosureToggle(for: section), default: true)
+        })
     }
 
     private func addExtraFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a folder the agent can also read from or execute in"
-        panel.prompt = "Add Folder"
-        if panel.runModal() == .OK, let url = panel.url {
-            let outcome = WorkspaceConfiguredRoots.addAdditionalPaths([url.path], to: workspace)
-            folderRefusal = outcome.refusalMessage
-            if outcome == .updated { markWorkspaceConfigurationChanged() }
-        }
+        chooseWorkspaceFolder(.additional)
+    }
+
+    private func chooseWorkspaceFolder(_ purpose: WorkspaceRailFolderPicker.Purpose) {
+        let outcome = WorkspaceRailFolderPicker.choose(purpose, for: workspace)
+        folderRefusal = outcome.refusalMessage
+        if outcome == .updated { markWorkspaceConfigurationChanged() }
     }
 
     private func addMemory() {
