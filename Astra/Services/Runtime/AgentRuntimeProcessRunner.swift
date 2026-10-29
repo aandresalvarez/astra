@@ -726,7 +726,7 @@ final class AgentRuntimeProcessRunner {
         defer {
             if preparationOwner?.record.providerProcess == nil { preparationOwner?.chargeElapsedPreparation() }
         }
-        let launchContext = AgentRuntimeProcessLaunchContext(
+        var launchContext = AgentRuntimeProcessLaunchContext(
             prompt: prompt,
             task: task,
             workspacePath: workspacePath,
@@ -807,7 +807,18 @@ final class AgentRuntimeProcessRunner {
         }
         let remainingTokenBudget = allowance.tokens
         let remainingTurns = allowance.turns
-        if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
+        let sharedKey: AgentRuntimeSharedStateKey?
+        do {
+            if adapter.id == .antigravityCLI {
+                launchContext.providerHomeDirectory = try ProviderSharedStateIdentity.providerHome(launchContext.providerHomeDirectory)
+            }
+            sharedKey = try adapter.sharedLaunchStateKey(context: launchContext)
+            launchContext.sharedStateKey = sharedKey
+        } catch {
+            return AgentProcessResult(exitCode: -1, error: error.localizedDescription,
+                runtimeStopReason: RuntimeProviderResourceRegistry.Block.stopReason, runtimeStopMessage: error.localizedDescription)
+        }
+        if let sharedStateKey = sharedKey {
             let sharedStateLease: AgentRuntimeSharedStateLease
             do {
                 try executionOwner?.waitingForProviderState(sharedStateKey)
@@ -828,6 +839,9 @@ final class AgentRuntimeProcessRunner {
                 return AgentProcessResult(exitCode: -1, error: block.message,
                     runtimeStopReason: RuntimeProviderResourceRegistry.Block.stopReason,
                     runtimeStopMessage: block.message)
+            } catch let block as ProviderSharedStateCompatibility.UnreadableReservation {
+                return AgentProcessResult(exitCode: -1, error: block.localizedDescription,
+                    runtimeStopReason: RuntimeProviderResourceRegistry.Block.stopReason, runtimeStopMessage: block.localizedDescription)
             } catch {
                 return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
             }

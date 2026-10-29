@@ -102,7 +102,7 @@ protocol AgentRuntimeProcessLaunchPlanning {
     var providerRuntimeMessages: ProviderRuntimeMessages { get }
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings
-    func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeSharedStateKey?
+    func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) throws -> AgentRuntimeSharedStateKey?
     func missingExecutableAuditReason() -> String
     func missingExecutableStopReason() -> String?
     func missingExecutableMessage(executablePath: String) -> String
@@ -650,7 +650,8 @@ struct AgentRuntimeProcessLaunchContext {
     let taskSnapshot: AgentTaskLaunchSnapshot
     let workspacePath: String
     let executablePath: String
-    let providerHomeDirectory: String
+    var providerHomeDirectory: String
+    var sharedStateKey: AgentRuntimeSharedStateKey? = nil
     let permissionPolicy: PermissionPolicy
     let executionPolicy: AgentRuntimeExecutionPolicy
     let permissionManifest: RunPermissionManifest?
@@ -725,7 +726,7 @@ struct AgentRuntimeProcessLaunchContext {
     func replacingLaunchResourcePlan(
         _ launchResourcePlan: TaskLaunchResourcePlan
     ) -> AgentRuntimeProcessLaunchContext {
-        AgentRuntimeProcessLaunchContext(
+        var copy = AgentRuntimeProcessLaunchContext(
             prompt: prompt,
             task: task,
             workspacePath: workspacePath,
@@ -745,6 +746,8 @@ struct AgentRuntimeProcessLaunchContext {
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimeRequirements: runtimeRequirements
         )
+        copy.sharedStateKey = sharedStateKey
+        return copy
     }
 }
 
@@ -2408,12 +2411,12 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeSharedStateKey? {
-        AgentRuntimeSharedStateKey(
+    func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) throws -> AgentRuntimeSharedStateKey? {
+        try AgentRuntimeSharedStateKey(
             runtime: id,
-            identifier: AntigravityCLIRuntime.settingsURL(
+            fileURL: AntigravityCLIRuntime.settingsURL(
                 providerHomeDirectory: context.providerHomeDirectory
-            ).standardizedFileURL.path
+            )
         )
     }
 
@@ -2566,7 +2569,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? AntigravityCLIRuntime.detectPath() : context.executablePath
         let providerVersion = AntigravityCLIRuntime.versionSummary(executablePath: executable)
-        let modelSettingsURL = AntigravityCLIRuntime.settingsURL(
+        let modelSettingsURL = context.sharedStateKey?.filePath.map { URL(fileURLWithPath: $0) } ?? AntigravityCLIRuntime.settingsURL(
             providerHomeDirectory: context.providerHomeDirectory
         )
         // Antigravity is the only adapter with a non-nil `sharedLaunchStateKey`, so this is the
@@ -2732,16 +2735,13 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty
             ? AntigravityCLIRuntime.detectPath()
             : configuredPath
-        let providerHomeDirectory = configuration.homeDirectory(for: id)
-        let modelSettingsURL = AntigravityCLIRuntime.settingsURL(
-            providerHomeDirectory: providerHomeDirectory
-        )
-        let sharedStateKey = AgentRuntimeSharedStateKey(
-            runtime: id,
-            identifier: modelSettingsURL.standardizedFileURL.path
-        )
+        let providerHomeDirectory: String
+        let sharedStateKey: AgentRuntimeSharedStateKey
         let sharedStateLease: RuntimeUtilitySharedStateLease
         do {
+            providerHomeDirectory = try ProviderSharedStateIdentity.providerHome(configuration.homeDirectory(for: id))
+            sharedStateKey = try AgentRuntimeSharedStateKey(runtime: id,
+                fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: providerHomeDirectory))
             sharedStateLease = try await RuntimeUtilitySharedStateLease.acquire(sharedStateKey)
         } catch is CancellationError {
             return AgentUtilityRunResult(
@@ -2752,6 +2752,13 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         } catch {
             return AgentUtilityRunResult(exitCode: -1, output: "", error: error.localizedDescription)
         }
+        do {
+            try sharedStateKey.validate(fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: providerHomeDirectory))
+        } catch {
+            await sharedStateLease.release()
+            return AgentUtilityRunResult(exitCode: -1, output: "", error: error.localizedDescription)
+        }
+        let modelSettingsURL = URL(fileURLWithPath: sharedStateKey.filePath!)
         let model = AgentRuntimeProcessRunner.model(configuration.model, for: id)
         if FileManager.default.isExecutableFile(atPath: executable) {
             AntigravityCLIRuntime.applySelectedModel(model, settingsURL: modelSettingsURL)
@@ -2790,7 +2797,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 process: processPlan,
                 providerHomeDirectory: providerHomeDirectory,
                 permissionPolicy: .restricted,
-                timeoutSeconds: configuration.timeoutSeconds
+                timeoutSeconds: configuration.timeoutSeconds,
+                sharedStateKey: sharedStateKey
             )
         )
         await sharedStateLease.release()

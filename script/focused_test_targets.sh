@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Runtime/ProviderSharedState*.swift|Astra/Services/Runtime/AgentRuntimeSharedStateGate.swift|Astra/Services/Runtime/RuntimeProviderOwnershipReference.swift|Astra/Services/Runtime/RuntimeProviderResourceRegistry.swift|Tests/ProviderSharedState*Tests.swift)
+      add_target "ProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests"
+      ;;
+  esac
+
+  case "$path" in
     ASTRACore/ProviderToolSemantics.swift|ASTRACore/ProviderReadFileInput.swift|ASTRACore/AgentPolicyTypes.swift|Astra/Services/Runtime/AgentPolicyAdapters.swift|Astra/Services/Runtime/AgentRuntimePolicyGuard.swift|Tests/AntigravityReadFilePolicyTests.swift)
       add_target "AntigravityReadFilePolicyTests|AgentPolicyTests|AgentPolicyRuntimeMatrixTests|RuntimePolicyGuardTests|AntigravityCLIRuntimeTests"
       ;;

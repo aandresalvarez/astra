@@ -96,17 +96,20 @@ struct AgentUtilityLaunchPlan: Equatable {
     var providerHomeDirectory: String
     var permissionPolicy: PermissionPolicy
     var timeoutSeconds: TimeInterval
+    var sharedStateKey: AgentRuntimeSharedStateKey? = nil
 
     init(
         process: AgentRuntimeProcessLaunchPlan,
         providerHomeDirectory: String,
         permissionPolicy: PermissionPolicy,
-        timeoutSeconds: TimeInterval
+        timeoutSeconds: TimeInterval,
+        sharedStateKey: AgentRuntimeSharedStateKey? = nil
     ) {
         self.process = process
         self.providerHomeDirectory = providerHomeDirectory
         self.permissionPolicy = permissionPolicy
         self.timeoutSeconds = timeoutSeconds
+        self.sharedStateKey = sharedStateKey
     }
 }
 

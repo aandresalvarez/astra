@@ -20,6 +20,12 @@ assert_targets "MCPGatewaySupportTests" \
   "Tools/MCPGatewaySupport/MCPGatewaySupport.swift" \
   "Tests/MCPGatewaySupportTests/RemoteMCPGatewaySupportTests.swift"
 
+assert_targets "ProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests" \
+  "Astra/Services/Runtime/ProviderSharedStateIdentity.swift" \
+  "Astra/Services/Runtime/ProviderSharedStateCompatibility.swift" \
+  "Tests/ProviderSharedStateIdentityTests.swift" \
+  "Tests/ProviderSharedStateMigrationTests.swift"
+
 assert_targets "AntigravityReadFilePolicyTests|AgentPolicyTests|AgentPolicyRuntimeMatrixTests|RuntimePolicyGuardTests|AntigravityCLIRuntimeTests" \
   "ASTRACore/ProviderReadFileInput.swift" \
   "ASTRACore/ProviderToolSemantics.swift" \
@@ -358,7 +364,7 @@ assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\n
 assert_targets $'AgentRuntimeAdapterTests\nNativeContinuationFallbackTests' \
   "Tests/AgentRuntimeAdapterCopilotFixture.swift"
 
-assert_targets 'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode' \
+assert_targets $'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode\nProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests' \
   'Astra/Services/Tasks/TaskQueue.swift' \
   'Astra/Services/Runtime/RuntimeProviderOwnershipReference.swift' \
   'Tests/RuntimeCancellationReviewTests.swift' \
