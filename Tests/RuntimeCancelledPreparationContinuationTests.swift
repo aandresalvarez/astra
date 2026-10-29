@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SwiftData
 import Testing
@@ -10,6 +11,110 @@ import WorkspaceToolSupport
 @Suite("Cancelled preparation preserves human continuation", .serialized)
 @MainActor
 struct RuntimeCancelledPreparationContinuationTests {
+    @Test("Cancelled preparation without a run requires its untouched human request and joined work", arguments:
+        ["safe", "initial", "unjoined", "missingProof", "activeRequest", "consumed", "wrongSource", "retry"])
+    func cancellationBeforeRun(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .copilotCLI, goal: "Preparation only", model: "test")
+        if fault != "initial" {
+            let run = TaskRun(task: task); h.context.insert(run)
+            run.status = .completed; run.typedStopReason = .completed; run.completedAt = Date()
+            run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+            task.status = .completed
+            var prior = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context, toolsStopped: false)
+            prior.state = .finished; prior.settlementInProgress = false
+            prior.settlementLocalWorkStopped = true; prior.settlementToolsStopped = true
+            prior.resourceClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: task,
+                runMode: "previous", sandboxEnforcement: .off)
+            let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
+            try lease.save(prior)
+        }
+        let submitted = try ExecutionRequestSubmissionService.submitFollowUp(message: "Never launched", for: task, into: h.context).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submitted.requestID, in: h.context))
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, userRequest: request))
+        let runsBefore = task.runs.count
+        RuntimePrelaunchCancellation.settle(task: task, request: request, owner: owner,
+            context: h.context, localWorkStopped: fault != "unjoined")
+        owner.finish()
+        #expect(request.state == .cancelled && request.runID == nil && request.startedAt == nil)
+        #expect(task.runs.count == runsBefore)
+        var saved = owner.record
+        switch fault {
+        case "missingProof": saved.settlementLocalWorkStopped = nil; saved.settlementToolsStopped = nil
+        case "activeRequest": request.state = .admitted
+        case "consumed": request.startedAt = Date()
+        case "wrongSource": TaskHistoryRead.event(id: request.sourceEventID, in: task)?.type = "system.info"
+        default: break
+        }
+        do {
+            let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
+            try lease.save(saved)
+        }
+        let submittedNext = try ExecutionRequestSubmissionService.submitFollowUp(message: "New human instruction", for: task, into: h.context).get()
+        let next = try #require(try TaskTurnRequestRepository.request(id: submittedNext.requestID, in: h.context))
+        if fault == "retry" { next.kind = .retry }
+        let successor = RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, userRequest: next)
+        #expect((successor != nil) == (fault == "safe" || fault == "initial"))
+        successor?.finish()
+    }
+
+    @Test("Stop during an inherited help probe preserves a continuable, joined attempt", arguments: [false, true])
+    func inheritedProbeCancellation(cancelCaller: Bool) async throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .antigravityCLI, goal: "Preserve partial work", model: "gemini-test")
+        let original = TaskRun(task: task); h.context.insert(original)
+        original.status = .completed; original.typedStopReason = .completed; original.completedAt = Date()
+        original.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+        original.setOutput("Preserved implementation"); task.status = .completed
+        var prior = try RuntimeRecoveryTestReceipt.install(task: task, run: original, context: h.context, toolsStopped: false)
+        prior.state = .finished; prior.settlementInProgress = false
+        prior.settlementLocalWorkStopped = true; prior.settlementToolsStopped = true
+        prior.resourceClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: task,
+            runMode: "previous", sandboxEnforcement: .off)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(prior) }
+        let pidFile = h.rootURL.appendingPathComponent("probe.pid")
+        let launched = h.rootURL.appendingPathComponent("provider-launched")
+        let path = try h.writeExecutable(named: "agy", script: """
+        #!/bin/sh
+        if [ "$1" = "--help" ]; then
+          trap '' TERM
+          echo $$ > '\(pidFile.path)'
+          exec /bin/sleep 30
+        fi
+        : > '\(launched.path)'
+        printf '%s\\n' 'A continued answer.'
+        """)
+        let worker = h.makeWorker(runtime: .antigravityCLI, executablePath: path)
+        worker.antigravityLaunchPreparation = AntigravityLaunchPreparation(defaults: InMemoryDefaults())
+        let waiting = Task { await h.continueTask(task: task, message: "Will stop during preparation", worker: worker) }
+        defer { waiting.cancel() }
+        let started = await h.waitUntil(task: task, timeoutSeconds: 8) { _ in
+            FileManager.default.fileExists(atPath: pidFile.path)
+        }
+        try #require(started)
+        let pid = try #require(Int32(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        defer { if kill(pid, 0) == 0 { kill(pid, SIGKILL) } }
+        if cancelCaller { waiting.cancel() } else { worker.cancel() }
+        _ = await waiting.value
+        #expect(kill(pid, 0) == -1 && errno == ESRCH)
+        #expect(!FileManager.default.fileExists(atPath: launched.path))
+        let saved = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(saved.state == .notStarted && saved.cancellationRequested == true)
+        #expect(saved.settlementInProgress == false && saved.settlementLocalWorkStopped == true
+            && saved.settlementToolsStopped == true)
+        #expect(saved.hasUnverifiedTools && saved.resourcesReleased != true)
+        let submission = try ExecutionRequestSubmissionService.submitFollowUp(message: "Continue safely", for: task, into: h.context).get()
+        let next = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context))
+        #expect(RuntimeCompletedUserTurnContinuation.permits(task: task, request: next, context: h.context))
+        let successor = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context,
+            maxRunSeconds: 60, userRequest: next))
+        defer { successor.finish() }
+        #expect(successor.record.ownerID == prior.ownerID && successor.record.hasUnverifiedTools)
+        #expect(original.output == "Preserved implementation")
+        #expect(try store.retainedExecutions(of: successor.record).count == 2)
+    }
+
     @Test("Stop after launch permits human input only with a joined local stop and its cancelled request", arguments:
         ["safe", "initial", "live", "settling", "activeRequest", "retry"])
     func settledCancellation(fault: String) throws {

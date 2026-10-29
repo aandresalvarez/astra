@@ -1807,6 +1807,8 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentRuntimeCapabilityBlockRecorder.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": ["run", "run?"],
+            // Extracted prelaunch TaskRun failure; AgentTask still uses TaskStateMachine.
+            "Astra/Services/Runtime/RuntimePrelaunchCancellation.swift": ["run"],
             "Astra/Services/Runtime/RuntimeTurnOutcomeService.swift": ["run"],
             // This helper normalizes TaskRun only; AgentTask still uses TaskStateMachine.
             "Astra/Services/Runtime/RuntimeSettlementCancellation.swift": ["run"],
