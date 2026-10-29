@@ -1,0 +1,711 @@
+// Frozen compatibility fixture from ecc37b6dc38eaec9e1fb9798319253e0ae0556ab.
+// Preserve the old collector and its outbox decoder: testing the current
+// collector alone cannot prove a downgrade respects a new retention contract.
+// Only type names and the workspace outbox call are renamed to coexist with HEAD.
+import CryptoKit
+import Foundation
+import SwiftData
+import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
+@testable import ASTRA
+
+@MainActor
+enum LegacyV21ConnectorCredentialCleanup {
+    /// The namespaces stored connectors own, and the IDs of the stored
+    /// Outlook connectors, which alone keep a mail-registry entry: an import
+    /// that reused an Outlook connector's ID for another service doesn't.
+    struct Ownership {
+        let namespaces: Set<String>
+        let outlookConnectorIDs: Set<UUID>
+        let connectorIDs: Set<UUID>
+        let currentNamespaces: [UUID: Set<String>]
+        let hasUnknownOAuthOwnership: Bool
+
+        /// `retained` are connectors a pending workspace deletion still
+        /// holds: their mirror may yet be recovered, so what they use stays.
+        init(_ connectors: [Connector], retained: [ConnectorKeychainCleanup] = []) {
+            let live = connectors.map(ConnectorSecretFacts.init(connector:))
+            let all = live + retained.map(\.secretFacts)
+            let owned = all.map(KeychainSecretStore.ownedConnectorEntityIDs(for:))
+            hasUnknownOAuthOwnership = owned.contains { $0 == nil }
+            namespaces = Set(owned.compactMap { $0 }.flatMap { $0 })
+            outlookConnectorIDs = Set(connectors.filter(\.isStanfordOutlookMail).map(\.id))
+                .union(retained.filter(\.isStanfordOutlookMail).map(\.connectorID))
+            connectorIDs = Set(connectors.map(\.id))
+            currentNamespaces = Dictionary(live.map { ($0.id, Set(KeychainSecretStore.ownedConnectorEntityIDs(for: $0) ?? [])) },
+                uniquingKeysWith: { $0.union($1) })
+        }
+    }
+
+    /// Plain references only; fresh saved rows own the current generation.
+    /// Retired generations remain held by every admitted recovery source.
+    static func capturedOwnership(modelContext: ModelContext, extraMirrors: [String]? = nil) -> Ownership? {
+        let saved = ModelContext(modelContext.container)
+        guard let stored = try? saved.fetch(FetchDescriptor<Connector>()),
+              let retained = retainedByPendingWorkspaceDeletions(modelContext: saved),
+              let mirrored = connectorsInStoredMirrors(modelContext: saved, extraMirrors: extraMirrors) else { return nil }
+        let ownership = Ownership(stored, retained: retained + mirrored.owners)
+        return ownership.hasUnknownOAuthOwnership ? nil : ownership
+    }
+
+    /// The namespaces `connector` resolves to that nothing in `ownership`
+    /// uses, which are the only ones its cleanup removes.
+    static func unownedNamespaces(of connector: ConnectorKeychainCleanup, ownership: Ownership) -> Set<String> {
+        Set(KeychainSecretStore.ownedConnectorEntityIDs(for: connector.secretFacts) ?? []).subtracting(ownership.namespaces)
+    }
+
+    /// Runs each cleanup against `ownership`, attempting every one. True when
+    /// everything owed was cleared. A deletion whose credentials all stay
+    /// with live owners is still audited, through `auditSkipped`, as the
+    /// cleanup it doesn't need would have. Only a deletion known to be saved
+    /// is run: `CleanupRecordMarks.verdict` decides which.
+    @discardableResult
+    static func run(
+        _ cleanups: [ConnectorKeychainCleanup], ownership: Ownership,
+        auditSkipped: (ConnectorKeychainCleanup) -> Void = { cleanup in
+            AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
+                "connector_id": cleanup.connectorID.uuidString,
+                "service_type": cleanup.serviceType,
+                "credentials": "kept_for_live_owners"
+            ])
+        }
+    ) -> Bool {
+        guard !ownership.hasUnknownOAuthOwnership else { return false }
+        var cleared = true
+        for cleanup in cleanups {
+            guard KeychainSecretStore.ownedConnectorEntityIDs(for: cleanup.secretFacts) != nil else { cleared = false; continue }
+            let keepRegistryEntry = ownership.outlookConnectorIDs.contains(cleanup.connectorID)
+            // Owed when a namespace has no live owner, or a mail-registry
+            // entry no live Outlook connector claims.
+            let ownsRegistryEntry = cleanup.isStanfordOutlookMail && !keepRegistryEntry
+            guard ownsRegistryEntry || !unownedNamespaces(of: cleanup, ownership: ownership).isEmpty else {
+                auditSkipped(cleanup)
+                continue
+            }
+            cleared = cleanup.run(sparing: ownership.namespaces, keepRegistryEntry: keepRegistryEntry) && cleared
+        }
+        return cleared
+    }
+
+    /// Runs `cleanups` against the connectors `modelContext` stores, which
+    /// must already reflect the saved deletion, and those pending workspace
+    /// deletions still hold (`retained`, by default read from the app's
+    /// deletion outbox). When either can't be read nothing is removed: an
+    /// orphaned credential is recoverable, one a live connector still reads
+    /// is not.
+    @discardableResult
+    static func run(
+        _ cleanups: [ConnectorKeychainCleanup], modelContext: ModelContext, retained: [ConnectorKeychainCleanup]? = nil,
+        extraMirrors: [String]? = nil,
+        perform: (([ConnectorKeychainCleanup], Ownership) -> Bool)? = nil
+    ) -> Bool {
+        guard !cleanups.isEmpty else { return true }
+        guard PluginOperationRecovery.permitsCredentialCleanup(modelContext: modelContext) else { return false }
+        guard let retained = retained ?? retainedByPendingWorkspaceDeletions(modelContext: modelContext) else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "workspace_deletion_unreadable",
+                "connector_count": String(cleanups.count)
+            ], level: .error)
+            return false
+        }
+        guard let stored = try? modelContext.fetch(FetchDescriptor<Connector>()) else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "store_unreadable",
+                "connector_count": String(cleanups.count)
+            ], level: .error)
+            return false
+        }
+        guard let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+              let mirroredRequests = PluginCredentialMirrorReferences.capture(modelContext: modelContext, extraMirrors: extraMirrors),
+              let mirroredOwners = connectorsInStoredMirrors(modelContext: modelContext, extraMirrors: extraMirrors) else { return false }
+        let ready = cleanups.filter { !references.holdsAccount($0) && !mirroredRequests.holdsAccount($0) }
+        let ownership = Ownership(stored, retained: retained + mirroredOwners.owners)
+        guard !ownership.hasUnknownOAuthOwnership else { return false }
+        let cleared = perform.map { $0(ready, ownership) } ?? run(ready, ownership: ownership)
+        return ready.count == cleanups.count && cleared
+    }
+
+    /// The connectors pending workspace deletions hold, whose mirrors startup
+    /// left out of recovery. Read only by the app, which tracks recovery; a
+    /// process that doesn't, such as a test, has none. Nil when a record
+    /// can't be read.
+    private static func retainedByPendingWorkspaceDeletions(modelContext: ModelContext) -> [ConnectorKeychainCleanup]? {
+        guard WorkspaceRecoveryTrust.state != .notTracked else { return [] }
+        return LegacyV21WorkspaceDeletionOwners.capture(modelContext: modelContext)
+    }
+
+    /// Deletes connectors durably: `cleanups` are recorded before `save`,
+    /// taken back when it fails, and cleared once they run. Any that don't
+    /// clear wait in `store`, by default the outbox for `modelContext`'s
+    /// store, for `resumePending`. False, with nothing recorded, when the
+    /// deletion wasn't saved; the caller rolls it back.
+    ///
+    /// The cleanup runs at once only while `cleansNow`. In the app it never
+    /// does by default: a connector only a mirror not yet imported holds
+    /// could share a namespace, and the workspace mirrors this deletion
+    /// rewrites are exported after the save, off this path, so one may still
+    /// name the connector. The intent waits for the next trusted launch's
+    /// `resumePending`, by which time an export that landed has dropped it
+    /// and one that didn't restores a connector that then owns what it uses.
+    /// A process that doesn't track recovery, as a test, cleans at once.
+    /// `beforeSettling` runs once the save has landed (rewriting the mirrors
+    /// that name the deleted rows); when it fails the cleanup stays recorded
+    /// for `resumePending` instead of running.
+    @discardableResult
+    static func deleteThenClean(
+        _ cleanups: [ConnectorKeychainCleanup],
+        modelContext: ModelContext,
+        store: LegacyV21ConnectorCredentialCleanupStore? = nil,
+        cleansNow: Bool? = nil,
+        save: () -> Bool,
+        beforeSettling: () -> Bool = { true }
+    ) -> Bool {
+        let cleansNow = cleansNow ?? (WorkspaceRecoveryTrust.state == .notTracked)
+        let store = store ?? LegacyV21ConnectorCredentialCleanupStore(for: modelContext)
+        // A retry can tell a saved deletion from one never saved only by the
+        // store it was recorded against, so one that can't be identified
+        // isn't deleted.
+        let storeIdentity = PersistentStoreIdentity.current(for: modelContext)
+        if store != nil, storeIdentity == nil, !cleanups.isEmpty {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "store_unidentified"
+            ], level: .error)
+            return false
+        }
+        let recorded: LegacyV21ConnectorCredentialCleanupStore.Recording
+        do {
+            recorded = try store?.begin(cleanups, storeIdentity: storeIdentity) ?? LegacyV21ConnectorCredentialCleanupStore.Recording()
+        } catch {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "intent_unwritable",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return false
+        }
+        guard save() else {
+            store?.undo(recorded)
+            return false
+        }
+        // Marked saved, so a retry tells this deletion from an intent whose
+        // save never happened. One a quit or a failed write leaves unmarked
+        // is still known saved by a retry against the same store.
+        store?.markCommitted(cleanups)
+        // A step the cleanup waits on (rewriting the mirrors that still name
+        // the deleted rows) that fails leaves it recorded, for launch.
+        guard beforeSettling() else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "held_for_mirror", "count": String(cleanups.count)
+            ], level: .warning)
+            return true
+        }
+        // Without an outbox there is nothing to defer to, so it runs now.
+        // Once it has, the matching records go, including one an earlier
+        // identical deletion left, which this run has just settled.
+        if cleansNow || store == nil, run(cleanups, modelContext: modelContext) {
+            store?.remove(store?.recordURLs(for: cleanups) ?? recorded.added)
+        }
+        return true
+    }
+
+    /// Deletes `connector` from the Configure surface. A deletion that isn't
+    /// saved is rolled back with the workspace's membership arrays, which
+    /// rollback doesn't restore, so no later save commits it without its
+    /// cleanup. False when it was rolled back.
+    ///
+    /// Every workspace whose mirror carries the connector
+    /// (`WorkspaceConfigManager.workspacesMirroring`, this one included)
+    /// leaves its shared list and is written again once the deletion is
+    /// saved and before its credentials are cleaned, so no mirror keeps the
+    /// deleted account; one that can't be written keeps the cleanup for
+    /// launch. `exportMirror` stands in for the rewrite in tests.
+    @discardableResult
+    static func deleteConnector(
+        _ connector: Connector, in workspace: Workspace, modelContext: ModelContext,
+        store: LegacyV21ConnectorCredentialCleanupStore? = nil,
+        exportMirror: ((Workspace) -> Void)? = nil,
+        fetchWorkspaces: (() throws -> [Workspace])? = nil,
+        save: () -> Bool
+    ) -> Bool {
+        var seen = Set<UUID>()
+        let id = connector.id.uuidString
+        // Which mirrors carry the connector must be known in full before
+        // anything is deleted: one left out would restore the account from
+        // its stale mirror without credentials. Unreadable means not deleted.
+        guard let stored = try? (fetchWorkspaces ?? { try modelContext.fetch(FetchDescriptor<Workspace>()) })(),
+              let mirroring = try? WorkspaceConfigManager.workspacesMirroring(
+                  accountIDs: [connector.id], among: stored, modelContext: modelContext
+              )
+        else { return false }
+        let affected = ([workspace] + WorkspaceCapabilityActivation.workspacesBinding(connector)
+            + mirroring
+            + stored.filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) })
+            .filter { seen.insert($0.id).inserted }
+        let memberships = affected.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
+        for listing in affected where WorkspaceCapabilityActivation.state(of: listing).globalConnectorIDs.contains(id) {
+            WorkspaceCapabilityActivation.mutate(listing) { $0.globalConnectorIDs.removeAll { $0 == id } }
+        }
+        WorkspaceCapabilityActivation.releaseAccount(connector)
+        let cleanup = connector.keychainCleanup
+        modelContext.delete(connector)
+        let rewritten = deleteThenClean([cleanup], modelContext: modelContext, store: store, save: save, beforeSettling: {
+            affected.reduce(true) { written, affectedWorkspace in
+                if let exportMirror {
+                    exportMirror(affectedWorkspace)
+                    return written
+                }
+                return WorkspaceConfigManager.exportMirrorNow(workspace: affectedWorkspace, modelContext: modelContext) && written
+            }
+        })
+        guard rewritten else {
+            modelContext.rollback()
+            for (affectedWorkspace, membership) in memberships {
+                WorkspaceCapabilityActivation.restore(membership, to: affectedWorkspace)
+            }
+            return false
+        }
+        return true
+    }
+
+    /// Retries the cleanups a failed run or a quit left, against what the
+    /// store holds now. Startup calls it only once recovery is trusted, so a
+    /// connector a mirror still owns counts.
+    ///
+    /// A record not marked saved was saved anyway when the store is the one
+    /// it was recorded against and no longer holds its connector: only the
+    /// saved deletion removed it. One whose connector is still stored was
+    /// never saved and is dropped without running or reporting anything. One
+    /// whose store has changed since, as by a recovery, can't be told apart;
+    /// it is dropped too and reported, since running it could remove what a
+    /// connector in the earlier store still uses, while an orphaned
+    /// credential is recoverable.
+    @discardableResult
+    static func resumePending(
+        modelContext: ModelContext, store: LegacyV21ConnectorCredentialCleanupStore? = nil, extraMirrors: [String]? = nil
+    ) -> Int {
+        guard let store = store ?? LegacyV21ConnectorCredentialCleanupStore(for: modelContext) else { return 0 }
+        guard let pending = store.pending() else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "outbox_unreadable"
+            ], level: .error)
+            return 0
+        }
+        // A record that can't be read stays for a later launch, but never
+        // holds back the ones that can.
+        // A record that can't be decoded may name an owner no other record
+        // shows, so nothing runs until it can be read.
+        guard pending.complete else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "intent_unreadable"
+            ], level: .error)
+            return 0
+        }
+        guard let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Connector>())).map({ Set($0.map(\.id)) })
+        else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "store_unreadable"
+            ], level: .error)
+            return 0
+        }
+        // An intent is judged against the store it was recorded for; while
+        // the active store can't be identified, none is.
+        guard PersistentStoreIdentity.current(for: modelContext) != nil else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "store_unidentified"
+            ], level: .error)
+            return 0
+        }
+        guard let workspaceRetained = retainedByPendingWorkspaceDeletions(modelContext: modelContext) else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "workspace_deletion_unreadable"
+            ], level: .error)
+            return 0
+        }
+        // A deletion saved just before a quit may not have reached the
+        // mirrors, and recovery leaves a stored workspace's mirror as it is;
+        // a later recovery from that mirror would restore the connector
+        // without its credentials. So a cleanup waits, as an owner, while a
+        // stored workspace's mirror still lists its connector, and that
+        // workspace is exported again for the next launch.
+        guard let mirrored = connectorsInStoredMirrors(modelContext: modelContext, extraMirrors: extraMirrors) else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "workspace_mirror_unreadable"
+            ], level: .error)
+            return 0
+        }
+        let classified = classify(pending.records, storedIDs: storedIDs, modelContext: modelContext)
+        // One whose connector is stored again, as restored from that very
+        // mirror, isn't stale: the stored connector owns what it uses.
+        let stale = classified.filter {
+            $0.committed && mirrored.ids.contains($0.record.cleanup.connectorID) && !storedIDs.contains($0.record.cleanup.connectorID)
+        }
+        let owners = classified.filter(\.holdsOwnership).map(\.record.cleanup) + pending.heldBack
+            + stale.map(\.record.cleanup) + mirrored.owners
+        let staleIDs = Set(stale.map(\.record.cleanup.connectorID))
+        for (workspace, listed) in mirrored.byWorkspace where !listed.isDisjoint(with: staleIDs) {
+            WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
+        }
+        var cleared = 0
+        for entry in classified {
+            switch entry.verdict {
+            case .wait:
+                continue
+            case .unsaved:
+                // Its connector is stored: nothing was deleted to report.
+                break
+            case .unconfirmed:
+                AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                    "scope": "connector_cleanup", "reason": "intent_unconfirmed_after_store_change",
+                    "connector_id": entry.record.cleanup.connectorID.uuidString
+                ], level: .error)
+            case .committed:
+                guard !staleIDs.contains(entry.record.cleanup.connectorID),
+                      run([entry.record.cleanup], modelContext: ModelContext(modelContext.container), retained: workspaceRetained + owners, extraMirrors: extraMirrors)
+                else { continue }
+            }
+            store.remove([entry.record.url])
+            cleared += 1
+        }
+        return cleared
+    }
+
+    /// What each stored workspace's mirror lists, and every other mirror
+    /// this launch's recovery loaded (`extraMirrors`, by default those it
+    /// recorded), such as an old folder's or a copy's that recovery skipped
+    /// because the workspace is stored: a later recovery could restore from
+    /// any of them. `ids` are the connector IDs the stored workspaces' own
+    /// mirrors list, which an export rewrites; `owners` every listed
+    /// connector, by the namespaces it resolves to, an import giving one
+    /// without a valid ID a new one; `skillIDs` the skills listed, and
+    /// `skillsByWorkspace` those each stored workspace's own mirror lists,
+    /// which an export rewrites. A loaded
+    /// mirror of a workspace pending deletion (`excludingWorkspaceIDs`, by
+    /// default those the app's outbox holds) names nothing: its deletion
+    /// settles what it lists. A missing mirror lists none; nil when one that
+    /// exists can't be read.
+    static func connectorsInStoredMirrors(
+        modelContext: ModelContext, extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil
+    ) -> (
+        ids: Set<UUID>, byWorkspace: [(Workspace, Set<UUID>)], owners: [ConnectorKeychainCleanup], skillIDs: Set<UUID>,
+        skillsByWorkspace: [(Workspace, Set<UUID>)]
+    )? {
+        struct Listed: Decodable {
+            struct Skill: Decodable { let id: String?; let credentialNamespaceID: UUID? }
+            struct Entry: Decodable {
+                let id: String?
+                let name: String?
+                let serviceType: String?
+                let baseURL: String?
+                let originPackageID: String?
+                let originComponentID: String?
+                let credentialNamespaceID: UUID?
+                let outlookCredentialFormat: String?
+                let configKeys: [String]?
+                let configValues: [String]?
+            }
+            let id: String?
+            let connectors: [Entry]?
+            let skills: [Skill]?
+        }
+        guard let mirrors = CredentialRecoveryMirrors.read(modelContext: modelContext, extraMirrors: extraMirrors,
+            excludingWorkspaceIDs: excludingWorkspaceIDs) else { return nil }
+        var all = Set<UUID>()
+        var byWorkspace: [(Workspace, Set<UUID>)] = []
+        var owners: [ConnectorKeychainCleanup] = []
+        var skillIDs = Set<UUID>()
+        var skillsByWorkspace: [(Workspace, Set<UUID>)] = []
+        for mirror in mirrors {
+            let workspace = mirror.workspace
+            guard let listed = try? JSONDecoder().decode(Listed.self, from: mirror.data) else { return nil }
+            var ids = Set<UUID>()
+            for entry in listed.connectors ?? [] {
+                // Unmanaged and never inserted: only its facts are read.
+                let connector = Connector(
+                    name: entry.name ?? "", serviceType: entry.serviceType ?? "", baseURL: entry.baseURL ?? ""
+                )
+                connector.originPackageID = entry.originPackageID
+                connector.originComponentID = entry.originComponentID
+                connector.credentialNamespaceID = entry.credentialNamespaceID
+                connector.outlookCredentialFormat = entry.outlookCredentialFormat
+                    ?? OutlookCredentialIdentity.format(keys: entry.configKeys ?? [], values: entry.configValues ?? [])
+                if let id = entry.id.flatMap(UUID.init(uuidString:)) {
+                    ids.insert(id)
+                    connector.id = id
+                }
+                owners.append(connector.keychainCleanup)
+            }
+            let skills = Set((listed.skills ?? []).compactMap { $0.credentialNamespaceID ?? $0.id.flatMap(UUID.init(uuidString:)) })
+            skillIDs.formUnion(skills)
+            // Only a stored workspace's own mirror holds an intent back: an
+            // export rewrites it. Any other copy names owners, which every
+            // cleanup spares, but can't be rewritten, so it holds nothing.
+            if let workspace {
+                all.formUnion(ids)
+                byWorkspace.append((workspace, ids))
+                skillsByWorkspace.append((workspace, skills))
+            }
+        }
+        return (all, byWorkspace, owners, skillIDs, skillsByWorkspace)
+    }
+
+    private struct Classified {
+        let record: LegacyV21ConnectorCredentialCleanupStore.Pending.Record
+        let verdict: CleanupRecordMarks.Verdict
+        var committed: Bool { verdict == .committed }
+        /// Not run, but an owner of what it names while the others run: one
+        /// from a store since replaced, whose connector may still be in that
+        /// store even when a connector with its ID is stored now, since that
+        /// one may resolve elsewhere, and one kept for later.
+        var holdsOwnership: Bool { verdict == .unconfirmed || verdict == .wait }
+    }
+
+    /// Each record's verdict, by the rule every cleanup outbox shares, its
+    /// owner being the deleted connector.
+    private static func classify(
+        _ records: [LegacyV21ConnectorCredentialCleanupStore.Pending.Record], storedIDs: Set<UUID>, modelContext: ModelContext
+    ) -> [Classified] {
+        let currentStore = PersistentStoreIdentity.current(for: modelContext)
+        let storeCreated = PersistentStoreIdentity.createdAt(for: modelContext)
+        return records.map { record in
+            Classified(record: record, verdict: CleanupRecordMarks.verdict(
+                record.marks, ownerStored: storedIDs.contains(record.cleanup.connectorID),
+                currentStore: currentStore, storeCreated: storeCreated, writtenAt: record.writtenAt
+            ))
+        }
+    }
+
+    /// The pending intents that can't be confirmed, which every other
+    /// credential cleanup, a workspace deletion's included, must spare. Nil
+    /// when the outbox, a record in it, or the store can't be read.
+    static func unconfirmedOwners(
+        modelContext: ModelContext, store: LegacyV21ConnectorCredentialCleanupStore? = nil,
+        extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil
+    ) -> [ConnectorKeychainCleanup]? {
+        // Every connector a recoverable mirror lists, which recovery could
+        // restore from it, and the pending intents the connector pass holds.
+        guard let mirrored = connectorsInStoredMirrors(
+            modelContext: modelContext, extraMirrors: extraMirrors, excludingWorkspaceIDs: excludingWorkspaceIDs
+        ) else { return nil }
+        guard let store = store ?? LegacyV21ConnectorCredentialCleanupStore(for: modelContext) else { return mirrored.owners }
+        // Which store the intents were recorded for decides which can run;
+        // while that can't be read, none is classified.
+        guard PersistentStoreIdentity.current(for: modelContext) != nil,
+              let pending = store.pending(), pending.complete,
+              let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Connector>()))
+                .map({ Set($0.map(\.id)) }) else { return nil }
+        return classify(pending.records, storedIDs: storedIDs, modelContext: modelContext)
+            .filter {
+                $0.holdsOwnership || ($0.committed && mirrored.ids.contains($0.record.cleanup.connectorID)
+                    && !storedIDs.contains($0.record.cleanup.connectorID))
+            }
+            .map(\.record.cleanup) + pending.heldBack + mirrored.owners
+    }
+}
+
+struct LegacyV21ConnectorCredentialCleanupStore: Sendable {
+    let directory: URL
+
+    init(directory: URL) {
+        self.directory = directory.standardizedFileURL
+    }
+
+    /// The outbox for the SwiftData store `modelContext` writes to. Nil for
+    /// a store kept only in memory, whose deletions no record should outlive.
+    @MainActor
+    init?(for modelContext: ModelContext) {
+        guard let configuration = modelContext.container.configurations.first(where: { !$0.isStoredInMemoryOnly })
+        else { return nil }
+        self.init(directory: Self.directory(
+            forStoreAt: configuration.url, applicationSupport: WorkspaceRecoveryService.applicationSupportDirectory
+        ))
+    }
+
+    /// The app's own store, the active one or a recovery's replacement, both
+    /// inside its Application Support folder, shares one outbox there: a
+    /// recovery that moves the store must not strand deletions it already
+    /// committed. Any other store, such as a scratch copy, keeps one beside it.
+    static func directory(forStoreAt store: URL, applicationSupport: URL) -> URL {
+        let support = applicationSupport.standardizedFileURL.resolvingSymlinksInPath()
+        let resolved = store.standardizedFileURL.resolvingSymlinksInPath().path
+        let root = resolved.hasPrefix(support.path + "/") ? support : store.deletingLastPathComponent()
+        return root.appendingPathComponent("ConnectorCredentialCleanup", isDirectory: true)
+    }
+
+    /// Writes each cleanup not already pending and returns the files this
+    /// call added, which are all a failed save takes back. One already
+    /// there must read back as the same cleanup; one that can't, or can't
+    /// be checked at all, throws, so the deletion isn't saved behind an
+    /// intent that could never be retried.
+    ///
+    /// `storeIdentity` is the store the deletion is about to be saved to,
+    /// kept beside each new record: a retry against that same store can then
+    /// tell a deletion saved just before a quit from one never saved.
+    func record(_ cleanups: [ConnectorKeychainCleanup], storeIdentity: String? = nil) throws -> [URL] {
+        try begin(cleanups, storeIdentity: storeIdentity).added
+    }
+
+    /// What one `begin` changed: the records it added, and the store marks
+    /// of reused records it rewrote, with what they held before.
+    struct Recording {
+        var added: [URL] = []
+        var replacedStoreMarks: [(record: URL, previous: Data?)] = []
+    }
+
+    /// `record`, returning what a failed save must take back with `undo`.
+    func begin(_ cleanups: [ConnectorKeychainCleanup], storeIdentity: String? = nil) throws -> Recording {
+        var recording = Recording()
+        guard !cleanups.isEmpty else { return recording }
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
+        )
+        do {
+            for cleanup in cleanups {
+                let data = try Self.encode(cleanup)
+                let url = recordURL(for: cleanup, data: data)
+                do {
+                    _ = try FileManager.default.attributesOfItem(atPath: url.path)
+                    guard try JSONDecoder().decode(ConnectorKeychainCleanup.self, from: Data(contentsOf: url)) == cleanup
+                    else { throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path]) }
+                    // Reused for this attempt, so it names this attempt's store;
+                    // a failed save puts the earlier one back.
+                    if let storeIdentity {
+                        recording.replacedStoreMarks.append((url, try CleanupRecordMarks(record: url).markStore(storeIdentity)))
+                    }
+                    continue
+                } catch where WorkspaceFileLayout.isMissingFile(error) {}
+                try data.write(to: url, options: .atomic)
+                recording.added.append(url)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                if let storeIdentity { try CleanupRecordMarks(record: url).markStore(storeIdentity) }
+            }
+        } catch {
+            undo(recording)
+            throw error
+        }
+        return recording
+    }
+
+    /// Takes back what `begin` changed, for a deletion that wasn't saved.
+    func undo(_ recording: Recording) {
+        remove(recording.added)
+        for (record, previous) in recording.replacedStoreMarks {
+            CleanupRecordMarks(record: record).restoreStore(previous)
+        }
+    }
+
+    func remove(_ urls: [URL]) {
+        for url in urls {
+            try? FileManager.default.removeItem(at: url)
+            CleanupRecordMarks(record: url).remove()
+        }
+    }
+
+    /// Where the records of `cleanups` are, whether or not they exist.
+    func recordURLs(for cleanups: [ConnectorKeychainCleanup]) -> [URL] {
+        cleanups.compactMap { cleanup in (try? Self.encode(cleanup)).map { recordURL(for: cleanup, data: $0) } }
+    }
+
+    /// Marks the records of `cleanups` as deletions that were saved, beside
+    /// each record, so its own content and name stay what `record` wrote.
+    func markCommitted(_ cleanups: [ConnectorKeychainCleanup]) {
+        for record in recordURLs(for: cleanups) {
+            do {
+                try CleanupRecordMarks(record: record).markCommitted()
+            } catch {
+                AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                    "scope": "connector_cleanup", "reason": "commit_mark_unwritable",
+                    "error_type": String(describing: type(of: error))
+                ], level: .error)
+            }
+        }
+    }
+
+    /// Every readable pending cleanup, and whether that was all of them: a
+    /// record that can't be read is left on disk and only marks the listing
+    /// incomplete, so it never holds back the others. Nil when the outbox
+    /// itself can't be listed.
+    func pending() -> Pending? {
+        let urls: [URL]
+        do {
+            urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        } catch {
+            guard WorkspaceFileLayout.isMissingFile(error) else { return nil }
+            return Pending(records: [], heldBack: [], complete: true)
+        }
+        var records: [Pending.Record] = []
+        var heldBack: [ConnectorKeychainCleanup] = []
+        var complete = true
+        for url in urls.filter({ $0.pathExtension == "json" }).sorted(by: { $0.path < $1.path }) {
+            guard let cleanup = try? JSONDecoder().decode(ConnectorKeychainCleanup.self, from: Data(contentsOf: url)) else {
+                complete = false
+                continue
+            }
+            // A mark that can't be read leaves the record for later, and its
+            // cleanup held back as an owner of what it names meanwhile: the
+            // store it names may still hold that connector.
+            let marks = CleanupRecordMarks(record: url)
+            let state = marks.read()
+            guard state.committed != nil, state.store != .unreadable else {
+                heldBack.append(cleanup)
+                continue
+            }
+            records.append(Pending.Record(url: url, cleanup: cleanup, marks: state, writtenAt: marks.writtenAt))
+        }
+        return Pending(records: records, heldBack: heldBack, complete: complete)
+    }
+
+    struct Pending {
+        struct Record {
+            let url: URL
+            let cleanup: ConnectorKeychainCleanup
+            let marks: CleanupRecordMarks.State
+            let writtenAt: Date?
+            /// Whether its deletion is marked saved.
+            var committed: Bool { marks.committed == true }
+            /// The store it was recorded against, when its mark names one.
+            var storeIdentity: String? {
+                if case .recorded(let identity) = marks.store { return identity }
+                return nil
+            }
+        }
+        let records: [Record]
+        /// Readable cleanups whose marks can't be read: not run, but owners
+        /// of what they name until they can be.
+        let heldBack: [ConnectorKeychainCleanup]
+        /// False when a record couldn't be read and was left out.
+        let complete: Bool
+    }
+
+    private static func encode(_ cleanup: ConnectorKeychainCleanup) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(cleanup)
+    }
+
+    /// Keyed by content, so a connector deleted again under the same ID
+    /// with other namespaces keeps both cleanups.
+    private func recordURL(for cleanup: ConnectorKeychainCleanup, data: Data) -> URL {
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent(cleanup.connectorID.uuidString.lowercased() + "-" + digest + ".json")
+    }
+}
+
+
+/// The old workspace outbox protocol, independent of HEAD's new fence parser.
+@MainActor
+private enum LegacyV21WorkspaceDeletionOwners {
+    static func capture(modelContext: ModelContext) -> [ConnectorKeychainCleanup]? {
+        let directory = WorkspaceDeletionCleanupStore(for: modelContext).directory
+        do { _ = try FileManager.default.attributesOfItem(atPath: directory.path) }
+        catch { return WorkspaceFileLayout.isMissingFile(error) ? [] : nil }
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        else { return nil }
+        var connectors: [ConnectorKeychainCleanup] = []
+        for url in urls where url.pathExtension == "json" {
+            guard let record = try? JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: url)),
+                  !record.folderWasResolvedOnRead else { return nil }
+            connectors += record.connectors
+        }
+        return connectors
+    }
+}

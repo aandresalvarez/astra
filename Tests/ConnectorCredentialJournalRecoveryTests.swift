@@ -317,7 +317,7 @@ struct ConnectorCredentialJournalRecoveryTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: other.path).isEmpty)
     }
 
-    @Test("Repeated recovery retains the complete archive chain; damaged history blocks collectors")
+    @Test("Repeated recovery compacts holds, preserves sources and rejects damaged snapshots")
     func recoveryHistoryKeepsOwnership() throws {
         let env = try PluginAddCommitTests.Fixture(installed: false)
         defer { env.disk.removeFiles() }
@@ -332,9 +332,14 @@ struct ConnectorCredentialJournalRecoveryTests {
         second["storeIdentity"] = "/synthetic/foreign.store|credential-v2:foreign"
         try JSONSerialization.data(withJSONObject: second, options: [.sortedKeys]).write(to: journal.fileURL, options: .atomic)
         #expect(try journal.recoverEditing(lease: lease)?.previousVersion == 2)
-        #expect(try recoveryArchives(journal).count == 2)
+        #expect(try recoveryArchives(journal).count == 3)
         #expect(ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: env.context) == [original])
-        try Data("damaged archive".utf8).write(to: firstArchive)
+        #expect(FileManager.default.fileExists(atPath: firstArchive.path))
+        let active = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: journal.fileURL)) as? [String: Any])
+        let receipt = try #require(active["recovery"] as? [String: Any])
+        let snapshot = try #require(receipt["archivedDigest"] as? String)
+        let retained = firstArchive.deletingLastPathComponent().appendingPathComponent(snapshot + ".json")
+        try Data("damaged archive".utf8).write(to: retained)
         #expect(ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: env.context) == nil)
         #expect(ConnectorCredentialCleanup.capturedOwnership(modelContext: env.context, extraMirrors: []) == nil)
         #expect(!ConnectorCredentialCleanup.run([original], modelContext: env.context, extraMirrors: []))

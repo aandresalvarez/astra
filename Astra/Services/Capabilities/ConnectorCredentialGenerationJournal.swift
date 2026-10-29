@@ -42,6 +42,10 @@ struct ConnectorCredentialGenerationJournal {
         let archivedDigest: String
         let recoveredAt: Date
         let previousVersion: Int
+        /// Exact pre-cutover bytes, when archivedDigest names a compacted
+        /// retention snapshot. The snapshot is the new immutable owner of
+        /// all holds; original archives remain available for investigation.
+        var sourceDigest: String? = nil
     }
     private struct Contents: Codable {
         var version = 2
@@ -53,7 +57,27 @@ struct ConnectorCredentialGenerationJournal {
     private let storeIdentity: String
     private let legacyStoreIdentity: String
     private let storeURL: URL
-    private static let maximumBytes = 1_048_576
+    nonisolated private static let maximumBytes = 1_048_576
+    private struct HistoryBudget {
+        let archives: Int
+        let bytes: Int
+        static let collection = Self(archives: 32, bytes: 4 * maximumBytes)
+        // Explicit recovery may compact a previously published over-budget
+        // chain. This larger read is bounded and never runs in background scans.
+        static let recovery = Self(archives: 256, bytes: 32 * maximumBytes)
+    }
+
+    private var archiveDirectory: URL {
+        fileURL.deletingLastPathComponent().appendingPathComponent("ConnectorCredentialRecovery", isDirectory: true)
+    }
+    private var barrierDirectories: [URL] {
+        ["ConnectorCredentialCleanup", "WorkspaceDeletionCleanup"].map {
+            fileURL.deletingLastPathComponent().appendingPathComponent($0, isDirectory: true)
+        }
+    }
+    private func installRetentionBarriers() throws {
+        for directory in barrierDirectories { try CredentialRecoveryRetentionBarrier.install(in: directory) }
+    }
 
     init?(modelContext: ModelContext) throws {
         guard let store = ConnectorCredentialCleanupStore(for: modelContext) else { return nil }
@@ -198,7 +222,22 @@ struct ConnectorCredentialGenerationJournal {
         do {
             try requireCurrentStore()
             guard let stored = try stored(), [1, 2].contains(stored.contents.version) else { return false }
-            return !matches(stored.contents)
+            if !matches(stored.contents) { return true }
+            do {
+                _ = try retainedHistory(stored.contents, budget: .collection)
+                if stored.contents.recovery != nil {
+                    for directory in barrierDirectories {
+                        let fence = directory.appendingPathComponent(CredentialRecoveryRetentionBarrier.filename)
+                        do { _ = try FileManager.default.attributesOfItem(atPath: fence.path) }
+                        catch where WorkspaceFileLayout.isMissingFile(error) { return true }
+                    }
+                }
+                return false
+            }
+            catch Failure.tooLarge {
+                _ = try retainedHistory(stored.contents, budget: .recovery)
+                return true
+            }
         } catch { return false }
     }
 
@@ -209,26 +248,55 @@ struct ConnectorCredentialGenerationJournal {
         do {
             guard let journal = try Self(modelContext: modelContext), let current = try journal.stored() else { return [] }
             try journal.requireSupportedVersion(current.contents)
-            var retained = journal.matches(current.contents) ? [] : current.contents.candidates
-            var recovery = current.contents.recovery
-            var seen = Set<String>()
-            var totalBytes = 0
-            let directory = journal.fileURL.deletingLastPathComponent().appendingPathComponent("ConnectorCredentialRecovery")
-            while let receipt = recovery {
-                let digest = receipt.archivedDigest
-                guard digest.count == 64, digest.allSatisfy({ $0.isHexDigit }),
-                      seen.insert(digest).inserted, seen.count <= 32 else { return nil }
-                let data = try readData(at: directory.appendingPathComponent(digest + ".json"))
-                totalBytes += data.count
-                guard totalBytes <= 4 * maximumBytes,
-                      SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == digest else { return nil }
-                let contents = try JSONDecoder().decode(Contents.self, from: data)
-                try journal.requireSupportedVersion(contents)
-                retained += contents.candidates
-                recovery = contents.recovery
+            if current.contents.recovery != nil {
+                for directory in journal.barrierDirectories {
+                    try CredentialRecoveryRetentionBarrier.validate(at: directory
+                        .appendingPathComponent(CredentialRecoveryRetentionBarrier.filename))
+                }
             }
-            return retained
+            return (journal.matches(current.contents) ? [] : current.contents.candidates)
+                + (try journal.retainedHistory(current.contents, budget: .collection))
         } catch { return nil }
+    }
+
+    private func retainedHistory(_ contents: Contents, budget: HistoryBudget) throws -> [ConnectorKeychainCleanup] {
+        var recovery = contents.recovery
+        var seen = Set<String>()
+        var totalBytes = 0
+        var retained: [ConnectorKeychainCleanup] = []
+        func verified(_ digest: String) throws -> Data {
+            guard digest.count == 64, digest.allSatisfy({ $0.isHexDigit }), seen.insert(digest).inserted
+            else { throw Failure.unreadable }
+            guard seen.count <= budget.archives else { throw Failure.tooLarge }
+            let data = try Self.readData(at: archiveDirectory.appendingPathComponent(digest + ".json"))
+            totalBytes += data.count
+            guard totalBytes <= budget.bytes else { throw Failure.tooLarge }
+            guard Self.digest(data) == digest else { throw Failure.unreadable }
+            return data
+        }
+        while let receipt = recovery {
+            if let source = receipt.sourceDigest, source != receipt.archivedDigest {
+                // Verify the exact source too, without traversing its retired
+                // chain: its holds have transferred into the snapshot.
+                _ = try verified(source)
+            }
+            let archived = try JSONDecoder().decode(Contents.self, from: verified(receipt.archivedDigest))
+            try requireSupportedVersion(archived)
+            retained += archived.candidates
+            recovery = archived.recovery
+        }
+        return retained
+    }
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func encode(_ contents: Contents) throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(contents)
+        guard data.count <= maximumBytes else { throw Failure.tooLarge }
+        return data
     }
 
     @discardableResult
@@ -238,22 +306,43 @@ struct ConnectorCredentialGenerationJournal {
         _ = try acquireLease(reusing: lease)
         guard let stored = try stored() else { return nil }
         try requireSupportedVersion(stored.contents)
-        guard !matches(stored.contents) else { return nil }
-        let digest = SHA256.hash(data: stored.data).map { String(format: "%02x", $0) }.joined()
-        let directory = fileURL.deletingLastPathComponent().appendingPathComponent("ConnectorCredentialRecovery", isDirectory: true)
+        if matches(stored.contents) {
+            do {
+                _ = try retainedHistory(stored.contents, budget: .collection)
+                if stored.contents.recovery != nil { try installRetentionBarriers() }
+                return nil
+            }
+            catch Failure.tooLarge { /* Explicit repair of an older over-budget receipt chain. */ }
+        }
+        let historical = try retainedHistory(stored.contents, budget: .recovery)
+        // Transfer every distinct hold to a bounded immutable snapshot. This
+        // removes history depth and repeated bytes from collection's budget;
+        // it never drops a reference or deletes any original archive.
+        var candidates: [ConnectorKeychainCleanup] = []
+        var seen = Set<Data>()
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        for candidate in stored.contents.candidates + historical {
+            if seen.insert(try encoder.encode(candidate)).inserted { candidates.append(candidate) }
+        }
+        let snapshot = try stored.contents.recovery == nil ? stored.data
+            : Self.encode(Contents(storeIdentity: stored.contents.storeIdentity, candidates: candidates))
+        let sourceDigest = Self.digest(stored.data)
+        let snapshotDigest = Self.digest(snapshot)
+        let directory = archiveDirectory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         guard try FileManager.default.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType == .typeDirectory
         else { throw Failure.unreadable }
-        let archive = directory.appendingPathComponent(digest + ".json")
-        if FileManager.default.fileExists(atPath: archive.path) {
-            guard try Self.readData(at: archive) == stored.data else { throw Failure.unreadable }
-        } else {
-            try Self.preserve(stored.data, at: archive)
+        // Preserve the exact original before the derived retention snapshot.
+        for data in sourceDigest == snapshotDigest ? [stored.data] : [stored.data, snapshot] {
+            let archive = directory.appendingPathComponent(Self.digest(data) + ".json")
+            if FileManager.default.fileExists(atPath: archive.path) {
+                guard try Self.readData(at: archive) == data else { throw Failure.unreadable }
+            } else { try Self.preserve(data, at: archive) }
+            // Retry sync even when a previous attempt left a complete archive.
+            try synchronizeArchive(archive)
         }
-        // Also retry synchronization when a previous attempt published the
-        // archive link but failed before confirming its directory entry.
-        try synchronizeArchive(archive)
-        let receipt = RecoveryReceipt(archivedDigest: digest, recoveredAt: Date(), previousVersion: stored.contents.version)
+        let receipt = RecoveryReceipt(archivedDigest: snapshotDigest, recoveredAt: Date(),
+            previousVersion: stored.contents.version, sourceDigest: sourceDigest == snapshotDigest ? nil : sourceDigest)
         // The archive must be durable before the atomic active-record cutover.
         // A failed publication leaves the original journal and archive intact;
         // retry uses the same digest, rather than adding duplicate archives.
@@ -341,12 +430,14 @@ struct ConnectorCredentialGenerationJournal {
     private func write(_ contents: Contents,
                        publish: (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }) throws {
         let upgraded = Contents(storeIdentity: storeIdentity, candidates: contents.candidates, recovery: contents.recovery)
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(upgraded)
-        guard data.count <= Self.maximumBytes else { throw Failure.tooLarge }
+        let data = try Self.encode(upgraded)
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
         try requireCurrentStore()
+        if contents.recovery != nil {
+            _ = try retainedHistory(contents, budget: .collection)
+            try installRetentionBarriers()
+        }
         try publish(data, fileURL)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }

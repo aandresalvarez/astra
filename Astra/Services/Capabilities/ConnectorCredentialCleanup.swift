@@ -666,6 +666,13 @@ struct ConnectorCredentialCleanupStore: Sendable {
         var heldBack: [ConnectorKeychainCleanup] = []
         var complete = true
         for url in urls.filter({ $0.pathExtension == "json" }).sorted(by: { $0.path < $1.path }) {
+            if url.lastPathComponent == CredentialRecoveryRetentionBarrier.filename {
+                // Older outbox readers cannot decode the fence and refuse
+                // collection even before workspace recovery is tracked.
+                do { try CredentialRecoveryRetentionBarrier.validate(at: url) }
+                catch { complete = false }
+                continue
+            }
             guard let cleanup = try? JSONDecoder().decode(ConnectorKeychainCleanup.self, from: Data(contentsOf: url)) else {
                 complete = false
                 continue
