@@ -171,7 +171,8 @@ struct AgentRuntimePolicyGuard: Sendable {
         // of returning .ask here (which Auto would auto-approve — a bypass).
         let toolName = rawTool.trimmingCharacters(in: .whitespacesAndNewlines)
         let command = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let path = rawPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = ProviderToolSemantics.requiresStructuredFilePath(toolName)
+            ? rawPath : rawPath?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Route through the guard's own post-hoc evaluation so the live
         // decision is identical to what would terminate the run otherwise — no
@@ -296,6 +297,17 @@ struct AgentRuntimePolicyGuard: Sendable {
             )
         }
 
+        // An approval cannot make an ambiguous native path safe. Validate its
+        // shape before ask/allow, but leave explicit denials above authoritative.
+        if ProviderToolSemantics.requiresStructuredFilePath(toolName),
+           ProviderReadFileInput.validatedPath(observed.path) == nil {
+            return AgentRuntimePolicyViolation(
+                reason: "ASTRA could not validate the file path for this tool",
+                toolName: toolName,
+                detail: observed.summary
+            )
+        }
+
         if isShellTool(toolName),
            observed.command?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
            toolMatches(toolName, command: nil, candidates: manifest.providerRender.askFirstTools) {
@@ -375,7 +387,8 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
 
         if isFileTool(toolName),
-           let violation = validateFilePath(observed.path, toolName: toolName, summary: observed.summary, requiresPath: isMutationTool(toolName)) {
+           let violation = validateFilePath(observed.path, toolName: toolName, summary: observed.summary,
+               requiresPath: isMutationTool(toolName) || ProviderToolSemantics.requiresStructuredFilePath(toolName)) {
             return violation
         }
 
@@ -769,7 +782,7 @@ struct AgentRuntimePolicyGuard: Sendable {
               !path.isEmpty else {
             guard requiresPath else { return nil }
             return AgentRuntimePolicyViolation(
-                reason: "ASTRA could not validate the file path for a mutating tool",
+                reason: "ASTRA could not validate the file path for this tool",
                 toolName: toolName,
                 detail: summary
             )
