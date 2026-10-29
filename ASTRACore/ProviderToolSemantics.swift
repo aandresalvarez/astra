@@ -12,7 +12,7 @@ public enum ProviderToolSemantics {
         switch lower {
         case "shell", "command_execution", "shelltoolcall":
             return "bash"
-        case "view":
+        case "view", "read_file":
             return "read"
         case "create", "apply_patch":
             return "write"
@@ -25,6 +25,12 @@ public enum ProviderToolSemantics {
 
     public static func isShellTool(_ tool: String) -> Bool {
         normalizedName(tool) == "bash"
+    }
+
+    /// Native single-file reads must carry a structured path. A JSON summary
+    /// is an argument container, never a relative filename or implicit scope.
+    public static func requiresStructuredFilePath(_ tool: String) -> Bool {
+        tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "read_file"
     }
 
     /// Returns the semantic command carried by an exact `sh -lc` style

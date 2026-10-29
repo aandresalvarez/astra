@@ -85,7 +85,10 @@ enum ClaudeControlProtocol {
 
         /// The bare file path from the structured input, if present.
         var pathText: String? {
-            firstStringValue(forKeys: ["file_path", "path", "filePath", "notebook_path"])
+            if let toolName, ProviderToolSemantics.requiresStructuredFilePath(toolName) {
+                return ProviderReadFileInput.path(from: inputJSON)
+            }
+            return firstStringValue(forKeys: ["file_path", "path", "filePath", "notebook_path"])
         }
 
         private func firstStringValue(forKeys keys: [String]) -> String? {
