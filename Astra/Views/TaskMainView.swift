@@ -228,7 +228,8 @@ struct TaskMainView: View {
     @State var taskFolderRevision = 0
     /// Not `private`: refreshed from `TaskMainViewDecisionArtifacts.swift`.
     @State var decisionArtifactPathsCache: [String] = []
-    @State var decisionOutcomeCache = TaskDecisionOutcomeCache()
+    @State var decisionOutcomeProjection = TaskDecisionOutcomeRefresh.Projection()
+    @State var decisionOutcomeSaveRevision = 0
     @State private var deliverableIntentMemo = TaskDeliverableIntentMemo()
     /// Not `private`: refreshed from `TaskMainViewMissionControl.swift`.
     @State var missionControlSnapshotCache = TaskMissionControlSnapshot.empty
@@ -634,6 +635,11 @@ struct TaskMainView: View {
             ComposerCapabilitySnapshotLoader(workspace: task.workspace) { snapshot in
                 capabilitySnapshot = snapshot
             }.equatable()
+        }
+        .background {
+            TaskDecisionOutcomeSaveObserver(task: task, modelContext: modelContext) {
+                decisionOutcomeSaveRevision &+= 1
+            }
         }
         .background {
             TaskPlanEventObserver(task: task) {

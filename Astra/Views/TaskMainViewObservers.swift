@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 
@@ -57,6 +58,22 @@ struct TaskPlanEventObserver: View {
                       insertion.taskID == task.id,
                       TaskPlanEventRelevance.affectsPlanState(eventType: insertion.type) else { return }
                 onPlanEvent()
+            }
+    }
+}
+
+/// Observe pending rows before save clears the context's change lists. This
+/// also covers services that save atomic transactions without insert notices.
+struct TaskDecisionOutcomeSaveObserver: View {
+    let task: AgentTask
+    let modelContext: ModelContext
+    let onRelevantSave: () -> Void
+    @State private var tracker = TaskDecisionOutcomeRefresh.SaveTracker()
+
+    var body: some View {
+        Color.clear
+            .onReceive(NotificationCenter.default.publisher(for: ModelContext.willSave, object: modelContext)) { _ in
+                if tracker.record(context: modelContext, task: task) { onRelevantSave() }
             }
     }
 }

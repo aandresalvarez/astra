@@ -16,14 +16,16 @@ enum WorkspaceRailOutputPresentation {
                     && !files.userProvidedPaths.contains(TaskHeaderFilesReader.Facts.pathIdentity(item.path))
             }
         }
-        func date(_ item: TaskFileItem) -> Date {
-            files.activityDates[TaskHeaderFilesReader.Facts.pathIdentity(item.path)] ?? item.change?.timestamp ?? .distantPast
+        // Compute path identity once per file, never
+        // inside the O(n log n) sort comparator.
+        let dated = produced.map { item in
+            (item: item, date: files.activityDates[TaskHeaderFilesReader.Facts.pathIdentity(item.path)]
+                ?? item.change?.timestamp ?? .distantPast)
         }
-        return Rail.OutputFacts(files: produced.sorted {
-            let left = date($0), right = date($1)
-            return left == right ? $0.path < $1.path : left > right
-        }.map { item in
-            Rail.OutputFile(path: item.path, destination: destination(item.destination))
+        return Rail.OutputFacts(files: dated.sorted {
+            $0.date == $1.date ? $0.item.path < $1.item.path : $0.date > $1.date
+        }.map { entry in
+            Rail.OutputFile(path: entry.item.path, destination: destination(entry.item.destination))
         })
     }
 

@@ -16,6 +16,14 @@ assert_targets() {
   fi
 }
 
+assert_targets "TaskDecisionOutcomeRefreshTests|TaskDeliverableFollowUpTests|TaskDecisionDock|TaskMainActorScalingGateTests" \
+  "Astra/Views/TaskDecisionOutcomeRefresh.swift" \
+  "Tests/TaskDecisionOutcomeRefreshTests.swift"
+
+assert_targets "WorkspaceRailOutputPresentationTests|WorkspaceRailOutputPerformanceTests|WorkspaceRailSectionPresentationTests|WorkspaceRightRailPerformanceTests" \
+  "Astra/Views/WorkspaceRailOutputPresentation.swift" \
+  "Tests/WorkspaceRailOutputPerformanceTests.swift"
+
 assert_targets "MCPGatewaySupportTests" \
   "Tools/MCPGatewaySupport/MCPGatewaySupport.swift" \
   "Tests/MCPGatewaySupportTests/RemoteMCPGatewaySupportTests.swift"

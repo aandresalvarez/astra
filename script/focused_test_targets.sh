@@ -20,6 +20,15 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Views/TaskDecisionOutcomeRefresh.swift|Astra/Views/TaskMainViewDecisionOutcomes.swift|Astra/Views/TaskMainViewObservers.swift|Tests/TaskDecisionOutcomeRefreshTests.swift)
+      add_target "TaskDecisionOutcomeRefreshTests|TaskDeliverableFollowUpTests|TaskDecisionDock|TaskMainActorScalingGateTests"
+      ;;
+    Astra/Views/WorkspaceRailOutputPresentation.swift|Astra/Views/WorkspaceRailSectionPresentation.swift|Astra/Views/WorkspaceRightRailView.swift|Tests/WorkspaceRailOutput*Tests.swift)
+      add_target "WorkspaceRailOutputPresentationTests|WorkspaceRailOutputPerformanceTests|WorkspaceRailSectionPresentationTests|WorkspaceRightRailPerformanceTests"
+      ;;
+  esac
+
+  case "$path" in
     ASTRACore/ProviderToolSemantics.swift|ASTRACore/ProviderReadFileInput.swift|ASTRACore/AgentPolicyTypes.swift|Astra/Services/Runtime/AgentPolicyAdapters.swift|Astra/Services/Runtime/AgentRuntimePolicyGuard.swift|Tests/AntigravityReadFilePolicyTests.swift)
       add_target "AntigravityReadFilePolicyTests|AgentPolicyTests|AgentPolicyRuntimeMatrixTests|RuntimePolicyGuardTests|AntigravityCLIRuntimeTests"
       ;;

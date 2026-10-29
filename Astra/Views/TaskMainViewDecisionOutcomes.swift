@@ -22,23 +22,12 @@ struct TaskDecisionOutcomeCache: Equatable {
 }
 
 extension TaskMainView {
-    /// Signature for the cached outcomes; all scalars, nothing faulted.
-    ///
-    /// `appliedSnapshotRevision` moves whenever the transcript picks up new
-    /// events, `updatedAt` whenever the task persists anything at all (a
-    /// mutation decline lands there before the next snapshot), and the latest
-    /// run's identity and status bound the publication rule's target run.
-    var decisionOutcomeInputSignature: String {
-        let latestRun = threadViewModel.snapshot?.latestRun
-        return [
-            task.id.uuidString,
-            task.status.rawValue,
-            String(task.updatedAt.timeIntervalSince1970),
-            "\(threadViewModel.appliedSnapshotRevision)",
-            latestRun?.id.uuidString ?? "none",
-            latestRun?.status.rawValue ?? "none",
-            decisionArtifactPathsCache.joined(separator: ",")
-        ].joined(separator: "|")
+    var decisionOutcomeCache: TaskDecisionOutcomeCache { decisionOutcomeProjection.outcomes }
+    /// Streamed output, successful tool results and updatedAt do not change
+    /// decisions. The save revision covers relevant rows outside this window.
+    var decisionOutcomeInputSignature: TaskDecisionOutcomeRefresh.Key {
+        .init(task: task, snapshot: threadViewModel.snapshot,
+              artifactPaths: decisionArtifactPathsCache, saveRevision: decisionOutcomeSaveRevision)
     }
 
     var shouldOfferGitPublishReview: Bool {
@@ -49,22 +38,27 @@ extension TaskMainView {
         )
     }
 
-    /// Runs under `.task(id: decisionOutcomeInputSignature)`. Synchronous on
-    /// purpose: the publication rule reads the snapshot the view already holds
-    /// (the window always carries the latest run, and the capped successful
-    /// tool results are the one kind it never reads), and the mutation rule is
-    /// a single typed fetch that faults only mutation rows.
+    /// Refreshes only when semantic inputs change. Reads remain in this
+    /// context, including pending changes and rollback, and never authorize
+    /// actions: each action's service rechecks its durable evidence.
     func recomputeDecisionOutcomes() {
         let snapshot = threadViewModel.snapshot
-        decisionOutcomeCache = TaskDecisionOutcomeResolver.outcomes(
-            task: task,
-            latestRun: snapshot?.latestRun.map { .init(id: $0.id, startedAt: $0.startedAt) },
-            windowEvents: (snapshot?.sortedEvents ?? []).map {
-                TaskOutcomeEventRecord(id: $0.id, runID: $0.runID, type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
-            },
-            decisionArtifactPaths: decisionArtifactPathsCache,
-            modelContext: modelContext
-        )
+        decisionOutcomeProjection.refresh(key: decisionOutcomeInputSignature) {
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            let outcomes = TaskDecisionOutcomeResolver.outcomes(
+                task: task,
+                latestRun: snapshot?.latestRun.map { .init(id: $0.id, startedAt: $0.startedAt) },
+                windowEvents: (snapshot?.sortedEvents ?? []).map {
+                    TaskOutcomeEventRecord(id: $0.id, runID: $0.runID, type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
+                },
+                decisionArtifactPaths: decisionArtifactPathsCache,
+                modelContext: modelContext
+            )
+            PerformanceTelemetry.logIfNeeded("task_decision_outcomes_refresh", start: startedAt,
+                thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+                fields: ["task_status": task.status.rawValue], taskID: task.id)
+            return outcomes
+        }
     }
 }
 
@@ -89,9 +83,9 @@ enum TaskDecisionOutcomeResolver {
     ) -> TaskDecisionOutcomeCache {
         var outcomes = TaskDecisionOutcomeCache()
         if let latestRun {
-            let follows = (try? TaskDeliverableExpectation.followsUpDeliveredRequest(
-                taskID: task.id, runID: latestRun.id, startedAt: latestRun.startedAt, in: modelContext
-            )) == true
+            let follows = TaskDeliverableExpectation.followsUpDeliveredRequest(
+                runID: latestRun.id, startedAt: latestRun.startedAt, in: task
+            )
             if follows { outcomes.deliveredRequestFollowUpRunID = latestRun.id }
         }
         if let latestRunID = latestRun?.id {
