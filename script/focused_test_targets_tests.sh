@@ -20,6 +20,14 @@ assert_targets "MCPGatewaySupportTests" \
   "Tools/MCPGatewaySupport/MCPGatewaySupport.swift" \
   "Tests/MCPGatewaySupportTests/RemoteMCPGatewaySupportTests.swift"
 
+assert_targets "AntigravityReadFilePolicyTests|AgentPolicyTests|AgentPolicyRuntimeMatrixTests|RuntimePolicyGuardTests|AntigravityCLIRuntimeTests" \
+  "ASTRACore/ProviderReadFileInput.swift" \
+  "ASTRACore/ProviderToolSemantics.swift" \
+  "ASTRACore/AgentPolicyTypes.swift" \
+  "Astra/Services/Runtime/AgentPolicyAdapters.swift" \
+  "Astra/Services/Runtime/AgentRuntimePolicyGuard.swift" \
+  "Tests/AntigravityReadFilePolicyTests.swift"
+
 assert_targets "MCPServerKitTests" \
   "Tools/MCPServerKit/MCPServerKit.swift" \
   "Tests/MCPServerKitTests/MCPServerKitTests.swift"

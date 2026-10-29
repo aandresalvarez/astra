@@ -431,7 +431,9 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
             policyLevel: policy.level,
             configOwnership: .generated,
             permissionMode: permissionMode,
-            allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
+            // These rules also drive ASTRA's stream guard. The absence of
+            // provider-native allow flags must not discard the effective policy.
+            allowedTools: permissionPolicy == .autonomous ? ["*"] : policy.providerAllowedTools(requestedTools: context.requestedAllowedTools),
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
             deniedTools: policy.deniedTools,
