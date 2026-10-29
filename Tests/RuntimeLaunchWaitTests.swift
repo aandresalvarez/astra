@@ -46,13 +46,14 @@ struct RuntimeLaunchWaitTests {
         let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: h.rootURL.path)
         try await Task.detached {
             let first = try await gate.acquire(key)
-            let timerExpired = ContinuousClock.now.advanced(by: .seconds(1.1))
+            let enqueueDeadline = ContinuousClock.now.advanced(by: .seconds(1.1))
             let waiting = Task { try await gate.acquire(key, timeoutSeconds: 1) }
             defer { waiting.cancel() }
-            while await gate.queuedWaiterCount(for: key) == 0, ContinuousClock.now < timerExpired {
+            while await gate.queuedWaiterCount(for: key) == 0, ContinuousClock.now < enqueueDeadline {
                 await Task.yield()
             }
             #expect(await gate.queuedWaiterCount(for: key) == 1)
+            let timerExpired = ContinuousClock.now.advanced(by: .seconds(1.1))
             waiting.cancel()
             do { _ = try await waiting.value; Issue.record("Cancelled wait acquired the gate") }
             catch is CancellationError {}
