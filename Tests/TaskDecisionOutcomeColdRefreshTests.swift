@@ -122,6 +122,74 @@ struct TaskDecisionOutcomeColdRefreshTests {
             runID: f.run.id, startedAt: f.run.startedAt, in: f.context))
     }
 
+    @Test("Pending source inserts and deletes cannot omit plan evidence across run batches")
+    func pendingSourcePages() throws {
+        let fixture = try Fixture(runCount: 71, planRuns: true)
+        for boundary in [0, 115, 146, 147, 148, 178, 179, 210, 211, 1_000] {
+            let context = ModelContext(fixture.container)
+            context.autosaveEnabled = false
+            let task = try fixture.task(in: context)
+            let runs = try context.fetch(FetchDescriptor<TaskRun>())
+            let events = try context.fetch(FetchDescriptor<TaskEvent>())
+            let run = try #require(runs.first { $0.id == Fixture.uuid("00000000", 169) })
+            let noise = TaskEvent.structuredPayloadEvent(task: task,
+                type: TaskEventTypes.ExecutionRequest.retry.rawValue,
+                payload: TaskExecutionSourcePayloadV1(launchMode: .continuation), run: run)
+            noise.id = Fixture.uuid("10000000", boundary * 10 + 5)
+            noise.timestamp = Date(timeIntervalSince1970: 200)
+            context.insert(noise)
+            try expectParity(fixture, task: task, context: context, expected: false)
+            context.rollback()
+            try expectParity(fixture, task: task, context: context, expected: false)
+
+            if let initial = events.first(where: { $0.id == Fixture.uuid("10000000", boundary * 10) }),
+               TaskDeliverableExpectation.requestSource(type: initial.type, payload: initial.payload) == .other {
+                context.delete(initial)
+                try expectParity(fixture, task: task, context: context, expected: false)
+                context.rollback()
+                try expectParity(fixture, task: task, context: context, expected: false)
+            }
+        }
+    }
+
+    @Test("Pending run deletion and lifecycle edits preserve delivery beyond the first batch")
+    func pendingRunPages() throws {
+        let fixture = try Fixture(runCount: 71, planRuns: true)
+        let seedContext = ModelContext(fixture.container)
+        seedContext.autosaveEnabled = false
+        let task = try fixture.task(in: seedContext)
+        let delivered = TaskRun(task: task)
+        delivered.startedAt = Date(timeIntervalSince1970: 10)
+        delivered.status = .completed
+        delivered.stopReason = TaskRunStopReason.completed.rawValue
+        seedContext.insert(delivered)
+        try seedContext.save()
+        let deliveredID = delivered.id
+        for index in [100, 105, 106, 137, 138, 169] {
+            let context = ModelContext(fixture.container)
+            context.autosaveEnabled = false
+            let current = try fixture.task(in: context)
+            let runs = try context.fetch(FetchDescriptor<TaskRun>())
+            context.delete(try #require(runs.first { $0.id == Fixture.uuid("00000000", index) }))
+            try expectParity(fixture, task: current, context: context, expected: true)
+            context.rollback()
+            let ordinary = try #require(runs.first { $0.id == deliveredID })
+            ordinary.status = .failed
+            try expectParity(fixture, task: current, context: context, expected: false)
+            context.rollback()
+            try expectParity(fixture, task: current, context: context, expected: true)
+            context.delete(ordinary)
+            try expectParity(fixture, task: current, context: context, expected: false)
+        }
+    }
+
+    private func expectParity(_ fixture: Fixture, task: AgentTask, context: ModelContext, expected: Bool) throws {
+        #expect(try TaskDeliverableHistoryReader.followsUpDeliveredRequest(ownerID: task.persistentModelID,
+            runID: fixture.latestRunID, startedAt: fixture.startedAt, in: context) == expected)
+        #expect(TaskDeliverableExpectation.followsUpDeliveredRequest(runID: fixture.latestRunID,
+            startedAt: fixture.startedAt, in: task) == expected)
+    }
+
     private func measureControl(_ fixture: Fixture) throws -> Double {
         let context = ModelContext(fixture.container)
         context.autosaveEnabled = false
@@ -151,7 +219,7 @@ struct TaskDecisionOutcomeColdRefreshTests {
         let startedAt: Date
         let snapshot: TaskThreadSnapshot
 
-        init() throws {
+        init(runCount: Int = 1_000, planRuns: Bool = false) throws {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("decision-cold-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let store = root.appendingPathComponent("synthetic.store")
@@ -163,13 +231,26 @@ struct TaskDecisionOutcomeColdRefreshTests {
             task.status = .completed
             context.insert(task)
             var lastRun: TaskRun?, lastSource: TaskEvent?
-            for index in 0..<1_000 {
+            for index in 0..<runCount {
                 let run = TaskRun(task: task)
-                run.startedAt = Date(timeIntervalSince1970: 1_700_000_000 + Double(index))
+                if planRuns { run.id = Self.uuid("00000000", index + 100) }
+                run.startedAt = Date(timeIntervalSince1970: planRuns
+                    ? (index == runCount - 1 ? 1_000 : 100) : 1_700_000_000 + Double(index))
                 run.status = .completed
                 run.stopReason = TaskRunStopReason.completed.rawValue
                 run.setOutput(String(repeating: "Synthetic response data. ", count: 128))
                 context.insert(run)
+                if planRuns, index < runCount - 1 {
+                    for sourceIndex in 0..<3 {
+                        let event = TaskEvent.structuredPayloadEvent(task: task,
+                            type: TaskEventTypes.ExecutionRequest.retry.rawValue,
+                            payload: TaskExecutionSourcePayloadV1(launchMode: sourceIndex == 2 ? .approvedPlan : .initial), run: run)
+                        event.id = Self.uuid("10000000", (index * 3 + sourceIndex + 1) * 10)
+                        event.timestamp = Date(timeIntervalSince1970: 200)
+                        context.insert(event)
+                    }
+                    continue
+                }
                 let source = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage,
                     payload: "Synthetic follow-up \(index)", run: run)
                 source.timestamp = run.startedAt
@@ -194,6 +275,10 @@ struct TaskDecisionOutcomeColdRefreshTests {
             var descriptor = FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == target })
             descriptor.fetchLimit = 1
             return try #require(try context.fetch(descriptor).first)
+        }
+
+        static func uuid(_ family: String, _ number: Int) -> UUID {
+            UUID(uuidString: family + "-0000-0000-0000-" + String(format: "%012X", number))!
         }
     }
 }
