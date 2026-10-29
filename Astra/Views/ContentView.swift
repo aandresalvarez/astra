@@ -3160,6 +3160,7 @@ private struct ContentDetailAreaView: View {
             onOpenCapabilityPackage: onOpenCapabilityPackage,
             onTaskCreated: onTaskCreated,
             onOpenWorkspaceFile: onOpenWorkspaceFile,
+            onOpenGeneratedFile: onOpenGeneratedFile,
             onNewSSHConnection: onNewSSHConnection,
             onEditSSHConnection: onEditSSHConnection,
             sshReloadTrigger: sshReloadTrigger,

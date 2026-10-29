@@ -77,7 +77,17 @@ enum RuntimeCompletedUserTurnContinuation {
         // an absent PID (which is also possible after a failed launch).
         guard saved.state == .notStarted, saved.settlementInProgress == false,
               saved.settlementLocalWorkStopped == true, saved.settlementToolsStopped == true else { return false }
-        return cancelledAttempt(saved, task: task, context: context)
+        if saved.runID != nil { return cancelledAttempt(saved, task: task, context: context) }
+        // Preparation can end before a TaskRun exists. Its protected request
+        // identity and untouched human source are the evidence in that case.
+        guard let requestID = saved.continuingUserRequestID,
+              let request = try? TaskTurnRequestRepository.request(id: requestID, in: context),
+              (try? TaskTurnRequestOwnership.resolve(request, in: context))?.persistentModelID == task.persistentModelID,
+              request.kind == .followUp, request.state == .cancelled,
+              request.runID == nil, request.startedAt == nil,
+              let source = TaskHistoryRead.event(id: request.sourceEventID, in: task),
+              source.type == TaskEventTypes.Conversation.userMessage.rawValue, source.run == nil else { return false }
+        return true
     }
 
     private static func cancelledAttempt(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,

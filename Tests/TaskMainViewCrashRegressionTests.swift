@@ -36,20 +36,20 @@ struct TaskMainViewCrashRegressionTests {
 
     @Test("Right-rail setup work is deferred out of SwiftUI lifecycle callbacks")
     func rightRailSetupDefersViewModelMutation() throws {
-        let dockerSource = try fileText("Astra/Views/WorkspaceDockerSectionView.swift")
-        #expect(dockerSource.contains(".task(id: setupSignature) {\n            await setupAfterViewUpdate()\n        }"))
-        #expect(dockerSource.contains("private var setupSignature: String"))
-        #expect(dockerSource.contains("private func setupAfterViewUpdate() async"))
-        #expect(dockerSource.contains("viewModel.setup(for: workspace, selectedTask: selectedTask)"))
-        #expect(!dockerSource.contains(".onAppear {\n            viewModel.setup(for: workspace, selectedTask: selectedTask)"))
-        #expect(!dockerSource.contains(".onChange(of: selectedTask?.id) {\n            viewModel.setup(for: workspace, selectedTask: selectedTask)"))
+        let owner = try fileText("Astra/Views/WorkspaceRailEnvironmentLifecycle.swift")
+        #expect(owner.contains(".task(id: RepositoryContext("))
+        #expect(owner.contains(".task(id: ContainerContext("))
+        #expect(owner.contains("guard await deferViewUpdate()"))
+        #expect(owner.contains("Task.sleep(for: .milliseconds(1))"))
+        #expect(owner.contains("return !Task.isCancelled"))
+        let rail = try fileText("Astra/Views/WorkspaceRightRailView.swift")
+        #expect(rail.contains(".modifier(WorkspaceRailEnvironmentLifecycle("))
+        for path in ["Astra/Views/WorkspaceGitSectionView.swift", "Astra/Views/WorkspaceDockerSectionView.swift"] {
+            let child = try fileText(path)
+            #expect(!child.contains("viewModel.setup("), "Disclosure must not own model setup")
+            #expect(!child.contains("viewModel.pauseRefresh()"), "Folding controls must not pause the visible summary")
+        }
 
-        let gitSource = try fileText("Astra/Views/WorkspaceGitSectionView.swift")
-        #expect(gitSource.contains(".task(id: repositorySetupSignature) {\n                await setupRepositoryPanelAfterViewUpdate()\n            }"))
-        #expect(gitSource.contains("private var repositorySetupSignature: String"))
-        #expect(gitSource.contains("private func setupRepositoryPanelAfterViewUpdate() async"))
-        #expect(!gitSource.contains(".onAppear {\n            viewModel.setup(for: workspace, selectedTask: selectedTask)"))
-        #expect(!gitSource.contains(".onChange(of: selectedTask?.id) {\n            viewModel.setup(for: workspace, selectedTask: selectedTask)"))
     }
 
     @Test("Canvas refresh signatures do not walk live task relationships in SwiftUI body")
@@ -103,10 +103,15 @@ struct TaskMainViewCrashRegressionTests {
         let nextRowStart = try #require(dockerSource[pickerStart.upperBound...].range(of: "private var credentialProjectionRow"))
         let pickerSource = String(dockerSource[pickerStart.lowerBound..<nextRowStart.lowerBound])
 
-        #expect(pickerSource.contains("rowTitle(viewModel.environmentPickerTitle)"))
-        #expect(pickerSource.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
+        // The one-line row (rail v2) gives the key layout priority over the
+        // trailing value, so a long scope value can never squeeze the title.
+        #expect(pickerSource.contains("key: viewModel.environmentPickerTitle"))
         #expect(pickerSource.contains("Image(systemName: \"chevron.up.chevron.down\")"))
-        #expect(!pickerSource.contains("RailCountBadge(viewModel.activeScopeLabel)"))
+        #expect(!pickerSource.contains("RailCountBadge"))
+        let rowLineStart = try #require(dockerSource.range(of: "private func rowLine<Trailing: View>("))
+        let rowLineSource = String(dockerSource[rowLineStart.lowerBound...])
+        #expect(rowLineSource.contains(".layoutPriority(1)"))
+        #expect(rowLineSource.contains(".frame(maxWidth: .infinity, minHeight: Layout.rowHeight, alignment: .leading)"))
     }
 
     private func fileText(_ path: String) throws -> String {

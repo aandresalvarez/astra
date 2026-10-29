@@ -13,17 +13,18 @@ final class AntigravityLaunchPreparation {
         self.timeoutSeconds = timeoutSeconds
     }
 
-    func prepare(executablePath: String, homeDirectory: String, taskID: UUID) async {
-        guard !Task.isCancelled else { return }
+    @discardableResult
+    func prepare(executablePath: String, homeDirectory: String, taskID: UUID) async -> Bool {
+        guard !Task.isCancelled else { return true }
         let preparation = Task {
-            await AntigravityCLIRuntime.warmStructuredOutputSupportBeforeLaunch(
+            await AntigravityCLIRuntime.probeStructuredOutputSupportBeforeLaunch(
                 executablePath: executablePath, providerHomeDirectory: homeDirectory,
                 taskID: taskID, defaults: defaults, timeoutSeconds: timeoutSeconds
-            )
+            ).stopped
         }
         pending = preparation
         defer { pending = nil }
-        _ = await withTaskCancellationHandler {
+        return await withTaskCancellationHandler {
             await preparation.value
         } onCancel: {
             preparation.cancel()

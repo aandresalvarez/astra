@@ -1807,6 +1807,8 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentRuntimeCapabilityBlockRecorder.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": ["run", "run?"],
+            // Extracted prelaunch TaskRun failure; AgentTask still uses TaskStateMachine.
+            "Astra/Services/Runtime/RuntimePrelaunchCancellation.swift": ["run"],
             "Astra/Services/Runtime/RuntimeTurnOutcomeService.swift": ["run"],
             // This helper normalizes TaskRun only; AgentTask still uses TaskStateMachine.
             "Astra/Services/Runtime/RuntimeSettlementCancellation.swift": ["run"],
@@ -1998,7 +2000,6 @@ struct ArchitectureFitnessTests {
             // mark itself lives in SidebarWorkspaceActivityViews.swift.
             "Astra/Views/TaskSidebarView.swift": .init(2_535, .owner("Task sidebar")),
             "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": .init(2_450, .owner("Workspace App action execution")),
-            "Astra/Views/WorkspaceRightRailView.swift": .init(2_400, .owner("Workspace right rail")),
             // Budget raised for Track A4 (ASTRAPersistence extraction) - see
             // WorkspaceConfigManager.swift's entry above for why.
             "Astra/Services/Persistence/TaskContextStateManager.swift": .init(2_450, .owner("Task context state")),

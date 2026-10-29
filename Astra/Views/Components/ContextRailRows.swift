@@ -1,11 +1,15 @@
-// Shared row & badge views for the Workspace Context right rail (capability
-// rows, summary rows, hierarchy lines, empty states). Extracted from
-// WorkspaceRightRailView to keep that owner file within its line budget and to
-// give the rail a single home for its reusable row vocabulary.
+// Shared row, box-header and add-menu views for the Workspace Context rail
+// (rail v2, docs/specs/2026-10-26-workspace-context-rail-v2.md). Extracted
+// from WorkspaceRightRailView to keep that owner file within its line budget
+// and to give the rail a single home for its reusable row vocabulary.
 
 import SwiftUI
+import AppKit
 import ASTRACore
 import ASTRAModels
+
+private typealias RailLayout = WorkspaceRailSectionPresentation.Layout
+private typealias RailAddAction = WorkspaceRailSectionPresentation.AddAction
 
 /// A small green dot pinned to the corner of a row's leading icon to mark an
 /// item as configured. The contrasting ring lifts it off the glyph so it reads
@@ -26,88 +30,292 @@ struct ConfiguredStatusDot: View {
     }
 }
 
-struct CapabilitySummaryRow: View {
-    let icon: String
-    let iconColor: Color
+/// A box header: the title with a tight chevron, the one-line summary while
+/// collapsed, and a trailing `+` for the box's own adds. The title and chevron
+/// toggle; the `+` is a separate target.
+struct RailBoxHeader: View {
+    static func accessibilityValue(isExpanded: Bool, summary: String) -> String {
+        if isExpanded { return "Expanded" }
+        let summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? "Collapsed" : "Collapsed, \(summary)"
+    }
+
     let title: String
-    let subtitle: String
-    let actionTitle: String?
-    let action: () -> Void
+    let isExpanded: Bool
+    let collapsedSummary: String
+    let addActions: [WorkspaceRailSectionPresentation.AddAction]
+    /// Spins while the box's facts are being re-read.
+    var isBusy = false
+    /// A quiet refresh control beside the `+`, for boxes whose facts come
+    /// from scans (repositories, containers).
+    var onRefresh: (() -> Void)? = nil
+    let onToggle: () -> Void
+    let onAdd: (WorkspaceRailSectionPresentation.AddAction) -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(alignment: .center, spacing: CapabilityRailLayout.leadingIconSpacing) {
-                Image(systemName: icon)
-                    .font(Stanford.ui(CapabilityRailLayout.leadingIconFontSize, weight: .medium))
-                    .foregroundStyle(iconColor)
-                    .frame(width: CapabilityRailLayout.leadingIconFrame)
-
-                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
+        HStack(spacing: 4) {
+            Button(action: onToggle) {
+                HStack(spacing: 4) {
                     Text(title)
-                        .font(Stanford.ui(CapabilityRailLayout.rowTitleFontSize, weight: .semibold))
+                        .font(Stanford.ui(RailLayout.boxTitleFontSize, weight: .medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
-                    Text(subtitle)
-                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .help(subtitle)
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(Stanford.ui(9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+
+                    if !isExpanded {
+                        Text(collapsedSummary)
+                            .font(Stanford.caption(RailLayout.rowValueFontSize))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .padding(.leading, 4)
+                            .help(collapsedSummary)
+                    }
+
+                    Spacer(minLength: 0)
                 }
-                .layoutPriority(1)
-
-                Spacer(minLength: 10)
-
-                if let actionTitle {
-                    Text(actionTitle)
-                        .font(Stanford.caption(CapabilityRailLayout.rowActionFontSize).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .layoutPriority(2)
-                }
-
-                Image(systemName: "chevron.right")
-                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: RailLayout.rowHeight, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, minHeight: CapabilityRailLayout.summaryRowMinHeight, alignment: .leading)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help(isExpanded ? "Collapse \(title)" : "Expand \(title)")
+            .accessibilityLabel(title)
+            .accessibilityValue(Self.accessibilityValue(isExpanded: isExpanded, summary: collapsedSummary))
+
+            if isBusy {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 20, height: 20)
+            } else if let onRefresh {
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(Stanford.ui(11, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Refresh \(title.lowercased())")
+                .accessibilityLabel("Refresh \(title)")
+            }
+
+            if !addActions.isEmpty {
+                RailAddMenuButton(actions: addActions, onAdd: onAdd)
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 4)
     }
 }
 
-struct CapabilityEmptyPrompt: View {
-    let title: String
-    let description: String
-    let actionTitle: String
-    let action: (() -> Void)?
+/// A box's `+`, or the rail-level `Add…` chip at the foot of the rail. One
+/// action runs on the tap; several pop an AppKit menu, so the control never
+/// flattens into a greedy SwiftUI `Menu` label.
+struct RailAddMenuButton: View {
+    enum Style: Equatable {
+        case plus
+        case chip
+    }
+
+    let actions: [WorkspaceRailSectionPresentation.AddAction]
+    var style: Style = .plus
+    let onAdd: (WorkspaceRailSectionPresentation.AddAction) -> Void
+
+    @State private var menuAnchor: NSView?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(Stanford.caption(12).weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Text(description)
-                .font(Stanford.caption(11))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let action {
-                Button(action: action) {
-                    Text(actionTitle)
-                        .font(Stanford.caption(11).weight(.semibold))
-                        .foregroundStyle(Stanford.lagunita)
+        Button {
+            present()
+        } label: {
+            switch style {
+            case .plus:
+                Image(systemName: "plus")
+                    .font(Stanford.ui(11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            case .chip:
+                HStack(spacing: 5) {
+                    Image(systemName: "plus")
+                        .font(Stanford.ui(10, weight: .semibold))
+                    Text(WorkspaceRailSectionPresentation.railAddTitle)
+                        .font(Stanford.caption(RailLayout.rowValueFontSize).weight(.medium))
                 }
-                .buttonStyle(.plain)
-                .padding(.top, 1)
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 6)
+                .frame(height: 24)
+                .contentShape(Rectangle())
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 5)
+        .buttonStyle(.plain)
+        .background { ToolbarMenuAnchorView(anchor: $menuAnchor) }
+        .help(helpTitle)
+        .accessibilityLabel(helpTitle)
+        .disabled(actions.isEmpty)
+    }
+
+    private var helpTitle: String {
+        actions.count == 1 ? actions[0].title : WorkspaceRailSectionPresentation.railAddTitle
+    }
+
+    private func present() {
+        if actions.count == 1, let only = actions.first {
+            onAdd(only)
+            return
+        }
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for action in actions {
+            menu.addItem(
+                ToolbarClosureMenuItem(title: action.title, systemSymbolName: Self.systemImage(for: action)) {
+                    onAdd(action)
+                }
+            )
+        }
+
+        if let menuAnchor {
+            menu.popUp(
+                positioning: nil,
+                at: NSPoint(x: 0, y: menuAnchor.bounds.minY - 4),
+                in: menuAnchor
+            )
+        } else if let event = NSApp.currentEvent, let view = event.window?.contentView {
+            NSMenu.popUpContextMenu(menu, with: event, for: view)
+        }
+    }
+
+    static func systemImage(for action: WorkspaceRailSectionPresentation.AddAction) -> String {
+        switch action {
+        case .addCapability: "puzzlepiece.extension"
+        case .addMemory: "text.badge.checkmark"
+        case .newRoutine: "arrow.triangle.2.circlepath"
+        case .addFolder: "folder.badge.plus"
+        case .connectServer: "network"
+        case .runInContainer: "shippingbox"
+        }
+    }
+}
+
+/// One line per fact: leading icon, key, trailing value, muted detail, an
+/// optional verb or label, and a disclosure chevron when the row expands in
+/// place. The row body is one tap target; the verb is another.
+struct RailKeyValueRow: View {
+    let row: WorkspaceRailSectionPresentation.Row
+    var brand: BrandMark? = nil
+    var isExpanded = false
+    /// The tooltip. Defaults to the value, so a truncated path stays readable.
+    var help: String? = nil
+    var onTap: (() -> Void)? = nil
+    var onAction: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                onTap?()
+            } label: {
+                HStack(spacing: 8) {
+                    CapabilityLeadingIcon(
+                        systemImage: row.systemImage,
+                        brand: brand,
+                        pointSize: RailLayout.leadingIconFontSize
+                    )
+                    .foregroundStyle(.secondary)
+                    .frame(width: RailLayout.leadingIconFrame)
+
+                    Text(row.title)
+                        .font(Stanford.ui(RailLayout.rowTitleFontSize))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+
+                    Spacer(minLength: 8)
+
+                    if let value = row.value {
+                        Text(value)
+                            .font(valueFont)
+                            .foregroundStyle(valueColor)
+                            .lineLimit(1)
+                            .truncationMode(usesMonospace ? .head : .tail)
+                    }
+
+                    if let detail = row.detail {
+                        Text(detail)
+                            .font(Stanford.caption(RailLayout.rowValueFontSize))
+                            .foregroundStyle(row.tone == .info ? Stanford.statusInfo : Stanford.textTertiary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: RailLayout.rowHeight, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(onTap == nil)
+            .help(help ?? row.value ?? row.title)
+
+            if let action = row.action {
+                actionView(action)
+            }
+
+            if row.isExpandable, onTap != nil {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(Stanford.ui(9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 10)
+            }
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 4)
+    }
+
+    @ViewBuilder
+    private func actionView(_ action: WorkspaceRailSectionPresentation.RowAction) -> some View {
+        switch action {
+        case .verb(let title):
+            Button {
+                onAction?()
+            } label: {
+                Text(title)
+                    .font(Stanford.caption(RailLayout.rowValueFontSize).weight(.medium))
+                    .foregroundStyle(Stanford.lagunita)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .buttonStyle(.plain)
+            .help(title)
+        case .repair(let title):
+            Button(title) {
+                onAction?()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(Stanford.poppy)
+        case .label(let title):
+            Text(title)
+                .font(Stanford.caption(RailLayout.rowValueFontSize))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private var usesMonospace: Bool {
+        row.kind == .folder || row.kind == .repository
+    }
+
+    private var valueFont: Font {
+        usesMonospace
+            ? Stanford.mono(RailLayout.rowValueFontSize - 0.5)
+            : Stanford.caption(RailLayout.rowValueFontSize)
+    }
+
+    private var valueColor: Color {
+        switch row.tone {
+        case .neutral: .secondary
+        case .info: Stanford.statusInfo
+        case .link: Stanford.lagunita
+        }
     }
 }
 
@@ -163,15 +371,20 @@ struct RailCapabilityItem: Identifiable {
     var brand: BrandMark? { BrandMark.resolve(id: id, name: name) }
 }
 
+/// A capability as one line: mark, name, and, only when the capability is
+/// blocked, its repair verb as a tinted button. The button is the whole
+/// signal; a ready capability shows nothing but its name. The composition
+/// summary lives in the tooltip.
 struct CapabilityRailRow: View {
     let icon: String
     var brand: BrandMark?
     let title: String
+    /// Inventory and readiness detail, shown as the row's tooltip.
     let subtitle: String
-    let color: Color
     let readiness: CapabilityReadiness
+    /// A passive trailing label (`Draft`, `Restored`), shown only when no
+    /// repair button is.
     let statusLabel: String?
-    let statusColor: Color
     let isEnabled: Bool
     var isCompact = false
     /// A separate verb ("Sign in", "Install") beside the row, never the row's
@@ -198,9 +411,13 @@ struct CapabilityRailRow: View {
         return true
     }
 
+    private static var detailLeadingPadding: CGFloat {
+        RailLayout.leadingIconFrame + 8 + 6
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 rowButton
                 if let contextualRepair {
                     contextualRepair
@@ -208,22 +425,34 @@ struct CapabilityRailRow: View {
                     Text(repairStatus)
                         .font(Stanford.caption(11))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 } else if canStartRepair, let repairVerb, let onRepair {
                     Button(repairVerb) {
                         if repairGuidance == nil { onRepair() } else { isConfirmingCommand.toggle() }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .tint(Stanford.lagunita)
+                    .tint(Stanford.poppy)
+                    .help(readiness.messages.joined(separator: "\n"))
                     .accessibilityIdentifier("CapabilityRailRepairButton")
+                } else if let statusLabel {
+                    Text(statusLabel)
+                        .font(Stanford.caption(RailLayout.rowValueFontSize))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
+
+                Image(systemName: "chevron.right")
+                    .font(Stanford.ui(9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 10)
             }
             if !repairIsChecking, let repairStatus {
                 Text(repairStatus)
                     .font(Stanford.caption(11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, CapabilityRailLayout.leadingIconFrame + CapabilityRailLayout.leadingIconSpacing)
+                    .padding(.leading, Self.detailLeadingPadding)
                     .accessibilityIdentifier("CapabilityRailRepairFailure")
             }
             if isConfirmingCommand, canStartRepair, let repairGuidance, let onRepair {
@@ -242,9 +471,11 @@ struct CapabilityRailRow: View {
                     .controlSize(.small)
                     .accessibilityIdentifier("CapabilityRailRepairRunButton")
                 }
-                .padding(.leading, CapabilityRailLayout.leadingIconFrame + CapabilityRailLayout.leadingIconSpacing)
+                .padding(.leading, Self.detailLeadingPadding)
             }
         }
+        .padding(.leading, 6)
+        .padding(.trailing, 4)
     }
 
     /// The rail's guidance for `repair`: a Terminal repair's command, or its
@@ -257,72 +488,28 @@ struct CapabilityRailRow: View {
 
     private var rowButton: some View {
         Button(action: onOpen) {
-            HStack(spacing: CapabilityRailLayout.leadingIconSpacing) {
+            HStack(spacing: 8) {
                 CapabilityLeadingIcon(
                     systemImage: icon,
                     brand: brand,
-                    pointSize: CapabilityRailLayout.leadingIconFontSize
+                    pointSize: RailLayout.leadingIconFontSize
                 )
-                .foregroundStyle(isEnabled ? color : .secondary)
-                .frame(width: CapabilityRailLayout.leadingIconFrame)
+                .foregroundStyle(.secondary)
+                .frame(width: RailLayout.leadingIconFrame)
 
-                VStack(alignment: .leading, spacing: CapabilityRailLayout.titleSubtitleSpacing) {
-                    HStack(spacing: 5) {
-                        Text(title.isEmpty ? "Untitled Capability" : title)
-                            .font(Stanford.ui(CapabilityRailLayout.rowTitleFontSize, weight: .semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .layoutPriority(1)
-
-                        Spacer(minLength: 6)
-
-                        if let statusLabel {
-                            CapabilityStatusBadge(title: statusLabel, color: statusColor)
-                                .help(readiness.messages.joined(separator: "\n"))
-                                .accessibilityLabel(statusLabel)
-                        }
-                    }
-
-                    Text(subtitle.isEmpty ? "No details" : subtitle)
-                        .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .help(subtitle)
-                }
+                Text(title.isEmpty ? WorkspaceRailSectionPresentation.untitledCapabilityName : title)
+                    .font(Stanford.ui(RailLayout.rowTitleFontSize))
+                    .foregroundStyle(isEnabled ? .primary : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
                 Spacer(minLength: 0)
-
-                Image(systemName: "chevron.right")
-                    .font(Stanford.ui(CapabilityRailLayout.rowChevronFontSize, weight: .semibold))
-                    .foregroundStyle(Color.secondary.opacity(0.65))
             }
             .contentShape(Rectangle())
-            .frame(
-                maxWidth: .infinity,
-                minHeight: CapabilityRailLayout.rowMinHeight(isCompact: isCompact),
-                alignment: .leading
-            )
+            .frame(maxWidth: .infinity, minHeight: RailLayout.rowHeight, alignment: .leading)
         }
         .buttonStyle(.plain)
         .help(subtitle.isEmpty ? "Open details" : subtitle)
-    }
-}
-
-struct CapabilityStatusBadge: View {
-    let title: String
-    let color: Color
-
-    var body: some View {
-        Text(title)
-            .font(Stanford.caption(11).weight(.medium))
-            .foregroundStyle(color)
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.07))
-            .clipShape(Capsule())
     }
 }
 

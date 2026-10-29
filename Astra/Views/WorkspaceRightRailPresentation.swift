@@ -2,39 +2,13 @@ import SwiftUI
 import ASTRACore
 import ASTRAModels
 
+/// Rail-generic presentation helpers that outlive the v1 checklist: the
+/// capability composition summary (now a tooltip) and the detail-list overflow
+/// line used by the expanded remote and routine editors. The boxes, rows and
+/// order come from `WorkspaceRailSectionPresentation`.
 enum WorkspaceRightRailPresentation {
-    /// Order while a workspace still has setup to do: setup stays directly under
-    /// the repository so onboarding is not buried beneath the inventory.
-    static let primarySectionOrder = [
-        "Repository",
-        WorkspaceSetupChecklistPresentation.sectionTitle,
-        CapabilityRailSectionPresentation.sectionTitle
-    ]
-
-    /// Order once setup is complete: the capabilities the workspace actually uses
-    /// rise above the now-compact configured-setup summary, so the panel leads
-    /// with where the user has invested rather than with finished chores.
-    static let steadyStateSectionOrder = [
-        "Repository",
-        CapabilityRailSectionPresentation.sectionTitle,
-        WorkspaceSetupChecklistPresentation.sectionTitle
-    ]
-
-    /// The section order to render for a workspace, chosen by whether any setup
-    /// item is still outstanding.
-    static func sectionOrder(hasPendingSetup: Bool) -> [String] {
-        hasPendingSetup ? primarySectionOrder : steadyStateSectionOrder
-    }
-
-    static let headerIconFontSize: CGFloat = 15
-    static let headerIconFrame: CGFloat = 22
-    static let headerTitleFontSize: CGFloat = 16
-    static let headerSubtitleFontSize: CGFloat = 12
-
-    /// Collapse verb for the rail's own expandable groups (setup, capabilities).
-    /// Kept here rather than borrowing the git panel's constant so the rail and
-    /// git presentation layers stay independent.
-    static let hideActionTitle = "Hide"
+    /// How many items an expanded detail list shows before an overflow line.
+    static let detailPreviewLimit = 4
 
     static func compositionSummary(for item: RailCapabilityItem) -> String {
         var parts: [String] = []
@@ -53,9 +27,110 @@ enum WorkspaceRightRailPresentation {
         return fallback.isEmpty ? "No resources" : fallback
     }
 
+    static func overflowSummary(
+        total: Int,
+        visible: Int,
+        singular: String,
+        plural: String
+    ) -> String? {
+        let remaining = total - visible
+        guard remaining > 0 else { return nil }
+        return "\(remaining) more \(remaining == 1 ? singular : plural)"
+    }
+
     private static func appendCount(_ count: Int, singular: String, plural: String, to parts: inout [String]) {
         guard count > 0 else { return }
         parts.append("\(count) \(count == 1 ? singular : plural)")
+    }
+}
+
+/// Folder facts for the rail's Environment rows and the Workspace home
+/// screen: which configured paths count as added folders (the root is a
+/// reference, not an addition), their detail rows, and removal.
+struct WorkspaceFolderDetailRowPresentation: Equatable {
+    let title: String
+    let subtitle: String
+    let path: String
+    let copyPathHelp: String
+    let canRemove: Bool
+    let showsPathInBody: Bool
+}
+
+enum WorkspaceFolderPresentation {
+    static let folderAccessTitle = "Folder access"
+    static let addFolderActionTitle = "Add folder"
+    static let workspaceRootFolderSubtitle = "Workspace root"
+    static let additionalFolderSubtitle = "Additional folder"
+    static let copyFolderPathHelp = "Copy folder path"
+    static let showsFolderPathInDetailRows = false
+    static let missingWorkspaceRootSubtitle = "No workspace root selected."
+    static let referenceOnlyFolderSubtitle = "Workspace root only"
+
+    static func shouldShowWorkspaceRootMissingMessage(primaryPath: String) -> Bool {
+        WorkspacePathPresentation.standardizedPath(primaryPath).isEmpty
+    }
+
+    static func userConfiguredFolderDescriptors(_ additionalPaths: [String]) -> [WorkspacePathDescriptor] {
+        userConfiguredFolderDescriptors(primaryPath: "", additionalPaths: additionalPaths)
+    }
+
+    static func userConfiguredFolderDescriptors(
+        primaryPath: String,
+        additionalPaths: [String]
+    ) -> [WorkspacePathDescriptor] {
+        let rootPath = WorkspacePathPresentation.standardizedPath(primaryPath)
+        let folderPaths = additionalPaths.filter { rawPath in
+            let folderPath = WorkspacePathPresentation.standardizedPath(rawPath)
+            return rootPath.isEmpty || folderPath != rootPath
+        }
+        return WorkspacePathPresentation.descriptors(primaryPath: "", additionalPaths: folderPaths)
+    }
+
+    static func userConfiguredFolderCount(_ additionalPaths: [String]) -> Int {
+        userConfiguredFolderDescriptors(additionalPaths).count
+    }
+
+    static func userConfiguredFolderCount(primaryPath: String, additionalPaths: [String]) -> Int {
+        userConfiguredFolderDescriptors(primaryPath: primaryPath, additionalPaths: additionalPaths).count
+    }
+
+    static func remainingAdditionalPaths(
+        afterRemovingFolderMatching path: String,
+        from additionalPaths: [String]
+    ) -> [String] {
+        let removedPath = WorkspacePathPresentation.standardizedPath(path)
+        guard !removedPath.isEmpty else { return additionalPaths }
+        return additionalPaths.filter { rawPath in
+            WorkspacePathPresentation.standardizedPath(rawPath) != removedPath
+        }
+    }
+
+    static func folderDetailRow(for descriptor: WorkspacePathDescriptor) -> WorkspaceFolderDetailRowPresentation {
+        WorkspaceFolderDetailRowPresentation(
+            title: descriptor.title,
+            subtitle: descriptor.role == .primary ? workspaceRootFolderSubtitle : additionalFolderSubtitle,
+            path: descriptor.path,
+            copyPathHelp: copyFolderPathHelp,
+            canRemove: descriptor.role == .additional,
+            showsPathInBody: showsFolderPathInDetailRows
+        )
+    }
+
+    static func folderSubtitle(primaryPath: String, additionalPaths: [String]) -> String {
+        guard !shouldShowWorkspaceRootMissingMessage(primaryPath: primaryPath) else {
+            return missingWorkspaceRootSubtitle
+        }
+        let count = userConfiguredFolderCount(primaryPath: primaryPath, additionalPaths: additionalPaths)
+        guard count > 0 else { return referenceOnlyFolderSubtitle }
+        return "\(count) added \(count == 1 ? "folder" : "folders")"
+    }
+}
+
+enum WorkspaceContextIconography {
+    static func capabilityIcon(name: String, fallback: String) -> String {
+        CapabilityIconPresentation
+            .make(name: name, fallbackSystemName: fallback)
+            .legacySystemName
     }
 }
 
@@ -272,7 +347,7 @@ enum CapabilityRailLayout {
     static let regularSectionContentSpacing: CGFloat = 8
     static let compactGroupSpacing: CGFloat = 14
     static let regularGroupSpacing: CGFloat = 12
-    static let sectionTitleFontSize: CGFloat = 15
+    static let sectionTitleFontSize: CGFloat = 13
     static let sectionActionFontSize: CGFloat = 13
     static let sectionActionSubtitleFontSize: CGFloat = 10
     static let groupHeadingFontSize: CGFloat = 12
@@ -311,68 +386,6 @@ enum CapabilityRailLayout {
 
     static func dividerTrailingPadding(isCompact _: Bool) -> CGFloat {
         0
-    }
-}
-
-enum CapabilityRailSectionPresentation {
-    static let sectionTitle = "Capabilities"
-    static let addActionTitle = "Add"
-    static let addActionSubtitle = ""
-    static let addActionHelp = "Browse capability library"
-    static let addActionShowsPlusIcon = false
-    static let showsAvailableToAddCount = false
-    static let showsBrowseLibraryFooter = false
-    static let showsTopHealthSummaryMetrics = false
-    static let attentionGroupShowsWarningIcon = false
-    static let attentionGroupUsesWarningTint = false
-
-    static func readySummaryTitle(count: Int) -> String {
-        "\(count) ready \(count == 1 ? "capability" : "capabilities")"
-    }
-
-    static func draftSummaryTitle(count: Int) -> String {
-        "\(count) draft \(count == 1 ? "capability" : "capabilities")"
-    }
-
-    /// Status + count metadata shown beneath the noun-first capability summary
-    /// title (the title carries the capability names).
-    static func readySummarySubtitle(count: Int) -> String {
-        "Ready · \(count)"
-    }
-
-    static func draftSummarySubtitle(count: Int) -> String {
-        "Draft · \(count)"
-    }
-
-    /// Disclosure verb that names how many rows it reveals. Only rendered for
-    /// count >= 2 — a lone capability renders expanded instead.
-    static func showAllActionTitle(count: Int) -> String {
-        "Show all (\(count))"
-    }
-
-    static func previewList(_ names: [String], limit: Int = 3) -> String {
-        let displayNames = names
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard !displayNames.isEmpty else { return "No details" }
-
-        let visible = displayNames.prefix(limit)
-        let remaining = displayNames.count - visible.count
-        let prefix = visible.joined(separator: ", ")
-        return remaining > 0 ? "\(prefix) +\(remaining)" : prefix
-    }
-
-    static func summaryIconPresentation(
-        for itemIcons: [CapabilityIconPresentation],
-        fallbackSystemName: String
-    ) -> CapabilityIconPresentation {
-        if itemIcons.count == 1, let icon = itemIcons.first {
-            return icon
-        }
-        return CapabilityIconPresentation(
-            kind: .systemSymbol(fallbackSystemName),
-            fallbackSystemName: fallbackSystemName
-        )
     }
 }
 

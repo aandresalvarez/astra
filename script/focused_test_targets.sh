@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    ASTRACore/BinaryRunner.swift|ASTRACore/BinaryProcessGroupCompletion.swift|Astra/Services/Runtime/RuntimePrelaunchCancellation.swift|Astra/Services/Runtime/RuntimeCompletedUserTurnContinuation.swift|Astra/Services/Runtime/AntigravityLaunchPreparation.swift|Astra/Services/Runtime/AntigravityCLIRuntime.swift|Tests/RuntimeCancelledPreparationContinuationTests.swift|Tests/BinaryProcessGroupCompletionTests.swift)
+      add_target "BinaryProcessGroupCompletionTests|ProcessBinaryRunnerTests|AntigravityLaunchPreparationTests|RuntimeCancelledPreparationContinuationTests|RuntimeCompletedUserTurnContinuationTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Runtime/RuntimeWorkspaceContinuation*.swift|Astra/Views/TaskWorkspaceContinuationPrompt.swift|Tests/RuntimeWorkspaceContinuation*Tests.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Tasks/TaskQueue+ResourceAdmission.swift)
       add_target "RuntimeWorkspaceContinuation.*Tests|RuntimeCompletedUserTurnContinuationTests|RemoteWorkspaceJobPersistenceTests|TaskDecisionDock"
       ;;
