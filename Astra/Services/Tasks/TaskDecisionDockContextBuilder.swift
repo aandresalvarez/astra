@@ -201,7 +201,8 @@ enum TaskDecisionDockContextBuilder {
         var details: [TaskDecisionDockDetail] = []
         if input.status == .running {
             details.append(TaskDecisionDockDetail(
-                id: "runtime-health",
+                id: input.runtimeHealth.state == .preparing || input.runtimeHealth.state == .waitingForResource
+                    ? "runtime-preparation" : "runtime-health",
                 title: input.runtimeHealth.message,
                 summary: input.runtimeHealth.detail ?? input.runtimeHealth.message,
                 systemImage: input.runtimeHealth.isAttentionState ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath",

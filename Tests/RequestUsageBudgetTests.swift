@@ -39,7 +39,10 @@ extension HeadlessChatScenarioTests {
                 existingMessageEventID: retry.eventID, turnRequestID: retry.requestID, modelContext: h.context) { _ in }
             #expect(try String(contentsOf: launches, encoding: .utf8).split(separator: "\n").count == 1)
             let retried = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
-            #expect(retried.limits == stopped.limits)
+            var remaining = stopped.limits
+            remaining.secondsRemaining = retried.limits.secondsRemaining
+            #expect(remaining.secondsRemaining < stopped.limits.secondsRemaining && remaining.secondsRemaining > 0)
+            #expect(retried.limits == remaining)
             #expect(task.tokensUsed == 210_000)
         }
 

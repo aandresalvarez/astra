@@ -3,6 +3,8 @@ import ASTRAModels
 
 enum TaskRuntimeHealthState: String, Equatable, Sendable {
     case notRunning = "not_running"
+    case preparing
+    case waitingForResource = "waiting_for_resource"
     case active
     case quiet
     case recoveredWarning = "recovered_warning"
@@ -98,8 +100,11 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         let warningTool = latestWarning.flatMap(permissionToolName)
         let blockedStep = latestPlanBlock.flatMap(planStepID)
 
+        let preparation = RuntimeLaunchPresentation.preparation(for: run, events: runEvents)
         let state: TaskRuntimeHealthState
-        if latestPlanBlock != nil,
+        if let preparation {
+            state = preparation.state
+        } else if latestPlanBlock != nil,
            laterProgressAfterPlanBlockAt == nil,
            (secondsSincePlanBlock ?? 0) >= quietThreshold {
             state = .possiblyStalled
@@ -116,7 +121,7 @@ struct TaskRuntimeHealth: Equatable, Sendable {
             state = .active
         }
 
-        let message = message(
+        let message = preparation?.message ?? message(
             state: state,
             latestProgressEvent: latestProgressEvent,
             latestTool: latestTool,
@@ -129,7 +134,7 @@ struct TaskRuntimeHealth: Equatable, Sendable {
             warningTool: warningTool,
             blockedStep: blockedStep
         )
-        let detail = detail(
+        let detail = preparation?.detail ?? detail(
             state: state,
             now: now,
             lastActivityAt: lastActivityAt,
@@ -267,6 +272,8 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         switch state {
         case .notRunning:
             return ""
+        case .preparing: return "Preparing execution"
+        case .waitingForResource: return "Waiting for provider configuration"
         case .possiblyStalled:
             if let blockedStep {
                 return "Plan step \(blockedStep) is blocked"
@@ -350,6 +357,7 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         switch state {
         case .notRunning:
             return nil
+        case .preparing, .waitingForResource: return "The provider has not started yet."
         case .possiblyStalled:
             if let latestPlanBlock {
                 return "No new plan progress, agent output, tool results, or file changes for \(relativeAge(from: latestPlanBlock.timestamp, to: now)) after the blocker."

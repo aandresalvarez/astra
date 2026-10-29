@@ -23,6 +23,9 @@ target_for_path() {
     ASTRACore/ProviderToolSemantics.swift|ASTRACore/ProviderReadFileInput.swift|ASTRACore/AgentPolicyTypes.swift|Astra/Services/Runtime/AgentPolicyAdapters.swift|Astra/Services/Runtime/AgentRuntimePolicyGuard.swift|Tests/AntigravityReadFilePolicyTests.swift)
       add_target "AntigravityReadFilePolicyTests|AgentPolicyTests|AgentPolicyRuntimeMatrixTests|RuntimePolicyGuardTests|AntigravityCLIRuntimeTests"
       ;;
+    Astra/Views/RuntimeLaunchPresentation.swift|Astra/Services/Runtime/RuntimeProviderStateWaitTimeout.swift|Astra/Services/Runtime/AgentRuntimeSharedStateGate.swift|Astra/Services/Runtime/ProviderSharedStateProcessLock.swift|Tests/RuntimeLaunchWaitTests.swift|Tests/RuntimeLaunchPresentationRegressionTests.swift|Tests/RuntimePreparationAccountingTests.swift|Tests/RuntimePreparationSettlementTests.swift)
+      add_target "RuntimeLaunchWaitTests|RuntimeLaunchPresentationRegressionTests|RuntimePreparationAccountingTests|RuntimePreparationSettlementTests|TaskDecisionDockPresentationTests|RuntimeProviderRecordingLimitsTests|NativeResumeEmptyTurnTests|ImportedTaskHistoryIsolationTests"
+      ;;
   esac
 
   case "$path" in

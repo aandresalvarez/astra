@@ -16,7 +16,7 @@ final class ProviderSharedStateProcessLock: @unchecked Sendable {
     }
     deinit { close(descriptor) }
 
-    static func acquire(_ key: AgentRuntimeSharedStateKey, root override: URL? = nil) async throws -> ProviderSharedStateProcessLock {
+    static func acquire(_ key: AgentRuntimeSharedStateKey, root override: URL? = nil, deadline: ContinuousClock.Instant? = nil) async throws -> ProviderSharedStateProcessLock {
         let root = override ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ASTRA Runtime Coordination/provider-state", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -31,6 +31,7 @@ final class ProviderSharedStateProcessLock: @unchecked Sendable {
               info.st_uid == getuid(), info.st_nlink == 1 else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }
         while true {
             try Task.checkCancellation()
+            if let deadline, ContinuousClock.now >= deadline { throw RuntimeProviderStateWaitTimeout() }
             if flock(fd, LOCK_EX | LOCK_NB) == 0 { return lease }
             guard errno == EWOULDBLOCK || errno == EAGAIN else { throw RuntimeExecutionOwnerStore.Failure.busy }
             try await Task.sleep(for: .milliseconds(50))

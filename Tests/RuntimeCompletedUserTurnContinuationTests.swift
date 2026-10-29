@@ -288,7 +288,8 @@ struct RuntimeCompletedUserTurnContinuationTests {
             admitted.finish()
             let repeated = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context,
                 maxRunSeconds: 900, userRequest: request))
-            #expect(repeated.record.limits == saved.limits)
+            #expect(repeated.record.limits == admitted.record.limits)
+            #expect(repeated.record.limits.secondsRemaining < saved.limits.secondsRemaining)
             #expect(repeated.record.runID == saved.runID)
             repeated.finish()
         }
