@@ -6,6 +6,62 @@ import ASTRAModels
 
 @Suite("Task decision dock presentation")
 struct TaskDecisionDockPresentationTests {
+    @Test("Preparation titles remain truthful in both active and passive docks", arguments: [true, false])
+    func preparationTitles(canCancel: Bool) throws {
+        var input = context(status: .running)
+        input.canCancel = canCancel
+        input.extraDetails = [.init(id: "runtime-preparation", title: "Waiting for provider configuration",
+            summary: "The provider has not started.", systemImage: "clock", tone: .running)]
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.title == "Waiting for provider configuration")
+    }
+
+    @Test("Cancellation before launch offers a new instruction without claiming a partial result")
+    func cancelledBeforeLaunch() throws {
+        var input = context(status: .cancelled)
+        input.extraDetails = [.init(id: "runtime-unlaunched-terminal", title: "Cancelled before provider start",
+            summary: "Send a new instruction to continue.", systemImage: "stop.circle", tone: .neutral)]
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.title == "Cancelled before provider start")
+        #expect(dock.compactMeta == "Provider never started")
+        #expect(dock.primaryAction == nil && dock.summary.contains("new instruction"))
+    }
+
+    @Test("Unlaunched outcomes preserve approved-plan and correction decisions", arguments: [false, true])
+    func unlaunchedKeepsPlanDecisions(correction: Bool) throws {
+        var input = context(status: .pendingUser, mission: correction ? missionNeedingCorrection() : nil)
+        input.hasExecutableApprovedPlan = true
+        input.canRunApprovedPlan = true; input.canOpenPlan = true
+        input.planActionTitle = "Approve next step"
+        input.extraDetails = [.init(id: "runtime-unlaunched-terminal", title: "Provider did not start",
+            summary: "Waiting for provider configuration exceeded the preparation limit.", systemImage: "stop.circle", tone: .attention)]
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.primaryAction?.kind == (correction ? .approveCorrection : .runApprovedPlan))
+        #expect(dock.details.contains { $0.id == "runtime-unlaunched-terminal" })
+        if !correction { #expect(dock.secondaryActions.contains { $0.kind == .openPlan }) }
+    }
+
+    @Test("Unjoined preparation offers no restart or plan action")
+    func unjoinedPreparationKeepsStopping() throws {
+        var input = context(status: .cancelled)
+        input.hasExecutableApprovedPlan = true; input.canRunApprovedPlan = true
+        input.extraDetails = [.init(id: "runtime-unlaunched-stopping", title: "Stopping preparation",
+            summary: "Waiting for cleanup to finish.", systemImage: "hourglass", tone: .attention)]
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.title == "Stopping preparation")
+        #expect(dock.primaryAction == nil && dock.secondaryActions.isEmpty && dock.overflowActions.isEmpty)
+    }
+
+    @Test("A new live attempt cannot inherit a previous attempt's terminal presentation")
+    func liveAttemptIgnoresOldTerminal() throws {
+        var input = context(status: .running)
+        input.extraDetails = [.init(id: "runtime-unlaunched-terminal", title: "Cancelled before provider start",
+            summary: "Send a new instruction to continue.", systemImage: "stop.circle", tone: .attention)]
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.title == "Task running")
+        #expect(dock.id != "unlaunched")
+    }
+
     @Test("Ordinary waiting keeps its presentation when recovery is verified")
     func waitingWithoutRecoveryBlockIsUnchanged() {
         let cancel = TaskDecisionDockAction(kind: .cancelTurnRequest, title: "Cancel request", systemImage: "xmark.circle",

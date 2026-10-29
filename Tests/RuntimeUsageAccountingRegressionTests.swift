@@ -40,7 +40,7 @@ struct RuntimeUsageAccountingRegressionTests {
                 mode: mode, task: task, run: run, modelContext: h.context, recordingState: AgentEventRecordingState())
         }
         AgentRuntimeWorker.recordEstimatedUsageIfProviderDidNotReport(runtimeAdapter: adapter, selectedRuntime: .antigravityCLI,
-            prompt: "Synthetic prompt", task: task, run: next, modelContext: h.context)
+            prompt: "Synthetic prompt", task: task, run: next, modelContext: h.context, providerStarted: true)
         #expect(next.tokensUsed == 0)
         #expect(task.tokensUsed == 120)
         #expect(!task.events.contains { $0.payload.hasPrefix("estimated tokens:") })

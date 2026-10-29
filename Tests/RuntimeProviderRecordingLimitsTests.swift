@@ -19,7 +19,7 @@ struct RuntimeProviderRecordingLimitsTests {
             runtimeAdapter: AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI),
             selectedRuntime: .antigravityCLI, prompt: "Waiting for shared configuration cleanup.",
             task: task, run: run, modelContext: h.context,
-            runtimeStopReason: RuntimeProviderResourceRegistry.Block.stopReason)
+            providerStarted: false)
         #expect(task.tokensUsed == 70 && run.tokensUsed == 0)
         #expect(!task.events.contains { $0.type == TaskEventTypes.Task.stats.rawValue })
     }
@@ -36,7 +36,7 @@ struct RuntimeProviderRecordingLimitsTests {
         AgentRuntimeWorker.recordEstimatedUsageIfProviderDidNotReport(
             runtimeAdapter: AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI),
             selectedRuntime: .antigravityCLI, prompt: "Continue within the saved limits.",
-            task: task, run: run, modelContext: h.context)
+            task: task, run: run, modelContext: h.context, providerStarted: true)
         #expect(task.tokensUsed == Int.max)
         #expect(run.tokensUsed > 0)
         #expect(run.tokensUsed == run.inputTokens + run.outputTokens)

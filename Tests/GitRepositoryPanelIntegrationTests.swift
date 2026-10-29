@@ -1197,10 +1197,17 @@ extension GitRepositoryPanelIntegrationTests {
         try await waitForRail { git.currentBranch == "first" }
         #expect(git.activeWorkingPath == WorkspacePathPresentation.standardizedPath(firstRoot))
         #expect(docker.selectedEnvironment == .host)
+        await git.waitForPendingRefresh()
         fake.currentBranch = "second"
         host.rootView = content(second)
         host.layoutSubtreeIfNeeded()
-        try await waitForRail { git.currentBranch == "second" && docker.selectedEnvironment.id == container.id }
+        // Branch status and container selection can publish before the async
+        // repository scan finishes. Observe the complete context transition.
+        try await waitForRail {
+            git.currentBranch == "second"
+                && git.selectedRepositoryFullPath == WorkspacePathPresentation.standardizedPath(secondRoot)
+                && docker.selectedEnvironment.id == container.id
+        }
         #expect(git.activeWorkingPath == WorkspacePathPresentation.standardizedPath(secondRoot))
         #expect(git.selectedRepositoryFullPath == WorkspacePathPresentation.standardizedPath(secondRoot))
         #expect(docker.selectedEnvironment.displayName == "Rail container")

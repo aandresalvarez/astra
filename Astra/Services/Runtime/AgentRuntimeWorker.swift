@@ -1265,7 +1265,7 @@ final class AgentRuntimeWorker {
             task: task,
             run: run,
             modelContext: modelContext,
-            runtimeStopReason: result.runtimeStopReason
+            providerStarted: executionOwner.record.hasProviderLaunch
         )
         RuntimeSupervisionUsageRecorder.record(supervisionReservations,
             task: task, run: run, modelContext: modelContext)
@@ -1512,9 +1512,9 @@ final class AgentRuntimeWorker {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        runtimeStopReason: String? = nil
+        providerStarted: Bool
     ) {
-        guard runtimeStopReason != RuntimeProviderResourceRegistry.Block.stopReason,
+        guard providerStarted,
               runtimeAdapter.recordsEstimatedUsageWhenProviderUsageMissing,
               run.tokensUsed == 0,
               !ProviderUsageEvidence.hasReport(run: run, task: task) else {

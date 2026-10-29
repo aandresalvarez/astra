@@ -38,6 +38,10 @@ assert_targets "AntigravityReadFilePolicyTests|AgentPolicyTests|AgentPolicyRunti
   "Astra/Services/Runtime/AgentRuntimePolicyGuard.swift" \
   "Tests/AntigravityReadFilePolicyTests.swift"
 
+assert_targets "RuntimeLaunchWaitTests|RuntimeLaunchPresentationRegressionTests|RuntimePreparationAccountingTests|RuntimePreparationSettlementTests|TaskDecisionDockPresentationTests|RuntimeProviderRecordingLimitsTests|NativeResumeEmptyTurnTests|ImportedTaskHistoryIsolationTests" \
+  "Astra/Views/RuntimeLaunchPresentation.swift" \
+  "Tests/RuntimePreparationAccountingTests.swift"
+
 assert_targets "MCPServerKitTests" \
   "Tools/MCPServerKit/MCPServerKit.swift" \
   "Tests/MCPServerKitTests/MCPServerKitTests.swift"

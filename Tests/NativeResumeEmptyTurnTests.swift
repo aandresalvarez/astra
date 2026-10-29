@@ -170,6 +170,16 @@ struct NativeResumeEmptyTurnTests {
         #expect(latest.output.contains("4172"))
         #expect(task.sessionId == "chat-new")
         #expect(latest.stopReason != "no_usable_result")
+        let ownership = task.events.filter { $0.run?.id == latest.id && $0.type == TaskEventTypes.System.runtimeExecutionOwnership.rawValue }
+        let receipt = try #require(ownership.max { $0.timestamp < $1.timestamp })
+        let record = try JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: Data(receipt.payload.utf8))
+        #expect(record.providerLaunchCount == 2 && record.hasProviderLaunch)
+        // Even a page retaining only the latest ownership anchor knows this
+        // was a multi-launch run, so its first execution is never preparation.
+        let label = RuntimeLaunchPresentation.durationLabel(run: .init(input: .init(run: latest)),
+            events: [.init(event: receipt)], now: Date(), format: { "\($0)s" })
+        #expect(label?.hasPrefix("Elapsed ") == true)
+        #expect(label?.contains("preparation") == false)
     }
 
     @Test("Expired fallback time never launches a replacement with unlimited zero timeout")
