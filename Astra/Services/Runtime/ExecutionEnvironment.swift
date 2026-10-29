@@ -437,7 +437,8 @@ enum DockerExecutionPlanner {
             commandPlannedFields: commandFields,
             interactiveAsk: base.interactiveAsk,
             pathMapper: mapper,
-            executionEnvironment: resolvedEnvironment
+            executionEnvironment: resolvedEnvironment,
+            sharedConfigurationHostURL: base.sharedConfigurationURLOnHost
         )
         resolvedPlan.containerProviderCommandIndex = providerCommandIndex
         return .success(resolvedPlan)
@@ -497,7 +498,8 @@ enum DockerExecutionPlanner {
             commandPlannedFields: commandFields,
             interactiveAsk: base.interactiveAsk,
             pathMapper: mapper,
-            executionEnvironment: environment
+            executionEnvironment: environment,
+            sharedConfigurationHostURL: base.sharedConfigurationHostURL
         )
     }
 

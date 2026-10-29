@@ -13,13 +13,25 @@ extension AgentRuntimeProcessLaunchContext {
 }
 
 extension AgentRuntimeProcessLaunchPlan {
-    /// Check the actual child environment at the final synchronous launch boundary.
+    /// Docker's child environment belongs to its host client. Keep the route
+    /// to the settings ASTRA prepared before wrapping it, without resolving
+    /// symlinks here: a retarget must still fail final identity validation.
+    var sharedConfigurationURLOnHost: URL? {
+        guard runtime == .antigravityCLI else { return nil }
+        if executionEnvironment.providerRunsInsideContainer { return sharedConfigurationHostURL }
+        guard let home = environment["HOME"], !home.isEmpty else { return nil }
+        return AntigravityCLIRuntime.settingsURL(providerHomeDirectory: home)
+    }
+
+    /// Host providers must still follow their actual child HOME, even if an
+    /// earlier plan carries a captured URL. Container providers instead retain
+    /// the host configuration ASTRA mutated; their profile projection is separate.
     func validateSharedConfiguration(_ key: AgentRuntimeSharedStateKey?) throws {
         guard let key, key.filePath != nil else { return }
-        guard let home = environment["HOME"], !home.isEmpty else {
+        guard let settingsURL = sharedConfigurationURLOnHost else {
             throw ProviderSharedStateIdentity.Failure(detail: "the launch home is unavailable")
         }
-        do { try key.validate(fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: home)) }
+        do { try key.validate(fileURL: settingsURL) }
         catch let error as ProviderSharedStateIdentity.Failure { throw error }
         catch { throw ProviderSharedStateIdentity.Failure(detail: error.localizedDescription) }
     }

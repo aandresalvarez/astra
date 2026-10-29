@@ -35,7 +35,10 @@ final class ProviderSharedStateProcessLock: @unchecked Sendable {
         var info = stat()
         guard lstat(root.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
               info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }
-        let hash = SHA256.hash(data: Data(key.rawValue.utf8)).map { String(format: "%02x", $0) }.joined()
+        // Swift keys compare canonical Unicode equivalents as equal. Use the same
+        // equivalence for physical lock bytes; legacy names must remain exact.
+        let identity = key.filePath == nil ? key.rawValue : key.rawValue.precomposedStringWithCanonicalMapping
+        let hash = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
         let name = (key.filePath == nil ? "" : "file-v1-") + hash
         let fd = open(root.appendingPathComponent(name).path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }

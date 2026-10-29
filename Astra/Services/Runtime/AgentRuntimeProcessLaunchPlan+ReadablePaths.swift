@@ -30,7 +30,8 @@ extension AgentRuntimeProcessLaunchPlan {
             commandPlannedFields: updatedPlannedFields,
             interactiveAsk: interactiveAsk,
             pathMapper: pathMapper,
-            executionEnvironment: executionEnvironment
+            executionEnvironment: executionEnvironment,
+            sharedConfigurationHostURL: sharedConfigurationHostURL
         )
         plan.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
         plan.executionSandboxBoundaryReceipt = executionSandboxBoundaryReceipt
@@ -59,7 +60,8 @@ extension AgentRuntimeProcessLaunchPlan {
             commandPlannedFields: commandPlannedFields,
             interactiveAsk: interactiveAsk,
             pathMapper: pathMapper,
-            executionEnvironment: executionEnvironment
+            executionEnvironment: executionEnvironment,
+            sharedConfigurationHostURL: sharedConfigurationHostURL
         )
         plan.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
         plan.executionSandboxBoundaryReceipt = executionSandboxBoundaryReceipt

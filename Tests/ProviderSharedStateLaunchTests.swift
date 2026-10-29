@@ -142,6 +142,80 @@ struct ProviderSharedStateLaunchTests {
         #expect(result.exitCode == -1 && result.error.contains("configuration path changed"))
         #expect(!FileManager.default.fileExists(atPath: h.workspaceURL.appendingPathComponent("launched").path))
     }
+
+    @Test("Docker keeps the reserved host settings independent of its client HOME", arguments: [true, false])
+    func dockerRetainsHostConfiguration(clientHasHome: Bool) throws {
+        let h = try HeadlessChatHarness(); defer { h.cleanup() }
+        let home = h.rootURL.appendingPathComponent("provider-profile")
+        let first = h.rootURL.appendingPathComponent("first-settings")
+        let replacement = h.rootURL.appendingPathComponent("replacement-settings")
+        for directory in [home, first, replacement] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let link = home.appendingPathComponent(".gemini")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
+            fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: home.path))
+        let base = AgentRuntimeProcessLaunchPlan(runtime: .antigravityCLI, executablePath: "/usr/bin/false",
+            arguments: [], currentDirectory: h.workspaceURL.path, environment: ["HOME": home.path],
+            browserShimDirectory: nil, providerVersion: nil, parsesJSONLines: false)
+        let environment = WorkspaceExecutionEnvironment(id: "image:reservation", kind: .dockerImage,
+            displayName: "Synthetic", image: "astra/test:latest", runtimeExecutablePath: "/usr/local/bin/agy",
+            providerPlacement: .container, environmentKeyAllowlist: [])
+        let clientHome = h.rootURL.appendingPathComponent("docker-client-home").path
+        var clientEnvironment = ["PATH": "/usr/bin:/bin"]
+        if clientHasHome { clientEnvironment["HOME"] = clientHome }
+        let task = h.makeTask(runtime: .antigravityCLI, goal: "Synthetic", model: "test")
+        let wrapped = try DockerExecutionPlanner.plan(base: base, environment: environment,
+            task: task, runID: nil, dockerRuntime: DockerRuntimeResolver.resolution(
+                executablePath: "/usr/local/bin/docker", environment: clientEnvironment)).get()
+
+        #expect(wrapped.environment["HOME"] == (clientHasHome ? clientHome : nil))
+        // Reserving the host file ASTRA prepares does not grant a profile mount
+        // or forward HOME to a container configured with an empty allowlist.
+        #expect(!wrapped.arguments.contains("--env"))
+        #expect(!wrapped.executionEnvironment.mounts.contains { $0.hostPath == home.path })
+        let reconstructed = [wrapped,
+            wrapped.addingSandboxReadablePaths([h.workspaceURL.path]),
+            wrapped.addingSandboxProtectedWriteDenyPaths([h.workspaceURL.appendingPathComponent("read-only").path]),
+            wrapped.addingGitCredentialContext(.init(readablePaths: [h.workspaceURL.path],
+                writablePaths: [], transports: [], diagnostics: []))]
+        for plan in reconstructed { try plan.validateSharedConfiguration(key) }
+
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: replacement)
+        for plan in reconstructed {
+            #expect(throws: ProviderSharedStateIdentity.Failure.self) {
+                try plan.validateSharedConfiguration(key)
+            }
+        }
+    }
+
+    @Test("A host provider cannot use captured settings to conceal a changed or missing child HOME", arguments: [true, false])
+    func hostUsesActualHome(childHasHome: Bool) throws {
+        let h = try HeadlessChatHarness(); defer { h.cleanup() }
+        let home = h.rootURL.appendingPathComponent("reserved-profile")
+        let settings = AntigravityCLIRuntime.settingsURL(providerHomeDirectory: home.path)
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: settings)
+        let environment = childHasHome ? ["HOME": h.rootURL.appendingPathComponent("other-profile").path] : [:]
+        let plan = AgentRuntimeProcessLaunchPlan(runtime: .antigravityCLI, executablePath: "/usr/bin/false",
+            arguments: [], currentDirectory: h.workspaceURL.path, environment: environment,
+            browserShimDirectory: nil, providerVersion: nil, parsesJSONLines: false,
+            sharedConfigurationHostURL: settings)
+        #expect(throws: ProviderSharedStateIdentity.Failure.self) {
+            try plan.validateSharedConfiguration(key)
+        }
+        // Seatbelt changes the executable but must still validate the provider's
+        // actual HOME, not the captured URL retained by a previous wrapper.
+        guard case .applied(let wrapped, _) = ExecutionSandbox.decide(plan: plan,
+            providerHomeDirectory: "", settings: .init(enforcement: .strict)) else {
+            Issue.record("Host fixture did not receive an enforced plan"); return
+        }
+        #expect(wrapped.sharedConfigurationHostURL == settings)
+        #expect(throws: ProviderSharedStateIdentity.Failure.self) {
+            try wrapped.validateSharedConfiguration(key)
+        }
+    }
 }
 
 private struct ReservationLaunchFixtureAdapter: AgentRuntimeProcessLaunchPlanning, AgentRuntimeProcessEventParsing {

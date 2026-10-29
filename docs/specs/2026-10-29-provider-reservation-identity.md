@@ -3,7 +3,10 @@
 Antigravity tasks and utilities modify the same settings file. Its reservation
 now identifies the resolved location, rather than the spelling of the provider
 home. `/tmp` and `/private/tmp`, directory aliases, and file symlinks share one
-versioned key. Creating or atomically replacing settings does not change it.
+versioned key. The kernel-lock hash uses canonical Unicode composition for
+versioned keys, matching Swift string equality even for absent profile paths.
+Legacy hashes retain their exact original bytes; filesystem access paths are
+not rewritten to another Unicode spelling. Creating or atomically replacing settings does not change it.
 Resolution respects symlinks before `..` and the case sensitivity of each
 parent volume. Hard-linked, special, dangling or unresolvable configuration
 paths fail closed with an explanation.
@@ -19,6 +22,14 @@ Settings writes use the reserved target, preserving file symlinks.
 Utilities use the same identity, gate and validation. A changed destination
 requires a fresh admission; it never silently transfers the reservation.
 
+When Docker places the provider inside a container, the wrapper environment
+belongs to the host Docker client. The plan preserves the original host settings
+URL through Docker, credential, readable-path and sandbox wrappers and revalidates
+that URL before spawn. Host providers still validate their actual child HOME.
+This metadata grants no new mount or HOME forwarding; container profile
+projections remain explicitly configured. The reserved host file is the one
+ASTRA prepares, independently of the container's own provider configuration.
+
 ## Authority and compatibility
 
 The execution journal remains the release authority. The new key is persisted
@@ -31,7 +42,9 @@ An unreleased legacy claim lacks captured physical identity: resolving its path
 today cannot prove which target it originally reserved. Such a claim blocks
 new Antigravity admission conservatively, including retained claims. Anonymous
 legacy kernel locks are waited on without assuming which resource they own.
-Cancellation or expiration does not release the previous execution.
+Cancellation or expiration does not release the previous execution. Unsafe or
+unreadable legacy locks produce a reservation-blocked outcome naming the exact
+blocking path, while preserving the lock and its journal.
 
 A legacy pointer with a missing or unreadable journal is an explicit migration
 block. Absence is not termination proof. Reconcile it using independent execution

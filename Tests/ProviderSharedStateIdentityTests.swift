@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import Testing
@@ -7,6 +8,49 @@ import ASTRACore
 @Suite("Physical provider reservation identity", .serialized)
 @MainActor
 struct ProviderSharedStateIdentityTests {
+    @Test("Canonical Unicode equivalents share a kernel lock and legacy hashes stay unchanged")
+    func unicodeKernelIdentity() async throws {
+        let h = try HeadlessChatHarness(); defer { h.cleanup() }
+        let root = h.rootURL.appendingPathComponent("unicode-locks")
+        let composed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:/missing/caf\u{00e9}/settings.json")
+        let decomposed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:/missing/cafe\u{0301}/settings.json")
+        #expect(composed == decomposed)
+        #expect(Array(composed.rawValue.utf8) != Array(decomposed.rawValue.utf8))
+        let held = try await ProviderSharedStateProcessLock.acquire(composed, root: root)
+        defer { withExtendedLifetime(held) {} }
+        do {
+            _ = try await ProviderSharedStateProcessLock.acquire(decomposed, root: root,
+                deadline: ContinuousClock.now.advanced(by: .milliseconds(50)))
+            Issue.record("Unicode-equivalent profile bypassed the kernel lock")
+        } catch is RuntimeProviderStateWaitTimeout {}
+        let legacy = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "old/cafe\u{0301}")
+        let oldRoot = h.rootURL.appendingPathComponent("legacy-hash")
+        let old = try await ProviderSharedStateProcessLock.acquire(legacy, root: oldRoot)
+        let expected = SHA256.hash(data: Data(legacy.rawValue.utf8)).map { String(format: "%02x", $0) }.joined()
+        #expect(FileManager.default.fileExists(atPath: oldRoot.appendingPathComponent(expected).path))
+        withExtendedLifetime(old) {}
+    }
+
+    @Test("Unsafe legacy locks report the blocking path without changing the reservation", arguments: ["symlink", "public", "hardlink"])
+    func unsafeLegacyDiagnostic(kind: String) async throws {
+        let h = try HeadlessChatHarness(); defer { h.cleanup() }
+        let root = h.rootURL.appendingPathComponent("unsafe-locks")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let lock = root.appendingPathComponent(String(repeating: "a", count: 64))
+        let target = h.rootURL.appendingPathComponent("target-lock")
+        try Data("protected".utf8).write(to: target)
+        if kind == "symlink" { try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: target) }
+        else if kind == "hardlink" { try FileManager.default.linkItem(at: target, to: lock) }
+        else { try Data("protected".utf8).write(to: lock); try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: lock.path) }
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.rootURL.appendingPathComponent("profile/settings.json"))
+        do { _ = try await ProviderSharedStateProcessLock.acquire(key, root: root); Issue.record("Unsafe legacy lock admitted") }
+        catch let failure as ProviderSharedStateCompatibility.UnreadableReservation {
+            #expect(failure.localizedDescription.contains(lock.path))
+        }
+        #expect(try Data(contentsOf: target) == Data("protected".utf8))
+        #expect(FileManager.default.fileExists(atPath: lock.path))
+    }
+
     @Test("Case-insensitive mounts preserve case-sensitive ancestor names")
     func nestedVolumeSensitivity() throws {
         #expect(try ProviderSharedStateIdentity.normalizedComponents("/Profiles/Mount/Config/New/File") { parent in

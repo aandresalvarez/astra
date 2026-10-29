@@ -789,6 +789,9 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
     var pathMapper: ExecutionEnvironmentPathMapper?
     var executionEnvironment: WorkspaceExecutionEnvironment
+    /// Host settings prepared before a provider is wrapped in Docker. This is
+    /// launch evidence only; it grants neither a mount nor access to the home.
+    let sharedConfigurationHostURL: URL?
     /// Owned by Docker planning. Avoid inferring command boundaries from CLI strings.
     var containerProviderCommandIndex: Int? = nil
     /// Set only by `AgentRuntimeProcessRunner` after every required read-only
@@ -816,7 +819,8 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         commandPlannedFields: [String: String] = [:],
         interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil,
         pathMapper: ExecutionEnvironmentPathMapper? = nil,
-        executionEnvironment: WorkspaceExecutionEnvironment = .host
+        executionEnvironment: WorkspaceExecutionEnvironment = .host,
+        sharedConfigurationHostURL: URL? = nil
     ) {
         self.runtime = runtime
         self.executablePath = executablePath
@@ -835,6 +839,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.interactiveAsk = interactiveAsk
         self.pathMapper = pathMapper
         self.executionEnvironment = executionEnvironment
+        self.sharedConfigurationHostURL = sharedConfigurationHostURL
         self.readOnlyBoundaryReceipt = nil
         self.executionSandboxBoundaryReceipt = nil
     }
