@@ -66,8 +66,8 @@ struct PluginRepairTests {
     }
 
     private func railRow(_ repair: RepairAction, coordinator: PluginRepairCoordinator, owner: String) -> CapabilityRailRow {
-        CapabilityRailRow(icon: "terminal", title: repair.componentName, subtitle: "CLI setup", color: .gray,
-            readiness: .init(level: .needsAttention, messages: []), statusLabel: nil, statusColor: .gray,
+        CapabilityRailRow(icon: "terminal", title: repair.componentName, subtitle: "CLI setup",
+            readiness: .init(level: .needsAttention, messages: []), statusLabel: nil,
             isEnabled: true, repairVerb: repair.verb, repairStatus: coordinator.statusText(for: repair, owner: owner),
             repairIsChecking: coordinator.phase(for: repair, owner: owner) == .waiting,
             onRepair: {}, onOpen: {})

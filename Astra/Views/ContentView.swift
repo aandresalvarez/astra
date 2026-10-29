@@ -205,7 +205,7 @@ struct ContentView: View {
     /// Read-only forward to `RightPanelPresentationModel`. Every write goes
     /// through the model's methods (`presentRail`, `dismissRail`,
     /// `setRailPresented`) — never assign this directly.
-    private var isWorkspaceRightRailVisible: Bool {
+    var isWorkspaceRightRailVisible: Bool {
         rightPanel.isRailShown
     }
 
@@ -621,6 +621,7 @@ struct ContentView: View {
             filesShelfResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
             detailPresentation: detailPresentation,
+            screenTransitionCoordinator: screenTransitionCoordinator,
             taskQueue: runtime.taskQueue,
             browserSession: currentBrowserSession,
             isBrowserPinnedToTask: browserPinnedToTaskBinding,
@@ -706,7 +707,6 @@ struct ContentView: View {
         applySceneSelectionIntent {
             sceneSelection.composeApp(workspace: studioWorkspace)
         }
-        rightPanel.hideRailWithoutClearingCanvasItem()
         if let workspace = studioWorkspace {
             workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
         }
@@ -715,7 +715,7 @@ struct ContentView: View {
             context: shelfAvailabilityContext
         )
         pendingAppPreviewPolicyRestore = appPreviewItem == nil
-        setActiveWorkspaceCanvasItem(appPreviewItem, intent: .transient)
+        setActiveWorkspaceCanvasItem(appPreviewItem, intent: .transient, hidesRail: true)
     }
 
     /// Leave the Studio without publishing: drop the composer, collapse the preview, cancel gen.
@@ -738,8 +738,7 @@ struct ContentView: View {
             guard canPresentWorkspaceCanvasItem(.appPreview) else { return }
             pendingAppPreviewPolicyRestore = false
             animatePanelChange {
-                rightPanel.hideRailWithoutClearingCanvasItem()
-                setActiveWorkspaceCanvasItem(.appPreview, intent: .transient)
+                setActiveWorkspaceCanvasItem(.appPreview, intent: .transient, hidesRail: true)
             }
         }
     }
@@ -1289,11 +1288,13 @@ struct ContentView: View {
             return
         }
 
+        beginRightRailTransition(isPresenting: false, source: "sidebar_reveal")
         animatePanelChange {
             setActiveWorkspaceCanvasItem(nil, intent: .explicitUserChoice)
             rightPanel.dismissRail()
             presentation.revealAfterClearingRightSidePanel()
         }
+        screenTransitionCoordinator.stateCommitted()
     }
 
     private func handleSelectedTaskCanvasSignatureChanged() {
@@ -1313,19 +1314,23 @@ struct ContentView: View {
     private var taskReadStateService: TaskReadStateService { TaskReadStateService(modelContext: modelContext) }
 
     private func setRightRailPresented(_ isPresented: Bool) {
+        beginRightRailTransition(isPresenting: isPresented, source: "rail_toggle")
         animatePanelChange { rightPanel.setRailPresented(isPresented) }
         if isPresented {
             workspaceCanvasPreferenceService.apply(.explicitUserChoice, item: nil, for: selectedTask)
         }
+        screenTransitionCoordinator.stateCommitted()
     }
 
     private func presentRightRail(rememberShelfState: Bool = true) {
+        beginRightRailTransition(isPresenting: true, source: "rail_toggle")
         animatePanelChange {
             rightPanel.presentRail()
         }
         if rememberShelfState {
             workspaceCanvasPreferenceService.apply(.explicitUserChoice, item: nil, for: selectedTask)
         }
+        screenTransitionCoordinator.stateCommitted()
     }
 
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
@@ -1348,9 +1353,10 @@ struct ContentView: View {
         )
     }
 
-    private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, intent: WorkspaceCanvasPreferenceIntent) {
-        beginScreenTransitionIfNeeded(to: item, source: "shelf_state")
+    private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, intent: WorkspaceCanvasPreferenceIntent, hidesRail: Bool = false) {
+        beginScreenTransitionIfNeeded(to: item, source: "shelf_state", hidesRail: hidesRail)
         commitWorkspaceCanvasItemChange {
+            if hidesRail { rightPanel.hideRailWithoutClearingCanvasItem() }
             rightPanel.setActiveCanvasItem(item)
         }
         workspaceCanvasPreferenceService.apply(intent, item: item, for: selectedTask)
@@ -1370,12 +1376,16 @@ struct ContentView: View {
     private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
         guard let item = rightPanel.restoreRememberedItemIfAvailable(
             rememberedItem: workspaceCanvasPreferenceService.rememberedItem(for: selectedTask),
-            canPresent: canPresentWorkspaceCanvasItem
+            canPresent: canPresentWorkspaceCanvasItem,
+            willRestore: { item in
+                beginScreenTransition(destination: screenTransitionDestination(item), source: "remembered_shelf_restore",
+                    panels: .init(previous: currentRightPanelName, next: "shelf_\(item.rawValue)"))
+            }
         ) else {
             return
         }
 
-        beginScreenTransition(destination: screenTransitionDestination(item), source: "remembered_shelf_restore")
+        screenTransitionCoordinator.stateCommitted()
         prepareWorkspaceCanvasItemForPresentation(item, source: "remembered_shelf_restore")
     }
 
@@ -2473,7 +2483,8 @@ struct ContentView: View {
             TaskOpenResponsivenessTelemetry.beginForSelection(task: task, source: "task_selection", scope: taskOpenResponsivenessScope)
             if task == nil, recordsFinalHomeTransition {
                 beginScreenTransition(destination: "workspace_home", source: "task_selection_cleared",
-                                      taskID: nil, usesSelectedTask: false)
+                                      taskID: nil, usesSelectedTask: false,
+                                      panels: .init(previous: currentRightPanelName, next: currentRightPanelName))
             }
         }
         let transitionTask = TaskOpenResponsivenessTelemetry.shouldMeasureSelectionTransition(
@@ -2525,6 +2536,7 @@ struct ContentView: View {
             }
             rightPanel.setActiveCanvasItem(nextCanvasItem)
             workspaceCanvasPreferenceService.apply(.transient, item: nextCanvasItem, for: selectedTask)
+            if recordsTransition { screenTransitionCoordinator.stateCommitted() }
         }
     }
 
@@ -2927,6 +2939,7 @@ private struct ContentDetailAreaView: View {
     let filesShelfResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
     let detailPresentation: ContentDetailPresentation
+    let screenTransitionCoordinator: ScreenTransitionCoordinator
     let taskQueue: TaskQueue
     @ObservedObject var browserSession: ShelfBrowserSession
     @Binding var isBrowserPinnedToTask: Bool
@@ -3057,6 +3070,7 @@ private struct ContentDetailAreaView: View {
                 transitionMode.animatesPanel ? panelAnimation : nil,
                 value: activeRightPanel
             )
+            .onChange(of: ScreenTransitionLayout(mode: String(describing: layoutMode), detailWidth: Double(detailProposalWidth), panelWidth: Double(dockedPanelWidth)), initial: true) { screenTransitionCoordinator.recordLayout($1) }
         }
         .background(Stanford.panelBackground)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -3136,6 +3150,7 @@ private struct ContentDetailAreaView: View {
             onOpenCapabilityPackage: onOpenCapabilityPackage,
             onTaskCreated: onTaskCreated,
             onOpenWorkspaceFile: onOpenWorkspaceFile,
+            onOpenGeneratedFile: onOpenGeneratedFile,
             onNewSSHConnection: onNewSSHConnection,
             onEditSSHConnection: onEditSSHConnection,
             sshReloadTrigger: sshReloadTrigger,

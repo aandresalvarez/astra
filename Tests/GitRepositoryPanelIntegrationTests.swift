@@ -1,4 +1,7 @@
 import Foundation
+import AppKit
+import SwiftUI
+import SwiftData
 import Testing
 import ASTRAModels
 import ASTRAPersistence
@@ -6,9 +9,9 @@ import ASTRAPersistence
 import ASTRACore
 import ASTRAGitContracts
 
-/// Reports when the panel's detached `gh pr list` lookups actually reach the
-/// service, and can hold one in flight so a test observes the panel between
-/// "the action fired" and "the follow-up probe answered".
+/// Reports when a panel operation reaches the service and can hold one in
+/// flight so tests distinguish published state from completed work. Used by
+/// detached `gh pr list` lookups and the final rail status refresh.
 ///
 /// Tests wait on this signal instead of a wall clock. The panel's recovery
 /// paths chain several main-actor hops (`selectRepository` -> refresh ->
@@ -18,7 +21,7 @@ import ASTRAGitContracts
 /// un-advanced state. A continuation has no deadline to blow past: either the
 /// lookup happens or the test hangs until the runner kills it, which is a
 /// legible failure rather than a fake one.
-private actor PullRequestLookupGate {
+private actor GitPanelOperationGate {
     private var startedCount = 0
     private var waiters: [(target: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var gatedCall: Int?
@@ -84,13 +87,18 @@ struct GitRepositoryPanelIntegrationTests {
         var upstream = false
         var remote = false
         var unpushedCount = 0
+        var branchLog = ""
         var aheadBehind: (ahead: Int, behind: Int)?
         var worktrees: [GitWorktreeInfo] = []
         var pullRequestLookupResult: GitHubPullRequestLookupResult = .none
         private(set) var pullRequestLookupCallCount = 0
         /// Signals each lookup as it reaches the service, and optionally holds
         /// one in flight. Tests block on this rather than on a clock.
-        let lookupGate = PullRequestLookupGate()
+        let lookupGate = GitPanelOperationGate()
+        var diffStatsGate: GitPanelOperationGate?
+        var createGate: GitPanelOperationGate?
+        var createFailure: GitHubCLIError?
+        private(set) var createCallCount = 0
 
         func acquireIndexGuard() -> Bool {
             acquiredIndexGuardCount += 1
@@ -182,14 +190,17 @@ struct GitRepositoryPanelIntegrationTests {
             limit: Int,
             maxBytes: Int
         ) async -> String {
-            ""
+            branchLog
         }
 
         func getBranchDiffStat(at repoPath: String, base: String, branch: String, maxBytes: Int) async -> String {
             ""
         }
 
-        func getDiffStats(at repoPath: String) async -> (additions: Int, deletions: Int) { diffStats }
+        func getDiffStats(at repoPath: String) async -> (additions: Int, deletions: Int) {
+            await diffStatsGate?.noteStarted()
+            return diffStats
+        }
 
         func listWorktrees(at repoPath: String) async -> [GitWorktreeInfo] {
             refreshedWorktreeRoots.append(repoPath)
@@ -219,7 +230,10 @@ struct GitRepositoryPanelIntegrationTests {
             body: String,
             ghPathOverride: String?
         ) async throws -> String {
-            "https://github.com/example/repo/pull/1"
+            createCallCount += 1
+            await createGate?.noteStarted()
+            if let createFailure { throw createFailure }
+            return "https://github.com/example/repo/pull/1"
         }
 
         func createPullRequest(
@@ -268,10 +282,9 @@ struct GitRepositoryPanelIntegrationTests {
         }
     }
 
-    @Test("Repository context changes preserve hidden details and clear transient popovers")
-    func repositoryContextChangesPreserveHiddenDetailsAndClearTransientPopovers() {
+    @Test("Repository context changes clear transient popovers and the changes drawer")
+    func repositoryContextChangesClearTransients() {
         let initial = WorkspaceGitTransientPresentationState(
-            repositoryDetailsMode: .summary,
             isChangesDrawerExpanded: true,
             showRepositoryPopover: true,
             showLocationPopover: true,
@@ -281,28 +294,6 @@ struct GitRepositoryPanelIntegrationTests {
 
         let next = WorkspaceGitPanelPresentation.transientStateAfterRepositoryContextChange(initial)
 
-        #expect(next.repositoryDetailsMode == .summary)
-        #expect(next.isChangesDrawerExpanded == false)
-        #expect(next.showRepositoryPopover == false)
-        #expect(next.showLocationPopover == false)
-        #expect(next.showPRCommentsPopover == false)
-        #expect(next.showBranchPickerPopover == false)
-    }
-
-    @Test("Repository context changes preserve expanded details while closing transients")
-    func repositoryContextChangesPreserveExpandedDetails() {
-        let initial = WorkspaceGitTransientPresentationState(
-            repositoryDetailsMode: .details,
-            isChangesDrawerExpanded: true,
-            showRepositoryPopover: true,
-            showLocationPopover: true,
-            showPRCommentsPopover: true,
-            showBranchPickerPopover: true
-        )
-
-        let next = WorkspaceGitPanelPresentation.transientStateAfterRepositoryContextChange(initial)
-
-        #expect(next.repositoryDetailsMode == .details)
         #expect(next.isChangesDrawerExpanded == false)
         #expect(next.showRepositoryPopover == false)
         #expect(next.showLocationPopover == false)
@@ -1017,4 +1008,263 @@ struct GitRepositoryPanelIntegrationTests {
         #expect(!viewModel.pullRequestLookupAuthBlocked)
         #expect(viewModel.openPullRequest?.number == 42)
     }
+}
+
+private struct RailDraftAuthor: GitCommitMessageGenerating, GitPullRequestGenerating {
+    var gate: GitPanelOperationGate?
+    var shouldFail = false
+    func suggestCommitMessage(repoPath: String, diff: String, recentSubjects: [String]) async throws -> CommitSuggestion {
+        .init(subject: "Synthetic", body: "", type: "test")
+    }
+    func suggestPullRequest(repoPath: String, branch: String, base: String, log: String, diffStat: String) async throws -> PRSuggestion {
+        await gate?.noteStarted()
+        if shouldFail { throw GitAuthoringError.invalidOutput("Synthetic late failure") }
+        return .init(title: "Synthetic draft", body: "Review this isolated change")
+    }
+}
+
+extension GitRepositoryPanelIntegrationTests {
+    @MainActor
+    @Test("A draft completed with Environment folded presents when the Git controls mount")
+    func completedDraftPresentsOnMount() async throws {
+        let (vm, fake, repo, workspace) = try makePullRequestLookupPanel("folded-draft", result: .none)
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        let store = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        store.mainContext.autosaveEnabled = false
+        store.mainContext.insert(workspace)
+        try store.mainContext.save()
+        vm.hasUpstream = true; fake.branchLog = "Synthetic change"
+        vm.authoringServiceFactory = { RailDraftAuthor() }
+        // No mounted observer when the helper completes: this is the folded
+        // Environment path that an onChange-only sheet loses.
+        await vm.suggestPullRequest()
+        let draft = try #require(vm.presentablePRDraft)
+        let intents = NewTaskWorktreeIntentStore()
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 700),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: WorkspaceGitSectionView(viewModel: vm, workspace: workspace)
+            .environment(\.newTaskWorktreeIntents, intents).modelContainer(store))
+        window.contentView = host
+        RailHostedFixtureLifetime.keepAlive(store, store.mainContext, host, window, vm, intents)
+        defer { window.contentView = nil; window.close(); vm.pauseRefresh() }
+        host.layoutSubtreeIfNeeded(); window.orderBack(nil)
+        try await waitForRail { window.attachedSheet != nil }
+        #expect(vm.presentablePRDraft?.id == draft.id)
+        vm.dismissPRDraft(id: draft.id)
+        try await waitForRail { window.attachedSheet == nil }
+        await vm.waitForPendingRefresh()
+    }
+
+    @MainActor
+    @Test("A folded draft cannot cross branch, checkout or imported task owner", arguments: ["branch", "checkout", "workspace", "task"])
+    func draftRejectsChangedContext(change: String) async throws {
+        let (vm, fake, repo, workspace) = try makePullRequestLookupPanel("draft-context", result: .none)
+        let other = try makeTempDir("other-context")
+        defer { try? FileManager.default.removeItem(atPath: repo); try? FileManager.default.removeItem(atPath: other) }
+        vm.hasUpstream = true; fake.branchLog = "Synthetic change"
+        vm.authoringServiceFactory = { RailDraftAuthor() }
+        let store = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        store.mainContext.autosaveEnabled = false
+        store.mainContext.insert(workspace)
+        let firstTask = AgentTask(title: "First", goal: "First", workspace: workspace)
+        let importedTask = AgentTask(title: "Imported", goal: "Imported", workspace: workspace)
+        importedTask.id = firstTask.id
+        store.mainContext.insert(firstTask); store.mainContext.insert(importedTask)
+        try store.mainContext.save()
+        vm.setWorkspaceForTesting(workspace, selectedTask: firstTask)
+        await vm.suggestPullRequest()
+        let draft = try #require(vm.presentablePRDraft)
+        switch change {
+        case "branch": vm.currentBranch = "feature/other"
+        case "checkout": vm.activeWorkingPath = other
+        case "workspace":
+            let otherOwner = Workspace(name: "Imported", primaryPath: repo)
+            otherOwner.id = workspace.id
+            vm.setWorkspaceForTesting(otherOwner)
+        default: vm.setWorkspaceForTesting(workspace, selectedTask: importedTask)
+        }
+        #expect(vm.presentablePRDraft == nil)
+        #expect(vm.prDraft == nil)
+        vm.createPullRequest(with: draft.suggestion, context: draft.context)
+        #expect(vm.errorMessage?.contains("repository or task changed") == true)
+        vm.errorMessage = nil
+        vm.openPullRequestURL(with: draft.suggestion, context: draft.context)
+        #expect(vm.errorMessage?.contains("repository or task changed") == true)
+        #expect(!vm.isSuggestingPR)
+        await vm.waitForPendingRefresh()
+    }
+
+    @MainActor
+    @Test("An in-flight helper cannot deliver a draft or error after a context switch", arguments: [false, true])
+    func lateDraftIsDiscarded(fails: Bool) async throws {
+        let (vm, fake, repo, _) = try makePullRequestLookupPanel("late-draft", result: .none)
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        vm.hasUpstream = true; fake.branchLog = "Synthetic change"
+        let gate = GitPanelOperationGate()
+        await gate.gate(call: 1)
+        vm.authoringServiceFactory = { RailDraftAuthor(gate: gate, shouldFail: fails) }
+        let generation = Task { await vm.suggestPullRequest() }
+        await gate.waitForStart(1)
+        vm.currentBranch = "feature/other"
+        vm.errorMessage = "Current task message"
+        await gate.openGate()
+        await generation.value
+        #expect(vm.prDraft == nil)
+        #expect(!vm.isSuggestingPR)
+        #expect(vm.errorMessage == "Current task message")
+    }
+
+    @MainActor
+    @Test("A late creation result never publishes the old PR or error in the new context", arguments: [false, true])
+    func lateCreationPreservesCurrentPanel(fails: Bool) async throws {
+        let (vm, fake, repo, _) = try makePullRequestLookupPanel("late-create", result: .none)
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        vm.hasUpstream = true; fake.branchLog = "Synthetic change"
+        vm.authoringServiceFactory = { RailDraftAuthor() }
+        await vm.suggestPullRequest()
+        let draft = try #require(vm.presentablePRDraft)
+        let gate = GitPanelOperationGate()
+        await gate.gate(call: 1)
+        fake.createGate = gate
+        if fails { fake.createFailure = .commandFailed("Synthetic late error") }
+        vm.createPullRequest(with: draft.suggestion, context: draft.context)
+        await gate.waitForStart(1)
+        vm.currentBranch = "feature/other"
+        vm.errorMessage = "Current task message"
+        await gate.openGate()
+        try await waitForRail { !vm.isSuggestingPR }
+        #expect(vm.openPullRequest == nil)
+        #expect(vm.errorMessage == "Current task message")
+        #expect(fake.createCallCount == 1)
+        #expect(fake.pullRequestLookupCallCount == 0)
+    }
+}
+
+
+extension GitRepositoryPanelIntegrationTests {
+    @MainActor
+    @Test("A rail with no mounted Environment controls follows task and container changes")
+    func collapsedRailFollowsContext() async throws {
+        let firstRoot = try makeTempDir("rail-first")
+        let secondRoot = try makeTempDir("rail-second")
+        defer {
+            try? FileManager.default.removeItem(atPath: firstRoot)
+            try? FileManager.default.removeItem(atPath: secondRoot)
+        }
+        let workspace = Workspace(name: "Rail", primaryPath: firstRoot, additionalPaths: [secondRoot])
+        let first = AgentTask(title: "A", goal: "A", workspace: workspace)
+        let second = AgentTask(title: "B", goal: "B", workspace: workspace)
+        first.status = .completed; second.status = .completed
+        first.executionRootPath = firstRoot; second.executionRootPath = secondRoot
+        let container = WorkspaceExecutionEnvironment(id: "qa-container", kind: .dockerImage,
+            displayName: "Rail container", image: "qa:latest")
+        first.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(.host)
+        second.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(container)
+        let store = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        store.mainContext.autosaveEnabled = false
+        store.mainContext.insert(workspace); store.mainContext.insert(first); store.mainContext.insert(second)
+        try store.mainContext.save()
+        let intents = NewTaskWorktreeIntentStore()
+        let composerOwner = UUID()
+        intents.claim(owner: composerOwner, workspaceID: workspace.id, draftID: nil)
+        let fake = FakeGitRepositoryOperations()
+        fake.repositories = [GitRepositoryInfo(name: "A", path: firstRoot), GitRepositoryInfo(name: "B", path: secondRoot)]
+        fake.currentBranch = "first"
+        let git = WorkspaceGitViewModel(git: fake)
+        let docker = WorkspaceDockerViewModel(imageInventory: RailEmptyImageInventory())
+        func content(_ task: AgentTask?) -> some View {
+            // The controls are absent, as when the section starts collapsed.
+            Color.clear.frame(width: 300, height: 100)
+                .modifier(WorkspaceRailEnvironmentLifecycle(git: git, docker: docker, workspace: workspace,
+                    selectedTask: task, hasGitRepositories: true,
+                    hasDockerEnvironments: WorkspaceRailEnvironmentLifecycle.needsContainerRows(workspaceHasContainers: false, task: task)))
+                .environment(\.scenePhase, .active)
+                .environment(\.newTaskWorktreeIntents, intents)
+                .modelContainer(store)
+        }
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 300, height: 100),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: content(first))
+        window.contentView = host
+        RailHostedFixtureLifetime.keepAlive(store, store.mainContext, host, window, git, docker, intents)
+        defer { window.contentView = nil; window.close(); git.pauseRefresh() }
+        host.layoutSubtreeIfNeeded(); window.orderBack(nil)
+        try await waitForRail { git.currentBranch == "first" }
+        #expect(git.activeWorkingPath == WorkspacePathPresentation.standardizedPath(firstRoot))
+        #expect(docker.selectedEnvironment == .host)
+        fake.currentBranch = "second"
+        host.rootView = content(second)
+        host.layoutSubtreeIfNeeded()
+        try await waitForRail { git.currentBranch == "second" && docker.selectedEnvironment.id == container.id }
+        #expect(git.activeWorkingPath == WorkspacePathPresentation.standardizedPath(secondRoot))
+        #expect(git.selectedRepositoryFullPath == WorkspacePathPresentation.standardizedPath(secondRoot))
+        #expect(docker.selectedEnvironment.displayName == "Rail container")
+        // No workspace Docker configuration or Dockerfile: the selected
+        // task's pinned snapshot alone must keep its container visible.
+        #expect(workspace.activeExecutionEnvironmentJSON == nil)
+
+        intents.update(owner: composerOwner) { $0.preparedDraft = first }
+        fake.currentBranch = "draft-first"
+        host.rootView = content(nil)
+        host.layoutSubtreeIfNeeded()
+        try await waitForRail { git.currentBranch == "draft-first" }
+        #expect(git.activeWorkingPath == WorkspacePathPresentation.standardizedPath(firstRoot))
+        await git.waitForPendingRefresh()
+        let finalRefreshGate = GitPanelOperationGate()
+        await finalRefreshGate.gate(call: 1)
+        fake.diffStatsGate = finalRefreshGate
+        func finishRefresh() async {
+            git.pauseRefresh()
+            await finalRefreshGate.openGate()
+            await git.waitForPendingRefresh()
+        }
+        do {
+            fake.currentBranch = "draft-second"
+            intents.update(owner: composerOwner) { $0.preparedDraft = second }
+            // No host replacement here: observation of the intent store must
+            // rebind the model while selectedTask remains nil.
+            try await waitForRail { git.currentBranch == "draft-second" }
+            #expect(git.activeWorkingPath == WorkspacePathPresentation.standardizedPath(secondRoot))
+            #expect(docker.selectedEnvironment == .host)
+            // The branch is published before the refresh's remaining async work.
+            // Hold one of those operations to prove that visible state is not a
+            // completion signal, then join the real refresh before teardown.
+            await finalRefreshGate.waitForStart(1)
+            #expect(fake.acquiredIndexGuardCount > fake.releasedIndexGuardCount)
+        } catch {
+            await finishRefresh()
+            throw error
+        }
+        await finishRefresh()
+        #expect(fake.acquiredIndexGuardCount == fake.releasedIndexGuardCount)
+    }
+
+    @MainActor
+    private func waitForRail(_ ready: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while !ready(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        try #require(ready(), "The collapsed rail did not bind its current context")
+    }
+}
+
+/// SwiftUI can retain model-reading callbacks after an offscreen test window
+/// closes. Match the app's container lifetime, as the other hosted SwiftData
+/// suites do: this single fixture remains valid through later run-loop turns
+/// and is released with the test process. This is test-only ownership.
+@MainActor
+private enum RailHostedFixtureLifetime {
+    private static var retained: [AnyObject] = []
+
+    static func keepAlive(_ objects: AnyObject...) {
+        retained.append(contentsOf: objects)
+    }
+}
+
+private struct RailEmptyImageInventory: DockerImageInventoryListing {
+    func listLoadedImages() async -> Result<[DockerImageReference], DockerImageInventoryError> { .success([]) }
 }
