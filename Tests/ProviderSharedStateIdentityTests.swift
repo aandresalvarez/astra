@@ -8,6 +8,103 @@ import ASTRACore
 @Suite("Physical provider reservation identity", .serialized)
 @MainActor
 struct ProviderSharedStateIdentityTests {
+    @Test("HFS+ rejects Unicode components before profile paths can be folded", arguments: [
+        "/Profiles/Straße", "/Profiles/caf\u{00e9}", "/Profiles/cafe\u{0301}"
+    ])
+    func hfsUnicodeComponents(path: String) throws {
+        do {
+            try ProviderSharedStateIdentity.validateSupportedComponents(path) { _ in "hfs" }
+            Issue.record("A Unicode HFS+ profile was accepted")
+        } catch let failure as ProviderSharedStateIdentity.Failure {
+            #expect(failure.localizedDescription.contains("HFS+"))
+            #expect(failure.localizedDescription.contains("APFS"))
+            #expect(failure.localizedDescription.contains("ASCII-only"))
+            #expect(failure.localizedDescription.contains("preserved"))
+        }
+    }
+
+    @Test("ASCII HFS+ and Unicode APFS or case-sensitive filesystems remain supported")
+    func supportedFileSystemComponents() throws {
+        try ProviderSharedStateIdentity.validateSupportedComponents("/Profiles/ASCII/settings.json") { _ in "hfs" }
+        for type in ["apfs", "ufs"] {
+            try ProviderSharedStateIdentity.validateSupportedComponents("/Profiles/Straße/caf\u{00e9}/settings.json") { _ in type }
+        }
+    }
+
+    @Test("Filesystem guards follow each parent across mounts and missing tails")
+    func mixedFileSystemComponents() throws {
+        // The later APFS mount cannot make its Unicode HFS+ ancestor safe.
+        #expect(throws: ProviderSharedStateIdentity.Failure.self) {
+            try ProviderSharedStateIdentity.validateSupportedComponents("/HFS/Profilé/APFS/settings.json") { parent in
+                parent == "/" || parent == "/HFS/Profilé/APFS" ? "apfs" : "hfs"
+            }
+        }
+        // This mount's own name belongs to APFS; only its children belong to HFS+.
+        try ProviderSharedStateIdentity.validateSupportedComponents("/HFSé/ASCII/settings.json") { parent in
+            parent == "/" ? "apfs" : "hfs"
+        }
+        #expect(throws: ProviderSharedStateIdentity.Failure.self) {
+            try ProviderSharedStateIdentity.validateSupportedComponents("/HFS/Missing/Profilé/settings.json") { parent in
+                switch parent {
+                case "/": "apfs"
+                case "/HFS": "hfs"
+                default: nil
+                }
+            }
+        }
+        try ProviderSharedStateIdentity.validateSupportedComponents("/APFS/Missing/Profilé/settings.json") { parent in
+            parent == "/" || parent == "/APFS" ? "apfs" : nil
+        }
+    }
+
+    @Test("Real HFS+ Unicode rejection preserves both distinct profiles",
+          .enabled(if: ProcessInfo.processInfo.environment["ASTRA_PROVIDER_IDENTITY_HFS_ROOT"] != nil))
+    func realHfsUnicodeProfilesStayUntouched() throws {
+        let root = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["ASTRA_PROVIDER_IDENTITY_HFS_ROOT"]))
+        var volume = statfs()
+        try #require(statfs(root.path, &volume) == 0)
+        let type = withUnsafeBytes(of: volume.f_fstypename) { bytes in
+            String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        try #require(type == "hfs")
+        let fixture = root.appendingPathComponent("provider-identity-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let first = fixture.appendingPathComponent("Straße")
+        let second = fixture.appendingPathComponent("Strasse")
+        let settings = [first, second].map { AntigravityCLIRuntime.settingsURL(providerHomeDirectory: $0.path) }
+        for (index, file) in settings.enumerated() {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("{\"profile\":\(index)}".utf8).write(to: file)
+        }
+        let alias = fixture.appendingPathComponent("ascii-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: first)
+        var firstInfo = stat(), secondInfo = stat()
+        try #require(stat(first.path, &firstInfo) == 0 && stat(second.path, &secondInfo) == 0)
+        try #require(firstInfo.st_ino != secondInfo.st_ino)
+        let contents = try settings.map { try Data(contentsOf: $0) }
+        let names = try FileManager.default.subpathsOfDirectory(atPath: fixture.path).sorted()
+        #expect(throws: ProviderSharedStateIdentity.Failure.self) {
+            try ProviderSharedStateIdentity.providerHome(first.path)
+        }
+        #expect(throws: ProviderSharedStateIdentity.Failure.self) {
+            try ProviderSharedStateIdentity.providerHome(alias.path)
+        }
+        #expect(throws: ProviderSharedStateIdentity.Failure.self) {
+            try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: settings[0])
+        }
+        let missing = fixture.appendingPathComponent("Missingé/.gemini/settings.json")
+        #expect(throws: ProviderSharedStateIdentity.Failure.self) {
+            try ProviderSharedStateIdentity.canonicalPath(missing.path)
+        }
+        _ = try ProviderSharedStateIdentity.providerHome(second.path)
+        #expect(try settings.map { try Data(contentsOf: $0) } == contents)
+        #expect(try FileManager.default.subpathsOfDirectory(atPath: fixture.path).sorted() == names)
+        var finalFirstInfo = stat(), finalSecondInfo = stat()
+        #expect(stat(first.path, &finalFirstInfo) == 0 && stat(second.path, &finalSecondInfo) == 0)
+        #expect(finalFirstInfo.st_ino == firstInfo.st_ino && finalSecondInfo.st_ino == secondInfo.st_ino)
+    }
+
     @Test("Canonical Unicode equivalents share a kernel lock and legacy hashes stay unchanged")
     func unicodeKernelIdentity() async throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }

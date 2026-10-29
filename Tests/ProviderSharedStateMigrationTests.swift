@@ -80,11 +80,60 @@ struct ProviderSharedStateMigrationTests {
             let lease = try await ProviderSharedStateProcessLock.acquire(key, root: root)
             try lease.handoff(key, reference: .init(journalRoot: store.root.path, taskID: task.id, ownerID: record.ownerID)) {}
         }
+        let pointers = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        let pointer = try #require(pointers.first)
+        let bytes = try Data(contentsOf: pointer)
         do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try FileManager.default.removeItem(at: lease.recordURL) }
         let gate = AgentRuntimeSharedStateGate(processLockRoot: root, registeredStoreRoots: [])
-        do { _ = try await gate.acquire(key); Issue.record("Missing receipt admitted its profile") } catch {}
+        do { _ = try await gate.acquire(key); Issue.record("Missing receipt admitted its profile") }
+        catch let failure as ProviderSharedStateCompatibility.UnreadableReservation {
+            #expect(URL(fileURLWithPath: failure.path).resolvingSymlinksInPath().path == pointer.resolvingSymlinksInPath().path)
+            #expect(failure.localizedDescription.contains(failure.path))
+        }
+        #expect(try Data(contentsOf: pointer) == bytes)
         let independent = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.rootURL.appendingPathComponent("independent/settings.json"))
         let next = try await gate.acquire(independent)
         await gate.release(next)
+    }
+
+    @Test("A malformed modern pointer reports its exact path and remains untouched")
+    func malformedModernPointer() async throws {
+        let h = try HeadlessChatHarness(); defer { h.cleanup() }
+        let root = h.rootURL.appendingPathComponent("locks")
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
+            fileURL: h.rootURL.appendingPathComponent("profile/settings.json"))
+        let lock = try await ProviderSharedStateProcessLock.acquire(key, root: root)
+        let files = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        let pointer = try #require(files.first).appendingPathExtension("json")
+        let bytes = Data("{invalid ownership reference".utf8)
+        try bytes.write(to: pointer)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pointer.path)
+        var prepared = false
+        do { try lock.handoff(key, reference: nil) { prepared = true }; Issue.record("Malformed pointer admitted its profile") }
+        catch let failure as ProviderSharedStateCompatibility.UnreadableReservation {
+            #expect(URL(fileURLWithPath: failure.path).resolvingSymlinksInPath().path == pointer.resolvingSymlinksInPath().path)
+            #expect(failure.localizedDescription.contains(failure.path))
+        }
+        #expect(!prepared)
+        #expect(try Data(contentsOf: pointer) == bytes)
+    }
+
+    @Test("Handoff preserves cancellation and unrelated owner failures", arguments: ["cancel", "busy", "writeFailed"])
+    func preservesHandoffFailure(kind: String) async throws {
+        let h = try HeadlessChatHarness(); defer { h.cleanup() }
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
+            fileURL: h.rootURL.appendingPathComponent("profile/settings.json"))
+        let lock = try await ProviderSharedStateProcessLock.acquire(key, root: h.rootURL.appendingPathComponent("locks"))
+        do {
+            try lock.handoff(key, reference: nil) {
+                if kind == "cancel" { throw CancellationError() }
+                if kind == "busy" { throw RuntimeExecutionOwnerStore.Failure.busy }
+                throw RuntimeExecutionOwnerStore.Failure.writeFailed
+            }
+            Issue.record("Handoff swallowed a preparation failure")
+        } catch is CancellationError { #expect(kind == "cancel") }
+        catch RuntimeExecutionOwnerStore.Failure.busy { #expect(kind == "busy") }
+        catch RuntimeExecutionOwnerStore.Failure.writeFailed { #expect(kind == "writeFailed") }
     }
 }

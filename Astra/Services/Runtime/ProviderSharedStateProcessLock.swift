@@ -13,7 +13,11 @@ final class ProviderSharedStateProcessLock: @unchecked Sendable {
     }
     func handoff(_ key: AgentRuntimeSharedStateKey, reference: RuntimeProviderOwnershipReference?,
                  prepare: () throws -> Void) throws {
-        try RuntimeProviderOwnershipReference.handoff(at: referenceURL, key: key, to: reference, prepare: prepare)
+        do {
+            try RuntimeProviderOwnershipReference.handoff(at: referenceURL, key: key, to: reference, prepare: prepare)
+        } catch RuntimeExecutionOwnerStore.Failure.unreadable, RuntimeExecutionOwnerStore.Failure.unsafePath {
+            throw ProviderSharedStateCompatibility.UnreadableReservation(path: referenceURL.path)
+        }
     }
     deinit { close(descriptor) }
 

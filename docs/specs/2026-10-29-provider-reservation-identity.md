@@ -11,6 +11,14 @@ Resolution respects symlinks before `..` and the case sensitivity of each
 parent volume. Hard-linked, special, dangling or unresolvable configuration
 paths fail closed with an explanation.
 
+Unicode path components belonging to HFS+ are temporarily unsupported. HFS+
+uses different Unicode comparison rules, so the guard rejects them before
+normalization can change HOME or write another profile. ASCII HFS+ paths remain
+available; APFS Unicode paths remain supported. The check follows each
+component's parent filesystem across mounts and inherits that filesystem for
+missing tails. Profiles and existing reservations are preserved. Complete HFS+
+Unicode support requires a separate identity/access-path implementation.
+
 The runner pins the effective provider home before waiting, including scoped
 HOME overrides. An inherited home stays separate from an explicitly configured
 home: resolving its identity never grants write access to the whole home or
@@ -44,7 +52,9 @@ new Antigravity admission conservatively, including retained claims. Anonymous
 legacy kernel locks are waited on without assuming which resource they own.
 Cancellation or expiration does not release the previous execution. Unsafe or
 unreadable legacy locks produce a reservation-blocked outcome naming the exact
-blocking path, while preserving the lock and its journal.
+blocking path, while preserving the lock and its journal. Modern versioned
+pointers with unreadable journals or malformed receipts use the same typed,
+path-bearing block; cancellation and unrelated owner errors retain their types.
 
 A legacy pointer with a missing or unreadable journal is an explicit migration
 block. Absence is not termination proof. Reconcile it using independent execution

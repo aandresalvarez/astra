@@ -38,7 +38,18 @@ enum ProviderSharedStateIdentity {
                 resolved = candidate
             }
         }
-        return try normalizedComponents(resolved.isEmpty ? "/" : resolved) { parent in
+        let physicalPath = resolved.isEmpty ? "/" : resolved
+        try validateSupportedComponents(physicalPath) { parent in
+            var info = statfs()
+            guard statfs(parent, &info) == 0 else {
+                if errno == ENOENT { return nil }
+                throw Failure(detail: "the filesystem identity cannot be inspected")
+            }
+            return withUnsafeBytes(of: info.f_fstypename) { bytes in
+                String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+            }
+        }
+        return try normalizedComponents(physicalPath) { parent in
             var info = stat()
             guard stat(parent, &info) == 0 else {
                 if errno == ENOENT { return nil }
@@ -47,6 +58,25 @@ enum ProviderSharedStateIdentity {
             let values = try URL(fileURLWithPath: parent).resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
             guard let sensitive = values.volumeSupportsCaseSensitiveNames else { throw Failure(detail: "the volume identity is unavailable") }
             return sensitive
+        }
+    }
+
+    /// HFS+ uses different Unicode comparison rules from Foundation. Until
+    /// identity and access paths are separate, reject affected names before
+    /// folding can redirect HOME or settings writes to a different profile.
+    /// A component belongs to its parent's filesystem, including mount names.
+    static func validateSupportedComponents(_ path: String, fileSystemType: (String) throws -> String?) throws {
+        var parent = "/"
+        var inheritedType: String?
+        for component in path.split(separator: "/") {
+            guard let type = try fileSystemType(parent) ?? inheritedType else {
+                throw Failure(detail: "the filesystem identity is unavailable")
+            }
+            if type == "hfs", component.utf8.contains(where: { $0 >= 0x80 }) {
+                throw Failure(detail: "Unicode provider profile paths on HFS+ are temporarily unsupported. The profile was preserved; move it to APFS or use an ASCII-only path on HFS+")
+            }
+            inheritedType = type
+            parent = parent == "/" ? "/" + component : parent + "/" + component
         }
     }
 
