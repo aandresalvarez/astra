@@ -34,6 +34,9 @@ public struct RunResult: Sendable, Equatable {
     public let elapsedTime: TimeInterval
     public let stdoutTruncated: Bool
     public let stderrTruncated: Bool
+    /// Present only for explicitly joined process-group probes. A cancelled
+    /// result alone does not establish that its child or group has stopped.
+    public var processGroupStopped: Bool? = nil
 
     public init(
         outcome: Outcome,
@@ -217,7 +220,8 @@ public struct ProcessBinaryRunner: BinaryRunner {
         stdin: Data? = nil,
         maximumOutputBytes: Int? = nil,
         terminateProcessGroup: Bool = false,
-        stopOnOutputLimit: Bool = false
+        stopOnOutputLimit: Bool = false,
+        verifyProcessGroupStop: Bool = false
     ) async -> RunResult {
         if terminateProcessGroup {
             return await runSpawnedProcessGroup(
@@ -228,7 +232,8 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 currentDirectory: currentDirectory,
                 stdin: stdin,
                 maximumOutputBytes: maximumOutputBytes,
-                stopOnOutputLimit: stopOnOutputLimit
+                stopOnOutputLimit: stopOnOutputLimit,
+                verifyProcessGroupStop: verifyProcessGroupStop
             )
         }
 
@@ -391,11 +396,14 @@ public struct ProcessBinaryRunner: BinaryRunner {
         currentDirectory: String?,
         stdin: Data?,
         maximumOutputBytes: Int?,
-        stopOnOutputLimit: Bool
+        stopOnOutputLimit: Bool,
+        verifyProcessGroupStop: Bool
     ) async -> RunResult {
         let state = SpawnedProcessGroupRunState()
-        return await withTaskCancellationHandler {
+        let completion = BinaryProcessGroupCompletion()
+        var result = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
+                defer { completion.launchFinished() }
                 if state.setContinuation(continuation) {
                     return
                 }
@@ -527,6 +535,7 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     return
                 }
 
+                completion.launched(pid)
                 closeParentPipeEnds()
                 state.setProcessGroupID(pid)
                 if let stdinPipe, let stdin {
@@ -534,9 +543,9 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     try? writer.write(contentsOf: stdin)
                     try? writer.close()
                 }
-                if state.stopIfFinished() {
-                    return
-                }
+                // Even cancellation during spawn must install a reaper. Its
+                // continuation may already have returned, but the child has not.
+                _ = state.stopIfFinished()
 
                 // waitpid and the post-exit pipe drain block their thread.
                 // Keep each wait independent of shared worker-pool capacity.
@@ -556,6 +565,7 @@ public struct ProcessBinaryRunner: BinaryRunner {
                             return
                         }
                     }
+                    completion.reaped()
                     let reapedAfter = Date().timeIntervalSince(startedAt)
                     if let timedOut = state.claimReap(elapsed: reapedAfter, deadline: timeout) {
                         if timedOut.needsTeardown {
@@ -606,6 +616,10 @@ public struct ProcessBinaryRunner: BinaryRunner {
         } onCancel: {
             state.cancel()
         }
+        if verifyProcessGroupStop {
+            result.processGroupStopped = await completion.waitForStop()
+        }
+        return result
     }
 
     private func configureSpawnFileActions(

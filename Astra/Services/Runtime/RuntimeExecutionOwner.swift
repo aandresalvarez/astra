@@ -154,7 +154,7 @@ final class RuntimeExecutionOwner {
             } ?? false)
             if let previous {
                 if previous.cancellationRequested == true, previous.resourcesReleased != true,
-                   !previous.canReplace, !previous.canRecoverPreparation {
+                   !previous.canReplace, !previous.canRecoverPreparation, !continuesOwner {
                     report("The cancelled execution still owns resources because its tools have not been confirmed stopped.",
                         task: task, context: context, pause: true)
                     return nil
@@ -376,6 +376,20 @@ final class RuntimeExecutionOwner {
 
     var isActive: Bool { lease != nil && !writeFailed }
     var persistedResourceRelease: Bool { !writeFailed && record.resourcesReleased == true }
+
+    /// The kernel gate serializes live local preparation/execution. The
+    /// protected journal separately quarantines uncertain prior effects.
+    /// Closing the local gate never releases that journal's reservation.
+    var providerLaunchGateCanRelease: Bool {
+        guard !writeFailed, lease == nil, record.settlementInProgress == false,
+              record.settlementLocalWorkStopped == true, record.settlementToolsStopped == true else {
+            return persistedResourceRelease
+        }
+        if record.state == .notStarted, record.providerProcess == nil, record.stopProof == nil { return true }
+        guard let proof = record.stopProof, proof.executionID == record.executionID,
+              proof.process == record.providerProcess, proof.reaped, proof.processGroupEmpty else { return false }
+        return proof.process.presence == .absent
+    }
 
     func releaseProviderSharedState() -> Bool {
         let neverLaunched = record.state == .preparing && record.providerProcess == nil
