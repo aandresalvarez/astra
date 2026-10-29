@@ -2313,6 +2313,7 @@ struct AgentRuntimeAdapterTests {
     }
 
     @Test("Antigravity declares shared launch state and suggestion-only model availability")
+    @MainActor
     func antigravityDeclaresSharedLaunchStateAndSuggestionModelAvailability() throws {
         let adapter = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
         let workspace = Workspace(name: "Provider State", primaryPath: "/tmp/astra-provider-state")

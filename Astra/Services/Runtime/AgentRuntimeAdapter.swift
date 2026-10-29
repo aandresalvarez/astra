@@ -102,6 +102,7 @@ protocol AgentRuntimeProcessLaunchPlanning {
     var providerRuntimeMessages: ProviderRuntimeMessages { get }
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings
+    @MainActor
     func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) throws -> AgentRuntimeSharedStateKey?
     func missingExecutableAuditReason() -> String
     func missingExecutableStopReason() -> String?
@@ -652,6 +653,7 @@ struct AgentRuntimeProcessLaunchContext {
     let executablePath: String
     var providerHomeDirectory: String
     var sharedStateKey: AgentRuntimeSharedStateKey? = nil
+    var sharedStateHome: String? = nil
     let permissionPolicy: PermissionPolicy
     let executionPolicy: AgentRuntimeExecutionPolicy
     let permissionManifest: RunPermissionManifest?
@@ -747,6 +749,7 @@ struct AgentRuntimeProcessLaunchContext {
             runtimeRequirements: runtimeRequirements
         )
         copy.sharedStateKey = sharedStateKey
+        copy.sharedStateHome = sharedStateHome
         return copy
     }
 }
@@ -2415,7 +2418,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         try AgentRuntimeSharedStateKey(
             runtime: id,
             fileURL: AntigravityCLIRuntime.settingsURL(
-                providerHomeDirectory: context.providerHomeDirectory
+                providerHomeDirectory: try context.antigravityLaunchHome()
             )
         )
     }
@@ -2567,6 +2570,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
+        if let home = context.sharedStateHome { taskEnv["HOME"] = home }
         let executable = context.executablePath.isEmpty ? AntigravityCLIRuntime.detectPath() : context.executablePath
         let providerVersion = AntigravityCLIRuntime.versionSummary(executablePath: executable)
         let modelSettingsURL = context.sharedStateKey?.filePath.map { URL(fileURLWithPath: $0) } ?? AntigravityCLIRuntime.settingsURL(
@@ -2736,12 +2740,14 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             ? AntigravityCLIRuntime.detectPath()
             : configuredPath
         let providerHomeDirectory: String
+        let effectiveHome: String
         let sharedStateKey: AgentRuntimeSharedStateKey
         let sharedStateLease: RuntimeUtilitySharedStateLease
         do {
             providerHomeDirectory = try ProviderSharedStateIdentity.providerHome(configuration.homeDirectory(for: id))
+            effectiveHome = try ProviderSharedStateIdentity.effectiveHome(configured: providerHomeDirectory, environment: [:])
             sharedStateKey = try AgentRuntimeSharedStateKey(runtime: id,
-                fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: providerHomeDirectory))
+                fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: effectiveHome))
             sharedStateLease = try await RuntimeUtilitySharedStateLease.acquire(sharedStateKey)
         } catch is CancellationError {
             return AgentUtilityRunResult(
@@ -2753,7 +2759,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             return AgentUtilityRunResult(exitCode: -1, output: "", error: error.localizedDescription)
         }
         do {
-            try sharedStateKey.validate(fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: providerHomeDirectory))
+            try sharedStateKey.validate(fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: effectiveHome))
         } catch {
             await sharedStateLease.release()
             return AgentUtilityRunResult(exitCode: -1, output: "", error: error.localizedDescription)
@@ -2769,7 +2775,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             workspacePath: workspacePath,
             additionalPaths: [],
             permissionPolicy: .restricted,
-            taskEnvironment: [:],
+            taskEnvironment: ["HOME": effectiveHome],
             providerHomeDirectory: providerHomeDirectory,
             permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
             // This path returns the child's raw stdout to the caller's own

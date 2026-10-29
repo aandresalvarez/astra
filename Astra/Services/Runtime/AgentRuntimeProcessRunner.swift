@@ -624,7 +624,8 @@ final class AgentRuntimeProcessRunner {
                 process: resolvedPlan,
                 providerHomeDirectory: utilityPlan.providerHomeDirectory,
                 permissionPolicy: utilityPlan.permissionPolicy,
-                timeoutSeconds: utilityPlan.timeoutSeconds
+                timeoutSeconds: utilityPlan.timeoutSeconds,
+                sharedStateKey: utilityPlan.sharedStateKey
             ))
         case .blocked(let result):
             return .blocked(AgentUtilityRunResult(
@@ -685,6 +686,7 @@ final class AgentRuntimeProcessRunner {
 
         return await Self.runScopedUtilityProcess(
             processPlan,
+            sharedStateKey: resolvedPlan.sharedStateKey,
             timeoutSeconds: resolvedPlan.timeoutSeconds,
             stdoutLineHandler: stdoutLineHandler,
             stderrChunkHandler: stderrChunkHandler,
@@ -811,6 +813,7 @@ final class AgentRuntimeProcessRunner {
         do {
             if adapter.id == .antigravityCLI {
                 launchContext.providerHomeDirectory = try ProviderSharedStateIdentity.providerHome(launchContext.providerHomeDirectory)
+                launchContext.sharedStateHome = try launchContext.antigravityLaunchHome()
             }
             sharedKey = try adapter.sharedLaunchStateKey(context: launchContext)
             launchContext.sharedStateKey = sharedKey
@@ -861,6 +864,7 @@ final class AgentRuntimeProcessRunner {
             let result = await runProcess(
                 adapter: adapter,
                 plan: plan,
+                sharedStateKey: launchContext.sharedStateKey,
                 task: task,
                 runID: runID,
                 permissionManifest: permissionManifest,
@@ -894,6 +898,7 @@ final class AgentRuntimeProcessRunner {
         return await runProcess(
             adapter: adapter,
             plan: plan,
+            sharedStateKey: launchContext.sharedStateKey,
             task: task,
             runID: runID,
             permissionManifest: permissionManifest,
@@ -916,6 +921,7 @@ final class AgentRuntimeProcessRunner {
     private func runProcess(
         adapter: any AgentRuntimeProcessEventParsing,
         plan: AgentRuntimeProcessLaunchPlan,
+        sharedStateKey: AgentRuntimeSharedStateKey?,
         task: AgentTask,
         runID: UUID?,
         permissionManifest: RunPermissionManifest?,
@@ -944,6 +950,11 @@ final class AgentRuntimeProcessRunner {
         }
         guard !Task.isCancelled, task.status != .cancelled, homeAccessCancellation.isCurrent(preparationGeneration) else {
             return AgentProcessResult(exitCode: -1, error: "Cancelled before provider launch.")
+        }
+        do { try plan.validateSharedConfiguration(sharedStateKey) }
+        catch {
+            Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
+            return Self.sharedConfigurationBlock(error)
         }
         defer {
             activeSupervision?.finish(); activeSupervision = nil
@@ -1255,7 +1266,7 @@ final class AgentRuntimeProcessRunner {
             }
 
             do {
-                try process.run()
+                try process.run { try plan.validateSharedConfiguration(sharedStateKey) }
                 do { try owner?.launched(process) }
                 catch { process.terminate() } // never return while the original child can still execute
                 hostControlBrokerSessionManager.registerProviderProcess(
@@ -1266,6 +1277,10 @@ final class AgentRuntimeProcessRunner {
             } catch {
                 owner?.didNotLaunch()
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
+                if error is ProviderSharedStateIdentity.Failure {
+                    resumeOnce(Self.sharedConfigurationBlock(error))
+                    return
+                }
                 resumeOnce(AgentProcessResult(
                     exitCode: -1,
                     error: error.localizedDescription,
@@ -1291,6 +1306,7 @@ final class AgentRuntimeProcessRunner {
 
     static func runScopedUtilityProcess(
         _ plan: AgentRuntimeProcessLaunchPlan,
+        sharedStateKey: AgentRuntimeSharedStateKey? = nil,
         timeoutSeconds: TimeInterval,
         stdoutLineHandler: (@Sendable (String) -> AgentUtilityRunResult?)?,
         stderrChunkHandler: (@Sendable (String) -> Void)?,
@@ -1422,7 +1438,7 @@ final class AgentRuntimeProcessRunner {
                 }
 
                 do {
-                    try process.run()
+                    try process.run { try plan.validateSharedConfiguration(sharedStateKey) }
                     // Cancellation can race the interval between entering the
                     // cancellation handler and publishing the spawned pid. If
                     // the first terminate was a no-op, close that window now.

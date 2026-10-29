@@ -8,9 +8,14 @@ Resolution respects symlinks before `..` and the case sensitivity of each
 parent volume. Hard-linked, special, dangling or unresolvable configuration
 paths fail closed with an explanation.
 
-The runner pins the provider home before waiting. After admission it validates
-the settings destination before mutation and again after asynchronous launch
-preflight. Settings writes use the reserved target, preserving file symlinks.
+The runner pins the effective provider home before waiting, including scoped
+HOME overrides. An inherited home stays separate from an explicitly configured
+home: resolving its identity never grants write access to the whole home or
+adds it to the utility read allowlist. After admission the runner validates
+the settings destination before mutation, after asynchronous supervision baseline
+collection and immediately before spawning. Final validation runs inside failed
+spawn cleanup so rejection also releases stream and termination callbacks.
+Settings writes use the reserved target, preserving file symlinks.
 Utilities use the same identity, gate and validation. A changed destination
 requires a fresh admission; it never silently transfers the reservation.
 
@@ -53,7 +58,19 @@ cancelled waits, retargeted settings, symlink-safe writes and task/utility parit
 `ProviderSharedStateMigrationTests` covers current/retained legacy claims,
 cross-store cold admission, missing legacy authority, unchanged pointers and
 independence from missing versioned journals. Both suites are selected by the
-focused pre-push mapping.
+focused pre-push mapping. `ProviderSharedStateLaunchTests` covers deterministic
+retargeting during baseline collection, zero launch/accounting on rejection,
+inherited versus explicit home permissions, scoped HOME pinning, utility key
+propagation and final utility validation. Process regressions verify callback
+cleanup when final validation rejects a launch.
+
+The development machine's old QA namespace was reconciled separately with the
+owner's authorization: 1,343 pointers to removed test fixtures and 14 pointers
+from named QA installations were backed up and retired. The latter's surviving
+execution chains were checked against stop receipts and a subsequent host reboot,
+with remote work excluded and no active task processes. Journals and stable lock
+files were preserved. This administrative cleanup is not an application migration
+rule and does not authorize deleting real or uncertain reservations elsewhere.
 
 Native QA uses the opt-in `ProviderReservationAppFixtureTests` to seed untouched
 drafts in a new store. It fabricates no runs or execution receipts. Run the

@@ -67,7 +67,15 @@ enum ProviderSharedStateIdentity {
 
     static func providerHome(_ configured: String) throws -> String {
         let path = configured.trimmingCharacters(in: .whitespacesAndNewlines)
-        return try canonicalPath(path.isEmpty ? FileManager.default.homeDirectoryForCurrentUser.path : path)
+        // Empty means inherited HOME, not a user-authorized grant to the whole home.
+        return path.isEmpty ? "" : try canonicalPath(path)
+    }
+
+    static func effectiveHome(configured: String, environment: [String: String]) throws -> String {
+        let explicit = try providerHome(configured)
+        if !explicit.isEmpty { return explicit }
+        return try canonicalPath(environment["HOME"] ?? ProcessInfo.processInfo.environment["HOME"]
+            ?? FileManager.default.homeDirectoryForCurrentUser.path)
     }
 }
 

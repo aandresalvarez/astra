@@ -75,10 +75,11 @@ extension AgentRuntimeProcessRunner {
                            runtimeStopReason: "cancelled", runtimeStopMessage: "Run cancelled before provider launch.")
     }
 
+    @MainActor
     private func sharedConfigurationFailure(_ context: AgentRuntimeProcessLaunchContext) -> AgentProcessResult? {
         guard let key = context.sharedStateKey, key.filePath != nil else { return nil }
         do {
-            try key.validate(fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: context.providerHomeDirectory))
+            try key.validate(fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: try context.antigravityLaunchHome()))
             return nil
         } catch {
             return AgentProcessResult(exitCode: -1, error: error.localizedDescription,
@@ -89,7 +90,7 @@ extension AgentRuntimeProcessRunner {
     private func sharedUtilityConfigurationFailure(_ plan: AgentUtilityLaunchPlan) -> String? {
         guard let key = plan.sharedStateKey else { return nil }
         do {
-            try key.validate(fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: plan.providerHomeDirectory))
+            try plan.process.validateSharedConfiguration(key)
             return nil
         } catch { return error.localizedDescription }
     }
