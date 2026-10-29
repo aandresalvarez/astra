@@ -397,6 +397,12 @@ struct NativeContinuationFallbackTests {
         priorRun.status = .completed
         priorRun.stopReason = "completed"
         context.insert(priorRun)
+        // Keep this fixture on the current instruction contract so the test
+        // reaches the missing-store guard rather than a legacy-policy reset.
+        let instructions = CopilotRepositoryInstructions.load(workspacePath: testDir, mode: .guidance)
+        ProviderLaunchSignatureService.record(ProviderLaunchSignatureFixture.make(
+            runtime: .copilotCLI, model: task.model,
+            repositoryInstructionContract: instructions.signatureComponent), task: task, run: priorRun, modelContext: context)
         try RuntimeRecoveryTestReceipt.install(task: task, run: priorRun, context: context)
         try context.save()
 
@@ -452,6 +458,7 @@ private final class ContinuationRecordingRunner: AgentRuntimeProcessRunning {
         phase: RunPhase,
         contextText: String,
         nativeContinuationSessionID: String?,
+        copilotRepositoryInstructionMode: CopilotRepositoryInstructionMode,
         runID: UUID?,
         launchResourcePlan: TaskLaunchResourcePlan?,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,

@@ -45,6 +45,7 @@ final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
         phase: RunPhase,
         contextText: String,
         nativeContinuationSessionID: String?,
+        copilotRepositoryInstructionMode: CopilotRepositoryInstructionMode,
         runID: UUID?,
         launchResourcePlan: TaskLaunchResourcePlan?,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,

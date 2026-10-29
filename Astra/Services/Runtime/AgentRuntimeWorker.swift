@@ -839,12 +839,34 @@ final class AgentRuntimeWorker {
             task: executionTask, manifest: manifest, requirements: appliedRuntime.requirements,
             environment: runEnvironment.runSnapshot, runtimeCapabilityProfile: runtimeCapabilityProfile,
             hostControlHelperAvailable: processRunner.isHostControlBrokerAvailable()), resourcePlan: &launchResourcePlan))
+        let instructionMode = runtimeConfiguration.copilotRepositoryInstructionMode
+        let repositoryInstructions = selectedRuntime == .copilotCLI
+            ? await Task.detached(priority: .utility) {
+                CopilotRepositoryInstructions.load(workspacePath: executionPath, mode: instructionMode)
+            }.value : nil
         let launchSignature = ProviderLaunchSignatureService.make(
             for: task,
             manifest: manifest,
             contextText: providerLaunchContextText,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan,
+            repositoryInstructionContract: repositoryInstructions?.signatureComponent
         )
+        if let repositoryInstructions {
+            do {
+                try CopilotInstructionSessionService.resetIfNeeded(task: task, instructions: repositoryInstructions,
+                    context: modelContext, admittedRunID: run.id)
+            } catch {
+                run.status = .failed
+                run.completedAt = Date()
+                run.stopReason = "instruction_policy_active_execution"
+                TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
+                modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error,
+                    payload: "Copilot still has an active execution; its session policy was not changed.", run: run))
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext,
+                    taskID: task.id, auditFields: ["operation": "instruction_policy_active_execution"])
+                return
+            }
+        }
         // OpenCode, Antigravity and Cursor keep their stores under HOME (OpenCode also XDG_DATA_HOME / OPENCODE_DB), which an attached skill may redirect for the launch.
         let baseLaunchEnvironment = ProcessInfo.processInfo.environment.merging(["HOME": providerSessionStoreHome]) { _, home in home }
         let providerLaunchEnvironment = [.openCodeCLI, .antigravityCLI, .cursorCLI].contains(selectedRuntime)
@@ -856,7 +878,7 @@ final class AgentRuntimeWorker {
                 runtimeRequirements: appliedRuntime.requirements
             )) { _, scoped in scoped }
             : baseLaunchEnvironment
-        let nativeContinuationDecision = Self.nativeContinuationSessionID(
+        let nativeContinuationDecision = ProviderNativeContinuationPolicy.resolve(
             for: task,
             currentRun: run,
             runtimeAdapter: runtimeAdapter,
@@ -888,7 +910,8 @@ final class AgentRuntimeWorker {
         // Appended after the resource resolver read the prompt, so README text
         // never steers capability scoping; and to a native resume as well, whose
         // session may predate the orientation and whose folder may have changed.
-        let promptWithoutResume = workspaceOrientation.appending(to: prompt) + historyGuidance
+        let orientedPrompt = workspaceOrientation.appending(to: prompt) + historyGuidance
+        let promptWithoutResume = repositoryInstructions?.appending(to: orientedPrompt) ?? orientedPrompt
         // Compact only after this launch has proved native continuation safe.
         // Fresh handoffs (including changed signatures) keep the wider context.
         if auditPhase == .resume, approvedPlan == nil, nativeContinuationSessionID != nil {
@@ -898,6 +921,7 @@ final class AgentRuntimeWorker {
                 repositoryStatus: githubRepositoryStatus, runEnvironment: runEnvironment))
         }
         prompt = workspaceOrientation.appending(to: prompt) + historyGuidance
+        prompt = repositoryInstructions?.appending(to: prompt) ?? prompt
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
         guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
             prompt: prompt,
@@ -1105,6 +1129,7 @@ final class AgentRuntimeWorker {
             phase: auditPhase,
             contextText: providerLaunchContextText,
             nativeContinuationSessionID: nativeSessionID,
+            copilotRepositoryInstructionMode: instructionMode,
             runID: run.id,
             launchResourcePlan: launchResourcePlan,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
@@ -1703,101 +1728,6 @@ final class AgentRuntimeWorker {
             "phase": phase.rawValue,
             "history_run_count": String(task.runs.count)
         ], level: .info)
-    }
-
-    private struct NativeContinuationDecision {
-        let sessionID: String?
-        let skipReason: String
-        let signatureMatched: Bool
-    }
-
-    @MainActor
-    private static func nativeContinuationSessionID(
-        for task: AgentTask,
-        currentRun: TaskRun,
-        runtimeAdapter: any AgentRuntimeDescriptorReadiness,
-        phase: RunPhase,
-        currentLaunchSignature: ProviderLaunchSignaturePayload,
-        grantNeutralizingStrings: Set<String> = [],
-        providerHomeDirectory: String = "",
-        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> NativeContinuationDecision {
-        guard phase == .resume,
-              runtimeAdapter.descriptor.supportsNativeContinuation else {
-            return NativeContinuationDecision(sessionID: nil, skipReason: "unsupported_or_not_resume_phase", signatureMatched: false)
-        }
-
-        guard let sessionID = task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sessionID.isEmpty else {
-            return NativeContinuationDecision(sessionID: nil, skipReason: "missing_session_id", signatureMatched: false)
-        }
-
-        if shouldSkipNativeContinuationAfterLastRun(task, currentRun: currentRun) {
-            return NativeContinuationDecision(sessionID: nil, skipReason: "unsafe_previous_no_progress_run", signatureMatched: false)
-        }
-
-        guard let previousRun = priorRun(forNativeSessionID: sessionID, task: task, currentRun: currentRun) else {
-            return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_session_run", signatureMatched: false)
-        }
-
-        let storeLookup = ProviderNativeSessionStore.lookup(
-            runtime: runtimeAdapter.descriptor.id,
-            sessionID: sessionID,
-            providerHomeDirectory: providerHomeDirectory,
-            userHome: userHome,
-            environment: environment
-        )
-        guard storeLookup == .present else {
-            // Only a confirmed absence stops the task advertising the session; a store that could not be
-            // read says nothing about it, so the session stays for a later attempt.
-            if storeLookup == .absent { task.sessionId = nil }
-            return NativeContinuationDecision(
-                sessionID: nil,
-                skipReason: storeLookup == .absent ? "provider_session_missing" : "provider_session_unverifiable",
-                signatureMatched: false
-            )
-        }
-
-        guard let previousSignature = ProviderLaunchSignatureService.storedSignature(for: task, run: previousRun) else {
-            return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_launch_signature", signatureMatched: false)
-        }
-
-        let previousValue = ProviderLaunchSignatureService.grantNeutralizedValue(
-            previousSignature,
-            grantStrings: grantNeutralizingStrings
-        )
-        let currentValue = ProviderLaunchSignatureService.grantNeutralizedValue(
-            currentLaunchSignature,
-            grantStrings: grantNeutralizingStrings
-        )
-        guard previousValue == currentValue else {
-            return NativeContinuationDecision(sessionID: nil, skipReason: "launch_signature_changed", signatureMatched: false)
-        }
-
-        return NativeContinuationDecision(sessionID: sessionID, skipReason: "none", signatureMatched: true)
-    }
-
-    private static func shouldSkipNativeContinuationAfterLastRun(_ task: AgentTask, currentRun: TaskRun) -> Bool {
-        guard let lastRun = task.runs
-            .filter({ $0.id != currentRun.id })
-            .sorted(by: { $0.startedAt > $1.startedAt })
-            .first,
-              lastRun.status == .failed,
-              lastRun.typedStopReason.map({
-                  [.providerNoSemanticProgress, .providerNoActionableProgress].contains($0)
-              }) == true,
-              lastRun.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return false
-        }
-        return true
-    }
-
-    private static func priorRun(forNativeSessionID sessionID: String, task: AgentTask, currentRun: TaskRun) -> TaskRun? {
-        task.runs
-            .filter { $0.id != currentRun.id }
-            .filter { $0.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) == sessionID }
-            .max { $0.startedAt < $1.startedAt }
     }
 
     private static func runtimeID(from rawValue: String?) -> AgentRuntimeID? {

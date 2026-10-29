@@ -5,13 +5,29 @@ import ASTRAModels
 struct AgentRuntimeProviderSettings: Codable, Equatable, Sendable {
     private var executablePaths: [AgentRuntimeID: String]
     private var homeDirectories: [AgentRuntimeID: String]
+    var copilotRepositoryInstructionMode: CopilotRepositoryInstructionMode
 
     init(
         executablePaths: [AgentRuntimeID: String] = [:],
-        homeDirectories: [AgentRuntimeID: String] = [:]
+        homeDirectories: [AgentRuntimeID: String] = [:],
+        copilotRepositoryInstructionMode: CopilotRepositoryInstructionMode = .guidance
     ) {
         self.executablePaths = executablePaths.mapValues(Self.normalizedExecutablePath)
         self.homeDirectories = homeDirectories
+        self.copilotRepositoryInstructionMode = copilotRepositoryInstructionMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case executablePaths, homeDirectories, copilotRepositoryInstructionMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            executablePaths: try values.decodeIfPresent([AgentRuntimeID: String].self, forKey: .executablePaths) ?? [:],
+            homeDirectories: try values.decodeIfPresent([AgentRuntimeID: String].self, forKey: .homeDirectories) ?? [:],
+            copilotRepositoryInstructionMode: try values.decodeIfPresent(CopilotRepositoryInstructionMode.self, forKey: .copilotRepositoryInstructionMode) ?? .guidance
+        )
     }
 
     func executablePath(for runtime: AgentRuntimeID) -> String {
@@ -97,6 +113,10 @@ struct AgentRuntimeConfiguration {
 
     var configuredProviderSettings: AgentRuntimeProviderSettings {
         providerSettings
+    }
+
+    var copilotRepositoryInstructionMode: CopilotRepositoryInstructionMode {
+        providerSettings.copilotRepositoryInstructionMode
     }
 
     mutating func setHomeDirectory(_ path: String, for runtime: AgentRuntimeID) {
