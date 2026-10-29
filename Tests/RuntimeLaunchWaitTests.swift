@@ -35,7 +35,7 @@ struct RuntimeLaunchWaitTests {
         #expect(outcome.elapsed < .seconds(2))
         if let local { #expect(await gate.isHeld(local)); await gate.release(local) }
         processLock = nil
-        let next = try await gate.acquire(key, timeoutSeconds: 1)
+        let next = try await gate.acquire(key)
         #expect(await gate.release(next))
     }
 
@@ -58,7 +58,10 @@ struct RuntimeLaunchWaitTests {
             catch is CancellationError {}
             #expect(await gate.isHeld(first))
             await gate.release(first)
-            let next = try await gate.acquire(key, timeoutSeconds: 1)
+            // The successor's protected handoff uses the UI actor. Keep the
+            // production allowance here so unrelated history reads do not
+            // turn this cancellation test into an actor scheduling deadline.
+            let next = try await gate.acquire(key)
             // Cross the retired waiter's original deadline while the successor owns
             // the gate; a late timer must never release this different lease.
             try await ContinuousClock().sleep(until: timerExpired)
