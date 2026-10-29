@@ -30,7 +30,7 @@ struct WorkspaceGitNewWorktreePreview: Equatable {
     static let checkoutValue = "New worktree"
     static let checkoutHelp = "The task gets its own folder when it starts. The checkout shown here is not changed."
     static let changesCaption = "Base checkout · not copied"
-    static let footerCaption = "Commit and push act on the base checkout."
+    static let footerCaption = "Git actions apply to the base checkout."
 
     var startsFrom: String {
         if let baseLabel { return "from \(baseLabel)" }

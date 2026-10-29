@@ -14,13 +14,16 @@ final class WorkspaceGitViewModel: ObservableObject {
     @Published var selectedRepository: GitRepositoryInfo? = nil {
         didSet {
             if oldValue?.path != selectedRepository?.path {
+                discardIncompatiblePRDraft()
                 scheduleRefresh()
             }
         }
     }
 
     // Branch + status
-    @Published var currentBranch: String = ""
+    @Published var currentBranch: String = "" {
+        didSet { discardIncompatiblePRDraft() }
+    }
     @Published var branches: [String] = []
     @Published var statusFiles: [GitStatusFile] = []
 
@@ -46,7 +49,9 @@ final class WorkspaceGitViewModel: ObservableObject {
     /// Absolute path of the working location new chats default to and the panel
     /// operates in. `nil` means the repository root. Mirrors
     /// `workspace.activeWorkingPath` for SwiftUI observation.
-    @Published var activeWorkingPath: String? = nil
+    @Published var activeWorkingPath: String? = nil {
+        didSet { discardIncompatiblePRDraft() }
+    }
     @Published var isManagingWorktrees: Bool = false
     @Published var newWorktreeBranch: String = ""
     /// Set when a removal was refused because the worktree has uncommitted
@@ -56,7 +61,22 @@ final class WorkspaceGitViewModel: ObservableObject {
     // Helper model
     @Published var isSuggestingCommit: Bool = false
     @Published var isSuggestingPR: Bool = false
-    @Published var prDraft: PRSuggestion? = nil
+    @Published private(set) var prDraft: PullRequestDraft? = nil
+
+    struct PullRequestDraft: Identifiable {
+        let id = UUID()
+        let suggestion: PRSuggestion
+        let context: PullRequestActionSnapshot
+    }
+
+    var presentablePRDraft: PullRequestDraft? {
+        guard let draft = prDraft, isCurrentPullRequestActionSnapshot(draft.context) else { return nil }
+        return draft
+    }
+
+    private func discardIncompatiblePRDraft() {
+        if let draft = prDraft, !isCurrentPullRequestActionSnapshot(draft.context) { prDraft = nil }
+    }
 
     /// The open pull request for the current branch, when one exists. Drives the
     /// panel to link to the PR instead of offering to create a duplicate.
@@ -1127,18 +1147,23 @@ final class WorkspaceGitViewModel: ObservableObject {
     struct PullRequestActionSnapshot: Equatable {
         let path: String
         let branch: String
+        let workspaceOwner: PersistentIdentifier?
+        let taskOwner: PersistentIdentifier?
     }
 
     func makePullRequestActionSnapshot() -> PullRequestActionSnapshot? {
         guard let path = workingPath else { return nil }
         let branch = currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !branch.isEmpty, branch != "unknown" else { return nil }
-        return PullRequestActionSnapshot(path: path, branch: branch)
+        return PullRequestActionSnapshot(path: path, branch: branch,
+            workspaceOwner: workspace?.persistentModelID, taskOwner: selectedTask?.persistentModelID)
     }
 
     func isCurrentPullRequestActionSnapshot(_ snapshot: PullRequestActionSnapshot) -> Bool {
         currentBranch.trimmingCharacters(in: .whitespacesAndNewlines) == snapshot.branch
             && workingPath == snapshot.path
+            && workspace?.persistentModelID == snapshot.workspaceOwner
+            && selectedTask?.persistentModelID == snapshot.taskOwner
     }
 
     @discardableResult
@@ -1473,7 +1498,6 @@ final class WorkspaceGitViewModel: ObservableObject {
                 "original_branch": snapshot.branch,
                 "current_branch": currentBranch
             ], level: .warning)
-            self.errorMessage = "Branch changed while drafting the pull request. Try again."
             return
         }
         guard !log.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1496,10 +1520,9 @@ final class WorkspaceGitViewModel: ObservableObject {
                 diffStat: diffStat
             )
             guard isCurrentPullRequestActionSnapshot(snapshot) else {
-                self.errorMessage = "Branch changed while drafting the pull request. Try again."
                 return
             }
-            self.prDraft = suggestion
+            self.prDraft = PullRequestDraft(suggestion: suggestion, context: snapshot)
             self.errorMessage = nil
         } catch {
             AppLogger.audit(.gitAuthoringFailed, category: "Git", fields: [
@@ -1510,6 +1533,7 @@ final class WorkspaceGitViewModel: ObservableObject {
                 "log_bytes": "\(log.utf8.count)",
                 "diffstat_bytes": "\(diffStat.utf8.count)"
             ], level: .error, fieldMaxLength: 240)
+            guard isCurrentPullRequestActionSnapshot(snapshot) else { return }
             self.errorMessage = error.localizedDescription
         }
     }
@@ -1519,7 +1543,8 @@ final class WorkspaceGitViewModel: ObservableObject {
     /// Creates the pull request directly via the `gh` CLI and opens it in the
     /// browser. Falls back to the GitHub web compare flow when `gh` is missing
     /// or unauthenticated, so the action always results in a usable next step.
-    func createPullRequest(with draft: PRSuggestion) {
+    func createPullRequest(with draft: PRSuggestion, context: PullRequestActionSnapshot? = nil) {
+        guard validatePRDraftContext(context) else { return }
         guard validatePullRequestReadiness() else { return }
         guard let snapshot = makePullRequestActionSnapshot() else { return }
         isSuggestingPR = true
@@ -1527,7 +1552,6 @@ final class WorkspaceGitViewModel: ObservableObject {
             let remote = await git.getDefaultRemote(at: snapshot.path)
             let base = await git.getDefaultBaseBranch(at: snapshot.path, remote: remote)
             guard self.isCurrentPullRequestActionSnapshot(snapshot) else {
-                self.errorMessage = "Branch changed before creating the pull request. Try again."
                 self.isSuggestingPR = false
                 return
             }
@@ -1541,6 +1565,10 @@ final class WorkspaceGitViewModel: ObservableObject {
                 )
                 AppLogger.info("Created pull request via gh", category: "Git")
                 await MainActor.run {
+                    // GitHub may have completed the request after navigation.
+                    // Never apply its success to a different task or checkout,
+                    // and never retry creation just because the user moved on.
+                    guard self.isCurrentPullRequestActionSnapshot(snapshot) else { return }
                     #if os(macOS)
                     if let prURL = URL(string: url) { _ = self.urlLauncher.open(prURL) }
                     #endif
@@ -1558,15 +1586,21 @@ final class WorkspaceGitViewModel: ObservableObject {
             } catch let error as GitHubCLIError {
                 // Graceful fallback to the web compare page.
                 AppLogger.warning("gh pr create unavailable: \(error.localizedDescription)", category: "Git")
+                guard self.isCurrentPullRequestActionSnapshot(snapshot) else {
+                    self.isSuggestingPR = false
+                    return
+                }
                 if case .commandFailed(let detail) = error {
                     self.errorMessage = detail
                 } else {
                     self.errorMessage = "\(error.localizedDescription) Opening GitHub instead."
                 }
-                openPullRequestURL(with: draft, requireReady: true)
+                openPullRequestURL(with: draft, requireReady: true, context: snapshot)
             } catch {
                 AppLogger.error("Create pull request failed: \(error.localizedDescription)", category: "Git")
-                self.errorMessage = error.localizedDescription
+                if self.isCurrentPullRequestActionSnapshot(snapshot) {
+                    self.errorMessage = error.localizedDescription
+                }
             }
             isSuggestingPR = false
         }
@@ -1575,7 +1609,9 @@ final class WorkspaceGitViewModel: ObservableObject {
     // MARK: - Pull request URL
 
     /// Opens the GitHub PR compare URL with the optional draft pre-filled via `?expand=1&title=...&body=...`.
-    func openPullRequestURL(with draft: PRSuggestion?, requireReady: Bool = true) {
+    func openPullRequestURL(with draft: PRSuggestion?, requireReady: Bool = true,
+                            context: PullRequestActionSnapshot? = nil) {
+        guard validatePRDraftContext(context) else { return }
         if requireReady {
             guard validatePullRequestReadiness() else { return }
         }
@@ -1584,12 +1620,10 @@ final class WorkspaceGitViewModel: ObservableObject {
             let remote = await git.getDefaultRemote(at: snapshot.path)
             let base = await git.getDefaultBaseBranch(at: snapshot.path, remote: remote)
             let baseBranch = git.normalizeBaseBranch(base)
-            guard let baseURL = await git.getRemoteURL(at: snapshot.path, remote: remote) else {
+            let remoteURL = await git.getRemoteURL(at: snapshot.path, remote: remote)
+            guard self.isCurrentPullRequestActionSnapshot(snapshot) else { return }
+            guard let baseURL = remoteURL else {
                 self.errorMessage = "Could not detect the GitHub remote URL to create a pull request."
-                return
-            }
-            guard self.isCurrentPullRequestActionSnapshot(snapshot) else {
-                self.errorMessage = "Branch changed before opening the pull request page. Try again."
                 return
             }
             let pathAllowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
@@ -1612,6 +1646,7 @@ final class WorkspaceGitViewModel: ObservableObject {
                 return
             }
             await MainActor.run {
+                guard self.isCurrentPullRequestActionSnapshot(snapshot) else { return }
                 #if os(macOS)
                 _ = self.urlLauncher.open(url)
                 #endif
@@ -1620,7 +1655,14 @@ final class WorkspaceGitViewModel: ObservableObject {
         }
     }
 
-    func dismissPRDraft() {
+    private func validatePRDraftContext(_ context: PullRequestActionSnapshot?) -> Bool {
+        guard let context, !isCurrentPullRequestActionSnapshot(context) else { return true }
+        errorMessage = "The repository or task changed. Create a new pull-request draft for this context."
+        return false
+    }
+
+    func dismissPRDraft(id: UUID? = nil) {
+        if let id, prDraft?.id != id { return }
         prDraft = nil
     }
 }

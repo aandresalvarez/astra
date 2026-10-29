@@ -68,16 +68,17 @@ enum PanelLayoutGeometry {
     }
 
     /// Minimum docked width that still keeps the workspace inspector readable.
-    static let inspectorMinColumnWidth: CGFloat = 340
+    /// One-line rows (rail v2) read at 300; the tokens live with the rail.
+    static let inspectorMinColumnWidth: CGFloat = WorkspaceRailSectionPresentation.Layout.minimumColumnWidth
 
-    /// Preferred width of the inspector (Task Context) column on normal windows.
-    static let inspectorColumnWidth: CGFloat = 392
+    /// Preferred width of the inspector (Workspace Context) column on normal windows.
+    static let inspectorColumnWidth: CGFloat = WorkspaceRailSectionPresentation.Layout.columnWidth
 
     /// Maximum width used by the automatic docked inspector size.
-    static let inspectorDefaultMaxColumnWidth: CGFloat = 420
+    static let inspectorDefaultMaxColumnWidth: CGFloat = WorkspaceRailSectionPresentation.Layout.automaticMaximumColumnWidth
 
     /// Maximum width a user can drag the docked inspector to.
-    static let inspectorMaxColumnWidth: CGFloat = 460
+    static let inspectorMaxColumnWidth: CGFloat = WorkspaceRailSectionPresentation.Layout.maximumColumnWidth
 
     /// Margin kept around the slide-over inspector on narrow detail areas.
     static let inspectorOverlayHorizontalMargin: CGFloat = 12
@@ -109,7 +110,7 @@ enum PanelLayoutGeometry {
     }
 
     /// Uses a viewport-relative target with hard readability clamps:
-    /// roughly `clamp(340, 24vw, 420)` in SwiftUI layout terms.
+    /// roughly `clamp(300, 24vw, 380)` in SwiftUI layout terms.
     static func inspectorDockedColumnWidth(for detailAreaWidth: CGFloat) -> CGFloat {
         guard detailAreaWidth > 0 else { return inspectorColumnWidth }
         return min(

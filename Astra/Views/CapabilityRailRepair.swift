@@ -4,6 +4,14 @@ import ASTRACore
 /// The rail's readiness and repair for a capability package, kept out of
 /// `WorkspaceRightRailView`, which is at its line budget.
 enum CapabilityRailRepair {
+    /// Reset row-local confirmation whenever its owner or repair changes,
+    /// including prose-only guidance that has no command.
+    @MainActor
+    static func confirmationIdentity(for repair: RepairAction?, owner: String) -> String {
+        guard let repair else { return owner }
+        return PluginRepairCoordinator.key(repair, owner: owner) + "\u{1D}" + repair.detail
+    }
+
     static func readiness(
         for package: PluginPackage,
         stateReadiness: CapabilityReadiness,
