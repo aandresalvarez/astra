@@ -83,9 +83,16 @@ enum TaskDecisionOutcomeResolver {
     ) -> TaskDecisionOutcomeCache {
         var outcomes = TaskDecisionOutcomeCache()
         if let latestRun {
-            let follows = TaskDeliverableExpectation.followsUpDeliveredRequest(
-                runID: latestRun.id, startedAt: latestRun.startedAt, in: task
-            )
+            let follows: Bool
+            do {
+                follows = try TaskDeliverableHistoryReader.followsUpDeliveredRequest(
+                    ownerID: task.persistentModelID, runID: latestRun.id,
+                    startedAt: latestRun.startedAt, in: modelContext
+                )
+            } catch {
+                AppLogger.error("Decision delivery evidence could not be read", category: "UI")
+                follows = false
+            }
             if follows { outcomes.deliveredRequestFollowUpRunID = latestRun.id }
         }
         if let latestRunID = latestRun?.id {
