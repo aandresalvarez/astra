@@ -19,12 +19,20 @@ struct RuntimeLaunchWaitTests {
         if kernel { processLock = try await ProviderSharedStateProcessLock.acquire(key, root: root) }
         else { local = try await gate.acquire(key) }
         defer { withExtendedLifetime(processLock) {} }
-        let started = ContinuousClock.now
-        do {
-            _ = try await gate.acquire(key, timeoutSeconds: 0.05)
-            Issue.record("A reserved provider configuration was acquired")
-        } catch is RuntimeProviderStateWaitTimeout {}
-        #expect(started.duration(to: .now) < .seconds(2))
+        // Measure the gate's completion off the UI actor. Other suites may be
+        // doing synchronous history reads there after this deadline fires.
+        let outcome = try await Task.detached {
+            let started = ContinuousClock.now
+            do {
+                let unexpected = try await gate.acquire(key, timeoutSeconds: 0.05)
+                await gate.release(unexpected)
+                return (expired: false, elapsed: started.duration(to: .now))
+            } catch is RuntimeProviderStateWaitTimeout {
+                return (expired: true, elapsed: started.duration(to: .now))
+            }
+        }.value
+        #expect(outcome.expired)
+        #expect(outcome.elapsed < .seconds(2))
         if let local { #expect(await gate.isHeld(local)); await gate.release(local) }
         processLock = nil
         let next = try await gate.acquire(key, timeoutSeconds: 1)
@@ -36,16 +44,27 @@ struct RuntimeLaunchWaitTests {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
         let gate = AgentRuntimeSharedStateGate(processLockRoot: h.rootURL.appendingPathComponent("locks"), registeredStoreRoots: [])
         let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: h.rootURL.path)
-        let first = try await gate.acquire(key)
-        let waiting = Task { try await gate.acquire(key, timeoutSeconds: 1) }
-        waiting.cancel()
-        do { _ = try await waiting.value; Issue.record("Cancelled wait acquired the gate") }
-        catch is CancellationError {}
-        #expect(await gate.isHeld(first))
-        await gate.release(first)
-        let next = try await gate.acquire(key, timeoutSeconds: 1)
-        #expect(await gate.isHeld(next))
-        await gate.release(next)
+        try await Task.detached {
+            let first = try await gate.acquire(key)
+            let timerExpired = ContinuousClock.now.advanced(by: .seconds(1.1))
+            let waiting = Task { try await gate.acquire(key, timeoutSeconds: 1) }
+            defer { waiting.cancel() }
+            while await gate.queuedWaiterCount(for: key) == 0, ContinuousClock.now < timerExpired {
+                await Task.yield()
+            }
+            #expect(await gate.queuedWaiterCount(for: key) == 1)
+            waiting.cancel()
+            do { _ = try await waiting.value; Issue.record("Cancelled wait acquired the gate") }
+            catch is CancellationError {}
+            #expect(await gate.isHeld(first))
+            await gate.release(first)
+            let next = try await gate.acquire(key, timeoutSeconds: 1)
+            // Cross the retired waiter's original deadline while the successor owns
+            // the gate; a late timer must never release this different lease.
+            try await ContinuousClock().sleep(until: timerExpired)
+            #expect(await gate.isHeld(next))
+            await gate.release(next)
+        }.value
     }
 
     @Test("A runner deadline pauses before planning or launching and preserves its explanation")
@@ -118,7 +137,7 @@ struct RuntimeLaunchWaitTests {
             snapshot: TaskThreadSnapshot(goal: task.goal, createdAt: run.startedAt, events: [waiting], runs: [run]), now: now)
         #expect(health.state == .waitingForResource && health.message == "Waiting for provider configuration")
         run.status = .cancelled; run.completedAt = now
-        #expect(RuntimeLaunchPresentation.durationLabel(run: TaskRunSnapshot(input: .init(run: run)), events: events, now: now, format: { "\($0)s" }) == "Elapsed 90s · cancelled before provider start")
+        #expect(RuntimeLaunchPresentation.durationLabel(run: TaskRunSnapshot(input: .init(run: run)), events: events, now: now, format: { "\($0)s" }) == "Elapsed 90s · stopping preparation")
         run.status = .completed
         let started = TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
             payload: "{\"state\":\"working\",\"providerProcess\":{\"startedSeconds\":9940}}", run: run)

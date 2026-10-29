@@ -223,13 +223,12 @@ struct TaskDecisionDockPresentation: Equatable {
             return connectorMutationPresentation(context)
         }
 
-        if [.cancelled, .failed, .pendingUser].contains(context.status),
-           let terminal = context.extraDetails.first(where: { $0.id == "runtime-unlaunched-terminal" }) {
-            return TaskDecisionDockPresentation(id: "unlaunched", icon: terminal.systemImage, tone: .attention,
-                title: terminal.title, summary: terminal.summary, compactMeta: "Provider never started",
+        if context.status == .cancelled,
+           let stopping = context.extraDetails.first(where: { $0.id == "runtime-unlaunched-stopping" }) {
+            return TaskDecisionDockPresentation(id: "unlaunched-stopping", icon: stopping.systemImage, tone: .attention,
+                title: stopping.title, summary: stopping.summary,
                 metrics: metrics(context), details: details(context), primaryAction: nil,
-                secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
-                overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil), prefersExpandedDetails: false)
+                secondaryActions: [], overflowActions: [], prefersExpandedDetails: false)
         }
 
         if let correction = context.mission?.correction {
@@ -238,6 +237,15 @@ struct TaskDecisionDockPresentation: Equatable {
 
         if context.hasExecutableApprovedPlan {
             return planPresentation(context)
+        }
+
+        if [.cancelled, .failed, .pendingUser].contains(context.status),
+           let terminal = context.extraDetails.first(where: { $0.id == "runtime-unlaunched-terminal" }) {
+            return TaskDecisionDockPresentation(id: "unlaunched", icon: terminal.systemImage, tone: .attention,
+                title: terminal.title, summary: terminal.summary, compactMeta: "Provider never started",
+                metrics: metrics(context), details: details(context), primaryAction: nil,
+                secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
+                overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil), prefersExpandedDetails: false)
         }
 
         switch context.status {

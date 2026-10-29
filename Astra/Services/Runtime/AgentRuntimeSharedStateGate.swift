@@ -146,4 +146,8 @@ actor AgentRuntimeSharedStateGate {
     func isHeld(_ lease: AgentRuntimeSharedStateLease) -> Bool {
         holders[lease.key] == lease.id
     }
+
+    #if DEBUG
+    func queuedWaiterCount(for key: AgentRuntimeSharedStateKey) -> Int { waiters[key]?.count ?? 0 }
+    #endif
 }

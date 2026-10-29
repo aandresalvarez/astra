@@ -71,6 +71,8 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     /// Optional presentation facts owned by this execution; older journals decode unchanged.
     var preparationStage: String? = nil
     var preparationResource: String? = nil
+    /// Successful launches in the bound run, retained when a fallback clears its current process.
+    var providerLaunchCount: Int? = nil
     var resourcesReleased: Bool? = nil
     var cancellationRequested: Bool? = nil
     /// The pre-journal run that `RuntimeRecoveryLegacyReconciliation` admitted this owner on.
@@ -93,6 +95,8 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
         inheritedToolUncertainty == true || stopProof?.toolsStopped == false
             || stopProof?.remoteWorkExcluded == false || settlementToolsStopped == false
     }
+
+    var hasProviderLaunch: Bool { (providerLaunchCount ?? 0) > 0 || providerProcess != nil }
 
     // A new instruction cannot bypass cleanup required of an automatic retry.
     var canAcceptUserTurn: Bool { canReplace }

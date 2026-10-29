@@ -27,6 +27,31 @@ struct TaskDecisionDockPresentationTests {
         #expect(dock.primaryAction == nil && dock.summary.contains("new instruction"))
     }
 
+    @Test("Unlaunched outcomes preserve approved-plan and correction decisions", arguments: [false, true])
+    func unlaunchedKeepsPlanDecisions(correction: Bool) throws {
+        var input = context(status: .pendingUser, mission: correction ? missionNeedingCorrection() : nil)
+        input.hasExecutableApprovedPlan = true
+        input.canRunApprovedPlan = true; input.canOpenPlan = true
+        input.planActionTitle = "Approve next step"
+        input.extraDetails = [.init(id: "runtime-unlaunched-terminal", title: "Provider did not start",
+            summary: "Waiting for provider configuration exceeded the preparation limit.", systemImage: "stop.circle", tone: .attention)]
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.primaryAction?.kind == (correction ? .approveCorrection : .runApprovedPlan))
+        #expect(dock.details.contains { $0.id == "runtime-unlaunched-terminal" })
+        if !correction { #expect(dock.secondaryActions.contains { $0.kind == .openPlan }) }
+    }
+
+    @Test("Unjoined preparation offers no restart or plan action")
+    func unjoinedPreparationKeepsStopping() throws {
+        var input = context(status: .cancelled)
+        input.hasExecutableApprovedPlan = true; input.canRunApprovedPlan = true
+        input.extraDetails = [.init(id: "runtime-unlaunched-stopping", title: "Stopping preparation",
+            summary: "Waiting for cleanup to finish.", systemImage: "hourglass", tone: .attention)]
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.title == "Stopping preparation")
+        #expect(dock.primaryAction == nil && dock.secondaryActions.isEmpty && dock.overflowActions.isEmpty)
+    }
+
     @Test("A new live attempt cannot inherit a previous attempt's terminal presentation")
     func liveAttemptIgnoresOldTerminal() throws {
         var input = context(status: .running)

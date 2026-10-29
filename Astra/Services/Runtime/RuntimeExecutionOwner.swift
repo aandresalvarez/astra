@@ -264,6 +264,7 @@ final class RuntimeExecutionOwner {
     }
 
     func bind(run: TaskRun) throws {
+        if record.runID != run.id { record.providerLaunchCount = 0 }
         self.run = run; record.runID = run.id
         let runtime = run.runtimeID ?? task.resolvedRuntimeID.rawValue
         if record.runtime != runtime { record.sessionID = nil }
@@ -302,6 +303,9 @@ final class RuntimeExecutionOwner {
 
     func launched(_ process: AgentExecutionScopedProcess) throws {
         guard let identity = process.executionIdentity else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
+        if record.providerProcess != identity {
+            record.providerLaunchCount = RuntimeUsageArithmetic.adding(record.providerLaunchCount ?? 0, 1)
+        }
         record.providerProcess = identity; record.state = .working
         try save(nil, audit: true)
     }
@@ -380,6 +384,7 @@ final class RuntimeExecutionOwner {
     func finish() {
         defer { lease = nil; Self.active.remove(key) }
         guard lease != nil else { return }
+        if !record.hasProviderLaunch { chargeElapsedPreparation() }
         reconcileUsage()
         if let run, run.isLive { record.limits.costSpent += run.costUSD }
         if record.state == .preparing { record.state = .notStarted }
@@ -390,7 +395,7 @@ final class RuntimeExecutionOwner {
             record.providerSharedStateReleased = true
         }
         if record.state == .notStarted, record.cancellationRequested == true,
-           record.providerProcess == nil, record.stopProof == nil,
+           !record.hasProviderLaunch, record.stopProof == nil,
            record.settlementInProgress == false, record.settlementLocalWorkStopped == true,
            record.settlementToolsStopped == true {
             try? save("This attempt was cancelled before the provider started. Your task history and files are preserved.", audit: true)
@@ -447,7 +452,8 @@ final class RuntimeExecutionOwner {
                 || record.providerSharedStateKey == key.rawValue else { throw RuntimeExecutionOwnerStore.Failure.busy }
         record.providerSharedStateKey = key.rawValue
         record.providerSharedStateReleased = false
-        try save(nil)
+        record.preparationStage = nil; record.preparationResource = nil
+        try save(nil, audit: true)
     }
 
     /// The journal now holds this task's first receipt. Its ownership event makes the
