@@ -210,10 +210,10 @@ enum TaskDeliverableExpectation {
         TaskEventTypes.ExecutionRequest.permissionResume.rawValue
     ]
 
-    private enum RequestSource { case conversation, approvedPlan, other }
+    enum RequestSource { case conversation, approvedPlan, other }
 
     /// What started a run, read from its linked source event.
-    private static func requestSource(type: String, payload: String) -> RequestSource {
+    static func requestSource(type: String, payload: String) -> RequestSource {
         if type == TaskEventTypes.Conversation.userMessage.rawValue { return .conversation }
         guard [
             TaskEventTypes.ExecutionRequest.retry.rawValue,

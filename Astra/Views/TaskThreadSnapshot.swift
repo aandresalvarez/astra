@@ -805,6 +805,7 @@ struct TaskRunProtocolState: Equatable, Sendable {
 struct TaskThreadSnapshot: Sendable {
     let sortedEvents: [TaskEventSnapshot]
     let sortedRuns: [TaskRunSnapshot]
+    let decisionOutcomeInputs: TaskDecisionOutcomeRefresh.SnapshotInputs
     let latestRun: TaskRunSnapshot?
     let conversationItems: [TaskConversationItem]
     let latestAgentPlanItems: [TaskProtocolTodoItem]
@@ -942,6 +943,7 @@ struct TaskThreadSnapshot: Sendable {
         try cancellationCheck()
         sortedEvents = events.sorted { $0.timestamp < $1.timestamp }
         sortedRuns = runs.sorted { $0.startedAt < $1.startedAt }
+        decisionOutcomeInputs = try .init(events: sortedEvents, runs: sortedRuns, cancellationCheck: cancellationCheck)
         try cancellationCheck()
         latestRun = sortedRuns.last
         self.totalEventCount = totalEventCount ?? events.count

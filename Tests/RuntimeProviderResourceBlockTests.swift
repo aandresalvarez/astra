@@ -11,13 +11,15 @@ struct RuntimeProviderResourceBlockTests {
     private func retainedOwner(_ h: HeadlessChatHarness, key: AgentRuntimeSharedStateKey,
                                missingClaims: Bool = false) throws -> RuntimeExecutionOwnerRecord {
         let task = h.makeTask(runtime: .antigravityCLI, goal: "Previous unverified execution", model: "test")
+        // Keep the URL registered before receipt installation creates the
+        // directory; a later lookup can infer a different directory hint.
+        let store = RuntimeExecutionOwner.store(in: h.context)
         var record = try RuntimeRecoveryTestReceipt.install(task: task, run: nil, context: h.context, toolsStopped: false)
         record.providerSharedStateKey = missingClaims ? nil : key.rawValue
         record.providerSharedStateReleased = false
         record.resourcesReleased = false
         record.resourceClaims = missingClaims ? nil : [.init(taskID: task.id, resourceKey: h.workspaceURL.path,
             accessMode: .write, runMode: "task")]
-        let store = RuntimeExecutionOwner.store(in: h.context)
         // Missing legacy claims intentionally fence every provider-settings
         // key. This fixture has its own explicit registry namespace; remove
         // its global scan hint before publishing that ambiguous record so

@@ -253,8 +253,8 @@ struct TaskThreadArchitectureFitnessTests {
     /// reached `pendingGitHubPullRequest(task:run:)` and `pendingMutations(task:)`
     /// on every body pass — every keystroke — and each faulted every event of a
     /// 362-event thread through `performAndWait`. The answers now live in
-    /// `TaskMainViewDecisionOutcomes.swift`, recomputed only when the snapshot
-    /// revision or the task's durable revision moves.
+    /// `TaskMainViewDecisionOutcomes.swift`, recomputed only when semantic
+    /// decision inputs change. Streaming revisions must not issue history reads.
     @Test("Decision-dock outcomes are resolved off the snapshot, not per body pass")
     func decisionDockOutcomesAreNotResolvedPerBodyPass() throws {
         let root = URL(fileURLWithPath: #filePath)
@@ -269,7 +269,17 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(!taskMainView.contains("pendingTargets(task:"))
         #expect(!taskMainView.contains("pendingMutations(task:"))
         #expect(taskMainView.contains(".task(id: decisionOutcomeInputSignature)"))
-        #expect(outcomes.contains("threadViewModel.appliedSnapshotRevision"))
+        #expect(outcomes.contains("TaskDecisionOutcomeRefresh.Key"))
+        #expect(!outcomes.contains("threadViewModel.appliedSnapshotRevision"))
+        #expect(!outcomes.contains("task.updatedAt"))
+        let refresh = try source("Astra/Views/TaskDecisionOutcomeRefresh.swift", root: root)
+        #expect(refresh.contains("context.changedModelsArray"))
+        #expect(refresh.contains("context.deletedModelsArray"))
+        #expect(refresh.contains("task.persistentModelID"))
+        #expect(!refresh.contains("run.output"))
+        #expect(refresh.contains("snapshot?.decisionOutcomeInputs"))
+        let snapshot = try source("Astra/Views/TaskThreadSnapshot.swift", root: root)
+        #expect(snapshot.contains("decisionOutcomeInputs = try .init(events: sortedEvents"))
         #expect(outcomes.contains("pendingMutations(task: task)"))
         let mutations = try source("Astra/Services/Tasks/ConnectorMutationRequirement.swift", root: root)
         #expect(mutations.contains("TaskHistoryRead.records(for: task, ofTypes: resolutionEventTypes)"))
