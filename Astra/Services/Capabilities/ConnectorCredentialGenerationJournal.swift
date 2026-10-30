@@ -46,6 +46,9 @@ struct ConnectorCredentialGenerationJournal {
         /// retention snapshot. The snapshot is the new immutable owner of
         /// all holds; original archives remain available for investigation.
         var sourceDigest: String? = nil
+        /// Derived integrity inventory, owned by this receipt. A restored
+        /// older receipt cannot silently omit newer preserved archives.
+        var preservedArchives: [String]? = nil
     }
     private struct Contents: Codable {
         var version = 2
@@ -246,7 +249,10 @@ struct ConnectorCredentialGenerationJournal {
     /// workspace deletion. Missing/corrupt history fails closed for cleanup.
     static func retainedRecoveryCandidates(modelContext: ModelContext) -> [ConnectorKeychainCleanup]? {
         do {
-            guard let journal = try Self(modelContext: modelContext), let current = try journal.stored() else { return [] }
+            guard let journal = try Self(modelContext: modelContext) else { return [] }
+            let current = try journal.stored()
+            try journal.requireArchiveReceipt(current?.contents)
+            guard let current else { return [] }
             try journal.requireSupportedVersion(current.contents)
             if current.contents.recovery != nil {
                 for directory in journal.barrierDirectories {
@@ -257,6 +263,74 @@ struct ConnectorCredentialGenerationJournal {
             return (journal.matches(current.contents) ? [] : current.contents.candidates)
                 + (try journal.retainedHistory(current.contents, budget: .collection))
         } catch { return nil }
+    }
+
+    /// Absence of the active record is not absence of recovery debt. Never
+    /// recreate a receipt-free owner while immutable archives still exist.
+    /// Temporary interrupted copies are not published archives.
+    private func publishedArchives() throws -> Set<String> {
+        let entries: [URL]
+        do {
+            guard try FileManager.default.attributesOfItem(atPath: archiveDirectory.path)[.type] as? FileAttributeType == .typeDirectory
+            else { throw Failure.unreadable }
+            entries = try FileManager.default.contentsOfDirectory(at: archiveDirectory, includingPropertiesForKeys: nil)
+        } catch where WorkspaceFileLayout.isMissingFile(error) { return [] }
+        var digests = Set<String>()
+        for entry in entries {
+            if entry.lastPathComponent.hasPrefix("."), entry.pathExtension == "tmp" { continue }
+            let digest = entry.deletingPathExtension().lastPathComponent
+            guard entry.pathExtension == "json", Self.validDigest(digest),
+                  try FileManager.default.attributesOfItem(atPath: entry.path)[.type] as? FileAttributeType == .typeRegular
+            else { throw Failure.unreadable }
+            digests.insert(digest)
+        }
+        return digests
+    }
+
+    nonisolated private static func validDigest(_ digest: String) -> Bool {
+        digest.count == 64 && digest.allSatisfy { $0.isHexDigit }
+    }
+
+    /// Older receipts lack an inventory. Validate their complete graph once
+    /// under the explicit-repair budget before a writer upgrades the receipt.
+    private func legacyArchiveGraph(_ receipt: RecoveryReceipt) throws -> Set<String> {
+        var queue = [receipt.archivedDigest] + [receipt.sourceDigest].compactMap { $0 }
+        var seen = Set<String>()
+        var bytes = 0
+        while let digest = queue.popLast() {
+            guard Self.validDigest(digest) else { throw Failure.unreadable }
+            if !seen.insert(digest).inserted { continue }
+            guard seen.count <= HistoryBudget.recovery.archives else { throw Failure.tooLarge }
+            let data = try Self.readData(at: archiveDirectory.appendingPathComponent(digest + ".json"))
+            bytes += data.count
+            guard bytes <= HistoryBudget.recovery.bytes else { throw Failure.tooLarge }
+            guard Self.digest(data) == digest else { throw Failure.unreadable }
+            let archived = try JSONDecoder().decode(Contents.self, from: data)
+            try requireSupportedVersion(archived)
+            if let next = archived.recovery {
+                queue.append(next.archivedDigest)
+                if let source = next.sourceDigest { queue.append(source) }
+            }
+        }
+        return seen
+    }
+
+    @discardableResult
+    private func requireArchiveReceipt(_ contents: Contents?, allowing: Set<String> = []) throws -> Set<String> {
+        let actual = try publishedArchives()
+        let accounted: Set<String>
+        if let receipt = contents?.recovery {
+            if let inventory = receipt.preservedArchives {
+                accounted = Set(inventory)
+                guard accounted.count == inventory.count, accounted.allSatisfy(Self.validDigest),
+                      accounted.contains(receipt.archivedDigest),
+                      receipt.sourceDigest.map({ accounted.contains($0) }) ?? true
+                else { throw Failure.unreadable }
+            } else { accounted = try legacyArchiveGraph(receipt) }
+        } else { accounted = [] }
+        guard accounted.isSubset(of: actual), actual.isSubset(of: accounted.union(allowing))
+        else { throw Failure.unreadable }
+        return actual
     }
 
     private func retainedHistory(_ contents: Contents, budget: HistoryBudget) throws -> [ConnectorKeychainCleanup] {
@@ -309,6 +383,7 @@ struct ConnectorCredentialGenerationJournal {
         if matches(stored.contents) {
             do {
                 _ = try retainedHistory(stored.contents, budget: .collection)
+                try requireArchiveReceipt(stored.contents)
                 if stored.contents.recovery != nil { try installRetentionBarriers() }
                 return nil
             }
@@ -328,6 +403,9 @@ struct ConnectorCredentialGenerationJournal {
             : Self.encode(Contents(storeIdentity: stored.contents.storeIdentity, candidates: candidates))
         let sourceDigest = Self.digest(stored.data)
         let snapshotDigest = Self.digest(snapshot)
+        // Only deterministic products of this exact attempt may be left by
+        // an interrupted publication. Other unaccounted history blocks it.
+        try requireArchiveReceipt(stored.contents, allowing: [sourceDigest, snapshotDigest])
         let directory = archiveDirectory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         guard try FileManager.default.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType == .typeDirectory
@@ -342,7 +420,8 @@ struct ConnectorCredentialGenerationJournal {
             try synchronizeArchive(archive)
         }
         let receipt = RecoveryReceipt(archivedDigest: snapshotDigest, recoveredAt: Date(),
-            previousVersion: stored.contents.version, sourceDigest: sourceDigest == snapshotDigest ? nil : sourceDigest)
+            previousVersion: stored.contents.version, sourceDigest: sourceDigest == snapshotDigest ? nil : sourceDigest,
+            preservedArchives: try publishedArchives().sorted())
         // The archive must be durable before the atomic active-record cutover.
         // A failed publication leaves the original journal and archive intact;
         // retry uses the same digest, rather than adding duplicate archives.
@@ -369,7 +448,9 @@ struct ConnectorCredentialGenerationJournal {
 
     private func read() throws -> Contents {
         try requireCurrentStore()
-        guard let stored = try stored() else { return Contents(storeIdentity: storeIdentity, candidates: []) }
+        let stored = try stored()
+        try requireArchiveReceipt(stored?.contents)
+        guard let stored else { return Contents(storeIdentity: storeIdentity, candidates: []) }
         try requireSupportedVersion(stored.contents)
         guard matches(stored.contents) else { throw Failure.wrongStore }
         return stored.contents
@@ -429,7 +510,9 @@ struct ConnectorCredentialGenerationJournal {
 
     private func write(_ contents: Contents,
                        publish: (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }) throws {
-        let upgraded = Contents(storeIdentity: storeIdentity, candidates: contents.candidates, recovery: contents.recovery)
+        var upgraded = Contents(storeIdentity: storeIdentity, candidates: contents.candidates, recovery: contents.recovery)
+        let inventory = try requireArchiveReceipt(contents)
+        if upgraded.recovery != nil { upgraded.recovery?.preservedArchives = inventory.sorted() }
         let data = try Self.encode(upgraded)
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])

@@ -55,6 +55,28 @@ repaired; a matching receipt missing its fence can explicitly restore it without
 rewriting the journal. Missing or corrupt archive data never authorizes a
 partial transfer or deletion.
 
+An absent active journal, or one restored without its recovery receipt, is not
+evidence that no recovery debt exists. If the archive directory contains any
+published record, collection returns unknown ownership and journal reads and
+receipt-free writes fail closed. This also prevents `record()` or `forget()`
+from hiding lost ownership behind a newly created journal. Only unpublished
+temporary copies are excluded from this presence check. The exact authoritative
+receipt must be restored before collection can resume; archives are never
+deleted or silently rebound to manufacture an empty history.
+Explicit recovery applies the same admission check. A failed first publication
+may retry only when the sole published archive matches the exact current source
+bytes; unrelated preserved records cannot be omitted by minting a new receipt.
+
+Each new receipt also records the complete inventory of preserved archive
+digests. Readers compare it with the directory before granting collection or
+mutation authority, so an older restored receipt cannot omit newer archives.
+For legacy receipts without this field, a bounded hash-verified graph traversal
+checks that all published archives are reachable; the next successful write
+persists the derived inventory. Modern receipts require only metadata inventory
+checks plus their bounded snapshot/source reads, not repeated traversal of
+retired history. Interrupted recovery may admit only the deterministic source
+and snapshot of that exact attempt, both byte-verified before publication.
+
 ## Regression evidence
 
 - A frozen schema-21 collector and both historical outbox readers, two
