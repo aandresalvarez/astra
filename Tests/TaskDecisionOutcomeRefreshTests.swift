@@ -64,16 +64,44 @@ struct TaskDecisionOutcomeRefreshTests {
 
     @Test("Saved streaming bursts avoid history queries, including the full main-thread write and refresh path")
     func streamingBurstCost() throws {
-        let before = try measureBurst(legacy: true)
-        let after = try measureBurst(legacy: false)
-        print("[decision-refresh] history=5000 snapshots=60 events=120 before_resolves=\(before.resolves) after_resolves=\(after.resolves) before_main_cpu_ms=\(before.cpu) after_main_cpu_ms=\(after.cpu) before_refresh_cpu_ms=\(before.refreshCPU) after_refresh_cpu_ms=\(after.refreshCPU)")
-        #expect(before.resolves == 60)
-        #expect(after.resolves == 0, "An irrelevant burst must issue zero decision-history reads")
+        var pairs: [(before: BurstMeasurement, after: BurstMeasurement)] = []
+        // A is the legacy control; B is semantic refresh. Balance AB/BA
+        // order and compare within each pair before taking the median, so
+        // one independently seeded store or an ordering effect cannot
+        // decide the full-path budget from a single measurement.
+        for index in 0..<4 {
+            let before: BurstMeasurement
+            let after: BurstMeasurement
+            let legacyFirst = index.isMultiple(of: 2)
+            if legacyFirst {
+                before = try measureBurst(legacy: true)
+                after = try measureBurst(legacy: false)
+            } else {
+                after = try measureBurst(legacy: false)
+                before = try measureBurst(legacy: true)
+            }
+            #expect(before.resolves == 60)
+            #expect(after.resolves == 0, "Every irrelevant burst must issue zero decision-history reads")
+            try #require(before.cpu > 0 && before.refreshCPU > 0)
+            pairs.append((before, after))
+            print("[decision-refresh-pair] pair=\(index + 1) order=\(legacyFirst ? "AB" : "BA") before_resolves=\(before.resolves) after_resolves=\(after.resolves) before_main_cpu_ms=\(before.cpu) after_main_cpu_ms=\(after.cpu) before_refresh_cpu_ms=\(before.refreshCPU) after_refresh_cpu_ms=\(after.refreshCPU)")
+        }
+        let mainRatio = median(pairs.map { $0.after.cpu / $0.before.cpu })
+        let refreshRatio = median(pairs.map { $0.after.refreshCPU / $0.before.refreshCPU })
+        print("[decision-refresh] history=5000 snapshots=60 events=120 pairs=\(pairs.count) before_main_cpu_ms=\(median(pairs.map { $0.before.cpu })) after_main_cpu_ms=\(median(pairs.map { $0.after.cpu })) before_refresh_cpu_ms=\(median(pairs.map { $0.before.refreshCPU })) after_refresh_cpu_ms=\(median(pairs.map { $0.after.refreshCPU })) median_main_cpu_ratio=\(mainRatio) median_refresh_cpu_ratio=\(refreshRatio)")
         // Persistence dominates the full path. Keep its raw cost visible and
         // guard against a total regression; the refresh budget separately
         // bounds key construction as well as the removed history reads.
-        #expect(after.cpu < before.cpu * 1.1, "Includes insert/save, change classification, snapshot/key construction and resolution")
-        #expect(after.refreshCPU < before.refreshCPU * 0.25)
+        #expect(mainRatio < 1.1, "Includes insert/save, change classification, snapshot/key construction and resolution")
+        #expect(refreshRatio < 0.25)
+    }
+
+    private func median(_ values: [Double]) -> Double {
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        return sorted.count.isMultiple(of: 2)
+            ? (sorted[middle - 1] + sorted[middle]) / 2
+            : sorted[middle]
     }
 
     @Test("Relevant writes outside the transcript window, edits, deletions and recovery refresh the durable answer")
@@ -239,7 +267,9 @@ struct TaskDecisionOutcomeRefreshTests {
         #expect(probe.projection.outcomes.deliveredRequestFollowUpRunID == f.run.id)
     }
 
-    private func measureBurst(legacy: Bool) throws -> (cpu: Double, refreshCPU: Double, resolves: Int) {
+    private typealias BurstMeasurement = (cpu: Double, refreshCPU: Double, resolves: Int)
+
+    private func measureBurst(legacy: Bool) throws -> BurstMeasurement {
         let fixture = try TaskMainActorScalingGateTests.Fixture(eventCount: 5_000)
         let context = fixture.container.mainContext
         context.autosaveEnabled = false
