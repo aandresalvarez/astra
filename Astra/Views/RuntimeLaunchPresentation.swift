@@ -57,7 +57,8 @@ enum RuntimeLaunchPresentation {
               (receipt.providerLaunchCount ?? 0) == 0,
               receipt.state == "preparing" || receipt.state == "notStarted" else { return nil }
         let cancelled = run.status == .cancelled
-        guard cancelled || run.stopReason == RuntimeProviderStateWaitTimeout.stopReason else { return nil }
+        let reserved = run.stopReason == RuntimeProviderResourceRegistry.Block.stopReason
+        guard cancelled || reserved || run.stopReason == RuntimeProviderStateWaitTimeout.stopReason else { return nil }
         if cancelled, !receipt.preparationHasSettled {
             return .init(id: "runtime-unlaunched-stopping", title: "Stopping preparation",
                 summary: "ASTRA is waiting for preparation and its tools to stop. Resources remain reserved until cleanup is confirmed.",
@@ -66,6 +67,7 @@ enum RuntimeLaunchPresentation {
         return .init(id: "runtime-unlaunched-terminal",
             title: cancelled ? "Cancelled before provider start" : "Provider did not start",
             summary: cancelled ? "Send a new instruction to continue. Your task history and files are preserved."
+                : reserved ? "Shared configuration remains protected. Review the reservation described in the latest output before trying again. Your task history and files are preserved."
                 : "Waiting for provider configuration exceeded the preparation limit. Your work is preserved; send a new instruction when the resource is available.",
             systemImage: "stop.circle", tone: .attention)
     }

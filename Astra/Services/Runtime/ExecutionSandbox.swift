@@ -1596,7 +1596,8 @@ enum ExecutionSandbox: Sendable {
             commandPlannedFields: plan.commandPlannedFields,
             interactiveAsk: plan.interactiveAsk,
             pathMapper: plan.pathMapper,
-            executionEnvironment: plan.executionEnvironment
+            executionEnvironment: plan.executionEnvironment,
+            sharedConfigurationHostURL: plan.sharedConfigurationHostURL
         )
     }
 }

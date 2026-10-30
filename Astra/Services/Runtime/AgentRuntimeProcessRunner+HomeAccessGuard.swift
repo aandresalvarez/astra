@@ -18,12 +18,14 @@ extension AgentRuntimeProcessRunner {
             !homeAccessCancellation.isCurrent(cancellation) || Task.isCancelled || context.task.status == .cancelled
         }
         guard !cancelled() else { return .blocked(Self.cancelledHomeLaunch) }
+        if let failure = sharedConfigurationFailure(context) { return .blocked(failure) }
         let outcome = sandboxedPlan(adapter: adapter, context: context)
         guard case .plan(let original) = outcome else { return outcome }
         let plan = await RuntimeHomeAccessContainerPreflight.prepare(original, resumeSessionID: context.nativeContinuationSessionID)
         guard !cancelled() else { return .blocked(Self.cancelledHomeLaunch) }
         let message = await homeAccessCheck(plan, context.nativeContinuationSessionID)
         guard !cancelled() else { return .blocked(Self.cancelledHomeLaunch) }
+        if let failure = sharedConfigurationFailure(context) { return .blocked(failure) }
         guard let message else { return .plan(plan) }
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
             "runtime": plan.runtime.rawValue,
@@ -47,12 +49,18 @@ extension AgentRuntimeProcessRunner {
         func cancelled() -> Bool { !homeAccessCancellation.isCurrent(cancellation) || Task.isCancelled }
         let cancelledResult = AgentUtilityRunResult(exitCode: -1, output: "", error: "Utility cancelled before provider launch.")
         guard !cancelled() else { return .blocked(cancelledResult) }
+        if let message = sharedUtilityConfigurationFailure(utilityPlan) {
+            return .blocked(.init(exitCode: -1, output: "", error: message))
+        }
         let outcome = sandboxedUtilityPlan(utilityPlan)
         guard case .plan(var plan) = outcome else { return outcome }
         plan.process = await RuntimeHomeAccessContainerPreflight.prepare(plan.process, resumeSessionID: nil)
         guard !cancelled() else { return .blocked(cancelledResult) }
         let message = await Self.providerHomeBlock(for: plan.process, resumeSessionID: nil)
         guard !cancelled() else { return .blocked(cancelledResult) }
+        if let message = sharedUtilityConfigurationFailure(utilityPlan) {
+            return .blocked(.init(exitCode: -1, output: "", error: message))
+        }
         guard let message else { return .plan(plan) }
         AppLogger.audit(.workerBlocked, category: "Utility", fields: [
             "runtime": plan.process.runtime.rawValue,
@@ -65,6 +73,26 @@ extension AgentRuntimeProcessRunner {
     private static var cancelledHomeLaunch: AgentProcessResult {
         AgentProcessResult(exitCode: -1, error: "Run cancelled before provider launch.",
                            runtimeStopReason: "cancelled", runtimeStopMessage: "Run cancelled before provider launch.")
+    }
+
+    @MainActor
+    private func sharedConfigurationFailure(_ context: AgentRuntimeProcessLaunchContext) -> AgentProcessResult? {
+        guard let key = context.sharedStateKey, key.filePath != nil else { return nil }
+        do {
+            try key.validate(fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: try context.antigravityLaunchHome()))
+            return nil
+        } catch {
+            return AgentProcessResult(exitCode: -1, error: error.localizedDescription,
+                runtimeStopReason: RuntimeProviderResourceRegistry.Block.stopReason, runtimeStopMessage: error.localizedDescription)
+        }
+    }
+
+    private func sharedUtilityConfigurationFailure(_ plan: AgentUtilityLaunchPlan) -> String? {
+        guard let key = plan.sharedStateKey else { return nil }
+        do {
+            try plan.process.validateSharedConfiguration(key)
+            return nil
+        } catch { return error.localizedDescription }
     }
 
     /// Only immutable launch facts cross into the background filesystem probe.
