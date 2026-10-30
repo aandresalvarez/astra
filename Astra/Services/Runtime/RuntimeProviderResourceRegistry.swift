@@ -12,20 +12,25 @@ enum RuntimeProviderResourceRegistry {
         let taskID: UUID
         let ownerID: UUID
         let missingClaims: Bool
+        let legacyIdentity: Bool
 
         init(key: AgentRuntimeSharedStateKey, record: RuntimeExecutionOwnerRecord, missingClaims: Bool = false) {
             self.key = key
             taskID = record.taskID
             ownerID = record.ownerID
             self.missingClaims = missingClaims
+            legacyIdentity = key.filePath != nil && ([record.providerSharedStateKey].compactMap { $0 }
+                + (record.retainedProviderSharedStateKeys ?? [])).contains { $0 != key.rawValue && key.conflicts(withRecorded: $0) }
         }
 
         var message: String {
             let parts = key.rawValue.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             let provider = parts.first.flatMap { AgentRuntimeID(rawValue: String($0)) }?.displayName ?? "The provider"
-            let resource = parts.count == 2 ? String(parts[1]) : key.rawValue
+            let resource = key.filePath ?? (parts.count == 2 ? String(parts[1]) : key.rawValue)
             let reason = missingClaims
                 ? "Its ownership records are incomplete, so ASTRA cannot verify that this shared configuration is available."
+                : legacyIdentity
+                ? "An older reservation did not capture the configuration's physical identity. ASTRA must preserve it until the earlier execution and tools are confirmed stopped, even if this profile uses a different path."
                 : "Its shared configuration remains reserved because ASTRA cannot verify that its earlier execution and tools stopped."
             return "\(provider) did not start. Task \(taskID.uuidString) blocks this launch. \(reason) Resource: \(resource). Review the owning task; this task stays paused and will not restart automatically."
         }
@@ -52,11 +57,11 @@ enum RuntimeProviderResourceRegistry {
                     && reference?.journalRoot == root.path && ownerID == record.ownerID
                 guard !sameOwner, record.resourcesReleased != true,
                       record.providerSharedStateReleased != true, !record.canRecoverPreparation else { continue }
-                if record.providerSharedStateKey == key.rawValue || record.retainedProviderSharedStateKeys?.contains(key.rawValue) == true {
+                if conflicts(key, record: record) {
                     // A live owner waits on the kernel gate. An orphaned or
                     // returned owner must retain its durable quarantine.
-                    if record.appProcess.presence == .present,
-                       record.retainedProviderSharedStateKeys?.contains(key.rawValue) != true {
+                    if record.appProcess.presence == .present, record.providerSharedStateKey == key.rawValue,
+                       record.retainedProviderSharedStateKeys?.contains(where: key.conflicts) != true {
                         do { let lease = try store.acquire(taskID: record.taskID); withExtendedLifetime(lease) {} }
                         catch RuntimeExecutionOwnerStore.Failure.busy { continue }
                     }
@@ -68,5 +73,10 @@ enum RuntimeProviderResourceRegistry {
                 }
             }
         }
+    }
+
+    static func conflicts(_ key: AgentRuntimeSharedStateKey, record: RuntimeExecutionOwnerRecord) -> Bool {
+        ([record.providerSharedStateKey].compactMap { $0 } + (record.retainedProviderSharedStateKeys ?? []))
+            .contains(where: key.conflicts)
     }
 }

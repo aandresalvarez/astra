@@ -6,6 +6,18 @@ import ASTRAModels
 
 @Suite("Task decision dock presentation")
 struct TaskDecisionDockPresentationTests {
+    @Test("An unlaunched provider reservation cannot expose result approval or blind retry")
+    func reservedProviderHasNoResultToApprove() throws {
+        var input = context(status: .pendingUser)
+        input.canApprove = true
+        input.extraDetails = [.init(id: "runtime-unlaunched-terminal", title: "Provider did not start",
+            summary: "Shared configuration remains protected.", systemImage: "stop.circle", tone: .attention)]
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.title == "Provider did not start" && dock.compactMeta == "Provider never started")
+        #expect(dock.primaryAction == nil)
+        #expect(!actionTitles(dock).contains("Approve result") && !actionTitles(dock).contains("Retry"))
+    }
+
     @Test("Preparation titles remain truthful in both active and passive docks", arguments: [true, false])
     func preparationTitles(canCancel: Bool) throws {
         var input = context(status: .running)

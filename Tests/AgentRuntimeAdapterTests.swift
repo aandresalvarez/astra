@@ -2313,7 +2313,8 @@ struct AgentRuntimeAdapterTests {
     }
 
     @Test("Antigravity declares shared launch state and suggestion-only model availability")
-    func antigravityDeclaresSharedLaunchStateAndSuggestionModelAvailability() {
+    @MainActor
+    func antigravityDeclaresSharedLaunchStateAndSuggestionModelAvailability() throws {
         let adapter = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
         let workspace = Workspace(name: "Provider State", primaryPath: "/tmp/astra-provider-state")
         let task = AgentTask(
@@ -2336,10 +2337,10 @@ struct AgentRuntimeAdapterTests {
         )
 
         #expect(adapter.modelAvailabilityAuthority == .suggestions)
-        #expect(adapter.sharedLaunchStateKey(context: context)?.rawValue.contains("antigravity_cli:") == true)
-        #expect(adapter.sharedLaunchStateKey(context: context)?.rawValue.contains("/tmp/astra-antigravity-home/.gemini/antigravity-cli/settings.json") == true)
-        #expect(AgentRuntimeAdapterRegistry.adapter(for: .claudeCode).sharedLaunchStateKey(context: context) == nil)
-        #expect(AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).sharedLaunchStateKey(context: context) == nil)
+        #expect(try adapter.sharedLaunchStateKey(context: context)?.rawValue.contains("antigravity_cli:file-v1:") == true)
+        #expect(try adapter.sharedLaunchStateKey(context: context)?.rawValue.contains("/tmp/astra-antigravity-home/.gemini/antigravity-cli/settings.json") == true)
+        #expect(try AgentRuntimeAdapterRegistry.adapter(for: .claudeCode).sharedLaunchStateKey(context: context) == nil)
+        #expect(try AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).sharedLaunchStateKey(context: context) == nil)
     }
 
     // Regression: a model edit made while queued on the shared-state gate must still land in the plan.

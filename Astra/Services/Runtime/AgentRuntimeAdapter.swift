@@ -102,7 +102,8 @@ protocol AgentRuntimeProcessLaunchPlanning {
     var providerRuntimeMessages: ProviderRuntimeMessages { get }
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings
-    func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeSharedStateKey?
+    @MainActor
+    func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) throws -> AgentRuntimeSharedStateKey?
     func missingExecutableAuditReason() -> String
     func missingExecutableStopReason() -> String?
     func missingExecutableMessage(executablePath: String) -> String
@@ -650,7 +651,9 @@ struct AgentRuntimeProcessLaunchContext {
     let taskSnapshot: AgentTaskLaunchSnapshot
     let workspacePath: String
     let executablePath: String
-    let providerHomeDirectory: String
+    var providerHomeDirectory: String
+    var sharedStateKey: AgentRuntimeSharedStateKey? = nil
+    var sharedStateHome: String? = nil
     let permissionPolicy: PermissionPolicy
     let executionPolicy: AgentRuntimeExecutionPolicy
     let permissionManifest: RunPermissionManifest?
@@ -725,7 +728,7 @@ struct AgentRuntimeProcessLaunchContext {
     func replacingLaunchResourcePlan(
         _ launchResourcePlan: TaskLaunchResourcePlan
     ) -> AgentRuntimeProcessLaunchContext {
-        AgentRuntimeProcessLaunchContext(
+        var copy = AgentRuntimeProcessLaunchContext(
             prompt: prompt,
             task: task,
             workspacePath: workspacePath,
@@ -745,6 +748,9 @@ struct AgentRuntimeProcessLaunchContext {
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimeRequirements: runtimeRequirements
         )
+        copy.sharedStateKey = sharedStateKey
+        copy.sharedStateHome = sharedStateHome
+        return copy
     }
 }
 
@@ -783,6 +789,9 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
     var interactiveAsk: AgentRuntimeInteractiveAskPlan?
     var pathMapper: ExecutionEnvironmentPathMapper?
     var executionEnvironment: WorkspaceExecutionEnvironment
+    /// Host settings prepared before a provider is wrapped in Docker. This is
+    /// launch evidence only; it grants neither a mount nor access to the home.
+    let sharedConfigurationHostURL: URL?
     /// Owned by Docker planning. Avoid inferring command boundaries from CLI strings.
     var containerProviderCommandIndex: Int? = nil
     /// Set only by `AgentRuntimeProcessRunner` after every required read-only
@@ -810,7 +819,8 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         commandPlannedFields: [String: String] = [:],
         interactiveAsk: AgentRuntimeInteractiveAskPlan? = nil,
         pathMapper: ExecutionEnvironmentPathMapper? = nil,
-        executionEnvironment: WorkspaceExecutionEnvironment = .host
+        executionEnvironment: WorkspaceExecutionEnvironment = .host,
+        sharedConfigurationHostURL: URL? = nil
     ) {
         self.runtime = runtime
         self.executablePath = executablePath
@@ -829,6 +839,7 @@ struct AgentRuntimeProcessLaunchPlan: Equatable {
         self.interactiveAsk = interactiveAsk
         self.pathMapper = pathMapper
         self.executionEnvironment = executionEnvironment
+        self.sharedConfigurationHostURL = sharedConfigurationHostURL
         self.readOnlyBoundaryReceipt = nil
         self.executionSandboxBoundaryReceipt = nil
     }
@@ -2408,12 +2419,12 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeSharedStateKey? {
-        AgentRuntimeSharedStateKey(
+    func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) throws -> AgentRuntimeSharedStateKey? {
+        try AgentRuntimeSharedStateKey(
             runtime: id,
-            identifier: AntigravityCLIRuntime.settingsURL(
-                providerHomeDirectory: context.providerHomeDirectory
-            ).standardizedFileURL.path
+            fileURL: AntigravityCLIRuntime.settingsURL(
+                providerHomeDirectory: try context.antigravityLaunchHome()
+            )
         )
     }
 
@@ -2564,9 +2575,10 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
+        if let home = context.sharedStateHome { taskEnv["HOME"] = home }
         let executable = context.executablePath.isEmpty ? AntigravityCLIRuntime.detectPath() : context.executablePath
         let providerVersion = AntigravityCLIRuntime.versionSummary(executablePath: executable)
-        let modelSettingsURL = AntigravityCLIRuntime.settingsURL(
+        let modelSettingsURL = context.sharedStateKey?.filePath.map { URL(fileURLWithPath: $0) } ?? AntigravityCLIRuntime.settingsURL(
             providerHomeDirectory: context.providerHomeDirectory
         )
         // Antigravity is the only adapter with a non-nil `sharedLaunchStateKey`, so this is the
@@ -2732,16 +2744,15 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty
             ? AntigravityCLIRuntime.detectPath()
             : configuredPath
-        let providerHomeDirectory = configuration.homeDirectory(for: id)
-        let modelSettingsURL = AntigravityCLIRuntime.settingsURL(
-            providerHomeDirectory: providerHomeDirectory
-        )
-        let sharedStateKey = AgentRuntimeSharedStateKey(
-            runtime: id,
-            identifier: modelSettingsURL.standardizedFileURL.path
-        )
+        let providerHomeDirectory: String
+        let effectiveHome: String
+        let sharedStateKey: AgentRuntimeSharedStateKey
         let sharedStateLease: RuntimeUtilitySharedStateLease
         do {
+            providerHomeDirectory = try ProviderSharedStateIdentity.providerHome(configuration.homeDirectory(for: id))
+            effectiveHome = try ProviderSharedStateIdentity.effectiveHome(configured: providerHomeDirectory, environment: [:])
+            sharedStateKey = try AgentRuntimeSharedStateKey(runtime: id,
+                fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: effectiveHome))
             sharedStateLease = try await RuntimeUtilitySharedStateLease.acquire(sharedStateKey)
         } catch is CancellationError {
             return AgentUtilityRunResult(
@@ -2752,6 +2763,13 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         } catch {
             return AgentUtilityRunResult(exitCode: -1, output: "", error: error.localizedDescription)
         }
+        do {
+            try sharedStateKey.validate(fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: effectiveHome))
+        } catch {
+            await sharedStateLease.release()
+            return AgentUtilityRunResult(exitCode: -1, output: "", error: error.localizedDescription)
+        }
+        let modelSettingsURL = URL(fileURLWithPath: sharedStateKey.filePath!)
         let model = AgentRuntimeProcessRunner.model(configuration.model, for: id)
         if FileManager.default.isExecutableFile(atPath: executable) {
             AntigravityCLIRuntime.applySelectedModel(model, settingsURL: modelSettingsURL)
@@ -2762,7 +2780,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             workspacePath: workspacePath,
             additionalPaths: [],
             permissionPolicy: .restricted,
-            taskEnvironment: [:],
+            taskEnvironment: ["HOME": effectiveHome],
             providerHomeDirectory: providerHomeDirectory,
             permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted),
             // This path returns the child's raw stdout to the caller's own
@@ -2790,7 +2808,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 process: processPlan,
                 providerHomeDirectory: providerHomeDirectory,
                 permissionPolicy: .restricted,
-                timeoutSeconds: configuration.timeoutSeconds
+                timeoutSeconds: configuration.timeoutSeconds,
+                sharedStateKey: sharedStateKey
             )
         )
         await sharedStateLease.release()

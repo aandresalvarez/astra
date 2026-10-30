@@ -81,7 +81,7 @@ actor AgentRuntimeSharedStateGate {
 
     private func finishAcquisition(_ lease: AgentRuntimeSharedStateLease, owner: RuntimeExecutionOwner?, reference: RuntimeProviderOwnershipReference?, deadline: ContinuousClock.Instant) async throws -> AgentRuntimeSharedStateLease {
         do {
-            let processLock = try await ProviderSharedStateProcessLock.acquire(lease.key, root: processLockRoot, deadline: deadline)
+            let processLock = try await ProviderSharedStateProcessLock.acquire(lease.key, root: processLockRoot, deadline: deadline, reference: reference)
             try Task.checkCancellation()
             try checkAvailability(lease.key, reference: reference)
             guard ContinuousClock.now < deadline else { throw RuntimeProviderStateWaitTimeout() }

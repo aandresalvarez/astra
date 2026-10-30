@@ -72,6 +72,33 @@ struct AgentExecutionScopedProcessTests {
         #expect(throws: (any Error).self) { try process.run() }
     }
 
+    @Test("Final launch validation rejects a child and releases all captured callbacks")
+    func rejectedValidationReleasesCaptures() async {
+        let reference = WeakProcessReference()
+        do {
+            let process = AgentExecutionScopedProcess(executablePath: "/usr/bin/true", arguments: [],
+                currentDirectory: "/tmp", environment: [:])
+            reference.value = process
+            process.terminationHandler = { _ in _ = process.terminationStatus }
+            process.stdoutFileHandle.readabilityHandler = { _ in _ = process.isRunning }
+            process.stderrFileHandle.readabilityHandler = { _ in _ = process.isRunning }
+            #expect(throws: ProviderSharedStateIdentity.Failure.self) {
+                try process.run { throw ProviderSharedStateIdentity.Failure(detail: "fixture rejected final identity") }
+            }
+            #expect(process.processIdentifier == 0)
+            #expect(process.stdoutFileHandle.readabilityHandler == nil)
+            #expect(process.stderrFileHandle.readabilityHandler == nil)
+            #expect(process.terminationHandler == nil)
+        }
+        let released = await waitUntil(timeout: 2) { reference.value == nil }
+        defer {
+            reference.value?.stdoutFileHandle.readabilityHandler = nil
+            reference.value?.stderrFileHandle.readabilityHandler = nil
+            reference.value?.terminationHandler = nil
+        }
+        #expect(released)
+    }
+
     @Test("terminate kills background child process")
     func terminateKillsBackgroundChildProcess() async throws {
         let directory = temporaryDirectory()
