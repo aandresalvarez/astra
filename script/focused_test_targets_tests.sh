@@ -16,6 +16,16 @@ assert_targets() {
   fi
 }
 
+assert_targets "TaskDecisionOutcomeRefreshTests|TaskDecisionOutcomeColdRefreshTests|TaskDeliverableFollowUpTests|TaskDecisionDock|TaskMainActorScalingGateTests" \
+  "Astra/Views/TaskDecisionOutcomeRefresh.swift" \
+  "Tests/TaskDecisionOutcomeRefreshTests.swift" \
+  "Astra/Services/Validation/TaskDeliverableHistoryReader.swift" \
+  "Tests/TaskDecisionOutcomeColdRefreshTests.swift"
+
+assert_targets "WorkspaceRailOutputPresentationTests|WorkspaceRailOutputPerformanceTests|WorkspaceRailSectionPresentationTests|WorkspaceRightRailPerformanceTests" \
+  "Astra/Views/WorkspaceRailOutputPresentation.swift" \
+  "Tests/WorkspaceRailOutputPerformanceTests.swift"
+
 assert_targets "MCPGatewaySupportTests" \
   "Tools/MCPGatewaySupport/MCPGatewaySupport.swift" \
   "Tests/MCPGatewaySupportTests/RemoteMCPGatewaySupportTests.swift"
@@ -291,7 +301,7 @@ for path in \
   assert_targets "$expected" "$path"
 done
 
-assert_targets $'TaskTextOnlyDeliverableTests\nTaskDeliverableExpectationTests\nDeliverableExpectationCoverageTests\nTaskDeliverableVerificationServiceTests\nTaskDeliverableFollowUpTests\nTaskExecutionResourceClaimResolverTests' \
+assert_targets $'TaskDecisionOutcomeColdRefreshTests\nTaskTextOnlyDeliverableTests\nTaskDeliverableExpectationTests\nDeliverableExpectationCoverageTests\nTaskDeliverableVerificationServiceTests\nTaskDeliverableFollowUpTests\nTaskExecutionResourceClaimResolverTests' \
   "Astra/Services/Validation/TaskDeliverableExpectation.swift" \
   "Astra/Services/Validation/StandaloneArtifactRequestPolicy.swift" \
   "Astra/Services/Tasks/TaskIntentLanguagePolicy.swift" \

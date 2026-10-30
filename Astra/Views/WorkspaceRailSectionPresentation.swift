@@ -101,7 +101,7 @@ enum WorkspaceRailSectionPresentation {
     }
 
     /// Where an output opens when tapped: the shelf that renders its kind.
-    enum OutputDestination: Equatable {
+    enum OutputDestination: Equatable, Sendable {
         case files
         case browser
         case query
@@ -119,7 +119,7 @@ enum WorkspaceRailSectionPresentation {
 
     /// One file the selected task produced, newest first as given. Inputs the
     /// user attached are not outputs and never reach this list.
-    struct OutputFile: Equatable, Identifiable {
+    struct OutputFile: Equatable, Identifiable, Sendable {
         var path: String
         var destination: OutputDestination = .files
 
@@ -127,7 +127,7 @@ enum WorkspaceRailSectionPresentation {
         var name: String { WorkspaceRailSectionPresentation.lastPathComponent(path) }
     }
 
-    struct OutputFacts: Equatable {
+    struct OutputFacts: Equatable, Sendable {
         var files: [OutputFile] = []
     }
 

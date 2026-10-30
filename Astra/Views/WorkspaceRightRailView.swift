@@ -111,7 +111,7 @@ struct WorkspaceRightRailView: View {
     /// The selected task's file facts, read off the main actor from their
     /// persisted owner (runs' file changes and the task folder), as the task
     /// header does. Keyed by scope so a stale task never shows another's files.
-    @State private var outputFilesCache: (scope: TaskAttachmentHistoryScope, files: TaskHeaderFilesReader.Facts)?
+    @State private var outputFilesCache: (key: WorkspaceRailOutputPresentation.ReadKey, facts: Rail.OutputFacts)?
     @State private var isLoadingOutputs = false
     @State private var outputsRefreshTick = 0
     @State private var showsTopRailScrollShadow = false
@@ -507,10 +507,10 @@ struct WorkspaceRightRailView: View {
     private var outputFacts: Rail.OutputFacts {
         guard let selectedTask,
               let cache = outputFilesCache,
-              cache.scope == TaskAttachmentHistoryScope(task: selectedTask) else {
+              cache.key.scope == TaskAttachmentHistoryScope(task: selectedTask) else {
             return Rail.OutputFacts()
         }
-        return WorkspaceRailOutputPresentation.facts(from: cache.files)
+        return cache.facts
     }
 
     private var outputsSignature: WorkspaceRailOutputPresentation.ReadKey {
@@ -518,8 +518,10 @@ struct WorkspaceRightRailView: View {
     }
 
     private func recomputeOutputFiles() async {
+        let key = outputsSignature
         guard let task = selectedTask else {
             outputFilesCache = nil
+            isLoadingOutputs = false
             return
         }
         let inputs = task.inputs
@@ -529,19 +531,20 @@ struct WorkspaceRightRailView: View {
         let scope = TaskAttachmentHistoryScope(task: task)
         let container = modelContext.container
         isLoadingOutputs = true
-        defer { isLoadingOutputs = false }
+        defer { if key == outputsSignature { isLoadingOutputs = false } }
         let read = Task.detached(priority: .userInitiated) {
             let context = ModelContext(container)
             context.autosaveEnabled = false
-            return try TaskHeaderFilesReader.facts(
+            let files = try TaskHeaderFilesReader.facts(
                 scope: scope, inputs: inputs, taskFolder: taskFolder,
                 workspacePath: workspacePath, modelContext: context
             )
+            return WorkspaceRailOutputPresentation.facts(from: files)
         }
         do {
             let items = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
-            guard !Task.isCancelled, let current = selectedTask, scope == TaskAttachmentHistoryScope(task: current) else { return }
-            outputFilesCache = (scope, items)
+            guard !Task.isCancelled, key == outputsSignature else { return }
+            outputFilesCache = (key, items)
         } catch is CancellationError {
             return
         } catch {

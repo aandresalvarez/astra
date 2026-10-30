@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Views/TaskDecisionOutcomeRefresh.swift|Astra/Views/TaskMainViewDecisionOutcomes.swift|Astra/Views/TaskMainViewObservers.swift|Astra/Services/Validation/TaskDeliverableHistoryReader.swift|Tests/TaskDecisionOutcomeRefreshTests.swift|Tests/TaskDecisionOutcomeColdRefreshTests.swift)
+      add_target "TaskDecisionOutcomeRefreshTests|TaskDecisionOutcomeColdRefreshTests|TaskDeliverableFollowUpTests|TaskDecisionDock|TaskMainActorScalingGateTests"
+      ;;
+    Astra/Views/WorkspaceRailOutputPresentation.swift|Astra/Views/WorkspaceRailSectionPresentation.swift|Astra/Views/WorkspaceRightRailView.swift|Tests/WorkspaceRailOutput*Tests.swift)
+      add_target "WorkspaceRailOutputPresentationTests|WorkspaceRailOutputPerformanceTests|WorkspaceRailSectionPresentationTests|WorkspaceRightRailPerformanceTests"
+      ;;
     Astra/Services/Runtime/ProviderSharedState*.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner+SharedConfiguration.swift|Astra/Services/Runtime/AgentRuntimeSharedStateGate.swift|Astra/Services/Runtime/RuntimeProviderOwnershipReference.swift|Astra/Services/Runtime/RuntimeProviderResourceRegistry.swift|Tests/ProviderSharedState*Tests.swift)
       add_target "ProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests|ProviderSharedStateLaunchTests"
       ;;
@@ -340,6 +346,7 @@ target_for_path() {
       add_target "PromptContextPreviewPresentationTests"
       ;;
     Astra/Services/Validation/TaskDeliverableExpectation.swift|Astra/Services/Validation/StandaloneArtifactRequestPolicy.swift|Astra/Services/Tasks/TaskIntentLanguagePolicy.swift|Tests/TaskTextOnlyDeliverableTests.swift)
+      add_target "TaskDecisionOutcomeColdRefreshTests"
       add_target "TaskTextOnlyDeliverableTests"
       add_target "TaskDeliverableExpectationTests"
       add_target "DeliverableExpectationCoverageTests"
