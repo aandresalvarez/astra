@@ -520,6 +520,7 @@ enum PluginActivationMigration {
             restoreState()
             credentials.discard()
             accountCredentials.discard()
+            PluginSavedStateRollback.finish(in: modelContext)
             throw error
         }
         return report

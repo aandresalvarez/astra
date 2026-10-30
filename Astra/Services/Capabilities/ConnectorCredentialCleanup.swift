@@ -43,8 +43,9 @@ enum ConnectorCredentialCleanup {
         let saved = ModelContext(modelContext.container)
         guard let stored = try? saved.fetch(FetchDescriptor<Connector>()),
               let retained = retainedByPendingWorkspaceDeletions(modelContext: saved),
+              let archived = ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: saved),
               let mirrored = connectorsInStoredMirrors(modelContext: saved, extraMirrors: extraMirrors) else { return nil }
-        let ownership = Ownership(stored, retained: retained + mirrored.owners)
+        let ownership = Ownership(stored, retained: retained + mirrored.owners + archived)
         return ownership.hasUnknownOAuthOwnership ? nil : ownership
     }
 
@@ -116,10 +117,11 @@ enum ConnectorCredentialCleanup {
             return false
         }
         guard let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+              let archived = ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: modelContext),
               let mirroredRequests = PluginCredentialMirrorReferences.capture(modelContext: modelContext, extraMirrors: extraMirrors),
               let mirroredOwners = connectorsInStoredMirrors(modelContext: modelContext, extraMirrors: extraMirrors) else { return false }
         let ready = cleanups.filter { !references.holdsAccount($0) && !mirroredRequests.holdsAccount($0) }
-        let ownership = Ownership(stored, retained: retained + mirroredOwners.owners)
+        let ownership = Ownership(stored, retained: retained + mirroredOwners.owners + archived)
         guard !ownership.hasUnknownOAuthOwnership else { return false }
         let cleared = perform.map { $0(ready, ownership) } ?? run(ready, ownership: ownership)
         return ready.count == cleanups.count && cleared
@@ -664,6 +666,13 @@ struct ConnectorCredentialCleanupStore: Sendable {
         var heldBack: [ConnectorKeychainCleanup] = []
         var complete = true
         for url in urls.filter({ $0.pathExtension == "json" }).sorted(by: { $0.path < $1.path }) {
+            if url.lastPathComponent == CredentialRecoveryRetentionBarrier.filename {
+                // Older outbox readers cannot decode the fence and refuse
+                // collection even before workspace recovery is tracked.
+                do { try CredentialRecoveryRetentionBarrier.validate(at: url) }
+                catch { complete = false }
+                continue
+            }
             guard let cleanup = try? JSONDecoder().decode(ConnectorKeychainCleanup.self, from: Data(contentsOf: url)) else {
                 complete = false
                 continue

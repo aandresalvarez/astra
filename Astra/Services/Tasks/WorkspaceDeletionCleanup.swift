@@ -268,7 +268,7 @@ struct WorkspaceDeletionCleanupStore: Sendable {
     func pendingMirrorIdentities() -> Set<String>? {
         guard let present = outboxPresent() else { return nil }
         guard present else { return [] }
-        guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        guard let urls = try? deletionRecordURLs()
         else { return nil }
         var ids = Set<String>()
         for url in urls where url.pathExtension == "json" {
@@ -290,12 +290,24 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         }
     }
 
+    /// New retention records deliberately fail decoding in older readers,
+    /// fencing their collectors. Skip only a completely verified fence here;
+    /// an unknown version, damaged file or symlink still blocks ownership.
+    private func deletionRecordURLs() throws -> [URL] {
+        let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        for url in urls where url.lastPathComponent == CredentialRecoveryRetentionBarrier.filename {
+            try CredentialRecoveryRetentionBarrier.validate(at: url)
+        }
+        return urls.filter { $0.lastPathComponent != CredentialRecoveryRetentionBarrier.filename }
+    }
+
     /// Every pending deletion's connectors, or nil when a record can't be
     /// read, since what it holds is then unknown.
     func pendingConnectors() -> [ConnectorKeychainCleanup]? {
         guard let present = outboxPresent() else { return nil }
         guard present else { return [] }
-        guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        guard let urls = try? deletionRecordURLs()
         else { return nil }
         var connectors: [ConnectorKeychainCleanup] = []
         for url in urls where url.pathExtension == "json" {
@@ -353,7 +365,7 @@ struct WorkspaceDeletionCleanupStore: Sendable {
 
     /// Readable records; an unreadable one stays on disk and is skipped.
     func pending() -> [WorkspaceDeletionCleanupRecord] {
-        let urls = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        let urls = (try? deletionRecordURLs()) ?? []
         return urls.filter { $0.pathExtension == "json" }.sorted { $0.path < $1.path }.compactMap { try? read($0) }
     }
 
@@ -364,7 +376,7 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         // No outbox means nothing pending; one that can't be listed is unknown.
         guard let present = outboxPresent() else { return nil }
         guard present else { return [] }
-        guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        guard let urls = try? deletionRecordURLs()
         else { return nil }
         var mirrors = Set<String>()
         for url in urls where url.pathExtension == "json" {
@@ -501,7 +513,8 @@ enum WorkspaceDeletionCleanupService {
         // a stable endpoint or package namespace under a new ID, so
         // connector ownership is per namespace.
         let ready = record.connectors.filter { !requests.holdsAccount($0) && !mirrored.holdsAccount($0) }
-        let ownership = ConnectorCredentialCleanup.Ownership(connectors, retained: retained)
+        guard let archived = ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: modelContext) else { return false }
+        let ownership = ConnectorCredentialCleanup.Ownership(connectors, retained: retained + archived)
         let attempted = cleanConnectors.map { $0(ready, ownership) } ?? ConnectorCredentialCleanup.run(ready, ownership: ownership)
         var cleared = ready.count == record.connectors.count && attempted
         for skill in record.skills where !liveSkills.contains(skill.skillID) && !retainedSkillIDs.contains(skill.skillID) {

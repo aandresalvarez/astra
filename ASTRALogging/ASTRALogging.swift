@@ -233,6 +233,7 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case keychainSaveFailed = "keychain.save_failed"
     case keychainDeleteFailed = "keychain.delete_failed"
     case keychainSecretsMigrated = "keychain.secrets_migrated"
+    case credentialJournalRecovered = "credential.journal_recovered"
     /// The dedicated keychain could not be opened, so every credential read is
     /// returning nil. Distinct from `keychainSaveFailed`: nothing failed to
     /// write, and no individual lookup reports an error — callers just see
