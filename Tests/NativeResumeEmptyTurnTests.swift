@@ -646,7 +646,10 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
             let events = adapter.parseProcessEvents(line: line, parsesJSONLines: true)
             evidence.observeFrame(line, parsesJSONLines: true, events: events)
             for event in events {
-                if case .systemInit(_, let sessionID) = event { owner.session(sessionID) }
+                if case .systemInit(_, let sessionID) = event {
+                    do { try await owner.session(sessionID) }
+                    catch { return AgentProcessResult(exitCode: -1, runtimeStopReason: "runtime_recovery_blocked", runtimeStopMessage: error.localizedDescription) }
+                }
             }
             onLine(line, true)
         }

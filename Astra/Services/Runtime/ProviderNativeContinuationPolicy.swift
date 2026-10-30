@@ -28,8 +28,7 @@ enum ProviderNativeContinuationPolicy {
             return Decision(sessionID: nil, skipReason: "unsupported_or_not_resume_phase", signatureMatched: false)
         }
 
-        guard let sessionID = task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sessionID.isEmpty else {
+        guard let sessionID = RuntimeNativeSessionOwnership.normalized(task.sessionId) else {
             return Decision(sessionID: nil, skipReason: "missing_session_id", signatureMatched: false)
         }
 
@@ -96,7 +95,7 @@ enum ProviderNativeContinuationPolicy {
     private static func priorRun(forNativeSessionID sessionID: String, task: AgentTask, currentRun: TaskRun) -> TaskRun? {
         task.runs
             .filter { $0.id != currentRun.id }
-            .filter { $0.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) == sessionID }
+            .filter { RuntimeNativeSessionOwnership.normalized($0.providerSessionId) == sessionID }
             .max { $0.startedAt < $1.startedAt }
     }
 

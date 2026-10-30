@@ -26,6 +26,10 @@ assert_targets "WorkspaceRailOutputPresentationTests|WorkspaceRailOutputPerforma
   "Astra/Views/WorkspaceRailOutputPresentation.swift" \
   "Tests/WorkspaceRailOutputPerformanceTests.swift"
 
+assert_targets "RuntimeNativeSessionOwnershipTests|AgentRuntimeAsyncWorkTests|AgentProcessResultTests" \
+  "Astra/Services/Runtime/RuntimeNativeSessionOwnership.swift" \
+  "Tests/RuntimeNativeSessionOwnershipTests.swift"
+
 assert_targets "MCPGatewaySupportTests" \
   "Tools/MCPGatewaySupport/MCPGatewaySupport.swift" \
   "Tests/MCPGatewaySupportTests/RemoteMCPGatewaySupportTests.swift"

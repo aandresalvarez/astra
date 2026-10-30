@@ -36,8 +36,12 @@ enum RuntimeWorkspaceContinuation {
         let leases: [RuntimeExecutionOwnerStore.Lease]
         var needsPersistence = false
         var excludedClaims: Set<TaskResourceLockClaim> {
-            Set(authorization.sources.flatMap { $0.receipt.resourceClaims ?? [] })
+            Set(authorization.sources.flatMap { workspaceClaims($0.receipt) })
         }
+    }
+
+    nonisolated private static func workspaceClaims(_ record: RuntimeExecutionOwnerRecord) -> [TaskResourceLockClaim] {
+        (record.resourceClaims ?? []).filter { $0.resourceKind == .workspace || $0.resourceKind == .gitCommonDirectory }
     }
 
     /// Only a saved, manually submitted first turn can receive this exceptional
@@ -70,8 +74,9 @@ enum RuntimeWorkspaceContinuation {
         let records = try store.records()
         var sources: [RuntimeWorkspaceContinuationAuthorization.Source] = []
         for record in records where record.resourceClaims?.contains(where: conflicts.contains) == true {
-            guard record.taskID != task.id, let claims = record.resourceClaims, !claims.isEmpty,
-                  claims.allSatisfy({ $0.resourceKind == .workspace || $0.resourceKind == .gitCommonDirectory }),
+            let claims = workspaceClaims(record)
+            guard record.taskID != task.id, !claims.isEmpty,
+                  record.resourceClaims?.allSatisfy({ $0.resourceKind == .workspace || $0.resourceKind == .gitCommonDirectory || $0.resourceKind == .nativeSession }) == true,
                   // This action cannot silently authorize unrelated directories.
                   claims.allSatisfy({ claim in requested.contains { $0.resourceKind == claim.resourceKind && $0.resourceKey == claim.resourceKey && $0.accessMode == claim.accessMode } }) else { throw RuntimeExecutionOwnerStore.Failure.busy }
             let id = record.taskID
@@ -82,7 +87,7 @@ enum RuntimeWorkspaceContinuation {
             try requireNoKnownRemoteWork(task: owner, context: context)
             sources.append(.init(taskOwnerID: owner.persistentModelID, receipt: record))
         }
-        let covered = Set(sources.flatMap { $0.receipt.resourceClaims ?? [] })
+        let covered = Set(sources.flatMap { workspaceClaims($0.receipt) })
         guard Set(conflicts).isSubset(of: covered) else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         return .init(taskID: task.id, taskOwnerID: task.persistentModelID, requestID: request.id, sourceEventID: request.sourceEventID,
             approvedAt: Date(), sources: sources.sorted { $0.receipt.taskID.uuidString < $1.receipt.taskID.uuidString })
@@ -163,7 +168,7 @@ enum RuntimeWorkspaceContinuation {
         }
         let requested = claims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(for: request, task: task,
             runMode: "workspace_continuation", sandboxEnforcement: .off)
-        guard authorization.sources.flatMap({ $0.receipt.resourceClaims ?? [] }).allSatisfy({ held in
+        guard authorization.sources.flatMap({ ($0.receipt.resourceClaims ?? []).filter { $0.resourceKind != .nativeSession } }).allSatisfy({ held in
             requested.contains { $0.resourceKind == held.resourceKind && $0.resourceKey == held.resourceKey && $0.accessMode == held.accessMode }
         }) else { throw RuntimeExecutionOwnerStore.Failure.busy }
         return Admission(authorization: authorization, leases: try lockSources(authorization, store: store, context: context),

@@ -22,6 +22,7 @@ enum RuntimeResourceOwnership {
         }
         var claims: [TaskResourceLockClaim] = []
         for record in records where !(record.taskID == taskID && (record.taskOwnerID ?? legacyOwners[record.taskID]) == excludingOwner) && retainsResources(record) {
+            claims += try RuntimeNativeSessionOwnership.claims(record, store: store)
             if let captured = record.resourceClaims { claims += captured; continue }
             // Pre-upgrade receipts have no captured resource identity. Only a
             // verifiably ended owner can be omitted; unknown ownership blocks.
@@ -60,6 +61,7 @@ enum RuntimeResourceOwnership {
                       !(audit.taskID == taskID && event.task?.persistentModelID == excludingOwner) else { continue }
                 guard let captured = audit.resourceClaims else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
                 claims += captured
+                claims += try RuntimeNativeSessionOwnership.claims(audit, store: store)
             }
         }
         var seen: Set<TaskResourceLockClaim> = []

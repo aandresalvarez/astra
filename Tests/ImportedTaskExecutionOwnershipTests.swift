@@ -130,8 +130,9 @@ struct ImportedTaskExecutionOwnershipTests {
         var saved = try receipt(a, spent: 700)
         saved.state = .unverified; saved.resourcesReleased = false; saved.resourceClaims = [claim]
         do { let lease = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID); try lease.save(saved) }
-        #expect(try RuntimeResourceOwnership.claims(in: store, context: context, excluding: b.id,
-            excludingOwner: b.persistentModelID) == [claim])
+        let session = try #require(RuntimeNativeSessionOwnership.claim(saved))
+        #expect(Set(try RuntimeResourceOwnership.claims(in: store, context: context, excluding: b.id,
+            excludingOwner: b.persistentModelID)) == Set([claim, session]))
         #expect(try RuntimeResourceOwnership.claims(in: store, context: context, excluding: a.id,
             excludingOwner: a.persistentModelID).isEmpty)
     }

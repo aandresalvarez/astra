@@ -984,10 +984,14 @@ final class AgentRuntimeProcessRunner {
                 catch { owner.didNotLaunch(); throw error }
             }
         }
+        catch let conflict as RuntimeNativeSessionOwnership.Conflict {
+            return AgentProcessResult(exitCode: -1, runtimeStopReason: "runtime_recovery_blocked", runtimeStopMessage: conflict.message)
+        }
         catch { return AgentProcessResult(exitCode: -1, runtimeStopReason: "runtime_recovery_blocked", runtimeStopMessage: "Recovery ownership could not authorize this launch.") }
         let executionID = owner?.record.executionID ?? UUID()
         let remoteWorkExcluded = owner?.remoteWorkExcluded ?? false
         let ownershipEvents = OrderedMainActorTaskQueue()
+        var nativeSessionFailure: String?
         let inspectedAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = onInteractiveAsk.map { ask in
             { request in
                 await MainActor.run { owner?.waitingForInput(true) }
@@ -1125,7 +1129,10 @@ final class AgentRuntimeProcessRunner {
                 let parsedEvents = adapter.parseProcessEvents(line: deliveredLine, parsesJSONLines: plan.parsesJSONLines)
                 for parsed in parsedEvents {
                     if case .systemInit(_, let sessionID) = parsed {
-                        ownershipEvents.add { owner?.session(sessionID) }
+                        ownershipEvents.add {
+                            if let failure = await RuntimeNativeSessionOwnership.observe(sessionID, owner: owner,
+                                process: process, evidence: processEvidence) { nativeSessionFailure = failure }
+                        }
                     }
                     for filtered in eventPipeline.process(parsed) {
                         _ = monitor.processEvent(filtered, process: process)
@@ -1297,11 +1304,10 @@ final class AgentRuntimeProcessRunner {
             monitor.startWatchdog(process: process)
         }
         await ownershipEvents.drainAll()
-        var acknowledgedResult = result
-        acknowledgedResult.supervisionReservedTokens = activeSupervision?.tokenReservation
-        acknowledgedResult.acknowledgedPermissionRequestIDs = deliveryChannel.acknowledgedPermissionRequestIDs
-        acknowledgedResult.writtenPermissionRequestIDs = deliveryChannel.writtenPermissionRequestIDs
-        return acknowledgedResult
+        return result.applyingOwnershipObservations(nativeSessionFailure: nativeSessionFailure,
+            supervisionTokens: activeSupervision?.tokenReservation,
+            acknowledgedPermissions: deliveryChannel.acknowledgedPermissionRequestIDs,
+            writtenPermissions: deliveryChannel.writtenPermissionRequestIDs)
     }
 
     static func runScopedUtilityProcess(
