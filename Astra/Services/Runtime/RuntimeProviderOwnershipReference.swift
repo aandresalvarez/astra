@@ -59,6 +59,22 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
         }
     }
 
+    /// Read another key's pointer without migrating it. Its journal remains
+    /// the only release authority, including across stores and app restarts.
+    static func assertCompatible(at url: URL, key: AgentRuntimeSharedStateKey,
+                                 next: Self?) throws {
+        guard let previous = try read(url) else { return }
+        let record = try previous.record()
+        let sameOwner = next?.journalRoot == previous.journalRoot && next?.taskID == previous.taskID
+            && next?.taskOwnerID == record.taskOwnerID && next?.ownerID == record.ownerID
+        guard !sameOwner, record.resourcesReleased != true, record.providerSharedStateReleased != true,
+              !record.canRecoverPreparation else { return }
+        if RuntimeProviderResourceRegistry.conflicts(key, record: record)
+            || (record.resourceClaims == nil && record.runtime == key.runtimeName) {
+            throw RuntimeProviderResourceRegistry.Block(key: key, record: record, missingClaims: record.resourceClaims == nil)
+        }
+    }
+
     private static func read(_ url: URL) throws -> Self? {
         let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else {

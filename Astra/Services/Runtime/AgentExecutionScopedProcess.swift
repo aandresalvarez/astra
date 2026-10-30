@@ -127,7 +127,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         return true
     }
 
-    func run() throws {
+    func run(validatingLaunch: () throws -> Void = {}) throws {
         settlementScope = RuntimeSettlementExecutionScope.current
         try settlementScope?.begin(settlementChildID, cancel: { [weak self] in self?.terminate() })
         var spawned = false
@@ -203,6 +203,9 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
             freeCStringArray(envp)
         }
 
+        // The caller's final filesystem check shares the failed-launch cleanup
+        // and runs synchronously at the spawn boundary, after all preparation.
+        try validatingLaunch()
         let spawnResult = executablePath.withCString { executable in
             argv.withUnsafeMutableBufferPointer { argvBuffer in
                 envp.withUnsafeMutableBufferPointer { envBuffer in

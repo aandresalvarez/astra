@@ -8,6 +8,25 @@ import ASTRAModels
 @Suite("Provider launch presentation regressions", .serialized)
 @MainActor
 struct RuntimeLaunchPresentationRegressionTests {
+    @Test("A retained provider reservation is an unlaunched outcome, including after an earlier completed run")
+    func retainedReservationNeverOffersResultApproval() throws {
+        let h = try HeadlessChatHarness(); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .antigravityCLI, goal: "Synthetic", model: "test")
+        let previous = TaskRun(task: task); previous.status = .completed; h.context.insert(previous)
+        let oldReceipt = TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: "{\"state\":\"finished\",\"providerLaunchCount\":1,\"providerProcess\":{\"startedSeconds\":100}}", run: previous)
+        let run = TaskRun(task: task); h.context.insert(run)
+        run.status = .failed; run.stopReason = RuntimeProviderResourceRegistry.Block.stopReason
+        let receipt = TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: "{\"state\":\"notStarted\",\"providerLaunchCount\":0}", run: run)
+        let detail = try #require(RuntimeLaunchPresentation.terminalDetail(run: .init(input: .init(run: run)),
+            events: [oldReceipt, receipt].map(TaskEventSnapshot.init(event:))))
+        #expect(detail.id == "runtime-unlaunched-terminal")
+        #expect(detail.title == "Provider did not start")
+        #expect(detail.summary.contains("remains protected"))
+        #expect(!detail.summary.contains("exceeded"))
+    }
+
     @Test("A provider preparation timeout must not charge unexecuted prompt tokens")
     func timeoutDoesNotSpend() throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
