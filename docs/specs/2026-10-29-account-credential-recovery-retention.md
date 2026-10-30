@@ -34,6 +34,17 @@ Normal collection retains its limits of 32 archive reads, 4 MiB in aggregate
 and 1 MiB per record. Explicit recovery can read up to 256 archives and 32 MiB
 to repair histories produced before publication enforced these budgets.
 
+Reconciliation and ownership loading share one operation-scoped allowance and
+verified-image cache. Reusing an archive never performs another physical read
+or decode, and a subsequent operation starts with an empty cache. Availability
+probes use collection limits too; only the explicit recovery action can enlarge
+its allowance, keeping images and I/O already charged by its initial probe.
+The reader checks file size against the remaining byte allowance before reading
+the body, so the read that discovers exhaustion cannot overshoot 4 MiB.
+Publication separately checks the collection cost of the new snapshot/source,
+including complete images just written by the locked producer without an extra
+verification read.
+
 Recovery verifies the complete admitted source history and deduplicates by
 every cleanup fact, preserving distinct generations of the same account. It
 preserves the exact source bytes, then creates an immutable, digest-named
