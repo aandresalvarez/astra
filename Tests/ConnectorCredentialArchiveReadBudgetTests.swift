@@ -69,7 +69,7 @@ struct ConnectorCredentialArchiveReadBudgetTests {
         #expect(Set(reads.map { $0.0 }).count == 4)
     }
 
-    @Test("Explicit recovery shares its larger limit across the probe and both traversals", arguments: [256, 257])
+    @Test("Explicit recovery reserves retry verification within its hard limit", arguments: [254, 255, 256, 257])
     func explicitRecoveryIsBounded(count: Int) throws {
         let env = try PluginAddCommitTests.Fixture(installed: false)
         defer { env.disk.removeFiles() }
@@ -80,16 +80,79 @@ struct ConnectorCredentialArchiveReadBudgetTests {
             archiveReadObserver: { reads.append(($0, $1)) }))
         let before = try Data(contentsOf: journal.fileURL)
         let lease = try journal.acquireLease()
-        if count == 256 {
+        if count == 254 {
             #expect(try journal.recoverEditing(lease: lease) != nil)
             #expect(ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: env.context) == [candidate])
         } else {
             #expect(throws: ConnectorCredentialGenerationJournal.Failure.tooLarge) { try journal.recoverEditing(lease: lease) }
             #expect(try Data(contentsOf: journal.fileURL) == before)
         }
-        #expect(reads.count == 256)
-        #expect(Set(reads.map { $0.0 }).count == 256)
-        #expect(reads.reduce(0) { $0 + $1.1 } <= 32 * 1_048_576)
+        #expect(reads.count == 254)
+        #expect(Set(reads.map { $0.0 }).count == 254)
+        #expect(reads.reduce(0) { $0 + $1.1 } <= 30 * 1_048_576)
+    }
+
+    @Test("Oversized histories reject before a failing publisher can strand retry products",
+          arguments: [255, 256], ["reads", "bytes"])
+    func oversizedHistoryNeverReachesPublication(boundary: Int, limit: String) throws {
+        let env = try PluginAddCommitTests.Fixture(installed: false)
+        defer { env.disk.removeFiles() }
+        let candidate = Connector(name: "Synthetic retry admission", serviceType: "jira").keychainCleanup
+        let count = limit == "reads" ? boundary : (boundary == 255 ? 31 : 32)
+        let archives = try legacyChain(in: env.context, candidate: candidate, count: count,
+            recordBytes: limit == "bytes" ? 1_048_576 : nil)
+        let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.context))
+        let before = try Data(contentsOf: journal.fileURL)
+        let directory = try #require(archives.first).deletingLastPathComponent()
+        let originalNames = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        let lease = try journal.acquireLease()
+        var publications = 0
+        for _ in 0..<3 {
+            #expect(throws: ConnectorCredentialGenerationJournal.Failure.tooLarge) {
+                try journal.recoverEditing(lease: lease, publish: { _, _ in
+                    publications += 1
+                    throw CocoaError(.fileWriteNoPermission)
+                })
+            }
+            #expect(try Data(contentsOf: journal.fileURL) == before)
+            #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted() == originalNames)
+        }
+        #expect(publications == 0)
+    }
+
+    @Test("Admitted recovery retries repeated publication failures within reserved reads and bytes", arguments: ["reads", "bytes"])
+    func admittedHistoryCanRetryAtBoundary(limit: String) throws {
+        let env = try PluginAddCommitTests.Fixture(installed: false)
+        defer { env.disk.removeFiles() }
+        let candidate = Connector(name: "Synthetic admitted retry", serviceType: "jira").keychainCleanup
+        let count = limit == "reads" ? 254 : 30
+        try legacyChain(in: env.context, candidate: candidate, count: count,
+            recordBytes: limit == "bytes" ? 1_048_576 : nil)
+        var reads: [(URL, Int)] = []
+        let journal = try #require(try ConnectorCredentialGenerationJournal(modelContext: env.context,
+            archiveReadObserver: { reads.append(($0, $1)) }))
+        let original = try Data(contentsOf: journal.fileURL)
+        let directory = journal.fileURL.deletingLastPathComponent().appendingPathComponent("ConnectorCredentialRecovery")
+        let lease = try journal.acquireLease()
+        var retryNames: [String]?
+        for attempt in 0..<3 {
+            reads.removeAll()
+            if attempt < 2 {
+                #expect(throws: CocoaError.self) {
+                    try journal.recoverEditing(lease: lease, publish: { _, _ in throw CocoaError(.fileWriteNoPermission) })
+                }
+                #expect(try Data(contentsOf: journal.fileURL) == original)
+            } else { #expect(try journal.recoverEditing(lease: lease) != nil) }
+            #expect(reads.count == count + (attempt == 0 ? 0 : 2))
+            #expect(Set(reads.map { $0.0 }).count == reads.count)
+            #expect(reads.count <= 256)
+            #expect(reads.reduce(0) { $0 + $1.1 } <= 32 * 1_048_576)
+            let names = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+            if let retryNames { #expect(names == retryNames) }
+            else { retryNames = names }
+        }
+        #expect(ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: env.context) == [candidate])
+        #expect(!journal.canRecoverEditing())
     }
 
     @Test("A file larger than the remaining allowance is rejected before reading its bytes")

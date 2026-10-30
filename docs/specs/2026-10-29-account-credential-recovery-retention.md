@@ -33,12 +33,23 @@ while retained recovery debt exists. No background task removes it.
 Normal collection retains its limits of 32 archive reads, 4 MiB in aggregate
 and 1 MiB per record. Explicit recovery can read up to 256 archives and 32 MiB
 to repair histories produced before publication enforced these budgets.
+Those are total attempt limits, including verification of retry products.
+History admission therefore reserves two reads and 2 MiB for the exact source
+and compacted snapshot: at most 254 historical reads / 30 MiB may be needed
+before either product is created. Histories exceeding that allowance (including
+255/256-archive legacy chains) are rejected without reaching publication or
+creating extra archives. This conservative reservation makes an admitted
+recovery retryable after a failed cutover without increasing the hard limits.
 
 Reconciliation and ownership loading share one operation-scoped allowance and
 verified-image cache. Reusing an archive never performs another physical read
 or decode, and a subsequent operation starts with an empty cache. Availability
 probes use collection limits too; only the explicit recovery action can enlarge
 its allowance, keeping images and I/O already charged by its initial probe.
+The history reservation stays in force through ownership reconciliation; only
+then is the reserved capacity released for product verification. Repeated
+publication failures reuse the same immutable products and keep the active
+source unchanged until a cutover succeeds.
 The reader checks file size against the remaining byte allowance before reading
 the body, so the read that discovers exhaustion cannot overshoot 4 MiB.
 Publication separately checks the collection cost of the new snapshot/source,

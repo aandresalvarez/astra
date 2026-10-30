@@ -19,7 +19,7 @@ struct ConnectorCredentialGenerationJournal {
             case .unreadable: return "The account credential recovery record could not be read."
             case .wrongStore: return "ASTRA couldn't verify the account credential recovery record for this store. Recover credential editing before retrying."
             case .unsupportedVersion: return "This account credential recovery record requires a newer ASTRA. Update ASTRA before retrying."
-            case .tooLarge: return "Finish account credential recovery before making more changes."
+            case .tooLarge: return "The account credential recovery record exceeds ASTRA's processing limit. Existing records and credentials were preserved."
             case .busy: return "Another account credential change is in progress. Retry."
             }
         }
@@ -69,6 +69,11 @@ struct ConnectorCredentialGenerationJournal {
         // Explicit recovery may compact a previously published over-budget
         // chain. This larger read is bounded and never runs in background scans.
         static let recovery = Self(archives: 256, bytes: 32 * maximumBytes)
+        // A failed cutover can leave both the exact source and compacted
+        // snapshot. Every admitted history must leave room to read and verify
+        // those products on a fresh retry, even when each is a full record.
+        static let recoveryHistory = Self(archives: recovery.archives - 2,
+                                          bytes: recovery.bytes - 2 * maximumBytes)
     }
 
     /// Operation-local verified images. Reconciliation and ownership loading
@@ -441,7 +446,7 @@ struct ConnectorCredentialGenerationJournal {
         }
         // This explicit action alone may enlarge the allowance. Keep already
         // verified images and charged I/O from the collection-sized probe.
-        reads.budget = .recovery
+        reads.budget = .recoveryHistory
         let historical = try retainedHistory(stored.contents, using: reads)
         // Transfer every distinct hold to a bounded immutable snapshot. This
         // removes history depth and repeated bytes from collection's budget;
@@ -459,6 +464,10 @@ struct ConnectorCredentialGenerationJournal {
         // Only deterministic products of this exact attempt may be left by
         // an interrupted publication. Other unaccounted history blocks it.
         try requireArchiveReceipt(stored.contents, allowing: [sourceDigest, snapshotDigest], using: reads)
+        // History admission is complete before any archive is created. The
+        // reserved allowance is now available for existing retry products;
+        // both fresh and retried attempts keep the same total hard limit.
+        reads.budget = .recovery
         let directory = archiveDirectory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         guard try FileManager.default.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType == .typeDirectory
