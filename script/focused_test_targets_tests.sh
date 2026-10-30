@@ -30,13 +30,16 @@ assert_targets "MCPGatewaySupportTests" \
   "Tools/MCPGatewaySupport/MCPGatewaySupport.swift" \
   "Tests/MCPGatewaySupportTests/RemoteMCPGatewaySupportTests.swift"
 
-assert_targets "ProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests|ProviderSharedStateLaunchTests" \
+assert_targets "ProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests|ProviderSharedStateLaunchTests|ProviderSharedStateIsolationTests|ProviderFixtureRecoveryTests|antigravityEmptyRetryIgnoresEarlierArtifacts" \
   "Astra/Services/Runtime/ProviderSharedStateIdentity.swift" \
   "Astra/Services/Runtime/ProviderSharedStateCompatibility.swift" \
   "Astra/Services/Runtime/AgentRuntimeProcessRunner+SharedConfiguration.swift" \
   "Tests/ProviderSharedStateIdentityTests.swift" \
   "Tests/ProviderSharedStateMigrationTests.swift" \
-  "Tests/ProviderSharedStateLaunchTests.swift"
+  "Tests/ProviderSharedStateLaunchTests.swift" \
+  "Astra/Services/Runtime/ProviderSharedStateNamespace.swift" \
+  "Tests/ProviderSharedStateIsolationTests.swift" \
+  "Tests/ProviderFixtureRecoveryService.swift"
 
 assert_targets "AntigravityReadFilePolicyTests|AgentPolicyTests|AgentPolicyRuntimeMatrixTests|RuntimePolicyGuardTests|AntigravityCLIRuntimeTests" \
   "ASTRACore/ProviderReadFileInput.swift" \
@@ -376,7 +379,7 @@ assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\n
 assert_targets $'AgentRuntimeAdapterTests\nNativeContinuationFallbackTests' \
   "Tests/AgentRuntimeAdapterCopilotFixture.swift"
 
-assert_targets $'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode\nProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests|ProviderSharedStateLaunchTests' \
+assert_targets $'RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode\nProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests|ProviderSharedStateLaunchTests|ProviderSharedStateIsolationTests|ProviderFixtureRecoveryTests|antigravityEmptyRetryIgnoresEarlierArtifacts' \
   'Astra/Services/Tasks/TaskQueue.swift' \
   'Astra/Services/Runtime/RuntimeProviderOwnershipReference.swift' \
   'Tests/RuntimeCancellationReviewTests.swift' \

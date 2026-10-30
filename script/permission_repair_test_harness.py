@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 SOCKET_ENV = 'ASTRA_PERMISSION_TEST_SOCKET'
@@ -113,7 +114,11 @@ def run(command):
             os.chmod(path, 0o600)
             server.listen(128)
             server.settimeout(0.1)
-            child = subprocess.Popen(command, env=dict(os.environ, **{SOCKET_ENV: path}), start_new_session=True)
+            # Every wrapper invocation owns a fresh namespace. Children and
+            # renamed SwiftPM helpers inherit it before loading any test code.
+            environment = dict(os.environ, **{SOCKET_ENV: path,
+                'ASTRA_TEST_PROVIDER_NAMESPACE_ID': str(uuid.uuid4())})
+            child = subprocess.Popen(command, env=environment, start_new_session=True)
             previous = {}
 
             def interrupted(number, _frame):

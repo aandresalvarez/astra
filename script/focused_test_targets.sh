@@ -26,8 +26,8 @@ target_for_path() {
     Astra/Views/WorkspaceRailOutputPresentation.swift|Astra/Views/WorkspaceRailSectionPresentation.swift|Astra/Views/WorkspaceRightRailView.swift|Tests/WorkspaceRailOutput*Tests.swift)
       add_target "WorkspaceRailOutputPresentationTests|WorkspaceRailOutputPerformanceTests|WorkspaceRailSectionPresentationTests|WorkspaceRightRailPerformanceTests"
       ;;
-    Astra/Services/Runtime/ProviderSharedState*.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner+SharedConfiguration.swift|Astra/Services/Runtime/AgentRuntimeSharedStateGate.swift|Astra/Services/Runtime/RuntimeProviderOwnershipReference.swift|Astra/Services/Runtime/RuntimeProviderResourceRegistry.swift|Tests/ProviderSharedState*Tests.swift)
-      add_target "ProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests|ProviderSharedStateLaunchTests"
+    Astra/Services/Runtime/ProviderSharedState*.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner+SharedConfiguration.swift|Astra/Services/Runtime/AgentRuntimeSharedStateGate.swift|Astra/Services/Runtime/RuntimeProviderOwnershipReference.swift|Astra/Services/Runtime/RuntimeProviderResourceRegistry.swift|Tests/ProviderSharedState*Tests.swift|Tests/ProviderFixtureRecovery*.swift)
+      add_target "ProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests|ProviderSharedStateLaunchTests|ProviderSharedStateIsolationTests|ProviderFixtureRecoveryTests|antigravityEmptyRetryIgnoresEarlierArtifacts"
       ;;
   esac
 

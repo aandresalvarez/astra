@@ -109,8 +109,8 @@ struct ProviderSharedStateIdentityTests {
     func unicodeKernelIdentity() async throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
         let root = h.rootURL.appendingPathComponent("unicode-locks")
-        let composed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:/missing/caf\u{00e9}/settings.json")
-        let decomposed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:/missing/cafe\u{0301}/settings.json")
+        let composed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:\(h.rootURL.path)/missing/caf\u{00e9}/settings.json")
+        let decomposed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:\(h.rootURL.path)/missing/cafe\u{0301}/settings.json")
         #expect(composed == decomposed)
         #expect(Array(composed.rawValue.utf8) != Array(decomposed.rawValue.utf8))
         let held = try await ProviderSharedStateProcessLock.acquire(composed, root: root)

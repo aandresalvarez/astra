@@ -21,20 +21,10 @@ final class ProviderSharedStateProcessLock: @unchecked Sendable {
     }
     deinit { close(descriptor) }
 
-    private static let defaultRoot: URL = {
-        // SwiftPM fixtures must never leave fabricated reservations in the
-        // user's real cross-app coordination namespace.
-        if ProcessInfo.processInfo.processName == "swiftpm-testing-helper"
-            || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
-            return FileManager.default.temporaryDirectory.appendingPathComponent("astra-provider-tests-\(UUID().uuidString)")
-        }
-        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ASTRA Runtime Coordination/provider-state", isDirectory: true)
-    }()
-
     static func acquire(_ key: AgentRuntimeSharedStateKey, root override: URL? = nil, deadline: ContinuousClock.Instant? = nil,
                         reference: RuntimeProviderOwnershipReference? = nil) async throws -> ProviderSharedStateProcessLock {
-        let root = override ?? defaultRoot
+        let root = try ProviderSharedStateNamespace.resolve(override: override)
+        try ProviderSharedStateNamespace.validateResource(key)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var info = stat()
         guard lstat(root.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,

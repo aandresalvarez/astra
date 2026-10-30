@@ -963,5 +963,17 @@ extension HeadlessChatScenarioTests {
         #expect(run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         #expect(task.events.contains { $0.type == "error" && $0.run?.id == run.id && $0.payload.contains("for this run") })
         #expect(!task.events.contains { $0.type == "task.completed" && $0.run?.id == run.id })
+        // This intentionally empty fake has no terminal/tool proof. Its
+        // reservation must survive settlement, entirely inside test scope.
+        let owner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        #expect(owner.stopProof?.toolsStopped == false)
+        #expect(owner.settlementToolsStopped == true)
+        #expect(owner.resourcesReleased == false && owner.providerSharedStateReleased == false)
+        let namespace = try ProviderSharedStateNamespace.resolve()
+        let pointers = try FileManager.default.contentsOfDirectory(at: namespace, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        #expect(try pointers.contains {
+            try JSONDecoder().decode(RuntimeProviderOwnershipReference.self, from: Data(contentsOf: $0)).taskID == task.id
+        })
     }
 }
