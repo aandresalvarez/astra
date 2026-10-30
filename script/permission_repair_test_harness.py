@@ -61,7 +61,7 @@ def stop_test_process(process):
     process.wait()
 
 
-def execute(request):
+def execute(request, environment=None):
     if not isinstance(request, dict):
         raise ValueError('Invalid permission-test request')
     executable = request.get('executable')
@@ -71,7 +71,7 @@ def execute(request):
     # File-backed output cannot hang pipe draining if a command leaves a child.
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         child = subprocess.Popen([executable, *arguments], stdin=subprocess.DEVNULL,
-                                 stdout=out, stderr=err, start_new_session=True)
+                                 stdout=out, stderr=err, env=environment, start_new_session=True)
         try:
             code = child.wait(timeout=COMMAND_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -91,7 +91,7 @@ def execute(request):
                 'stderr': err.read(8192).decode(errors='replace')}
 
 
-def serve_request(connection):
+def serve_request(connection, environment=None):
     connection.settimeout(COMMAND_TIMEOUT + 2)
     data = bytearray()
     while b'\n' not in data:
@@ -101,7 +101,7 @@ def serve_request(connection):
         data.extend(chunk)
         if len(data) > MAX_REQUEST_BYTES:
             raise ValueError('Permission-test request exceeds limit')
-    return execute(json.loads(data.split(b'\n', 1)[0]))
+    return execute(json.loads(data.split(b'\n', 1)[0]), environment=environment)
 
 
 def run(command):
@@ -134,7 +134,9 @@ def run(command):
                         continue
                     with connection:
                         try:
-                            response = serve_request(connection)
+                            # These commands are siblings of SwiftPM, not its
+                            # children. Give them the same explicit namespace.
+                            response = serve_request(connection, environment=environment)
                             response['executorPID'] = os.getpid()
                         except (ValueError, OSError) as error:
                             response = {'exitCode': 125, 'stderr': str(error)}

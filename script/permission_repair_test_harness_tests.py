@@ -66,12 +66,14 @@ assert Path(path).stat().st_mode & 0o777 == 0o600
 assert Path(path).parent.stat().st_mode & 0o777 == 0o700
 with socket.socket(socket.AF_UNIX) as client:
  client.connect(path)
- client.sendall(json.dumps({'executable':'/bin/sh','arguments':['-c','printf "%s" "$PPID"; exit 7']}).encode()+b'\\n')
+ client.sendall(json.dumps({'executable':'/bin/sh','arguments':['-c','printf "%s|%s" "$PPID" "$ASTRA_TEST_PROVIDER_NAMESPACE_ID"; exit 7']}).encode()+b'\\n')
  data=b''
  while b'\\n' not in data: data+=client.recv(4096)
  result=json.loads(data)
  assert result['executorPID']!=os.getpid()
- assert str(result['executorPID'])==result['stdout']
+ parent,namespace=result['stdout'].split('|')
+ assert str(result['executorPID'])==parent
+ assert namespace==os.environ['ASTRA_TEST_PROVIDER_NAMESPACE_ID']
  assert result['exitCode']==7
 sys.exit(23)
 '''
