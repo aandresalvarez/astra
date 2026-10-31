@@ -33,8 +33,8 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
     }
 
     static func handoff(in directory: ProviderSharedStateDirectory, name: String, key: AgentRuntimeSharedStateKey, to next: Self?,
-                        prepare: () throws -> Void = {}) throws {
-        try directory.verifyLocation()
+                        verifyLease: () throws -> Void, prepare: () throws -> Void) throws {
+        try verifyLease()
         if let previous = try read(in: directory, name: name) {
             let record = try previous.record()
             // Admission of a successor under the same task journal has already
@@ -50,11 +50,13 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
             }
         }
         try prepare()
-        try directory.verifyLocation()
         if let next {
             let record = try next.record()
             guard record.ownerID == next.ownerID, record.providerSharedStateKey == key.rawValue,
                   record.cancellationRequested != true else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        }
+        try verifyLease()
+        if let next {
             try save(next, in: directory, name: name)
         } else if unlinkat(directory.descriptor, name, 0) != 0 && errno != ENOENT {
             throw RuntimeExecutionOwnerStore.Failure.writeFailed
@@ -78,7 +80,7 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
     }
 
     private static func read(in directory: ProviderSharedStateDirectory, name: String) throws -> Self? {
-        let fd = openat(directory.descriptor, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        let fd = openat(directory.descriptor, name, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else {
             if errno == ENOENT { return nil }
             throw RuntimeExecutionOwnerStore.Failure.unreadable

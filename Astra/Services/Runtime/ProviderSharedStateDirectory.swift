@@ -7,7 +7,7 @@ final class ProviderSharedStateDirectory: @unchecked Sendable {
     let url: URL
     let descriptor: Int32
 
-    init(_ url: URL) throws {
+    init(_ url: URL, createIfMissing: Bool = true) throws {
         self.url = url
         let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
         var current = open("/", flags)
@@ -17,7 +17,7 @@ final class ProviderSharedStateDirectory: @unchecked Sendable {
                 let name = String(component)
                 guard name != ".", name != ".." else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }
                 var next = openat(current, name, flags)
-                if next < 0, errno == ENOENT {
+                if next < 0, errno == ENOENT, createIfMissing {
                     guard mkdirat(current, name, 0o700) == 0 || errno == EEXIST else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }
                     next = openat(current, name, flags)
                 }
@@ -41,7 +41,19 @@ final class ProviderSharedStateDirectory: @unchecked Sendable {
         defer { close(current) }
         var named = stat(), held = stat()
         guard fstat(current, &named) == 0, fstat(descriptor, &held) == 0,
+              held.st_uid == getuid(), held.st_mode & 0o077 == 0,
               named.st_dev == held.st_dev, named.st_ino == held.st_ino else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }
+    }
+
+    /// The named file must still be the private, singly linked inode locked by this descriptor.
+    func verifiedLock(_ file: Int32, named name: String) throws -> stat {
+        try verifyLocation()
+        var held = stat(), named = stat()
+        guard fstat(file, &held) == 0, held.st_mode & S_IFMT == S_IFREG,
+              held.st_uid == getuid(), held.st_nlink == 1,
+              fstatat(descriptor, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              named.st_dev == held.st_dev, named.st_ino == held.st_ino else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }
+        return held
     }
 
     func names() throws -> [String] {

@@ -267,6 +267,64 @@ struct ProviderSharedStateIdentityTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.count == 64 }.count == 1)
     }
 
+    @Test("A waiter refuses a replaced legacy lock even while the replacement is busy")
+    func replacedLegacyLockDuringWait() async throws {
+        let fixture = try ProviderCoordinationFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.coordination) }
+        let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "legacy-wait")
+        var original: ProviderSharedStateProcessLock? = try await .acquire(key, root: fixture.coordination)
+        let directory = try ProviderSharedStateDirectory(fixture.coordination)
+        let name = try #require(try directory.names().first { $0.count == 64 })
+        let entered = AgentLockedBuffer()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        let waiter = Task {
+            try await ProviderSharedStateCompatibility.waitForLegacyLocks(in: directory, deadline: deadline,
+                onContention: { entered.append("waiting") })
+        }
+        defer { waiter.cancel() }
+        while entered.value.isEmpty && ContinuousClock.now < deadline { await Task.yield() }
+        try #require(!entered.value.isEmpty)
+        let entry = fixture.coordination.appendingPathComponent(name)
+        try FileManager.default.moveItem(at: entry, to: fixture.coordination.appendingPathComponent("original-lock"))
+        let replacement = try await ProviderSharedStateProcessLock.acquire(key, root: fixture.coordination)
+        defer { withExtendedLifetime(replacement) {} }
+        withExtendedLifetime(original) {}
+        original = nil
+        await #expect(throws: ProviderSharedStateCompatibility.UnreadableReservation.self) { try await waiter.value }
+    }
+
+    @Test("A modern lock replaced during a legacy wait cannot admit the provider")
+    func replacedModernLockDuringWait() async throws {
+        let fixture = try ProviderCoordinationFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.coordination) }
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: fixture.data.appendingPathComponent("settings.json"))
+        let legacy = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "held-legacy-lock")
+        var holder: ProviderSharedStateProcessLock? = try await .acquire(legacy, root: fixture.coordination)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        let waiter = Task { try await ProviderSharedStateProcessLock.acquire(key, root: fixture.coordination, deadline: deadline) }
+        defer { waiter.cancel() }
+        let directory = try ProviderSharedStateDirectory(fixture.coordination)
+        var occupied: URL?
+        while occupied == nil && ContinuousClock.now < deadline {
+            if let name = try directory.names().first(where: { $0.hasPrefix("file-v1-") }) {
+                let fd = openat(directory.descriptor, name, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+                try #require(fd >= 0)
+                if flock(fd, LOCK_EX | LOCK_NB) != 0, errno == EWOULDBLOCK {
+                    occupied = fixture.coordination.appendingPathComponent(name)
+                }
+                close(fd)
+            }
+            if occupied == nil { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        let entry = try #require(occupied)
+        let moved = fixture.coordination.appendingPathComponent("original-modern-lock")
+        try FileManager.default.moveItem(at: entry, to: moved)
+        try FileManager.default.copyItem(at: moved, to: entry)
+        withExtendedLifetime(holder) {}
+        holder = nil
+        await #expect(throws: RuntimeExecutionOwnerStore.Failure.self) { try await waiter.value }
+    }
+
     @Test("A redirected settings directory is rejected before adapter mutation")
     func retargetedDirectory() async throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }

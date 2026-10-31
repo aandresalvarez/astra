@@ -180,6 +180,29 @@ struct ProviderSharedStateIsolationTests {
         #expect(try ProviderCoordinationFixture.liveAntigravityHome(alias.path) == ProviderSharedStateIdentity.canonicalPath(good.path))
     }
 
+    @Test("All three E2E phases configure Antigravity with the validated QA home")
+    @MainActor
+    func e2eWorkerUsesFixtureHome() throws {
+        let fixture = try ProviderCoordinationFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.data) }
+        let runtime = try #require(E2ETestSupport.runtimeCases(environment: ["RUN_E2E_RUNTIME": "antigravity"]).first)
+        let worker = AgentRuntimeWorker()
+        try E2ETestSupport.configureUnattended(worker, for: runtime,
+            environment: ["REAL_PROVIDER_ANTIGRAVITY_HOME": fixture.data.path], resolveExecutable: { _ in "/usr/bin/true" })
+        #expect(worker.executablePath(for: .antigravityCLI) == "/usr/bin/true")
+        let home = worker.homeDirectory(for: .antigravityCLI)
+        #expect(home == (try ProviderSharedStateIdentity.canonicalPath(fixture.data.path)))
+        let settings = AntigravityCLIRuntime.settingsURL(providerHomeDirectory: home)
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: settings)
+        #expect(try ProviderSharedStateNamespace.resolve(key: key) == fixture.coordination)
+        for environment in [[:], ["REAL_PROVIDER_ANTIGRAVITY_HOME": fixture.coordination.path]] {
+            #expect(throws: LiveProviderReadiness.Failure.self) {
+                try E2ETestSupport.configureUnattended(worker, for: runtime, environment: environment,
+                    resolveExecutable: { _ in "/usr/bin/true" })
+            }
+        }
+    }
+
     @Test("Changing a directory during handoff cannot remove a different owner's pointer", arguments: [false, true])
     func pointerStaysWithAcquiredDirectory(replaceDirectory: Bool) async throws {
         let fixture = try ProviderSharedStateNamespace.resolve().appendingPathComponent(UUID().uuidString)
@@ -213,6 +236,39 @@ struct ProviderSharedStateIsolationTests {
         } catch is ProviderSharedStateCompatibility.UnreadableReservation { /* A changed lock directory may fail closed. */ }
         #expect(prepared)
         #expect(try Data(contentsOf: neighbor) == sentinel)
+    }
+
+    @Test("Handoff requires the original lock in a directory that stays private",
+          arguments: ["replace", "permissions"], [false, true])
+    func handoffRequiresOriginalProviderLock(change: String, duringPrepare: Bool) async throws {
+        let fixture = try ProviderCoordinationFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.coordination) }
+        let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "lock-handoff")
+        let lock = try await ProviderSharedStateProcessLock.acquire(key, root: fixture.coordination)
+        let name = try #require(FileManager.default.contentsOfDirectory(atPath: fixture.coordination.path).first)
+        let entry = fixture.coordination.appendingPathComponent(name)
+        let pointer = entry.appendingPathExtension("json")
+        let sentinel = Data("other owner's pointer".utf8)
+        func changeLock() throws {
+            if change == "permissions" {
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.coordination.path)
+                return
+            }
+            let moved = fixture.coordination.appendingPathComponent("original-lock")
+            try FileManager.default.moveItem(at: entry, to: moved)
+            try FileManager.default.copyItem(at: moved, to: entry)
+        }
+        if !duringPrepare { try changeLock() }
+        var prepared = false
+        #expect(throws: ProviderSharedStateCompatibility.UnreadableReservation.self) {
+            try lock.handoff(key, reference: nil) {
+                prepared = true
+                if duringPrepare { try changeLock() }
+                try sentinel.write(to: pointer)
+            }
+        }
+        #expect(prepared == duringPrepare)
+        if duringPrepare { #expect(try Data(contentsOf: pointer) == sentinel) }
     }
 
     @Test("An explicitly selected renamed helper still publishes only in test scope",
