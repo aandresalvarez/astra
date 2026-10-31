@@ -36,7 +36,11 @@ struct CopilotSessionDiscoveryWorkerTests {
         printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
         exit 0
         """))
-        let worker = h.makeWorker(runtime: .copilotCLI, executablePath: executable, sandboxEnforcementOverride: .strict)
+        let worker = AgentRuntimeWorker.scenarioWorker(processRunner: CopilotSessionDiscoveryProcessRunner(home: h.rootURL.path))
+        worker.copilotPath = executable
+        worker.permissionPolicy = .restricted
+        worker.liveApprovalsEnabled = false
+        worker.timeoutSeconds = 10
         worker.copilotHome = h.rootURL.appendingPathComponent(".copilot").path
         worker.providerSessionStoreHome = h.rootURL.path
         DirectWorkerLaunchAdmission.admitInitialRun(source, modelContext: h.context)
@@ -93,11 +97,16 @@ struct CopilotSessionDiscoveryWorkerTests {
         let prior = try #require(copy.runs.first { $0.id != latest.id })
         #expect(ProviderLaunchSignatureService.storedSignature(for: copy, run: latest)?.signatureValue
             == ProviderLaunchSignatureService.storedSignature(for: copy, run: prior)?.signatureValue)
-        #expect(latest.stopReason == "runtime_recovery_blocked")
+        #expect(latest.stopReason == "runtime_recovery_blocked", "\(copy.events.filter { $0.run?.id == latest.id && $0.type == "error" }.map(\.payload))")
         #expect(copy.events.contains { $0.payload.contains("native session \(sessionID)") && $0.payload.contains("held by") })
         #expect(!FileManager.default.fileExists(atPath: path.appendingPathComponent("launches").path))
         let receipt = try #require(try RuntimeExecutionOwner.existing(task: copy, context: h.context))
         #expect((receipt.providerLaunchCount ?? 0) == 0)
+        #expect(receipt.sessionID == nil)
+        #expect(receipt.resourceClaims?.contains { $0.resourceKind == .nativeSession } != true)
+        #expect(receipt.sessionVerificationPending != true && !receipt.hasUnverifiedTools)
+        #expect(receipt.state == .notStarted)
+        #expect(receipt.resourcesReleased == true && receipt.canReplace)
     }
 
     private func policy(for task: AgentTask) -> AgentRuntimeExecutionPolicy {
@@ -114,5 +123,111 @@ struct CopilotSessionDiscoveryWorkerTests {
         h.context.insert(workspace); h.context.insert(task)
         try h.context.save()
         return task
+    }
+}
+
+/// Relocate only the synthetic provider's home before the real runner applies
+/// its sandbox and home-access checks. Ownership, launches and parsing are real.
+private final class CopilotSessionDiscoveryProcessRunner: AgentRuntimeProcessRunning {
+    private let home: String
+    private let runner: AgentRuntimeProcessRunner
+
+    init(home: String) {
+        self.home = home
+        runner = AgentRuntimeProcessRunner(
+            sandboxSettingsProvider: { _ in ExecutionSandboxSettings(enforcement: .strict) },
+            hostControlBrokerSessionManager: HostControlBrokerSessionManager(
+                expectedHelperPath: BuiltProductLocator.executablePath(named: "astra-host-control") ?? ""))
+    }
+
+    func cancel() { runner.cancel() }
+    func isHostControlBrokerAvailable() -> Bool { runner.isHostControlBrokerAvailable() }
+    @MainActor func configureSupervision(_ context: RuntimeSupervisionContext?) { runner.configureSupervision(context) }
+    @MainActor func configureExecutionOwner(_ owner: RuntimeExecutionOwner?) { runner.configureExecutionOwner(owner) }
+
+    @MainActor
+    func runRuntimeProcess(
+        adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
+        prompt: String, task: AgentTask, workspacePath: String, executablePath: String, homeDirectory: String,
+        permissionPolicy: PermissionPolicy, executionPolicy: AgentRuntimeExecutionPolicy,
+        permissionManifest: RunPermissionManifest?, budgetEnforcementMode: BudgetEnforcementMode,
+        timeoutSeconds: TimeInterval, phase: RunPhase, contextText: String, nativeContinuationSessionID: String?,
+        copilotRepositoryInstructionMode: CopilotRepositoryInstructionMode, runID: UUID?,
+        launchResourcePlan: TaskLaunchResourcePlan?, capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,
+        runtimeRequirements: TaskRuntimeRequirementSet?, liveApprovalsEnabled: Bool,
+        noSemanticProgressTimeoutSeconds: TimeInterval?, maxRunSeconds: TimeInterval?,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
+        onLine: @escaping (String, Bool) -> Void
+    ) async -> AgentProcessResult {
+        await runner.runRuntimeProcess(adapter: CopilotSessionDiscoveryAdapter(base: adapter, home: home),
+            prompt: prompt, task: task, workspacePath: workspacePath, executablePath: executablePath,
+            homeDirectory: homeDirectory, permissionPolicy: permissionPolicy, executionPolicy: executionPolicy,
+            permissionManifest: permissionManifest, budgetEnforcementMode: budgetEnforcementMode,
+            timeoutSeconds: timeoutSeconds, phase: phase, contextText: contextText,
+            nativeContinuationSessionID: nativeContinuationSessionID,
+            copilotRepositoryInstructionMode: copilotRepositoryInstructionMode, runID: runID,
+            launchResourcePlan: launchResourcePlan, capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimeRequirements: runtimeRequirements, liveApprovalsEnabled: liveApprovalsEnabled,
+            noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds, maxRunSeconds: maxRunSeconds,
+            onInteractiveAsk: onInteractiveAsk, onLine: onLine)
+    }
+}
+
+private struct CopilotSessionDiscoveryAdapter: AgentRuntimeProcessLaunchPlanning, AgentRuntimeProcessEventParsing {
+    let base: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing
+    let home: String
+    var id: AgentRuntimeID { base.id }
+    var descriptor: AgentRuntimeDescriptor { base.descriptor }
+    var providerRuntimeMessages: ProviderRuntimeMessages { base.providerRuntimeMessages }
+    func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings { base.launchSettings(configuration: configuration) }
+    @MainActor func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) throws -> AgentRuntimeSharedStateKey? {
+        try base.sharedLaunchStateKey(context: context)
+    }
+    func missingExecutableAuditReason() -> String { base.missingExecutableAuditReason() }
+    func missingExecutableStopReason() -> String? { base.missingExecutableStopReason() }
+    func missingExecutableMessage(executablePath: String) -> String { base.missingExecutableMessage(executablePath: executablePath) }
+    func defaultStartEventPayload(task: AgentTask) -> String { base.defaultStartEventPayload(task: task) }
+    func connectorPreflightContextText(task: AgentTask, promptOverride: String?, startPayload: String,
+                                      sessionMessage: String?, phase: RunPhase) -> String {
+        base.connectorPreflightContextText(task: task, promptOverride: promptOverride, startPayload: startPayload,
+            sessionMessage: sessionMessage, phase: phase)
+    }
+    func shouldCheckWorkspaceDirectory(phase: RunPhase) -> Bool { base.shouldCheckWorkspaceDirectory(phase: phase) }
+    func shouldPrepareIsolation(phase: RunPhase) -> Bool { base.shouldPrepareIsolation(phase: phase) }
+    func parseProcessEvents(line: String, parsesJSONLines: Bool) -> [ParsedEvent] {
+        base.parseProcessEvents(line: line, parsesJSONLines: parsesJSONLines)
+    }
+    func blockingProcessPermissionMessage(line: String, parsesJSONLines: Bool) -> String? {
+        base.blockingProcessPermissionMessage(line: line, parsesJSONLines: parsesJSONLines)
+    }
+    func providerSelfStop(stderr: String) -> AgentRuntimeProviderSelfStop? { base.providerSelfStop(stderr: stderr) }
+
+    @MainActor
+    func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
+        let plan = base.makeProcessLaunchPlan(context: context)
+        let originalHome = FileManager.default.homeDirectoryForCurrentUser.path
+        func relocate(_ path: String) -> String {
+            path == originalHome || path.hasPrefix(originalHome + "/")
+                ? home + path.dropFirst(originalHome.count) : path
+        }
+        var environment = plan.environment
+        for key in ["HOME", "COPILOT_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"] {
+            if let path = environment[key] { environment[key] = relocate(path) }
+        }
+        #expect(environment["HOME"] == home)
+        #expect(environment["COPILOT_HOME"] == home + "/.copilot")
+        var isolated = AgentRuntimeProcessLaunchPlan(runtime: plan.runtime, executablePath: plan.executablePath,
+            arguments: plan.arguments, currentDirectory: plan.currentDirectory, environment: environment,
+            browserShimDirectory: plan.browserShimDirectory, providerVersion: plan.providerVersion,
+            parsesJSONLines: plan.parsesJSONLines, directoriesToCreate: plan.directoriesToCreate.map(relocate),
+            sandboxReadablePaths: plan.sandboxReadablePaths.map(relocate), sandboxHomeStateAccess: plan.sandboxHomeStateAccess,
+            sandboxProtectedWriteDenyPaths: plan.sandboxProtectedWriteDenyPaths.map(relocate),
+            providerDetectedFields: plan.providerDetectedFields, commandPlannedFields: plan.commandPlannedFields,
+            interactiveAsk: plan.interactiveAsk, pathMapper: plan.pathMapper,
+            executionEnvironment: plan.executionEnvironment, sharedConfigurationHostURL: plan.sharedConfigurationHostURL)
+        isolated.containerProviderCommandIndex = plan.containerProviderCommandIndex
+        isolated.readOnlyBoundaryReceipt = plan.readOnlyBoundaryReceipt
+        isolated.executionSandboxBoundaryReceipt = plan.executionSandboxBoundaryReceipt
+        return isolated
     }
 }

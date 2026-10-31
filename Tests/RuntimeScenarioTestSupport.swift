@@ -88,13 +88,14 @@ extension AgentRuntimeWorker {
     /// directly (see AgentRuntimeComponentTests) and are unaffected.
     @MainActor
     static func scenarioWorker(
-        sandboxEnforcementOverride: ExecutionSandboxEnforcement? = nil
+        sandboxEnforcementOverride: ExecutionSandboxEnforcement? = nil,
+        processRunner: (any AgentRuntimeProcessRunning)? = nil
     ) -> AgentRuntimeWorker {
         // Exercise real broker setup with SwiftPM's built helper instead of
         // depending on a locally installed ASTRA.app tool.
         let hostControlHelperPath = BuiltProductLocator
             .executablePath(named: "astra-host-control") ?? ""
-        let runner = AgentRuntimeProcessRunner(
+        let runner = processRunner ?? AgentRuntimeProcessRunner(
             sandboxSettingsProvider: { permissionPolicy in
                 let enforcement = sandboxEnforcementOverride
                     ?? (permissionPolicy == .autonomous ? .strict : .bestEffort)

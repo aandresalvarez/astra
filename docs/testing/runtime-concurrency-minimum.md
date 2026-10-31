@@ -111,6 +111,16 @@ ID through the same protected owner verification before settlement. A conflict
 keeps uncertainty and reports `runtime_recovery_blocked`, preserving usage,
 permission evidence and process facts without charging a second stop.
 
+Native QA on `6851b8fc` caught a regression in that verification: a Retry
+rejected before launch published its requested session as though it had run,
+leaving a phantom reservation. The strengthened worker regression reproduced
+four failed expectations (identity, claim, uncertainty and release). Verification
+now requires a recorded provider launch; rejected attempts retain no native
+claim and remain replaceable after settlement. Real post-process discoveries
+still pass through verification. The affected synthetic QA receipt is preserved;
+this correction does not rewrite existing protected receipts. The full campaign
+and CI for `6851b8fc` were stopped as superseded, not counted as passing.
+
 The worker regression runs a synthetic Copilot executable under strict isolation:
 its stream omits the session, its state file discloses it, and its missing final
 frame leaves tool cleanup uncertain. It verifies discovery, an already occupied
@@ -120,6 +130,13 @@ use separate subdirectories of a real temporary repository so their repository
 instruction signatures actually match. Only copied history dates are moved
 before startup to model a later app launch; protected execution evidence is not
 rewritten. This is automated worker coverage, not a real Copilot-account test.
+A test-only plan decorator relocates the provider home before the real runner's
+strict sandbox and home-access checks; it does not bypass those checks. Without
+that relocation, the fixture looked for the imported session in a different
+home and failed at readiness before reaching session admission. The corrected
+campaign passed **63 tests in 8 suites** (`copilot-isolated-home-focused.log`),
+including the rejection-before-launch release assertions. The independent
+reviewer found no remaining actionable P1/P2 in that correction.
 
 Ownership scans also cache protected retained-file reads for that single scan.
 With 32 historical receipts and 99 audit identities, the regression measured
