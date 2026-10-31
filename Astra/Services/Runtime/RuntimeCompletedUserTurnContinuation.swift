@@ -145,10 +145,10 @@ enum RuntimeCompletedUserTurnContinuation {
 
     static func retainingClaims(_ prior: RuntimeExecutionOwnerRecord,
                                 additional: [TaskResourceLockClaim], requestID: UUID?) -> [TaskResourceLockClaim] {
-        // This is the protected predecessor read during admission, not an audit.
-        // A proved release must not fence an old session throughout a new turn.
-        let released = prior.resourcesReleased == true && prior.canReplace
-        let inherited = (prior.resourceClaims ?? []).filter { $0.resourceKind != .nativeSession || !released }
+        // Admission archives the predecessor before saving this successor.
+        // Session protection is projected from that chain; copying its sessions
+        // into every successor would eventually make the receipt unreadable.
+        let inherited = (prior.resourceClaims ?? []).filter { $0.resourceKind != .nativeSession }
         let claims = (inherited + additional).map {
             TaskExecutionResourceClaim(kind: $0.resourceKind, key: $0.resourceKey,
                 access: $0.accessMode == .write ? .exclusive : .shared)

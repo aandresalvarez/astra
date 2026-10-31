@@ -93,6 +93,18 @@ performance benchmark untouched. The focused validation passed **19 tests in
 2 suites** (`cold-refresh-preparation-fix.log`). The failed full campaign remains
 a failed campaign; final full-suite results are reported separately on the PR.
 
+Copilot review identified a separate growth defect: uncertain native-session
+claims were copied into every successor as well as retained in the journal
+chain. The regression reproduced an unreadable 32,803-byte receipt at successor
+62. Successors now inherit only non-session claims; prior sessions remain
+protected by the archive saved before successor publication. The focused run
+passed **58 tests in 5 suites** (`native-history-fix-focused.log`), including
+128 constructed successors, 258 protected identities, actual journal reads,
+reopening, orphaned-audit fallback, and independent launch admission. These are
+receipt/admission tests, not 128 real provider turns. Existing unreadable receipts
+still fail closed; this does not migrate or delete them. The full campaign on
+`2310764b` was intentionally stopped before this correction, not counted as passed.
+
 ## Candidate native-app session check
 
 The verified development bundle was copied into the same isolated QA identity.

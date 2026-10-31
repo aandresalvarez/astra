@@ -183,6 +183,67 @@ struct RuntimeNativeSessionOwnershipTests {
         }
     }
 
+    @Test("Long uncertain session histories keep receipts readable and independent work admissible")
+    func longSessionHistoryRemainsReadable() async throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let source = try task("long-history", runtime: .codexCLI, in: h)
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: source, context: h.context, maxRunSeconds: 60))
+        try owner.prepareLaunch(sessionID: "initial-session")
+        try await owner.session("initial-late-session")
+        owner.stopped(proof: nil, turns: 1, tokens: 12, seconds: 1)
+        let receiptURL = try #require(owner.receiptURL)
+        owner.finish()
+        var current = owner.record
+        var sessions = ["initial-session", "initial-late-session"]
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        for index in 0..<128 {
+            // Exercise the same archive-before-successor protocol as admission,
+            // with two disclosed identities in each uncertain execution.
+            try store.retain(current)
+            let disclosed = [UUID().uuidString, UUID().uuidString]
+            let additional = try disclosed.map { session in
+                try #require(RuntimeNativeSessionOwnership.claim(runtime: "codex_cli", sessionID: session, taskID: source.id))
+            }
+            var next = current
+            next.executionID = UUID()
+            next.sessionID = disclosed.last
+            next.retainedExecutionHead = current.executionID
+            next.resourceClaims = RuntimeCompletedUserTurnContinuation.retainingClaims(current,
+                additional: additional, requestID: UUID())
+            next.updatedAt = Date()
+            do {
+                let lease = try store.acquire(taskID: source.id, taskOwnerID: source.persistentModelID)
+                try lease.save(next)
+                let bytes = try Data(contentsOf: lease.recordURL).count
+                #expect(bytes <= 32_768, "Successor \(index) wrote an unreadable \(bytes)-byte receipt")
+                #expect(try lease.read() == next)
+            }
+            current = next
+            sessions += disclosed
+        }
+        #expect(current.resourceClaims?.filter { $0.resourceKind == .nativeSession }.count == 2)
+        #expect(try store.retainedExecutions(of: current).count == 128)
+        #expect(try store.records().contains(current))
+        h.context.insert(TaskEvent(task: source, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: TaskEvent.payloadString(current)))
+        try h.context.save()
+        for orphaned in [false, true] {
+            if orphaned { try FileManager.default.removeItem(at: receiptURL) }
+            let reopened = ModelContext(h.container)
+            let held = try RuntimeResourceOwnership.claims(in: RuntimeExecutionOwner.store(in: reopened), context: reopened)
+            for session in sessions {
+                let claim = try #require(RuntimeNativeSessionOwnership.claim(runtime: "codex_cli", sessionID: session, taskID: UUID()))
+                #expect(!TaskExecutionResourceBroker.canAcquire([claim], active: held))
+            }
+            let other = try task("independent-\(orphaned)", runtime: .codexCLI, in: h)
+            let independent = try #require(RuntimeExecutionOwner.acquire(task: other, context: h.context, maxRunSeconds: 60))
+            defer { independent.finish() }
+            try independent.prepareLaunch(sessionID: "independent-\(orphaned)")
+            #expect(independent.record.state == .launching)
+        }
+    }
+
     @Test("An independent admission lease delays session verification without stopping the owner", arguments: [false, true])
     func admissionContention(cancelled: Bool) async throws {
         let h = try HeadlessChatHarness(persistentStore: true)
