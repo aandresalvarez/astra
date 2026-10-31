@@ -105,6 +105,29 @@ receipt/admission tests, not 128 real provider turns. Existing unreadable receip
 still fail closed; this does not migrate or delete them. The full campaign on
 `2310764b` was intentionally stopped before this correction, not counted as passed.
 
+The subsequent Copilot review found that post-process session discovery updated
+the task and run without reserving the discovered ID. The worker now passes that
+ID through the same protected owner verification before settlement. A conflict
+keeps uncertainty and reports `runtime_recovery_blocked`, preserving usage,
+permission evidence and process facts without charging a second stop.
+
+The worker regression runs a synthetic Copilot executable under strict isolation:
+its stream omits the session, its state file discloses it, and its missing final
+frame leaves tool cleanup uncertain. It verifies discovery, an already occupied
+session, six usage tokens, imported native resume with zero competing launches,
+an unchanged source receipt and independent-session admission. Source and import
+use separate subdirectories of a real temporary repository so their repository
+instruction signatures actually match. Only copied history dates are moved
+before startup to model a later app launch; protected execution evidence is not
+rewritten. This is automated worker coverage, not a real Copilot-account test.
+
+Ownership scans also cache protected retained-file reads for that single scan.
+With 32 historical receipts and 99 audit identities, the regression measured
+1,584 reads before caching and 32 afterward. Every audit identity remains
+reserved, cached traversals still check attribution and cycles, and a fresh scan
+fails closed if a protected receipt disappears. The cache does not survive the
+scan, trust imported audit evidence, or make all in-memory traversals linear.
+
 ## Candidate native-app session check
 
 The verified development bundle was copied into the same isolated QA identity.

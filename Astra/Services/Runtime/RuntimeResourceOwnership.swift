@@ -10,8 +10,21 @@ enum RuntimeResourceOwnership {
         record.resourcesReleased != true && !record.canRecoverPreparation
     }
 
-    static func claims(in store: RuntimeExecutionOwnerStore, context: ModelContext? = nil, excluding taskID: UUID? = nil, excludingOwner: PersistentIdentifier? = nil) throws -> [TaskResourceLockClaim] {
+    static func claims(in store: RuntimeExecutionOwnerStore, context: ModelContext? = nil, excluding taskID: UUID? = nil,
+                       excludingOwner: PersistentIdentifier? = nil,
+                       readRetained: (URL) throws -> RuntimeExecutionOwnerRecord? = RuntimeExecutionOwnerStore.read) throws -> [TaskResourceLockClaim] {
         let records = try store.records()
+        // A missing current journal can leave many audit roots sharing the
+        // same retained history. Cache only protected reads within this scan;
+        // each traversal still validates attribution/cycles and each audit
+        // still contributes its own identities, never proof of release.
+        var retainedReads: [URL: RuntimeExecutionOwnerRecord] = [:]
+        func readOnce(_ url: URL) throws -> RuntimeExecutionOwnerRecord? {
+            if let cached = retainedReads[url] { return cached }
+            let record = try readRetained(url)
+            retainedReads[url] = record
+            return record
+        }
         // Resolve legacy attribution without mutating it, including during queue
         // projection before the receiver acquires its real execution lease.
         var legacyOwners: [UUID: PersistentIdentifier] = [:]
@@ -22,7 +35,7 @@ enum RuntimeResourceOwnership {
         }
         var claims: [TaskResourceLockClaim] = []
         for record in records where !(record.taskID == taskID && (record.taskOwnerID ?? legacyOwners[record.taskID]) == excludingOwner) && retainsResources(record) {
-            claims += try RuntimeNativeSessionOwnership.claims(record, store: store)
+            claims += try RuntimeNativeSessionOwnership.claims(record, store: store, readRetained: readOnce)
             if let captured = record.resourceClaims { claims += captured; continue }
             // Pre-upgrade receipts have no captured resource identity. Only a
             // verifiably ended owner can be omitted; unknown ownership blocks.
@@ -61,7 +74,7 @@ enum RuntimeResourceOwnership {
                       !(audit.taskID == taskID && event.task?.persistentModelID == excludingOwner) else { continue }
                 guard let captured = audit.resourceClaims else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
                 claims += captured
-                claims += try RuntimeNativeSessionOwnership.claims(audit, store: store)
+                claims += try RuntimeNativeSessionOwnership.claims(audit, store: store, readRetained: readOnce)
             }
         }
         var seen: Set<TaskResourceLockClaim> = []

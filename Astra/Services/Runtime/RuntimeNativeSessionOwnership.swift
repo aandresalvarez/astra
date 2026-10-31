@@ -58,8 +58,9 @@ enum RuntimeNativeSessionOwnership {
 
     /// Older receipts already contain the session ID, including in retained
     /// executions. Project those reservations without rewriting old evidence.
-    static func claims(_ record: RuntimeExecutionOwnerRecord, store: RuntimeExecutionOwnerStore) throws -> [TaskResourceLockClaim] {
-        let retained = try store.retainedExecutions(of: record).filter { !($0.resourcesReleased == true && $0.canReplace) }
+    static func claims(_ record: RuntimeExecutionOwnerRecord, store: RuntimeExecutionOwnerStore,
+                       readRetained: (URL) throws -> RuntimeExecutionOwnerRecord? = RuntimeExecutionOwnerStore.read) throws -> [TaskResourceLockClaim] {
+        let retained = try store.retainedExecutions(of: record, read: readRetained).filter { !($0.resourcesReleased == true && $0.canReplace) }
         // The input may be an orphaned audit: it can never authorize release.
         // Only protected historical receipts above can supply that proof.
         return ([record] + retained).flatMap { receipt in
