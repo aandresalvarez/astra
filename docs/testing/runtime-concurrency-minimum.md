@@ -82,6 +82,17 @@ its focused check passed **15 tests in 3 suites** (`result-component-tests.log`)
 Full-suite, hook and CI results belong to the final commit's PR checks; this
 focused result is not a substitute for those checks.
 
+The first full campaign on `f9709488` aborted in the existing cold-history
+fixture at `pendingSourcePages`' deletion rollback. The isolated case reproduced
+the same SwiftData `DefaultStoreSnapshotValueFuture` to `[TaskEvent]` cast abort.
+The fixture omitted `SwiftDataTaskRollbackPreparation`, which production and
+the history-read tests already use before reversible edits. The correction
+prepares those relationships before each mutation in the two pending-page
+tests; it preserves every case, assertion and rollback, and leaves the cold
+performance benchmark untouched. The focused validation passed **19 tests in
+2 suites** (`cold-refresh-preparation-fix.log`). The failed full campaign remains
+a failed campaign; final full-suite results are reported separately on the PR.
+
 ## Candidate native-app session check
 
 The verified development bundle was copied into the same isolated QA identity.
