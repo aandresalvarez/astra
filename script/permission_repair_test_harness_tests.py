@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 import permission_repair_test_harness as harness
@@ -65,12 +66,14 @@ assert Path(path).stat().st_mode & 0o777 == 0o600
 assert Path(path).parent.stat().st_mode & 0o777 == 0o700
 with socket.socket(socket.AF_UNIX) as client:
  client.connect(path)
- client.sendall(json.dumps({'executable':'/bin/sh','arguments':['-c','printf "%s" "$PPID"; exit 7']}).encode()+b'\\n')
+ client.sendall(json.dumps({'executable':'/bin/sh','arguments':['-c','printf "%s|%s" "$PPID" "$ASTRA_TEST_PROVIDER_NAMESPACE_ID"; exit 7']}).encode()+b'\\n')
  data=b''
  while b'\\n' not in data: data+=client.recv(4096)
  result=json.loads(data)
  assert result['executorPID']!=os.getpid()
- assert str(result['executorPID'])==result['stdout']
+ parent,namespace=result['stdout'].split('|')
+ assert str(result['executorPID'])==parent
+ assert namespace==os.environ['ASTRA_TEST_PROVIDER_NAMESPACE_ID']
  assert result['exitCode']==7
 sys.exit(23)
 '''
@@ -79,12 +82,32 @@ sys.exit(23)
             self.assertEqual(harness.run([sys.executable, '-c', code, str(record)]), 23)
             self.assertFalse(Path(record.read_text()).parent.exists())
 
+    def test_renamed_helpers_inherit_a_fresh_provider_namespace_even_on_failure(self):
+        code = '''import json,os,subprocess,sys,uuid
+from pathlib import Path
+key='ASTRA_TEST_PROVIDER_NAMESPACE_ID'
+identifier=str(uuid.UUID(os.environ[key]))
+child=subprocess.check_output(['/bin/sh','-c','printf "%s" "$ASTRA_TEST_PROVIDER_NAMESPACE_ID"','renamed-provider-helper'],text=True)
+assert str(uuid.UUID(child))==identifier
+Path(sys.argv[1]).write_text(identifier)
+sys.exit(19)
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            seen = []
+            for index in range(2):
+                record = Path(directory) / str(index)
+                with patch.dict(os.environ, {'ASTRA_TEST_PROVIDER_NAMESPACE_ID': 'invalid-parent-marker'}):
+                    self.assertEqual(harness.run([sys.executable, '-c', code, str(record)]), 19)
+                seen.append(uuid.UUID(record.read_text()))
+            self.assertNotEqual(seen[0], seen[1])
+
     def test_cancellation_reaps_active_command_and_test_process(self):
         code = """import json,os,socket,sys
 from pathlib import Path
 Path(sys.argv[1]).write_text(str(os.getpid()))
 with socket.socket(socket.AF_UNIX) as client:
  client.connect(os.environ['ASTRA_PERMISSION_TEST_SOCKET'])
+ assert os.environ['ASTRA_TEST_PROVIDER_NAMESPACE_ID']
  command='echo $$ > "'+sys.argv[2]+'"; sleep 60'
  client.sendall(json.dumps({'executable':'/bin/sh','arguments':['-c',command]}).encode()+b'\\n')
  client.recv(4096)

@@ -1410,6 +1410,7 @@ struct ArchitectureFitnessTests {
         #expect(shim.contains("@_cdecl(\"\(cSymbol)\")"))
         #expect(shim.contains("RuntimeSeamRegistration.registerAll()"))
         #expect(shim.contains("astra_test_seam_bootstrap_force_link()"))
+        #expect(shim.contains("ProviderSharedStateNamespace.markRunningUnderTests()"))
 
         let manifest = try fileText("Package.swift", root: root)
         #expect(manifest.contains(#"name: "AstraTestSeamBootstrap""#))

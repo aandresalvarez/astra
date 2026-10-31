@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 SOCKET_ENV = 'ASTRA_PERMISSION_TEST_SOCKET'
@@ -60,7 +61,7 @@ def stop_test_process(process):
     process.wait()
 
 
-def execute(request):
+def execute(request, environment=None):
     if not isinstance(request, dict):
         raise ValueError('Invalid permission-test request')
     executable = request.get('executable')
@@ -70,7 +71,7 @@ def execute(request):
     # File-backed output cannot hang pipe draining if a command leaves a child.
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         child = subprocess.Popen([executable, *arguments], stdin=subprocess.DEVNULL,
-                                 stdout=out, stderr=err, start_new_session=True)
+                                 stdout=out, stderr=err, env=environment, start_new_session=True)
         try:
             code = child.wait(timeout=COMMAND_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -90,7 +91,7 @@ def execute(request):
                 'stderr': err.read(8192).decode(errors='replace')}
 
 
-def serve_request(connection):
+def serve_request(connection, environment=None):
     connection.settimeout(COMMAND_TIMEOUT + 2)
     data = bytearray()
     while b'\n' not in data:
@@ -100,7 +101,7 @@ def serve_request(connection):
         data.extend(chunk)
         if len(data) > MAX_REQUEST_BYTES:
             raise ValueError('Permission-test request exceeds limit')
-    return execute(json.loads(data.split(b'\n', 1)[0]))
+    return execute(json.loads(data.split(b'\n', 1)[0]), environment=environment)
 
 
 def run(command):
@@ -113,7 +114,11 @@ def run(command):
             os.chmod(path, 0o600)
             server.listen(128)
             server.settimeout(0.1)
-            child = subprocess.Popen(command, env=dict(os.environ, **{SOCKET_ENV: path}), start_new_session=True)
+            # Every wrapper invocation owns a fresh namespace. Children and
+            # renamed SwiftPM helpers inherit it before loading any test code.
+            environment = dict(os.environ, **{SOCKET_ENV: path,
+                'ASTRA_TEST_PROVIDER_NAMESPACE_ID': str(uuid.uuid4())})
+            child = subprocess.Popen(command, env=environment, start_new_session=True)
             previous = {}
 
             def interrupted(number, _frame):
@@ -129,7 +134,9 @@ def run(command):
                         continue
                     with connection:
                         try:
-                            response = serve_request(connection)
+                            # These commands are siblings of SwiftPM, not its
+                            # children. Give them the same explicit namespace.
+                            response = serve_request(connection, environment=environment)
                             response['executorPID'] = os.getpid()
                         except (ValueError, OSError) as error:
                             response = {'exitCode': 125, 'stderr': str(error)}

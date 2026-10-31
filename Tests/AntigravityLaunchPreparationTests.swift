@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Testing
 import ASTRACore
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Antigravity launch preparation")
@@ -68,7 +69,7 @@ struct AntigravityLaunchPreparationTests {
         let worker = harness.makeWorker(runtime: .antigravityCLI, executablePath: executable)
         worker.antigravityLaunchPreparation = AntigravityLaunchPreparation(defaults: defaults)
         let task = harness.makeTask(runtime: .antigravityCLI, goal: "Explain a concept", model: "Gemini 3.5 Flash")
-        let execution = Task { await harness.execute(task: task, worker: worker) }
+        let execution = Task { await executeProbeTask(task, worker: worker, harness: harness) }
         defer { execution.cancel() }
         let started = await waitUntil { FileManager.default.fileExists(atPath: pidFile.path) }
         #expect(started, "Must exercise the real probe inside worker execution")
@@ -107,7 +108,7 @@ struct AntigravityLaunchPreparationTests {
             defaults: InMemoryDefaults(), timeoutSeconds: 0.5)
         let task = harness.makeTask(runtime: .antigravityCLI, goal: "Explain two plus two in one sentence", model: "Gemini 3.5 Flash")
         let started = ContinuousClock.now
-        _ = await harness.execute(task: task, worker: worker)
+        await executeProbeTask(task, worker: worker, harness: harness)
 
         #expect(started.duration(to: .now) < .seconds(10))
         #expect(!worker.isRunning)
@@ -116,6 +117,18 @@ struct AntigravityLaunchPreparationTests {
         let pid = try readPID(pidFile)
         let stopped = await waitUntil { kill(pid, 0) != 0 }
         #expect(stopped)
+    }
+
+    private func executeProbeTask(_ task: AgentTask, worker: AgentRuntimeWorker, harness: HeadlessChatHarness) async {
+        // This workspace enables no packages. A deadline measurement must not
+        // enumerate the user's approval store before and after its real probe.
+        let reads = CapabilityResolutionInputs.DiskReadProbe()
+        await CapabilityResolutionInputs.$diskReadProbe.withValue(reads) {
+            await CapabilityResolutionInputs.$pinned.withValue(CapabilityResolutionTestSupport.inputs(packages: PluginCatalog.builtInPackages)) {
+                _ = await harness.execute(task: task, worker: worker)
+            }
+        }
+        #expect(reads.count(.approvalRecords) == 0)
     }
 
     private func readPID(_ file: URL) throws -> pid_t {

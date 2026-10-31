@@ -166,7 +166,7 @@ struct ImportedTaskExecutionOwnershipTests {
         value.taskOwnerID = a.persistentModelID
         value.providerSharedStateKey = key.rawValue
         do { let receipt = try store.acquire(taskID: a.id); try receipt.save(value) }
-        let gate = try await ProviderSharedStateProcessLock.acquire(key, root: store.root.appendingPathComponent("provider-gates"))
+        let gate = try await ProviderSharedStateProcessLock.acquire(key, root: try ProviderCoordinationFixture().coordination)
         try gate.handoff(key, reference: .init(journalRoot: store.root.path, taskID: a.id, ownerID: legacyOwner), prepare: {})
         for _ in 0..<3 {
             var next = try receipt(a, spent: 700)

@@ -20,6 +20,14 @@ final class RuntimeExecutionOwnerStore {
             self.taskID = taskID; self.descriptor = descriptor; self.recordURL = recordURL; self.taskOwnerID = taskOwnerID
         }
         deinit { close(descriptor) }
+        /// Verify the actual held lock when a caller also owns a pinned journal directory.
+        func verifiedTaskLock(in directory: Int32) throws -> stat {
+            var held = stat(), named = stat()
+            guard fstat(descriptor, &held) == 0,
+                  fstatat(directory, taskID.uuidString + ".lock", &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  held.st_dev == named.st_dev, held.st_ino == named.st_ino else { throw Failure.unsafePath }
+            return held
+        }
         func read() throws -> RuntimeExecutionOwnerRecord? {
             let record = try RuntimeExecutionOwnerStore.read(recordURL)
             guard record == nil || (record?.taskID == taskID && (taskOwnerID == nil || record?.taskOwnerID == taskOwnerID)) else {

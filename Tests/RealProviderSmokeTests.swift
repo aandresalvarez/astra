@@ -337,7 +337,7 @@ struct RealProviderSmokeTests {
                 workspaceURL: harness.workspaceURL,
                 secret: secret
             )
-            let worker = harness.makeWorker(for: runtime.id, executablePath: executable)
+            let worker = try harness.makeWorker(for: runtime.id, executablePath: executable)
             worker.timeoutSeconds = TimeInterval(ProcessInfo.processInfo.environment["REAL_PROVIDER_DOCKER_TIMEOUT"] ?? "")
                 ?? 180
             let model = runtime.model
@@ -449,7 +449,7 @@ struct RealProviderSmokeTests {
 
         let antigravityPath = try #require(Self.findExecutable("agy"))
         let model = Self.antigravityModel()
-        let worker = harness.makeWorker(antigravityPath: antigravityPath)
+        let worker = try harness.makeAntigravityWorker(antigravityPath)
 
         try await Self.assertConversationRecallOrProviderUnavailable(
             harness: harness,
@@ -1035,8 +1035,7 @@ private final class RealProviderHarness {
     func makeWorker(
         claudePath: String? = nil,
         copilotPath: String? = nil,
-        codexPath: String? = nil,
-        antigravityPath: String? = nil
+        codexPath: String? = nil
     ) -> AgentRuntimeWorker {
         let worker = AgentRuntimeWorker()
         if let claudePath {
@@ -1049,16 +1048,20 @@ private final class RealProviderHarness {
         if let codexPath {
             worker.setExecutablePath(codexPath, for: .codexCLI)
         }
-        if let antigravityPath {
-            worker.setExecutablePath(antigravityPath, for: .antigravityCLI)
-        }
         worker.timeoutSeconds = TimeInterval(ProcessInfo.processInfo.environment["REAL_PROVIDER_TIMEOUT"] ?? "")
             ?? 120
         worker.permissionPolicy = .restricted
         return worker
     }
 
-    func makeWorker(for runtime: AgentRuntimeID, executablePath: String) -> AgentRuntimeWorker {
+    func makeAntigravityWorker(_ path: String) throws -> AgentRuntimeWorker {
+        let worker = makeWorker()
+        worker.setHomeDirectory(try ProviderCoordinationFixture.liveAntigravityHome(), for: .antigravityCLI)
+        worker.setExecutablePath(path, for: .antigravityCLI)
+        return worker
+    }
+
+    func makeWorker(for runtime: AgentRuntimeID, executablePath: String) throws -> AgentRuntimeWorker {
         switch runtime {
         case .claudeCode:
             makeWorker(claudePath: executablePath)
@@ -1067,7 +1070,7 @@ private final class RealProviderHarness {
         case .codexCLI:
             makeWorker(codexPath: executablePath)
         case .antigravityCLI:
-            makeWorker(antigravityPath: executablePath)
+            try makeAntigravityWorker(executablePath)
         default:
             {
                 let worker = makeWorker()

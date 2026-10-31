@@ -32,9 +32,10 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
         return record
     }
 
-    static func handoff(at url: URL, key: AgentRuntimeSharedStateKey, to next: Self?,
+    static func handoff(in directory: ProviderSharedStateDirectory, name: String, key: AgentRuntimeSharedStateKey, to next: Self?,
                         prepare: () throws -> Void = {}) throws {
-        if let previous = try read(url) {
+        try directory.verifyLocation()
+        if let previous = try read(in: directory, name: name) {
             let record = try previous.record()
             // Admission of a successor under the same task journal has already
             // verified the previous generation. Only that admitted owner may
@@ -49,21 +50,22 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
             }
         }
         try prepare()
+        try directory.verifyLocation()
         if let next {
             let record = try next.record()
             guard record.ownerID == next.ownerID, record.providerSharedStateKey == key.rawValue,
                   record.cancellationRequested != true else { throw RuntimeExecutionOwnerStore.Failure.busy }
-            try save(next, at: url)
-        } else if unlink(url.path) != 0 && errno != ENOENT {
+            try save(next, in: directory, name: name)
+        } else if unlinkat(directory.descriptor, name, 0) != 0 && errno != ENOENT {
             throw RuntimeExecutionOwnerStore.Failure.writeFailed
         }
     }
 
     /// Read another key's pointer without migrating it. Its journal remains
     /// the only release authority, including across stores and app restarts.
-    static func assertCompatible(at url: URL, key: AgentRuntimeSharedStateKey,
+    static func assertCompatible(in directory: ProviderSharedStateDirectory, name: String, key: AgentRuntimeSharedStateKey,
                                  next: Self?) throws {
-        guard let previous = try read(url) else { return }
+        guard let previous = try read(in: directory, name: name) else { return }
         let record = try previous.record()
         let sameOwner = next?.journalRoot == previous.journalRoot && next?.taskID == previous.taskID
             && next?.taskOwnerID == record.taskOwnerID && next?.ownerID == record.ownerID
@@ -75,8 +77,8 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
         }
     }
 
-    private static func read(_ url: URL) throws -> Self? {
-        let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    private static func read(in directory: ProviderSharedStateDirectory, name: String) throws -> Self? {
+        let fd = openat(directory.descriptor, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else {
             if errno == ENOENT { return nil }
             throw RuntimeExecutionOwnerStore.Failure.unreadable
@@ -93,19 +95,16 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
         catch { throw RuntimeExecutionOwnerStore.Failure.unreadable }
     }
 
-    private static func save(_ reference: Self, at url: URL) throws {
+    private static func save(_ reference: Self, in directory: ProviderSharedStateDirectory, name: String) throws {
         let data = try JSONEncoder().encode(reference)
-        let temporary = url.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".tmp")
-        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        let temporary = UUID().uuidString + ".tmp"
+        let fd = openat(directory.descriptor, temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw RuntimeExecutionOwnerStore.Failure.writeFailed }
-        defer { close(fd); unlink(temporary.path) }
+        defer { close(fd); unlinkat(directory.descriptor, temporary, 0) }
         let count = data.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
-        guard count == data.count, fsync(fd) == 0, rename(temporary.path, url.path) == 0 else {
+        guard count == data.count, fsync(fd) == 0, renameat(directory.descriptor, temporary, directory.descriptor, name) == 0 else {
             throw RuntimeExecutionOwnerStore.Failure.writeFailed
         }
-        let parent = open(url.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
-        guard parent >= 0 else { throw RuntimeExecutionOwnerStore.Failure.writeFailed }
-        defer { close(parent) }
-        guard fsync(parent) == 0 else { throw RuntimeExecutionOwnerStore.Failure.writeFailed }
+        guard fsync(directory.descriptor) == 0 else { throw RuntimeExecutionOwnerStore.Failure.writeFailed }
     }
 }
