@@ -22,8 +22,8 @@ struct RuntimePreparationAccountingTests {
         exit 1
         """)
         let home = h.rootURL.appendingPathComponent("provider-home").path
-        let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
-            identifier: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: home).standardizedFileURL.path)
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
+            fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: home))
         let lock = try await ProviderSharedStateProcessLock.acquire(key)
         defer { withExtendedLifetime(lock) {} }
         let runner = AgentRuntimeProcessRunner { _ in .init(enforcement: .off) }

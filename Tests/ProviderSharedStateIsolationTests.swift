@@ -23,8 +23,9 @@ struct ProviderSharedStateIsolationTests {
             == ProviderSharedStateNamespace.isolatedRoot(id))
         #expect(try ProviderSharedStateNamespace.resolve(override: nil, environment: environment, testBundleLoaded: true)
             == ProviderSharedStateNamespace.isolatedRoot(id))
-        #expect(try ProviderSharedStateNamespace.resolve(override: nil, environment: [:], testBundleLoaded: false)
-            == ProviderSharedStateNamespace.sharedRoot)
+        let ordinary = try ProviderSharedStateNamespace.resolve(override: nil, environment: [:], testBundleLoaded: false)
+        #expect(try ProviderSharedStateIdentity.canonicalPath(ordinary.path) ==
+            ProviderSharedStateIdentity.canonicalPath(ProviderSharedStateNamespace.sharedRoot.path))
     }
 
     @Test("Lost/malformed inheritance and non-temporary overrides fail closed")
@@ -51,7 +52,7 @@ struct ProviderSharedStateIsolationTests {
         let outside = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
             fileURL: URL(fileURLWithPath: "/Users/synthetic-no-access/profile/settings.json"))
         #expect(throws: RuntimeExecutionOwnerStore.Failure.self) {
-            try ProviderSharedStateNamespace.validateResource(outside)
+            _ = try ProviderSharedStateNamespace.resolve(key: outside)
         }
     }
 
@@ -67,7 +68,7 @@ struct ProviderSharedStateIsolationTests {
         do { let journal = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try journal.save(record) }
         let reference = RuntimeProviderOwnershipReference(journalRoot: store.root.path, taskID: task.id,
             ownerID: record.ownerID, taskOwnerID: task.persistentModelID)
-        let root = try ProviderSharedStateNamespace.resolve()
+        let root = h.providerLockRoot
         let before = Set((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? [])
         do {
             let lock = try await ProviderSharedStateProcessLock.acquire(key)
@@ -88,6 +89,130 @@ struct ProviderSharedStateIsolationTests {
         }
         do { try await cancelled.value; Issue.record("Cancellation admitted") } catch is CancellationError {}
         #expect(try store.read(taskID: task.id, taskOwnerID: task.persistentModelID) == record)
+    }
+
+    @Test("A test run cannot reserve another run's physical profile or an ordinary temporary app profile")
+    func physicalProfileBelongsToTestRun() throws {
+        let fixture = try ProviderCoordinationFixture()
+        let own = fixture.data
+        defer { try? FileManager.default.removeItem(at: own) }
+        let other = ProviderSharedStateNamespace.isolatedRoot(UUID())
+        let app = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let file = "profile/settings.json"
+        let ownKey = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: own.appendingPathComponent(file))
+        #expect(try ProviderSharedStateNamespace.resolve(key: ownKey) == fixture.coordination)
+        #expect(try ProviderSharedStateNamespace.resolve(override: fixture.coordination, key: ownKey) == fixture.coordination)
+        #expect(throws: RuntimeExecutionOwnerStore.Failure.self) {
+            try ProviderSharedStateNamespace.resolve(override: own.appendingPathComponent("another-lock"), key: ownKey)
+        }
+        let foreignEnvironment = [ProviderSharedStateNamespace.environmentKey: UUID().uuidString]
+        for environment in [[:], foreignEnvironment, ["TMPDIR": own.path]] {
+            #expect(throws: RuntimeExecutionOwnerStore.Failure.self) {
+                try ProviderSharedStateNamespace.resolve(override: nil, environment: environment, testBundleLoaded: false, key: ownKey)
+            }
+        }
+        if FileManager.default.fileExists(atPath: "/System/Volumes/Data/private/tmp") {
+            let physical = try ProviderSharedStateIdentity.canonicalPath(own.path)
+            let aliasHome = URL(fileURLWithPath: "/System/Volumes/Data" + physical)
+            try #require(FileManager.default.fileExists(atPath: aliasHome.path))
+            let dataAlias = aliasHome.appendingPathComponent(file)
+            let aliasKey = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: dataAlias)
+            #expect(throws: RuntimeExecutionOwnerStore.Failure.self) {
+                try ProviderSharedStateNamespace.resolve(override: nil, environment: [:], testBundleLoaded: false, key: aliasKey)
+            }
+        }
+        for foreign in [other, app] {
+            let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: foreign.appendingPathComponent(file))
+            #expect(throws: RuntimeExecutionOwnerStore.Failure.self) { _ = try ProviderSharedStateNamespace.resolve(key: key) }
+            #expect(throws: RuntimeExecutionOwnerStore.Failure.self) { try ProviderSharedStateNamespace.resolve(override: foreign) }
+        }
+    }
+
+    @Test("Discarding a workspace preserves its uncertain legacy reservation within that fixture")
+    func discardedWorkspaceKeepsFixtureReservation() async throws {
+        let h = try HeadlessChatHarness()
+        defer { h.cleanup() }
+        let task = h.makeTask(runtime: .antigravityCLI, goal: "Synthetic legacy owner", model: "test")
+        let legacy = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "unresolved-fixture-alias")
+        let settings = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.rootURL.appendingPathComponent("settings.json"))
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        var record = try RuntimeRecoveryTestReceipt.install(task: task, run: nil, context: h.context, toolsStopped: false)
+        record.providerSharedStateKey = legacy.rawValue
+        record.providerSharedStateReleased = false
+        record.resourcesReleased = false
+        let ref = RuntimeProviderOwnershipReference(journalRoot: store.root.path, taskID: task.id, ownerID: record.ownerID,
+            taskOwnerID: task.persistentModelID)
+        do {
+            let journal = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
+            try journal.save(record)
+            let lock = try await ProviderSharedStateProcessLock.acquire(legacy, root: h.providerLockRoot)
+            try lock.handoff(legacy, reference: ref) {}
+        }
+        await h.cleanup().value
+        #expect(!FileManager.default.fileExists(atPath: h.rootURL.path))
+        let gate = AgentRuntimeSharedStateGate(registeredStoreRoots: [])
+        do { _ = try await gate.acquire(settings); Issue.record("Discarding test data released an uncertain legacy owner") }
+        catch let block as RuntimeProviderResourceRegistry.Block { #expect(block.ownerID == ref.ownerID && block.legacyIdentity) }
+        let independent = try ProviderCoordinationFixture()
+        defer { try? FileManager.default.removeItem(at: independent.data) }
+        let lease = try await gate.acquire(.init(runtime: .antigravityCLI, fileURL: independent.data.appendingPathComponent("settings.json")))
+        await gate.release(lease)
+    }
+
+    @Test("Live probes use the physical QA home and its own fixture's settings")
+    func liveProfileAndSettingsStayTogether() throws {
+        let fm = FileManager.default
+        let good = try ProviderCoordinationFixture().data
+        let second = try ProviderCoordinationFixture().data
+        let outside = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { for dir in [good, second, outside] { try? fm.removeItem(at: dir) } }
+        let settings = AntigravityCLIRuntime.settingsURL(providerHomeDirectory: good.path)
+        try fm.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: settings)
+        for home in [second, outside] {
+            let foreign = AntigravityCLIRuntime.settingsURL(providerHomeDirectory: home.path)
+            try fm.createDirectory(at: foreign.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.createSymbolicLink(at: foreign, withDestinationURL: settings)
+            #expect(throws: LiveProviderReadiness.Failure.self) { try ProviderCoordinationFixture.liveAntigravityHome(home.path) }
+        }
+        let alias = outside.appendingPathComponent("qa-home")
+        try fm.createSymbolicLink(at: alias, withDestinationURL: good)
+        #expect(try ProviderCoordinationFixture.liveAntigravityHome(alias.path) == ProviderSharedStateIdentity.canonicalPath(good.path))
+    }
+
+    @Test("Changing a directory during handoff cannot remove a different owner's pointer", arguments: [false, true])
+    func pointerStaysWithAcquiredDirectory(replaceDirectory: Bool) async throws {
+        let fixture = try ProviderSharedStateNamespace.resolve().appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let fm = FileManager.default
+        let original = fixture.appendingPathComponent("original/locks")
+        let other = fixture.appendingPathComponent("other/locks")
+        for dir in [original, other] {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        let alias = fixture.appendingPathComponent("alias")
+        try fm.createSymbolicLink(at: alias, withDestinationURL: original.deletingLastPathComponent())
+        let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "fixture-local-lock")
+        let lock = try await ProviderSharedStateProcessLock.acquire(key, root: alias.appendingPathComponent("locks"))
+        let name = try #require(try fm.contentsOfDirectory(atPath: original.path).first)
+        let neighbor = other.appendingPathComponent(name + ".json")
+        let sentinel = Data("neighbor's protected pointer".utf8)
+        try sentinel.write(to: neighbor)
+        var prepared = false
+        do {
+            try lock.handoff(key, reference: nil) {
+                if replaceDirectory {
+                    try fm.moveItem(at: original, to: fixture.appendingPathComponent("moved"))
+                    try fm.createSymbolicLink(at: original, withDestinationURL: other)
+                } else {
+                    try fm.removeItem(at: alias)
+                    try fm.createSymbolicLink(at: alias, withDestinationURL: other.deletingLastPathComponent())
+                }
+                prepared = true
+            }
+        } catch is ProviderSharedStateCompatibility.UnreadableReservation { /* A changed lock directory may fail closed. */ }
+        #expect(prepared)
+        #expect(try Data(contentsOf: neighbor) == sentinel)
     }
 
     @Test("An explicitly selected renamed helper still publishes only in test scope",

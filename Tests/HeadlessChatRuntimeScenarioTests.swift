@@ -969,7 +969,7 @@ extension HeadlessChatScenarioTests {
         #expect(owner.stopProof?.toolsStopped == false)
         #expect(owner.settlementToolsStopped == true)
         #expect(owner.resourcesReleased == false && owner.providerSharedStateReleased == false)
-        let namespace = try ProviderSharedStateNamespace.resolve()
+        let namespace = harness.providerLockRoot
         let pointers = try FileManager.default.contentsOfDirectory(at: namespace, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" }
         #expect(try pointers.contains {

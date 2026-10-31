@@ -26,6 +26,15 @@ assert_targets "WorkspaceRailOutputPresentationTests|WorkspaceRailOutputPerforma
   "Astra/Views/WorkspaceRailOutputPresentation.swift" \
   "Tests/WorkspaceRailOutputPerformanceTests.swift"
 
+assert_targets "RuntimeNativeSessionOwnershipTests|AgentRuntimeAsyncWorkTests|AgentProcessResultTests" \
+  "Astra/Services/Runtime/RuntimeNativeSessionOwnership.swift" \
+  "Tests/RuntimeNativeSessionOwnershipTests.swift" \
+  "Tests/RuntimeNativeSessionOwnershipScanTests.swift"
+
+assert_targets "CopilotSessionDiscovery" \
+  "Tests/CopilotSessionDiscoveryTests.swift" \
+  "Tests/CopilotSessionDiscoveryWorkerTests.swift"
+
 assert_targets "MCPGatewaySupportTests" \
   "Tools/MCPGatewaySupport/MCPGatewaySupport.swift" \
   "Tests/MCPGatewaySupportTests/RemoteMCPGatewaySupportTests.swift"
@@ -38,6 +47,8 @@ assert_targets "ProviderSharedStateIdentityTests|ProviderSharedStateMigrationTes
   "Tests/ProviderSharedStateMigrationTests.swift" \
   "Tests/ProviderSharedStateLaunchTests.swift" \
   "Astra/Services/Runtime/ProviderSharedStateNamespace.swift" \
+  "Astra/Services/Runtime/ProviderSharedStateDirectory.swift" \
+  "Tests/ProviderCoordinationFixture.swift" \
   "Tests/ProviderSharedStateIsolationTests.swift" \
   "Tests/ProviderFixtureRecoveryService.swift"
 
@@ -260,6 +271,9 @@ assert_targets $'SidebarTaskStoreTests\nSidebarTaskStoreSignalIntegrationTests\n
 
 assert_targets "RunningTaskCountPredicateTests" \
   "Astra/Services/Settings/AppUpdateSafety.swift"
+
+assert_targets "BinaryProcessGroupCompletionTests|ProcessBinaryRunnerTests|AntigravityLaunchPreparationTests|RuntimeCancelledPreparationContinuationTests|RuntimeCompletedUserTurnContinuationTests" \
+  "Tests/AntigravityLaunchPreparationTests.swift"
 
 assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree\nPendingP2RegressionTests\nSpecEngineTests' \
   "Astra/Services/Persistence/SwiftDataDeletionPreparation.swift" \

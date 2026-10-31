@@ -108,9 +108,10 @@ struct ProviderSharedStateIdentityTests {
     @Test("Canonical Unicode equivalents share a kernel lock and legacy hashes stay unchanged")
     func unicodeKernelIdentity() async throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
-        let root = h.rootURL.appendingPathComponent("unicode-locks")
-        let composed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:\(h.rootURL.path)/missing/caf\u{00e9}/settings.json")
-        let decomposed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:\(h.rootURL.path)/missing/cafe\u{0301}/settings.json")
+        let root = h.providerLockRoot
+        let physical = try ProviderSharedStateIdentity.canonicalPath(h.rootURL.path)
+        let composed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:\(physical)/missing/caf\u{00e9}/settings.json")
+        let decomposed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:\(physical)/missing/cafe\u{0301}/settings.json")
         #expect(composed == decomposed)
         #expect(Array(composed.rawValue.utf8) != Array(decomposed.rawValue.utf8))
         let held = try await ProviderSharedStateProcessLock.acquire(composed, root: root)
@@ -131,7 +132,7 @@ struct ProviderSharedStateIdentityTests {
     @Test("Unsafe legacy locks report the blocking path without changing the reservation", arguments: ["symlink", "public", "hardlink"])
     func unsafeLegacyDiagnostic(kind: String) async throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
-        let root = h.rootURL.appendingPathComponent("unsafe-locks")
+        let root = h.providerLockRoot
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let lock = root.appendingPathComponent(String(repeating: "a", count: 64))
         let target = h.rootURL.appendingPathComponent("target-lock")
@@ -224,7 +225,7 @@ struct ProviderSharedStateIdentityTests {
         let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.workspaceURL.appendingPathComponent("settings.json"))
         let equivalent = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: alias.appendingPathComponent("settings.json"))
         let independent = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.rootURL.appendingPathComponent("other/settings.json"))
-        let root = h.rootURL.appendingPathComponent("locks")
+        let root = h.providerLockRoot
         let one = AgentRuntimeSharedStateGate(processLockRoot: root, registeredStoreRoots: [])
         let two = AgentRuntimeSharedStateGate(processLockRoot: root, registeredStoreRoots: [])
         let held = try await one.acquire(key)
@@ -242,7 +243,7 @@ struct ProviderSharedStateIdentityTests {
     @Test("An anonymous live legacy lock survives timeout and cancellation")
     func legacyKernelLock() async throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
-        let root = h.rootURL.appendingPathComponent("locks")
+        let root = h.providerLockRoot
         let legacy = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "unknown-old-alias")
         let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.rootURL.appendingPathComponent("settings.json"))
         var holder: ProviderSharedStateProcessLock? = try await ProviderSharedStateProcessLock.acquire(legacy, root: root)
@@ -251,7 +252,7 @@ struct ProviderSharedStateIdentityTests {
         catch is RuntimeProviderStateWaitTimeout {}
         let entered = AgentLockedBuffer()
         let waiting = Task {
-            try await ProviderSharedStateCompatibility.waitForLegacyLocks(in: root, deadline: nil,
+            try await ProviderSharedStateCompatibility.waitForLegacyLocks(in: try ProviderSharedStateDirectory(root), deadline: nil,
                 onContention: { entered.append("waiting") })
         }
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))

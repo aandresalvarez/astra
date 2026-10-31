@@ -76,6 +76,27 @@ struct AgentRuntimeAsyncWorkTests {
         #expect(await recorder.snapshot() == Set(0..<4))
         #expect(collector.count == 4)
     }
+
+    @Test("Ordered queue joins a suspended ownership write before later events")
+    func orderedQueueJoinsSuspendedWrite() async {
+        let queue = OrderedMainActorTaskQueue()
+        let entered = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        var values: [Int] = []
+        queue.add {
+            values.append(1)
+            entered.continuation.yield(())
+            for await _ in release.stream { break }
+            values.append(2)
+        }
+        queue.add { values.append(3) }
+        for await _ in entered.stream { break }
+        #expect(values == [1])
+        release.continuation.yield(())
+        await queue.drainAll()
+        entered.continuation.finish(); release.continuation.finish()
+        #expect(values == [1, 2, 3])
+    }
 }
 
 @Suite("Agent Runtime Progress Timeout Policy")
@@ -1315,6 +1336,27 @@ struct AgentRuntimeRunPersistenceTests {
 
 @Suite("Agent process result")
 struct AgentProcessResultTests {
+    @Test("Late session failure preserves charged usage and permission evidence", arguments: [false, true])
+    func ownershipObservationsPreserveEvidence(failed: Bool) {
+        let process = RuntimeProcessIdentity(pid: Int32.max, startedSeconds: 1, startedMicroseconds: 1)
+        let proof = RuntimeExecutionStopProof(executionID: UUID(), process: process, reaped: true,
+            processGroupEmpty: true, toolsStopped: true, remoteWorkExcluded: true, capturedAt: Date())
+        var original = AgentProcessResult(exitCode: 0)
+        original.executionStopProof = proof
+        original.executionTokensSpent = 321
+        original.executionTurnsSpent = 2
+        original.executionSecondsSpent = 4
+        let result = original.applyingOwnershipObservations(nativeSessionFailure: failed ? "Occupied session" : nil,
+            supervisionTokens: 50, acknowledgedPermissions: ["acknowledged"], writtenPermissions: ["written"])
+        #expect(result.executionTokensSpent == 321 && result.executionTurnsSpent == 2 && result.executionSecondsSpent == 4)
+        #expect(result.supervisionReservedTokens == 50)
+        #expect(result.acknowledgedPermissionRequestIDs == ["acknowledged"] && result.writtenPermissionRequestIDs == ["written"])
+        #expect(result.executionStopProof?.toolsStopped == !failed)
+        #expect(result.executionStopProof?.process == process && result.executionStopProof?.executionID == proof.executionID)
+        #expect(result.runtimeStopped == failed)
+        if !failed { #expect(result.executionStopProof == proof) }
+    }
+
     @Test("Every stop ASTRA forces counts as one, whatever the exit code; a reap after the turn ended does not")
     func stoppedByASTRACoversEveryForcedStop() {
         let forced = [

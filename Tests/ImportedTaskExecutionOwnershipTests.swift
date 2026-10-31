@@ -130,8 +130,9 @@ struct ImportedTaskExecutionOwnershipTests {
         var saved = try receipt(a, spent: 700)
         saved.state = .unverified; saved.resourcesReleased = false; saved.resourceClaims = [claim]
         do { let lease = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID); try lease.save(saved) }
-        #expect(try RuntimeResourceOwnership.claims(in: store, context: context, excluding: b.id,
-            excludingOwner: b.persistentModelID) == [claim])
+        let session = try #require(RuntimeNativeSessionOwnership.claim(saved))
+        #expect(Set(try RuntimeResourceOwnership.claims(in: store, context: context, excluding: b.id,
+            excludingOwner: b.persistentModelID)) == Set([claim, session]))
         #expect(try RuntimeResourceOwnership.claims(in: store, context: context, excluding: a.id,
             excludingOwner: a.persistentModelID).isEmpty)
     }
@@ -165,7 +166,7 @@ struct ImportedTaskExecutionOwnershipTests {
         value.taskOwnerID = a.persistentModelID
         value.providerSharedStateKey = key.rawValue
         do { let receipt = try store.acquire(taskID: a.id); try receipt.save(value) }
-        let gate = try await ProviderSharedStateProcessLock.acquire(key, root: store.root.appendingPathComponent("provider-gates"))
+        let gate = try await ProviderSharedStateProcessLock.acquire(key, root: try ProviderCoordinationFixture().coordination)
         try gate.handoff(key, reference: .init(journalRoot: store.root.path, taskID: a.id, ownerID: legacyOwner), prepare: {})
         for _ in 0..<3 {
             var next = try receipt(a, spent: 700)

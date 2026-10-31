@@ -20,6 +20,7 @@ struct ProviderFixtureRecoveryTests {
                 reaped: fault != "unreaped", processGroupEmpty: fault != "group", toolsStopped: fault != "tools",
                 remoteWorkExcluded: fault != "remote", capturedAt: Date()), updatedAt: Date())
         record.providerSharedStateKey = key.rawValue
+        if fault == "notStartedWithoutProof" { record.state = .notStarted; record.stopProof = nil }
         record.providerSharedStateReleased = false; record.resourcesReleased = false
         record.settlementInProgress = fault == "settling"
         record.settlementLocalWorkStopped = fault != "children"
@@ -42,7 +43,7 @@ struct ProviderFixtureRecoveryTests {
         let (key, record, reference) = try await fixture(service)
         let ticket = try service.capture(key: key, reference: reference)
         let modern = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
-            fileURL: service.root.appendingPathComponent("independent/settings.json"))
+            fileURL: service.profile.appendingPathComponent("independent/settings.json"))
         let gate = AgentRuntimeSharedStateGate(processLockRoot: service.root, registeredStoreRoots: [])
         do { _ = try await gate.acquire(modern); Issue.record("Legacy reservation lost") }
         catch is RuntimeProviderResourceRegistry.Block {}
@@ -59,10 +60,14 @@ struct ProviderFixtureRecoveryTests {
         #expect(object["pointer"] != nil && object["journal"] != nil)
         let lease = try await gate.acquire(modern)
         await gate.release(lease)
+        let pointer = auditURL.deletingPathExtension().appendingPathExtension("json")
+        try FileManager.default.createSymbolicLink(at: pointer, withDestinationURL: service.root.appendingPathComponent("missing"))
+        await #expect(throws: ProviderFixtureRecoveryService.Failure.self) { try await service.retire(ticket) }
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: pointer.path).hasSuffix("/missing"))
     }
 
     @Test("Absent PIDs and completed local settlement cannot replace tool proof", arguments:
-        ["app", "provider", "tools", "unreaped", "group", "remote", "settling", "children", "settlementTools", "retained"])
+        ["app", "provider", "tools", "unreaped", "group", "remote", "settling", "children", "settlementTools", "retained", "notStartedWithoutProof"])
     func preservesUnverified(fault: String) async throws {
         let service = try ProviderFixtureRecoveryService()
         defer { try? FileManager.default.removeItem(at: service.root) }
@@ -121,7 +126,7 @@ struct ProviderFixtureRecoveryTests {
         let removedReference = try JSONDecoder().decode(RuntimeProviderOwnershipReference.self,
             from: #require(before[removedPath]))
         #expect(removedReference == reference)
-        let modern = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: service.root.appendingPathComponent("profile/settings.json"))
+        let modern = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: service.profile.appendingPathComponent("profile/settings.json"))
         let gate = AgentRuntimeSharedStateGate(processLockRoot: service.root, registeredStoreRoots: [])
         do { _ = try await gate.acquire(modern); Issue.record("Foreign reservation bypassed") }
         catch is RuntimeProviderResourceRegistry.Block {}
@@ -138,6 +143,33 @@ struct ProviderFixtureRecoveryTests {
             result[String(url.path.dropFirst(root.path.count))] = try Data(contentsOf: url)
         }
         return result
+    }
+
+    @Test("An identical replacement cannot substitute a busy task lease during recovery",
+          arguments: ["root", "journals", "lock"])
+    func swappedRehearsal(replaced: String) async throws {
+        let service = try ProviderFixtureRecoveryService()
+        let moved = service.root.deletingLastPathComponent().appendingPathComponent(UUID().uuidString)
+        defer { for dir in [service.root, moved] { try? FileManager.default.removeItem(at: dir) } }
+        let (key, _, reference) = try await fixture(service)
+        let ticket = try service.capture(key: key, reference: reference)
+        let before = try snapshot(service.root)
+        let store = RuntimeExecutionOwnerStore(root: URL(fileURLWithPath: reference.journalRoot))
+        let source = replaced == "root" ? service.root : (replaced == "journals" ? store.root :
+            store.root.appendingPathComponent(reference.taskID.uuidString + ".lock"))
+        let original = replaced == "lock" ? nil : try snapshot(source)
+        let originalLock = replaced == "lock" ? try Data(contentsOf: source) : nil
+        let busy = try store.acquire(taskID: reference.taskID, taskOwnerID: reference.taskOwnerID)
+        defer { withExtendedLifetime(busy) {} }
+        await #expect(throws: RuntimeExecutionOwnerStore.Failure.self) {
+            try await service.retire(ticket) {
+                try FileManager.default.moveItem(at: source, to: moved)
+                try FileManager.default.copyItem(at: moved, to: source)
+            }
+        }
+        if let original { #expect(try snapshot(moved) == original) }
+        if let originalLock { #expect(try Data(contentsOf: moved) == originalLock) }
+        #expect(try snapshot(service.root) == before)
     }
 
     @Test("Cancellation while a fixture's provider gate is held preserves its provenance and pointer")

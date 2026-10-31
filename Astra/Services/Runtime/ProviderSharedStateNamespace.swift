@@ -1,19 +1,16 @@
 import Darwin
 import Foundation
 
-/// Test isolation is declared at bundle load, before any gate can be used.
-/// The UUID travels through the wrapper's environment to helper processes;
-/// neither a process name nor a provider/profile path grants this scope.
+/// Test helpers inherit the run UUID. Every physical fixture profile selects
+/// its own coordination directory, including when a caller supplies an override.
 enum ProviderSharedStateNamespace {
     static let environmentKey = "ASTRA_TEST_PROVIDER_NAMESPACE_ID"
-    // Written only by the single-threaded test bundle constructor.
+    private static let prefix = "astra-provider-tests-"
     nonisolated(unsafe) private static var testBundleLoaded = false
 
     static func markRunningUnderTests() {
         testBundleLoaded = true
-        if getenv(environmentKey) == nil {
-            setenv(environmentKey, UUID().uuidString, 0)
-        }
+        if getenv(environmentKey) == nil { setenv(environmentKey, UUID().uuidString, 0) }
     }
 
     static var sharedRoot: URL {
@@ -23,47 +20,88 @@ enum ProviderSharedStateNamespace {
 
     static func isolatedRoot(_ id: UUID) -> URL {
         URL(fileURLWithPath: "/private/tmp", isDirectory: true)
-            .appendingPathComponent("astra-provider-tests-\(id.uuidString)", isDirectory: true)
+            .appendingPathComponent(prefix + id.uuidString, isDirectory: true)
     }
 
-    static func resolve(override: URL? = nil) throws -> URL {
+    static func coordinationRoot(in run: URL, fixtureID: UUID) -> URL {
+        run.appendingPathComponent("coordination").appendingPathComponent(fixtureID.uuidString)
+    }
+
+    static func resolve(override: URL? = nil, key: AgentRuntimeSharedStateKey? = nil) throws -> URL {
         try resolve(override: override, environment: ProcessInfo.processInfo.environment,
-                    testBundleLoaded: testBundleLoaded)
+                    testBundleLoaded: testBundleLoaded, key: key)
     }
 
-    static func validateResource(_ key: AgentRuntimeSharedStateKey) throws {
-        guard testBundleLoaded || ProcessInfo.processInfo.environment[environmentKey] != nil,
-              let path = key.filePath else { return }
-        guard isTemporary(URL(fileURLWithPath: path)) else {
-            throw RuntimeExecutionOwnerStore.Failure.unsafePath
-        }
-    }
-
-    static func resolve(override: URL?, environment: [String: String], testBundleLoaded: Bool) throws -> URL {
+    static func resolve(override: URL?, environment: [String: String], testBundleLoaded: Bool,
+                        key: AgentRuntimeSharedStateKey? = nil) throws -> URL {
         let value = environment[environmentKey]
-        guard testBundleLoaded || value != nil else { return override ?? sharedRoot }
-        // Malformed or removed inheritance must fail closed, never fall back
-        // to the user's shared namespace after the bundle declares a test run.
-        guard let value, let id = UUID(uuidString: value) else {
-            throw RuntimeExecutionOwnerStore.Failure.unsafePath
+        let resource = try key?.filePath.map { try ProviderSharedStateIdentity.canonicalPath($0) }
+        let fixture = resource.flatMap(testLocation)
+        guard testBundleLoaded || value != nil else {
+            guard fixture == nil else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }
+            return try physicalParent(of: override ?? sharedRoot)
         }
-        guard let override else { return isolatedRoot(id) }
-        guard let path = try? ProviderSharedStateIdentity.canonicalPath(override.path),
-              let shared = try? ProviderSharedStateIdentity.canonicalPath(sharedRoot.path),
-              isTemporary(override), path != shared, !path.hasPrefix(shared + "/") else {
-            throw RuntimeExecutionOwnerStore.Failure.unsafePath
+        guard let value, let runID = UUID(uuidString: value) else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }
+        let run = isolatedRoot(runID)
+        var expected: URL?
+        if resource != nil {
+            guard resource == key?.filePath, let fixture, fixture.run == runID, fixture.standardSpelling,
+                  fixture.suffix.count >= 3, fixture.suffix[0] == "fixtures",
+                  let fixtureID = UUID(uuidString: fixture.suffix[1]) else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }
+            expected = coordinationRoot(in: run, fixtureID: fixtureID)
         }
-        return override
+        if let override {
+            guard let physical = try? physicalParent(of: override),
+                  let path = try? ProviderSharedStateIdentity.canonicalPath(physical.path),
+                  let location = testLocation(path), location.run == runID, location.standardSpelling,
+                  try expected.map({ try ProviderSharedStateIdentity.canonicalPath($0.path) == path }) ?? true
+            else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }
+            return expected ?? physical
+        }
+        return expected ?? run
     }
 
-    private static func isTemporary(_ url: URL) -> Bool {
-        guard let path = try? ProviderSharedStateIdentity.canonicalPath(url.path) else { return false }
-        let roots = [URL(fileURLWithPath: NSTemporaryDirectory()), URL(fileURLWithPath: "/private/tmp")]
-        // Use the same filesystem/Unicode/case rules as the resource key.
-        // Foundation can spell /private/tmp differently for missing children.
-        return roots.contains {
-            guard let root = try? ProviderSharedStateIdentity.canonicalPath($0.path) else { return false }
-            return path.hasPrefix(root + "/")
+    /// Resolve parent aliases before opening the directory. Its final component
+    /// must itself pass the no-follow, ownership and permissions checks.
+    private static func physicalParent(of url: URL) throws -> URL {
+        // A directory is opened by its actual spelling. Provider key folding
+        // and the HFS+ Unicode policy apply only to provider settings.
+        var parent = url.deletingLastPathComponent()
+        var missing: [String] = []
+        while true {
+            if let physical = realpath(parent.path, nil) {
+                defer { free(physical) }
+                var result = URL(fileURLWithPath: String(cString: physical), isDirectory: true)
+                for component in missing.reversed() { result.appendPathComponent(component, isDirectory: true) }
+                return result.appendingPathComponent(url.lastPathComponent, isDirectory: true)
+            }
+            var info = stat()
+            guard errno == ENOENT, lstat(parent.path, &info) != 0, errno == ENOENT,
+                  !["", "/", ".", ".."].contains(parent.lastPathComponent) else { throw RuntimeExecutionOwnerStore.Failure.unsafePath }
+            missing.append(parent.lastPathComponent)
+            parent.deleteLastPathComponent()
         }
+    }
+
+    private struct Location {
+        let run: UUID
+        let standardSpelling: Bool
+        let suffix: [String]
+    }
+
+    /// APFS exposes /private/tmp through its Data volume as well. Detect the
+    /// directory by device/inode and refuse alternate spellings for test locks.
+    private static func testLocation(_ path: String) -> Location? {
+        guard path.contains("/" + prefix) else { return nil }
+        let parts = path.split(separator: "/")
+        for i in parts.indices where parts[i].hasPrefix(prefix) {
+            guard let run = UUID(uuidString: String(parts[i].dropFirst(prefix.count))) else { continue }
+            let parent = "/" + parts[..<i].joined(separator: "/")
+            var actual = stat(), temporary = stat()
+            guard stat(parent, &actual) == 0, stat("/private/tmp", &temporary) == 0,
+                  actual.st_dev == temporary.st_dev, actual.st_ino == temporary.st_ino else { continue }
+            return Location(run: run, standardSpelling: parent == "/private/tmp", suffix: parts[(i+1)...].map(String.init))
+        }
+        return nil
     }
 }

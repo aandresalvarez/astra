@@ -24,10 +24,15 @@ describes ASTRA's settlement children; it does not override
 - A UUID selects a private directory under `/private/tmp`; it cannot select an
   arbitrary app coordination path. Malformed or missing inheritance after bundle
   registration fails closed.
-- Test overrides must remain temporary and cannot select the shared namespace,
-  including symlink aliases. Physical provider resources in test scope must also
-  be temporary, preventing an isolated gate from admitting a real user profile.
-- App processes without a test declaration keep the existing shared namespace.
+- Each physical test profile belongs to `fixtures/<fixture-UUID>/` under its
+  run. Its locks and pointers live in the sibling `coordination/<fixture-UUID>/`
+  and survive workspace cleanup. Overrides for that profile must identify the
+  same directory. Other runs and ordinary app processes cannot claim it.
+- A temporary path or inherited `TMPDIR` alone grants no access. The reserved
+  temp parent is identified by device and inode, including its APFS Data-volume
+  alias. Lock and pointer operations keep the directory descriptor across waits
+  and callbacks and check that the directory is still in place before publishing.
+- App processes without a test declaration use the existing shared namespace for app profiles.
   Legacy compatibility, journal authority and release criteria are unchanged.
 
 ## Recovery boundary and limits
@@ -59,3 +64,15 @@ unverified reservations. Wrapper tests exercise renamed helpers, failures and
 process-group cancellation. Provider scenarios use synthetic homes/configuration
 and fake executables; they do not establish live Antigravity authentication or
 real-provider success.
+
+The timed worker fixtures use their own capabilities and zero user approval
+records. They assert that admission does not read the user's approval store
+while measuring the complete worker, including its real process and cleanup.
+
+For the opt-in account-backed Swift tests, set `REAL_PROVIDER_ANTIGRAVITY_HOME`
+to an authenticated QA profile inside the active run's `fixtures/<fixture-UUID>/`.
+The worker and slash-command utility validate the same path. The wrapper exports
+`ASTRA_TEST_PROVIDER_NAMESPACE_ID` before starting its child so an explicit
+setup command can prepare that run's QA profile. Native app QA instead starts
+the development app with its own store, ordinary coordination and an existing
+QA provider profile.

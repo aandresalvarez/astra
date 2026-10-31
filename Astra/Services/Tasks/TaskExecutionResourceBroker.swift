@@ -135,7 +135,7 @@ enum TaskExecutionResourceBroker {
         switch kind {
         case .workspace, .gitCommonDirectory:
             true
-        case .browserSession, .docker, .remoteDirectory, .accountSession:
+        case .browserSession, .docker, .remoteDirectory, .accountSession, .nativeSession:
             false
         }
     }

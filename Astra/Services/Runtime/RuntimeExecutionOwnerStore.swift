@@ -20,6 +20,14 @@ final class RuntimeExecutionOwnerStore {
             self.taskID = taskID; self.descriptor = descriptor; self.recordURL = recordURL; self.taskOwnerID = taskOwnerID
         }
         deinit { close(descriptor) }
+        /// Verify the actual held lock when a caller also owns a pinned journal directory.
+        func verifiedTaskLock(in directory: Int32) throws -> stat {
+            var held = stat(), named = stat()
+            guard fstat(descriptor, &held) == 0,
+                  fstatat(directory, taskID.uuidString + ".lock", &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  held.st_dev == named.st_dev, held.st_ino == named.st_ino else { throw Failure.unsafePath }
+            return held
+        }
         func read() throws -> RuntimeExecutionOwnerRecord? {
             let record = try RuntimeExecutionOwnerStore.read(recordURL)
             guard record == nil || (record?.taskID == taskID && (taskOwnerID == nil || record?.taskOwnerID == taskOwnerID)) else {
@@ -143,14 +151,15 @@ final class RuntimeExecutionOwnerStore {
         try writer.save(record)
     }
 
-    func retainedExecutions(of record: RuntimeExecutionOwnerRecord) throws -> [RuntimeExecutionOwnerRecord] {
+    func retainedExecutions(of record: RuntimeExecutionOwnerRecord,
+                            read: (URL) throws -> RuntimeExecutionOwnerRecord? = RuntimeExecutionOwnerStore.read) throws -> [RuntimeExecutionOwnerRecord] {
         var result: [RuntimeExecutionOwnerRecord] = []
         var head = record.retainedExecutionHead
         if head != nil { try validateRetainedDirectory(taskID: record.taskID, ownerID: record.ownerID, create: false) }
         var seen: Set<UUID> = [record.executionID]
         while let id = head {
             guard seen.insert(id).inserted,
-                  let previous = try Self.read(retainedDirectory(taskID: record.taskID, ownerID: record.ownerID)
+                  let previous = try read(retainedDirectory(taskID: record.taskID, ownerID: record.ownerID)
                     .appendingPathComponent(id.uuidString + ".json")),
                   previous.taskID == record.taskID, previous.ownerID == record.ownerID,
                   previous.taskOwnerID == nil || previous.taskOwnerID == record.taskOwnerID,
