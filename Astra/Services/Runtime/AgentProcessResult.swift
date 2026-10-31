@@ -21,8 +21,8 @@ struct AgentProcessResult: Codable {
     let policyViolationMessage: String?
     let policyApprovalRequired: Bool
     let policyApprovalMessage: String?
-    let runtimeStopReason: String?
-    let runtimeStopMessage: String?
+    var runtimeStopReason: String?
+    var runtimeStopMessage: String?
     let runtimeRepairContext: RuntimeRepairContext?
     let budgetExceeded: Bool
     let budgetWarning: Bool
@@ -83,6 +83,26 @@ struct AgentProcessResult: Codable {
 
     var runtimeStopped: Bool {
         runtimeStopReason?.isEmpty == false
+    }
+
+    /// Called after the ordered ownership queue drains. Late evidence may
+    /// invalidate tool cleanup while preserving process facts and accounting.
+    func applyingOwnershipObservations(nativeSessionFailure: String?, supervisionTokens: Int?,
+                                       acknowledgedPermissions: Set<String>, writtenPermissions: Set<String>) -> Self {
+        var result = self
+        if let nativeSessionFailure {
+            result.runtimeStopReason = "runtime_recovery_blocked"
+            result.runtimeStopMessage = nativeSessionFailure
+            if let proof = result.executionStopProof {
+                result.executionStopProof = .init(executionID: proof.executionID, process: proof.process,
+                    reaped: proof.reaped, processGroupEmpty: proof.processGroupEmpty, toolsStopped: false,
+                    remoteWorkExcluded: proof.remoteWorkExcluded, capturedAt: proof.capturedAt)
+            }
+        }
+        result.supervisionReservedTokens = supervisionTokens
+        result.acknowledgedPermissionRequestIDs = acknowledgedPermissions
+        result.writtenPermissionRequestIDs = writtenPermissions
+        return result
     }
 
     /// ASTRA ended the provider itself: a watchdog or other runtime stop, the

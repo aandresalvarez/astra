@@ -64,7 +64,10 @@ final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
         for line in streamLines {
             onLine(line, true)
             for event in adapter.parseProcessEvents(line: line, parsesJSONLines: true) {
-                if case .systemInit(_, let sessionID) = event { owner?.session(sessionID) }
+                if case .systemInit(_, let sessionID) = event {
+                    do { try await owner?.session(sessionID) }
+                    catch { return AgentProcessResult(exitCode: -1, runtimeStopReason: "runtime_recovery_blocked", runtimeStopMessage: error.localizedDescription) }
+                }
             }
         }
         return result

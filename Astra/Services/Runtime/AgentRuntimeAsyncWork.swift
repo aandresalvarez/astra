@@ -41,7 +41,7 @@ final class OrderedMainActorTaskQueue: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }; return enqueuedCount
     }
 
-    func add(_ operation: @escaping @MainActor () -> Void) {
+    func add(_ operation: @escaping @MainActor () async -> Void) {
         lock.lock()
         let previous = tail
         let task = Task { @MainActor [permitsCommit] in
@@ -49,7 +49,7 @@ final class OrderedMainActorTaskQueue: @unchecked Sendable {
                 await previous.value
             }
             guard permitsCommit() else { return }
-            operation()
+            await operation()
         }
         enqueuedCount += 1
         tail = task

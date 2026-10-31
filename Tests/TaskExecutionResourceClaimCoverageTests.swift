@@ -9,7 +9,7 @@ import ASTRAPersistence
 ///
 /// `TaskExecutionResourceKind` declares the resource identities ASTRA is
 /// willing to serialize on, but declaring a kind does nothing on its own: a
-/// kind only affects admission once `TaskExecutionResourceClaimResolver`
+/// kind only affects admission once a resolver or the execution owner
 /// actually emits a claim for it. `.gitCommonDirectory` shipped declared but
 /// never emitted, and a reviewer had to find that by reading the diff.
 ///
@@ -61,8 +61,8 @@ struct TaskExecutionResourceClaimCoverageTests {
         // runtime, not per task: `AgentRuntimeHomeStateAccess` puts `~/.claude`,
         // `~/.codex`, and friends on the sandbox write allow-list for every run
         // of that runtime. Risk: concurrent runs of one runtime rewrite the
-        // same session/credential files (re-auth, config churn) with nothing
-        // serializing them (see
+        // credential/configuration files (re-auth, config churn) with nothing
+        // serializing them. Native session IDs are separately reserved at launch (see
         // `providerAccountStateIsWritableForEveryRunWithoutAnAccountSessionClaim`).
         .accountSession
     ]
@@ -472,6 +472,15 @@ struct TaskExecutionResourceClaimCoverageTests {
             )
             kinds.formUnion(claims.map(\.kind))
         }
+        // Native continuation is selected at launch, after the workspace
+        // resolver. Exercise its real admission boundary, not a literal claim.
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let task = h.makeTask(runtime: .codexCLI, goal: "Synthetic", model: "default")
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60))
+        defer { owner.finish() }
+        try owner.prepareLaunch(sessionID: "coverage-session")
+        kinds.formUnion(try RuntimeResourceOwnership.claims(in: RuntimeExecutionOwner.store(in: h.context), context: h.context).map(\.resourceKind))
         return kinds
     }
 

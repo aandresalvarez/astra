@@ -132,6 +132,8 @@ struct TaskDecisionOutcomeColdRefreshTests {
             let runs = try context.fetch(FetchDescriptor<TaskRun>())
             let events = try context.fetch(FetchDescriptor<TaskEvent>())
             let run = try #require(runs.first { $0.id == Fixture.uuid("00000000", 169) })
+            // Match production reversible edits without warming the cold-read benchmark.
+            SwiftDataTaskRollbackPreparation.prepare(task)
             let noise = TaskEvent.structuredPayloadEvent(task: task,
                 type: TaskEventTypes.ExecutionRequest.retry.rawValue,
                 payload: TaskExecutionSourcePayloadV1(launchMode: .continuation), run: run)
@@ -144,6 +146,7 @@ struct TaskDecisionOutcomeColdRefreshTests {
 
             if let initial = events.first(where: { $0.id == Fixture.uuid("10000000", boundary * 10) }),
                TaskDeliverableExpectation.requestSource(type: initial.type, payload: initial.payload) == .other {
+                SwiftDataTaskRollbackPreparation.prepare(task)
                 context.delete(initial)
                 try expectParity(fixture, task: task, context: context, expected: false)
                 context.rollback()
@@ -170,14 +173,17 @@ struct TaskDecisionOutcomeColdRefreshTests {
             context.autosaveEnabled = false
             let current = try fixture.task(in: context)
             let runs = try context.fetch(FetchDescriptor<TaskRun>())
+            SwiftDataTaskRollbackPreparation.prepare(current)
             context.delete(try #require(runs.first { $0.id == Fixture.uuid("00000000", index) }))
             try expectParity(fixture, task: current, context: context, expected: true)
             context.rollback()
             let ordinary = try #require(runs.first { $0.id == deliveredID })
+            SwiftDataTaskRollbackPreparation.prepare(current)
             ordinary.status = .failed
             try expectParity(fixture, task: current, context: context, expected: false)
             context.rollback()
             try expectParity(fixture, task: current, context: context, expected: true)
+            SwiftDataTaskRollbackPreparation.prepare(current)
             context.delete(ordinary)
             try expectParity(fixture, task: current, context: context, expected: false)
         }

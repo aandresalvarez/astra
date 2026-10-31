@@ -61,6 +61,9 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     var state: State
     var limits: RuntimeRecoveryLimits
     var stopProof: RuntimeExecutionStopProof?
+    /// A disclosed native identity must be verified before even a clean process
+    /// receipt can authorize replacement. Persisted across crash/restart.
+    var sessionVerificationPending: Bool? = nil
     var inheritedToolUncertainty: Bool? = nil
     var settlementInProgress: Bool? = nil
     var settlementLocalWorkStopped: Bool? = nil
@@ -92,7 +95,7 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     /// A new user instruction is distinct from replaying unfinished work. It
     /// still cannot compete with the old provider or its local process group.
     var hasUnverifiedTools: Bool {
-        inheritedToolUncertainty == true || stopProof?.toolsStopped == false
+        sessionVerificationPending == true || inheritedToolUncertainty == true || stopProof?.toolsStopped == false
             || stopProof?.remoteWorkExcluded == false || settlementToolsStopped == false
     }
 

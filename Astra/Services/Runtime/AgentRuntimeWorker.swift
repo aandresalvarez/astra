@@ -1258,6 +1258,19 @@ final class AgentRuntimeWorker {
             recordingMode: recordingMode,
             onEvent: onEvent
         ))
+        // Some providers discover their session from disk only after the
+        // process returns. Publish and verify that identity before settlement,
+        // through the same owner used for streamed session frames. A run
+        // rejected before launch has only a requested ID, not a discovered one.
+        if executionOwner.record.hasProviderLaunch {
+            do { try await executionOwner.session(run.providerSessionId) }
+            catch {
+                result = result.applyingOwnershipObservations(nativeSessionFailure: error.localizedDescription,
+                    supervisionTokens: result.supervisionReservedTokens,
+                    acknowledgedPermissions: result.acknowledgedPermissionRequestIDs,
+                    writtenPermissions: result.writtenPermissionRequestIDs)
+            }
+        }
         Self.recordEstimatedUsageIfProviderDidNotReport(
             runtimeAdapter: runtimeAdapter,
             selectedRuntime: selectedRuntime,

@@ -117,6 +117,7 @@ public enum TaskExecutionResourceKind: String, Codable, CaseIterable, Sendable {
     case docker
     case remoteDirectory = "remote_directory"
     case accountSession = "account_session"
+    case nativeSession = "native_session"
 }
 
 public enum TaskExecutionResourceAccess: String, Codable, CaseIterable, Sendable {

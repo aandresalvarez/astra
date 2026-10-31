@@ -143,14 +143,15 @@ final class RuntimeExecutionOwnerStore {
         try writer.save(record)
     }
 
-    func retainedExecutions(of record: RuntimeExecutionOwnerRecord) throws -> [RuntimeExecutionOwnerRecord] {
+    func retainedExecutions(of record: RuntimeExecutionOwnerRecord,
+                            read: (URL) throws -> RuntimeExecutionOwnerRecord? = RuntimeExecutionOwnerStore.read) throws -> [RuntimeExecutionOwnerRecord] {
         var result: [RuntimeExecutionOwnerRecord] = []
         var head = record.retainedExecutionHead
         if head != nil { try validateRetainedDirectory(taskID: record.taskID, ownerID: record.ownerID, create: false) }
         var seen: Set<UUID> = [record.executionID]
         while let id = head {
             guard seen.insert(id).inserted,
-                  let previous = try Self.read(retainedDirectory(taskID: record.taskID, ownerID: record.ownerID)
+                  let previous = try read(retainedDirectory(taskID: record.taskID, ownerID: record.ownerID)
                     .appendingPathComponent(id.uuidString + ".json")),
                   previous.taskID == record.taskID, previous.ownerID == record.ownerID,
                   previous.taskOwnerID == nil || previous.taskOwnerID == record.taskOwnerID,

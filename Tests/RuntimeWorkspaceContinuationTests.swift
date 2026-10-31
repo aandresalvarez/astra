@@ -10,8 +10,9 @@ import WorkspaceToolSupport
 @Suite("Explicit workspace continuation", .serialized)
 @MainActor
 struct RuntimeWorkspaceContinuationTests {
-    private func completed(_ h: HeadlessChatHarness) throws -> (AgentTask, RuntimeExecutionOwnerRecord) {
-        let task = h.makeTask(runtime: .claudeCode, goal: "Keep previous work", model: "test")
+    private func completed(_ h: HeadlessChatHarness, source: AgentTask? = nil,
+                           capturedClaims: [TaskResourceLockClaim]? = nil) throws -> (AgentTask, RuntimeExecutionOwnerRecord) {
+        let task = source ?? h.makeTask(runtime: .claudeCode, goal: "Keep previous work", model: "test")
         let run = TaskRun(task: task)
         run.status = .completed; run.typedStopReason = .completed; run.completedAt = Date()
         run.setOutput("Preserved answer")
@@ -20,10 +21,41 @@ struct RuntimeWorkspaceContinuationTests {
         var record = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context, toolsStopped: false)
         record.state = .finished; record.inheritedToolUncertainty = true
         record.settlementInProgress = false; record.settlementLocalWorkStopped = true; record.settlementToolsStopped = true
-        record.resourceClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: task,
+        record.resourceClaims = capturedClaims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: task,
             runMode: "previous", sandboxEnforcement: .off)
+        if capturedClaims != nil { record.sessionID = "reported-session" }
         try save(record, h); try h.context.save()
         return (task, record)
+    }
+
+    @Test("Authorizing a workspace never authorizes taking its predecessor's native session")
+    func workspaceGrantDoesNotGrantSession() async throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let source = h.makeTask(runtime: .claudeCode, goal: "Keep previous work", model: "test")
+        let prior = try #require(RuntimeExecutionOwner.acquire(task: source, context: h.context, maxRunSeconds: 60))
+        try prior.prepareLaunch(sessionID: "requested-session")
+        try await prior.session("reported-session")
+        prior.stopped(proof: nil, turns: 1, tokens: 0, seconds: 0)
+        prior.finish()
+        let (_, original) = try completed(h, source: source, capturedClaims: prior.record.resourceClaims)
+        let next = h.makeTask(runtime: .claudeCode, goal: "New independent session", model: "test")
+        next.workspace = source.workspace
+        let submission = try ExecutionRequestSubmissionService.submitInitial(for: next, into: h.context).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context))
+        try approve(h, task: next, request: request)
+        do {
+            let admission = try #require(try RuntimeWorkspaceContinuation.admission(task: next, request: request,
+                previous: nil, context: h.context))
+            #expect(admission.excludedClaims.allSatisfy { $0.resourceKind == .workspace || $0.resourceKind == .gitCommonDirectory })
+        }
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: next, context: h.context,
+            maxRunSeconds: 60, userRequest: request))
+        defer { owner.finish() }
+        for session in ["requested-session", "reported-session"] {
+            #expect(throws: (any Error).self) { try owner.prepareLaunch(sessionID: session) }
+        }
+        try owner.prepareLaunch(sessionID: "independent-session")
+        #expect(try RuntimeExecutionOwner.existing(task: source, context: h.context) == original)
     }
     private func save(_ record: RuntimeExecutionOwnerRecord, _ h: HeadlessChatHarness) throws {
         let lease = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: record.taskID, taskOwnerID: record.taskOwnerID)
@@ -416,7 +448,11 @@ struct RuntimeWorkspaceContinuationTests {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("Fixtures/ProviderStreams/claude/foreground-tool-completion.jsonl")
         let frames = h.rootURL.appendingPathComponent("frames.jsonl")
-        try FileManager.default.copyItem(at: fixture, to: frames)
+        let fixtureText = try String(contentsOf: fixture, encoding: .utf8)
+        func stageFrames(for task: AgentTask) throws {
+            try fixtureText.replacingOccurrences(of: "foreground-fixture", with: "fixture-" + task.id.uuidString)
+                .write(to: frames, atomically: true, encoding: .utf8)
+        }
         let executable = try h.writeExecutable(named: "claude", script: HeadlessChatScenarioTests.claudeScript(body:
             "cat " + HeadlessChatScenarioTests.shQuote(frames.path)))
         let policy = AgentRuntimeExecutionPolicy.default.withRemoteSSHRoute(
@@ -444,6 +480,7 @@ struct RuntimeWorkspaceContinuationTests {
             let lease = try #require(queue.acquireResourceLocksIfAvailable(claims, task: task, modelContext: h.context))
             _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
             DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: h.context)
+            try stageFrames(for: task)
             let worker = h.makeWorker(runtime: .claudeCode, executablePath: executable, permissionPolicy: .autonomous)
             _ = await worker.execute(task: task, modelContext: h.context, executionRequestID: request.id,
                 executionPolicy: policy.withResourceAdmission(workspaceAccess: .exclusive, sandboxEnforcement: .off, claims: lease)) { _ in }
@@ -459,8 +496,10 @@ struct RuntimeWorkspaceContinuationTests {
             previous = task
             sequence.append(task)
         }
+        #expect(Set(sequence.compactMap(\.sessionId)).count == 4)
         for index in [1, 2, 1, 0] {
             let task = sequence[index]
+            let originalSession = task.sessionId
             let before = task.runs.count
             let message = "Return to task \(index)"
             let submitted = try ExecutionRequestSubmissionService.submitFollowUp(message: message, for: task, into: h.context).get()
@@ -470,6 +509,7 @@ struct RuntimeWorkspaceContinuationTests {
             let lease = try #require(queue.acquireResourceLocksIfAvailable(claims, task: task, modelContext: h.context))
             _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
             DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: h.context)
+            try stageFrames(for: task)
             let worker = h.makeWorker(runtime: .claudeCode, executablePath: executable, permissionPolicy: .autonomous)
             await worker.continueSession(task: task, message: message, existingMessageEventID: submitted.eventID,
                 turnRequestID: request.id, modelContext: h.context,
@@ -480,6 +520,7 @@ struct RuntimeWorkspaceContinuationTests {
             #expect(!queue.persistedResourceLocks.isEmpty)
             #expect(task.status == .completed)
             #expect(task.runs.count == before + 1)
+            #expect(task.sessionId == originalSession)
         }
     }
 

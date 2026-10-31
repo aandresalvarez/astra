@@ -294,6 +294,16 @@ final class RuntimeExecutionOwner {
     func prepareLaunch(sessionID: String? = nil) throws {
         guard !writeFailed, lease != nil, record.cancellationRequested != true,
               record.state == .preparing || record.canReplace else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        let admission = try Self.store(in: context).acquireAdmission()
+        defer { withExtendedLifetime(admission) {} }
+        let sessionID = RuntimeNativeSessionOwnership.normalized(sessionID)
+        try checkNativeSession(sessionID)
+        if record.canReplace {
+            // A fallback is a new execution; its uncertainty must not reclaim
+            // sessions whose preceding execution has proven tool cleanup.
+            record.resourceClaims?.removeAll { $0.resourceKind == .nativeSession }
+        }
+        retainNativeSession(sessionID)
         record.executionID = UUID(); record.providerProcess = nil; record.stopProof = nil
         record.sessionID = sessionID
         record.state = .launching
@@ -312,10 +322,57 @@ final class RuntimeExecutionOwner {
 
     func didNotLaunch() { record.state = .notStarted; try? save(nil) }
 
-    func session(_ sessionID: String?) {
+    func session(_ sessionID: String?) async throws {
         guard isActive else { return }
-        guard let sessionID, !sessionID.isEmpty, record.sessionID != sessionID else { return }
-        record.sessionID = sessionID; try? save(nil)
+        guard let sessionID = RuntimeNativeSessionOwnership.normalized(sessionID), record.sessionID != sessionID else { return }
+        // A provider may disclose its ID only after launch, or while its final
+        // stream is draining. Never lose an earlier ID if this signal differs.
+        retainNativeSession(record.sessionID)
+        retainNativeSession(sessionID)
+        record.sessionID = sessionID
+        record.sessionVerificationPending = true
+        do {
+            // Publish the identity before yielding, so a crash while waiting
+            // cannot erase the newly disclosed session reservation.
+            try save(nil, audit: true)
+            let admission = try await RuntimeNativeSessionOwnership.admission(in: Self.store(in: context))
+            defer { withExtendedLifetime(admission) {} }
+            guard isActive else { throw RuntimeExecutionOwnerStore.Failure.busy }
+            try checkNativeSession(sessionID)
+            record.sessionVerificationPending = false
+            try save(nil, audit: true)
+        } catch {
+            record.sessionVerificationPending = true
+            record.inheritedToolUncertainty = true
+            try? save("The provider's native session ownership could not be verified. ASTRA requested a stop and preserved the affected session reservations. " + error.localizedDescription, audit: true)
+            throw error
+        }
+    }
+
+    private func checkNativeSession(_ sessionID: String?) throws {
+        guard let sessionID, let requested = RuntimeNativeSessionOwnership.claim(
+            runtime: record.runtime, sessionID: sessionID, taskID: record.taskID) else { return }
+        let held = try RuntimeResourceOwnership.claims(in: Self.store(in: context), context: context,
+            excluding: task.id, excludingOwner: task.persistentModelID)
+        if let conflict = TaskExecutionResourceBroker.firstConflict(requested: [requested], active: held) {
+            let holderID = conflict.holder.taskID
+            let candidates = (try? context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == holderID }))) ?? []
+            let holder = candidates.first { candidate in
+                guard candidate.persistentModelID != task.persistentModelID,
+                      let saved = try? RuntimeTaskOwnerJournal.read(task: candidate, context: context),
+                      RuntimeResourceOwnership.retainsResources(saved),
+                      let sessions = try? RuntimeNativeSessionOwnership.claims(saved, store: Self.store(in: context)) else { return false }
+                return sessions.contains { TaskExecutionResourceBroker.conflicts($0, requested) }
+            }
+            throw RuntimeNativeSessionOwnership.Conflict(runtime: record.runtime, sessionID: sessionID,
+                holder: holderID, holderTitle: holder?.title, workspace: holder?.workspace?.name)
+        }
+    }
+
+    private func retainNativeSession(_ sessionID: String?) {
+        guard let claim = RuntimeNativeSessionOwnership.claim(runtime: record.runtime, sessionID: sessionID, taskID: record.taskID),
+              record.resourceClaims?.contains(claim) != true else { return }
+        record.resourceClaims = (record.resourceClaims ?? []) + [claim]
     }
 
     func waitingForInput(_ waiting: Bool) {

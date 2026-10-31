@@ -10,7 +10,7 @@ import ASTRAModels
 enum RuntimeCompletedUserTurnContinuation {
     static func permits(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
                         request: TaskTurnRequest?, context: ModelContext) -> Bool {
-        guard task.isLive, task.modelContext === context,
+        guard saved.sessionVerificationPending != true, task.isLive, task.modelContext === context,
               let request, request.modelContext === context, request.state.isActive,
               request.taskID == task.id else { return false }
         if RuntimeExecutionAdmission.resolve(request: request, task: task) == .userInstruction,
@@ -105,7 +105,7 @@ enum RuntimeCompletedUserTurnContinuation {
 
     private static func settledBasis(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
                                      context: ModelContext, excluding ignored: Set<UUID>, requiresSuccess: Bool) -> Bool {
-        guard task.isLive, task.modelContext === context,
+        guard saved.sessionVerificationPending != true, task.isLive, task.modelContext === context,
               saved.taskID == task.id, settledState(saved),
               saved.cancellationRequested != true || cancelledAttempt(saved, task: task, context: context),
               saved.settlementInProgress == false, saved.settlementLocalWorkStopped == true,
@@ -145,7 +145,11 @@ enum RuntimeCompletedUserTurnContinuation {
 
     static func retainingClaims(_ prior: RuntimeExecutionOwnerRecord,
                                 additional: [TaskResourceLockClaim], requestID: UUID?) -> [TaskResourceLockClaim] {
-        let claims = ((prior.resourceClaims ?? []) + additional).map {
+        // Admission archives the predecessor before saving this successor.
+        // Session protection is projected from that chain; copying its sessions
+        // into every successor would eventually make the receipt unreadable.
+        let inherited = (prior.resourceClaims ?? []).filter { $0.resourceKind != .nativeSession }
+        let claims = (inherited + additional).map {
             TaskExecutionResourceClaim(kind: $0.resourceKind, key: $0.resourceKey,
                 access: $0.accessMode == .write ? .exclusive : .shared)
         }

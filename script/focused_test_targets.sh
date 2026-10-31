@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Runtime/RuntimeNativeSessionOwnership.swift|Tests/RuntimeNativeSessionOwnership*Tests.swift)
+      add_target "RuntimeNativeSessionOwnershipTests|AgentRuntimeAsyncWorkTests|AgentProcessResultTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Views/TaskDecisionOutcomeRefresh.swift|Astra/Views/TaskMainViewDecisionOutcomes.swift|Astra/Views/TaskMainViewObservers.swift|Astra/Services/Validation/TaskDeliverableHistoryReader.swift|Tests/TaskDecisionOutcomeRefreshTests.swift|Tests/TaskDecisionOutcomeColdRefreshTests.swift)
       add_target "TaskDecisionOutcomeRefreshTests|TaskDecisionOutcomeColdRefreshTests|TaskDeliverableFollowUpTests|TaskDecisionDock|TaskMainActorScalingGateTests"
       ;;
@@ -55,6 +61,12 @@ target_for_path() {
   case "$path" in
     Astra/Services/Browser/ShelfBrowserOwner.swift|Astra/Services/Browser/ShelfBrowserBridgeRegistry.swift|Astra/Services/Browser/ShelfBrowserSession.swift|Astra/Services/Browser/ShelfSessionStores.swift|Astra/Services/Browser/ControlledBrowser*.swift|Astra/Views/ContentViewBrowserSessionPolicyCache.swift|Astra/Views/ShelfBrowserPanelView.swift|Tests/ShelfBrowserOwnershipTests.swift|Tests/ShelfBrowserLifetimeTests.swift|Tests/ControlledBrowserProfileLeaseTests.swift)
       add_target "ShelfBrowserOwnershipTests|ShelfBrowserLifetimeTests|ControlledBrowserProfileLeaseTests|BrowserBridgeSecurityTests|BrowserSessionPolicy|ShelfBrowserPanelLayoutTests|WorkspaceRightRailPerformanceTests"
+      ;;
+  esac
+
+  case "$path" in
+    Tests/CopilotSessionDiscovery*Tests.swift)
+      add_target "CopilotSessionDiscovery"
       ;;
   esac
 
