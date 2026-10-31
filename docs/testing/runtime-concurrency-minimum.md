@@ -145,6 +145,20 @@ reserved, cached traversals still check attribution and cycles, and a fresh scan
 fails closed if a protected receipt disappears. The cache does not survive the
 scan, trust imported audit evidence, or make all in-memory traversals linear.
 
+The empty-resume fallback also kept the preceding session claim after complete
+cleanup proof, so uncertainty in the fresh attempt unnecessarily fenced both
+sessions. Launch preparation now removes only current native-session claims
+when `canReplace` proves replacement is safe, under the existing admission lock
+and after checking the requested identity. Workspace/Git claims and retained
+history are unchanged. The regression first reproduced three failed assertions,
+then the focused campaign passed **60 tests in 4 suites**
+(`fallback-session-focused.log`). It uses real scoped child processes with
+synthetic Cursor frames: reopened receipts and actual competing admission show
+that the stopped session is available, the uncertain session/workspace stay
+protected, missing proof blocks fallback, and consumption remains 110/165
+tokens as applicable. A fallback failing before its init frame is also covered.
+This is worker regression coverage, not a real Cursor-account test.
+
 ## Candidate native-app session check
 
 The verified development bundle was copied into the same isolated QA identity.

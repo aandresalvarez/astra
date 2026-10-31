@@ -182,6 +182,53 @@ struct NativeResumeEmptyTurnTests {
         #expect(label?.contains("preparation") == false)
     }
 
+    @Test("An uncertain fallback reserves its own session, not a confirmed-stopped predecessor", arguments: [false, true])
+    func fallbackReleasesOnlyProvenSession(resumedConfirmed: Bool) async throws {
+        let (runner, task, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyWithUsage, providesStopProof: resumedConfirmed, chargedTokens: 110),
+            .init(lines: Self.freshAnswerWithUsage, providesStopProof: false, chargedTokens: 55)
+        ])
+        defer { withExtendedLifetime(container) {} }
+        #expect(runner.nativeSessionIDs == (resumedConfirmed ? [nil, "chat-xyz", nil] : [nil, "chat-xyz"]))
+        let context = container.mainContext
+        let record = try #require(try RuntimeExecutionOwner.existing(task: task, context: context))
+        #expect(!record.canReplace && record.resourcesReleased != true)
+        #expect(record.sessionID == (resumedConfirmed ? "chat-new" : "chat-xyz"))
+        #expect(record.limits.tokensSpent == (resumedConfirmed ? 165 : 110))
+
+        // Reopen the projection, so the persisted receipt (not the worker's
+        // process-local state) decides which resource a competing task may use.
+        let reopened = ModelContext(container)
+        let active = try RuntimeResourceOwnership.claims(in: RuntimeExecutionOwner.store(in: reopened), context: reopened)
+        for (sessionID, allowed) in [("chat-xyz", resumedConfirmed), ("chat-new", !resumedConfirmed), ("independent", true)] {
+            let claim = try #require(RuntimeNativeSessionOwnership.claim(runtime: "cursor_cli", sessionID: sessionID, taskID: UUID()))
+            #expect(TaskExecutionResourceBroker.canAcquire([claim], active: active) == allowed)
+        }
+        var workspaceClaim = try #require(record.resourceClaims?.first { $0.resourceKind == .workspace })
+        workspaceClaim.taskID = UUID()
+        #expect(!TaskExecutionResourceBroker.canAcquire([workspaceClaim], active: active))
+
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("fallback-contender-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let workspace = Workspace(name: "Independent fallback contender", primaryPath: path.path)
+        context.insert(workspace)
+        let contender = AgentTask(title: "Resume another session", goal: "Synthetic admission only", workspace: workspace,
+            model: "composer-2.5-fast", runtime: .cursorCLI)
+        context.insert(contender)
+        try context.save()
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: contender, context: context, maxRunSeconds: 60))
+        defer { owner.finish() }
+        let before = owner.record
+        #expect(throws: RuntimeNativeSessionOwnership.Conflict.self) {
+            try owner.prepareLaunch(sessionID: resumedConfirmed ? "chat-new" : "chat-xyz")
+        }
+        #expect(owner.record == before)
+        try owner.prepareLaunch(sessionID: resumedConfirmed ? "chat-xyz" : "independent")
+        owner.didNotLaunch() // This contender checks admission without launching a provider.
+    }
+
     @Test("Expired fallback time never launches a replacement with unlimited zero timeout")
     func expiredFallbackDoesNotLaunch() async throws {
         let (runner, task, container) = try await runFollowUp(scripts: [
@@ -298,6 +345,10 @@ struct NativeResumeEmptyTurnTests {
         defer { withExtendedLifetime(container) {} }
         #expect(runner.nativeSessionIDs == [nil, "chat-xyz", nil])
         #expect(task.sessionId == nil)
+        let context = container.mainContext
+        let active = try RuntimeResourceOwnership.claims(in: RuntimeExecutionOwner.store(in: context), context: context)
+        let oldSession = try #require(RuntimeNativeSessionOwnership.claim(runtime: "cursor_cli", sessionID: "chat-xyz", taskID: UUID()))
+        #expect(TaskExecutionResourceBroker.canAcquire([oldSession], active: active))
     }
 
     @Test("A hard budget stop on the re-run still drops the abandoned session")

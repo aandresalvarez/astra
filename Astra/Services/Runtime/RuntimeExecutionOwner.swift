@@ -298,6 +298,11 @@ final class RuntimeExecutionOwner {
         defer { withExtendedLifetime(admission) {} }
         let sessionID = RuntimeNativeSessionOwnership.normalized(sessionID)
         try checkNativeSession(sessionID)
+        if record.canReplace {
+            // A fallback is a new execution; its uncertainty must not reclaim
+            // sessions whose preceding execution has proven tool cleanup.
+            record.resourceClaims?.removeAll { $0.resourceKind == .nativeSession }
+        }
         retainNativeSession(sessionID)
         record.executionID = UUID(); record.providerProcess = nil; record.stopProof = nil
         record.sessionID = sessionID
