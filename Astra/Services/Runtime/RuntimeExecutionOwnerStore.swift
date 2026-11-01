@@ -20,6 +20,14 @@ final class RuntimeExecutionOwnerStore {
             self.taskID = taskID; self.descriptor = descriptor; self.recordURL = recordURL; self.taskOwnerID = taskOwnerID
         }
         deinit { close(descriptor) }
+        /// Verify the actual held lock when a caller also owns a pinned journal directory.
+        func verifiedTaskLock(in directory: Int32) throws -> stat {
+            var held = stat(), named = stat()
+            guard fstat(descriptor, &held) == 0,
+                  fstatat(directory, taskID.uuidString + ".lock", &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  held.st_dev == named.st_dev, held.st_ino == named.st_ino else { throw Failure.unsafePath }
+            return held
+        }
         func read() throws -> RuntimeExecutionOwnerRecord? {
             let record = try RuntimeExecutionOwnerStore.read(recordURL)
             guard record == nil || (record?.taskID == taskID && (taskOwnerID == nil || record?.taskOwnerID == taskOwnerID)) else {
@@ -83,13 +91,16 @@ final class RuntimeExecutionOwnerStore {
 
     }
 
-    func acquire(taskID: UUID, taskOwnerID: PersistentIdentifier? = nil) throws -> Lease {
+    func acquire(taskID: UUID, taskOwnerID: PersistentIdentifier? = nil, createIfMissing: Bool = true) throws -> Lease {
         let targetURL = try recordURL(taskID, owner: taskOwnerID)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        if createIfMissing {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
         var info = stat()
         guard lstat(root.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR, info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { throw Failure.unsafePath }
         let lockURL = root.appendingPathComponent(taskID.uuidString + ".lock")
-        let fd = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        let flags = O_RDWR | O_CLOEXEC | O_NOFOLLOW | (createIfMissing ? O_CREAT : 0)
+        let fd = open(lockURL.path, flags, 0o600)
         guard fd >= 0 else { throw Failure.unsafePath }
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid(), info.st_nlink == 1 else {
             close(fd); throw Failure.unsafePath
@@ -253,7 +264,7 @@ final class RuntimeExecutionOwnerStore {
     static func read(_ url: URL) throws -> RuntimeExecutionOwnerRecord? { try readValue(url) }
 
     private static func readValue<T: Decodable>(_ url: URL) throws -> T? {
-        let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        let fd = open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else {
             if errno == ENOENT { return nil }
             throw Failure.unreadable

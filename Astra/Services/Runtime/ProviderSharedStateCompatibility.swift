@@ -14,21 +14,25 @@ enum ProviderSharedStateCompatibility {
         name.count == 64 && name.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
-    static func waitForLegacyLocks(in root: URL, deadline: ContinuousClock.Instant?, onContention: @Sendable () -> Void = {}) async throws {
-        for url in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            where isLegacyLock(url.lastPathComponent) {
-            let fd = open(url.path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
+    static func waitForLegacyLocks(in directory: ProviderSharedStateDirectory, deadline: ContinuousClock.Instant?, onContention: @Sendable () -> Void = {}) async throws {
+        for name in try directory.names() where isLegacyLock(name) {
+            let url = directory.url.appendingPathComponent(name)
+            let fd = openat(directory.descriptor, name, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
             guard fd >= 0 else { throw UnreadableReservation(path: url.path) }
             defer { close(fd) }
-            var info = stat()
-            guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
-                  info.st_uid == getuid(), info.st_nlink == 1, info.st_mode & 0o077 == 0 else {
-                throw UnreadableReservation(path: url.path)
+            func verifyLock() throws {
+                guard let file = try? directory.verifiedLock(fd, named: name), file.st_mode & 0o077 == 0 else {
+                    throw UnreadableReservation(path: url.path)
+                }
             }
             while true {
                 try Task.checkCancellation()
                 if let deadline, ContinuousClock.now >= deadline { throw RuntimeProviderStateWaitTimeout() }
-                if flock(fd, LOCK_EX | LOCK_NB) == 0 { break }
+                try verifyLock()
+                if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                    try verifyLock()
+                    break
+                }
                 guard errno == EWOULDBLOCK || errno == EAGAIN else { throw UnreadableReservation(path: url.path) }
                 onContention()
                 try await Task.sleep(for: .milliseconds(50))
@@ -36,14 +40,13 @@ enum ProviderSharedStateCompatibility {
         }
     }
 
-    static func checkLegacyReferences(in root: URL, key: AgentRuntimeSharedStateKey,
+    static func checkLegacyReferences(in directory: ProviderSharedStateDirectory, key: AgentRuntimeSharedStateKey,
                                 reference: RuntimeProviderOwnershipReference?, deadline: ContinuousClock.Instant?) async throws {
-        for url in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
-            let name = url.deletingPathExtension().lastPathComponent
-            guard url.pathExtension == "json", isLegacyLock(name) else { continue }
+        for name in try directory.names() where name.hasSuffix(".json") && isLegacyLock(String(name.dropLast(5))) {
+            let url = directory.url.appendingPathComponent(name)
             try Task.checkCancellation()
             if let deadline, ContinuousClock.now >= deadline { throw RuntimeProviderStateWaitTimeout() }
-            do { try RuntimeProviderOwnershipReference.assertCompatible(at: url, key: key, next: reference) }
+            do { try RuntimeProviderOwnershipReference.assertCompatible(in: directory, name: name, key: key, next: reference) }
             catch let block as RuntimeProviderResourceRegistry.Block { throw block }
             catch { throw UnreadableReservation(path: url.path) }
         }

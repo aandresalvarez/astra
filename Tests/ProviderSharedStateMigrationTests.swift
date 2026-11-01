@@ -38,7 +38,7 @@ struct ProviderSharedStateMigrationTests {
         record.providerSharedStateKey = old.rawValue; record.providerSharedStateReleased = false; record.resourcesReleased = false
         func save() throws { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         try save()
-        let root = h.rootURL.appendingPathComponent("locks")
+        let root = h.providerLockRoot
         do {
             let lease = try await ProviderSharedStateProcessLock.acquire(old, root: root)
             try lease.handoff(old, reference: .init(journalRoot: store.root.path, taskID: task.id, ownerID: record.ownerID)) {}
@@ -74,7 +74,7 @@ struct ProviderSharedStateMigrationTests {
         RuntimeProviderResourceRegistry.unregister(store.root)
         let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.rootURL.appendingPathComponent("profile/settings.json"))
         record.providerSharedStateKey = key.rawValue; record.providerSharedStateReleased = false; record.resourcesReleased = false
-        let root = h.rootURL.appendingPathComponent("locks")
+        let root = h.providerLockRoot
         do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(record) }
         do {
             let lease = try await ProviderSharedStateProcessLock.acquire(key, root: root)
@@ -100,7 +100,7 @@ struct ProviderSharedStateMigrationTests {
     @Test("A malformed modern pointer reports its exact path and remains untouched")
     func malformedModernPointer() async throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
-        let root = h.rootURL.appendingPathComponent("locks")
+        let root = h.providerLockRoot
         let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
             fileURL: h.rootURL.appendingPathComponent("profile/settings.json"))
         let lock = try await ProviderSharedStateProcessLock.acquire(key, root: root)
@@ -124,7 +124,7 @@ struct ProviderSharedStateMigrationTests {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
         let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
             fileURL: h.rootURL.appendingPathComponent("profile/settings.json"))
-        let lock = try await ProviderSharedStateProcessLock.acquire(key, root: h.rootURL.appendingPathComponent("locks"))
+        let lock = try await ProviderSharedStateProcessLock.acquire(key, root: h.providerLockRoot)
         do {
             try lock.handoff(key, reference: nil) {
                 if kind == "cancel" { throw CancellationError() }

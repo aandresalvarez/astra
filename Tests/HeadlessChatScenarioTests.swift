@@ -86,6 +86,7 @@ extension HeadlessChatScenarioTests {
 @MainActor
 final class HeadlessChatHarness {
     let rootURL: URL
+    let providerLockRoot: URL
     let workspaceURL: URL
     let container: ModelContainer
     let context: ModelContext
@@ -93,8 +94,9 @@ final class HeadlessChatHarness {
     /// `persistentStore` backs the container with a file under `rootURL`, for
     /// measurements that must pay real SQLite saves and faults.
     init(persistentStore: Bool = false) throws {
-        rootURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("astra-headless-chat-\(UUID().uuidString)", isDirectory: true)
+        let fixture = try ProviderCoordinationFixture()
+        rootURL = fixture.data
+        providerLockRoot = fixture.coordination
         workspaceURL = rootURL.appendingPathComponent("workspace", isDirectory: true)
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
 

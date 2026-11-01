@@ -503,8 +503,7 @@ struct AgentUtilityRuntimeTests {
 
     @Test("Antigravity utility uses closed stdin")
     func antigravityUtilityUsesClosedStdin() async throws {
-        let root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("astra-utility-agy-stdin-\(UUID().uuidString)", isDirectory: true)
+        let root = try ProviderCoordinationFixture().data
         let fakeAgy = root.appendingPathComponent("agy")
         let providerHome = root.appendingPathComponent("agy-home", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

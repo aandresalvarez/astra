@@ -32,8 +32,8 @@ target_for_path() {
     Astra/Views/WorkspaceRailOutputPresentation.swift|Astra/Views/WorkspaceRailSectionPresentation.swift|Astra/Views/WorkspaceRightRailView.swift|Tests/WorkspaceRailOutput*Tests.swift)
       add_target "WorkspaceRailOutputPresentationTests|WorkspaceRailOutputPerformanceTests|WorkspaceRailSectionPresentationTests|WorkspaceRightRailPerformanceTests"
       ;;
-    Astra/Services/Runtime/ProviderSharedState*.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner+SharedConfiguration.swift|Astra/Services/Runtime/AgentRuntimeSharedStateGate.swift|Astra/Services/Runtime/RuntimeProviderOwnershipReference.swift|Astra/Services/Runtime/RuntimeProviderResourceRegistry.swift|Tests/ProviderSharedState*Tests.swift)
-      add_target "ProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests|ProviderSharedStateLaunchTests"
+    Astra/Services/Runtime/ProviderSharedState*.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner+SharedConfiguration.swift|Astra/Services/Runtime/AgentRuntimeSharedStateGate.swift|Astra/Services/Runtime/RuntimeProviderOwnershipReference.swift|Astra/Services/Runtime/RuntimeProviderResourceRegistry.swift|Tests/ProviderSharedState*Tests.swift|Tests/ProviderFixtureRecovery*.swift|Tests/ProviderCoordinationFixture.swift)
+      add_target "ProviderSharedStateIdentityTests|ProviderSharedStateMigrationTests|ProviderSharedStateLaunchTests|ProviderSharedStateIsolationTests|ProviderFixtureRecoveryTests|antigravityEmptyRetryIgnoresEarlierArtifacts"
       ;;
   esac
 
@@ -47,7 +47,7 @@ target_for_path() {
   esac
 
   case "$path" in
-    ASTRACore/BinaryRunner.swift|ASTRACore/BinaryProcessGroupCompletion.swift|Astra/Services/Runtime/RuntimePrelaunchCancellation.swift|Astra/Services/Runtime/RuntimeCompletedUserTurnContinuation.swift|Astra/Services/Runtime/AntigravityLaunchPreparation.swift|Astra/Services/Runtime/AntigravityCLIRuntime.swift|Tests/RuntimeCancelledPreparationContinuationTests.swift|Tests/BinaryProcessGroupCompletionTests.swift)
+    ASTRACore/BinaryRunner.swift|ASTRACore/BinaryProcessGroupCompletion.swift|Astra/Services/Runtime/RuntimePrelaunchCancellation.swift|Astra/Services/Runtime/RuntimeCompletedUserTurnContinuation.swift|Astra/Services/Runtime/AntigravityLaunchPreparation.swift|Astra/Services/Runtime/AntigravityCLIRuntime.swift|Tests/RuntimeCancelledPreparationContinuationTests.swift|Tests/BinaryProcessGroupCompletionTests.swift|Tests/AntigravityLaunchPreparationTests.swift)
       add_target "BinaryProcessGroupCompletionTests|ProcessBinaryRunnerTests|AntigravityLaunchPreparationTests|RuntimeCancelledPreparationContinuationTests|RuntimeCompletedUserTurnContinuationTests"
       ;;
   esac

@@ -32,7 +32,7 @@ struct PendingP2RegressionTests {
 
     @Test("Antigravity titles explicitly select the model on the launch command")
     func antigravityTitleBindsModel() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-title-model-\(UUID())")
+        let root = try ProviderCoordinationFixture().data
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let executable = root.appendingPathComponent("agy")

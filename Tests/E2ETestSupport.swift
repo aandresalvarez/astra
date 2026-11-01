@@ -180,75 +180,39 @@ enum E2ETestSupport {
     static func configureUnattended(
         _ worker: AgentRuntimeWorker,
         for runtimeCase: RuntimeCase? = nil,
-        temporaryRootPath: String? = nil
+        temporaryRootPath: String? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        resolveExecutable: (AgentRuntimeID) -> String? = executablePath(for:)
     ) throws {
         worker.skipPermissions = true
         worker.permissionPolicy = .autonomous
         worker.defaultAgentPolicyLevelRaw = AgentPolicyLevel.autonomous.rawValue
 
         if let runtimeCase {
-            worker.defaultRuntimeID = runtimeCase.runtimeID
-            try configureExecutable(for: runtimeCase.runtimeID, worker: worker, temporaryRootPath: temporaryRootPath)
-        }
-
-        if let timeout = TimeInterval(ProcessInfo.processInfo.environment["RUN_E2E_TIMEOUT_SECONDS"] ?? "") {
-            worker.timeoutSeconds = timeout
-        }
-    }
-
-    @MainActor
-    private static func configureExecutable(
-        for runtimeID: AgentRuntimeID,
-        worker: AgentRuntimeWorker,
-        temporaryRootPath: String?
-    ) throws {
-        switch runtimeID {
-        case .claudeCode:
-            let path = RuntimePathResolver.detectClaudePath()
-            guard FileManager.default.isExecutableFile(atPath: path) else {
-                throw E2ETestSupportError.missingExecutable("claude")
+            let runtime = runtimeCase.runtimeID
+            worker.defaultRuntimeID = runtime
+            guard let path = resolveExecutable(runtime) else {
+                throw E2ETestSupportError.missingExecutable(runtime.rawValue)
             }
-            try requireLiveProviderReady(runtimeID: runtimeID, executablePath: path)
-            worker.claudePath = path
-        case .copilotCLI:
-            let path = RuntimePathResolver.detectCopilotPath()
             guard FileManager.default.isExecutableFile(atPath: path) else {
-                throw E2ETestSupportError.missingExecutable("copilot")
+                throw E2ETestSupportError.missingExecutable(AgentRuntimeAdapterRegistry.descriptor(for: runtime).executableName)
             }
-            try requireLiveProviderReady(runtimeID: runtimeID, executablePath: path)
-            worker.copilotPath = path
-            if let temporaryRootPath {
+            if environment["RUN_E2E"] != nil {
+                try LiveProviderReadiness.requireReady(runtimeID: runtime, executablePath: path)
+            }
+            if runtime == .copilotCLI, let temporaryRootPath {
                 worker.copilotHome = copilotHomePath(forTemporaryRootPath: temporaryRootPath)
             }
-        case .antigravityCLI:
-            let path = RuntimePathResolver.detectAntigravityPath()
-            guard FileManager.default.isExecutableFile(atPath: path) else {
-                throw E2ETestSupportError.missingExecutable("agy")
+            if runtime == .antigravityCLI {
+                let home = try ProviderCoordinationFixture.liveAntigravityHome(environment["REAL_PROVIDER_ANTIGRAVITY_HOME"])
+                worker.setHomeDirectory(home, for: runtime)
             }
-            try requireLiveProviderReady(runtimeID: runtimeID, executablePath: path)
-            worker.setExecutablePath(path, for: .antigravityCLI)
-        case .cursorCLI:
-            let path = RuntimePathResolver.detectCursorPath()
-            guard FileManager.default.isExecutableFile(atPath: path) else {
-                throw E2ETestSupportError.missingExecutable("cursor-agent")
-            }
-            try requireLiveProviderReady(runtimeID: runtimeID, executablePath: path)
-            worker.setExecutablePath(path, for: .cursorCLI)
-        case .openCodeCLI:
-            let path = RuntimePathResolver.detectOpenCodePath()
-            guard FileManager.default.isExecutableFile(atPath: path) else {
-                throw E2ETestSupportError.missingExecutable("opencode")
-            }
-            try requireLiveProviderReady(runtimeID: runtimeID, executablePath: path)
-            worker.setExecutablePath(path, for: .openCodeCLI)
-        default:
-            throw E2ETestSupportError.missingExecutable(runtimeID.rawValue)
+            worker.setExecutablePath(path, for: runtime)
         }
-    }
 
-    private static func requireLiveProviderReady(runtimeID: AgentRuntimeID, executablePath: String) throws {
-        guard ProcessInfo.processInfo.environment["RUN_E2E"] != nil else { return }
-        try LiveProviderReadiness.requireReady(runtimeID: runtimeID, executablePath: executablePath)
+        if let timeout = TimeInterval(environment["RUN_E2E_TIMEOUT_SECONDS"] ?? "") {
+            worker.timeoutSeconds = timeout
+        }
     }
 
     static func copilotHomePath(forTemporaryRootPath path: String) -> String {

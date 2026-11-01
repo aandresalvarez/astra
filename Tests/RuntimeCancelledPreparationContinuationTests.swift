@@ -253,9 +253,9 @@ struct RuntimeCancelledPreparationContinuationTests {
         #expect(task.runs.count == 3)
         let preserved = h.workspaceURL.appendingPathComponent("preserved.sql")
         try Data("select 1;\n".utf8).write(to: preserved)
-        let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
-            identifier: AntigravityCLIRuntime.settingsURL(providerHomeDirectory:
-                h.rootURL.appendingPathComponent("antigravity_cli-home").path).standardizedFileURL.path)
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI,
+            fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory:
+                h.rootURL.appendingPathComponent("antigravity_cli-home").path))
         var blocker: ProviderSharedStateProcessLock? = try await ProviderSharedStateProcessLock.acquire(key)
         defer { withExtendedLifetime(blocker) {} }
         let waiting = Task { await h.continueTask(task: task, message: "Will be cancelled", worker: worker, executionPolicy: policy) }

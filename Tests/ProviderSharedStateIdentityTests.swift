@@ -108,9 +108,10 @@ struct ProviderSharedStateIdentityTests {
     @Test("Canonical Unicode equivalents share a kernel lock and legacy hashes stay unchanged")
     func unicodeKernelIdentity() async throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
-        let root = h.rootURL.appendingPathComponent("unicode-locks")
-        let composed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:/missing/caf\u{00e9}/settings.json")
-        let decomposed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:/missing/cafe\u{0301}/settings.json")
+        let root = h.providerLockRoot
+        let physical = try ProviderSharedStateIdentity.canonicalPath(h.rootURL.path)
+        let composed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:\(physical)/missing/caf\u{00e9}/settings.json")
+        let decomposed = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "file-v1:\(physical)/missing/cafe\u{0301}/settings.json")
         #expect(composed == decomposed)
         #expect(Array(composed.rawValue.utf8) != Array(decomposed.rawValue.utf8))
         let held = try await ProviderSharedStateProcessLock.acquire(composed, root: root)
@@ -131,7 +132,7 @@ struct ProviderSharedStateIdentityTests {
     @Test("Unsafe legacy locks report the blocking path without changing the reservation", arguments: ["symlink", "public", "hardlink"])
     func unsafeLegacyDiagnostic(kind: String) async throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
-        let root = h.rootURL.appendingPathComponent("unsafe-locks")
+        let root = h.providerLockRoot
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let lock = root.appendingPathComponent(String(repeating: "a", count: 64))
         let target = h.rootURL.appendingPathComponent("target-lock")
@@ -224,7 +225,7 @@ struct ProviderSharedStateIdentityTests {
         let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.workspaceURL.appendingPathComponent("settings.json"))
         let equivalent = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: alias.appendingPathComponent("settings.json"))
         let independent = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.rootURL.appendingPathComponent("other/settings.json"))
-        let root = h.rootURL.appendingPathComponent("locks")
+        let root = h.providerLockRoot
         let one = AgentRuntimeSharedStateGate(processLockRoot: root, registeredStoreRoots: [])
         let two = AgentRuntimeSharedStateGate(processLockRoot: root, registeredStoreRoots: [])
         let held = try await one.acquire(key)
@@ -242,7 +243,7 @@ struct ProviderSharedStateIdentityTests {
     @Test("An anonymous live legacy lock survives timeout and cancellation")
     func legacyKernelLock() async throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
-        let root = h.rootURL.appendingPathComponent("locks")
+        let root = h.providerLockRoot
         let legacy = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "unknown-old-alias")
         let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.rootURL.appendingPathComponent("settings.json"))
         var holder: ProviderSharedStateProcessLock? = try await ProviderSharedStateProcessLock.acquire(legacy, root: root)
@@ -251,7 +252,7 @@ struct ProviderSharedStateIdentityTests {
         catch is RuntimeProviderStateWaitTimeout {}
         let entered = AgentLockedBuffer()
         let waiting = Task {
-            try await ProviderSharedStateCompatibility.waitForLegacyLocks(in: root, deadline: nil,
+            try await ProviderSharedStateCompatibility.waitForLegacyLocks(in: try ProviderSharedStateDirectory(root), deadline: nil,
                 onContention: { entered.append("waiting") })
         }
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
@@ -264,6 +265,64 @@ struct ProviderSharedStateIdentityTests {
         let successor = try await gate.acquire(key)
         await gate.release(successor)
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.count == 64 }.count == 1)
+    }
+
+    @Test("A waiter refuses a replaced legacy lock even while the replacement is busy")
+    func replacedLegacyLockDuringWait() async throws {
+        let fixture = try ProviderCoordinationFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.coordination) }
+        let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "legacy-wait")
+        var original: ProviderSharedStateProcessLock? = try await .acquire(key, root: fixture.coordination)
+        let directory = try ProviderSharedStateDirectory(fixture.coordination)
+        let name = try #require(try directory.names().first { $0.count == 64 })
+        let entered = AgentLockedBuffer()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        let waiter = Task {
+            try await ProviderSharedStateCompatibility.waitForLegacyLocks(in: directory, deadline: deadline,
+                onContention: { entered.append("waiting") })
+        }
+        defer { waiter.cancel() }
+        while entered.value.isEmpty && ContinuousClock.now < deadline { await Task.yield() }
+        try #require(!entered.value.isEmpty)
+        let entry = fixture.coordination.appendingPathComponent(name)
+        try FileManager.default.moveItem(at: entry, to: fixture.coordination.appendingPathComponent("original-lock"))
+        let replacement = try await ProviderSharedStateProcessLock.acquire(key, root: fixture.coordination)
+        defer { withExtendedLifetime(replacement) {} }
+        withExtendedLifetime(original) {}
+        original = nil
+        await #expect(throws: ProviderSharedStateCompatibility.UnreadableReservation.self) { try await waiter.value }
+    }
+
+    @Test("A modern lock replaced during a legacy wait cannot admit the provider")
+    func replacedModernLockDuringWait() async throws {
+        let fixture = try ProviderCoordinationFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.coordination) }
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: fixture.data.appendingPathComponent("settings.json"))
+        let legacy = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: "held-legacy-lock")
+        var holder: ProviderSharedStateProcessLock? = try await .acquire(legacy, root: fixture.coordination)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        let waiter = Task { try await ProviderSharedStateProcessLock.acquire(key, root: fixture.coordination, deadline: deadline) }
+        defer { waiter.cancel() }
+        let directory = try ProviderSharedStateDirectory(fixture.coordination)
+        var occupied: URL?
+        while occupied == nil && ContinuousClock.now < deadline {
+            if let name = try directory.names().first(where: { $0.hasPrefix("file-v1-") }) {
+                let fd = openat(directory.descriptor, name, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+                try #require(fd >= 0)
+                if flock(fd, LOCK_EX | LOCK_NB) != 0, errno == EWOULDBLOCK {
+                    occupied = fixture.coordination.appendingPathComponent(name)
+                }
+                close(fd)
+            }
+            if occupied == nil { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        let entry = try #require(occupied)
+        let moved = fixture.coordination.appendingPathComponent("original-modern-lock")
+        try FileManager.default.moveItem(at: entry, to: moved)
+        try FileManager.default.copyItem(at: moved, to: entry)
+        withExtendedLifetime(holder) {}
+        holder = nil
+        await #expect(throws: RuntimeExecutionOwnerStore.Failure.self) { try await waiter.value }
     }
 
     @Test("A redirected settings directory is rejected before adapter mutation")

@@ -42,7 +42,7 @@ private enum SlashCommandLiveProviderProbe {
             selectedRuntime(),
             "RUN_REAL_PROVIDERS was set, but no runnable real provider utility runtime was found"
         )
-        let configuration = utilityConfiguration(for: selection, root: root)
+        let configuration = try utilityConfiguration(for: selection, root: root)
         let workspace = root.appendingPathComponent("workspace", isDirectory: true)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
 
@@ -253,11 +253,14 @@ private enum SlashCommandLiveProviderProbe {
     private static func utilityConfiguration(
         for selection: RuntimeSelection,
         root: URL
-    ) -> AgentUtilityRuntimeConfiguration {
+    ) throws -> AgentUtilityRuntimeConfiguration {
         var settings = AgentRuntimeProviderSettings()
         settings.setExecutablePath(selection.executablePath, for: selection.runtimeCase.runtimeID)
         if selection.runtimeCase.runtimeID == .copilotCLI {
             settings.setHomeDirectory(root.appendingPathComponent("copilot-home", isDirectory: true).path, for: .copilotCLI)
+        }
+        if selection.runtimeCase.runtimeID == .antigravityCLI {
+            settings.setHomeDirectory(try ProviderCoordinationFixture.liveAntigravityHome(), for: .antigravityCLI)
         }
         return AgentUtilityRuntimeConfiguration(
             runtime: selection.runtimeCase.runtimeID,

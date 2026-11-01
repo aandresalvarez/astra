@@ -27,6 +27,7 @@ public func astraTestRegisterRuntimeSeams() {
     // Force-links the C archive member that carries the constructor — see
     // astra_test_seam_bootstrap_force_link's doc comment.
     astra_test_seam_bootstrap_force_link()
+    ProviderSharedStateNamespace.markRunningUnderTests()
     // Declared here for the same reason the seams are: this runs at bundle
     // load, before anything can log, so the log directory is resolved knowing
     // it is a test run. Inferring it from the process silently stopped working
