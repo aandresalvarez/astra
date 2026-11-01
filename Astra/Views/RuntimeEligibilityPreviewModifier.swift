@@ -252,6 +252,8 @@ struct RuntimeEligibilityPreviewRequest {
             acceptedTurnCharacterCount: acceptedTurn.count,
             selectedRuntime: requestedRuntime
         ) { candidateRuntimes, betweenRuntimes in
+            // This preview may outlive the selected draft (Run promotes it).
+            guard draftTask?.isLive != false, workspace?.isLive != false else { return nil }
             let goal = acceptedTurn.trimmingCharacters(in: .whitespacesAndNewlines)
             // Preview the task the composer will actually submit, never the managed
             // draft: `quickRun` deletes the draft and enqueues a fresh task carrying the

@@ -8,9 +8,11 @@ import SwiftData
 final class SidebarTaskChangeObservation {
     private var saveObserver: NSObjectProtocol?
     private var generation = UUID()
-    private let onChange: @MainActor (Bool, [PersistentIdentifier]) -> Void
+    typealias ChangeHandler = @MainActor (_ membershipChanged: Bool, _ externallyUpdated: [PersistentIdentifier],
+                                         _ deleted: Set<PersistentIdentifier>) -> Void
+    private let onChange: ChangeHandler
 
-    init(context: ModelContext, onChange: @escaping @MainActor (Bool, [PersistentIdentifier]) -> Void) {
+    init(context: ModelContext, onChange: @escaping ChangeHandler) {
         self.onChange = onChange
         saveObserver = NotificationCenter.default.addObserver(
             forName: ModelContext.didSave, object: nil, queue: .main
@@ -18,15 +20,14 @@ final class SidebarTaskChangeObservation {
             MainActor.assumeIsolated {
                 guard let context, let source = notification.object as? ModelContext,
                       source.container === context.container else { return }
-                let membershipChanged = [ModelContext.NotificationKey.insertedIdentifiers, .deletedIdentifiers].contains { key in
-                    Self.taskIdentifiers(for: key, in: notification).isEmpty == false
-                }
+                let deleted = Set(Self.taskIdentifiers(for: .deletedIdentifiers, in: notification))
+                let membershipChanged = !deleted.isEmpty || !Self.taskIdentifiers(for: .insertedIdentifiers, in: notification).isEmpty
                 let taskUpdates = Self.taskIdentifiers(for: .updatedIdentifiers, in: notification)
                 guard membershipChanged || !taskUpdates.isEmpty else { return }
                 // Own-context task saves also release any foreign refreshes
                 // deferred while the local task was dirty.
                 let externalUpdates = source === context ? [] : taskUpdates
-                onChange(membershipChanged, externalUpdates)
+                onChange(membershipChanged, externalUpdates, deleted)
             }
         }
     }
@@ -43,7 +44,7 @@ final class SidebarTaskChangeObservation {
         return withObservationTracking(read) { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, self.generation == observedGeneration else { return }
-                self.onChange(false, [])
+                self.onChange(false, [], [])
             }
         }
     }

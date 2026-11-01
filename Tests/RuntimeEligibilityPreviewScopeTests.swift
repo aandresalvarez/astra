@@ -118,6 +118,31 @@ struct RuntimeEligibilityPreviewScopeTests {
         #expect(newTaskSnapshot.selectedCandidate.isEligible)
     }
 
+    @Test("A preview that wakes after its imported draft was promoted cannot authorize another submission")
+    func retiredDraftDiscardsPendingPreview() async throws {
+        let environment = try makeEnvironment()
+        defer {
+            withExtendedLifetime(environment.container) {}
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+        let context = environment.container.mainContext
+        let draft = environment.task
+        let request = RuntimeEligibilityPreviewRequest.newTask(
+            draftTask: draft, workspace: draft.workspace, selectedSkills: [], attachedFiles: [],
+            acceptedTurn: "Review this", requestedRuntime: .claudeCode, runtimeExplicitlySelected: true,
+            selectedPolicyLevelRaw: AgentPolicyLevel.review.rawValue, skipPermissions: false,
+            defaultModel: "test-model", defaultBudget: 1_000, providerSettings: .headlessScenario,
+            readinessStates: [.claudeCode: .ready]
+        )
+        let submitted = AgentTask(title: "Submitted", goal: "Review this", workspace: draft.workspace)
+        context.insert(submitted)
+        try context.save()
+        try NewTaskWorktreeComposerFlow.promote(draft, to: submitted, modelContext: context, resourceQueue: nil)
+
+        #expect(await request.evaluate(candidateRuntimes: [.claudeCode]) == nil)
+        #expect(try context.fetchCount(FetchDescriptor<AgentTask>()) == 1)
+    }
+
     @Test("The typing pass scores only the runtime the composer would launch")
     func typingPassScoresOnlySelectedRuntime() async throws {
         let environment = try makeEnvironment()
