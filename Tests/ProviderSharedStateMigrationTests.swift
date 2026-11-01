@@ -180,6 +180,54 @@ struct ProviderSharedStateMigrationTests {
         #expect(try store.read(taskID: task.id, taskOwnerID: task.persistentModelID) == continuation)
     }
 
+    @Test("A reader needs stop proof for the current writer and any inherited writer", arguments: [true, false], [false, true])
+    func readerChecksCurrentWriter(toolsStopped: Bool, inheritsUnprovenWriter: Bool) async throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .antigravityCLI, goal: "Current writer", model: "test")
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.rootURL.appendingPathComponent("profile/settings.json"))
+        var writer = try RuntimeRecoveryTestReceipt.install(task: task, run: nil, context: h.context, toolsStopped: toolsStopped)
+        RuntimeProviderResourceRegistry.unregister(store.root)
+        writer.providerSharedStateKey = key.rawValue
+        writer.providerSharedStateReleased = false
+        writer.resourcesReleased = false
+        if inheritsUnprovenWriter {
+            var prior = writer
+            prior.executionID = UUID()
+            prior.state = .unverified
+            prior.stopProof = nil
+            try store.retain(prior)
+            writer.retainedExecutionHead = prior.executionID
+            writer.retainedProviderSharedStateKeys = [key.rawValue]
+        }
+        #expect(writer.canReplace == toolsStopped)
+        do { let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID); try lease.save(writer) }
+        do {
+            let lock = try await ProviderSharedStateProcessLock.acquire(key, root: h.providerLockRoot)
+            try lock.handoff(key, reference: .init(journalRoot: store.root.path, taskID: task.id, ownerID: writer.ownerID,
+                taskOwnerID: task.persistentModelID)) {}
+        }
+        let pointer = try #require(try FileManager.default.contentsOfDirectory(at: h.providerLockRoot, includingPropertiesForKeys: nil)
+            .first { $0.pathExtension == "json" })
+        let bytes = try Data(contentsOf: pointer)
+        let cold = AgentRuntimeSharedStateGate(processLockRoot: h.providerLockRoot, registeredStoreRoots: [])
+        if toolsStopped && !inheritsUnprovenWriter {
+            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: nil, in: [store.root], reading: true)
+            try await cold.waitForPreviousWriter(key)
+        } else {
+            #expect(throws: RuntimeProviderResourceRegistry.Block.self) {
+                try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: nil, in: [store.root], reading: true)
+            }
+            await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await cold.waitForPreviousWriter(key) }
+        }
+        #expect(throws: RuntimeProviderResourceRegistry.Block.self) {
+            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: nil, in: [store.root])
+        }
+        await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await cold.acquire(key) }
+        #expect(try store.read(taskID: task.id, taskOwnerID: task.persistentModelID) == writer)
+        #expect(try Data(contentsOf: pointer) == bytes)
+    }
+
     @Test("A proven writer's pointer does not turn its reader Retry into a writer after restart", arguments: [false, true])
     func retryOfReleasedWriter(scopedPointer: Bool) async throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }

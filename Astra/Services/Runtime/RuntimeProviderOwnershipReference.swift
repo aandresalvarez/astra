@@ -73,13 +73,13 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
             && next?.taskOwnerID == record.taskOwnerID && next?.ownerID == record.ownerID
         guard !sameOwner, record.resourcesReleased != true, record.providerSharedStateReleased != true,
               !record.canRecoverPreparation else { return }
-        // A pointer follows its row across proven replacement. Within one owner,
-        // only the protected history can identify a prior writer of this exact key.
-        let sameWriter = exactKey && previous.ownerID == record.ownerID
+        // An exact pointer to the same owner must be accounted for by the current
+        // writer or by a proven writer in that owner's history.
+        let requireExactWriter = exactKey && previous.ownerID == record.ownerID
         let missingClaims = record.resourceClaims == nil && (exactKey || record.runtime == key.runtimeName)
         let store = reading ? RuntimeExecutionOwnerStore(root: URL(fileURLWithPath: previous.journalRoot)) : nil
         if missingClaims || RuntimeProviderResourceRegistry.conflicts(key, record: record,
-            checkingHistoryIn: store, requireArchivedWriter: sameWriter) {
+            checkingHistoryIn: store, requireExactWriter: requireExactWriter) {
             throw RuntimeProviderResourceRegistry.Block(key: key, record: record, missingClaims: missingClaims)
         }
     }

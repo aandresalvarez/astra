@@ -75,14 +75,14 @@ enum RuntimeProviderResourceRegistry {
         }
     }
 
-    /// Historical writers copied all earlier keys, including already released ones.
-    /// Only readers may discount them, when every matching claim has a proven origin
-    /// in the protected execution chain. Writers retain the original handoff rules.
+    /// Readers may pass a stopped writer even if it crashed before recording release.
+    /// Claims inherited from earlier writers still need their own proof.
     static func conflicts(_ key: AgentRuntimeSharedStateKey, record: RuntimeExecutionOwnerRecord,
-                          checkingHistoryIn store: RuntimeExecutionOwnerStore? = nil, requireArchivedWriter: Bool = false) -> Bool {
-        if let current = record.providerSharedStateKey, key.conflicts(withRecorded: current) { return true }
+                          checkingHistoryIn store: RuntimeExecutionOwnerStore? = nil, requireExactWriter: Bool = false) -> Bool {
+        if let current = record.providerSharedStateKey, key.conflicts(withRecorded: current),
+           store == nil || !record.canReplace { return true }
         var inherited = Set((record.retainedProviderSharedStateKeys ?? []).filter(key.conflicts))
-        if requireArchivedWriter { inherited.insert(key.rawValue) }
+        if requireExactWriter && record.providerSharedStateKey != key.rawValue { inherited.insert(key.rawValue) }
         guard !inherited.isEmpty else { return false }
         if record.providerSharedStateReleased == false && record.providerSharedStateKey == nil { return true }
         guard let store, let history = try? store.retainedExecutions(of: record) else { return true }
