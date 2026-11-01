@@ -291,6 +291,14 @@ final class RuntimeExecutionOwner {
         try save(nil, audit: true)
     }
 
+    func finishedWaitingForProviderState() throws {
+        guard isActive, record.state == .preparing, record.cancellationRequested != true else {
+            throw RuntimeExecutionOwnerStore.Failure.busy
+        }
+        record.preparationStage = nil; record.preparationResource = nil
+        try save(nil, audit: true)
+    }
+
     func prepareLaunch(sessionID: String? = nil) throws {
         guard !writeFailed, lease != nil, record.cancellationRequested != true,
               record.state == .preparing || record.canReplace else { throw RuntimeExecutionOwnerStore.Failure.busy }

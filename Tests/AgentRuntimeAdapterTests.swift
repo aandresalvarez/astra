@@ -118,8 +118,14 @@ struct AgentRuntimeAdapterTests {
             .appendingPathComponent("AgentRuntimeProcessRunner.swift")
         let source = try String(contentsOf: runnerURL, encoding: .utf8)
 
-        #expect(source.contains("await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)"))
-        #expect(!source.contains("Task { await AgentRuntimeSharedStateGate.shared.release(sharedStateLease) }"))
+        for result in ["blockedResult", "result"] {
+            let synchronousReturn = #"await releaseWriterIfStopped\(writerLease\)\s+return "# + result
+            #expect(source.range(of: synchronousReturn, options: .regularExpression) != nil)
+        }
+        let release = try #require(source.components(separatedBy: "private func releaseWriterIfStopped").last)
+            .components(separatedBy: "private func runProcess")[0]
+        #expect(release.contains("await AgentRuntimeSharedStateGate.shared.release(lease)"))
+        #expect(!release.contains("Task {"))
     }
 
     @Test("SSH launch presence helper avoids loading full connection payloads")
@@ -884,7 +890,7 @@ struct AgentRuntimeAdapterTests {
         #expect(antigravityPlan.providerDetectedFields["provider_home_configured"] == "true")
         #expect(antigravityPlan.commandPlannedFields["model"] == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
         #expect(antigravityPlan.commandPlannedFields["provider_model"] == AgentRuntimeAdapterRegistry.defaultModel(for: .antigravityCLI))
-        #expect(antigravityPlan.commandPlannedFields["model_applied"] == "false")
+        #expect(antigravityPlan.arguments.contains("--model"))
 
         #expect(codexPlan.runtime == .codexCLI)
         #expect(codexPlan.executablePath == "/bin/codex-not-present")
@@ -2312,7 +2318,7 @@ struct AgentRuntimeAdapterTests {
         #expect(!allow.contains("Edit(*)"))
     }
 
-    @Test("Antigravity declares shared launch state and suggestion-only model availability")
+    @Test("Antigravity identifies its configuration without claiming it for a session-local model")
     @MainActor
     func antigravityDeclaresSharedLaunchStateAndSuggestionModelAvailability() throws {
         let adapter = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI)
@@ -2337,6 +2343,7 @@ struct AgentRuntimeAdapterTests {
         )
 
         #expect(adapter.modelAvailabilityAuthority == .suggestions)
+        #expect(!adapter.writesSharedLaunchState)
         #expect(try adapter.sharedLaunchStateKey(context: context)?.rawValue.contains("antigravity_cli:file-v1:") == true)
         #expect(try adapter.sharedLaunchStateKey(context: context)?.rawValue.contains("/tmp/astra-antigravity-home/.gemini/antigravity-cli/settings.json") == true)
         #expect(try AgentRuntimeAdapterRegistry.adapter(for: .claudeCode).sharedLaunchStateKey(context: context) == nil)

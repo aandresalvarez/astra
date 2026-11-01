@@ -39,7 +39,7 @@ struct ProviderSharedStateLaunchTests {
             prompt: "Synthetic", task: task, workspacePath: h.workspaceURL.path, executablePath: "/bin/sh",
             homeDirectory: h.workspaceURL.path, permissionPolicy: .restricted, timeoutSeconds: 10,
             maxRunSeconds: 60, onLine: { _, _ in })
-        #expect(entered.value == "retargeted")
+        #expect(entered.value == "retargeted", "Launch stopped at \(result.runtimeStopReason ?? "unknown"): \(result.error ?? "")")
         #expect(result.runtimeStopReason == RuntimeProviderResourceRegistry.Block.stopReason)
         #expect(!FileManager.default.fileExists(atPath: h.workspaceURL.appendingPathComponent("launched").path))
         #expect(owner.record.providerLaunchCount == 0 && owner.record.providerProcess == nil)

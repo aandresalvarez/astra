@@ -66,16 +66,21 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
     /// Read another key's pointer without migrating it. Its journal remains
     /// the only release authority, including across stores and app restarts.
     static func assertCompatible(in directory: ProviderSharedStateDirectory, name: String, key: AgentRuntimeSharedStateKey,
-                                 next: Self?) throws {
+                                 next: Self?, reading: Bool = false, exactKey: Bool = false) throws {
         guard let previous = try read(in: directory, name: name) else { return }
         let record = try previous.record()
         let sameOwner = next?.journalRoot == previous.journalRoot && next?.taskID == previous.taskID
             && next?.taskOwnerID == record.taskOwnerID && next?.ownerID == record.ownerID
         guard !sameOwner, record.resourcesReleased != true, record.providerSharedStateReleased != true,
               !record.canRecoverPreparation else { return }
-        if RuntimeProviderResourceRegistry.conflicts(key, record: record)
-            || (record.resourceClaims == nil && record.runtime == key.runtimeName) {
-            throw RuntimeProviderResourceRegistry.Block(key: key, record: record, missingClaims: record.resourceClaims == nil)
+        // A pointer follows its row across proven replacement. Within one owner,
+        // only the protected history can identify a prior writer of this exact key.
+        let sameWriter = exactKey && previous.ownerID == record.ownerID
+        let missingClaims = record.resourceClaims == nil && (exactKey || record.runtime == key.runtimeName)
+        let store = reading ? RuntimeExecutionOwnerStore(root: URL(fileURLWithPath: previous.journalRoot)) : nil
+        if missingClaims || RuntimeProviderResourceRegistry.conflicts(key, record: record,
+            checkingHistoryIn: store, requireArchivedWriter: sameWriter) {
+            throw RuntimeProviderResourceRegistry.Block(key: key, record: record, missingClaims: missingClaims)
         }
     }
 

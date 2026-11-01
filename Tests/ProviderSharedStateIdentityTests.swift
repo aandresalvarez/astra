@@ -351,22 +351,24 @@ struct ProviderSharedStateIdentityTests {
         }
     }
 
-    @Test("Writing through the reserved target preserves a settings symlink")
-    func atomicWritePreservesLink() throws {
+    @Test("Selecting a model leaves the physical preference and its symlink intact")
+    func sessionSelectionPreservesLink() throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
         let file = h.rootURL.appendingPathComponent("actual.json")
         let link = h.rootURL.appendingPathComponent("settings.json")
-        try Data("{\"existing\":true}".utf8).write(to: file)
+        let saved = Data(#"{"model":"saved-model","existing":true}"#.utf8)
+        try saved.write(to: file)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
         let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: link)
-        #expect(AntigravityCLIRuntime.applySelectedModel("qa-model", settingsURL: URL(fileURLWithPath: try #require(key.filePath))))
+        let physical = URL(fileURLWithPath: try #require(key.filePath))
+        #expect(AntigravityCLIRuntime.resolvedModelName("default", settingsURL: physical) == "saved-model")
+        #expect(AntigravityCLIRuntime.resolvedModelName("qa-model", settingsURL: physical) == "qa-model")
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: link.path) == file.path)
         try key.validate(fileURL: link)
-        let data = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any]
-        #expect(data?["model"] as? String == "qa-model" && data?["existing"] as? Bool == true)
+        #expect(try Data(contentsOf: file) == saved)
     }
 
-    @Test("Utilities wait on the task's physical reservation before modifying settings")
+    @Test("Session-local utility launches still wait on a previous writer through a profile alias")
     func utilitySharesTaskGate() async throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
         let alias = h.rootURL.appendingPathComponent("alias")
