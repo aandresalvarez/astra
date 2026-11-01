@@ -319,38 +319,6 @@ enum AntigravityCLIRuntime {
         return trimmed
     }
 
-    @discardableResult
-    static func applySelectedModel(
-        _ model: String,
-        settingsURL: URL = settingsURL(),
-        fileManager: FileManager = .default
-    ) -> Bool {
-        let selected = resolvedModelName(model, settingsURL: settingsURL)
-        guard !selected.isEmpty else { return false }
-
-        var object: [String: Any] = [:]
-        if let data = readProviderFile(at: settingsURL),
-           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            object = existing
-        }
-        if object["model"] as? String == selected {
-            return true
-        }
-        object["model"] = selected
-
-        do {
-            try fileManager.createDirectory(
-                at: settingsURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: settingsURL, options: [.atomic])
-            return true
-        } catch {
-            return false
-        }
-    }
-
     /// Resolves the Antigravity auth-routing env var from the persisted
     /// setting, so the spawned `agy` process inherits the user's chosen
     /// sign-in method. GUI apps don't pick up shell env from

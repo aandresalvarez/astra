@@ -605,13 +605,10 @@ struct AntigravityCLIRuntimeTests {
         ]))
         #expect(AntigravityCLIRuntime.resolvedModelName("default", settingsURL: settingsURL) == "Local Experimental Model")
 
-        #expect(AntigravityCLIRuntime.applySelectedModel(
-            "Claude Sonnet 4.6 (Thinking)",
-            settingsURL: settingsURL
-        ))
+        #expect(AntigravityCLIRuntime.resolvedModelName("Claude Sonnet 4.6 (Thinking)", settingsURL: settingsURL) == "Claude Sonnet 4.6 (Thinking)")
         let data = try Data(contentsOf: settingsURL)
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(object["model"] as? String == "Claude Sonnet 4.6 (Thinking)")
+        #expect(object["model"] as? String == "Local Experimental Model")
         #expect(object["enableTelemetry"] as? Bool == false)
     }
 

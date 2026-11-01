@@ -41,12 +41,12 @@ enum ProviderSharedStateCompatibility {
     }
 
     static func checkLegacyReferences(in directory: ProviderSharedStateDirectory, key: AgentRuntimeSharedStateKey,
-                                reference: RuntimeProviderOwnershipReference?, deadline: ContinuousClock.Instant?) async throws {
+                                reference: RuntimeProviderOwnershipReference?, deadline: ContinuousClock.Instant?, reading: Bool = false) async throws {
         for name in try directory.names() where name.hasSuffix(".json") && isLegacyLock(String(name.dropLast(5))) {
             let url = directory.url.appendingPathComponent(name)
             try Task.checkCancellation()
             if let deadline, ContinuousClock.now >= deadline { throw RuntimeProviderStateWaitTimeout() }
-            do { try RuntimeProviderOwnershipReference.assertCompatible(in: directory, name: name, key: key, next: reference) }
+            do { try RuntimeProviderOwnershipReference.assertCompatible(in: directory, name: name, key: key, next: reference, reading: reading) }
             catch let block as RuntimeProviderResourceRegistry.Block { throw block }
             catch { throw UnreadableReservation(path: url.path) }
         }

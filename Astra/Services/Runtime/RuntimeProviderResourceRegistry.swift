@@ -44,12 +44,12 @@ enum RuntimeProviderResourceRegistry {
     /// Retire only after a store's producers have joined, before deleting it.
     /// Joining the scan lock prevents readers from traversing partially removed files.
     static func unregister(_ root: URL) { _ = lock.withLock { roots.remove(root) } }
-    static func assertAvailable(_ key: AgentRuntimeSharedStateKey, ownerID: UUID?, reference: RuntimeProviderOwnershipReference? = nil) throws {
-        try lock.withLock { try assertAvailable(key, ownerID: ownerID, in: Array(roots), reference: reference) }
+    static func assertAvailable(_ key: AgentRuntimeSharedStateKey, ownerID: UUID?, reference: RuntimeProviderOwnershipReference? = nil, reading: Bool = false) throws {
+        try lock.withLock { try assertAvailable(key, ownerID: ownerID, in: Array(roots), reference: reference, reading: reading) }
     }
 
     /// Explicit roots let an isolated coordination namespace avoid unrelated stores.
-    static func assertAvailable(_ key: AgentRuntimeSharedStateKey, ownerID: UUID?, in roots: [URL], reference: RuntimeProviderOwnershipReference? = nil) throws {
+    static func assertAvailable(_ key: AgentRuntimeSharedStateKey, ownerID: UUID?, in roots: [URL], reference: RuntimeProviderOwnershipReference? = nil, reading: Bool = false) throws {
         for root in roots {
             let store = RuntimeExecutionOwnerStore(root: root)
             for record in try store.records() {
@@ -57,7 +57,7 @@ enum RuntimeProviderResourceRegistry {
                     && reference?.journalRoot == root.path && ownerID == record.ownerID
                 guard !sameOwner, record.resourcesReleased != true,
                       record.providerSharedStateReleased != true, !record.canRecoverPreparation else { continue }
-                if conflicts(key, record: record) {
+                if conflicts(key, record: record, checkingHistoryIn: reading ? store : nil) {
                     // A live owner waits on the kernel gate. An orphaned or
                     // returned owner must retain its durable quarantine.
                     if record.appProcess.presence == .present, record.providerSharedStateKey == key.rawValue,
@@ -75,8 +75,26 @@ enum RuntimeProviderResourceRegistry {
         }
     }
 
-    static func conflicts(_ key: AgentRuntimeSharedStateKey, record: RuntimeExecutionOwnerRecord) -> Bool {
-        ([record.providerSharedStateKey].compactMap { $0 } + (record.retainedProviderSharedStateKeys ?? []))
-            .contains(where: key.conflicts)
+    /// Readers may pass a stopped writer even if it crashed before recording release.
+    /// Claims inherited from earlier writers still need their own proof.
+    static func conflicts(_ key: AgentRuntimeSharedStateKey, record: RuntimeExecutionOwnerRecord,
+                          checkingHistoryIn store: RuntimeExecutionOwnerStore? = nil, requireExactWriter: Bool = false) -> Bool {
+        if let current = record.providerSharedStateKey, key.conflicts(withRecorded: current),
+           store == nil || !record.canReplace { return true }
+        var inherited = Set((record.retainedProviderSharedStateKeys ?? []).filter(key.conflicts))
+        if requireExactWriter && record.providerSharedStateKey != key.rawValue { inherited.insert(key.rawValue) }
+        guard !inherited.isEmpty else { return false }
+        if record.providerSharedStateReleased == false && record.providerSharedStateKey == nil { return true }
+        guard let store, let history = try? store.retainedExecutions(of: record) else { return true }
+        var proven = Set<String>()
+        for prior in history.reversed() {
+            let carried = Set(prior.retainedProviderSharedStateKeys ?? []).intersection(inherited)
+            guard carried.isSubset(of: proven) else { return true }
+            if prior.providerSharedStateReleased == false && prior.providerSharedStateKey == nil { return true }
+            guard let written = prior.providerSharedStateKey, inherited.contains(written) else { continue }
+            guard prior.providerSharedStateReleased == true || prior.canReplace || prior.canRecoverPreparation else { return true }
+            proven.insert(written)
+        }
+        return !inherited.isSubset(of: proven)
     }
 }

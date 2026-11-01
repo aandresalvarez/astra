@@ -33,11 +33,11 @@ actor AgentRuntimeSharedStateGate {
         self.registeredStoreRoots = registeredStoreRoots
     }
 
-    private func checkAvailability(_ key: AgentRuntimeSharedStateKey, reference: RuntimeProviderOwnershipReference?) throws {
+    private func checkAvailability(_ key: AgentRuntimeSharedStateKey, reference: RuntimeProviderOwnershipReference?, reading: Bool) throws {
         if let registeredStoreRoots {
-            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: reference?.ownerID, in: registeredStoreRoots, reference: reference)
+            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: reference?.ownerID, in: registeredStoreRoots, reference: reference, reading: reading)
         } else {
-            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: reference?.ownerID, reference: reference)
+            try RuntimeProviderResourceRegistry.assertAvailable(key, ownerID: reference?.ownerID, reference: reference, reading: reading)
         }
     }
 
@@ -47,17 +47,30 @@ actor AgentRuntimeSharedStateGate {
 
     @discardableResult
     func acquire(_ key: AgentRuntimeSharedStateKey, owner: RuntimeExecutionOwner? = nil, timeoutSeconds: TimeInterval = 120) async throws -> AgentRuntimeSharedStateLease {
+        try await acquire(key, owner: owner, timeoutSeconds: timeoutSeconds, checkingPreviousWriter: false)
+    }
+
+    /// A session-local override needs no writer claim. Respect locks and journals from
+    /// older ASTRA versions at admission, without publishing a new owner for this file.
+    func waitForPreviousWriter(_ key: AgentRuntimeSharedStateKey, owner: RuntimeExecutionOwner? = nil, timeoutSeconds: TimeInterval = 120) async throws {
+        let lease = try await acquire(key, owner: owner, timeoutSeconds: timeoutSeconds, checkingPreviousWriter: true)
+        release(lease)
+    }
+
+    private func acquire(_ key: AgentRuntimeSharedStateKey, owner: RuntimeExecutionOwner?, timeoutSeconds: TimeInterval,
+                         checkingPreviousWriter: Bool) async throws -> AgentRuntimeSharedStateLease {
         let deadline = ContinuousClock.now.advanced(by: .seconds(timeoutSeconds.isFinite ? max(0, timeoutSeconds) : 120))
         let ownerReference = await owner?.providerOwnershipReference
         if Task.isCancelled {
             throw CancellationError()
         }
 
-        try checkAvailability(key, reference: ownerReference)
+        try checkAvailability(key, reference: ownerReference, reading: checkingPreviousWriter)
         let leaseID = UUID()
         if holders[key] == nil {
             holders[key] = leaseID
-            return try await finishAcquisition(.init(key: key, id: leaseID), owner: owner, reference: ownerReference, deadline: deadline)
+            return try await finishAcquisition(.init(key: key, id: leaseID), owner: owner, reference: ownerReference,
+                                               deadline: deadline, checkingPreviousWriter: checkingPreviousWriter)
         }
 
         let acquired = await withTaskCancellationHandler {
@@ -76,20 +89,26 @@ actor AgentRuntimeSharedStateGate {
             release(lease)
             throw CancellationError()
         }
-        return try await finishAcquisition(lease, owner: owner, reference: ownerReference, deadline: deadline)
+        return try await finishAcquisition(lease, owner: owner, reference: ownerReference,
+                                           deadline: deadline, checkingPreviousWriter: checkingPreviousWriter)
     }
 
-    private func finishAcquisition(_ lease: AgentRuntimeSharedStateLease, owner: RuntimeExecutionOwner?, reference: RuntimeProviderOwnershipReference?, deadline: ContinuousClock.Instant) async throws -> AgentRuntimeSharedStateLease {
+    private func finishAcquisition(_ lease: AgentRuntimeSharedStateLease, owner: RuntimeExecutionOwner?, reference: RuntimeProviderOwnershipReference?,
+                                   deadline: ContinuousClock.Instant, checkingPreviousWriter: Bool) async throws -> AgentRuntimeSharedStateLease {
         do {
-            let processLock = try await ProviderSharedStateProcessLock.acquire(lease.key, root: processLockRoot, deadline: deadline, reference: reference)
+            let processLock = try await ProviderSharedStateProcessLock.acquire(lease.key, root: processLockRoot, deadline: deadline, reference: reference, reading: checkingPreviousWriter)
             try Task.checkCancellation()
-            try checkAvailability(lease.key, reference: reference)
+            try checkAvailability(lease.key, reference: reference, reading: checkingPreviousWriter)
             guard ContinuousClock.now < deadline else { throw RuntimeProviderStateWaitTimeout() }
-            try await MainActor.run {
-                try Task.checkCancellation()
-                guard ContinuousClock.now < deadline else { throw RuntimeProviderStateWaitTimeout() }
-                try processLock.handoff(lease.key, reference: reference) {
-                    try owner?.bindProviderSharedState(lease.key)
+            if checkingPreviousWriter {
+                try processLock.checkPreviousWriter(lease.key, reference: reference)
+            } else {
+                try await MainActor.run {
+                    try Task.checkCancellation()
+                    guard ContinuousClock.now < deadline else { throw RuntimeProviderStateWaitTimeout() }
+                    try processLock.handoff(lease.key, reference: reference) {
+                        try owner?.bindProviderSharedState(lease.key)
+                    }
                 }
             }
             guard ContinuousClock.now < deadline else { throw RuntimeProviderStateWaitTimeout() }

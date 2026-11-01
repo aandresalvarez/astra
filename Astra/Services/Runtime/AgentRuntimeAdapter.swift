@@ -102,6 +102,7 @@ protocol AgentRuntimeProcessLaunchPlanning {
     var providerRuntimeMessages: ProviderRuntimeMessages { get }
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings
+    var writesSharedLaunchState: Bool { get }
     @MainActor
     func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) throws -> AgentRuntimeSharedStateKey?
     func missingExecutableAuditReason() -> String
@@ -219,6 +220,8 @@ extension AgentRuntimeDescriptorReadiness {
 }
 
 extension AgentRuntimeProcessLaunchPlanning {
+    var writesSharedLaunchState: Bool { true }
+
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)
         return AgentRuntimeLaunchSettings(
@@ -2392,6 +2395,7 @@ private final class CopilotUtilityStreamRunState: @unchecked Sendable {
 }
 
 struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
+    let writesSharedLaunchState = false
     var id: AgentRuntimeID { descriptor.id }
     let descriptor = AgentRuntimeDescriptor(
         id: .antigravityCLI,
@@ -2581,24 +2585,14 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let modelSettingsURL = context.sharedStateKey?.filePath.map { URL(fileURLWithPath: $0) } ?? AntigravityCLIRuntime.settingsURL(
             providerHomeDirectory: context.providerHomeDirectory
         )
-        // Antigravity is the only adapter with a non-nil `sharedLaunchStateKey`, so this is the
-        // only `makeProcessLaunchPlan` that can run after an unbounded await on
-        // `AgentRuntimeSharedStateGate` (queued behind another task sharing the same provider
-        // home directory). A fresh launch reads the live `context.task.model` (rather than
-        // `context.taskSnapshot.model`, captured before that wait) so a model edit made while
-        // queued is still honored when writing the shared settings file. A native resume keeps the
-        // model its launch signature approved: the continuation decision was made before the wait,
-        // so the old conversation never continues under a model the signature did not record; the
-        // edit applies from the next turn, where the signature change falls back to a fresh launch.
+        // A fresh task can honor edits made during preparation. A continuation must
+        // use the model its existing session was approved to resume with.
         let launchModel = context.nativeContinuationSessionID == nil
             ? context.task.model
             : context.permissionManifest?.model ?? context.taskSnapshot.model
         let model = AgentRuntimeProcessRunner.model(launchModel, for: id)
         if context.nativeContinuationSessionID == nil { ProviderLaunchSignatureService.recordLaunchedModel(launchModel, task: context.task, runID: context.runID) }
         let providerModel = AntigravityCLIRuntime.resolvedModelName(model, settingsURL: modelSettingsURL)
-        let modelApplied = FileManager.default.isExecutableFile(atPath: executable)
-            ? AntigravityCLIRuntime.applySelectedModel(providerModel, settingsURL: modelSettingsURL)
-            : false
         let diagnosticLogPath = context.runID.flatMap {
             AntigravityCLIRuntime.diagnosticLogPath(task: context.task, runID: $0)
         }
@@ -2636,7 +2630,6 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             "phase": context.phase.rawValue,
             "model": model,
             "provider_model": providerModel,
-            "model_applied": String(modelApplied),
             "permission_policy": effectivePermissionPolicy.rawValue,
             "parses_json_lines": String(plan.parsesJSONLines),
             "additional_paths_count": String(additionalPaths.count),
@@ -2747,13 +2740,14 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerHomeDirectory: String
         let effectiveHome: String
         let sharedStateKey: AgentRuntimeSharedStateKey
-        let sharedStateLease: RuntimeUtilitySharedStateLease
         do {
             providerHomeDirectory = try ProviderSharedStateIdentity.providerHome(configuration.homeDirectory(for: id))
             effectiveHome = try ProviderSharedStateIdentity.effectiveHome(configured: providerHomeDirectory, environment: [:])
             sharedStateKey = try AgentRuntimeSharedStateKey(runtime: id,
                 fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: effectiveHome))
-            sharedStateLease = try await RuntimeUtilitySharedStateLease.acquire(sharedStateKey)
+            try await AgentRuntimeSharedStateGate.shared.waitForPreviousWriter(sharedStateKey,
+                owner: RuntimeSettlementExecutionScope.current?.executionOwner)
+            try sharedStateKey.validate(fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: effectiveHome))
         } catch is CancellationError {
             return AgentUtilityRunResult(
                 exitCode: -1,
@@ -2763,17 +2757,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         } catch {
             return AgentUtilityRunResult(exitCode: -1, output: "", error: error.localizedDescription)
         }
-        do {
-            try sharedStateKey.validate(fileURL: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: effectiveHome))
-        } catch {
-            await sharedStateLease.release()
-            return AgentUtilityRunResult(exitCode: -1, output: "", error: error.localizedDescription)
-        }
-        let modelSettingsURL = URL(fileURLWithPath: sharedStateKey.filePath!)
         let model = AgentRuntimeProcessRunner.model(configuration.model, for: id)
-        if FileManager.default.isExecutableFile(atPath: executable) {
-            AntigravityCLIRuntime.applySelectedModel(model, settingsURL: modelSettingsURL)
-        }
         let plan = AntigravityCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: prompt,
@@ -2803,7 +2787,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             directoriesToCreate: trimmedHome.isEmpty ? [] : [trimmedHome],
             sandboxReadablePaths: AntigravityCLIRuntime.launchReadablePaths()
         )
-        let result = await AgentRuntimeProcessRunner().runUtilityProcess(
+        return await AgentRuntimeProcessRunner().runUtilityProcess(
             AgentUtilityLaunchPlan(
                 process: processPlan,
                 providerHomeDirectory: providerHomeDirectory,
@@ -2812,8 +2796,6 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 sharedStateKey: sharedStateKey
             )
         )
-        await sharedStateLease.release()
-        return result
     }
 }
 

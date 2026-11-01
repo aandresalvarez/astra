@@ -26,11 +26,22 @@ final class ProviderSharedStateProcessLock: @unchecked Sendable {
         try directory.verifiedLock(descriptor, named: name)
     }
 
+    func checkPreviousWriter(_ key: AgentRuntimeSharedStateKey, reference: RuntimeProviderOwnershipReference?) throws {
+        let name = lockName + ".json"
+        do {
+            _ = try verifiedFile(in: directory, named: lockName)
+            try RuntimeProviderOwnershipReference.assertCompatible(in: directory, name: name, key: key, next: reference, reading: true, exactKey: true)
+            _ = try verifiedFile(in: directory, named: lockName)
+        } catch RuntimeExecutionOwnerStore.Failure.unreadable, RuntimeExecutionOwnerStore.Failure.unsafePath {
+            throw ProviderSharedStateCompatibility.UnreadableReservation(path: directory.url.appendingPathComponent(name).path)
+        }
+    }
+
     deinit { close(descriptor) }
 
     static func acquire(_ key: AgentRuntimeSharedStateKey, root override: URL? = nil, deadline: ContinuousClock.Instant? = nil,
                         reference: RuntimeProviderOwnershipReference? = nil,
-                        matchingExistingLock: ((stat) -> Bool)? = nil) async throws -> ProviderSharedStateProcessLock {
+                        reading: Bool = false, matchingExistingLock: ((stat) -> Bool)? = nil) async throws -> ProviderSharedStateProcessLock {
         let root = try ProviderSharedStateNamespace.resolve(override: override, key: key)
         let directory = try ProviderSharedStateDirectory(root, createIfMissing: matchingExistingLock == nil)
         // Swift keys compare canonical Unicode equivalents as equal. Use the same
@@ -50,7 +61,7 @@ final class ProviderSharedStateProcessLock: @unchecked Sendable {
             if flock(fd, LOCK_EX | LOCK_NB) == 0 {
                 if key.filePath != nil {
                     try await ProviderSharedStateCompatibility.waitForLegacyLocks(in: directory, deadline: deadline)
-                    try await ProviderSharedStateCompatibility.checkLegacyReferences(in: directory, key: key, reference: reference, deadline: deadline)
+                    try await ProviderSharedStateCompatibility.checkLegacyReferences(in: directory, key: key, reference: reference, deadline: deadline, reading: reading)
                 }
                 _ = try lease.verifiedFile(in: directory, named: name)
                 return lease

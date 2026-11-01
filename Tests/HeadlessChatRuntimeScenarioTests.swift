@@ -361,12 +361,12 @@ extension HeadlessChatScenarioTests {
                 false
             }
         })
-        #expect(FileManager.default.fileExists(
+        #expect(!FileManager.default.fileExists(
             atPath: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: worker.homeDirectory(for: .antigravityCLI)).path
         ))
     }
 
-    @Test("Concurrent Antigravity runs with a shared home keep their selected models isolated")
+    @Test("Independent Antigravity processes overlap in one home and keep their session models isolated")
     func concurrentAntigravityRunsWithSharedHomeKeepModelsIsolated() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -383,14 +383,20 @@ extension HeadlessChatScenarioTests {
               printf '%s\\n' '  --output-format  Output format for print mode (text, json, stream-json)'
               exit 0
             fi
-            /usr/bin/python3 -u - <<'PY'
+            exec /usr/bin/python3 -u - "$@" <<'PY'
             import json
             import os
+            import sys
             import time
-            time.sleep(0.25)
-            settings_path = os.path.join(os.environ["HOME"], ".gemini", "antigravity-cli", "settings.json")
-            with open(settings_path, "r", encoding="utf-8") as handle:
-                model = json.load(handle).get("model", "")
+            from pathlib import Path
+            model = sys.argv[sys.argv.index("--model") + 1]
+            home = Path(os.environ["HOME"])
+            (home / ("ready-" + model)).touch()
+            deadline = time.monotonic() + 5
+            while len(list(home.glob("ready-*"))) < 2:
+                if time.monotonic() >= deadline:
+                    sys.exit("Independent provider never entered while this one was running")
+                time.sleep(0.02)
             print(json.dumps({"event": "init", "conversation_id": f"model-isolation-{os.getpid()}", "init": {"model": model}}), flush=True)
             print(json.dumps({"event": "result", "result": {
                 "status": "SUCCESS", "response": f"model={model}", "num_turns": 1
@@ -412,13 +418,16 @@ extension HeadlessChatScenarioTests {
             goal: "Use the second Antigravity model",
             model: "Gemini 3 Flash"
         )
-        // These workers compete for provider settings, not workspace writes.
-        // Direct worker admission now enforces the same workspace fence as the queue.
+        // The peer barrier is shared. Workspaces and native conversations are independent.
         let secondRoot = harness.rootURL.appendingPathComponent("second-workspace", isDirectory: true)
         try FileManager.default.createDirectory(at: secondRoot, withIntermediateDirectories: true)
         secondTask.executionRootPath = secondRoot.path
         let firstWorker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
         let secondWorker = harness.makeWorker(runtime: .antigravityCLI, executablePath: antigravityPath)
+        let settings = AntigravityCLIRuntime.settingsURL(providerHomeDirectory: firstWorker.homeDirectory(for: .antigravityCLI))
+        let saved = Data(#"{"model":"User preference","toolPermission":"strict"}"#.utf8)
+        try FileManager.default.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try saved.write(to: settings)
 
         let firstRun = Task { @MainActor in
             await harness.execute(task: firstTask, worker: firstWorker)
@@ -445,11 +454,12 @@ extension HeadlessChatScenarioTests {
         #expect(secondTask.status == .completed)
         #expect(firstOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "model=Gemini 3.5 Flash")
         #expect(secondOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "model=Gemini 3 Flash")
+        #expect(try Data(contentsOf: settings) == saved)
         for task in [firstTask, secondTask] {
             #expect(task.runs.count == 1)
             let owner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
             #expect(owner.canReplace)
-            #expect(owner.resourcesReleased == true && owner.providerSharedStateReleased == true)
+            #expect(owner.resourcesReleased == true && owner.providerSharedStateKey == nil)
         }
     }
 
@@ -963,16 +973,21 @@ extension HeadlessChatScenarioTests {
         #expect(run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         #expect(task.events.contains { $0.type == "error" && $0.run?.id == run.id && $0.payload.contains("for this run") })
         #expect(!task.events.contains { $0.type == "task.completed" && $0.run?.id == run.id })
-        // This intentionally empty fake has no terminal/tool proof. Its
-        // reservation must survive settlement, entirely inside test scope.
+        // This provider supplied no terminal/tool proof. Its workspace and Retry
+        // remain protected; an independent task may still use the same profile.
         let owner = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
         #expect(owner.stopProof?.toolsStopped == false)
         #expect(owner.settlementToolsStopped == true)
-        #expect(owner.resourcesReleased == false && owner.providerSharedStateReleased == false)
+        #expect(owner.resourcesReleased == false && !owner.canReplace)
+        #expect(owner.providerSharedStateKey == nil)
+        #expect(RuntimeExecutionOwner.acquire(task: task, context: harness.context, maxRunSeconds: 60) == nil)
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: AntigravityCLIRuntime.settingsURL(
+            providerHomeDirectory: worker.homeDirectory(for: .antigravityCLI)))
+        try await AgentRuntimeSharedStateGate.shared.waitForPreviousWriter(key)
         let namespace = harness.providerLockRoot
         let pointers = try FileManager.default.contentsOfDirectory(at: namespace, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" }
-        #expect(try pointers.contains {
+        #expect(try !pointers.contains {
             try JSONDecoder().decode(RuntimeProviderOwnershipReference.self, from: Data(contentsOf: $0)).taskID == task.id
         })
     }

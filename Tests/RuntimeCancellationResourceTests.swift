@@ -224,7 +224,7 @@ struct RuntimeCancellationResourceTests {
         await secondGate.release(next)
     }
 
-    @Test("A settlement utility journals its actual provider key and retains it on cancellation")
+    @Test("New readers and writers respect a cancelled settlement writer's durable reservation")
     func settlementUtilityPersistsClaim() async throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
@@ -240,18 +240,15 @@ struct RuntimeCancellationResourceTests {
         let store = RuntimeExecutionOwner.store(in: h.context)
         let gate = AgentRuntimeSharedStateGate(processLockRoot: h.rootURL.appendingPathComponent("provider-leases"),
             registeredStoreRoots: [store.root])
-        let utility = try await RuntimeSettlementExecutionScope.$current.withValue(scope) {
-            try await RuntimeUtilitySharedStateLease.acquire(key, gate: gate)
-        }
+        let utility = try await gate.acquire(key, owner: owner)
         #expect(try store.read(taskID: task.id, taskOwnerID: task.persistentModelID)?.providerSharedStateKey == key.rawValue)
         owner.requestCancellation()
-        await utility.release()
+        #expect(!owner.releaseProviderSharedState())
+        await gate.release(utility)
         #expect(try store.read(taskID: task.id, taskOwnerID: task.persistentModelID)?.providerSharedStateReleased == false)
         await #expect(throws: (any Error).self) { try await gate.acquire(key) }
         await #expect(throws: (any Error).self) {
-            try await RuntimeSettlementExecutionScope.$current.withValue(scope) {
-                try await RuntimeUtilitySharedStateLease.acquire(key, gate: gate)
-            }
+            try await gate.waitForPreviousWriter(key)
         }
     }
 

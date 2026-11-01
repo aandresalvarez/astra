@@ -821,12 +821,19 @@ final class AgentRuntimeProcessRunner {
             return AgentProcessResult(exitCode: -1, error: error.localizedDescription,
                 runtimeStopReason: RuntimeProviderResourceRegistry.Block.stopReason, runtimeStopMessage: error.localizedDescription)
         }
+        var writerLease: AgentRuntimeSharedStateLease?
         if let sharedStateKey = sharedKey {
-            let sharedStateLease: AgentRuntimeSharedStateLease
             do {
                 try executionOwner?.waitingForProviderState(sharedStateKey)
-                sharedStateLease = try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey, owner: executionOwner,
-                    timeoutSeconds: min(providerStateWaitTimeoutSeconds, executionOwner?.remainingWallTime ?? maxRunSeconds ?? 120))
+                let timeout = min(providerStateWaitTimeoutSeconds, executionOwner?.remainingWallTime ?? maxRunSeconds ?? 120)
+                if adapter.writesSharedLaunchState {
+                    writerLease = try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey, owner: executionOwner, timeoutSeconds: timeout)
+                    sharedStateLease = writerLease
+                    sharedStateOwnerID = executionOwner?.record.ownerID
+                } else {
+                    try await AgentRuntimeSharedStateGate.shared.waitForPreviousWriter(sharedStateKey, owner: executionOwner, timeoutSeconds: timeout)
+                    try executionOwner?.finishedWaitingForProviderState()
+                }
             } catch is CancellationError {
                 return AgentProcessResult(
                     exitCode: -1,
@@ -848,44 +855,6 @@ final class AgentRuntimeProcessRunner {
             } catch {
                 return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
             }
-            self.sharedStateLease = sharedStateLease
-            self.sharedStateOwnerID = executionOwner?.record.ownerID
-            let plan: AgentRuntimeProcessLaunchPlan
-            switch await guardedSandboxedPlan(adapter: adapter, context: launchContext) {
-            case .plan(let resolvedPlan):
-                plan = resolvedPlan
-            case .blocked(let blockedResult):
-                if executionOwner == nil || executionOwner?.releaseProviderSharedState() == true {
-                    await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)
-                    if self.sharedStateLease == sharedStateLease { self.sharedStateLease = nil }
-                }
-                return blockedResult
-            }
-            let result = await runProcess(
-                adapter: adapter,
-                plan: plan,
-                sharedStateKey: launchContext.sharedStateKey,
-                task: task,
-                runID: runID,
-                permissionManifest: permissionManifest,
-                budgetEnforcementMode: budgetEnforcementMode,
-                timeoutSeconds: timeoutSeconds,
-                noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
-                maxRunSeconds: maxRunSeconds,
-                preparationStartedAt: launchPreparationStarted,
-                maxTurns: remainingTurns,
-                tokenBudget: remainingTokenBudget,
-                nativeSessionID: nativeContinuationSessionID,
-                reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
-                estimatedInputTokens: Self.estimatedLaunchInputTokens(prompt: prompt, runtime: adapter.id),
-                onInteractiveAsk: onInteractiveAsk,
-                onLine: onLine
-            )
-            if executionOwner == nil || executionOwner?.releaseProviderSharedState() == true {
-                await AgentRuntimeSharedStateGate.shared.release(sharedStateLease)
-                if self.sharedStateLease == sharedStateLease { self.sharedStateLease = nil }
-            }
-            return result
         }
 
         let plan: AgentRuntimeProcessLaunchPlan
@@ -893,9 +862,10 @@ final class AgentRuntimeProcessRunner {
         case .plan(let resolvedPlan):
             plan = resolvedPlan
         case .blocked(let blockedResult):
+            await releaseWriterIfStopped(writerLease)
             return blockedResult
         }
-        return await runProcess(
+        let result = await runProcess(
             adapter: adapter,
             plan: plan,
             sharedStateKey: launchContext.sharedStateKey,
@@ -906,15 +876,24 @@ final class AgentRuntimeProcessRunner {
             timeoutSeconds: timeoutSeconds,
             noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
             maxRunSeconds: maxRunSeconds,
-                preparationStartedAt: launchPreparationStarted,
+            preparationStartedAt: launchPreparationStarted,
             maxTurns: remainingTurns,
             tokenBudget: remainingTokenBudget,
             nativeSessionID: nativeContinuationSessionID,
             reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
-                estimatedInputTokens: Self.estimatedLaunchInputTokens(prompt: prompt, runtime: adapter.id),
+            estimatedInputTokens: Self.estimatedLaunchInputTokens(prompt: prompt, runtime: adapter.id),
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
+        await releaseWriterIfStopped(writerLease)
+        return result
+    }
+
+    @MainActor
+    private func releaseWriterIfStopped(_ lease: AgentRuntimeSharedStateLease?) async {
+        guard let lease, executionOwner == nil || executionOwner?.releaseProviderSharedState() == true else { return }
+        await AgentRuntimeSharedStateGate.shared.release(lease)
+        if sharedStateLease == lease { sharedStateLease = nil }
     }
 
     @MainActor

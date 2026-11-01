@@ -30,8 +30,8 @@ struct PendingP2RegressionTests {
         #expect(diagnostic.redactedSummary.contains("1.0.98"))
     }
 
-    @Test("Antigravity titles explicitly select the model on the launch command")
-    func antigravityTitleBindsModel() async throws {
+    @Test("Antigravity titles explicitly select the model on the launch command", arguments: [0.0, 60.0])
+    func antigravityTitleBindsModel(timeout: TimeInterval) async throws {
         let root = try ProviderCoordinationFixture().data
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -44,7 +44,7 @@ struct PendingP2RegressionTests {
           if [ "$1" = '--model' ]; then shift; selected="$1"; fi
           shift
         done
-        if [ -z "$selected" ]; then echo 'plan model not specified; you must specify a valid model' >&2; exit 3; fi
+        if [ "$selected" != 'gemini-3.8-flash-high' ]; then echo 'unexpected session model' >&2; exit 3; fi
         echo 'Review attached agreement'
         """.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
@@ -52,8 +52,10 @@ struct PendingP2RegressionTests {
         settings.setExecutablePath(executable.path, for: .antigravityCLI)
         settings.setHomeDirectory(root.appendingPathComponent("provider-home").path, for: .antigravityCLI)
         let title = await SpecEngine.generateTitle(goal: "Review the attached agreement", workspacePath: root.path,
-            utilityRuntime: AgentUtilityRuntimeConfiguration(runtime: .antigravityCLI, model: "gemini-3.8-flash-high", providerSettings: settings))
+            utilityRuntime: AgentUtilityRuntimeConfiguration(runtime: .antigravityCLI, model: "gemini-3.8-flash-high", timeoutSeconds: timeout, providerSettings: settings))
         #expect(title == "Review attached agreement")
+        let profile = root.appendingPathComponent("provider-home")
+        #expect(!FileManager.default.fileExists(atPath: AntigravityCLIRuntime.settingsURL(providerHomeDirectory: profile.path).path))
     }
     @Test("A provider configuration failure stops title fallback and the remaining batch")
     func configurationFailureIsNotRetried() async throws {
