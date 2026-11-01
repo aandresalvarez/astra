@@ -25,7 +25,7 @@ import ASTRAModels
 /// rows updated anyway.
 ///
 /// **How membership is detected**, cheapest test first:
-/// 1. Any held row now `isDeleted`. Reading properties off a deleted model is
+/// 1. Any held row is deleted or detached. Reading properties off it is
 ///    unsafe, so this can never wait for a later pass.
 /// 2. `fetchCount` disagrees with the snapshot. Measured at **0.03 ms against
 ///    65.78 ms** for the read it guards on a production-shaped store — a
@@ -66,9 +66,32 @@ enum SidebarTaskStoreDefaults {
 @MainActor
 @Observable
 final class SidebarTaskStore {
-    /// The sidebar's snapshot. Replaced only when membership actually changed,
-    /// because assigning it unnecessarily re-runs the view body.
-    private(set) var tasks: [AgentTask] = []
+    private var snapshot: [AgentTask] = []
+
+    /// A save can detach a draft before the coalesced refresh replaces it.
+    /// Keep the usual array when every row is live, without fetching or
+    /// changing observed state during a render.
+    var tasks: [AgentTask] {
+        guard snapshot.contains(where: { !$0.isLive }) else { return snapshot }
+        return snapshot.filter(\.isLive)
+    }
+
+    var snapshotCount: Int { snapshot.count }
+
+    func row(for selection: AgentTask?) -> AgentTask? {
+        guard let selection else { return nil }
+        // SwiftData uniques rows in a context. A selection from another
+        // context must resolve to this sidebar's copy of the same store row.
+        if selection.modelContext === context {
+            return selection.isLive && snapshot.contains { $0 === selection } ? selection : nil
+        }
+        let owner = selection.persistentModelID
+        return snapshot.first { $0.persistentModelID == owner && $0.isLive }
+    }
+
+    func hasTask(in workspace: Workspace) -> Bool {
+        snapshot.contains { $0.isLive && $0.workspace?.id == workspace.id }
+    }
 
     /// Fingerprint of the snapshot's index-relevant fields, for the view to
     /// hang its index rebuild on.
@@ -195,11 +218,11 @@ final class SidebarTaskStore {
         probeAfterSave = false
         refreshExternallyUpdatedRows(in: context)
         lastReconcileAt = Date()
-        if tasks.contains(where: \.isDeleted) {
+        if snapshot.contains(where: { !$0.isLive }) {
             fetch(reason: "deleted_row")
             return
         }
-        if let count = try? context.fetchCount(SidebarTaskFetch.descriptor()), count != tasks.count {
+        if let count = try? context.fetchCount(SidebarTaskFetch.descriptor()), count != snapshot.count {
             fetch(reason: "count_changed")
             return
         }
@@ -241,12 +264,12 @@ final class SidebarTaskStore {
             PerformanceTelemetry.log(
                 "sidebar_membership_probe_failed",
                 level: .warning,
-                fields: ["held_count": PerformanceTelemetryFields.count(tasks.count)]
+                fields: ["held_count": PerformanceTelemetryFields.count(snapshot.count)]
             )
             return false
         }
 
-        let held = Set(tasks.map(\.persistentModelID))
+        let held = Set(snapshot.map(\.persistentModelID))
         // Identifiers are unique, so equal counts plus full containment is set
         // equality — one hash set instead of two.
         let changed = identifiers.count != held.count || !identifiers.allSatisfy(held.contains)
@@ -267,8 +290,9 @@ final class SidebarTaskStore {
     /// `@Observable` notifies on assignment regardless of equality. Suppress
     /// unchanged versions so a save that changed nothing does not rebuild UI.
     private func republishVersion() {
-        let version = changes?.track { SidebarTaskIndexInvalidation.signature(for: tasks) }
-            ?? SidebarTaskIndexInvalidation.signature(for: tasks)
+        let rows = tasks
+        let version = changes?.track { SidebarTaskIndexInvalidation.signature(for: rows) }
+            ?? SidebarTaskIndexInvalidation.signature(for: rows)
         guard version != tasksVersion else { return }
         tasksVersion = version
     }
@@ -277,10 +301,19 @@ final class SidebarTaskStore {
         self.context = context
         probeAfterSave = false
         externalUpdates.removeAll()
-        changes = SidebarTaskChangeObservation(context: context) { [weak self, weak context] membershipChanged, updated in
+        changes = SidebarTaskChangeObservation(context: context) { [weak self, weak context] membershipChanged, updated, deleted in
             guard let self, let context, self.context === context else { return }
+            self.removeDeletedRows(deleted)
             self.noteChanged(context: context, membershipMayHaveChanged: membershipChanged, externallyUpdated: updated)
         }
+    }
+
+    /// Another context can commit a deletion while our instance still looks attached.
+    private func removeDeletedRows(_ deleted: Set<PersistentIdentifier>) {
+        guard !deleted.isEmpty else { return }
+        externalUpdates.subtract(deleted)
+        let remaining = snapshot.filter { !deleted.contains($0.persistentModelID) }
+        if remaining.count != snapshot.count { snapshot = remaining }
     }
 
     /// A manual snapshot needs an explicit refetch for writes from another
@@ -330,28 +363,23 @@ final class SidebarTaskStore {
             PerformanceTelemetry.log(
                 "sidebar_task_fetch_failed",
                 level: .warning,
-                fields: ["reason": reason, "held_count": PerformanceTelemetryFields.count(tasks.count)]
+                fields: ["reason": reason, "held_count": PerformanceTelemetryFields.count(snapshot.count)]
             )
             return
         }
 
         if !holdsSameTasks(as: fetched) {
-            tasks = fetched
+            snapshot = fetched
         }
         // Unconditional: a read that returned the same rows can still have
         // returned different *fields* on them, and the index is keyed on those.
         republishVersion()
     }
 
-    /// Corrupts the snapshot on purpose, so the identifier probe can be tested
-    /// against the state it exists for.
-    ///
-    /// A count-preserving membership change cannot be staged through the public
-    /// surface: within one context, any row the snapshot holds that the store
-    /// no longer returns is `isDeleted`, and the first check catches it before
-    /// the probe is reached. Nothing in the app calls this.
+    /// Supplies stale membership to test the identifier probe. Normal saves
+    /// report deleted row IDs before that probe is due.
     func replaceSnapshotForTesting(_ snapshot: [AgentTask]) {
-        tasks = snapshot
+        self.snapshot = snapshot
     }
 
     /// Pointer identity, not field equality: SwiftData uniques a model to one
@@ -360,8 +388,8 @@ final class SidebarTaskStore {
     /// the *set* changed. A false negative costs one redundant publish, never a
     /// stale rail.
     private func holdsSameTasks(as fetched: [AgentTask]) -> Bool {
-        guard tasks.count == fetched.count else { return false }
-        for (held, incoming) in zip(tasks, fetched) where held !== incoming {
+        guard snapshot.count == fetched.count else { return false }
+        for (held, incoming) in zip(snapshot, fetched) where held !== incoming {
             return false
         }
         return true

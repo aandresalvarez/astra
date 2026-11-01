@@ -219,6 +219,53 @@ struct SidebarTaskStoreTests {
         #expect(!store.tasks.contains { $0.isDeleted })
     }
 
+    @Test("Submitting an imported draft removes only its row before the sidebar's next refresh")
+    func submittedDraftIsSafeBeforeRefresh() throws {
+        let context = try makeContext()
+        let original = try insertTask("Original", into: context)
+        original.status = .running
+        let draft = AgentTask(title: "Imported draft", goal: "Imported draft")
+        draft.id = original.id
+        draft.status = .draft
+        context.insert(draft)
+        try context.save()
+        let store = makeStore()
+        store.loadIfNeeded(context: context)
+        let draftOwner = draft.persistentModelID
+        #expect(store.tasks.contains { $0.persistentModelID == draftOwner })
+
+        let submitted = try insertTask("Submitted", into: context)
+        try NewTaskWorktreeComposerFlow.promote(draft, to: submitted, modelContext: context, resourceQueue: nil)
+
+        // A render can occur before the coalesced membership refresh. Check
+        // identities before faulting any properties on the retired draft.
+        let tasks = store.tasks
+        try #require(!tasks.contains { $0.persistentModelID == draftOwner })
+        #expect(store.row(for: draft) == nil)
+        #expect(store.row(for: original) === original)
+        let activities = TaskActivityPresentation.resolveByOwner(tasks: tasks, requests: [])
+        #expect(activities[original.persistentModelID]?.kind == .running)
+        store.refreshNow(context: context)
+        #expect(Set(store.tasks.map(\.persistentModelID)) == [original.persistentModelID, submitted.persistentModelID])
+        #expect(store.row(for: submitted) === submitted)
+    }
+
+    @Test("Rolling back a pending deletion makes the draft visible again without a fetch")
+    func pendingDeletionRollsBack() throws {
+        let context = try makeContext()
+        let draft = try insertTask("Draft", into: context)
+        let store = makeStore()
+        store.loadIfNeeded(context: context)
+
+        SwiftDataDeletionPreparation.prepare(draft)
+        context.delete(draft)
+        #expect(!store.tasks.contains { $0 === draft })
+        context.rollback()
+        #expect(store.row(for: draft) === draft)
+        #expect(store.tasks.contains { $0 === draft })
+        #expect(store.fetchCountForTesting == 1)
+    }
+
     @Test("refreshNow picks up a change without waiting out the window")
     func refreshNowSkipsTheWindow() throws {
         let context = try makeContext()

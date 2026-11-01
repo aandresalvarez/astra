@@ -124,12 +124,19 @@ struct SidebarTaskSourceObservationTests {
         try context.save()
         let store = SidebarTaskStore(coalesceInterval: 0, membershipProbeInterval: 3600)
         store.loadIfNeeded(context: context)
+        let selected = try #require(store.tasks.first)
         let importer = ModelContext(context.container)
         let old = try #require(try importer.fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(store.row(for: old) === selected)
+        let removedID = old.persistentModelID
         importer.delete(old)
-        importer.insert(AgentTask(title: "Replacement", goal: "goal"))
+        let replacement = AgentTask(title: "Replacement", goal: "goal")
+        importer.insert(replacement)
         try importer.save()
+        #expect(!store.tasks.contains { $0.persistentModelID == removedID })
+        #expect(store.row(for: selected) == nil)
         #expect(await settle { store.tasks.map(\.title) == ["Replacement"] })
+        #expect(store.row(for: replacement) === store.tasks.first)
     }
 
     @Test("Saved field changes from another context refresh held rows")
@@ -209,7 +216,7 @@ struct SidebarTaskSourceObservationTests {
     func unrelatedSavesDoNotSignal() throws {
         let context = try context()
         var signals = 0
-        let observation = SidebarTaskChangeObservation(context: context) { _, _ in signals += 1 }
+        let observation = SidebarTaskChangeObservation(context: context) { _, _, _ in signals += 1 }
         context.insert(TaskTemplate(name: "Unrelated", mainGoal: "goal"))
         try context.save()
         let writer = ModelContext(context.container)

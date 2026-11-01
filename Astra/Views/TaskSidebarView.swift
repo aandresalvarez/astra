@@ -51,12 +51,12 @@ struct TaskSidebarContainerView: View {
     var selectedWorkspaceApp: WorkspaceApp?
 
     var body: some View {
-        let ownedRequests = TaskActivityPresentation.requestsByOwner(tasks: taskStore.tasks, requests: turnRequests)
-        let taskActivities = TaskActivityPresentation.resolveByOwner(tasks: taskStore.tasks, owned: ownedRequests)
+        let tasks = taskStore.tasks
+        let ownedRequests = TaskActivityPresentation.requestsByOwner(tasks: tasks, requests: turnRequests)
+        let taskActivities = TaskActivityPresentation.resolveByOwner(tasks: tasks, owned: ownedRequests)
         TaskSidebarView(
             appUpdateController: appUpdateController,
-            tasks: taskStore.tasks,
-            tasksVersion: taskStore.tasksVersion,
+            taskStore: taskStore,
             selectedTask: $selectedTask,
             taskQueue: taskQueue,
             workspaces: workspaces,
@@ -340,11 +340,8 @@ enum SidebarRevealSettlingPolicy {
 
 struct TaskSidebarView: View {
     let appUpdateController: AppUpdateController
-    let tasks: [AgentTask]
-    /// `SidebarTaskStore`'s fingerprint of the fields the index is built from.
-    /// Passed in, never derived here — see `SidebarTaskIndexInvalidation` for
-    /// why fingerprinting the snapshot inside a `body` is self-defeating.
-    let tasksVersion: Int
+    // Deferred rebuilds must read the current rows when they actually run.
+    let taskStore: SidebarTaskStore
     @Binding var selectedTask: AgentTask?
     let taskQueue: TaskQueue
     let workspaces: [Workspace]
@@ -477,10 +474,10 @@ struct TaskSidebarView: View {
     private func rebuildTaskIndex(animated: Bool = false) {
         indexRebuildScheduler.noteRebuilt()
         let rebuilt = SidebarTaskIndex(
-            tasks: tasks,
+            tasks: taskStore.tasks,
             searchText: searchText,
             ownerActivities: taskActivities,
-            stickyUnreadTaskID: taskIndex.heldUnreadRank(forSelected: selectedTask?.id)
+            stickyUnreadTaskID: taskIndex.heldUnreadRank(forSelected: liveSelectedTask?.id)
         )
         guard animated, let animation = disclosureAnimation else {
             taskIndex = rebuilt
@@ -498,7 +495,7 @@ struct TaskSidebarView: View {
     // precomputed from `SidebarTaskStore`; only the activity half is derived
     // here, bounded by live turn requests rather than by the task table.
     private var sidebarTasksVersion: Int {
-        tasksVersion ^ taskActivitySignature
+        taskStore.tasksVersion ^ taskActivitySignature
     }
 
     private var taskActivitySignature: Int {
@@ -519,7 +516,11 @@ struct TaskSidebarView: View {
 
     private var selectedWorkspaceHasNoTasks: Bool {
         guard let selectedWorkspace else { return false }
-        return !tasks.contains { $0.workspace?.id == selectedWorkspace.id }
+        return !taskStore.hasTask(in: selectedWorkspace)
+    }
+
+    private var liveSelectedTask: AgentTask? {
+        taskStore.row(for: selectedTask)
     }
 
     private var shouldShowNewTaskNudge: Bool {
@@ -677,7 +678,7 @@ struct TaskSidebarView: View {
         }
         .onChange(of: schedulesVersion) { rebuildSchedules() }
         .onChange(of: selectedWorkspace?.id) { handleSelectedWorkspaceChanged() }
-        .onChange(of: selectedTask?.persistentModelID) { handleSelectedTaskChanged() }
+        .onChange(of: liveSelectedTask?.persistentModelID) { handleSelectedTaskChanged() }
         .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
         .accessibilityIdentifier("TaskSidebar")
@@ -781,7 +782,7 @@ struct TaskSidebarView: View {
                       let idString = String(data: data, encoding: .utf8),
                       let uuid = UUID(uuidString: idString) else { return }
                 DispatchQueue.main.async {
-                    if let task = tasks.first(where: { $0.id == uuid }) {
+                    if let task = taskStore.tasks.first(where: { $0.id == uuid }) {
                         withAnimation(disclosureAnimation) {
                             setPinned(true, for: task)
                         }
@@ -1296,7 +1297,7 @@ struct TaskSidebarView: View {
             "sidebar_visible_workspaces",
             thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
             fields: [
-                "task_count": PerformanceTelemetryFields.count(tasks.count),
+                "task_count": PerformanceTelemetryFields.count(taskStore.snapshotCount),
                 "workspace_count": PerformanceTelemetryFields.count(workspaces.count),
                 "search_active": PerformanceTelemetryFields.bool(!searchText.isEmpty)
             ],
@@ -2169,7 +2170,7 @@ struct TaskSidebarView: View {
         // this the outgoing row would keep its borrowed rank until some
         // unrelated edit happened to rebuild the index.
         rebuildTaskIndex(animated: true)
-        guard let workspaceID = selectedTask?.workspace?.id else { return }
+        guard let workspaceID = liveSelectedTask?.workspace?.id else { return }
         setAccordionState(WorkspaceSidebarAccordion.selectionChanged(workspaceID, in: accordion))
     }
 
