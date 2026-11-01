@@ -24,7 +24,14 @@ struct SceneSelectionApplyResult: Equatable {
 /// the durable context those surfaces sit inside.
 @MainActor
 final class SceneSelectionModel: ObservableObject {
-    @Published private(set) var selectedTask: AgentTask?
+    @Published private var heldTask: AgentTask?
+    private(set) var selectedTask: AgentTask? {
+        get { heldTask?.isLive == true ? heldTask : nil }
+        set { heldTask = newValue }
+    }
+    /// An imported draft still owns its browser session while being replaced.
+    /// A retired selection is not a new-task composer.
+    var usesSharedComposerBrowser: Bool { heldTask == nil || isComposingTask }
     @Published private(set) var selectedWorkspace: Workspace?
     @Published private(set) var selectedWorkspaceApp: WorkspaceApp?
     @Published private(set) var isComposingWorkspaceApp = false
@@ -94,7 +101,7 @@ final class SceneSelectionModel: ObservableObject {
 
     func openTask(_ task: AgentTask?) {
         isShowingWorkspaceConfiguration = false
-        guard let task else {
+        guard let task, task.isLive else {
             selectedTask = nil
             isComposingTask = false
             return

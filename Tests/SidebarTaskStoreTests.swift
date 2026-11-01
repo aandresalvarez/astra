@@ -233,6 +233,10 @@ struct SidebarTaskStoreTests {
         store.loadIfNeeded(context: context)
         let draftOwner = draft.persistentModelID
         #expect(store.tasks.contains { $0.persistentModelID == draftOwner })
+        let scene = SceneSelectionModel()
+        scene.openTask(draft)
+        #expect(scene.selectedTask === draft)
+        #expect(!scene.usesSharedComposerBrowser)
 
         let submitted = try insertTask("Submitted", into: context)
         try NewTaskWorktreeComposerFlow.promote(draft, to: submitted, modelContext: context, resourceQueue: nil)
@@ -242,12 +246,20 @@ struct SidebarTaskStoreTests {
         let tasks = store.tasks
         try #require(!tasks.contains { $0.persistentModelID == draftOwner })
         #expect(store.row(for: draft) == nil)
+        #expect(scene.selectedTask == nil)
+        // Until the scene opens the submitted task, it still belongs to the
+        // imported draft; it must not take the new-task composer's browser.
+        #expect(!scene.usesSharedComposerBrowser)
         #expect(store.row(for: original) === original)
         let activities = TaskActivityPresentation.resolveByOwner(tasks: tasks, requests: [])
         #expect(activities[original.persistentModelID]?.kind == .running)
         store.refreshNow(context: context)
         #expect(Set(store.tasks.map(\.persistentModelID)) == [original.persistentModelID, submitted.persistentModelID])
         #expect(store.row(for: submitted) === submitted)
+        scene.openTask(submitted)
+        #expect(scene.selectedTask === submitted)
+        scene.composeTask()
+        #expect(scene.usesSharedComposerBrowser)
     }
 
     @Test("Rolling back a pending deletion makes the draft visible again without a fetch")

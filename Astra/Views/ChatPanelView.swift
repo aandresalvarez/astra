@@ -80,7 +80,13 @@ struct ChatPanelView: View {
     @AppStorage(AppStorageKeys.skipPermissions) private var globalSkipPermissions = false
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var chainedGoal = ""
-    @State var draftTask: AgentTask?
+    @State private var heldDraftTask: AgentTask?
+    // SwiftUI can render this composer again after promotion deletes its
+    // draft, even when another window already selected the new task.
+    var draftTask: AgentTask? {
+        get { heldDraftTask?.isLive == true ? heldDraftTask : nil }
+        nonmutating set { heldDraftTask = newValue }
+    }
     // True only when the user genuinely touched ComposerToolbar's runtime picker
     // (never from a stored default) — mirrors TaskComposerCoordinator.applyRuntimeSwitch
     // so the launch resolver blocks instead of silently rerouting a runtime picked
@@ -464,6 +470,10 @@ struct ChatPanelView: View {
     }
 
     var body: some View {
+        if draftToLoad?.isLive != false { liveComposer }
+    }
+
+    private var liveComposer: some View {
         chatLayout
         .navigationTitle(draftTask != nil ? "Draft" : "New Task")
         .navigationSubtitle(workspace?.name ?? "Astra")
@@ -487,7 +497,7 @@ struct ChatPanelView: View {
             initializeComposerPolicyFromDefaults()
             loadSSHConnections()
             focusComposerInput()
-            if let draft = draftToLoad {
+            if let draft = draftToLoad, draft.isLive {
                 loadDraftMessages(draft)
             }
             installPasteMonitor()
@@ -1326,6 +1336,7 @@ struct ChatPanelView: View {
                 try Task.checkCancellation()
                 if shouldUseGoalMode, let planningDraft {
                     try await ensurePlanningWorktree(for: planningDraft)
+                    guard planningDraft.isLive else { return }
                     let selection = TaskRoleProfileStore.selection(
                         for: .planner,
                         task: planningDraft,
@@ -1355,6 +1366,7 @@ struct ChatPanelView: View {
                     utilityRuntime: planningUtilityRuntime
                 )
                 try Task.checkCancellation()
+                guard planningDraft?.isLive != false else { return }
                 isThinking = false
                 switch result {
                 case .success(let response):
@@ -1475,6 +1487,7 @@ struct ChatPanelView: View {
                 try Task.checkCancellation()
                 if let planningDraft {
                     try await ensurePlanningWorktree(for: planningDraft)
+                    guard planningDraft.isLive else { return }
                     let selection = TaskRoleProfileStore.selection(
                         for: .planner,
                         task: planningDraft,
@@ -1496,6 +1509,7 @@ struct ChatPanelView: View {
                     utilityRuntime: planningUtilityRuntime
                 )
                 try Task.checkCancellation()
+                guard planningDraft?.isLive != false else { return }
                 isThinking = false
                 switch result {
                 case .success(let response):
@@ -2228,7 +2242,7 @@ struct ChatPanelView: View {
     }
 
     private func initializeComposerPolicyFromDefaults() {
-        if let draftToLoad,
+        if let draftToLoad, draftToLoad.isLive,
            let selected = TaskPolicyStore.latestSelectedLevel(for: draftToLoad) {
             composerPolicyLevelRaw = selected.rawValue
             composerSkipPermissions = selected == .autonomous

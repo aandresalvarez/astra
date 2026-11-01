@@ -2118,7 +2118,7 @@ struct ContentView: View {
     }
 
     private func promoteDraftBrowserSessionIfNeeded(to task: AgentTask) {
-        guard selectedTask == nil || isComposingTask else { return }
+        guard sceneSelection.usesSharedComposerBrowser else { return }
         let wasPresented = activeWorkspaceCanvasItem == .browser
         let policy = currentBrowserSessionPolicy
         let promoted = browserSessionStore.promoteSharedSession(
@@ -3516,7 +3516,7 @@ private struct ContentDetailContentView: View {
     var body: some View {
         switch detailPresentation {
         case .draftTask:
-            if let task = selectedTask {
+            if let task = selectedTask, task.isLive {
                 ChatPanelView(
                     taskQueue: taskQueue,
                     workspace: task.workspace ?? effectiveWorkspace,
