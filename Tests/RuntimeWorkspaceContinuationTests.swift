@@ -361,8 +361,9 @@ struct RuntimeWorkspaceContinuationTests {
         #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context) == owner)
     }
 
-    @Test("A verified SSH cancellation wakes and runs the queued instruction once with no manual start")
-    func verifiedSSHReleaseDispatches() async throws {
+    @Test("An SSH confirmation wakes and runs the queued instruction once with no manual start",
+          arguments: ["automatic", "reviewed", "legacyReviewed"])
+    func verifiedSSHReleaseDispatches(mode: String) async throws {
         // The in-memory container disables live SSH monitoring. The injected
         // observation below uses the same durable outbox and queue as the app.
         let h = try HeadlessChatHarness(); defer { h.cleanup() }
@@ -379,16 +380,20 @@ struct RuntimeWorkspaceContinuationTests {
         try first.launched(child)
         let config = try RemoteWorkspaceJobRegistration.prepare(task: a, runID: run.id, owner: first, context: h.context, connections: [])
         let jobs = RemoteWorkspaceJobStore(rootPath: config.recordRootPath)
-        let job = sshJob(task: a, owner: first.record)
+        var job = sshJob(task: a, owner: first.record)
+        let legacy = mode == "legacyReviewed"
+        job.schemaVersion = legacy ? 2 : RemoteWorkspaceJobRecord.currentSchemaVersion
+        job.status = legacy ? .unverified : .starting
+        job.remoteClock = .init(bootID: "fixture-boot", deadline: 60)
         try jobs.create(job)
         for _ in 0..<200 where child.isRunning { try await Task.sleep(for: .milliseconds(10)) }
-        first.stopped(proof: child.stopProof(executionID: first.record.executionID, toolsStopped: true, remoteWorkExcluded: true),
+        first.stopped(proof: child.stopProof(executionID: first.record.executionID, toolsStopped: !legacy, remoteWorkExcluded: !legacy),
             turns: 1, tokens: 0, seconds: 1)
         try first.beginSettlement()
         a.status = .completed; run.status = .completed; run.typedStopReason = .completed; run.completedAt = Date()
         try first.completeSettlement(localWorkStopped: true, toolsStopped: true)
         first.finish()
-        #expect(first.record.pendingSSHJobSetDigest != nil && first.record.resourcesReleased == false)
+        #expect((first.record.pendingSSHJobSetDigest != nil) == !legacy && first.record.resourcesReleased == false)
         let task = h.makeTask(runtime: .claudeCode, goal: "Answer once", model: "claude-opus-5")
         task.workspace = a.workspace
         let submission = try ExecutionRequestSubmissionService.submitInitial(for: task, into: h.context).get()
@@ -402,17 +407,26 @@ struct RuntimeWorkspaceContinuationTests {
         _ = queue.signalExecutionRequest(id: request.id, task: task, modelContext: h.context)
         for _ in 0..<200 where request.state != .waitingForResource { try await Task.sleep(for: .milliseconds(10)) }
         #expect(request.state == .waitingForResource && task.runs.isEmpty)
+        if mode != "automatic" {
+            let proposal = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: h.context, reviewSSHJobs: true)
+            try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: h.context)
+        }
         let closed = try jobs.update(jobID: job.jobID) {
-            $0.status = .cancelled; $0.cancellationRequestedAt = Date(); $0.launchFence = .cancelledBeforeStart
+            $0.status = legacy ? .unverified : .cancelled
+            $0.cancellationRequestedAt = Date()
+            $0.launchFence = legacy ? .legacySealed : .cancelledBeforeStart
             $0.lastObservation = .init(at: Date(), outcome: .reachable)
         }
         let wakeCount = TaskQueue.dispatchWakeCountForTesting
         try RemoteWorkspaceJobEventReconciler.reconcile(closed, task: a, context: h.context, store: jobs)
         #expect(TaskQueue.dispatchWakeCountForTesting > wakeCount)
-        #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context)?.resourcesReleased == true)
+        #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context)?.resourcesReleased == !legacy)
         for _ in 0..<500 where request.state.isActive { try await Task.sleep(for: .milliseconds(20)) }
         #expect(request.state == .completed && task.runs.count == 1)
         #expect(request.id == submission.requestID)
+        let successor = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(successor.workspaceContinuationRequestID == (legacy ? request.id : nil))
+        #expect((successor.inheritedToolUncertainty == true) == legacy)
         _ = await queue.cancelAllAndWait()
     }
 

@@ -180,8 +180,11 @@ enum RuntimeWorkspaceContinuation {
         guard authorization.sources.flatMap({ ($0.receipt.resourceClaims ?? []).filter { $0.resourceKind != .nativeSession } }).allSatisfy({ held in
             requested.contains { $0.resourceKind == held.resourceKind && $0.resourceKey == held.resourceKey && $0.accessMode == held.accessMode }
         }) else { throw RuntimeExecutionOwnerStore.Failure.busy }
-        return Admission(authorization: authorization, leases: try lockSources(authorization, store: store, context: context),
-            needsPersistence: savedAuthorization == nil)
+        let leases = try lockSources(authorization, store: store, context: context)
+        // A new task needs no exception once every reviewed owner has
+        // independently released its resources. Use ordinary admission.
+        if leases.isEmpty && previous == nil { return nil }
+        return Admission(authorization: authorization, leases: leases, needsPersistence: savedAuthorization == nil)
     }
 
     static func resumesPreparation(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
@@ -227,14 +230,17 @@ enum RuntimeWorkspaceContinuation {
         for source in authorization.sources {
             let saved = source.receipt
             let lease = try store.acquire(taskID: saved.taskID, taskOwnerID: saved.taskOwnerID)
-            leases.append(lease)
             let id = saved.taskID
             let candidates = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id }))
             guard let owner = candidates.first(where: { $0.persistentModelID == source.taskOwnerID }),
-                  try RuntimeTaskOwnerJournal.read(task: owner, context: context) == saved,
-                  RuntimeCompletedUserTurnContinuation.hasCompletedTurn(saved, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+                  let current = try RuntimeTaskOwnerJournal.read(task: owner, context: context),
+                  current.ownerID == saved.ownerID, current.executionID == saved.executionID, current.runID == saved.runID,
+                  RuntimeCompletedUserTurnContinuation.hasCompletedTurn(current, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+            if !savingDecision, source.reviewedSSHJobs != nil, current.resourcesReleased == true, current.canReplace { continue }
+            guard current == saved else { throw RuntimeExecutionOwnerStore.Failure.busy }
             let jobs = try RuntimeWorkspaceRemoteJobs.inventory(task: owner, owner: saved, context: context)
             try RuntimeWorkspaceRemoteJobs.check(jobs, reviewed: source.reviewedSSHJobs ?? [], savingDecision: savingDecision)
+            leases.append(lease)
         }
         return leases
     }
