@@ -1245,7 +1245,8 @@ final class AgentRuntimeWorker {
             task: task,
             run: run,
             modelContext: modelContext,
-            processExitedCleanly: result.exitCode == 0 && !result.stoppedByASTRA && !cancellationRequested
+            processExitedCleanly: result.exitCode == 0 && result.providerTurnEnded != false
+                && !result.stoppedByASTRA && !cancellationRequested
         )
         AssistantMessageRecording.recordMessageIndex(for: run, task: task, modelContext: modelContext, recordingState: recordingState)
         runtimeAdapter.recordPostProcessEvents(context: AgentRuntimePostProcessContext(

@@ -2,6 +2,8 @@ import Foundation
 import ASTRACore
 
 struct AgentProcessResult: Codable {
+    /// Plain-text launches and checkpoints from older versions have no native end-of-turn signal.
+    var providerTurnEnded: Bool?
     var executionStopProof: RuntimeExecutionStopProof?
     var executionTurnsSpent: Int?
     var executionTokensSpent: Int?

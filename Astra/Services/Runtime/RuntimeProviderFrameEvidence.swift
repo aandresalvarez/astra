@@ -1,13 +1,12 @@
 import Foundation
 import ASTRACore
 
-/// A stricter contract than the presentation parsers: projecting unfamiliar JSON
-/// as readable text must never turn it into proof that no tools were launched.
+/// Identifies native turn boundaries. Tool and subagent counters on the same
+/// frame are checked separately before it can authorize resource release.
 enum RuntimeProviderFrameEvidence {
-    enum Kind { case activity, bookkeeping, terminal, openCodeStop, uncertain }
+    enum Kind { case activity, bookkeeping, postTurnReport, terminal, terminalWithoutCleanupProof, openCodeStop, uncertain }
 
     static func classify(_ frame: [String: Any], runtime: AgentRuntimeID) -> Kind {
-        if RuntimeStreamExecutionHints.containsWork(frame) { return .uncertain }
         switch runtime {
         case .claudeCode, .cursorCLI: return claude(frame, cursor: runtime == .cursorCLI)
         case .codexCLI: return codex(frame)
@@ -25,6 +24,10 @@ enum RuntimeProviderFrameEvidence {
             switch frame["subtype"] as? String {
             case "init": return .activity
             case "status", "thinking_tokens", "post_turn_summary": return .bookkeeping
+            case "task_summary" where !cursor:
+                let keys: Set<String> = ["type", "subtype", "session_id", "uuid", "detail"]
+                return frame["detail"] is NSNull && frame["session_id"] is String
+                    && Set(frame.keys).isSubset(of: keys) ? .postTurnReport : .uncertain
             case "commands_changed": return frame["commands"] is [Any] ? .bookkeeping : .uncertain
             default: return .uncertain
             }

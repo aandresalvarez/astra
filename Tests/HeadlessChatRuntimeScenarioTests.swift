@@ -123,6 +123,7 @@ extension HeadlessChatScenarioTests {
             script: Self.copilotScript(body: """
             printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Headless Copilot response"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
+            echo '{"type":"result","exitCode":0}'
             exit 0
             """)
         )
@@ -158,6 +159,7 @@ extension HeadlessChatScenarioTests {
             printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"docs-1","success":true,"result":{"content":"ok"}}}'
             printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I am GitHub Copilot CLI running through ASTRA."}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
+            echo '{"type":"result","exitCode":0}'
             exit 0
             """,
                 argsFile: argsURL
@@ -473,6 +475,7 @@ extension HeadlessChatScenarioTests {
             script: Self.copilotScript(body: """
             printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Save this as index.html: <html><script></script></html>"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
+            echo '{"type":"result","exitCode":0}'
             exit 0
             """)
         )
@@ -505,6 +508,7 @@ extension HeadlessChatScenarioTests {
             script: Self.copilotScript(body: """
             printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Wrote .astra/tasks/9B2FC25F/index.html\\n\\nFile: .astra/tasks/9B2FC25F/index.html\\n<html></html>"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
+            echo '{"type":"result","exitCode":0}'
             exit 0
             """)
         )
@@ -576,10 +580,12 @@ extension HeadlessChatScenarioTests {
                   printf '%s\\n' '<!doctype html><html><body><h1>Masterball solver</h1><script>console.log("solver")</script></body></html>' > \(Self.shQuote(artifactURL.path))
                   printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Created the Masterball solver page at .astra/tasks/bootstrap/index.html"}}'
                   printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                  echo '{"type":"result","exitCode":0}'
                   exit 0
                 fi
                 printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I could not directly write files in this run because the available tools are read-only, so here is a ready-to-save artifact for index.html: <html></html>"}}'
                 printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                echo '{"type":"result","exitCode":0}'
                 exit 0
                 """,
                 argsFile: argsURL
@@ -695,6 +701,7 @@ extension HeadlessChatScenarioTests {
             printf '%s\\n' 'Masterball solver notes' > \(Self.shQuote(artifactURL.path))
             printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Created notes.txt with the Masterball solver summary."}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            echo '{"type":"result","exitCode":0}'
             exit 0
             """)
         )
@@ -735,6 +742,7 @@ extension HeadlessChatScenarioTests {
             printf '%s\\n' '{ invalid json' > \(Self.shQuote(artifactURL.path))
             printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Created config.json"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            echo '{"type":"result","exitCode":0}'
             exit 0
             """)
         )

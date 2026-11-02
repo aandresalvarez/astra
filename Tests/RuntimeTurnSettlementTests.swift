@@ -128,6 +128,28 @@ struct RuntimeTurnSettlementTests {
         #expect(savedTask.events.contains { $0.type == TaskEventTypes.System.runtimeReconciliationRequired.rawValue })
     }
 
+    @Test("Startup settles a partial turn without dispatching its chain")
+    func restoreInterruptedStream() async throws {
+        let fixture = try Fixture(disk: true)
+        defer { fixture.cleanup() }
+        let (run, request) = try runningTurn(fixture)
+        var result = AgentProcessResult(exitCode: 0)
+        result.providerTurnEnded = false
+        let captured = checkpoint(fixture, request: request, result: result, chain: "Send the answer")
+        #expect(!RuntimeTurnSettlementService.finishedCleanly(checkpoint: captured, taskStatus: .running))
+        try RuntimeTurnSettlementService.capture(captured, task: fixture.task, run: run, modelContext: fixture.context)
+
+        let (container, task) = try reopen(fixture)
+        let queue = TaskQueue(poolSize: 1)
+        defer { queue.cancelAll() }
+        await RuntimeTurnSettlementRecoveryService.resume(modelContext: container.mainContext, taskQueue: queue, autoExport: false)
+        let saved = try #require(task.runs.first)
+        #expect(saved.typedStopReason == .providerTurnEndMissing)
+        #expect(task.status == .pendingUser)
+        #expect(try TaskTurnRequestRepository.request(id: request.id, in: container.mainContext)?.state == .failed)
+        #expect(task.workspace?.tasks.contains { $0.chainedFromID == task.id } == false)
+    }
+
     @Test("A failed capture cannot persist a receipt alone; restart preserves authority without automatic execution")
     func failedCaptureIsNotAcknowledged() throws {
         let fixture = try Fixture(disk: true)

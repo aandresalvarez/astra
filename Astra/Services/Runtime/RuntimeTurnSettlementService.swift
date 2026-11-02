@@ -101,7 +101,7 @@ enum RuntimeTurnSettlementService {
                                 agentReportedError: Bool, overBudget: Bool) -> Bool {
         guard !cancelled, taskStatus != .cancelled else { return false }
         guard result.exitCode == 0 || result.terminatedAfterTerminalProgress else { return false }
-        guard !agentReportedError, !overBudget else { return false }
+        guard result.providerTurnEnded != false, !agentReportedError, !overBudget else { return false }
         return !result.timedOut
             && !result.policyViolation
             && !result.policyApprovalRequired

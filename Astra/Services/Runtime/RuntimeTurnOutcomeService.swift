@@ -103,6 +103,12 @@ enum RuntimeTurnOutcomeService {
                     result: result,
                     phase: auditPhase
                   ) {
+        } else if processSucceeded, result.providerTurnEnded == false, !checkpoint.agentReportedError {
+            run.status = .failed
+            run.typedStopReason = .providerTurnEndMissing
+            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
+            let message = "\(runtimeAdapter.descriptor.displayName) exited before confirming the end of its turn. ASTRA saved the available work. Review it before continuing."
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: message, run: run))
         } else if processSucceeded {
             run.status = .completed
             run.typedStopReason = .completed

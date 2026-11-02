@@ -34,6 +34,7 @@ struct CopilotSessionDiscoveryWorkerTests {
         printf '%s\\n' '{"type":"user.message","data":{"content":"Task thread: \(source.id.uuidString)"}}' > \(HeadlessChatScenarioTests.shQuoteSandboxPath(sessionDirectory.appendingPathComponent("events.jsonl").path))
         printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Saved result"}}'
         printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":4},"duration_ms":10,"turns":1}'
+        echo '{"type":"result","exitCode":0}'
         exit 0
         """))
         let worker = AgentRuntimeWorker.scenarioWorker(processRunner: CopilotSessionDiscoveryProcessRunner(home: h.rootURL.path))

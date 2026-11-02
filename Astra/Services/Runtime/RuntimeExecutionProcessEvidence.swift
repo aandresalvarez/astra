@@ -29,17 +29,29 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
     func observeFrame(_ line: String, parsesJSONLines: Bool, events: [ParsedEvent]) {
         guard parsesJSONLines, !events.isEmpty,
               let frame = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else {
-            lock.withLock { toolsOrUnknownExecution = true }
+            lock.withLock {
+                toolsOrUnknownExecution = true
+                terminalFrameSeen = false
+                openCodeStopSeen = false
+            }
             return
         }
         let kind = RuntimeProviderFrameEvidence.classify(frame, runtime: runtime)
+        let containsWork = RuntimeStreamExecutionHints.containsWork(frame)
         lock.withLock {
-            if events.contains(where: Self.uncertain) { toolsOrUnknownExecution = true }
+            if containsWork || events.contains(where: Self.uncertain) { toolsOrUnknownExecution = true }
             switch kind {
-            case .uncertain: toolsOrUnknownExecution = true
+            case .uncertain:
+                toolsOrUnknownExecution = true
+                terminalFrameSeen = false
+                openCodeStopSeen = false
             case .activity: terminalFrameSeen = false; openCodeStopSeen = false
             case .bookkeeping: break
+            case .postTurnReport: toolsOrUnknownExecution = true
             case .terminal: terminalFrameSeen = true
+            case .terminalWithoutCleanupProof:
+                terminalFrameSeen = true
+                toolsOrUnknownExecution = true
             case .openCodeStop: openCodeStopSeen = true
             }
         }
@@ -50,7 +62,10 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
     /// promote the step, even if a SIGTERM handler chooses exit code zero.
     func processExited(naturally: Bool, stdoutEOF: Bool) {
         lock.withLock {
-            if !stdoutEOF { toolsOrUnknownExecution = true }
+            if !stdoutEOF {
+                toolsOrUnknownExecution = true
+                terminalFrameSeen = false
+            }
             if runtime == .openCodeCLI { terminalFrameSeen = naturally && stdoutEOF && openCodeStopSeen }
         }
     }
@@ -63,5 +78,7 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
         }
     }
 
+    /// A terminal response can coexist with an unverified tool or external job.
+    var providerTurnEnded: Bool { lock.withLock { terminalFrameSeen } }
     var toolsStopped: Bool { lock.withLock { terminalFrameSeen && !toolsOrUnknownExecution } }
 }

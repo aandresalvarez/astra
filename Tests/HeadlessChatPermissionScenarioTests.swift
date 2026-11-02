@@ -18,6 +18,7 @@ extension HeadlessChatScenarioTests {
             printf '%s\\n' '{"type":"event","data":{"type":"permission_request","toolName":"Bash","message":"approval needed for Bash"}}'
             printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Recovered after the warning"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            echo '{"type":"result","exitCode":0}'
             exit 0
             """)
         )
@@ -200,6 +201,7 @@ extension HeadlessChatScenarioTests {
                 if [ "$allowed_write" = "1" ]; then
                   printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Wrote the approved story"}}'
                   printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                  echo '{"type":"result","exitCode":0}'
                   exit 0
                 fi
                 printf '%s\\n' '● I will write the story to the task folder.'
@@ -344,6 +346,7 @@ extension HeadlessChatScenarioTests {
                   && ! printf '%s\\n' "$@" | grep -Fxq -- 'shell(echo:*)'; then
                   printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Reviewed open PRs after repaired approval"}}'
                   printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                  echo '{"type":"result","exitCode":0}'
                   exit 0
                 fi
                 printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
@@ -442,6 +445,7 @@ extension HeadlessChatScenarioTests {
                   && ! printf '%s\\n' "$@" | grep -Fq -- 'Original blocked user request: who are you?'; then
                   printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Reviewed open PRs after preserving blocked request"}}'
                   printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                  echo '{"type":"result","exitCode":0}'
                   exit 0
                 fi
                 printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
@@ -532,6 +536,7 @@ extension HeadlessChatScenarioTests {
                   && ! printf '%s\\n' "$@" | grep -Fxq -- 'shell(gh:*)'; then
                   printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Reviewed open PRs after task-scoped approval"}}'
                   printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+                  echo '{"type":"result","exitCode":0}'
                   exit 0
                 fi
                 printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'

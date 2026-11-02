@@ -162,6 +162,7 @@ extension HeadlessChatScenarioTests {
             printf 'launched\\n' > '\(launchMarker.path)'
             printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Warning mode still runs"}}'
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":30,"output_tokens":15},"duration_ms":10,"turns":1}'
+            echo '{"type":"result","exitCode":0}'
             exit 0
             """)
         )

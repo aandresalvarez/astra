@@ -1241,6 +1241,9 @@ final class AgentRuntimeProcessRunner {
                     readOnlyBoundaryEvidence: plan.readOnlyBoundaryReceipt?.evidence
                 )
                 processEvidence.processExited(naturally: proc.naturalSuccessfulExit, stdoutEOF: stdoutEOF)
+                if plan.parsesJSONLines {
+                    processResult.providerTurnEnded = processEvidence.providerTurnEnded
+                }
                 processResult.executionStopProof = proc.stopProof(executionID: executionID,
                     toolsStopped: processEvidence.toolsStopped,
                     remoteWorkExcluded: remoteWorkExcluded ||

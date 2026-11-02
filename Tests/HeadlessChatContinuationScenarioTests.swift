@@ -786,7 +786,7 @@ extension HeadlessChatScenarioTests {
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor handled GitHub through the ASTRA CLI relay'
+            echo '{"type":"result","subtype":"success","is_error":false,"result":"Cursor handled GitHub through the ASTRA CLI relay"}'
             exit 0
             """
         )
@@ -846,7 +846,7 @@ extension HeadlessChatScenarioTests {
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor handled Jira through the ASTRA CLI relay'
+            echo '{"type":"result","subtype":"success","is_error":false,"result":"Cursor handled Jira through the ASTRA CLI relay"}'
             exit 0
             """
         )
@@ -976,7 +976,7 @@ extension HeadlessChatScenarioTests {
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor handled generic work'
+            echo '{"type":"result","subtype":"success","is_error":false,"result":"Cursor handled generic work"}'
             exit 0
             """
         )
@@ -1010,7 +1010,7 @@ extension HeadlessChatScenarioTests {
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor handled GitHub'
+            echo '{"type":"result","subtype":"success","is_error":false,"result":"Cursor handled GitHub"}'
             exit 0
             """
         )
@@ -1068,7 +1068,7 @@ extension HeadlessChatScenarioTests {
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor handled GitHub'
+            echo '{"type":"result","subtype":"success","is_error":false,"result":"Cursor handled GitHub"}'
             exit 0
             """
         )
@@ -1124,7 +1124,7 @@ extension HeadlessChatScenarioTests {
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor GitHub answer'
+            echo '{"type":"result","subtype":"success","is_error":false,"result":"Cursor GitHub answer"}'
             exit 0
             """
         )
@@ -1199,7 +1199,7 @@ extension HeadlessChatScenarioTests {
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor handled explicit GitHub work'
+            echo '{"type":"result","subtype":"success","is_error":false,"result":"Cursor handled explicit GitHub work"}'
             exit 0
             """
         )

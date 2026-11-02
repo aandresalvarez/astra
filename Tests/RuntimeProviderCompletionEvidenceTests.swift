@@ -17,6 +17,49 @@ struct RuntimeProviderCompletionEvidenceTests {
         #expect(events.contains { if case .usage = $0 { true } else { false } })
     }
 
+    @Test("A provider's result can end its turn without granting tool cleanup")
+    func terminalWithToolUsage() {
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .claudeCode)
+        let result = #"{"type":"result","is_error":false,"result":"Finished","usage":{"server_tool_use":{"web_search_requests":1}}}"#
+        observe(result, runtime: .claudeCode, evidence: evidence)
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(evidence.providerTurnEnded)
+        #expect(!evidence.toolsStopped)
+    }
+
+    @Test("Copilot result envelopes without a session receipt can finish the turn only")
+    func copilotSummaryWithoutSession() {
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .copilotCLI)
+        observe(#"{"type":"result","data":{"usage":{"input_tokens":4,"output_tokens":5}}}"#, runtime: .copilotCLI, evidence: evidence)
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(evidence.providerTurnEnded)
+        #expect(!evidence.toolsStopped)
+    }
+
+    @Test("A complete captured provider exchange keeps its verdict after trailing metadata",
+          arguments: ProviderStreamFixture.all.filter { $0.scenario == "answer-write-signoff" })
+    func capturedTurnEnd(fixture: ProviderStreamFixture) throws {
+        let evidence = RuntimeExecutionProcessEvidence(runtime: fixture.runtime)
+        for line in try fixture.frameLines() {
+            observe(line, runtime: fixture.runtime, evidence: evidence)
+        }
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(evidence.providerTurnEnded)
+    }
+
+    @Test("A native ending cannot attest to a turn after a truncated next frame", arguments: [
+        (AgentRuntimeID.codexCLI, #"{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":1}}"#),
+        (.openCodeCLI, #"{"type":"step_finish","sessionID":"s","part":{"type":"step-finish","sessionID":"s","id":"f","messageID":"m","reason":"stop"}}"#)
+    ])
+    func truncatedTail(runtime: AgentRuntimeID, stop: String) {
+        let evidence = RuntimeExecutionProcessEvidence(runtime: runtime)
+        observe(stop, runtime: runtime, evidence: evidence)
+        observe(#"{"type":"unfinished"#, runtime: runtime, evidence: evidence)
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(!evidence.providerTurnEnded)
+        #expect(!evidence.toolsStopped)
+    }
+
     @Test("Copilot text cannot hide tool requests or unknown execution", arguments: [
         #"{"type":"assistant.message","data":{"content":"Working","toolRequests":[{"toolCallId":"call","name":"bash","arguments":{"command":"sleep 300 &"}}]}}"#,
         #"{"type":"future.remote_execution","content":"Looks like ordinary text"}"#

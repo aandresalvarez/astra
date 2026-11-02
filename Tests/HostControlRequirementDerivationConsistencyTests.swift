@@ -615,7 +615,7 @@ struct HostControlRequirementDerivationConsistencyTests {
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor GitHub answer'
+            echo '{"type":"result","subtype":"success","is_error":false,"result":"Cursor GitHub answer"}'
             exit 0
             """
         )
@@ -688,7 +688,7 @@ struct HostControlRequirementDerivationConsistencyTests {
         let cursorPath = try harness.writeExecutable(
             named: "cursor-agent",
             script: """
-            printf '%s\\n' 'Cursor resumed GitHub work'
+            echo '{"type":"result","subtype":"success","is_error":false,"result":"Cursor resumed GitHub work"}'
             exit 0
             """
         )
