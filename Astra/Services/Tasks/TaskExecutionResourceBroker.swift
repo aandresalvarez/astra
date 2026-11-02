@@ -25,10 +25,17 @@ enum TaskExecutionResourceBroker {
         runMode: String
     ) -> [TaskResourceLockClaim] {
         var normalized: [ResourceIdentity: TaskExecutionResourceAccess] = [:]
+        var liveReaders = Set<ResourceIdentity>()
+        var stableReaders = Set<ResourceIdentity>()
         for claim in claims {
             let identity = ResourceIdentity(kind: claim.kind, key: canonicalKey(for: claim))
             let existing = normalized[identity]
             normalized[identity] = existing == .exclusive || claim.access == .exclusive ? .exclusive : .shared
+            if claim.kind == .workspace, claim.access == .shared, claim.readConsistency == .live {
+                liveReaders.insert(identity)
+            } else {
+                stableReaders.insert(identity)
+            }
         }
         return normalized.map { identity, access in
             TaskResourceLockClaim(
@@ -37,7 +44,8 @@ enum TaskExecutionResourceBroker {
                 accessMode: access == .shared ? .readOnly : .write,
                 runMode: runMode,
                 resourceKind: identity.kind,
-                requestID: requestID
+                requestID: requestID,
+                readConsistency: liveReaders.contains(identity) && !stableReaders.contains(identity) ? .live : nil
             )
         }
         .sorted(by: claimOrder)
@@ -64,11 +72,13 @@ enum TaskExecutionResourceBroker {
 
     static func conflicts(_ existing: TaskResourceLockClaim, _ requested: TaskResourceLockClaim) -> Bool {
         guard identitiesOverlap(existing, requested) else { return false }
+        if existing.isLiveWorkspaceReader || requested.isLiveWorkspaceReader { return false }
         return existing.accessMode == .write || requested.accessMode == .write
     }
 
     static func claimsCompete(_ earlier: TaskResourceLockClaim, _ later: TaskResourceLockClaim) -> Bool {
         guard identitiesOverlap(earlier, later) else { return false }
+        if earlier.isLiveWorkspaceReader || later.isLiveWorkspaceReader { return false }
         return earlier.accessMode == .write || later.accessMode == .write
     }
 

@@ -125,6 +125,12 @@ public enum TaskExecutionResourceAccess: String, Codable, CaseIterable, Sendable
     case exclusive
 }
 
+/// A live reader accepts that another task may change files during its read.
+/// Missing values preserve the original stable-reader/exclusive-writer policy.
+public enum TaskResourceReadConsistency: String, Codable, Sendable {
+    case live
+}
+
 /// An immutable admission claim. Multiple claims allow the scheduler to admit
 /// unrelated work instead of collapsing all safety decisions into one
 /// workspace-wide write lock.
@@ -132,11 +138,14 @@ public struct TaskExecutionResourceClaim: Codable, Equatable, Hashable, Sendable
     public let kind: TaskExecutionResourceKind
     public let key: String
     public let access: TaskExecutionResourceAccess
+    public let readConsistency: TaskResourceReadConsistency?
 
-    public init(kind: TaskExecutionResourceKind, key: String, access: TaskExecutionResourceAccess) {
+    public init(kind: TaskExecutionResourceKind, key: String, access: TaskExecutionResourceAccess,
+                readConsistency: TaskResourceReadConsistency? = nil) {
         self.kind = kind
         self.key = key
         self.access = access
+        self.readConsistency = readConsistency
     }
 }
 

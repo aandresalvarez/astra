@@ -768,6 +768,10 @@ final class AgentRuntimeWorker {
             repositoryStatus: githubRepositoryStatus
         )
         var prompt = runEnvironment.appendingReadOnlyInputGuidance(to: readinessPrompt)
+        if executionWorkspaceAccess == .shared,
+           turnBegin.request?.resourceClaims.contains(where: { $0.kind == .workspace && $0.readConsistency == .live }) == true {
+            prompt += "\n\n" + TaskWorkspaceConsultationPolicy.providerGuidance
+        }
         var launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: executionTask,
             runID: run.id,
@@ -781,6 +785,9 @@ final class AgentRuntimeWorker {
             runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
             permissionPolicy: launchPermissionPolicy,
             workspaceAccess: executionWorkspaceAccess,
+            requiresWorkspaceConsultation: turnBegin.request?.resourceClaims.contains(where: {
+                $0.kind == .workspace && $0.readConsistency == .live
+            }) == true,
             admittedWritableGitMetadataRoots: TaskExecutionResourceClaimResolver
                 .admittedWritableGitMetadataRoots(for: turnBegin.request, task: launchTask),
             // appliedRuntime.requirements is already resolved above (~line 528),

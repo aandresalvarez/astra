@@ -111,6 +111,7 @@ struct AppSemanticFitnessTests {
             "plan.user.message": .conversation,
             "recap.result": .system,
             "resource.lock.acquired": .lifecycle,
+            "resource.lock.consultation_selected": .lifecycle,
             "resource.lock.released": .lifecycle,
             "resource.lock.requested": .lifecycle,
             "resource.lock.waiting": .lifecycle,

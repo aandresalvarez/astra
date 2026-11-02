@@ -102,6 +102,7 @@ struct ChatPanelView: View {
     @State private var slashSelectedIndex: Int = 0
     @State private var activeSlashContext: String?
     @State private var isPlanMode = false
+    @State private var isConsultationMode = false
     @State private var pendingPlan: TaskPlanPayload?
     // In-flight planning chat round-trips. Cancelled in `.onDisappear` so a dismissed composer
     // tears down the utility LLM subprocess instead of running it to completion for an assistant
@@ -1073,13 +1074,14 @@ struct ChatPanelView: View {
                     useAgentTeam: $useAgentTeam,
                     teamSize: $teamSize,
                     isPlanMode: goalModeBinding,
-                    isPlanModeDisabled: isSlashCommandInput,
-                    planModeHelp: goalModeHelpText,
+                    isPlanModeDisabled: isSlashCommandInput || isConsultationMode,
+                    planModeHelp: isConsultationMode ? "Choose Work to use Goal Mode." : goalModeHelpText,
                     onPolicyLevelChange: { level in
                         if let draftTask {
                             recordPolicySelection(on: draftTask, level: level, source: "new_task_composer")
                         }
                     },
+                    consultationMode: consultationModeBinding,
                     submitIcon: submitButtonIcon,
                     submitTitle: submitButtonTitle,
                     submitColor: submitButtonColor,
@@ -1417,6 +1419,7 @@ struct ChatPanelView: View {
             runtime: runtime
         )
         task.inputs = attachedFiles
+        TaskWorkspaceConsultationPolicy.apply(isConsultationMode, to: task)
         task.skills = AgentTask.storableSkills(taskSkills, in: task.workspace)
         TaskCapabilitySnapshotter.capture(for: task)
         task.useAgentTeam = useAgentTeam
@@ -1641,6 +1644,7 @@ struct ChatPanelView: View {
         )
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
+        TaskWorkspaceConsultationPolicy.apply(isConsultationMode, to: task)
         task.acceptanceCriteria = spec.acceptanceCriteria
         task.skills = AgentTask.storableSkills(taskSkills, in: task.workspace)
         TaskCapabilitySnapshotter.capture(for: task)
@@ -2178,6 +2182,7 @@ struct ChatPanelView: View {
                 composerFlagged: composerRuntimeExplicitlySelected
             )
             draft.inputs = ComposerAttachments.inputs(draft.inputs, replacingPathsWith: attachedFiles)
+            TaskWorkspaceConsultationPolicy.apply(isConsultationMode, to: draft)
             draft.skills = AgentTask.storableSkills(scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles), in: draft.workspace)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
@@ -2226,6 +2231,7 @@ struct ChatPanelView: View {
             draft.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
             draft.draftMessages = json
             draft.inputs = attachedFiles
+            TaskWorkspaceConsultationPolicy.apply(isConsultationMode, to: draft)
             draft.skills = AgentTask.storableSkills(scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles), in: draft.workspace)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
@@ -2310,7 +2316,20 @@ struct ChatPanelView: View {
         """
     }
 
+    private var consultationModeBinding: Binding<Bool> {
+        Binding(get: { isConsultationMode }, set: { enabled in
+            submissionIntent.cancel()
+            if let draftTask {
+                TaskWorkspaceConsultationPolicy.select(enabled, for: draftTask, in: modelContext)
+                isConsultationMode = TaskWorkspaceConsultationPolicy.isEnabled(for: draftTask)
+            } else {
+                isConsultationMode = enabled
+            }
+        })
+    }
+
     private func loadDraftMessages(_ task: AgentTask) {
+        isConsultationMode = TaskWorkspaceConsultationPolicy.isEnabled(for: task)
         // Adopt this draft's own persisted runtime pick and chips, not whatever this view held before.
         composerRuntimeExplicitlySelected = task.runtimeExplicitlySelected
         attachedFiles = ComposerAttachments.paths(in: task.inputs)
@@ -2321,7 +2340,7 @@ struct ChatPanelView: View {
            let decoded = try? JSONDecoder().decode([DraftChatMessagePayload].self, from: data) {
             messages = decoded.map { ChatMessage(role: $0.role, content: $0.content) }
             draftTask = task
-            isPlanMode = true
+            isPlanMode = !isConsultationMode
             return
         }
 
@@ -2340,7 +2359,7 @@ struct ChatPanelView: View {
         }
         if !restored.isEmpty {
             messages = restored
-            isPlanMode = true
+            isPlanMode = !isConsultationMode
         }
         draftTask = task
     }

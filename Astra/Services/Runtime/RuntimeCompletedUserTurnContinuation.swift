@@ -151,7 +151,7 @@ enum RuntimeCompletedUserTurnContinuation {
         let inherited = (prior.resourceClaims ?? []).filter { $0.resourceKind != .nativeSession }
         let claims = (inherited + additional).map {
             TaskExecutionResourceClaim(kind: $0.resourceKind, key: $0.resourceKey,
-                access: $0.accessMode == .write ? .exclusive : .shared)
+                access: $0.accessMode == .write ? .exclusive : .shared, readConsistency: $0.readConsistency)
         }
         return TaskExecutionResourceBroker.lockClaims(for: claims, taskID: prior.taskID,
             requestID: requestID, runMode: "user_continuation")

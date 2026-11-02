@@ -32,7 +32,8 @@ enum TaskResourceLockEventRecorder {
             holderTaskID: holder,
             reason: reason,
             resourceKind: claim.resourceKind,
-            requestID: claim.requestID
+            requestID: claim.requestID,
+            readConsistency: claim.readConsistency
         )
         if let modelContext {
             modelContext.insert(TaskEvent(task: task, type: type, payload: encode(payload)))

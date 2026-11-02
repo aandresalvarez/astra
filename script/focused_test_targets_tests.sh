@@ -16,6 +16,10 @@ assert_targets() {
   fi
 }
 
+assert_targets "WorkspaceConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests" \
+  "Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift" \
+  "Tests/WorkspaceConsultationTests.swift"
+
 assert_targets "TaskDecisionOutcomeRefreshTests|TaskDecisionOutcomeColdRefreshTests|TaskDeliverableFollowUpTests|TaskDecisionDock|TaskMainActorScalingGateTests" \
   "Astra/Views/TaskDecisionOutcomeRefresh.swift" \
   "Tests/TaskDecisionOutcomeRefreshTests.swift" \

@@ -178,6 +178,7 @@ public enum TaskEventTypes {
     }
 
     public enum ResourceLock {
+        public static let consultationSelected: TaskEventType = "resource.lock.consultation_selected"
         public static let requested: TaskEventType = "resource.lock.requested"
         public static let waiting: TaskEventType = "resource.lock.waiting"
         public static let acquired: TaskEventType = "resource.lock.acquired"
@@ -296,6 +297,7 @@ public enum TaskEventTypes {
         Corrective.taskCreated,
         Objective.assessmentChanged,
         ResourceLock.requested,
+        ResourceLock.consultationSelected,
         ResourceLock.waiting,
         ResourceLock.acquired,
         ResourceLock.released,

@@ -4133,7 +4133,9 @@ struct TaskMainView: View {
             useAgentTeam: .constant(false),
             teamSize: .constant(3),
             isPlanMode: $isPlanMode,
-            planModeHelp: "Turn on Goal Mode to refine the task goal before resuming",
+            isPlanModeDisabled: TaskWorkspaceConsultationPolicy.isEnabled(for: task),
+            planModeHelp: TaskWorkspaceConsultationPolicy.isEnabled(for: task)
+                ? "Choose Work to use Goal Mode." : "Turn on Goal Mode to refine the task goal before resuming",
             onPolicyLevelChange: { level in
                 TaskPolicyStore.recordSelection(
                     level: level,
@@ -4144,6 +4146,11 @@ struct TaskMainView: View {
                 task.updatedAt = Date()
                 WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             },
+            consultationMode: Binding(
+                get: { TaskWorkspaceConsultationPolicy.isEnabled(for: task) },
+                set: selectWorkspaceConsultation
+            ),
+            consultationModeDisabled: task.status == .queued,
             showSecurityGate: true,
             sshConnections: sshConnections
         )
@@ -4780,6 +4787,11 @@ struct TaskMainView: View {
         ))
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
+    }
+
+    private func selectWorkspaceConsultation(_ enabled: Bool) {
+        composerDraft.submissionIntent.cancel()
+        TaskWorkspaceConsultationPolicy.select(enabled, for: task, in: modelContext)
     }
 
     private func sendConversationMessage(_ msg: String, attachmentPaths: [String]) {

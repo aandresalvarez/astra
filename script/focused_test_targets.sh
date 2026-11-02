@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift|Tests/WorkspaceConsultationTests.swift)
+      add_target "WorkspaceConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Runtime/RuntimeNativeSessionOwnership.swift|Tests/RuntimeNativeSessionOwnership*Tests.swift)
       add_target "RuntimeNativeSessionOwnershipTests|AgentRuntimeAsyncWorkTests|AgentProcessResultTests"
       ;;

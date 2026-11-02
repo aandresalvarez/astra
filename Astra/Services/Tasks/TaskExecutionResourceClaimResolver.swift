@@ -16,7 +16,11 @@ enum TaskExecutionResourceClaimResolver {
         // Workspace claims stay first: `workspaceClaim(for:task:)` and the
         // drift check both treat the leading claim as the canonical boundary.
         let workspaceClaims = keys.map {
-            TaskExecutionResourceClaim(kind: .workspace, key: $0, access: access)
+            TaskExecutionResourceClaim(kind: .workspace, key: $0, access: access,
+                // Preserve the accepted consultation intent even when an
+                // intrinsic workflow needs an exclusive lease. Launch must
+                // reject that combination rather than grant provider writes.
+                readConsistency: TaskWorkspaceConsultationPolicy.isEnabled(for: task) ? .live : nil)
         }
         let readOnlyClaims = readOnlyWorkspaceKeys(for: task).map {
             TaskExecutionResourceClaim(kind: .workspace, key: $0, access: .shared)
