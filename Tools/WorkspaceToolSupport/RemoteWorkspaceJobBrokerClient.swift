@@ -47,7 +47,7 @@ public enum RemoteWorkspaceJobBrokerClient {
                 let result = SSHRemoteWorkspaceJobTransport(sshExecutable: configuration.sshExecutable).run(
                     connection: connection, script: RemoteWorkspaceJobScripts.start(jobID: record.jobID,
                         command: record.command, timeoutSeconds: record.timeoutSeconds, nonce: nonce, clock: remoteClock), timeoutSeconds: 90)
-                if result.exitCode != 0 || result.timedOut {
+                if result.timedOut || (result.exitCode != 0 && result.exitCode != RemoteWorkspaceJobScripts.existingJobExitCode) {
                     return .init(exitCode: 1, stdout: "remote_job_id: \(record.jobID)\nstatus: unverified\n",
                         stderr: "The launch reply is uncertain. ASTRA is checking the existing job; do not repeat the remote command. \(result.stderr)\n")
                 }

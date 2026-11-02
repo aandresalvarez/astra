@@ -169,7 +169,16 @@ final class TaskQueue {
             return storeSession
         }
         refreshResourceOwnership(in: modelContext)
-        let session = TaskQueueStoreSession(modelContext: modelContext)
+        let session = TaskQueueStoreSession(modelContext: modelContext) { [weak self, weak modelContext] in
+            guard let self, let modelContext, let session = self.storeSession, session.matches(modelContext),
+                  !self.isStopping else { return }
+            self.refreshResourceOwnership(in: modelContext)
+            self.wakeAllTurnAdmissionWaiters()
+            self.wakeDispatchWaiters()
+            if !self.hasProcessingLoop, (try? TaskTurnRequestRepository.allActiveRequests(in: modelContext))?.contains(where: { $0.state == .waitingForResource }) == true {
+                _ = self.startProcessing(storeSession: session)
+            }
+        }
         storeSession = session
         return session
     }

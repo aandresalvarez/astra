@@ -48,6 +48,12 @@ The host requires Python 3.9 or later, `clock_gettime(CLOCK_MONOTONIC)`, and a u
 an outer supervisor plus an anchored process group. The supervisor tracks the
 command and ordinary children even when the original shell exits first.
 
+Version 3 reserves the job directory and records a launch ticket while sampling
+the host clock, before the broker hands the launcher a job ID. Start and cancel
+lock the same nonce file and atomically decide the ticket. If cancellation wins,
+even a delayed launcher cannot execute the command. If start wins, cancellation
+and status follow the supervisor and its recorded result.
+
 Cancellation is saved locally before SSH. The probe writes a nonce-bound cancel
 request in the admitted job directory. Only the original live scope signals its
 own process group: TERM first, then KILL after a grace interval even if children
@@ -111,6 +117,15 @@ The task's Remote jobs panel shows the observed status, last successful check,
 connection errors, cancellation pending, bounded output and why the workspace
 remains reserved. Check now, Read output and Cancel job use the same service.
 Stopping the task also requests cancellation of registered remote jobs.
+
+After an SSH transition is saved, the queue checks its waiting requests again.
+A host receipt proving cancellation before launch can release an otherwise
+fully settled owner when it accounts for every registered job. Direct SSH
+commands and inherited tool uncertainty require separate evidence. A user may
+authorize one waiting request to continue after its listed jobs finish. For
+older jobs without a result or prior evidence of a launch, the host must first
+block the original launcher and check for its supervisor. This decision applies
+only to the reviewed request and preserves the previous owner's history.
 
 Every admission/status/cancellation transition is kept in a durable outbox in
 the protected job record. The monitor reconciles it to typed task events with a

@@ -102,8 +102,14 @@ public struct RemoteWorkspaceJobObservation: Codable, Equatable, Sendable {
     }
 }
 
+public enum RemoteWorkspaceJobLaunchFence: String, Codable, Sendable {
+    case cancelledBeforeStart = "cancel"
+    /// A v2 launcher now cannot win its mkdir. Earlier activity is unknown.
+    case legacySealed = "legacy_sealed"
+}
+
 public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public var schemaVersion: Int
     public var jobID: String
@@ -136,7 +142,15 @@ public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
     public var connectionArguments: [String]?
     public var cancellationRequestedAt: Date?
     public var remoteClock: RemoteWorkspaceJobClock.Reference?
+    public var launchFence: RemoteWorkspaceJobLaunchFence?
     public var pendingTransitions: [RemoteWorkspaceJobTransition]?
+
+    var legacyCancellationBootID: String? {
+        guard schemaVersion == 2, cancellationRequestedAt != nil, !status.isTerminal,
+              launch == nil, exitCode == nil, stdoutBytes == nil, stderrBytes == nil,
+              remoteClock?.clockDomain == RemoteWorkspaceJobClock.domain else { return nil }
+        return remoteClock?.bootID
+    }
 
     /// POSIX process groups cannot contain tools which detach or start work on
     /// another host. Observations never grant the execution owner's stop proof.
@@ -191,6 +205,7 @@ public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
                 lastOutputAt = latest
             }
             status = derived.status
+            launchFence = derived.launchFence
             exitCode = derived.exitCode
             completedAt = derived.completedAt ?? (derived.status.isTerminal ? at : nil)
             message = derived.message
@@ -225,6 +240,7 @@ public struct RemoteWorkspaceJobDerivedState: Equatable, Sendable {
     public var exitCode: Int32?
     public var completedAt: Date?
     public var message: String?
+    public var launchFence: RemoteWorkspaceJobLaunchFence?
 
     public init(status: RemoteWorkspaceJobStatus, exitCode: Int32? = nil, completedAt: Date? = nil, message: String? = nil) {
         self.status = status
@@ -238,6 +254,8 @@ public struct RemoteWorkspaceJobDerivedState: Equatable, Sendable {
 public struct RemoteWorkspaceJobHostSnapshot: Equatable, Sendable {
     public var jobID: String? = nil
     public var nonce: String? = nil
+    public var launchFence: RemoteWorkspaceJobLaunchFence? = nil
+    public var fencedAt: Date? = nil
     public var directoryPresent: Bool
     public var hostBootID: String?
     public var evidence: RemoteWorkspaceJobLaunchEvidence?
@@ -322,6 +340,14 @@ public struct RemoteWorkspaceJobHostSnapshot: Equatable, Sendable {
         } else if fields["result"] != nil {
             return nil
         }
+        if let fence = fields["launch_fence"] {
+            guard let value = RemoteWorkspaceJobLaunchFence(rawValue: fence),
+                  let date = fields["fenced_at"].flatMap(isoDate), snapshot.directoryPresent,
+                  snapshot.evidence == nil, snapshot.resultStatus == nil,
+                  !snapshot.pidAlive, !snapshot.supervisorAlive else { return nil }
+            snapshot.launchFence = value
+            snapshot.fencedAt = date
+        }
         return snapshot
     }
 
@@ -350,6 +376,29 @@ public enum RemoteWorkspaceJobStatusDerivation {
         now: Date
     ) -> RemoteWorkspaceJobDerivedState {
         let withinLaunchGrace = now.timeIntervalSince(record.createdAt) < launchGraceSeconds
+        if let fence = snapshot.launchFence {
+            guard record.cancellationRequestedAt != nil, record.launch == nil,
+                  record.exitCode == nil, record.stdoutBytes == nil, record.stderrBytes == nil,
+                  snapshot.jobID == record.jobID, snapshot.nonce == record.launchNonce,
+                  let clock = record.remoteClock, clock.clockDomain == RemoteWorkspaceJobClock.domain,
+                  snapshot.hostBootID == clock.bootID, snapshot.directoryPresent,
+                  snapshot.evidence == nil, !snapshot.pidAlive, !snapshot.supervisorAlive,
+                  snapshot.resultStatus == nil, snapshot.stdoutBytes == nil, snapshot.stderrBytes == nil,
+                  let fencedAt = snapshot.fencedAt else {
+                return unverified("The SSH cancellation receipt does not match the original launch.")
+            }
+            var result: RemoteWorkspaceJobDerivedState
+            switch fence {
+            case .cancelledBeforeStart where record.schemaVersion == 3:
+                result = .init(status: .cancelled, completedAt: fencedAt, message: "The host cancelled this job before its command started.")
+            case .legacySealed where record.legacyCancellationBootID != nil:
+                result = unverified("The host blocked a delayed launch and found no matching supervisor. This older job has no execution result.")
+            default:
+                return unverified("The SSH cancellation receipt belongs to a different launch protocol.")
+            }
+            result.launchFence = fence
+            return result
+        }
         guard snapshot.directoryPresent else {
             guard record.launch == nil else {
                 return unverified("The job directory is missing. Earlier work may still be running; its reservation is preserved.")

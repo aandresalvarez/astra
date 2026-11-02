@@ -193,6 +193,12 @@ extension TaskQueue {
         }
         let holders = (try? resourceOwnershipStore?.records())?.filter { $0.resourceClaims?.contains(conflict.holder) == true } ?? []
         let holder = holders.count == 1 ? holders.first : nil
+        if let holder, holder.state == .finished, let ownerID = holder.taskOwnerID,
+           let owner = modelContext.model(for: ownerID) as? AgentTask {
+            let jobs = RemoteWorkspaceJobMonitor.shared.presentation(task: owner, context: modelContext).jobs
+                .filter { !$0.status.isTerminal }
+            if !jobs.isEmpty { return WorkspaceSSHWait.summary(jobs.map(\.jobID)) }
+        }
         let awaitingCleanup = holder == nil || holder?.cancellationRequested == true
             || holder?.state == .unverified || holder?.appProcess.presence != .present
             || (holder?.state == .finished && holder?.canReplace != true)

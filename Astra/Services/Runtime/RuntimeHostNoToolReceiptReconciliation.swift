@@ -40,8 +40,8 @@ enum RuntimeHostNoToolReceiptReconciliation {
     /// task lease. Live workers, unreadable receipts and uncertain tools stay fenced.
     static func reconcile(in store: RuntimeExecutionOwnerStore, context: ModelContext) throws {
         let candidates = try store.records().filter {
-            $0.state == .finished && $0.resourcesReleased == false && $0.stopProof?.remoteWorkExcluded == false
-                && $0.stopProof?.toolsStopped == true
+            $0.state == .finished && $0.resourcesReleased == false && $0.stopProof?.toolsStopped == true
+                && ($0.stopProof?.remoteWorkExcluded == false || $0.pendingSSHJobSetDigest != nil)
         }
         guard !candidates.isEmpty else { return }
         let admission: RuntimeExecutionOwnerStore.Lease
@@ -50,13 +50,31 @@ enum RuntimeHostNoToolReceiptReconciliation {
         defer { withExtendedLifetime(admission) {} }
         for candidate in candidates {
             let lease: RuntimeExecutionOwnerStore.Lease
-            do { lease = try store.acquire(taskID: candidate.taskID) }
+            let legacy = try store.read(taskID: candidate.taskID) == candidate
+            do { lease = try store.acquire(taskID: candidate.taskID, taskOwnerID: legacy ? nil : candidate.taskOwnerID) }
             catch RuntimeExecutionOwnerStore.Failure.busy { continue }
             defer { withExtendedLifetime(lease) {} }
             let taskID = candidate.taskID
             let tasks = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
-            guard tasks.count == 1, let task = tasks.first, let saved = try lease.read(),
-                  let repaired = reconciled(saved, task: task) else { continue }
+            let matching = tasks.filter { candidate.taskOwnerID == nil || $0.persistentModelID == candidate.taskOwnerID }
+            guard matching.count == 1, let task = matching.first, let saved = try lease.read(), saved == candidate,
+                  let jobs = try? RuntimeWorkspaceRemoteJobs.releaseEvidence(task: task, owner: saved, context: context),
+                  jobs.safe else { continue }
+            var repaired = saved
+            if let expected = saved.pendingSSHJobSetDigest {
+                guard expected == jobs.identity,
+                      RuntimeCompletedUserTurnContinuation.hasCompletedTurn(saved, task: task, context: context) else { continue }
+                repaired.pendingSSHJobSetDigest = nil
+            }
+            if saved.stopProof?.remoteWorkExcluded == false {
+                guard let value = reconciled(repaired, task: task) else { continue }
+                repaired = value
+            } else {
+                guard repaired.canReplace else { continue }
+                repaired.resourcesReleased = true
+                repaired.providerSharedStateReleased = true
+                repaired.updatedAt = Date()
+            }
             // The journal retains the original proof even if an audit save is
             // interrupted. No task, request, run, usage or output is rewritten.
             try lease.save(repaired)
@@ -65,7 +83,7 @@ enum RuntimeHostNoToolReceiptReconciliation {
                 run: task.runs.first { $0.id == repaired.runID }))
             try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
                 modelContext: context, taskID: task.id,
-                auditFields: ["operation": "reconcile_finished_host_no_tool_receipt"])
+                auditFields: ["operation": saved.pendingSSHJobSetDigest == nil ? "reconcile_finished_host_no_tool_receipt" : "release_after_ssh_cancellation"])
         }
     }
 }

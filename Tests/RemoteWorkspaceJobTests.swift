@@ -256,6 +256,47 @@ struct RemoteWorkspaceJobTests {
         #expect(try manager.register(connectionTarget: "pcornet-backup", command: "sleep 10").created == false)
     }
 
+    @Test("Host cancellation wins before SSH launch and survives a late start and reopen")
+    func cancelBeforeStart() throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let manager = host.manager()
+        let job = try manager.register(connectionTarget: "pcornet-backup", command: "touch should-not-start").record
+        let cancelled = try #require(record(manager.cancel(jobID: job.jobID)))
+        #expect(cancelled.status == .cancelled && cancelled.launchFence == .cancelledBeforeStart)
+        let transport = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path)
+        let delayed = transport.run(connection: host.connections[0], script: RemoteWorkspaceJobScripts.start(
+            jobID: job.jobID, command: job.command, timeoutSeconds: 10, nonce: try #require(job.launchNonce),
+            clock: try #require(job.remoteClock)), timeoutSeconds: 10)
+        #expect(delayed.exitCode == RemoteWorkspaceJobScripts.existingJobExitCode)
+        let observed = try #require(record(host.manager().status(jobID: job.jobID)))
+        #expect(observed.launch == nil && observed.completedAt == cancelled.completedAt)
+        #expect(!FileManager.default.fileExists(atPath: host.home.appendingPathComponent("should-not-start").path))
+    }
+
+    @Test("A missing legacy job can fence future launches but never attests to past cleanup")
+    func legacyCancellationFence() throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let manager = host.manager()
+        let transport = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path)
+        let sample = try RemoteWorkspaceJobClock.sample(transport, connection: host.connections[0])
+        var job = RemoteWorkspaceJobRecord(jobID: UUID().uuidString.lowercased(),
+            taskID: manager.configuration.taskID, runID: manager.configuration.runID, connection: host.connections[0],
+            command: "true", createdAt: Date().addingTimeInterval(-120))
+        job.schemaVersion = 2
+        job.remoteClock = .init(bootID: sample.bootID, deadline: sample.monotonic + 10)
+        try manager.store.create(job)
+        #expect(try #require(record(manager.status(jobID: job.jobID))).launchFence == nil)
+        let fenced = try #require(record(manager.cancel(jobID: job.jobID)))
+        #expect(fenced.status == .unverified && fenced.launchFence == .legacySealed && !fenced.cleanupVerified)
+        // The original v2 script requires exclusive mkdir before writing or running a command.
+        #expect(transport.run(connection: host.connections[0],
+            script: "mkdir \"$HOME/\(job.remoteDirectory)\"", timeoutSeconds: 10).exitCode != 0)
+        try host.setUnreachable(true)
+        #expect(try #require(record(manager.status(jobID: job.jobID))).lastObservation?.outcome == .unreachable)
+    }
+
     @Test("An admission that expires during SSH connection never starts its command")
     func expiredRemoteAdmission() async throws {
         let host = try FakeSSHHost()

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import Combine
 import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
@@ -13,14 +14,20 @@ final class TaskQueueStoreSession {
     let modelContainer: ModelContainer
     let modelContext: ModelContext
     private let remoteJobs: RemoteWorkspaceJobMonitorSession
+    private let jobChanges: AnyCancellable
 
     private(set) var didRepairLegacyRequests = false
     private(set) var didAttemptLegacyRequestsRepair = false
 
-    init(modelContext: ModelContext) {
+    init(modelContext: ModelContext, remoteAdmissionChanged: @escaping @MainActor () -> Void = {}) {
         self.modelContext = modelContext
         self.modelContainer = modelContext.container
         self.remoteJobs = RemoteWorkspaceJobMonitorSession(context: modelContext)
+        jobChanges = NotificationCenter.default.publisher(for: RemoteWorkspaceJobEventReconciler.admissionDidChange)
+            .sink { [weak modelContext] notification in
+                guard let modelContext, notification.object as? ModelContext === modelContext else { return }
+                MainActor.assumeIsolated { remoteAdmissionChanged() }
+            }
     }
 
     func matches(_ modelContext: ModelContext) -> Bool {

@@ -77,6 +77,8 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     /// Successful launches in the bound run, retained when a fallback clears its current process.
     var providerLaunchCount: Int? = nil
     var resourcesReleased: Bool? = nil
+    /// Independently clean execution waiting for its exact registered SSH jobs.
+    var pendingSSHJobSetDigest: String? = nil
     var cancellationRequested: Bool? = nil
     /// The pre-journal run that `RuntimeRecoveryLegacyReconciliation` admitted this owner on.
     var legacySettledRunID: UUID? = nil
@@ -95,7 +97,7 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     /// A new user instruction is distinct from replaying unfinished work. It
     /// still cannot compete with the old provider or its local process group.
     var hasUnverifiedTools: Bool {
-        sessionVerificationPending == true || inheritedToolUncertainty == true || stopProof?.toolsStopped == false
+        sessionVerificationPending == true || pendingSSHJobSetDigest != nil || inheritedToolUncertainty == true || stopProof?.toolsStopped == false
             || stopProof?.remoteWorkExcluded == false || settlementToolsStopped == false
     }
 

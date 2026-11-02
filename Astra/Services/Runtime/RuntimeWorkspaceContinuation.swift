@@ -12,6 +12,7 @@ struct RuntimeWorkspaceContinuationAuthorization: Codable, Equatable {
     struct Source: Codable, Equatable {
         let taskOwnerID: PersistentIdentifier
         let receipt: RuntimeExecutionOwnerRecord
+        var reviewedSSHJobs: [ReviewedWorkspaceSSHJob]? = nil
     }
     let taskID: UUID
     let taskOwnerID: PersistentIdentifier
@@ -60,7 +61,7 @@ enum RuntimeWorkspaceContinuation {
     /// Preview is advisory. authorize and runtime acquisition re-read under
     /// kernel leases; changing a holder while the dialog is open invalidates it.
     static func preview(task: AgentTask, request: TaskTurnRequest, context: ModelContext,
-                        previous: RuntimeExecutionOwnerRecord? = nil) throws -> RuntimeWorkspaceContinuationAuthorization {
+                        previous: RuntimeExecutionOwnerRecord? = nil, reviewSSHJobs: Bool = false) throws -> RuntimeWorkspaceContinuationAuthorization {
         guard isNewManualInstruction(request, task: task, previous: previous, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
         let store = RuntimeExecutionOwner.store(in: context)
         let saved = try RuntimeTaskOwnerJournal.read(task: task, context: context)
@@ -84,8 +85,9 @@ enum RuntimeWorkspaceContinuation {
             let owners = try candidates.filter { try RuntimeTaskOwnerJournal.read(task: $0, context: context) == record }
             guard owners.count == 1, let owner = owners.first,
                   RuntimeCompletedUserTurnContinuation.hasCompletedTurn(record, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
-            try requireNoKnownRemoteWork(task: owner, context: context)
-            sources.append(.init(taskOwnerID: owner.persistentModelID, receipt: record))
+            let jobs = try RuntimeWorkspaceRemoteJobs.inventory(task: owner, owner: record, context: context).filter { !$0.status.isTerminal }
+            if !reviewSSHJobs { try RuntimeWorkspaceRemoteJobs.check(jobs, reviewed: [], savingDecision: false) }
+            sources.append(.init(taskOwnerID: owner.persistentModelID, receipt: record, reviewedSSHJobs: jobs.isEmpty ? nil : jobs))
         }
         let covered = Set(sources.flatMap { workspaceClaims($0.receipt) })
         guard Set(conflicts).isSubset(of: covered) else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
@@ -100,11 +102,16 @@ enum RuntimeWorkspaceContinuation {
         let beneficiary = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
         defer { withExtendedLifetime((admission, beneficiary)) {} }
         guard proposed.workspaceScope == nil, proposed.inheritedAuthorizationID == nil else { throw RuntimeExecutionOwnerStore.Failure.busy }
-        let fresh = try preview(task: task, request: request, context: context)
+        let reviewedJobs = proposed.sources.contains { $0.reviewedSSHJobs != nil }
+        guard !reviewedJobs || !rememberWorkspace else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        let fresh = try preview(task: task, request: request, context: context, reviewSSHJobs: reviewedJobs)
         guard fresh.taskID == proposed.taskID, fresh.taskOwnerID == proposed.taskOwnerID,
-              fresh.requestID == proposed.requestID, fresh.sourceEventID == proposed.sourceEventID, fresh.sources == proposed.sources else { throw RuntimeExecutionOwnerStore.Failure.busy }
-        let locked = try lockSources(proposed, store: store, context: context)
+              fresh.requestID == proposed.requestID, fresh.sourceEventID == proposed.sourceEventID,
+              fresh.sources.map(\.receipt) == proposed.sources.map(\.receipt),
+              fresh.sources.map(\.taskOwnerID) == proposed.sources.map(\.taskOwnerID) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        let locked = try lockSources(proposed, store: store, context: context, savingDecision: true)
         defer { withExtendedLifetime(locked) {} }
+        // Preserve all reviewed identities, including jobs that just finished.
         var authorization = proposed
         if rememberWorkspace {
             guard let workspace = task.workspace else { throw RuntimeExecutionOwnerStore.Failure.busy }
@@ -143,11 +150,13 @@ enum RuntimeWorkspaceContinuation {
               previous?.ownerID == logicalPrevious?.ownerID else { throw RuntimeExecutionOwnerStore.Failure.busy }
         // Refresh an old task's grant for a genuinely new human turn: holders
         // admitted since its last turn must also be covered by the root decision.
-        let inherited = try RuntimeWorkspaceContinuationScope.inherited(task: task, request: request,
-            context: context, claims: claims, previous: previous)
-        let authorizationID = inherited?.requestID ?? previous?.workspaceContinuationRequestID ?? request.id
-        let savedAuthorization = try store.workspaceContinuation(requestID: authorizationID)
+        let existing = try store.workspaceContinuation(requestID: request.id)
+        let inherited = try existing == nil ? RuntimeWorkspaceContinuationScope.inherited(task: task, request: request,
+            context: context, claims: claims, previous: previous) : nil
+        let authorizationID = existing?.requestID ?? inherited?.requestID ?? previous?.workspaceContinuationRequestID ?? request.id
+        let savedAuthorization = try existing ?? (authorizationID == request.id ? nil : store.workspaceContinuation(requestID: authorizationID))
         guard let authorization = savedAuthorization ?? inherited else { return nil }
+        if authorization.requestID != request.id, authorization.sources.contains(where: { $0.reviewedSSHJobs != nil }) { return nil }
         guard authorization.taskID == task.id, authorization.taskOwnerID == task.persistentModelID,
               authorization.requestID == authorizationID, request.state.isActive,
               let original = try TaskTurnRequestRepository.request(id: authorizationID, in: context),
@@ -211,7 +220,8 @@ enum RuntimeWorkspaceContinuation {
     }
 
     private static func lockSources(_ authorization: RuntimeWorkspaceContinuationAuthorization,
-                                    store: RuntimeExecutionOwnerStore, context: ModelContext) throws -> [RuntimeExecutionOwnerStore.Lease] {
+                                    store: RuntimeExecutionOwnerStore, context: ModelContext,
+                                    savingDecision: Bool = false) throws -> [RuntimeExecutionOwnerStore.Lease] {
         guard !authorization.sources.isEmpty else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         var leases: [RuntimeExecutionOwnerStore.Lease] = []
         for source in authorization.sources {
@@ -223,16 +233,10 @@ enum RuntimeWorkspaceContinuation {
             guard let owner = candidates.first(where: { $0.persistentModelID == source.taskOwnerID }),
                   try RuntimeTaskOwnerJournal.read(task: owner, context: context) == saved,
                   RuntimeCompletedUserTurnContinuation.hasCompletedTurn(saved, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
-            try requireNoKnownRemoteWork(task: owner, context: context)
+            let jobs = try RuntimeWorkspaceRemoteJobs.inventory(task: owner, owner: saved, context: context)
+            try RuntimeWorkspaceRemoteJobs.check(jobs, reviewed: source.reviewedSSHJobs ?? [], savingDecision: savingDecision)
         }
         return leases
     }
 
-    private static func requireNoKnownRemoteWork(task: AgentTask, context: ModelContext) throws {
-        for config in try RemoteWorkspaceJobRegistration.loadAll(task: task, context: context) {
-            guard try RemoteWorkspaceJobStore(rootPath: config.recordRootPath).records().allSatisfy({ $0.status.isTerminal }) else {
-                throw RuntimeExecutionOwnerStore.Failure.busy
-            }
-        }
-    }
 }

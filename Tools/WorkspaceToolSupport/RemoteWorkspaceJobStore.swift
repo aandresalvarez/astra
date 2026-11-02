@@ -131,7 +131,7 @@ public final class RemoteWorkspaceJobStore {
             var record = try read(at: url, jobID: jobID)
             let before = record
             try body(&record)
-            if record.status != before.status || record.lastObservation?.outcome != before.lastObservation?.outcome
+            if record.status != before.status || record.launchFence != before.launchFence || record.lastObservation?.outcome != before.lastObservation?.outcome
                 || record.cancellationRequestedAt != before.cancellationRequestedAt {
                 record.pendingTransitions = (record.pendingTransitions ?? []) + [RemoteWorkspaceJobTransition(record: record, cancellation: record.cancellationRequestedAt != before.cancellationRequestedAt)]
             }
