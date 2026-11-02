@@ -1,16 +1,16 @@
 import Foundation
+import ASTRACore
 
 enum RuntimeCopilotFrameEvidence {
     typealias Kind = RuntimeProviderFrameEvidence.Kind
     static func classify(_ frame: [String: Any]) -> Kind {
         guard let type = frame["type"] as? String else { return .uncertain }
         if type == "result" {
-            if frame["exitCode"] is Int, !(frame["sessionId"] as? String ?? "").isEmpty { return .terminal }
+            if ProviderUsageArithmetic.reportedCount(frame["exitCode"]) != nil,
+               let session = frame["sessionId"] as? String, !session.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .terminal }
             // Older result envelopes carry the turn summary or usage without a
             // native session receipt. A standalone usage frame is still bookkeeping.
-            let payload = frame["data"] as? [String: Any] ?? frame
-            return frame["exitCode"] as? Int == 0 || payload["result"] is String || payload["usage"] is [String: Any]
-                ? .terminalWithoutCleanupProof : .uncertain
+            return CopilotStreamEventParser.hasResultPayload(frame) ? .terminalWithoutCleanupProof : .uncertain
         }
         if type == "usage" || type == "stats" { return .bookkeeping }
         guard let data = frame["data"] as? [String: Any] else { return .uncertain }

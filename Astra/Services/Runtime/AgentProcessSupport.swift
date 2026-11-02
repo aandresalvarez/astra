@@ -322,6 +322,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     let activeToolIdleTimeoutSeconds: TimeInterval
     let managedWorkspaceJobIdleTimeoutSeconds: TimeInterval
     let terminalProgressExitGraceSeconds: TimeInterval
+    private let nativeTurnEvidence: RuntimeExecutionProcessEvidence?
     /// Hard ceiling on the whole run's wall clock. Every other timeout here
     /// measures *silence*, so a provider that keeps emitting can hold them all
     /// off forever. This is the one bound that cannot be talked out of firing.
@@ -515,7 +516,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         policyGuard: AgentRuntimePolicyGuard? = nil,
         liveApprovalsActive: Bool = false,
         sandboxDiagnosticContext: RuntimeSandboxDiagnosticContext = .none,
-        readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt? = nil
+        readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt? = nil,
+        nativeTurnEvidence: RuntimeExecutionProcessEvidence? = nil
     ) {
         self.tokenBudget = tokenBudget
         self.reportedUsageBaseline = reportedUsageBaseline
@@ -534,6 +536,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.liveApprovalsActive = liveApprovalsActive
         self.sandboxDiagnosticContext = sandboxDiagnosticContext
         self.readOnlyBoundaryReceipt = readOnlyBoundaryReceipt
+        self.nativeTurnEvidence = nativeTurnEvidence
     }
 
     static func estimatedTokenCount(for text: String) -> Int {
@@ -1773,7 +1776,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let now = Date()
         let idleDuration = now.timeIntervalSince(lastActivityTime)
         let anyIdleDuration = now.timeIntervalSince(lastAnyActivityTime)
-        let terminalIdleDuration = lastTerminalProgressTime.map { now.timeIntervalSince($0) }
+        // A provisional result or later work must not arm the terminal reap.
+        let terminalIdleDuration = nativeTurnEvidence?.providerTurnEnded == false
+            ? nil : lastTerminalProgressTime.map { now.timeIntervalSince($0) }
         let stalledManagedWorkspaceJob = refreshManagedWorkspaceJobs(now: now)
         let hasMetadataOnlyActivity = hasSeenAnyActivity
             && !hasSeenProviderLivenessActivity

@@ -1052,7 +1052,8 @@ final class AgentRuntimeProcessRunner {
                     workingDirectory: plan.currentDirectory,
                     boundaryReceipt: plan.executionSandboxBoundaryReceipt
                 ),
-                readOnlyBoundaryReceipt: plan.readOnlyBoundaryReceipt
+                readOnlyBoundaryReceipt: plan.readOnlyBoundaryReceipt,
+                nativeTurnEvidence: plan.parsesJSONLines ? processEvidence : nil
             )
             let supervision = context.map { context in
                 RuntimeSupervisionSession(goal: context.goal, runtime: context.runtime,
@@ -1084,7 +1085,7 @@ final class AgentRuntimeProcessRunner {
                 }
                 if plan.interactiveAsk != nil,
                    let control = ClaudeControlProtocol.controlRequest(from: trimmed) {
-                    processEvidence.observe(.unknown(type: "interactive_tool_request"))
+                    processEvidence.observeFrame(line, parsesJSONLines: true, events: [.unknown(type: "interactive_tool_request")])
                     Self.answerControlRequest(
                         control,
                         process: process,
@@ -1119,7 +1120,7 @@ final class AgentRuntimeProcessRunner {
                     // Stream-json input providers wait for the next stdin
                     // message after a turn ends; EOF on the terminal result is
                     // what lets the process exit.
-                    if plan.interactiveAsk != nil, case .result = parsed {
+                    if plan.interactiveAsk != nil, case .result = parsed, processEvidence.providerTurnEnded {
                         deliveryChannel.observeProviderCompletion()
                         process.closeStdinChannel()
                     }
@@ -1288,7 +1289,7 @@ final class AgentRuntimeProcessRunner {
         await ownershipEvents.drainAll()
         return result.applyingOwnershipObservations(nativeSessionFailure: nativeSessionFailure,
             supervisionTokens: activeSupervision?.tokenReservation,
-            acknowledgedPermissions: deliveryChannel.acknowledgedPermissionRequestIDs,
+            acknowledgedPermissions: result.providerTurnEnded == true ? deliveryChannel.acknowledgedPermissionRequestIDs : [],
             writtenPermissions: deliveryChannel.writtenPermissionRequestIDs)
     }
 

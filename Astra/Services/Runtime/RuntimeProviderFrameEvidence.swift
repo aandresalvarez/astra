@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import ASTRACore
 
 /// Identifies native turn boundaries. Tool and subagent counters on the same
@@ -41,7 +42,9 @@ enum RuntimeProviderFrameEvidence {
             case "completed": return frame["text"] == nil ? .bookkeeping : .uncertain
             default: return .uncertain
             }
-        case "result": return frame["is_error"] is Bool ? .terminal : .uncertain
+        case "result":
+            guard let flag = frame["is_error"] as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else { return .uncertain }
+            return .terminal
         case "rate_limit_event":
             let info = frame["rate_limit_info"] as? [String: Any]
             return ["allowed", "allowed_warning", "rejected"].contains(info?["status"] as? String ?? "") ? .bookkeeping : .uncertain

@@ -27,13 +27,48 @@ struct RuntimeProviderCompletionEvidenceTests {
         #expect(!evidence.toolsStopped)
     }
 
-    @Test("Copilot result envelopes without a session receipt can finish the turn only")
-    func copilotSummaryWithoutSession() {
+    @Test("An invalid Copilot exit code cannot complete the turn or release the workspace")
+    func invalidCopilotExitCode() {
         let evidence = RuntimeExecutionProcessEvidence(runtime: .copilotCLI)
-        observe(#"{"type":"result","data":{"usage":{"input_tokens":4,"output_tokens":5}}}"#, runtime: .copilotCLI, evidence: evidence)
+        observe(#"{"type":"result","sessionId":"s","exitCode":true,"result":"partial"}"#, runtime: .copilotCLI, evidence: evidence)
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(!evidence.providerTurnEnded)
+        #expect(!evidence.toolsStopped)
+    }
+
+    @Test("Copilot result envelopes without a session receipt can finish the turn only", arguments: [
+        #"{"type":"result","data":{"usage":{"input_tokens":4,"output_tokens":5}}}"#,
+        #"{"type":"result","data":{"content":"done"}}"#,
+        #"{"type":"result","data":{"content":"done"},"usage":{"input_tokens":4,"output_tokens":5}}"#,
+        #"{"type":"result","data":{},"usage":{"input_tokens":4,"output_tokens":5}}"#,
+        #"{"type":"result","payload":{"summary":"done"}}"#
+    ])
+    func copilotSummaryWithoutSession(line: String) {
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .copilotCLI)
+        observe(line, runtime: .copilotCLI, evidence: evidence)
         evidence.processExited(naturally: true, stdoutEOF: true)
         #expect(evidence.providerTurnEnded)
         #expect(!evidence.toolsStopped)
+    }
+
+    @Test("Only a current native terminal can arm the structured provider's terminal reap", arguments: [
+        #"{"type":"result","is_error":0,"result":"mistyped"}"#,
+        #"{"type":"result","is_error":false,"parent_tool_use_id":"child","result":"subtask"}"#,
+        #"{"type":"control_request","request_id":"late","request":{"subtype":"ping"}}"#
+    ])
+    func terminalReapRequiresCurrentEvidence(later: String) {
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .claudeCode)
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: .max, terminalProgressExitGraceSeconds: 0, nativeTurnEvidence: evidence)
+        let root = #"{"type":"result","is_error":false,"result":"done"}"#
+        for frame in [root, later] {
+            let events = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode).parseProcessEvents(line: frame, parsesJSONLines: true)
+            evidence.observeFrame(frame, parsesJSONLines: true, events: events)
+            for event in events { _ = monitor.processEvent(event, process: nil) }
+        }
+        #expect(!evidence.providerTurnEnded)
+        #expect(!monitor.evaluateWatchdogTimeoutForTesting())
+        observe(root, runtime: .claudeCode, evidence: evidence)
+        #expect(monitor.evaluateWatchdogTimeoutForTesting())
     }
 
     @Test("A complete captured provider exchange keeps its verdict after trailing metadata",

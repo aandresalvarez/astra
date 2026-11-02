@@ -115,7 +115,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                     remediation: nil
                 ))
             } else if let executable = cliStatus.executable {
-                checks.append(await checkCodexAuth(executable: executable, probes: probes))
+                checks.append(await checkCodexAuth(executable: executable,
+                    homeDirectory: configuration.providerSettings.homeDirectory(for: id), probes: probes))
                 checks.append(await checkCodexMCPPolicy(configuration: configuration, executable: executable))
             }
         }
@@ -167,9 +168,13 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     private func checkCodexAuth(
         executable: String,
+        homeDirectory: String,
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessCheck {
-        let result = await probes.run(path: executable, args: ["login", "status"])
+        var environment = probes.processEnvironment
+        let home = homeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !home.isEmpty { environment["CODEX_HOME"] = home }
+        let result = await probes.run(path: executable, args: ["login", "status"], environment: environment)
         if let unanswered = RuntimeReadinessCheck.inconclusiveProbe(
             id: "codex-account", title: "Codex account", result: result, timeout: probes.timeout
         ) { return unanswered }

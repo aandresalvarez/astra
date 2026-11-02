@@ -103,4 +103,95 @@ struct RuntimeInterruptedStreamTests {
         let independentOwner = try #require(RuntimeExecutionOwner.acquire(task: independent, context: harness.context, maxRunSeconds: 60))
         independentOwner.finish()
     }
+
+    @Test("Claude Ask acknowledges written permissions only after a confirmed root turn",
+          arguments: ["complete", "missing-flag", "child-then-complete", "trailing-text", "trailing-request"])
+    func claudeApprovalEnding(scenario: String) async throws {
+        let h = try HeadlessChatHarness()
+        defer { h.cleanup() }
+        let result = #"{"type":"result","is_error":false,"result":"done"}"#
+        let ask = #"{"type":"control_request","request_id":"first","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"}}}"#
+        let tail: String
+        switch scenario {
+        case "missing-flag":
+            tail = #"echo '{"type":"result","result":"partial"}'"#
+        case "child-then-complete":
+            tail = """
+                echo '{"type":"result","is_error":false,"parent_tool_use_id":"child","result":"subtask"}'
+                echo '\(ask.replacingOccurrences(of: "first", with: "second"))'
+                IFS= read -r response || exit 1
+                echo '\(result)'
+                """
+        case "trailing-text":
+            tail = """
+                echo '\(result)'
+                echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Still working"}]}}'
+                """
+        case "trailing-request":
+            tail = """
+                echo '\(result)'
+                echo '{"type":"control_request","request_id":"late","request":{"subtype":"ping"}}'
+                """
+        default: tail = "echo '\(result)'"
+        }
+        let executable = try h.writeExecutable(named: "claude", script: HeadlessChatScenarioTests.claudeScript(body: """
+            IFS= read -r prompt || exit 1
+            echo '\(ask)'
+            IFS= read -r response || exit 1
+            \(tail)
+            """))
+        let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic approval", model: "claude-sonnet-4-6")
+        let runner = AgentRuntimeProcessRunner { _ in .init(enforcement: .off) }
+        let outcome = await runner.runRuntimeProcess(adapter: AgentRuntimeAdapterRegistry.adapter(for: .claudeCode),
+            prompt: task.goal, task: task, workspacePath: h.workspaceURL.path, executablePath: executable,
+            homeDirectory: h.rootURL.path, permissionPolicy: .restricted, timeoutSeconds: 8,
+            liveApprovalsEnabled: true, maxRunSeconds: 12, onInteractiveAsk: { _ in .allow }, onLine: { _, _ in })
+        let complete = scenario == "complete" || scenario == "child-then-complete"
+        let written: Set<String> = scenario == "child-then-complete" ? ["first", "second"] : ["first"]
+        #expect(outcome.exitCode == 0)
+        #expect(outcome.providerTurnEnded == complete)
+        #expect(outcome.writtenPermissionRequestIDs == written)
+        #expect(outcome.acknowledgedPermissionRequestIDs == (complete ? written : []))
+    }
+
+    @Test("An explicitly failed Copilot result cannot complete a request even if the process exits zero", arguments: [
+        #"{"type":"result","sessionId":"failed-copilot","exitCode":1,"usage":{"input_tokens":4,"output_tokens":5}}"#,
+        #"{"type":"result","error":{"message":"quota exhausted"}}"#
+    ])
+    func failedCopilotEnvelope(result: String) async throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let executable = try h.writeExecutable(named: "copilot", script: HeadlessChatScenarioTests.copilotScript(body: """
+            echo '{"type":"assistant.message","data":{"content":"Partial answer"}}'
+            echo '\(result)'
+            """))
+        let task = h.makeTask(runtime: .copilotCLI, goal: "What is three plus four?", model: "gpt-5")
+        task.chainedGoal = "Check the answer"
+        _ = await h.execute(task: task, worker: h.makeWorker(runtime: .copilotCLI, executablePath: executable))
+        let run = try #require(task.runs.first)
+        let verdict = try #require(RuntimeTurnSettlementService.verdict(for: run, task: task))
+        #expect(run.typedStopReason == .agentReportedError)
+        #expect(verdict.requestState == .failed)
+        #expect(verdict.chainedTaskID == nil)
+        #expect(run.output.contains("Partial answer"))
+    }
+
+    @Test("An empty Codex turn distinguishes a missing ending from a confirmed empty result", arguments: [false, true])
+    func emptyCodexTurn(ended: Bool) async throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let final = ended ? #"echo '{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":0}}'"# : ""
+        let executable = try h.writeExecutable(named: "codex", script: """
+            #!/bin/sh
+            echo '{"type":"thread.started","thread_id":"empty-codex"}'
+            \(final)
+            """)
+        let task = h.makeTask(runtime: .codexCLI, goal: "What is three plus four?", model: "gpt-5.3-codex")
+        _ = await h.execute(task: task, worker: h.makeWorker(runtime: .codexCLI, executablePath: executable))
+        let run = try #require(task.runs.first)
+        #expect(run.typedStopReason == (ended ? .noUsableResult : .providerTurnEndMissing))
+        let errors = task.events.filter { $0.type == TaskEventTypes.System.error.rawValue }.map(\.payload)
+        #expect(errors.contains { $0.contains("Retry this task") } == ended)
+        try checkAdmission(after: task, harness: h, released: ended)
+    }
 }

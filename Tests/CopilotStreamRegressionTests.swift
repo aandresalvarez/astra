@@ -5,6 +5,19 @@ import ASTRACore
 
 @Suite("Copilot Stream Regressions")
 struct CopilotStreamRegressionTests {
+    @Test("A nonzero result retains session and usage and surfaces one error on both paths")
+    func resultExitFailure() {
+        let line = #"{"type":"result","sessionId":"s","exitCode":1,"usage":{"input_tokens":3,"output_tokens":2}}"#
+        let worker = CopilotStreamEventParser.parseIdentifiedAgentEvents(line: line)
+        #expect(worker.contains { if case .started("s", _) = $0 { true } else { false } })
+        #expect(worker.contains { if case .stats(3, 2, _, _, _) = $0 { true } else { false } })
+        #expect(worker.contains { if case .failed(let message) = $0 { message.contains("exit code 1") } else { false } })
+        #expect(!worker.contains { if case .completed = $0 { true } else { false } })
+        let monitor = CopilotStreamEventParser.parseAll(line: line)
+        #expect(monitor.contains { if case .usage(3, 2) = $0 { true } else { false } })
+        #expect(monitor.compactMap { if case .result(_, _, _, _, _, _, let isError) = $0 { isError } else { nil } } == [true])
+    }
+
     @Test("Captured Copilot quota frames parse as provider failure output")
     func capturedQuotaFailuresParseAsProviderFailures() throws {
         let fixtureURL = try #require(Bundle.module.url(
