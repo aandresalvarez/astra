@@ -462,7 +462,7 @@ struct RuntimeReadinessServiceTests {
     }
 
     @Test("Codex readiness blocks when login status exits zero but reports logged out")
-    func codexReadinessBlocksWhenLoginStatusReportsLoggedOut() async {
+    func codexReadinessBlocksWhenLoginStatusReportsLoggedOut() async throws {
         let runner = StubBinaryRunner()
         await runner.setResponse(
             forKey: "/opt/codex --version",
@@ -481,8 +481,7 @@ struct RuntimeReadinessServiceTests {
 
         let report = await service.check(configuration: RuntimeReadinessConfiguration(
             runtime: .codexCLI,
-            claudePath: "",
-            copilotPath: "",
+            providerSettings: .init(homeDirectories: [.codexCLI: "/tmp/selected-codex-profile"]),
             claudeProvider: .anthropic,
             vertexProjectID: "",
             vertexRegion: "",
@@ -491,6 +490,10 @@ struct RuntimeReadinessServiceTests {
             vertexHaikuModel: ""
         ))
 
+        let calls = await runner.recordedCalls()
+        let auth = try #require(calls.firstIndex { $0.args == ["login", "status"] })
+        let environments = await runner.recordedEnvironments()
+        #expect(environments[auth]?["CODEX_HOME"] == "/tmp/selected-codex-profile")
         #expect(report.state == .blocked)
         let account = report.checks.first { $0.id == "codex-account" }
         #expect(account?.state == .blocked)

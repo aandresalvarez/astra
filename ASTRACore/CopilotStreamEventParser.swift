@@ -7,6 +7,14 @@ public enum CopilotStreamEventParser {
     /// produces one long before the answer exists.
     static let resultFrameControlType = "astra.copilot.result"
 
+    /// Legacy result envelopes may finish the turn without a native session receipt.
+    public static func hasResultPayload(_ object: [String: Any]) -> Bool {
+        guard object["type"] as? String == "result" else { return false }
+        if let code = object["exitCode"] { return ProviderUsageArithmetic.reportedCount(code) != nil }
+        return textValue(in: object) != nil || object["usage"] is [String: Any]
+            || payloadObject(in: object)?["usage"] is [String: Any]
+    }
+
     public static func parse(line: String) -> ParsedEvent? {
         parseAll(line: line).first
     }
@@ -358,6 +366,16 @@ public enum CopilotStreamEventParser {
                 events.append(.stats(inputTokens: input ?? 0, outputTokens: output ?? 0, costUSD: cost, durationMs: duration, turns: turns))
             } else if cost != nil || duration != nil || turns != nil {
                 events.append(.usageMetadata(costUSD: cost, durationMs: duration, turns: turns))
+            }
+            if normalized == "result" {
+                if let message = nestedStringIncludingPayload(object, path: ["error", "message"])
+                    ?? firstStringIncludingPayload(in: object, keys: ["error"]) {
+                    return session + events + [.failed(message: message)]
+                }
+                if let exitCode = ProviderUsageArithmetic.reportedCount(object["exitCode"]), exitCode != 0 {
+                    let message = textValue(in: object) ?? "GitHub Copilot CLI reported exit code \(exitCode)."
+                    return session + events + [.failed(message: message)]
+                }
             }
             if let text = textValue(in: object), !text.isEmpty {
                 events.append(.completed(summary: text))

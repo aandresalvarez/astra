@@ -63,6 +63,7 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
     /// exited as if it had finished (agy's `--print-timeout`). Terminal for the
     /// same reason as the wall-clock ceiling: no approval changes the outcome.
     public static let providerTurnTimeLimitReached: TaskRunStopReason = "provider_turn_time_limit_reached"
+    public static let providerTurnEndMissing: TaskRunStopReason = "provider_turn_end_missing"
     public static let providerSemanticProgressStalled: TaskRunStopReason = "provider_semantic_progress_stalled"
     public static let providerActiveToolStalled: TaskRunStopReason = "provider_active_tool_stalled"
     public static let providerWorkspaceJobStalled: TaskRunStopReason = "provider_workspace_job_stalled"

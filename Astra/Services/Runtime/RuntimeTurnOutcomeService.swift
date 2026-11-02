@@ -93,7 +93,13 @@ enum RuntimeTurnOutcomeService {
             modelContext.insert(event)
         } else if processSucceeded, !checkpoint.agentReportedError,
                   try RuntimeTurnSettlementService.reconcilePermissions(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext, persist: permissionPromotionPersistence) {
-        } else if processSucceeded,
+        } else if processSucceeded, result.providerTurnEnded == false, !checkpoint.agentReportedError {
+            run.status = .failed
+            run.typedStopReason = .providerTurnEndMissing
+            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
+            let message = "\(runtimeAdapter.descriptor.displayName) exited before confirming the end of its turn. Review this task before continuing. ASTRA keeps its reservations until it can confirm the work has stopped."
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: message, run: run))
+        } else if processSucceeded, !checkpoint.agentReportedError,
                   runtimeAdapter.requiresVisibleResultForSuccessfulRun(phase: auditPhase),
                   Self.applyEmptySuccessfulRunIfNeeded(
                     runtimeAdapter: runtimeAdapter,

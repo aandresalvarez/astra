@@ -66,6 +66,9 @@ struct InstantSuccessBinaryRunner: BinaryRunner {
         if args.first == "which", args.count == 2 {
             return RunResult(outcome: .exited(code: 0), stdout: "/usr/local/bin/\(args[1])\n", stderr: "")
         }
+        if URL(fileURLWithPath: path).lastPathComponent == "opencode", args == ["auth", "list"] {
+            return RunResult(outcome: .exited(code: 0), stdout: "1 credential\n", stderr: "")
+        }
         return RunResult(outcome: .exited(code: 0), stdout: "logged in 1.0.0\nASTRA_READY", stderr: "")
     }
 

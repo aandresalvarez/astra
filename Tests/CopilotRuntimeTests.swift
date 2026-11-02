@@ -1694,6 +1694,7 @@ struct CopilotWorkerExecutionTests {
         mkdir -p \(Self.shQuote(taskFolder))
         printf 'changed\\n' > \(Self.shQuote(outputURL.path))
         printf 'changed\\n' > \(Self.shQuote(workspaceOutputURL.path))
+        echo '{"type":"result","exitCode":0}'
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
@@ -1830,6 +1831,7 @@ struct CopilotWorkerExecutionTests {
         for row in rows: row['timestamp']=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
         p.write_text('\\n'.join(json.dumps(row) for row in rows)+'\\n')
         STAMP
+        echo '{"type":"result","exitCode":0}'
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
@@ -1900,6 +1902,7 @@ struct CopilotWorkerExecutionTests {
         for row in rows: row['timestamp']=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
         p.write_text('\\n'.join(json.dumps(row) for row in rows)+'\\n')
         STAMP
+        echo '{"type":"result","exitCode":0}'
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
@@ -2178,6 +2181,7 @@ struct CopilotWorkerExecutionTests {
         printf 'artifact\\n' > "$task_folder/docs/requirements.md"
         printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"created plan artifact"}}'
         printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":10,"turns":1}'
+        echo '{"type":"result","exitCode":0}'
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
@@ -2364,6 +2368,7 @@ struct CopilotWorkerExecutionTests {
         printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"toolu_full","toolName":"bash","arguments":{"command":"astra-browser google-docs-read-document"}},"id":"event-full-start"}'
         printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"toolu_full","success":true,"result":{"content":"{\\"ok\\":false,\\"error\\":\\"google_docs_controlled_browser_required\\",\\"reason\\":\\"embedded_webkit_clipboard_unavailable\\"}"}},"id":"event-full-complete"}'
         printf '%s\\n' '{"type":"assistant.message","data":{"content":"Partial summary: Visible page content"}}'
+        echo '{"type":"result","exitCode":0}'
         exit 0
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
