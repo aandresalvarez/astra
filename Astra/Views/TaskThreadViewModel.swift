@@ -1015,7 +1015,8 @@ final class TaskThreadViewModel {
                     reportHistoryFlushFailure(for: task, operation: "earlier")
                     return
                 }
-                let initialPage = try await store.initialPage(taskID: task.id, ownerID: task.persistentModelID)
+                let initialPage = try await store.initialPage(taskID: task.id, ownerID: task.persistentModelID,
+                                                            historyInvalidation: TaskThreadHistoryInvalidation.token(for: task.id))
                 await notifyHistoryPageCapturedForTesting()
                 guard isCurrentHistoryRead(task) else { return }
                 historyReadCountForTesting += 1
@@ -1131,7 +1132,8 @@ final class TaskThreadViewModel {
                 }
                 let page = try await store.retainedPage(
                     taskID: taskID, ownerID: task.persistentModelID,
-                    eventIDs: Array(loadedHistoryEvents.keys), runIDs: Array(browsingRunIDs), cursor: cursor
+                    eventIDs: Array(loadedHistoryEvents.keys), runIDs: Array(browsingRunIDs), cursor: cursor,
+                    historyInvalidation: invalidationToken
                 )
                 await notifyHistoryPageCapturedForTesting()
                 guard isCurrentHistoryRead(task, windowRevision: windowRevision) else { return }
@@ -1152,7 +1154,8 @@ final class TaskThreadViewModel {
                     reportHistoryFlushFailure(for: task, operation: "latest")
                     return
                 }
-                let tail = try await store.tailPage(taskID: taskID, ownerID: task.persistentModelID, since: cursor)
+                let tail = try await store.tailPage(taskID: taskID, ownerID: task.persistentModelID, since: cursor,
+                                                    historyInvalidation: invalidationToken)
                 await notifyHistoryPageCapturedForTesting()
                 guard isCurrentHistoryRead(task, windowRevision: windowRevision) else { return }
                 historyTailReadCountForTesting += 1
@@ -1169,7 +1172,8 @@ final class TaskThreadViewModel {
             }
             // Live fallback and invalidation use the same fixed page limit.
             // Only explicit earlier-page navigation can widen retained history.
-            let page = try await store.initialPage(taskID: taskID, ownerID: task.persistentModelID)
+            let page = try await store.initialPage(taskID: taskID, ownerID: task.persistentModelID,
+                                                   historyInvalidation: invalidationToken)
             await notifyHistoryPageCapturedForTesting()
             guard isCurrentHistoryRead(task, windowRevision: windowRevision) else { return }
             historyFullReadCountForTesting += 1

@@ -63,16 +63,16 @@ Apple Swift 6.4.2, arm64, macOS 26.6.2 (25G83).
 | Stored events at completion | 6,000 | 6,000 |
 | Maximum retained snapshot events | 6,000 | 300 |
 | Maximum eager conversation rows | 6,002 | 302 |
-| Starting physical footprint | 39 MiB | 39 MiB |
-| Sampled workload peak | 410 MiB | 64 MiB |
-| Footprint after two seconds idle | 410 MiB | 61 MiB |
+| Starting physical footprint | 39 MiB | 36 MiB |
+| Sampled workload peak | 410 MiB | 71 MiB |
+| Footprint after two seconds idle | 410 MiB | 59 MiB |
 
 The two extra rows are the goal and active run. At each 1,000-event checkpoint,
 the before footprints were **98, 157, 205, 260, 327, 410 MiB**; after they were
-**59, 64, 52, 56, 57, 61 MiB**. The table uses the final-source after run; an earlier after run measured
-67 MiB peak and 58 MiB idle with the same 300-event/302-row bound. These are
+**56, 60, 65, 70, 60, 59 MiB**. The table uses the final-source after run; earlier after runs measured
+64–67 MiB peak and 54–61 MiB idle with the same 300-event/302-row bound. These are
 sequential runs on a shared developer machine, not a statistical performance
-claim. Test execution took 241.719 seconds before and 79.553 seconds in the final
+claim. Test execution took 241.719 seconds before and 72.689 seconds in the final
 after run, excluding compilation;
 there is no timing gate.
 
@@ -151,3 +151,42 @@ checks passed in the 76-test combined run; the remaining issue was the send-cost
 gate described above. The isolated scaling check passed. The repeated 6,000-event
 allocation probe passed with the same 300 retained events and 302 eager rows,
 64 MiB sampled peak and 61 MiB idle.
+
+## Avoiding repeated legacy searches
+
+A second review replay showed that scanning unrelated failures on every tail
+read was expensive even for tasks without PR intent. Legacy evidence is now
+intent-gated. Valid typed requests are checked first and remain authoritative
+when task wording is edited.
+
+The history store owns one bounded derived cache entry. It checks relevant
+persisted counts/latest records, selected evidence, scope/run identity and the
+explicit history-invalidation generation. A save-boundary observer invalidates
+existing publication/tool-evidence edits and deletions; it reads only pending
+changes on their context's saving thread and shares only a locked revision.
+It does not retain models/contexts, change domain state, or observe ordinary
+message/response changes as publication edits. Inserts/backdating are detected
+by the persisted signature. The observer is removed with the store. Tool uses
+after the newest failure do not invalidate the evidence signature.
+
+Deterministic tests with 1,500 unrelated failures verify zero legacy scans or
+preceding-use lookups for non-PR tasks. For PR-intent tasks, twelve ordinary
+appends (including a later tool use) add zero scans/lookups after priming and
+hit the cache. An older unselected failure edit and an explicit invalidation
+both force a rescan. Typed requests still win after PR wording is removed.
+The 76-test focused history/decision/work run passed.
+The final 6,000-event allocation replay also passed after this correction; its
+measurements are the after column above.
+
+The opt-in `TaskPublicationTailReplayTests` mirrors the review fixture with fresh
+read contexts. Non-PR reads at 100/750/1,500 failures measured
+1.42–1.63 / 1.74–2.25 / 1.99–2.49 ms (three reads each). The review's
+`bcef2f5e` observations were about 22–29 / 187–203 / 441–473 ms. A PR-intent
+store performed its initial 1,500-row search in 450.71 ms; the next two reads
+were 3.85 and 3.94 ms with the scan/lookup counts unchanged at 1,500.
+These are observations, with no wall-clock CI threshold. Run with:
+
+```bash
+ASTRA_MEASURE_PUBLICATION_TAIL=1 script/swift_test.sh --no-parallel \
+  --filter TaskPublicationTailReplayTests
+```

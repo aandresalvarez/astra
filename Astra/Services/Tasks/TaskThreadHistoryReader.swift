@@ -69,7 +69,9 @@ enum TaskThreadHistoryReader {
         ownerID: PersistentIdentifier? = nil,
         modelContext: ModelContext,
         runPageSize: Int = defaultRunPageSize,
-        eventPageSize: Int = defaultEventPageSize
+        eventPageSize: Int = defaultEventPageSize,
+        publicationCache: TaskPublicationDecisionEvidenceReader.Cache? = nil,
+        historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryPage {
         let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
         let startedAt = DispatchTime.now().uptimeNanoseconds
@@ -90,7 +92,9 @@ enum TaskThreadHistoryReader {
             hasEarlierRuns: runResult.hasEarlier,
             hasEarlierEvents: eventResult.hasEarlier,
             modelContext: modelContext,
-            includeRunlessStateAnchors: true
+            includeRunlessStateAnchors: true,
+            publicationCache: publicationCache,
+            historyInvalidation: historyInvalidation
         )
         logRead(operation: "latest", page: page, startedAt: startedAt, taskID: taskID)
         return page
@@ -105,7 +109,9 @@ enum TaskThreadHistoryReader {
         eventIDs: [UUID],
         runIDs: [UUID],
         cursor: TaskThreadHistoryCursor,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        publicationCache: TaskPublicationDecisionEvidenceReader.Cache? = nil,
+        historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryPage {
         let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
         guard cursor.ownerID == nil || cursor.ownerID == ownerID else { throw TaskHistoryScope.Failure.ambiguousOwner }
@@ -122,7 +128,8 @@ enum TaskThreadHistoryReader {
         let counts = try totals(ownerID: ownerID, modelContext: modelContext)
         let page = TaskThreadHistoryPage(
             publicationEvents: try TaskPublicationDecisionEvidenceReader.latest(
-                ownerID: ownerID, runID: liveRuns.items.first?.id, in: modelContext
+                ownerID: ownerID, runID: liveRuns.items.first?.id, cache: publicationCache,
+                historyInvalidation: historyInvalidation, in: modelContext
             ),
             runs: try budgetedRunSnapshots(runs, ownerID: ownerID, modelContext: modelContext),
             events: events.map(TaskEventSnapshot.init),
@@ -146,7 +153,9 @@ enum TaskThreadHistoryReader {
         since cursor: TaskThreadEventCursor,
         modelContext: ModelContext,
         runPageSize: Int = defaultRunPageSize,
-        eventPageSize: Int = defaultEventPageSize
+        eventPageSize: Int = defaultEventPageSize,
+        publicationCache: TaskPublicationDecisionEvidenceReader.Cache? = nil,
+        historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryTailPage {
         let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
         guard cursor.ownerID == nil || cursor.ownerID == ownerID else { throw TaskHistoryScope.Failure.ambiguousOwner }
@@ -168,7 +177,8 @@ enum TaskThreadHistoryReader {
         let counts = try totals(ownerID: ownerID, modelContext: modelContext)
         let page = TaskThreadHistoryTailPage(
             publicationEvents: try TaskPublicationDecisionEvidenceReader.latest(
-                ownerID: ownerID, runID: runResult.items.first?.id, in: modelContext
+                ownerID: ownerID, runID: runResult.items.first?.id, cache: publicationCache,
+                historyInvalidation: historyInvalidation, in: modelContext
             ),
             events: eventResult.items.map(TaskEventSnapshot.init),
             runs: try budgetedRunSnapshots(runResult.items, ownerID: ownerID, modelContext: modelContext),
@@ -241,7 +251,9 @@ enum TaskThreadHistoryReader {
         hasEarlierRuns: Bool,
         hasEarlierEvents: Bool,
         modelContext: ModelContext,
-        includeRunlessStateAnchors: Bool
+        includeRunlessStateAnchors: Bool,
+        publicationCache: TaskPublicationDecisionEvidenceReader.Cache? = nil,
+        historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryPage {
         let counts = try totals(ownerID: ownerID, modelContext: modelContext)
         let totalRunCount = counts.runs
@@ -257,7 +269,8 @@ enum TaskThreadHistoryReader {
 
         return TaskThreadHistoryPage(
             publicationEvents: includeRunlessStateAnchors
-                ? try TaskPublicationDecisionEvidenceReader.latest(ownerID: ownerID, runID: runs.first?.id, in: modelContext)
+                ? try TaskPublicationDecisionEvidenceReader.latest(ownerID: ownerID, runID: runs.first?.id,
+                    cache: publicationCache, historyInvalidation: historyInvalidation, in: modelContext)
                 : [],
             runs: runSnapshots,
             events: eventSnapshots,

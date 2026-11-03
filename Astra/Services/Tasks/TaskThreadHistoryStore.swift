@@ -21,6 +21,11 @@ import ASTRAModels
 /// main context without saving (`AgentEventRecorder`).
 actor TaskThreadHistoryStore {
     private let container: ModelContainer
+    private lazy var publicationCache = TaskPublicationDecisionEvidenceReader.Cache(container: container)
+
+    #if DEBUG
+    func publicationWorkForTesting() -> TaskPublicationDecisionEvidenceReader.Work { publicationCache.work }
+    #endif
 
     init(container: ModelContainer) {
         self.container = container
@@ -33,7 +38,8 @@ actor TaskThreadHistoryStore {
         taskID: UUID,
         ownerID: PersistentIdentifier? = nil,
         runPageSize: Int = TaskThreadHistoryReader.defaultRunPageSize,
-        eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize
+        eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize,
+        historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryPage {
         // No `await` between the context and the return: the context must never
         // be alive across a suspension point.
@@ -43,7 +49,9 @@ actor TaskThreadHistoryStore {
             ownerID: ownerID,
             modelContext: context,
             runPageSize: runPageSize,
-            eventPageSize: eventPageSize
+            eventPageSize: eventPageSize,
+            publicationCache: publicationCache,
+            historyInvalidation: historyInvalidation
         )
     }
 
@@ -55,11 +63,13 @@ actor TaskThreadHistoryStore {
         ownerID: PersistentIdentifier,
         eventIDs: [UUID],
         runIDs: [UUID],
-        cursor: TaskThreadHistoryCursor
+        cursor: TaskThreadHistoryCursor,
+        historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryPage {
         try TaskThreadHistoryReader.retainedPage(
             taskID: taskID, ownerID: ownerID, eventIDs: eventIDs,
-            runIDs: runIDs, cursor: cursor, modelContext: makeContext()
+            runIDs: runIDs, cursor: cursor, modelContext: makeContext(),
+            publicationCache: publicationCache, historyInvalidation: historyInvalidation
         )
     }
 
@@ -68,7 +78,8 @@ actor TaskThreadHistoryStore {
         ownerID: PersistentIdentifier? = nil,
         since cursor: TaskThreadEventCursor,
         runPageSize: Int = TaskThreadHistoryReader.defaultRunPageSize,
-        eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize
+        eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize,
+        historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryTailPage {
         try TaskThreadHistoryReader.tailPage(
             taskID: taskID,
@@ -76,7 +87,9 @@ actor TaskThreadHistoryStore {
             since: cursor,
             modelContext: makeContext(),
             runPageSize: runPageSize,
-            eventPageSize: eventPageSize
+            eventPageSize: eventPageSize,
+            publicationCache: publicationCache,
+            historyInvalidation: historyInvalidation
         )
     }
 
