@@ -49,6 +49,9 @@ struct DevScaleAX {
             fail("Only a uniquely identified synthetic benchmark app may be controlled")
         }
         guard AXIsProcessTrusted() else { fail("Accessibility permission required for the invoking terminal") }
+        // Direct executable launches may not present their first window until
+        // activated. Request presentation only after the owned-app guard.
+        if args[2] == "wait" { app.activate() }
         let root = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(root, 2)
         if args[2] == "dump" {

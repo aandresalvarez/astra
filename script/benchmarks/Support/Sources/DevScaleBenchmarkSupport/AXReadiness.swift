@@ -92,6 +92,8 @@ enum AXReadiness {
         let indices: [Int], textNeedle: String
         if needle.hasPrefix("value:") {
             indices = [4]; textNeedle = String(needle.dropFirst(6))
+        } else if needle.hasPrefix("content:") {
+            indices = [1, 2, 4]; textNeedle = String(needle.dropFirst(8))
         } else if needle.hasPrefix("label:") {
             indices = [1, 2]; textNeedle = String(needle.dropFirst(6))
         } else {

@@ -82,7 +82,9 @@ If an owned child cannot be stopped, its bundle is retained and the run fails.
 did not open the normal production/development store. The runner never uses
 `open`, `killall`, cross-bundle takeover, or process-name termination. It stops
 only its own `Popen` child. A controller must acquire the owned app's foreground
-focus before posting input. Existing ASTRA processes remain running.
+focus before posting input. Startup waits also request activation after verifying
+the benchmark identity, so the copied app can present its first window. Existing
+ASTRA processes remain running.
 
 Diagnostics and synthetic stores are retained for inspection; each copied app
 bundle is removed after its owned process exits, so it cannot later be opened
@@ -198,7 +200,8 @@ Unsupported/no-value attributes and documented CFNull results are allowed missin
 values. Both wait paths require a complete result before accepting absence.
 `last_ready_probe_ms` exposes the final query's observation cost.
 
-The default plan uses `value:contains:...` for transcript/instruction text,
+The default plan uses `content:contains:...` for transcript/instruction text
+(title, description or value, including combined message labels),
 `label:...` for menu title/description, and `id:AXButton:...` for the Files
 button. Role-qualified identifiers only inspect that attribute on the specified
 role. This avoids requiring unrelated attributes to be readable while preserving

@@ -115,7 +115,7 @@ struct AXReadinessTests {
         let root = AXUIElementCreateApplication(getpid())
         let composer = batch(role: "AXMenuButton", description: "Composer actions",
                              identifier: error(.failure), value: error(.attributeUnsupported))
-        for needle in ["value:contains:Synthetic message", "label:Workspace Configuration", "id:AXButton:FilesShelfBrowseButton"] {
+        for needle in ["value:contains:Synthetic message", "content:contains:Synthetic message", "label:Workspace Configuration", "id:AXButton:FilesShelfBrowseButton"] {
             #expect(AXReadiness.find(root, needle, reader: { _ in composer }).isReady(present: false))
         }
         #expect(!AXReadiness.find(root, "id:AXMenuButton:Composer", reader: { _ in composer }).isReady(present: false))
@@ -128,6 +128,18 @@ struct AXReadinessTests {
         #expect(AXReadiness.find(root, "id:AXButton:FilesShelfBrowseButton", reader: { _ in
             batch(role: "AXButton", title: error(.cannotComplete), identifier: "FilesShelfBrowseButton")
         }).isReady(present: true))
+    }
+
+    @Test("Visible-content selectors support combined message descriptions and text values")
+    func combinedMessageContent() {
+        let root = AXUIElementCreateApplication(getpid())
+        for observation in [batch(role: "AXUnknown", description: "Your message: Synthetic 426/0.", identifier: error(.failure)),
+                            batch(identifier: error(.failure), value: "Synthetic 426/0.")] {
+            #expect(AXReadiness.find(root, "content:contains:Synthetic 426/0.", reader: { _ in observation }).isReady(present: true))
+        }
+        #expect(!AXReadiness.find(root, "content:contains:Synthetic 426/0.", reader: { _ in
+            batch(description: error(.cannotComplete))
+        }).isReady(present: false))
     }
 }
 
