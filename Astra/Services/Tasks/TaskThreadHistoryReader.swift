@@ -94,6 +94,42 @@ enum TaskThreadHistoryReader {
         return page
     }
 
+    /// Refresh a reader-held window by durable identity. Counts can grow while
+    /// the window stays fixed. Invalidation cannot widen this query, resurrect
+    /// deleted rows, or move surviving conversation items above the viewport.
+    static func retainedPage(
+        taskID: UUID,
+        ownerID: PersistentIdentifier,
+        eventIDs: [UUID],
+        runIDs: [UUID],
+        cursor: TaskThreadHistoryCursor,
+        modelContext: ModelContext
+    ) throws -> TaskThreadHistoryPage {
+        let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
+        guard cursor.ownerID == nil || cursor.ownerID == ownerID else { throw TaskHistoryScope.Failure.ambiguousOwner }
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate {
+            $0.task?.persistentModelID == ownerID && eventIDs.contains($0.id)
+        }))
+        let retainedRuns = try modelContext.fetch(FetchDescriptor<TaskRun>(predicate: #Predicate {
+            $0.task?.persistentModelID == ownerID && runIDs.contains($0.id)
+        }))
+        let liveRuns = try latestRuns(ownerID: ownerID, limit: defaultRunPageSize, modelContext: modelContext)
+        let runs = Array(Dictionary((retainedRuns + liveRuns.items).map { ($0.id, $0) },
+                                    uniquingKeysWith: { _, latest in latest }).values)
+        let counts = try totals(ownerID: ownerID, modelContext: modelContext)
+        let page = TaskThreadHistoryPage(
+            runs: try budgetedRunSnapshots(runs, ownerID: ownerID, modelContext: modelContext),
+            events: events.map(TaskEventSnapshot.init),
+            stateAnchors: try latestStateAnchors(ownerID: ownerID, runs: runs, includeRunless: true, modelContext: modelContext),
+            cursor: cursor,
+            totalRunCount: counts.runs,
+            totalEventCount: counts.events
+        )
+        logRead(operation: "retained", page: page, startedAt: startedAt, taskID: taskID)
+        return page
+    }
+
     /// Reads only the rows at or after `cursor`, which is what a streaming
     /// append actually changes. Backdated inserts and deletions are invisible
     /// here by construction, so callers must reconcile `totalEventCount`

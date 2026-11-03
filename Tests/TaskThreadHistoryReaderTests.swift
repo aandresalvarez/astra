@@ -788,7 +788,8 @@ struct StorageBackedTaskThreadViewModelTests {
         #expect(viewModel.historyFullReadCountForTesting == 1)
         #expect(viewModel.historyTailReadCountForTesting == 5)
         #expect(viewModel.historyReadCountForTesting == 6)
-        #expect(viewModel.snapshot?.sortedEvents.count == min(600, TaskThreadHistoryReader.defaultEventPageSize) + 5)
+        #expect(viewModel.snapshot?.sortedEvents.count == TaskThreadHistoryReader.defaultEventPageSize)
+        #expect(viewModel.snapshot?.sortedEvents.last?.payload == "chunk 604")
     }
 
     @Test("Coalesced stream chunk is re-read by the tail because its timestamp moves forward")
@@ -939,14 +940,21 @@ struct StorageBackedTaskThreadViewModelTests {
         await viewModel.waitForPendingWorkForTesting()
 
         let events = viewModel.snapshot?.sortedEvents ?? []
-        // Refresh must surface the backdated summary and preserve the evidence.
+        // Invalidation refreshes held identities without inserting new rows
+        // above the reader. The new summary waits behind New activity.
         #expect(events.contains { $0.payload == strandedPayload })
-        #expect(events.contains { $0.type == "activity.compacted" })
-        // But replacing must not throw away the pages the user opened: nothing
-        // they did triggered this read.
-        #expect(events.count == 1_251)
+        #expect(events.count == 1_250)
+        #expect(viewModel.hasNewerHistory)
         #expect(!viewModel.hasEarlierHistory)
         #expect(events.contains { $0.payload == "message 1" })
+        viewModel.followLatestHistory(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+        for _ in 0..<10 where viewModel.hasEarlierHistory {
+            viewModel.loadEarlierHistory(for: task)
+            await viewModel.waitForPendingWorkForTesting()
+        }
+        #expect(viewModel.snapshot?.sortedEvents.contains { $0.type == "activity.compacted" } == true)
+        #expect(viewModel.snapshot?.sortedEvents.count == 1_251)
     }
 
     @Test("Backdated insert forces a full re-read")
@@ -1086,7 +1094,7 @@ struct StorageBackedTaskThreadViewModelTests {
         #expect(viewModel.historyFullReadCountForTesting == 1)
     }
 
-    @Test("Earlier pages survive a tail read")
+    @Test("Earlier pages stay fixed while new events wait for Jump to latest")
     func earlierPagesSurviveATailRead() async throws {
         let (container, context, task) = try fixture()
         defer { _ = container }
@@ -1114,11 +1122,16 @@ struct StorageBackedTaskThreadViewModelTests {
         viewModel.requestSnapshotRefresh(for: task)
         await viewModel.waitForPendingWorkForTesting()
 
-        #expect(viewModel.snapshot?.sortedEvents.count == 1_206)
+        #expect(viewModel.snapshot?.sortedEvents.count == 1_205)
         #expect(viewModel.snapshot?.sortedEvents.contains { $0.payload == "message 0" } == true)
         #expect(!viewModel.hasEarlierHistory)
-        #expect(viewModel.historyTailReadCountForTesting == 1)
+        #expect(viewModel.hasNewerHistory)
+        #expect(viewModel.historyTailReadCountForTesting == 0)
         #expect(viewModel.historyFullReadCountForTesting == 1)
+        viewModel.followLatestHistory(for: task)
+        await viewModel.waitForPendingWorkForTesting()
+        #expect(viewModel.snapshot?.sortedEvents.count == TaskThreadHistoryReader.defaultEventPageSize)
+        #expect(viewModel.snapshot?.sortedEvents.last?.payload == "newest")
     }
 
     @Test("Storage-backed snapshot caps tool results to the chronologically newest, not dictionary order")

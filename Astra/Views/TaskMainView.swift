@@ -1794,7 +1794,8 @@ struct TaskMainView: View {
     }
 
     private func handleChatTopPositionChange(topMinY: CGFloat) {
-        guard topMinY > -300 else { return }
+        guard topMinY > -300, !isChatAtBottom else { return }
+        guard pendingInitialChatScrollTaskID != task.id else { return }
         guard threadViewModel.hasEarlierHistory else { return }
         guard !isExpandingWindow else { return }
         requestEarlierHistory()
@@ -1816,11 +1817,19 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private func newActivityPill(proxy: ScrollViewProxy) -> some View {
-        if !isChatAtBottom {
-            ChatJumpToLatestButton(hasUnseenActivity: hasUnseenChatActivity) {
-                scrollChatToBottom(proxy)
+        if !isChatAtBottom || threadViewModel.hasNewerHistory {
+            ChatJumpToLatestButton(hasUnseenActivity: hasUnseenChatActivity || threadViewModel.hasNewerHistory) {
+                resumeLatestHistory()
+                scrollChatToBottomAfterLayout(proxy, animated: false)
             }
         }
+    }
+
+    private func resumeLatestHistory() {
+        isExpandingWindow = false
+        expansionAnchorItemID = nil
+        isChatAtBottom = true
+        threadViewModel.followLatestHistory(for: task)
     }
 
     private func updateChatBottomState(bottomMinY: CGFloat, viewportHeight: CGFloat) {
@@ -1828,7 +1837,12 @@ struct TaskMainView: View {
         let isNowAtBottom = ChatScrollMetrics.isAtBottom(bottomMinY: bottomMinY, viewportHeight: viewportHeight)
         guard isNowAtBottom != isChatAtBottom else { return }
         isChatAtBottom = isNowAtBottom
-        if isChatAtBottom && !wasAtBottom { hasUnseenChatActivity = false }
+        if isChatAtBottom && !wasAtBottom {
+            hasUnseenChatActivity = false
+            if !isExpandingWindow { threadViewModel.followLatestHistory(for: task) }
+        } else if !isChatAtBottom {
+            threadViewModel.pauseFollowingLatestHistory(for: task)
+        }
     }
 
     /// `ChatScrollRecoveryWatchdog` calls this once a parked bottom-sentinel reading
@@ -1879,6 +1893,7 @@ struct TaskMainView: View {
         }
 
         if shouldScrollAfterUserMessage {
+            resumeLatestHistory()
             scrollChatToBottom(proxy)
             shouldScrollAfterUserMessage = false
             return
@@ -4699,6 +4714,7 @@ struct TaskMainView: View {
            ) { return }
         shouldScrollAfterUserMessage = true
 
+        resumeLatestHistory()
         switch sendAction {
         case .none:
             return
@@ -4851,6 +4867,7 @@ struct TaskMainView: View {
         }
 
         shouldScrollAfterUserMessage = true
+        resumeLatestHistory()
         let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
         TaskEventInsertionService.insert(userEvent, attachmentPaths: attachmentPaths, into: modelContext)
         task.updatedAt = Date()

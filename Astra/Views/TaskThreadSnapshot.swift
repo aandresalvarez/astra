@@ -305,6 +305,7 @@ enum TaskThreadStateEventPolicy {
         "astra.todo.replace", "astra.complete", "astra.protocol.invalid",
         "astra.permission_manifest", "astra.permission_summary",
         "permission.approval.requested", "permission.request.resolved",
+        "git.publish.requested", "git.publish.receipt",
         "runtime.execution_ownership",
         "task.dismissed"
     ]

@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Views/TaskThreadViewModel.swift|Astra/Services/Tasks/TaskThreadHistoryStore.swift|Astra/Services/Tasks/TaskThreadHistoryPagePolicy.swift|Tests/TaskThreadLiveHistoryTests.swift)
+      add_target "TaskThreadLiveHistoryTests"
+      ;;
+  esac
+
+  case "$path" in
     ASTRACore/LaunchDiagnosticClock.swift|Astra/Services/Diagnostics/SidebarFolderResponsivenessTelemetry.swift|Astra/Services/Persistence/StartupCleanupTelemetry.swift|Astra/Services/Capabilities/CredentialCleanupStartupMirrors.swift|Tests/SidebarFolderResponsivenessTelemetryTests.swift|Tests/StartupCleanupTelemetryTests.swift|Tests/CredentialCleanupStartupTests.swift)
       add_target "SidebarFolderResponsivenessTelemetryTests|StartupCleanupTelemetryTests|CredentialCleanupStartupTests|MainThreadPhaseTests"
       ;;

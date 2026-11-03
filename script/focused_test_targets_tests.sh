@@ -465,3 +465,9 @@ assert_targets 'SidebarFolderResponsivenessTelemetryTests|StartupCleanupTelemetr
   Tests/SidebarFolderResponsivenessTelemetryTests.swift \
   Tests/StartupCleanupTelemetryTests.swift \
   Tests/CredentialCleanupStartupTests.swift
+
+assert_targets 'TaskThreadLiveHistoryTests' \
+  Astra/Views/TaskThreadViewModel.swift \
+  Astra/Services/Tasks/TaskThreadHistoryStore.swift \
+  Astra/Services/Tasks/TaskThreadHistoryPagePolicy.swift \
+  Tests/TaskThreadLiveHistoryTests.swift
