@@ -1,6 +1,8 @@
+import Darwin
 import Foundation
 import SwiftData
 import Testing
+import os
 import ASTRAModels
 @testable import ASTRAPersistence
 
@@ -24,6 +26,64 @@ private actor ProjectionWriteLatch {
 @MainActor
 @Suite("Committed recovery projection replacement", .serialized)
 struct WorkspaceSavedExportReplacementTests {
+    @Test("Disk-full snapshot, partial staging and replacement failures preserve the mirror and pending work",
+          arguments: ["snapshot", "staging", "replace"])
+    func diskFullPreservesLastGoodMirror(stage: String) async throws {
+        let (root, container, workspace) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context) }
+        let url = try #require(WorkspaceConfigManager.autoExportTarget(for: root.path).url)
+        try #require(await WorkspacePersistenceCoordinator.exportSavedMirrorNow(workspace: workspace, modelContext: context))
+        for index in 0..<3 {
+            let previous = try Data(contentsOf: url)
+            workspace.name = "Committed replacement \(index)"
+            try context.save()
+            var results: [Bool] = []
+            let snapshotFiles = OSAllocatedUnfairLock(initialState: Set<SnapshotFileIdentity>())
+            let run: () async throws -> Void = {
+                let job = try #require(WorkspacePersistenceCoordinator.enqueueSavedAutoExport(
+                    workspace: workspace, modelContext: context, completion: { results.append($0) }))
+                await job.value
+            }
+            try await WorkspaceExportFileIO.$copySnapshot.withValue({ source, destination in
+                // Exercise real SQLite backup handles before the failing
+                // copy unwinds its reservation. Never fill the host disk.
+                try WorkspaceRecoveryService.copyStoreSnapshot(from: source, to: destination)
+                let files = try snapshotFileIdentities(in: destination.deletingLastPathComponent())
+                snapshotFiles.withLock { $0.formUnion(files) }
+                if stage == "snapshot" { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
+            }) {
+                switch stage {
+                case "staging":
+                    try await WorkspaceExportFileIO.$writeStaging.withValue({ data, staging in
+                        try data.prefix(16).write(to: staging)
+                        throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))
+                    }, operation: run)
+                case "replace":
+                    try await WorkspaceExportFileIO.$replace.withValue({ _, _ in
+                        throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))
+                    }, operation: run)
+                default: try await run()
+                }
+            }
+            #expect(results == [false])
+            #expect(!snapshotFiles.withLock { $0.isEmpty })
+            #expect(openSnapshotDescriptors(snapshotFiles.withLock { $0 }).isEmpty)
+            #expect(try Data(contentsOf: url) == previous)
+            #expect(try WorkspaceConfigManager.loadConfig(from: url).name != workspace.name)
+            #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount >= 1)
+            let children = try FileManager.default.contentsOfDirectory(atPath: root.path)
+            #expect(!children.contains { $0.hasPrefix(".astra-mirror-") && $0 != ".astra-mirror-cleanup.lock" })
+            #expect(!children.contains { $0.contains(".astra-export-") })
+            // The committed rows and their obligation survive. An ordinary
+            // drain, with working I/O, publishes them and clears the request.
+            WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: context)
+            #expect(try WorkspaceConfigManager.loadConfig(from: url).name == workspace.name)
+            #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 0)
+        }
+    }
+
     private func fixture() throws -> (URL, ModelContainer, Workspace) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-replacement-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
