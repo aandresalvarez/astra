@@ -82,10 +82,25 @@ enum AXReadiness {
             let identifier = text(list[3])
             return (identifier.value == String(needle.dropFirst(7)), identifier.complete)
         }
-        let substring = needle.hasPrefix("contains:")
-        let target = substring ? String(needle.dropFirst(9)) : needle
+        if needle.hasPrefix("id:") {
+            let parts = needle.dropFirst(3).split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return (false, false) }
+            guard role == String(parts[0]) else { return (false, true) }
+            let identifier = text(list[3])
+            return (identifier.value == String(parts[1]), identifier.complete)
+        }
+        let indices: [Int], textNeedle: String
+        if needle.hasPrefix("value:") {
+            indices = [4]; textNeedle = String(needle.dropFirst(6))
+        } else if needle.hasPrefix("label:") {
+            indices = [1, 2]; textNeedle = String(needle.dropFirst(6))
+        } else {
+            indices = [1, 2, 3, 4]; textNeedle = needle
+        }
+        let substring = textNeedle.hasPrefix("contains:")
+        let target = substring ? String(textNeedle.dropFirst(9)) : textNeedle
         var complete = true
-        for index in 1...4 {
+        for index in indices {
             let attribute = text(list[index], allowNonText: index == 4)
             if let value = attribute.value, substring ? value.contains(target) : value == target {
                 return (true, true) // A positive witness does not need the other attributes.

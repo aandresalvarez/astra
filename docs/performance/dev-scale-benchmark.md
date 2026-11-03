@@ -198,6 +198,13 @@ Unsupported/no-value attributes and documented CFNull results are allowed missin
 values. Both wait paths require a complete result before accepting absence.
 `last_ready_probe_ms` exposes the final query's observation cost.
 
+The default plan uses `value:contains:...` for transcript/instruction text,
+`label:...` for menu title/description, and `id:AXButton:...` for the Files
+button. Role-qualified identifiers only inspect that attribute on the specified
+role. This avoids requiring unrelated attributes to be readable while preserving
+the operated controls. Errors in the attributes required by a selector still
+make absence indeterminate; they are never converted to missing values.
+
 These are **click-to-accessibility-ready upper bounds**, including UI input
 queueing, view work, accessibility query cost and polling. They do not measure
 pixels presented on screen or split queue delay from handler execution. A fresh

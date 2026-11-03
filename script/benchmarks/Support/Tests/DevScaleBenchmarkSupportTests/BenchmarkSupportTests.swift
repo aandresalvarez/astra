@@ -109,6 +109,26 @@ struct AXReadinessTests {
             batch(role: "AXMenuBar", children: error(.cannotComplete))
         }).isReady(present: false))
     }
+
+    @Test("Typed selectors ignore unrelated failures and still require their own attributes")
+    func typedSelectors() {
+        let root = AXUIElementCreateApplication(getpid())
+        let composer = batch(role: "AXMenuButton", description: "Composer actions",
+                             identifier: error(.failure), value: error(.attributeUnsupported))
+        for needle in ["value:contains:Synthetic message", "label:Workspace Configuration", "id:AXButton:FilesShelfBrowseButton"] {
+            #expect(AXReadiness.find(root, needle, reader: { _ in composer }).isReady(present: false))
+        }
+        #expect(!AXReadiness.find(root, "id:AXMenuButton:Composer", reader: { _ in composer }).isReady(present: false))
+        #expect(!AXReadiness.find(root, "value:contains:Synthetic message", reader: { _ in
+            batch(value: error(.cannotComplete))
+        }).isReady(present: false))
+        #expect(AXReadiness.find(root, "value:contains:Synthetic message", reader: { _ in
+            batch(identifier: error(.failure), value: "Synthetic message")
+        }).isReady(present: true))
+        #expect(AXReadiness.find(root, "id:AXButton:FilesShelfBrowseButton", reader: { _ in
+            batch(role: "AXButton", title: error(.cannotComplete), identifier: "FilesShelfBrowseButton")
+        }).isReady(present: true))
+    }
 }
 
 @Suite("Benchmark goal metadata")
