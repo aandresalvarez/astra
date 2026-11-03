@@ -25,6 +25,7 @@ extension WorkspaceConfigManager {
             accounts: [PluginAccountRef]? = nil,
             activationID: String? = nil,
             knownComponentIDs: [String]? = nil,
+            credentialComponentIDs: [String]? = nil,
             secretSettingKeys: [String]? = nil,
             namespaceSeed: String? = nil,
             credentialNamespaceSeed: String? = nil,
@@ -42,6 +43,7 @@ extension WorkspaceConfigManager {
             self.overridingRowIDs = overridingRowIDs
             self.accounts = accounts
             self.knownComponentIDs = knownComponentIDs
+            self.credentialComponentIDs = credentialComponentIDs
             self.secretSettingKeys = secretSettingKeys
             self.namespaceSeed = namespaceSeed
             self.credentialNamespaceSeed = credentialNamespaceSeed
@@ -66,6 +68,11 @@ extension WorkspaceConfigManager {
         /// reconciled against, so an Update after recovery still knows which
         /// ones it drops.
         public var knownComponentIDs: [String]?
+        /// Complete credential component inventory derived for cleanup. An
+        /// explicit [] is affirmative evidence of no component namespaces;
+        /// nil is unknown, including legacy activations never reconciled with
+        /// a definition. This is a projection, not imported activation state.
+        public var credentialComponentIDs: [String]?
         /// The secret settings (`componentID#KEY`) the activation stored in
         /// the Keychain. The values themselves are never in the file.
         public var secretSettingKeys: [String]?
@@ -151,6 +158,17 @@ extension WorkspaceConfigManager {
         var refs = WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
             let configuration = PluginLaunchConfiguration.activation(activation)
             let settings = Dictionary(zip(configuration.keys, configuration.values), uniquingKeysWith: { _, last in last })
+            // An empty model array also represents unreconciled legacy state.
+            // Only a matching definition may turn that absence into proof.
+            let inventory = activation.knownComponentIDs.isEmpty
+                ? PluginCredentialComponentInventorySeam.componentIDs(pluginID: activation.pluginID,
+                    version: activation.recordedVersion, digest: activation.recordedDigest)
+                : activation.knownComponentIDs
+            let credentialComponents = inventory.map {
+                Set($0 + activation.overriddenComponentIDs
+                    + (activation.configKeys + activation.secretSettingKeys).compactMap(PluginActivation.componentID(ofSettingKey:)))
+                    .sorted()
+            }
             let accounts = activation.bindings
                 .filter { !$0.isDeleted }
                 .sorted { $0.createdAt < $1.createdAt }
@@ -172,7 +190,8 @@ extension WorkspaceConfigManager {
                 accounts: accounts.isEmpty ? nil : accounts,
                 activationID: activation.id.uuidString,
                 knownComponentIDs: activation.knownComponentIDs.isEmpty ? nil : activation.knownComponentIDs,
-                secretSettingKeys: activation.secretSettingKeys.isEmpty ? nil : activation.secretSettingKeys,
+                credentialComponentIDs: credentialComponents,
+                secretSettingKeys: activation.secretSettingKeys,
                 namespaceSeed: activation.namespaceSeed.isEmpty ? nil : activation.namespaceSeed,
                 credentialNamespaceSeed: activation.credentialNamespaceSeed.isEmpty ? nil : activation.credentialNamespaceSeed,
                 digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest,
