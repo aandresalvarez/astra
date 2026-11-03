@@ -41,10 +41,13 @@ struct WorkspaceSavedExportReplacementTests {
             try context.save()
             var results: [Bool] = []
             let snapshotFiles = OSAllocatedUnfairLock(initialState: Set<SnapshotFileIdentity>())
+            let telemetry = StartupCleanupAggregate()
             let run: () async throws -> Void = {
-                let job = try #require(WorkspacePersistenceCoordinator.enqueueSavedAutoExport(
-                    workspace: workspace, modelContext: context, completion: { results.append($0) }))
-                await job.value
+                try await WorkspacePersistenceWork.$cleanupJob.withValue(telemetry) {
+                    let job = try #require(WorkspacePersistenceCoordinator.enqueueSavedAutoExport(
+                        workspace: workspace, modelContext: context, completion: { results.append($0) }))
+                    await job.value
+                }
             }
             try await WorkspaceExportFileIO.$copySnapshot.withValue({ source, destination in
                 // Exercise real SQLite backup handles before the failing
@@ -68,6 +71,20 @@ struct WorkspaceSavedExportReplacementTests {
                 }
             }
             #expect(results == [false])
+            // The real export path must keep the file-I/O override inside the
+            // copy measurement, and count bytes only after that copy returns.
+            let fields = telemetry.fields()
+            #expect(fields["copy_attempts"] == "1")
+            #expect(fields["copy_failed"] == (stage == "snapshot" ? "1" : "0"))
+            #expect(fields["copy_succeeded"] == (stage == "snapshot" ? "0" : "1"))
+            #expect(fields["error_disk_full"] == "1")
+            #expect(fields["json_written_bytes"] == "0")
+            if stage == "snapshot" {
+                #expect(fields["logical_snapshot_bytes"] == "0")
+            } else {
+                #expect(try #require(Int64(fields["logical_snapshot_bytes"] ?? "")) > 0)
+                #expect(fields["json_write_failed"] == "1")
+            }
             #expect(!snapshotFiles.withLock { $0.isEmpty })
             #expect(openSnapshotDescriptors(snapshotFiles.withLock { $0 }).isEmpty)
             #expect(try Data(contentsOf: url) == previous)

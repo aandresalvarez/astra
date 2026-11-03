@@ -49,6 +49,10 @@ public enum AuditLoggingSeam {
 /// Records an audit event, matching `AppLogger.audit`'s signature exactly
 /// so `AppLogger`'s existing conformance needs no changes.
 public protocol AuditLogging: Sendable {
+    /// Diagnostic scopes only. Persistence uses the app's existing watchdog
+    /// marker through this seam, without depending on the app target.
+    static func beginMainThreadPhase(_ label: String) -> Bool
+    static func endMainThreadPhase()
     static func audit(
         _ event: AuditEvent,
         category: String,
@@ -60,6 +64,9 @@ public protocol AuditLogging: Sendable {
 }
 
 extension AuditLogging {
+    public static func beginMainThreadPhase(_ label: String) -> Bool { false }
+    public static func endMainThreadPhase() {}
+
     /// Convenience overload matching `AppLogger.audit`'s own defaults
     /// (`category: "Audit"`, `taskID: nil`, `fields: [:]`, `level: .info`,
     /// `fieldMaxLength: 120`) - protocol requirements can't declare default

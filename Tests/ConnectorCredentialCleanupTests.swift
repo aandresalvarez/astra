@@ -1077,7 +1077,9 @@ struct ConnectorCredentialCleanupTests {
         let workspaces = try #require(app.range(of: "WorkspaceDeletionCleanupService.resumePending(", range: gate.upperBound..<app.endIndex))
         #expect(trusted.upperBound <= operations.lowerBound && operations.upperBound < workspaces.lowerBound)
         let connectors = try #require(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: gate.upperBound..<app.endIndex))
-        let drop = try #require(app.range(of: "WorkspaceDeletionCleanupService.dropUnconfirmed(\n                        modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker", range: connectors.upperBound..<app.endIndex))
+        let drop = try #require(app.range(
+            of: #"WorkspaceDeletionCleanupService\.dropUnconfirmed\(\s*modelContext: modelContext, rescanMarker: WorkspaceRecoveryService\.defaultIncompleteRecoveryMarker"#,
+            options: .regularExpression, range: connectors.upperBound..<app.endIndex))
         #expect(app[gate.upperBound..<drop.lowerBound].contains("dropsUnconfirmed: false"))
         let skills = try #require(app.range(of: "await SkillCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync",
             range: gate.upperBound..<connectors.lowerBound))

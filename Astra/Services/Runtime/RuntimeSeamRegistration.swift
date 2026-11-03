@@ -56,7 +56,10 @@ extension ExecutionSandbox: ExecutionPathSafetyChecking {}
 
 extension AgentRuntimeAdapterRegistry: AgentRuntimeRegistryLookup {}
 
-extension AppLogger: AuditLogging {}
+extension AppLogger: AuditLogging {
+    static func beginMainThreadPhase(_ label: String) -> Bool { MainThreadPhase.push(label) }
+    static func endMainThreadPhase() { MainThreadPhase.pop() }
+}
 
 extension TaskPlanService: TaskPlanReconstructing {}
 
