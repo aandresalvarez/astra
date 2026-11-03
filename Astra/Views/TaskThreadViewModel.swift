@@ -207,6 +207,9 @@ final class TaskThreadViewModel {
     private var loadedHistoryEvents: [UUID: TaskEventSnapshot] = [:]
     private var loadedHistoryStateAnchors: [TaskThreadStateEventKey: TaskEventSnapshot] = [:]
     private var loadedHistoryRuns: [UUID: TaskRunSnapshotInput] = [:]
+    /// At most six background-read publication records for the current run,
+    /// independent of the rendered/paged event window.
+    private var loadedPublicationEvents: [TaskEventSnapshot] = []
     private var historyTotalEventCount = 0
     private var historyTotalRunCount = 0
     /// Presentation mode only: the store and provider context stay complete.
@@ -308,6 +311,7 @@ final class TaskThreadViewModel {
             loadedHistoryEvents = [:]
             loadedHistoryStateAnchors = [:]
             loadedHistoryRuns = [:]
+            loadedPublicationEvents = []
             historyTotalEventCount = 0
             historyTotalRunCount = 0
             isBrowsingHistory = false
@@ -1343,6 +1347,7 @@ final class TaskThreadViewModel {
         // to any count and are handled by `TaskThreadHistoryInvalidation`
         // instead, which `readHistory` consults before choosing this path.
         guard tail.totalEventCount == historyTotalEventCount + appended else { return false }
+        loadedPublicationEvents = tail.publicationEvents
         for event in tail.events { loadedHistoryEvents[event.id] = event }
         // A refreshed anchor arrives as an ordinary tail row. Merge (never
         // replace) so anchors the tail page never refetches are retained.
@@ -1396,6 +1401,7 @@ final class TaskThreadViewModel {
     }
 
     private func replaceHistory(with page: TaskThreadHistoryPage) {
+        loadedPublicationEvents = page.publicationEvents
         loadedHistoryRuns = Dictionary(uniqueKeysWithValues: page.runs.map { ($0.id, $0) })
         loadedHistoryEvents = Dictionary(uniqueKeysWithValues: page.events.map { ($0.id, $0) })
         loadedHistoryStateAnchors = Self.stateAnchorDictionary(page.stateAnchors)
@@ -1462,7 +1468,8 @@ final class TaskThreadViewModel {
             totalEventCount: historyTotalEventCount,
             omittedEventCount: omittedEventCount,
             totalRunCount: historyTotalRunCount,
-            omittedRunCount: omittedRunCount
+            omittedRunCount: omittedRunCount,
+            publicationEvents: loadedPublicationEvents
         )
     }
 
@@ -1472,18 +1479,6 @@ final class TaskThreadViewModel {
         Dictionary(anchors.map { (TaskThreadStateEventKey(event: $0), $0) }) { current, candidate in
             Self.isLaterStateAnchor(candidate, than: current) ? candidate : current
         }
-    }
-
-    private func replaceLatestStateAnchors(
-        with anchors: [TaskEventSnapshot],
-        refreshedRuns: [TaskRunSnapshotInput]
-    ) {
-        let refreshedRunIDs = Set(refreshedRuns.map(\.id))
-        loadedHistoryStateAnchors = loadedHistoryStateAnchors.filter { key, _ in
-            guard let runID = key.runID else { return false }
-            return !refreshedRunIDs.contains(runID)
-        }
-        mergeStateAnchors(anchors)
     }
 
     private func mergeStateAnchors(_ anchors: [TaskEventSnapshot]) {

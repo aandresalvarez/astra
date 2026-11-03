@@ -470,4 +470,5 @@ assert_targets 'TaskThreadLiveHistoryTests' \
   Astra/Views/TaskThreadViewModel.swift \
   Astra/Services/Tasks/TaskThreadHistoryStore.swift \
   Astra/Services/Tasks/TaskThreadHistoryPagePolicy.swift \
+  Astra/Services/Tasks/TaskPublicationDecisionEvidenceReader.swift \
   Tests/TaskThreadLiveHistoryTests.swift

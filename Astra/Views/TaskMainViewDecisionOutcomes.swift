@@ -47,10 +47,7 @@ extension TaskMainView {
             let startedAt = DispatchTime.now().uptimeNanoseconds
             let outcomes = TaskDecisionOutcomeResolver.outcomes(
                 task: task,
-                latestRun: snapshot?.latestRun.map { .init(id: $0.id, startedAt: $0.startedAt) },
-                windowEvents: (snapshot?.sortedEvents ?? []).map {
-                    TaskOutcomeEventRecord(id: $0.id, runID: $0.runID, type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
-                },
+                snapshot: snapshot,
                 decisionArtifactPaths: decisionArtifactPathsCache,
                 modelContext: modelContext
             )
@@ -72,6 +69,26 @@ enum TaskDecisionOutcomeResolver {
     struct LatestRun: Equatable {
         let id: UUID
         let startedAt: Date
+    }
+
+    /// Use the snapshot's bounded decision evidence, which includes publication
+    /// failures/receipts outside the rendered transcript. No history read occurs
+    /// here; the background history store owns that projection.
+    static func outcomes(
+        task: AgentTask,
+        snapshot: TaskThreadSnapshot?,
+        decisionArtifactPaths: [String],
+        modelContext: ModelContext
+    ) -> TaskDecisionOutcomeCache {
+        outcomes(
+            task: task,
+            latestRun: snapshot?.latestRun.map { .init(id: $0.id, startedAt: $0.startedAt) },
+            windowEvents: (snapshot?.decisionOutcomeInputs.events ?? []).map {
+                TaskOutcomeEventRecord(id: $0.id, runID: $0.runID, type: $0.type,
+                                       payload: $0.payload, timestamp: $0.timestamp)
+            },
+            decisionArtifactPaths: decisionArtifactPaths, modelContext: modelContext
+        )
     }
 
     static func outcomes(

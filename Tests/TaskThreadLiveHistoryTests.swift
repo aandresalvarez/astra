@@ -181,6 +181,147 @@ struct TaskThreadLiveHistoryTests {
         #expect(pendingRequest() == nil)
     }
 
+    @Test("Publication failures stay actionable after eviction and receipts clear the decision",
+          arguments: ["durable", "legacyMessage", "legacyUse"], ["sameRun", "runless", "olderRun"])
+    func publicationFailuresSurviveEviction(failureKind: String, receiptScope: String) async throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        task.goal = "Fix the bug and create a pull request"
+        task.status = .pendingUser
+        var receiptRun: TaskRun?
+        if receiptScope == "olderRun" {
+            for index in 0..<15 {
+                let older = TaskRun(task: task)
+                older.startedAt = Date(timeIntervalSince1970: Double(-100 + index))
+                context.insert(older)
+                if index == 0 { receiptRun = older }
+            }
+        }
+        let run = TaskRun(task: task)
+        run.startedAt = Date(timeIntervalSince1970: 1)
+        run.status = .failed
+        run.stopReason = TaskRunStopReason.externalOutcomePending.rawValue
+        context.insert(run)
+        if receiptScope == "sameRun" { receiptRun = run }
+        if failureKind == "legacyUse" {
+            let use = append(-1, task: task, context: context, type: "tool.use", run: run)
+            use.payload = "bash: gh pr create --draft"
+        }
+        let failure = append(0, task: task, context: context,
+                             type: failureKind == "durable" ? "git.publish.failed" : "tool.result.failed", run: run)
+        if failureKind == "durable" {
+            failure.payload = TaskEvent.payloadString(TaskRequiredExternalOutcomeFailure(
+                version: 1, kind: .githubPullRequest, runID: run.id,
+                sourceEventID: nil, message: "gh pr create failed"
+            ))
+        } else if failureKind == "legacyMessage" {
+            failure.payload = TaskEvent.payloadString(ToolResultFailurePayload(
+                toolID: "bash", message: "gh pr create: permission denied"
+            ))
+        } else {
+            failure.payload = "permission denied"
+        }
+        // A later unrelated tool failure and a malformed durable failure must
+        // not replace the still-unresolved publication evidence.
+        let otherUse = append(40, task: task, context: context, type: "tool.use", run: run)
+        otherUse.payload = "git status"
+        let otherFailure = append(41, task: task, context: context, type: "tool.result.failed", run: run)
+        otherFailure.payload = "unrelated command failed"
+        append(42, task: task, context: context, type: "git.publish.failed", run: run)
+        let receipt = append(-10, task: task, context: context, type: "git.publish.receipt", run: receiptRun)
+        receipt.payload = "{}"
+        try context.save()
+        let vm = TaskThreadViewModel()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        func durablePending() -> Bool {
+            TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) != nil
+        }
+        func dockPending() -> Bool {
+            TaskDecisionOutcomeResolver.outcomes(
+                task: task, snapshot: vm.snapshot, decisionArtifactPaths: [], modelContext: context
+            ).hasGitPublishRequest
+        }
+        #expect(durablePending())
+        #expect(dockPending() == durablePending())
+        for batch in 0..<20 {
+            for offset in 0..<20 { append(100 + batch * 20 + offset, task: task, context: context) }
+            vm.refreshSnapshot(for: task)
+            await vm.waitForPendingWorkForTesting()
+        }
+        #expect(vm.retainedHistoryEventCountForTesting == 300)
+        #expect(vm.snapshot?.sortedEvents.contains { $0.id == failure.id } == false)
+        #expect(durablePending())
+        #expect(dockPending() == durablePending())
+        #expect((vm.snapshot?.decisionOutcomeInputs.events ?? []).filter {
+            $0.type.hasPrefix("git.publish.") || $0.type == "tool.use" || $0.type == "tool.result.failed"
+        }.count <= 6)
+        #expect(vm.snapshot?.decisionOutcomeInputs.events.count ?? 0 <= 306)
+        #expect(TaskGitPullRequestPublishReviewPolicy.shouldOffer(
+            taskStatus: task.status, latestRunStopReason: .externalOutcomePending, hasPendingPublication: dockPending()
+        ))
+        // Move an existing receipt forward, including one attached to a run
+        // outside the 12-run transcript window, then evict its ordinary row.
+        receipt.timestamp = Date(timeIntervalSince1970: 1_000)
+        task.updatedAt = Date()
+        TaskThreadHistoryInvalidation.invalidate(taskID: task.id)
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(!durablePending())
+        #expect(dockPending() == durablePending())
+        for index in 2_000..<2_400 { append(index, task: task, context: context) }
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(dockPending() == durablePending())
+        #expect(!dockPending())
+        #expect(!TaskGitPullRequestPublishReviewPolicy.shouldOffer(
+            taskStatus: task.status, latestRunStopReason: .externalOutcomePending, hasPendingPublication: dockPending()
+        ))
+        #expect((vm.snapshot?.decisionOutcomeInputs.events ?? []).filter {
+            $0.type.hasPrefix("git.publish.") || $0.type == "tool.use" || $0.type == "tool.result.failed"
+        }.count <= 6)
+        #expect(vm.snapshot?.decisionOutcomeInputs.events.count ?? 0 <= 306)
+        #expect(vm.retainedHistoryEventCountForTesting == 300)
+    }
+
+    @Test("Legacy evidence search crosses bounded batches and isolates imported task owners")
+    func legacyEvidenceSearchIsBatchedAndOwnerScoped() async throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        task.goal = "Fix the bug and create a pull request"
+        let run = TaskRun(task: task)
+        run.startedAt = Date(timeIntervalSince1970: 1)
+        context.insert(run)
+        let use = append(0, task: task, context: context, type: "tool.use", run: run)
+        use.payload = "gh pr create --draft"
+        let failed = append(1, task: task, context: context, type: "tool.result.failed", run: run)
+        failed.payload = "permission denied"
+        let otherUse = append(2, task: task, context: context, type: "tool.use", run: run)
+        otherUse.payload = "git status"
+        for index in 3..<143 {
+            let unrelated = append(index, task: task, context: context, type: "tool.result.failed", run: run)
+            unrelated.payload = "unrelated command failed"
+        }
+        for index in 200..<600 { append(index, task: task, context: context) }
+        let imported = AgentTask(title: "Other owner", goal: "Synthetic imported copy")
+        imported.id = task.id
+        context.insert(imported)
+        append(10_000, task: imported, context: context, type: "git.publish.receipt")
+        try context.save()
+        let vm = TaskThreadViewModel()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        let metadata = (vm.snapshot?.decisionOutcomeInputs.events ?? []).filter {
+            $0.type == "tool.use" || $0.type == "tool.result.failed" || $0.type.hasPrefix("git.publish.")
+        }
+        #expect(metadata.count == 2)
+        #expect(Set(metadata.map(\.id)) == Set([use.id, failed.id]))
+        #expect(vm.retainedHistoryEventCountForTesting == 300)
+        #expect(TaskDecisionOutcomeResolver.outcomes(
+            task: task, snapshot: vm.snapshot, decisionArtifactPaths: [], modelContext: context
+        ).hasGitPublishRequest)
+    }
+
     @Test("Streaming runs evict old run snapshots and their state anchors")
     func runAndAnchorRetention() async throws {
         let (container, context, task, root) = try fixture()

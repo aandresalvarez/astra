@@ -54,7 +54,8 @@ enum TaskDecisionOutcomeRefresh {
             self.init(events: events, runs: runs, cancellationCheck: {})
         }
 
-        init(events window: [TaskEventSnapshot], runs: [TaskRunSnapshot], cancellationCheck: () throws -> Void) rethrows {
+        init(events window: [TaskEventSnapshot], runs: [TaskRunSnapshot],
+             publicationEvents: [TaskEventSnapshot] = [], cancellationCheck: () throws -> Void) rethrows {
             self.runs = runs.map(RunKey.init)
             var lastUse: [UUID?: TaskEventSnapshot] = [:]
             var legacyUses = Set<UUID>()
@@ -83,7 +84,11 @@ enum TaskDecisionOutcomeRefresh {
                 start = end
             }
             try cancellationCheck()
-            events = window.filter { affectsOutcomes($0.type) || legacyUses.contains($0.id) }
+            let windowEvidence = window.filter { affectsOutcomes($0.type) || legacyUses.contains($0.id) }
+            events = Dictionary((windowEvidence + publicationEvents).map { ($0.id, $0) },
+                                uniquingKeysWith: { _, fresh in fresh }).values.sorted {
+                $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp
+            }
         }
     }
 

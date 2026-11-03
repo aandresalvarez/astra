@@ -63,16 +63,16 @@ Apple Swift 6.4.2, arm64, macOS 26.6.2 (25G83).
 | Stored events at completion | 6,000 | 6,000 |
 | Maximum retained snapshot events | 6,000 | 300 |
 | Maximum eager conversation rows | 6,002 | 302 |
-| Starting physical footprint | 39 MiB | 35 MiB |
+| Starting physical footprint | 39 MiB | 39 MiB |
 | Sampled workload peak | 410 MiB | 64 MiB |
-| Footprint after two seconds idle | 410 MiB | 54 MiB |
+| Footprint after two seconds idle | 410 MiB | 61 MiB |
 
 The two extra rows are the goal and active run. At each 1,000-event checkpoint,
 the before footprints were **98, 157, 205, 260, 327, 410 MiB**; after they were
-**56, 61, 56, 57, 58, 54 MiB**. The table uses the final-source after run; an earlier after run measured
+**59, 64, 52, 56, 57, 61 MiB**. The table uses the final-source after run; an earlier after run measured
 67 MiB peak and 58 MiB idle with the same 300-event/302-row bound. These are
 sequential runs on a shared developer machine, not a statistical performance
-claim. Test execution took 241.719 seconds before and 74.520 seconds in the final
+claim. Test execution took 241.719 seconds before and 79.553 seconds in the final
 after run, excluding compilation;
 there is no timing gate.
 
@@ -112,3 +112,42 @@ bundle`. Bundle staging/verification was blocked by the script's shared-identity
 guard because an ASTRA Dev app from another checkout was running. It was left
 open; no takeover override was used. The hosted synthetic renderer was exercised
 without launching either ASTRA app.
+
+## Publication decisions outside the visible window
+
+Review of the first draft found that retaining typed publication requests and
+receipts did not cover historical publication failures without a typed request.
+The disk-backed regression reproduced the dock/durable mismatch for all nine
+combinations of durable failure, legacy message evidence, or preceding tool-use
+evidence with same-run, runless, or older-run receipts: pending initially in
+both paths, lost only by the dock after eviction, cleared by a later receipt.
+
+The background history reader now supplies an additional publication evidence
+packet, independently of rendered events. It retains at most six records for
+the current run's decision. A valid typed request uses its own-run receipt;
+legacy failures also use the latest task-wide receipt, even when its run is
+outside the transcript. Valid durable failures and matching legacy failures are
+selected in 64-row batches; unrelated failures and malformed payloads cannot
+hide older actionable evidence. Legacy command context uses the latest
+preceding tool-use record, with the same evidence-matching helper as the durable
+resolver. A resolving receipt stops the search at its timestamp.
+
+The packet is refreshed by tail, replacement/invalidation, and retained-window
+reads. It participates in the immutable decision signature and dock resolver,
+without joining `sortedEvents` or conversation rows. Main-actor refresh consumes
+these values; it does not fetch publication history. Additional tests cover
+batch boundaries, imported tasks sharing a UUID, Review visibility, and receipt
+clearing after the receipt itself leaves the ordinary event page.
+
+The first combined decision/scaling runs passed the functional comparisons but
+missed the unchanged send-cost gate (180–189 ms send cost, 174–178 ms bounds).
+The isolated scaling rerun passed (166.73 ms send, 174.12 ms bound). Its view
+refresh measured 6.38 ms versus a 348.23 ms full-history control at 5,000 events.
+No timing threshold was changed; these observations do not establish the cause
+of the combined-run send-cost misses.
+
+After the publication-evidence correction, all 75 functional history/decision
+checks passed in the 76-test combined run; the remaining issue was the send-cost
+gate described above. The isolated scaling check passed. The repeated 6,000-event
+allocation probe passed with the same 300 retained events and 302 eager rows,
+64 MiB sampled peak and 61 MiB idle.

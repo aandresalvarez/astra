@@ -224,6 +224,7 @@ struct TaskRunSnapshotInput: Identifiable, Sendable {
 }
 
 struct TaskThreadSnapshotInput: Sendable {
+    let publicationEvents: [TaskEventSnapshot]
     let goal: String
     let createdAt: Date
     let events: [TaskEventSnapshot]
@@ -287,8 +288,10 @@ struct TaskThreadSnapshotInput: Sendable {
         totalEventCount: Int,
         omittedEventCount: Int,
         totalRunCount: Int,
-        omittedRunCount: Int
+        omittedRunCount: Int,
+        publicationEvents: [TaskEventSnapshot] = []
     ) {
+        self.publicationEvents = publicationEvents
         self.goal = goal
         self.createdAt = createdAt
         self.events = events
@@ -874,6 +877,7 @@ struct TaskThreadSnapshot: Sendable {
             omittedEventCount: input.omittedEventCount,
             totalRunCount: input.totalRunCount,
             omittedRunCount: input.omittedRunCount,
+            publicationEvents: input.publicationEvents,
             cancellationCheck: {}
         )
     }
@@ -894,6 +898,7 @@ struct TaskThreadSnapshot: Sendable {
             omittedEventCount: input.omittedEventCount,
             totalRunCount: input.totalRunCount,
             omittedRunCount: input.omittedRunCount,
+            publicationEvents: input.publicationEvents,
             cancellationCheck: { try Task.checkCancellation() }
         )
     }
@@ -939,12 +944,14 @@ struct TaskThreadSnapshot: Sendable {
         omittedEventCount: Int,
         totalRunCount: Int?,
         omittedRunCount: Int,
+        publicationEvents: [TaskEventSnapshot] = [],
         cancellationCheck: () throws -> Void
     ) throws {
         try cancellationCheck()
         sortedEvents = events.sorted { $0.timestamp < $1.timestamp }
         sortedRuns = runs.sorted { $0.startedAt < $1.startedAt }
-        decisionOutcomeInputs = try .init(events: sortedEvents, runs: sortedRuns, cancellationCheck: cancellationCheck)
+        decisionOutcomeInputs = try .init(events: sortedEvents, runs: sortedRuns,
+                                         publicationEvents: publicationEvents, cancellationCheck: cancellationCheck)
         try cancellationCheck()
         latestRun = sortedRuns.last
         self.totalEventCount = totalEventCount ?? events.count
