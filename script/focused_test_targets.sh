@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    ASTRACore/LaunchDiagnosticClock.swift|Astra/Services/Diagnostics/SidebarFolderResponsivenessTelemetry.swift|Astra/Services/Persistence/StartupCleanupTelemetry.swift|Astra/Services/Capabilities/CredentialCleanupStartupMirrors.swift|Tests/SidebarFolderResponsivenessTelemetryTests.swift|Tests/StartupCleanupTelemetryTests.swift|Tests/CredentialCleanupStartupTests.swift)
+      add_target "SidebarFolderResponsivenessTelemetryTests|StartupCleanupTelemetryTests|CredentialCleanupStartupTests|MainThreadPhaseTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Runtime/RuntimeNativeSessionOwnership.swift|Tests/RuntimeNativeSessionOwnership*Tests.swift)
       add_target "RuntimeNativeSessionOwnershipTests|AgentRuntimeAsyncWorkTests|AgentProcessResultTests"
       ;;
@@ -141,7 +147,7 @@ target_for_path() {
       add_target "TaskExecutionLaunchSnapshotApplicatorTests"
       add_target "RuntimePermissionGrantRegressionTests"
       ;;
-    Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Astra/Services/Persistence/WorkspaceSavedExportSnapshot.swift|Astra/Services/Persistence/WorkspaceExportChangeScope.swift|Astra/Services/Persistence/WorkspaceSavedExportLease.swift|Astra/Services/Persistence/WorkspaceSnapshotDirectory.swift|Tests/WorkspaceSavedExportPendingTests.swift|Tests/WorkspaceSavedExportReplacementTests.swift|Tests/WorkspaceSnapshotDirectoryTests.swift|Tests/WorkspaceSavedExportSnapshotTests.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceSavedExportReviewTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
+    Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Astra/Services/Persistence/WorkspaceSavedExportSnapshot.swift|Astra/Services/Persistence/WorkspaceExportFileIO.swift|Astra/Services/Persistence/WorkspaceExportChangeScope.swift|Astra/Services/Persistence/WorkspaceSavedExportLease.swift|Astra/Services/Persistence/WorkspaceSnapshotDirectory.swift|Tests/WorkspaceSavedExportPendingTests.swift|Tests/WorkspaceSavedExportReplacementTests.swift|Tests/WorkspaceSnapshotDirectoryTests.swift|Tests/WorkspaceSavedExportSnapshotTests.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceSavedExportReviewTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
       add_target "RuntimeSettlementReviewRegressionTests"
       add_target "WorkspaceSavedAutoExportTests"
       add_target "WorkspaceSavedExportSnapshotTests"

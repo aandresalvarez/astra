@@ -1460,14 +1460,6 @@ public enum WorkspaceConfigManager {
         )
     }
 
-    private static func write(_ config: WorkspaceConfig, to url: URL) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(config)
-        try data.write(to: url)
-    }
-
     static func fetchGlobalSkills(modelContext: ModelContext) -> [Skill] {
         let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal })
         return (try? modelContext.fetch(descriptor)) ?? []

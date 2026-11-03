@@ -11,6 +11,9 @@ enum WorkspaceSnapshotDirectory {
 
     /// A short saving-actor fence may suspend while this immutable copy stays
     /// leased. Its capture and row traversal still run on the reader actor.
+    /// Readers must release their contexts and drain deferred Objective-C
+    /// ownership before dropping this reservation: unlinking an open SQLite
+    /// file neither closes its reader nor returns its disk space.
     final class Reservation {
         let root: URL
         private let lease: FileLease

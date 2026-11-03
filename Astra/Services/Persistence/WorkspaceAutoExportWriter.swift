@@ -208,15 +208,13 @@ public final class WorkspaceAutoExportGate: @unchecked Sendable {
     private func withStagedFile<T>(_ data: Data, to url: URL, publish: (URL) throws -> T) throws -> T {
         let staging = url.deletingLastPathComponent()
             .appendingPathComponent(".\(url.lastPathComponent).astra-export-\(UUID().uuidString)")
-        try data.write(to: staging)
         defer { try? FileManager.default.removeItem(at: staging) }
+        try WorkspaceExportFileIO.writeStaging(data, staging)
         return try publish(staging)
     }
 
     private func replace(_ staging: URL, at url: URL) throws {
-        guard Darwin.rename(staging.path, url.path) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
+        try WorkspaceExportFileIO.replace(staging, url)
     }
 
     /// Drops every mirror write queued for `workspaceID` so far. Call it
@@ -232,7 +230,7 @@ public final class WorkspaceAutoExportGate: @unchecked Sendable {
 /// Serializes workspace auto-export JSON encode + file writes off the main actor.
 ///
 /// Actor isolation guarantees that two auto-exports never write the same file
-/// concurrently, and the `.atomic` write means `WorkspaceRecoveryService` /
+/// concurrently, and the staged write plus atomic rename mean `WorkspaceRecoveryService` /
 /// `loadConfig` can never observe a torn file. Auto-export drops `.prettyPrinted`
 /// (kept only for explicit user-facing exports via `WorkspaceConfigManager.write`)
 /// while preserving `.sortedKeys` so the on-disk recovery file stays deterministic.
@@ -297,11 +295,12 @@ actor WorkspaceAutoExportWriter {
         guard !Task.isCancelled, current else { return false }
         do {
             let data = try WorkspacePersistenceWork.measure("mirror_encode", workspaceID: workspaceID) {
-                try encoder.encode(config)
+                try WorkspacePersistenceWork.jsonEncode(workspaceID: workspaceID) { try encoder.encode(config) }
             }
             guard !Task.isCancelled else { return false }
             let ticket = try WorkspacePersistenceWork.measure("mirror_write", workspaceID: workspaceID) {
-                try publication.publish(data, to: url)
+                try WorkspacePersistenceWork.jsonWrite(workspaceID: workspaceID, bytes: data.count,
+                    published: { $0 != nil }) { try publication.publish(data, to: url) }
             }
             if let ticket {
                 await WorkspacePersistenceCoordinator.autoExportDidWrite(ticket)
