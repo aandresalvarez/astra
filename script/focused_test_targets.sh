@@ -20,8 +20,8 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
-    Astra/Views/TaskThreadViewModel.swift|Astra/Services/Tasks/TaskThreadHistoryStore.swift|Astra/Services/Tasks/TaskThreadHistoryPagePolicy.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceReader.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceCache.swift|Tests/TaskPublicationDecisionEvidenceWorkTests.swift|Tests/TaskThreadLiveHistoryTests.swift)
-      add_target "TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests"
+    Astra/Views/TaskThreadViewModel.swift|Astra/Services/Tasks/TaskThreadHistoryStore.swift|Astra/Services/Tasks/TaskThreadHistoryPagePolicy.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceReader.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceCache.swift|Tests/TaskPublicationDecisionEvidenceWorkTests.swift|Tests/TaskPublicationDecisionEvidenceCommitTests.swift|Tests/TaskThreadLiveHistoryTests.swift)
+      add_target "TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests"
       ;;
   esac
 

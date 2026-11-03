@@ -63,16 +63,16 @@ Apple Swift 6.4.2, arm64, macOS 26.6.2 (25G83).
 | Stored events at completion | 6,000 | 6,000 |
 | Maximum retained snapshot events | 6,000 | 300 |
 | Maximum eager conversation rows | 6,002 | 302 |
-| Starting physical footprint | 39 MiB | 36 MiB |
-| Sampled workload peak | 410 MiB | 71 MiB |
-| Footprint after two seconds idle | 410 MiB | 59 MiB |
+| Starting physical footprint | 39 MiB | 39 MiB |
+| Sampled workload peak | 410 MiB | 66 MiB |
+| Footprint after two seconds idle | 410 MiB | 58 MiB |
 
 The two extra rows are the goal and active run. At each 1,000-event checkpoint,
 the before footprints were **98, 157, 205, 260, 327, 410 MiB**; after they were
-**56, 60, 65, 70, 60, 59 MiB**. The table uses the final-source after run; earlier after runs measured
-64–67 MiB peak and 54–61 MiB idle with the same 300-event/302-row bound. These are
+**59, 63, 57, 56, 54, 58 MiB**. The table uses the final-source after run; earlier after runs measured
+64–71 MiB peak and 54–61 MiB idle with the same 300-event/302-row bound. These are
 sequential runs on a shared developer machine, not a statistical performance
-claim. Test execution took 241.719 seconds before and 72.689 seconds in the final
+claim. Test execution took 241.719 seconds before and 74.777 seconds in the final
 after run, excluding compilation;
 there is no timing gate.
 
@@ -161,12 +161,18 @@ when task wording is edited.
 
 The history store owns one bounded derived cache entry. It checks relevant
 persisted counts/latest records, selected evidence, scope/run identity and the
-explicit history-invalidation generation. A save-boundary observer invalidates
-existing publication/tool-evidence edits and deletions; it reads only pending
-changes on their context's saving thread and shares only a locked revision.
-It does not retain models/contexts, change domain state, or observe ordinary
-message/response changes as publication edits. Inserts/backdating are detected
-by the persisted signature. The observer is removed with the store. Tool uses
+explicit history-invalidation generation. Save-boundary observers invalidate
+existing publication/tool-evidence edits and deletions at both `willSave` and
+`didSave`. The revision is captured before the page's first query, so a read
+overlapping a commit cannot cache old evidence under a post-commit revision.
+Only pending changes are inspected on their context's saving thread. Locked
+value state and weak context identities connect the two boundaries; models
+and contexts are not retained. A later save attempt replaces an abandoned
+scope, and an unmatched `didSave` invalidates conservatively. Readers never
+wait for a completion notification, including after failed saves.
+The observers do not change domain state or treat ordinary message/response
+changes as publication edits. Inserts/backdating are detected
+by the persisted signature. The observers are removed with the store. Tool uses
 after the newest failure do not invalidate the evidence signature.
 
 Deterministic tests with 1,500 unrelated failures verify zero legacy scans or
@@ -174,16 +180,21 @@ preceding-use lookups for non-PR tasks. For PR-intent tasks, twelve ordinary
 appends (including a later tool use) add zero scans/lookups after priming and
 hit the cache. An older unselected failure edit and an explicit invalidation
 both force a rescan. Typed requests still win after PR wording is removed.
-The 76-test focused history/decision/work run passed.
+The commit-boundary regression holds a disposable SQLite writer slot while a
+second context edits an older unselected failure. A read after `willSave` sees
+the old committed evidence; after the real save commits, the cached read agrees
+with both the uncached read and durable resolver. An aborted notification scope
+and its superseding ordinary save also preserve read progress and cache hits.
+The 78-test focused history/decision/work/commit run passed in eleven suites.
 The final 6,000-event allocation replay also passed after this correction; its
 measurements are the after column above.
 
 The opt-in `TaskPublicationTailReplayTests` mirrors the review fixture with fresh
 read contexts. Non-PR reads at 100/750/1,500 failures measured
-1.42–1.63 / 1.74–2.25 / 1.99–2.49 ms (three reads each). The review's
+1.50–1.73 / 1.79–2.45 / 2.00–2.46 ms (three reads each). The review's
 `bcef2f5e` observations were about 22–29 / 187–203 / 441–473 ms. A PR-intent
-store performed its initial 1,500-row search in 450.71 ms; the next two reads
-were 3.85 and 3.94 ms with the scan/lookup counts unchanged at 1,500.
+store performed its initial 1,500-row search in 458.39 ms; the next two reads
+were 3.91 and 3.78 ms with the scan/lookup counts unchanged at 1,500.
 These are observations, with no wall-clock CI threshold. Run with:
 
 ```bash

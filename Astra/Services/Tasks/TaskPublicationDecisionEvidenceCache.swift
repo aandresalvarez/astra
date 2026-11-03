@@ -38,39 +38,61 @@ extension TaskPublicationDecisionEvidenceReader {
 
     /// Only existing publication/tool-evidence edits or deletions invalidate
     /// the cache. Insertions/backdating are checked by the persisted signature.
-    /// Notification callbacks read changes on the saving context's own thread;
-    /// only a locked integer crosses back to the history actor. No model or
-    /// context is retained, and the observer is removed with its store.
+    /// Both save boundaries advance the revision: a read during an in-flight
+    /// commit must not remain cached after didSave. Failed saves never block
+    /// readers, and the next willSave replaces that context's pending scope.
+    /// Callbacks inspect changes on the saving thread; only locked value state
+    /// crosses to the reader. Context references are weak.
     final class MutationTracker: @unchecked Sendable {
+        private struct PendingSave {
+            weak var context: ModelContext?
+            let relevant: Bool
+        }
         private let lock = NSLock()
         private var sequence = 0
-        private var observer: NSObjectProtocol?
+        private var pending: [ObjectIdentifier: PendingSave] = [:]
+        private var observers: [NSObjectProtocol] = []
 
         init(container: ModelContainer) {
             let containerID = ObjectIdentifier(container)
-            observer = NotificationCenter.default.addObserver(forName: ModelContext.willSave, object: nil, queue: nil) { [weak self] note in
+            observers.append(NotificationCenter.default.addObserver(forName: ModelContext.willSave, object: nil, queue: nil) { [weak self] note in
                 guard let context = note.object as? ModelContext,
                       ObjectIdentifier(context.container) == containerID else { return }
                 let inserted = Set(context.insertedModelsArray.map { ObjectIdentifier($0 as AnyObject) })
-                for model in context.changedModelsArray + context.deletedModelsArray {
-                    guard !inserted.contains(ObjectIdentifier(model as AnyObject)), let event = model as? TaskEvent,
-                          event.type.hasPrefix("git.publish.") || event.type == "tool.result.failed" || event.type == "tool.use" else { continue }
-                    self?.invalidate()
-                    return
+                let relevant = (context.changedModelsArray + context.deletedModelsArray).contains { model in
+                    guard !inserted.contains(ObjectIdentifier(model as AnyObject)), let event = model as? TaskEvent else { return false }
+                    return event.type.hasPrefix("git.publish.") || event.type == "tool.result.failed" || event.type == "tool.use"
                 }
-            }
+                self?.willSave(context, relevant: relevant)
+            })
+            observers.append(NotificationCenter.default.addObserver(forName: ModelContext.didSave, object: nil, queue: nil) { [weak self] note in
+                guard let context = note.object as? ModelContext,
+                      ObjectIdentifier(context.container) == containerID else { return }
+                self?.didSave(context)
+            })
         }
 
-        deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+        deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
 
         var revision: Int {
             lock.lock(); defer { lock.unlock() }
             return sequence
         }
 
-        private func invalidate() {
+        private func willSave(_ context: ModelContext, relevant: Bool) {
             lock.lock(); defer { lock.unlock() }
-            sequence &+= 1
+            pending = pending.filter { $0.value.context != nil }
+            pending[ObjectIdentifier(context)] = PendingSave(context: context, relevant: relevant)
+            if relevant { sequence &+= 1 }
+        }
+
+        private func didSave(_ context: ModelContext) {
+            lock.lock(); defer { lock.unlock() }
+            // An observer installed after willSave must still invalidate a
+            // read captured before that already-in-flight save commits.
+            let relevant = pending.removeValue(forKey: ObjectIdentifier(context))?.relevant ?? true
+            pending = pending.filter { $0.value.context != nil }
+            if relevant { sequence &+= 1 }
         }
     }
 }

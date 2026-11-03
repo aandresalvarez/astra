@@ -73,6 +73,7 @@ enum TaskThreadHistoryReader {
         publicationCache: TaskPublicationDecisionEvidenceReader.Cache? = nil,
         historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryPage {
+        let publicationRevision = publicationCache?.mutations.revision
         let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let runResult = try latestRuns(
@@ -94,7 +95,8 @@ enum TaskThreadHistoryReader {
             modelContext: modelContext,
             includeRunlessStateAnchors: true,
             publicationCache: publicationCache,
-            historyInvalidation: historyInvalidation
+            historyInvalidation: historyInvalidation,
+            publicationRevision: publicationRevision
         )
         logRead(operation: "latest", page: page, startedAt: startedAt, taskID: taskID)
         return page
@@ -113,6 +115,7 @@ enum TaskThreadHistoryReader {
         publicationCache: TaskPublicationDecisionEvidenceReader.Cache? = nil,
         historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryPage {
+        let publicationRevision = publicationCache?.mutations.revision
         let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
         guard cursor.ownerID == nil || cursor.ownerID == ownerID else { throw TaskHistoryScope.Failure.ambiguousOwner }
         let startedAt = DispatchTime.now().uptimeNanoseconds
@@ -129,7 +132,7 @@ enum TaskThreadHistoryReader {
         let page = TaskThreadHistoryPage(
             publicationEvents: try TaskPublicationDecisionEvidenceReader.latest(
                 ownerID: ownerID, runID: liveRuns.items.first?.id, cache: publicationCache,
-                historyInvalidation: historyInvalidation, in: modelContext
+                historyInvalidation: historyInvalidation, readRevision: publicationRevision, in: modelContext
             ),
             runs: try budgetedRunSnapshots(runs, ownerID: ownerID, modelContext: modelContext),
             events: events.map(TaskEventSnapshot.init),
@@ -157,6 +160,7 @@ enum TaskThreadHistoryReader {
         publicationCache: TaskPublicationDecisionEvidenceReader.Cache? = nil,
         historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryTailPage {
+        let publicationRevision = publicationCache?.mutations.revision
         let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
         guard cursor.ownerID == nil || cursor.ownerID == ownerID else { throw TaskHistoryScope.Failure.ambiguousOwner }
         let startedAt = DispatchTime.now().uptimeNanoseconds
@@ -178,7 +182,7 @@ enum TaskThreadHistoryReader {
         let page = TaskThreadHistoryTailPage(
             publicationEvents: try TaskPublicationDecisionEvidenceReader.latest(
                 ownerID: ownerID, runID: runResult.items.first?.id, cache: publicationCache,
-                historyInvalidation: historyInvalidation, in: modelContext
+                historyInvalidation: historyInvalidation, readRevision: publicationRevision, in: modelContext
             ),
             events: eventResult.items.map(TaskEventSnapshot.init),
             runs: try budgetedRunSnapshots(runResult.items, ownerID: ownerID, modelContext: modelContext),
@@ -253,7 +257,8 @@ enum TaskThreadHistoryReader {
         modelContext: ModelContext,
         includeRunlessStateAnchors: Bool,
         publicationCache: TaskPublicationDecisionEvidenceReader.Cache? = nil,
-        historyInvalidation: Int = 0
+        historyInvalidation: Int = 0,
+        publicationRevision: Int? = nil
     ) throws -> TaskThreadHistoryPage {
         let counts = try totals(ownerID: ownerID, modelContext: modelContext)
         let totalRunCount = counts.runs
@@ -270,7 +275,7 @@ enum TaskThreadHistoryReader {
         return TaskThreadHistoryPage(
             publicationEvents: includeRunlessStateAnchors
                 ? try TaskPublicationDecisionEvidenceReader.latest(ownerID: ownerID, runID: runs.first?.id,
-                    cache: publicationCache, historyInvalidation: historyInvalidation, in: modelContext)
+                    cache: publicationCache, historyInvalidation: historyInvalidation, readRevision: publicationRevision, in: modelContext)
                 : [],
             runs: runSnapshots,
             events: eventSnapshots,

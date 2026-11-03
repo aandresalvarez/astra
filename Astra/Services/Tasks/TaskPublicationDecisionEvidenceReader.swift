@@ -15,9 +15,11 @@ enum TaskPublicationDecisionEvidenceReader {
         runID: UUID?,
         cache: Cache? = nil,
         historyInvalidation: Int = 0,
+        readRevision: Int? = nil,
         in context: ModelContext
     ) throws -> [TaskEventSnapshot] {
         guard let runID else { return [] }
+        let editsAtStart = readRevision ?? cache?.mutations.revision
         var evidence: [TaskEventSnapshot] = []
         if let request = try newest(ownerID: ownerID, runID: runID,
                                     type: TaskExternalOutcomeEventTypes.publicationRequested, in: context) {
@@ -60,7 +62,7 @@ enum TaskPublicationDecisionEvidenceReader {
         if let cache {
             let current = try signatureFor(ownerID: ownerID, runID: runID, head: evidence,
                                            historyInvalidation: historyInvalidation,
-                                           edits: cache.mutations.revision, in: context)
+                                           edits: editsAtStart ?? cache.mutations.revision, in: context)
             signature = current
             if let entry = cache.entry, entry.signature == current,
                try selectedEventsUnchanged(entry.events, ownerID: ownerID, in: context),
