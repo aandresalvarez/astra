@@ -20,6 +20,8 @@ enum WorkspaceExportFileIO {
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         defer { try? handle.close() }
         try handle.write(contentsOf: data)
+        // A close-time writeback error must hold publication too.
+        try handle.close()
     }
 
     @TaskLocal static var replace: @Sendable (URL, URL) throws -> Void = { staging, destination in
