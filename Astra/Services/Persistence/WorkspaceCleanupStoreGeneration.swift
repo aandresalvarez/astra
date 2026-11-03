@@ -18,8 +18,9 @@ final class WorkspaceCleanupStoreGeneration: @unchecked Sendable {
         guard source.resolve() != nil else { throw CocoaError(.fileReadUnknown) }
         if container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
             // No SQLite generation exists for previews/tests. Hold cleanup
-            // after any save to this container while the batch exists.
-            observer = NotificationCenter.default.addObserver(forName: ModelContext.didSave,
+            // before any save to this container while the batch exists. A
+            // failed memory save conservatively holds this cleanup pass too.
+            observer = NotificationCenter.default.addObserver(forName: ModelContext.willSave,
                 object: nil, queue: nil) { [weak self, weak container] notification in
                 guard let self, let saved = notification.object as? ModelContext,
                       saved.container === container else { return }

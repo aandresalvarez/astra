@@ -11,14 +11,19 @@ public final class WorkspaceCleanupMirrorBatch {
     private let generation: WorkspaceCleanupStoreGeneration
     private let captured: WorkspaceSavedExportSnapshot.CapturedStore?
     private let tickets: [UUID: WorkspaceAutoExportGate.ExplicitTicket]
+    private let destinations: [UUID: WorkspaceCleanupMirrorDestination]
+    private let skipsExports: Bool
 
     private init(scope: [UUID: String], generation: WorkspaceCleanupStoreGeneration,
                  captured: WorkspaceSavedExportSnapshot.CapturedStore?,
-                 tickets: [UUID: WorkspaceAutoExportGate.ExplicitTicket]) {
+                 tickets: [UUID: WorkspaceAutoExportGate.ExplicitTicket],
+                 destinations: [UUID: WorkspaceCleanupMirrorDestination], skipsExports: Bool) {
         self.scope = scope
         self.generation = generation
         self.captured = captured
         self.tickets = tickets
+        self.destinations = destinations
+        self.skipsExports = skipsExports
     }
 
     @MainActor
@@ -33,18 +38,25 @@ public final class WorkspaceCleanupMirrorBatch {
                 try saved.fetch(FetchDescriptor<Workspace>())
             }
             let scope = Dictionary(uniqueKeysWithValues: workspaces.map { ($0.id, $0.primaryPath) })
+            let skipsExports = WorkspacePersistenceCoordinator.shouldSkipAutoExport()
             var tickets: [UUID: WorkspaceAutoExportGate.ExplicitTicket] = [:]
-            for (id, path) in scope where !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                guard WorkspaceMirrorRegistry(for: saved)?.register([path]) ?? true else { return nil }
+            var destinations: [UUID: WorkspaceCleanupMirrorDestination] = [:]
+            for (id, path) in scope where !skipsExports && !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let destination = try WorkspaceCleanupMirrorDestination(workspacePath: path)
+                guard WorkspaceMirrorRegistry(for: saved)?.register([destination.registeredWorkspacePath]) ?? true,
+                      destination.isCurrent else { return nil }
                 // Never create a new ticket late for an already-old copy.
                 tickets[id] = WorkspaceAutoExportGate.shared.reserveExport(for: id.uuidString)
+                destinations[id] = destination
             }
-            let needsCopy = !tickets.isEmpty && !WorkspacePersistenceCoordinator.shouldSkipAutoExport()
+            let needsCopy = !tickets.isEmpty
                 && !modelContext.container.configurations.allSatisfy(\.isStoredInMemoryOnly)
             let captured = needsCopy ? try await WorkspaceSavedAutoExport.shared.captureCleanupStore(
                 container: modelContext.container, workspaceID: tickets.keys.first?.uuidString ?? "none") : nil
-            guard !Task.isCancelled, generation.isCurrent else { return nil }
-            return WorkspaceCleanupMirrorBatch(scope: scope, generation: generation, captured: captured, tickets: tickets)
+            guard !Task.isCancelled, generation.isCurrent,
+                  destinations.values.allSatisfy(\.isCurrent) else { return nil }
+            return WorkspaceCleanupMirrorBatch(scope: scope, generation: generation, captured: captured,
+                tickets: tickets, destinations: destinations, skipsExports: skipsExports)
         } catch {
             AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "auto_export_failed", "operation": "cleanup_mirror_snapshot",
@@ -54,7 +66,11 @@ public final class WorkspaceCleanupMirrorBatch {
         }
     }
 
-    public var isCurrent: Bool { !Task.isCancelled && generation.isCurrent }
+    private var sourceIsCurrent: Bool { !Task.isCancelled && generation.isCurrent }
+
+    // Validate the whole folder scope at the final cleanup boundary. Writes
+    // check their own binding, so a stable N-workspace pass does O(N) checks.
+    public var isCurrent: Bool { sourceIsCurrent && destinations.values.allSatisfy(\.isCurrent) }
 
     @MainActor
     public func write(workspaceID: UUID, modelContext: ModelContext) async -> Bool {
@@ -63,23 +79,21 @@ public final class WorkspaceCleanupMirrorBatch {
 
     @MainActor
     func write(workspaceID: UUID, modelContext: ModelContext, writer: WorkspaceAutoExportWriter) async -> Bool {
-        guard isCurrent, let path = scope[workspaceID] else { return false }
-        if WorkspacePersistenceCoordinator.shouldSkipAutoExport()
+        guard sourceIsCurrent, let path = scope[workspaceID] else { return false }
+        if skipsExports
             || path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
         guard let ticket = tickets[workspaceID], WorkspaceAutoExportGate.shared.isCurrent(ticket),
-              let url = WorkspaceConfigManager.autoExportTarget(for: path).url else { return false }
-        guard let captured else {
+              let destination = destinations[workspaceID], destination.isCurrent else { return false }
+        let prepared: WorkspaceSavedAutoExport.Prepared?
+        if let captured {
+            prepared = await WorkspaceSavedAutoExport.shared.prepareCleanupWorkspace(captured: captured, workspaceID: workspaceID)
+        } else {
             // Preserve in-memory behavior; no SQLite file exists to share.
-            let id = workspaceID
-            guard let workspace = try? modelContext.fetch(FetchDescriptor<Workspace>(predicate: #Predicate { $0.id == id })).first
-            else { return false }
-            return await WorkspacePersistenceCoordinator.exportSavedMirrorNow(workspace: workspace, modelContext: modelContext)
-                && isCurrent
+            prepared = try? await WorkspaceSavedAutoExport.shared.prepare(container: modelContext.container, workspaceID: workspaceID)
         }
-        guard let prepared = await WorkspaceSavedAutoExport.shared.prepareCleanupWorkspace(
-            captured: captured, workspaceID: workspaceID), isCurrent,
+        guard let prepared, sourceIsCurrent, destination.isCurrent,
               prepared.config.primaryPath == path else { return false }
-        return await writer.write(prepared.config, to: url, workspaceID: workspaceID.uuidString,
-            ticket: ticket, sourceGeneration: generation) && isCurrent
+        return await writer.write(prepared.config, to: destination.url, workspaceID: workspaceID.uuidString,
+            ticket: ticket, sourceGeneration: generation, destination: destination) && sourceIsCurrent && destination.isCurrent
     }
 }

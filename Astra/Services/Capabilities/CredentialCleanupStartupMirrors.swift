@@ -22,10 +22,11 @@ enum CredentialCleanupStartupMirrors {
             saved.autosaveEnabled = false
             let scope = batch.scope
             for id in scope.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
-                guard batch.isCurrent else { return nil }
+                guard !Task.isCancelled else { return nil }
                 WorkspacePersistenceWork.mirrorAttempt(workspaceID: id)
                 let written: Bool
                 if let write {
+                    guard batch.isCurrent else { return nil }
                     guard let workspace = try? saved.fetch(FetchDescriptor<Workspace>(predicate: #Predicate { $0.id == id })).first
                     else { return nil }
                     written = await write(workspace, saved)

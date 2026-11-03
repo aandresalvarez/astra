@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import ASTRACore
 
@@ -192,20 +193,36 @@ public final class WorkspaceAutoExportGate: @unchecked Sendable {
     /// Renaming and superseding share the gate. A failed encoding, staging or
     /// rename leaves the old read/publication fully eligible as a fallback.
     func writeIfCurrent(_ ticket: ExplicitTicket, data: Data, to url: URL,
-                        sourceGeneration: WorkspaceCleanupStoreGeneration? = nil) throws -> Ticket? {
-        try withStagedFile(data, to: url) { staging in
-            if let sourceGeneration {
-                return try sourceGeneration.withCurrent { try publish(ticket, staging: staging, to: url) }
+                        sourceGeneration: WorkspaceCleanupStoreGeneration? = nil,
+                        destination: WorkspaceCleanupMirrorDestination? = nil) throws -> Ticket? {
+        if let destination {
+            return try destination.withDirectory { directory in
+                try stageAndPublish(ticket, data: data, to: url, sourceGeneration: sourceGeneration,
+                    destination: destination, directory: directory)
             }
-            return try publish(ticket, staging: staging, to: url)
+        }
+        return try stageAndPublish(ticket, data: data, to: url, sourceGeneration: sourceGeneration)
+    }
+
+    private func stageAndPublish(_ ticket: ExplicitTicket, data: Data, to url: URL,
+                                 sourceGeneration: WorkspaceCleanupStoreGeneration?,
+                                 destination: WorkspaceCleanupMirrorDestination? = nil, directory: Int32? = nil) throws -> Ticket? {
+        try withStagedFile(data, to: url, directory: directory) { staging in
+            if let sourceGeneration {
+                return try sourceGeneration.withCurrent {
+                    try publish(ticket, staging: staging, to: url, destination: destination, directory: directory)
+                }
+            }
+            return try publish(ticket, staging: staging, to: url, destination: destination, directory: directory)
         }
     }
 
-    private func publish(_ ticket: ExplicitTicket, staging: URL, to url: URL) throws -> Ticket? {
+    private func publish(_ ticket: ExplicitTicket, staging: URL, to url: URL,
+                         destination: WorkspaceCleanupMirrorDestination?, directory: Int32?) throws -> Ticket? {
         lock.lock()
         defer { lock.unlock() }
-        guard canPublish(ticket) else { return nil }
-        try replace(staging, at: url)
+        guard canPublish(ticket), destination?.isCurrent ?? true else { return nil }
+        try WorkspaceExportFileIO.replaceStagedFile(staging, at: url, directory: directory)
         generations[ticket.workspaceID, default: 0] += 1
         publishedReadRevisions[ticket.workspaceID] = ticket.coveredReadRevision
         publishedExplicitRevisions[ticket.workspaceID] = ticket.revision
@@ -213,16 +230,19 @@ public final class WorkspaceAutoExportGate: @unchecked Sendable {
             coveredReadRevision: ticket.coveredReadRevision)
     }
 
-    private func withStagedFile<T>(_ data: Data, to url: URL, publish: (URL) throws -> T) throws -> T {
+    private func withStagedFile<T>(_ data: Data, to url: URL, directory: Int32? = nil, publish: (URL) throws -> T) throws -> T {
         let staging = url.deletingLastPathComponent()
             .appendingPathComponent(".\(url.lastPathComponent).astra-export-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: staging) }
-        try WorkspaceExportFileIO.writeStaging(data, staging)
+        defer {
+            if let directory { unlinkat(directory, staging.lastPathComponent, 0) }
+            else { try? FileManager.default.removeItem(at: staging) }
+        }
+        try WorkspaceExportFileIO.writeStagingFile(data, to: staging, directory: directory)
         return try publish(staging)
     }
 
     private func replace(_ staging: URL, at url: URL) throws {
-        try WorkspaceExportFileIO.replace(staging, url)
+        try WorkspaceExportFileIO.replaceStagedFile(staging, at: url, directory: nil)
     }
 
     /// Drops every mirror write queued for `workspaceID` so far. Call it
@@ -250,12 +270,13 @@ actor WorkspaceAutoExportWriter {
 
     private enum Publication: Sendable {
         case prepared(WorkspaceAutoExportGate.Ticket)
-        case explicit(WorkspaceAutoExportGate.ExplicitTicket, WorkspaceCleanupStoreGeneration?)
+        case explicit(WorkspaceAutoExportGate.ExplicitTicket, WorkspaceCleanupStoreGeneration?, WorkspaceCleanupMirrorDestination?)
 
         var isCurrent: Bool {
             switch self {
             case .prepared(let ticket): WorkspaceAutoExportGate.shared.isCurrent(ticket)
-            case .explicit(let ticket, let source): WorkspaceAutoExportGate.shared.isCurrent(ticket) && (source?.isCurrent ?? true)
+            case .explicit(let ticket, let source, let destination):
+                WorkspaceAutoExportGate.shared.isCurrent(ticket) && (source?.isCurrent ?? true) && (destination?.isCurrent ?? true)
             }
         }
 
@@ -263,8 +284,9 @@ actor WorkspaceAutoExportWriter {
             switch self {
             case .prepared(let ticket):
                 return try WorkspaceAutoExportGate.shared.publishIfCurrent(ticket, data: data, to: url)
-            case .explicit(let ticket, let source):
-                return try WorkspaceAutoExportGate.shared.writeIfCurrent(ticket, data: data, to: url, sourceGeneration: source)
+            case .explicit(let ticket, let source, let destination):
+                return try WorkspaceAutoExportGate.shared.writeIfCurrent(ticket, data: data, to: url,
+                    sourceGeneration: source, destination: destination)
             }
         }
     }
@@ -288,8 +310,9 @@ actor WorkspaceAutoExportWriter {
 
     @discardableResult
     func write(_ config: WorkspaceConfigManager.WorkspaceConfig, to url: URL, workspaceID: String,
-               ticket: WorkspaceAutoExportGate.ExplicitTicket, sourceGeneration: WorkspaceCleanupStoreGeneration? = nil) async -> Bool {
-        await write(config, to: url, workspaceID: workspaceID, publication: .explicit(ticket, sourceGeneration))
+               ticket: WorkspaceAutoExportGate.ExplicitTicket, sourceGeneration: WorkspaceCleanupStoreGeneration? = nil,
+               destination: WorkspaceCleanupMirrorDestination? = nil) async -> Bool {
+        await write(config, to: url, workspaceID: workspaceID, publication: .explicit(ticket, sourceGeneration, destination))
     }
 
     private func write(_ config: WorkspaceConfigManager.WorkspaceConfig, to url: URL, workspaceID: String,

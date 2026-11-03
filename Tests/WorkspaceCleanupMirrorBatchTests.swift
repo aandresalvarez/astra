@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SQLite3
 import SwiftData
@@ -11,6 +12,97 @@ import ASTRAModels
 @MainActor
 @Suite("Credential cleanup shared committed-store snapshot", .serialized)
 struct WorkspaceCleanupMirrorBatchTests {
+    @Test("Physical recovery destinations stay bound across workspace and support symlink retargeting",
+          arguments: ["workspace", "support"], ["stable", "before", "staging", "replace"])
+    func symlinkDestinations(kind: String, phase: String) async throws {
+        let env = try Fixture()
+        defer { env.removeFiles() }
+        let workspace = env.workspaces[0]
+        let originalRoot = URL(fileURLWithPath: workspace.primaryPath)
+        try env.writePreviousMirror(workspace)
+        let originalBytes = try Data(contentsOf: env.mirror(workspace))
+        let otherRoot = env.root.appendingPathComponent("other-owner")
+        try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
+        let otherMirror = try #require(WorkspaceConfigManager.autoExportTarget(for: otherRoot.path).url)
+        var otherConfig = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: env.context))
+        otherConfig.id = UUID().uuidString
+        otherConfig.name = "Unrelated recoverable owner"
+        otherConfig.primaryPath = otherRoot.path
+        let otherBytes = try canonical(otherConfig)
+        try otherBytes.write(to: otherMirror)
+        let link: URL
+        let firstSupport: URL
+        let next: URL
+        if kind == "workspace" {
+            link = env.root.appendingPathComponent("workspace-alias")
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: originalRoot)
+            workspace.primaryPath = link.path
+            firstSupport = env.mirror(workspace).deletingLastPathComponent().resolvingSymlinksInPath()
+            next = otherRoot
+        } else {
+            link = env.mirror(workspace).deletingLastPathComponent()
+            firstSupport = env.root.appendingPathComponent("original-support")
+            try FileManager.default.moveItem(at: link, to: firstSupport)
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: firstSupport)
+            next = otherMirror.deletingLastPathComponent()
+        }
+        try env.context.save()
+        let originalMirror = firstSupport.appendingPathComponent(otherMirror.lastPathComponent)
+        let batch = try #require(await WorkspaceCleanupMirrorBatch.prepare(modelContext: env.context))
+        let retarget: @Sendable () throws -> Void = {
+            try FileManager.default.removeItem(at: link)
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: next)
+        }
+        if phase == "before" { try retarget() }
+        let stage = WorkspaceExportFileIO.writeStaging
+        let replace = WorkspaceExportFileIO.replace
+        let written = await WorkspaceExportFileIO.$writeStaging.withValue({ data, url in
+            try stage(data, url)
+            if phase == "staging" { try retarget() }
+        }) {
+            await WorkspaceExportFileIO.$replace.withValue({ staging, destination in
+                // Retarget even after the last validation to prove the
+                // actual rename is anchored by its open directory descriptor.
+                if phase == "replace" { try retarget() }
+                try replace(staging, destination)
+            }) { await batch.write(workspaceID: workspace.id, modelContext: env.context) }
+        }
+        #expect(written == (phase == "stable"))
+        #expect(batch.isCurrent == (phase == "stable"))
+        #expect(try Data(contentsOf: otherMirror) == otherBytes)
+        if phase == "before" || phase == "staging" {
+            #expect(try Data(contentsOf: originalMirror) == originalBytes)
+        }
+        #expect(WorkspaceMirrorRegistry(for: env.context)?.folders() == [originalRoot.resolvingSymlinksInPath().path])
+        for directory in [firstSupport, otherMirror.deletingLastPathComponent()] {
+            #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .allSatisfy { !$0.contains(".astra-export-") })
+        }
+        var info = stat()
+        try #require(stat(firstSupport.path, &info) == 0)
+        #expect(openSnapshotDescriptors([SnapshotFileIdentity(info)]).isEmpty,
+            "A retained batch must not keep the per-write directory descriptor open")
+    }
+
+    @Test("Disabled exports create neither registry records nor mirror directories",
+          .enabled(if: WorkspacePersistenceCoordinator.shouldSkipAutoExport()))
+    func disabledExportHasNoRegistrySideEffects() async throws {
+        let env = try Fixture(count: 2)
+        defer { env.removeFiles() }
+        let totals = StartupCleanupAggregate()
+        let batch = await WorkspacePersistenceWork.$cleanupJob.withValue(totals) {
+            await WorkspaceCleanupMirrorBatch.prepare(modelContext: env.context)
+        }
+        let prepared = try #require(batch)
+        for workspace in env.workspaces {
+            #expect(await prepared.write(workspaceID: workspace.id, modelContext: env.context))
+            #expect(!FileManager.default.fileExists(atPath: env.mirror(workspace).deletingLastPathComponent().path))
+        }
+        #expect(WorkspaceMirrorRegistry(for: env.context)?.folders() == [])
+        #expect(totals.fields()["copy_attempts"] == "0")
+        #expect(try env.snapshotDirectories().isEmpty)
+    }
+
     @Test("A stable 23-workspace cleanup makes one backup and 23 equivalent distinct recovery exports")
     func stablePass() async throws {
         let env = try Fixture(count: 23)
