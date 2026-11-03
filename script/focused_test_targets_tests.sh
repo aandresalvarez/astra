@@ -138,6 +138,7 @@ for path in \
   Astra/Services/Persistence/WorkspaceConfigManager.swift \
   Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift \
   Astra/Services/Persistence/WorkspacePersistenceWork.swift \
+  Astra/Services/Persistence/WorkspaceExportFileIO.swift \
   Astra/Services/Persistence/WorkspaceSavedAutoExport.swift \
   Astra/Services/Persistence/WorkspaceExportChangeScope.swift \
   Astra/Services/Persistence/WorkspaceSavedExportLease.swift \
