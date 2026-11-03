@@ -68,10 +68,10 @@ extension WorkspaceConfigManager {
         /// reconciled against, so an Update after recovery still knows which
         /// ones it drops.
         public var knownComponentIDs: [String]?
-        /// Complete credential component inventory derived for cleanup. An
-        /// explicit [] is affirmative evidence of no component namespaces;
-        /// nil is unknown, including legacy activations never reconciled with
-        /// a definition. This is a projection, not imported activation state.
+        /// Derived component inventory for cleanup. An empty array still needs
+        /// a matching accepted definition and consistent markers to prove no
+        /// namespaces; nil is unknown. This projection never becomes imported
+        /// activation state or proof that a legacy secret-marker list was known.
         public var credentialComponentIDs: [String]?
         /// The secret settings (`componentID#KEY`) the activation stored in
         /// the Keychain. The values themselves are never in the file.
@@ -166,9 +166,16 @@ extension WorkspaceConfigManager {
                 : activation.knownComponentIDs
             let credentialComponents = inventory.map {
                 Set($0 + activation.overriddenComponentIDs
+                    + activation.bindings.filter { !$0.isDeleted }.map(\.componentID)
                     + (activation.configKeys + activation.secretSettingKeys).compactMap(PluginActivation.componentID(ofSettingKey:)))
                     .sorted()
             }
+            // An empty model marker array also represents a legacy file with
+            // no list. Only the durable component contract or a proved empty
+            // inventory can make that absence an affirmative empty list.
+            let secretKeys: [String]? = activation.secretSettingKeys.isEmpty
+                && activation.knownComponentIDs.isEmpty && credentialComponents != []
+                ? nil : activation.secretSettingKeys
             let accounts = activation.bindings
                 .filter { !$0.isDeleted }
                 .sorted { $0.createdAt < $1.createdAt }
@@ -191,7 +198,7 @@ extension WorkspaceConfigManager {
                 activationID: activation.id.uuidString,
                 knownComponentIDs: activation.knownComponentIDs.isEmpty ? nil : activation.knownComponentIDs,
                 credentialComponentIDs: credentialComponents,
-                secretSettingKeys: activation.secretSettingKeys,
+                secretSettingKeys: secretKeys,
                 namespaceSeed: activation.namespaceSeed.isEmpty ? nil : activation.namespaceSeed,
                 credentialNamespaceSeed: activation.credentialNamespaceSeed.isEmpty ? nil : activation.credentialNamespaceSeed,
                 digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest,

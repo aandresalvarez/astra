@@ -5,6 +5,7 @@ import ASTRACore
 /// cached acceptance state: a different copy or version cannot prove emptiness.
 enum PluginCredentialComponentInventory: PluginCredentialComponentInventoryResolving {
     static func componentIDs(pluginID: String, version: String, digest: String) -> [String]? {
+        guard !version.isEmpty, !digest.isEmpty else { return nil }
         guard let package = CapabilityRuntimeResourceMatcher.packageDefinitions().first(where: { $0.id == pluginID }) else { return nil }
         return componentIDs(in: package, version: version, digest: digest)
     }

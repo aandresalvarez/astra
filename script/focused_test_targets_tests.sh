@@ -16,6 +16,15 @@ assert_targets() {
   fi
 }
 
+assert_targets "PluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests" \
+  "ASTRACore/PluginCredentialComponentInventorySeam.swift" \
+  "Astra/Services/Capabilities/PluginCredentialComponentInventory.swift" \
+  "Astra/Services/Capabilities/PluginCredentialMirrorReferences.swift" \
+  "Astra/Services/Persistence/WorkspaceConfigManager+PluginActivations.swift" \
+  "Tests/PluginCredentialMetadataCompatibilityTests.swift" \
+  "Tests/PluginRecoveryMirrorCredentialTests.swift" \
+  "Tests/PendingTaskCredentialCleanupTests.swift"
+
 assert_targets "TaskDecisionOutcomeRefreshTests|TaskDecisionOutcomeColdRefreshTests|TaskDeliverableFollowUpTests|TaskDecisionDock|TaskMainActorScalingGateTests" \
   "Astra/Views/TaskDecisionOutcomeRefresh.swift" \
   "Tests/TaskDecisionOutcomeRefreshTests.swift" \

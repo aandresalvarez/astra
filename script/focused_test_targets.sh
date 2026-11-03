@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    ASTRACore/PluginCredentialComponentInventorySeam.swift|Astra/Services/Capabilities/PluginCredentialComponentInventory.swift|Astra/Services/Capabilities/PluginCredentialMirrorReferences.swift|Astra/Services/Persistence/WorkspaceConfigManager+PluginActivations.swift|Tests/PluginCredentialMetadataCompatibilityTests.swift|Tests/PluginRecoveryMirrorCredentialTests.swift|Tests/PendingTaskCredentialCleanupTests.swift)
+      add_target "PluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests"
+      ;;
+  esac
+
+  case "$path" in
     ASTRACore/LaunchDiagnosticClock.swift|Astra/Services/Diagnostics/SidebarFolderResponsivenessTelemetry.swift|Astra/Services/Persistence/StartupCleanupTelemetry.swift|Astra/Services/Capabilities/CredentialCleanupStartupMirrors.swift|Tests/SidebarFolderResponsivenessTelemetryTests.swift|Tests/StartupCleanupTelemetryTests.swift|Tests/CredentialCleanupStartupTests.swift)
       add_target "SidebarFolderResponsivenessTelemetryTests|StartupCleanupTelemetryTests|CredentialCleanupStartupTests|MainThreadPhaseTests"
       ;;

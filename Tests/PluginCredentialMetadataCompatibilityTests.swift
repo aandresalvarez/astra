@@ -27,10 +27,13 @@ struct PluginCredentialMetadataCompatibilityTests {
         #expect(PluginCredentialComponentInventory.componentIDs(in: changed, version: changed.version, digest: digest) == nil)
     }
 
-    @Test("A current proven-empty export clears an orphan even after the definition is unavailable")
-    func provenEmptyExport() throws {
+    @Test("Proven-empty own and admitted exports clear only with matching definition evidence", arguments: [false, true])
+    func provenEmptyExport(extra: Bool) throws {
         let env = try PluginRecoveryMirrorCredentialTests.Fixture()
         defer { env.removeFiles() }
+        let previous = WorkspaceRecoveryTrust.loadedMirrors
+        defer { WorkspaceRecoveryTrust.recordLoadedMirrors(previous) }
+        WorkspaceRecoveryTrust.recordLoadedMirrors([])
         let package = emptyPackage()
         addActivation(package, in: env)
         try env.context.save()
@@ -40,12 +43,24 @@ struct PluginCredentialMetadataCompatibilityTests {
         let config = try WorkspaceConfigManager.loadConfig(from: env.ownMirror)
         #expect(config.installedPlugins?.first?.credentialComponentIDs == [])
         #expect(config.installedPlugins?.first?.secretSettingKeys == [])
+        if extra {
+            let copy = env.root.appendingPathComponent("proven-empty-copy.json")
+            try FileManager.default.copyItem(at: env.ownMirror, to: copy)
+            WorkspaceRecoveryTrust.recordLoadedMirrors([copy.path])
+        }
+        let orphan = UUID()
+        try env.outbox.write([orphan])
+        MetadataFakeSecrets.seed([orphan])
         try withDefinitions([]) {
-            let ownership = try #require(PluginCredentialMirrorReferences.capture(modelContext: env.context, extraMirrors: []))
-            let orphan = UUID()
+            #expect(PluginCredentialMirrorReferences.capture(modelContext: env.context) == nil)
+            resume(env)
+            #expect(MetadataFakeSecrets.value(orphan) == "synthetic-token")
+            let pending = try env.outbox.pending()
+            #expect(pending == [orphan])
+        }
+        try withDefinitions([package]) {
+            let ownership = try #require(PluginCredentialMirrorReferences.capture(modelContext: env.context))
             #expect(!ownership.holdsSkill(orphan))
-            try env.outbox.write([orphan])
-            MetadataFakeSecrets.seed([orphan])
             resume(env)
             #expect(MetadataFakeSecrets.value(orphan) == nil)
             #expect(try env.outbox.entries().isEmpty)
@@ -78,12 +93,13 @@ struct PluginCredentialMetadataCompatibilityTests {
         #expect(try env.outbox.pending() == [orphan])
     }
 
-    @Test("Older omitted metadata is resolved only against its matching definition")
-    func matchingLegacyDefinition() throws {
+    @Test("Older omitted metadata is resolved only against its matching definition", arguments: [false, true])
+    func matchingLegacyDefinition(approvalDigest: Bool) throws {
         let env = try PluginRecoveryMirrorCredentialTests.Fixture()
         defer { env.removeFiles() }
         let package = emptyPackage()
-        try write(["id": package.id, "version": package.version, "digest": PluginDefinitionDigest.content(of: package)],
+        let digest = approvalDigest ? try CapabilityApprovalDigest.digest(for: package) : PluginDefinitionDigest.content(of: package)
+        try write(["id": package.id, "version": package.version, "digest": digest],
             at: env.ownMirror, workspaceID: env.workspace.id)
         withDefinitions([package]) {
             #expect(PluginCredentialMirrorReferences.capture(modelContext: env.context, extraMirrors: []) != nil)
@@ -107,6 +123,137 @@ struct PluginCredentialMetadataCompatibilityTests {
             let config = try WorkspaceConfigManager.loadConfig(from: env.ownMirror)
             #expect(config.installedPlugins?.first?.credentialComponentIDs == nil)
             #expect(PluginCredentialMirrorReferences.capture(modelContext: env.context, extraMirrors: []) == nil)
+        }
+    }
+
+    @Test("Legacy single-key ownership survives recovery, real export and outbox reread", arguments: [false, true], [false, true])
+    func legacySingleKeyRoundTrip(override: Bool, matchingDefinition: Bool) throws {
+        let env = try PluginRecoveryMirrorCredentialTests.Fixture()
+        defer { env.removeFiles() }
+        let previous = WorkspaceRecoveryTrust.loadedMirrors
+        defer { WorkspaceRecoveryTrust.recordLoadedMirrors(previous) }
+        WorkspaceRecoveryTrust.recordLoadedMirrors([])
+        let mirror = env.ownMirror
+        let row = Skill(name: "Synthetic authored override")
+        env.context.insert(row)
+        row.workspace = env.workspace
+        try env.context.save()
+        var config = try #require(WorkspaceConfigManager.export(workspace: env.workspace, modelContext: env.context))
+        let pluginID = "synthetic-unresolved-legacy"
+        var package = emptyPackage()
+        package.id = pluginID
+        package.skills = [PluginSkill(name: "Agent", icon: "testtube.2", description: "Synthetic", allowedTools: [],
+            disallowedTools: [], customTools: [], behaviorInstructions: "Fixture", environmentKeys: ["API_TOKEN"], environmentValues: [""])]
+        config.installedPlugins = [.init(id: pluginID, version: matchingDefinition ? package.version : "legacy",
+            settings: override ? nil : ["skill:agent#REGION": "synthetic-region"],
+            overriddenComponentIDs: override ? ["skill:agent"] : nil,
+            overridingRowIDs: override ? [row.id.uuidString] : nil,
+            namespaceSeed: "legacy-runtime", credentialNamespaceSeed: "legacy-generation",
+            digest: matchingDefinition ? PluginDefinitionDigest.content(of: package) : nil)]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try encoder.encode(config).write(to: mirror)
+        let namespace = PluginActivation.credentialID(workspaceID: env.workspace.id, pluginID: pluginID,
+            componentID: "skill:agent", runtimeSeed: "legacy-runtime", generation: "legacy-generation")
+        let key = PluginUpdateService.StaleSecret(key: "API_TOKEN", skillID: namespace)
+        try withDefinitions(matchingDefinition ? [package] : []) {
+            // Negative control: the legacy file holds the individual key
+            // before any rewrite. On the reviewed code the real rewrite
+            // below loses this hold and the fake credential is deleted.
+            let before = try #require(PluginCredentialMirrorReferences.capture(modelContext: env.context, extraMirrors: []))
+            #expect(before.holdsSkill(namespace, key: key.key))
+            let loaded = try WorkspaceConfigManager.loadConfig(from: mirror)
+            env.context.delete(env.workspace)
+            try env.context.save()
+            let restored = WorkspaceConfigManager.importWorkspace(from: loaded, modelContext: env.context,
+                capabilityTrust: .preserveRecordedState)
+            try env.context.save()
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: pluginID, in: restored))
+            #expect(activation.knownComponentIDs.isEmpty && activation.secretSettingKeys.isEmpty)
+            #expect(activation.recordedDigest.isEmpty == !matchingDefinition)
+            try env.outbox.journal([key])
+            MetadataFakeSecrets.seed([namespace])
+            let settle = {
+                PluginSecretCleanupOutbox.resumePending(modelContext: env.context, outbox: env.outbox,
+                    secrets: MetadataFakeSecrets.self, rewriteMirror: {
+                        (try? WorkspaceConfigManager.exportToFile(workspace: $0, modelContext: env.context, url: mirror)) != nil
+                    })
+            }
+            settle()
+            var rewritten = try WorkspaceConfigManager.loadConfig(from: mirror)
+            #expect(rewritten.installedPlugins?.first?.secretSettingKeys == nil)
+            #expect(rewritten.installedPlugins?.first?.credentialComponentIDs == (matchingDefinition ? ["skill:agent"] : nil))
+            let after = try #require(PluginCredentialMirrorReferences.capture(modelContext: env.context, extraMirrors: []))
+            #expect(after.holdsSkill(namespace, key: key.key))
+            #expect(MetadataFakeSecrets.value(namespace) == "synthetic-token")
+            #expect(try env.outbox.pendingKeys() == [key])
+            // Also tolerate files already rewritten with the old false [].
+            rewritten.installedPlugins?[0].secretSettingKeys = []
+            try encoder.encode(rewritten).write(to: mirror)
+            let oldRewrite = try #require(PluginCredentialMirrorReferences.capture(modelContext: env.context, extraMirrors: []))
+            #expect(oldRewrite.holdsSkill(namespace, key: key.key))
+            resume(env)
+            #expect(MetadataFakeSecrets.value(namespace) == "synthetic-token")
+            #expect(try env.outbox.pendingKeys() == [key])
+            // The hold is ownership, not a permanently blocked outbox.
+            env.context.delete(activation)
+            try env.context.save()
+            settle()
+            #expect(MetadataFakeSecrets.value(namespace) == nil)
+            #expect(try env.outbox.entries().isEmpty)
+        }
+    }
+
+    @Test("Partial or contradictory empty inventories in admitted files hold the real outbox", arguments: [
+        "bare", "unverified", "missing-markers", "wrong-version", "wrong-digest", "override", "setting", "known", "secret", "account", "nonempty-definition"
+    ])
+    func inconsistentExtraEmptyInventory(evidence: String) throws {
+        let env = try PluginRecoveryMirrorCredentialTests.Fixture()
+        defer { env.removeFiles() }
+        let previous = WorkspaceRecoveryTrust.loadedMirrors
+        defer { WorkspaceRecoveryTrust.recordLoadedMirrors(previous) }
+        var package = emptyPackage()
+        if evidence == "nonempty-definition" {
+            package.skills = [PluginSkill(name: "Agent", icon: "testtube.2", description: "Synthetic", allowedTools: [],
+                disallowedTools: [], customTools: [], behaviorInstructions: "Fixture", environmentKeys: [], environmentValues: [])]
+        }
+        var plugin: [String: Any] = ["id": package.id, "credentialComponentIDs": [String](),
+            "version": package.version, "digest": PluginDefinitionDigest.content(of: package), "secretSettingKeys": [String]()]
+        switch evidence {
+        case "bare": plugin = ["id": package.id, "credentialComponentIDs": [String]()]
+        case "unverified": plugin["digest"] = "unverified-legacy"
+        case "missing-markers": plugin.removeValue(forKey: "secretSettingKeys")
+        case "wrong-version": plugin["version"] = "0.0.0"
+        case "wrong-digest": plugin["digest"] = "content-v1:other"
+        case "override": plugin["overriddenComponentIDs"] = ["skill:agent"]
+        case "setting": plugin["settings"] = ["skill:agent#REGION": "synthetic-region"]
+        case "known": plugin["knownComponentIDs"] = ["skill:agent"]
+        case "secret": plugin["secretSettingKeys"] = ["skill:agent#API_TOKEN"]
+        case "account": plugin["accounts"] = [["componentID": "connector:rest_api:account", "connectorID": UUID().uuidString, "isDefault": true]]
+        default: break
+        }
+        let extra = env.root.appendingPathComponent("ambiguous-extra.json")
+        let extraWorkspaceID = UUID(), orphan = UUID()
+        let namespace = PluginActivation.credentialID(workspaceID: extraWorkspaceID, pluginID: package.id, componentID: "skill:agent")
+        let key = PluginUpdateService.StaleSecret(key: "API_TOKEN", skillID: namespace)
+        try write(plugin, at: extra, workspaceID: extraWorkspaceID)
+        WorkspaceRecoveryTrust.recordLoadedMirrors([extra.path])
+        try env.outbox.write([orphan])
+        try env.outbox.journal([key])
+        MetadataFakeSecrets.seed([namespace, orphan])
+        try withDefinitions([package]) {
+            #expect(PluginCredentialMirrorReferences.capture(modelContext: env.context) == nil)
+            resume(env)
+            #expect(MetadataFakeSecrets.value(namespace) == "synthetic-token")
+            #expect(MetadataFakeSecrets.value(orphan) == "synthetic-token")
+            #expect(try env.outbox.pending() == [orphan])
+            #expect(try env.outbox.pendingKeys() == [key])
+            try FileManager.default.removeItem(at: extra)
+            resume(env)
+            #expect(MetadataFakeSecrets.value(namespace) == nil)
+            #expect(MetadataFakeSecrets.value(orphan) == nil)
+            #expect(try env.outbox.entries().isEmpty)
         }
     }
 

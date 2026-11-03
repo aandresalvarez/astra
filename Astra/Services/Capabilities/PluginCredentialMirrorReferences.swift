@@ -38,29 +38,37 @@ struct PluginCredentialMirrorReferences {
                 guard let workspaceID = file.workspaceID else { return nil }
                 let recorded = plugin.secretSettingKeys ?? []
                 let plain = Array((plugin.settings ?? [:]).keys)
-                var components = Set((plugin.credentialComponentIDs ?? []) + (plugin.knownComponentIDs ?? []) + (plugin.overriddenComponentIDs ?? [])
+                let known = Set(plugin.knownComponentIDs ?? [])
+                var components = Set(Array(known) + (plugin.overriddenComponentIDs ?? []) + (plugin.accounts ?? []).map(\.componentID)
                     + (recorded + plain).compactMap(PluginActivation.componentID(ofSettingKey:)))
-                if components.isEmpty, plugin.credentialComponentIDs == nil,
-                   let version = plugin.version, let digest = plugin.digest,
-                   let matched = PluginCredentialComponentInventorySeam.componentIDs(pluginID: plugin.id, version: version, digest: digest) {
-                    components.formUnion(matched)
-                    if matched.isEmpty && recorded.isEmpty && plain.isEmpty { continue }
+                let matched: [String]?
+                if known.isEmpty || plugin.credentialComponentIDs == [],
+                   let version = plugin.version, let digest = plugin.digest {
+                    matched = PluginCredentialComponentInventorySeam.componentIDs(pluginID: plugin.id, version: version, digest: digest)
+                } else { matched = nil }
+                // A supplied [] is a claim, not independent evidence. Current
+                // exports must be complete and agree with the accepted copy;
+                // neither partial nor contradictory recovery files may clear it.
+                if plugin.credentialComponentIDs == [] {
+                    guard matched == [], plugin.secretSettingKeys == [], components.isEmpty, plain.isEmpty else {
+                        ambiguousMetadata(workspaceID: workspaceID, pluginID: plugin.id)
+                        return nil
+                    }
                 }
-                guard !components.isEmpty || (plugin.credentialComponentIDs == [] && recorded.isEmpty && plain.isEmpty) else {
-                    AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
-                        "scope": "plugin_credential_mirror", "reason": "ambiguous_plugin_credential_metadata",
-                        "workspace_id": workspaceID.uuidString, "plugin_id": plugin.id
-                    ], level: .warning)
+                components.formUnion(plugin.credentialComponentIDs ?? [])
+                components.formUnion(matched ?? [])
+                guard !components.isEmpty || (matched == [] && recorded.isEmpty && plain.isEmpty) else {
+                    ambiguousMetadata(workspaceID: workspaceID, pluginID: plugin.id)
                     return nil
                 }
                 for component in components {
                     let id = PluginActivation.credentialID(workspaceID: workspaceID, pluginID: plugin.id,
                         componentID: component, runtimeSeed: plugin.namespaceSeed ?? "", generation: plugin.credentialNamespaceSeed ?? "")
                     namespaces.insert(id)
-                    // Older exports omitted empty secret marker arrays. Their
-                    // known component contract still proves no recorded keys;
-                    // a partial legacy record without that contract is unknown.
-                    if plugin.secretSettingKeys == nil && plugin.knownComponentIDs == nil && plugin.credentialComponentIDs == nil { result.unknownKeys.insert(id) }
+                    // A derived inventory does not prove a legacy marker list.
+                    // Empty arrays from an earlier rewrite of unknown state
+                    // must retain the same key hold as a missing list.
+                    if !known.contains(component) && recorded.isEmpty { result.unknownKeys.insert(id) }
                     for setting in recorded + plain where PluginActivation.componentID(ofSettingKey: setting) == component {
                         let key = String(setting.dropFirst(component.count + 1))
                         if recorded.contains(setting) || Skill.isSecretEnvironmentKey(key) { result.keys.insert(.init(key: key, skillID: id)) }
@@ -97,12 +105,21 @@ struct PluginCredentialMirrorReferences {
         return result
     }
 
+    private static func ambiguousMetadata(workspaceID: UUID, pluginID: String) {
+        AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+            "scope": "plugin_credential_mirror", "reason": "ambiguous_plugin_credential_metadata",
+            "workspace_id": workspaceID.uuidString, "plugin_id": pluginID
+        ], level: .warning)
+    }
+
     private struct Listed: Decodable {
         struct Plugin: Decodable {
+            struct Account: Decodable { let componentID: String }
             let id: String
             let version: String?
             let digest: String?
             let settings: [String: String]?
+            let accounts: [Account]?
             let overriddenComponentIDs: [String]?
             let knownComponentIDs: [String]?
             let credentialComponentIDs: [String]?
