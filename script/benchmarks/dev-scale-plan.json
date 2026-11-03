@@ -1,0 +1,31 @@
+{
+  "warmup": [
+    ["click", "contains:TaskRow_Long thread", "contains:Synthetic 425/29991.", "present"],
+    ["press", "Files shelf", "FilesShelfBrowseButton", "present"],
+    ["press", "Files shelf", "FilesShelfBrowseButton", "absent"],
+    ["click", "contains:TaskRow_Short thread", "contains:Synthetic 426/0.", "present"],
+    ["menu", "Expand Scale 00", "Workspace Configuration", "present"],
+    ["press", "Workspace Configuration", "contains:Synthetic benchmark", "present"],
+    ["click", "Edit", "role:AXTextArea", "present"],
+    ["set", "role:AXTextArea", "Synthetic benchmark cycle {cycle}"],
+    ["click", "Save", "role:AXTextArea", "absent"],
+    ["wait-mirror", "Scale 00", "Synthetic benchmark cycle {cycle}"],
+    ["click", "Collapse Scale 00", "TaskRow_Task 0424", "absent"]
+  ],
+  "cycle": [
+    ["click", "Expand Scale 00", "TaskRow_Task 0424", "present"],
+    ["click", "Collapse Scale 00", "TaskRow_Task 0424", "absent"],
+    ["click", "Expand Scale 01", "contains:TaskRow_Long thread", "present"],
+    ["click", "contains:TaskRow_Long thread", "contains:Synthetic 425/29991.", "present"],
+    ["press", "Files shelf", "FilesShelfBrowseButton", "present"],
+    ["press", "Files shelf", "FilesShelfBrowseButton", "absent"],
+    ["click", "contains:TaskRow_Short thread", "contains:Synthetic 426/0.", "present"],
+    ["menu", "Expand Scale 00", "Workspace Configuration", "present"],
+    ["press", "Workspace Configuration", "contains:Synthetic benchmark", "present"],
+    ["click", "Edit", "role:AXTextArea", "present"],
+    ["set", "role:AXTextArea", "Synthetic benchmark cycle {cycle}"],
+    ["click", "Save", "role:AXTextArea", "absent"],
+    ["wait-mirror", "Scale 00", "Synthetic benchmark cycle {cycle}"],
+    ["click", "Collapse Scale 00", "TaskRow_Task 0424", "absent"]
+  ]
+}

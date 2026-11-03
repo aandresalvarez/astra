@@ -1,0 +1,713 @@
+{
+  "actions": {
+    "click / Collapse Scale 00 / absent": {
+      "max_ms": 621.77,
+      "median_ms": 565.33,
+      "n": 18,
+      "p95_ms": 621.77
+    },
+    "click / Edit / present": {
+      "max_ms": 192.24,
+      "median_ms": 153.88,
+      "n": 9,
+      "p95_ms": 192.24
+    },
+    "click / Expand Scale 00 / present": {
+      "max_ms": 602.88,
+      "median_ms": 594.52,
+      "n": 9,
+      "p95_ms": 602.88
+    },
+    "click / Expand Scale 01 / present": {
+      "max_ms": 567.64,
+      "median_ms": 548.43,
+      "n": 9,
+      "p95_ms": 567.64
+    },
+    "click / Save / absent": {
+      "max_ms": 318.02,
+      "median_ms": 307.51,
+      "n": 9,
+      "p95_ms": 318.02
+    },
+    "click / contains:TaskRow_Long thread / present": {
+      "max_ms": 8642.64,
+      "median_ms": 8258.98,
+      "n": 9,
+      "p95_ms": 8642.64
+    },
+    "click / contains:TaskRow_Short thread / present": {
+      "max_ms": 5571.34,
+      "median_ms": 5256.35,
+      "n": 9,
+      "p95_ms": 5571.34
+    },
+    "press / Files shelf / absent": {
+      "max_ms": 1615.17,
+      "median_ms": 1502.76,
+      "n": 9,
+      "p95_ms": 1615.17
+    },
+    "press / Files shelf / present": {
+      "max_ms": 2621.47,
+      "median_ms": 2488.46,
+      "n": 9,
+      "p95_ms": 2621.47
+    },
+    "press / Workspace Configuration / present": {
+      "max_ms": 1534.18,
+      "median_ms": 1462.73,
+      "n": 9,
+      "p95_ms": 1534.18
+    }
+  },
+  "app_build": "10030",
+  "app_build_date": "2026-11-02T23:43:31Z",
+  "app_channel": "dev",
+  "app_linked_channel": "dev",
+  "app_revision": "b7908367b8fe",
+  "app_version": "0.1.30",
+  "astra_schema_version": 21,
+  "cold_process_launch_ms": [
+    8125.18,
+    7974.28,
+    7811.56
+  ],
+  "final_ready_query_cost": {
+    "click / Collapse Scale 00 / absent": {
+      "max_ms": 557.08,
+      "median_ms": 500.2,
+      "n": 18,
+      "p95_ms": 557.08
+    },
+    "click / Edit / present": {
+      "max_ms": 107.64,
+      "median_ms": 81.79,
+      "n": 9,
+      "p95_ms": 107.64
+    },
+    "click / Expand Scale 00 / present": {
+      "max_ms": 533.91,
+      "median_ms": 527.6,
+      "n": 9,
+      "p95_ms": 533.91
+    },
+    "click / Expand Scale 01 / present": {
+      "max_ms": 503.47,
+      "median_ms": 483.89,
+      "n": 9,
+      "p95_ms": 503.47
+    },
+    "click / Save / absent": {
+      "max_ms": 253.66,
+      "median_ms": 246.29,
+      "n": 9,
+      "p95_ms": 253.66
+    },
+    "click / contains:TaskRow_Long thread / present": {
+      "max_ms": 8563.25,
+      "median_ms": 5539.99,
+      "n": 9,
+      "p95_ms": 8563.25
+    },
+    "click / contains:TaskRow_Short thread / present": {
+      "max_ms": 5507.36,
+      "median_ms": 9.08,
+      "n": 9,
+      "p95_ms": 5507.36
+    },
+    "press / Files shelf / absent": {
+      "max_ms": 1410.53,
+      "median_ms": 1297.71,
+      "n": 9,
+      "p95_ms": 1410.53
+    },
+    "press / Files shelf / present": {
+      "max_ms": 2416.4,
+      "median_ms": 2285.88,
+      "n": 9,
+      "p95_ms": 2416.4
+    },
+    "press / Workspace Configuration / present": {
+      "max_ms": 1191.3,
+      "median_ms": 1064.38,
+      "n": 9,
+      "p95_ms": 1191.3
+    }
+  },
+  "fixture": {
+    "goal_bytes_per_task": 5040,
+    "history_workspace_events": 15259,
+    "history_workspace_tasks": 425,
+    "long_thread_events": 30000,
+    "profile": "full",
+    "seed": 42362,
+    "task_folder_allocated_bytes": 198299648,
+    "task_folder_files": 48414,
+    "task_folder_logical_bytes": 2230871040,
+    "verified_counts": {
+      "artifacts": 30110,
+      "events": 115977,
+      "runs": 5868,
+      "tasks": 2195,
+      "workspaces": 23
+    }
+  },
+  "host": {
+    "disk_free_bytes": 35245547520,
+    "hardware": "Mac15,7",
+    "load_before": [
+      9.46923828125,
+      11.02783203125,
+      12.8828125
+    ],
+    "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "power": "Now drawing from 'AC Power'\n -InternalBattery-0\t80%; AC attached; not charging present: true",
+    "ram_bytes": 38654705664,
+    "swift": "Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)\nTarget: arm64-apple-macosx26.0"
+  },
+  "idle_seconds": 10.0,
+  "input_sha256": {
+    "ASTRA Dev": "c8dfdc3c7c382215b9b17c547ad0c842e24a67db471399c489a7b556e400b505",
+    "DevScaleAX.swift": "0ea29fa16dd773b22ef9c00201b827584c8ffe4bc7afd197552cf5baa51dd95e",
+    "DevWorkspaceFixture.swift": "efdb72fd081a49f3f2bc34e2c000d3faff0d8a08edf9d879c12e7accace42a37",
+    "ax": "042b504f09dd5d976ba7559d1e3c1b41b5e8008d4cdb6486dbd5a27274497a90",
+    "dev-scale-plan.json": "d32e08addb5e7199317b239ea66c80476b9c9e901447eb2f7f30c21ea3b22d0c",
+    "dev_scale_benchmark.py": "06c83bc0646319f6c097764e3fef0935402077dd9b78c98a25a1d673dc6774aa",
+    "fixture": "f84a3ce1a2ab83f0d24b3aeeee571874b3ecea27e7aae9c1c49403078287c58c"
+  },
+  "measured_cycles_per_run": 3,
+  "memory_by_run": [
+    {
+      "final_counts": {
+        "artifacts": 30110,
+        "events": 115977,
+        "runs": 5868,
+        "tasks": 2195,
+        "workspaces": 23
+      },
+      "final_files": {
+        "task_folder_regular_files": 4,
+        "workspace_regular_files": 6
+      },
+      "heap": {
+        "final-idle": {
+          "launch_time": "2026-11-02 17:57:32.463 -0800",
+          "live_malloc_bytes": 103903392,
+          "malloc_nodes": 495002,
+          "sample_time": "2026-11-02 18:01:06.581 -0800",
+          "selected_classes": {
+            "AgentTask": {
+              "bytes": 210720,
+              "count": 2195
+            },
+            "ModelContext": {
+              "bytes": 320,
+              "count": 1
+            },
+            "NSManagedObjectContext": {
+              "bytes": 192,
+              "count": 1
+            },
+            "NSSQLRow": {
+              "bytes": 0,
+              "count": 0
+            },
+            "SwiftData.ModelContext weak object map": {
+              "bytes": 3162112,
+              "count": 1
+            },
+            "SwiftData._KKMDBackingData<ASTRAModels.AgentTask>": {
+              "bytes": 140480,
+              "count": 2195
+            },
+            "TaskEvent": {
+              "bytes": 0,
+              "count": 0
+            },
+            "TaskRun": {
+              "bytes": 0,
+              "count": 0
+            },
+            "Workspace": {
+              "bytes": 2208,
+              "count": 23
+            }
+          }
+        },
+        "warm-idle": {
+          "launch_time": "2026-11-02 17:57:32.463 -0800",
+          "live_malloc_bytes": 101823163,
+          "malloc_nodes": 479929,
+          "sample_time": "2026-11-02 17:58:32.870 -0800",
+          "selected_classes": {
+            "AgentTask": {
+              "bytes": 210720,
+              "count": 2195
+            },
+            "ModelContext": {
+              "bytes": 320,
+              "count": 1
+            },
+            "NSManagedObjectContext": {
+              "bytes": 192,
+              "count": 1
+            },
+            "NSSQLRow": {
+              "bytes": 0,
+              "count": 0
+            },
+            "SwiftData.ModelContext weak object map": {
+              "bytes": 3162112,
+              "count": 1
+            },
+            "SwiftData._KKMDBackingData<ASTRAModels.AgentTask>": {
+              "bytes": 140480,
+              "count": 2195
+            },
+            "TaskEvent": {
+              "bytes": 0,
+              "count": 0
+            },
+            "TaskRun": {
+              "bytes": 0,
+              "count": 0
+            },
+            "Workspace": {
+              "bytes": 2208,
+              "count": 23
+            }
+          }
+        }
+      },
+      "heap_exit_status": {
+        "final-idle": 0,
+        "warm-idle": 0
+      },
+      "initial_task_folder_files": 0,
+      "leaks": {
+        "leak_count": 287,
+        "leaked_bytes": 14368
+      },
+      "leaks_exit_status": 1,
+      "load_after": [
+        11.68896484375,
+        11.31884765625,
+        12.5849609375
+      ],
+      "samples": [
+        {
+          "elapsed_s": 10.245168375,
+          "peak_physical_footprint_bytes": 179096781,
+          "physical_footprint_bytes": 172805325,
+          "stage": "launch"
+        },
+        {
+          "elapsed_s": 60.396908459,
+          "peak_physical_footprint_bytes": 299787878,
+          "physical_footprint_bytes": 261095424,
+          "stage": "warm-idle"
+        },
+        {
+          "elapsed_s": 101.199264709,
+          "peak_physical_footprint_bytes": 378850509,
+          "physical_footprint_bytes": 271266611,
+          "stage": "cycle-1"
+        },
+        {
+          "elapsed_s": 112.308986125,
+          "peak_physical_footprint_bytes": 378850509,
+          "physical_footprint_bytes": 271161754,
+          "stage": "idle-1"
+        },
+        {
+          "elapsed_s": 149.262239125,
+          "peak_physical_footprint_bytes": 378850509,
+          "physical_footprint_bytes": 243374490,
+          "stage": "cycle-2"
+        },
+        {
+          "elapsed_s": 160.413512417,
+          "peak_physical_footprint_bytes": 378850509,
+          "physical_footprint_bytes": 243164774,
+          "stage": "idle-2"
+        },
+        {
+          "elapsed_s": 197.776603042,
+          "peak_physical_footprint_bytes": 378850509,
+          "physical_footprint_bytes": 220934963,
+          "stage": "cycle-3"
+        },
+        {
+          "elapsed_s": 208.926531459,
+          "peak_physical_footprint_bytes": 378850509,
+          "physical_footprint_bytes": 220725248,
+          "stage": "idle-3"
+        },
+        {
+          "elapsed_s": 214.108583834,
+          "peak_physical_footprint_bytes": 378850509,
+          "physical_footprint_bytes": 195244851,
+          "stage": "final-idle"
+        }
+      ]
+    },
+    {
+      "final_counts": {
+        "artifacts": 30110,
+        "events": 115977,
+        "runs": 5868,
+        "tasks": 2195,
+        "workspaces": 23
+      },
+      "final_files": {
+        "task_folder_regular_files": 4,
+        "workspace_regular_files": 6
+      },
+      "heap": {
+        "final-idle": {
+          "launch_time": "2026-11-02 18:01:12.934 -0800",
+          "live_malloc_bytes": 104013730,
+          "malloc_nodes": 495023,
+          "sample_time": "2026-11-02 18:04:40.881 -0800",
+          "selected_classes": {
+            "AgentTask": {
+              "bytes": 210720,
+              "count": 2195
+            },
+            "ModelContext": {
+              "bytes": 320,
+              "count": 1
+            },
+            "NSManagedObjectContext": {
+              "bytes": 192,
+              "count": 1
+            },
+            "NSSQLRow": {
+              "bytes": 0,
+              "count": 0
+            },
+            "SwiftData.ModelContext weak object map": {
+              "bytes": 3162112,
+              "count": 1
+            },
+            "SwiftData._KKMDBackingData<ASTRAModels.AgentTask>": {
+              "bytes": 140480,
+              "count": 2195
+            },
+            "TaskEvent": {
+              "bytes": 0,
+              "count": 0
+            },
+            "TaskRun": {
+              "bytes": 0,
+              "count": 0
+            },
+            "Workspace": {
+              "bytes": 2208,
+              "count": 23
+            }
+          }
+        },
+        "warm-idle": {
+          "launch_time": "2026-11-02 18:01:12.934 -0800",
+          "live_malloc_bytes": 101807008,
+          "malloc_nodes": 479748,
+          "sample_time": "2026-11-02 18:02:11.476 -0800",
+          "selected_classes": {
+            "AgentTask": {
+              "bytes": 210720,
+              "count": 2195
+            },
+            "ModelContext": {
+              "bytes": 320,
+              "count": 1
+            },
+            "NSManagedObjectContext": {
+              "bytes": 192,
+              "count": 1
+            },
+            "NSSQLRow": {
+              "bytes": 0,
+              "count": 0
+            },
+            "SwiftData.ModelContext weak object map": {
+              "bytes": 3162112,
+              "count": 1
+            },
+            "SwiftData._KKMDBackingData<ASTRAModels.AgentTask>": {
+              "bytes": 140480,
+              "count": 2195
+            },
+            "TaskEvent": {
+              "bytes": 0,
+              "count": 0
+            },
+            "TaskRun": {
+              "bytes": 0,
+              "count": 0
+            },
+            "Workspace": {
+              "bytes": 2208,
+              "count": 23
+            }
+          }
+        }
+      },
+      "heap_exit_status": {
+        "final-idle": 0,
+        "warm-idle": 0
+      },
+      "initial_task_folder_files": 0,
+      "leaks": {
+        "leak_count": 280,
+        "leaked_bytes": 14016
+      },
+      "leaks_exit_status": 1,
+      "load_after": [
+        8.59619140625,
+        10.00732421875,
+        11.72119140625
+      ],
+      "samples": [
+        {
+          "elapsed_s": 9.352099208,
+          "peak_physical_footprint_bytes": 181718221,
+          "physical_footprint_bytes": 174587904,
+          "stage": "launch"
+        },
+        {
+          "elapsed_s": 58.53374625,
+          "peak_physical_footprint_bytes": 299997594,
+          "physical_footprint_bytes": 269588890,
+          "stage": "warm-idle"
+        },
+        {
+          "elapsed_s": 97.62485575,
+          "peak_physical_footprint_bytes": 335020032,
+          "physical_footprint_bytes": 230791578,
+          "stage": "cycle-1"
+        },
+        {
+          "elapsed_s": 108.737614916,
+          "peak_physical_footprint_bytes": 335020032,
+          "physical_footprint_bytes": 230686720,
+          "stage": "idle-1"
+        },
+        {
+          "elapsed_s": 145.128016875,
+          "peak_physical_footprint_bytes": 335020032,
+          "physical_footprint_bytes": 204786893,
+          "stage": "cycle-2"
+        },
+        {
+          "elapsed_s": 156.34512875,
+          "peak_physical_footprint_bytes": 335020032,
+          "physical_footprint_bytes": 204682035,
+          "stage": "idle-2"
+        },
+        {
+          "elapsed_s": 191.872189625,
+          "peak_physical_footprint_bytes": 335020032,
+          "physical_footprint_bytes": 208247194,
+          "stage": "cycle-3"
+        },
+        {
+          "elapsed_s": 202.940074791,
+          "peak_physical_footprint_bytes": 335020032,
+          "physical_footprint_bytes": 208247194,
+          "stage": "idle-3"
+        },
+        {
+          "elapsed_s": 207.936531666,
+          "peak_physical_footprint_bytes": 335020032,
+          "physical_footprint_bytes": 195454566,
+          "stage": "final-idle"
+        }
+      ]
+    },
+    {
+      "final_counts": {
+        "artifacts": 30110,
+        "events": 115977,
+        "runs": 5868,
+        "tasks": 2195,
+        "workspaces": 23
+      },
+      "final_files": {
+        "task_folder_regular_files": 4,
+        "workspace_regular_files": 6
+      },
+      "heap": {
+        "final-idle": {
+          "launch_time": "2026-11-02 18:04:47.065 -0800",
+          "live_malloc_bytes": 104625787,
+          "malloc_nodes": 500534,
+          "sample_time": "2026-11-02 18:08:12.673 -0800",
+          "selected_classes": {
+            "AgentTask": {
+              "bytes": 210720,
+              "count": 2195
+            },
+            "ModelContext": {
+              "bytes": 320,
+              "count": 1
+            },
+            "NSManagedObjectContext": {
+              "bytes": 192,
+              "count": 1
+            },
+            "NSSQLRow": {
+              "bytes": 0,
+              "count": 0
+            },
+            "SwiftData.ModelContext weak object map": {
+              "bytes": 3162112,
+              "count": 1
+            },
+            "SwiftData._KKMDBackingData<ASTRAModels.AgentTask>": {
+              "bytes": 140480,
+              "count": 2195
+            },
+            "TaskEvent": {
+              "bytes": 0,
+              "count": 0
+            },
+            "TaskRun": {
+              "bytes": 0,
+              "count": 0
+            },
+            "Workspace": {
+              "bytes": 2208,
+              "count": 23
+            }
+          }
+        },
+        "warm-idle": {
+          "launch_time": "2026-11-02 18:04:47.065 -0800",
+          "live_malloc_bytes": 102909289,
+          "malloc_nodes": 487976,
+          "sample_time": "2026-11-02 18:05:45.324 -0800",
+          "selected_classes": {
+            "AgentTask": {
+              "bytes": 210720,
+              "count": 2195
+            },
+            "ModelContext": {
+              "bytes": 320,
+              "count": 1
+            },
+            "NSManagedObjectContext": {
+              "bytes": 192,
+              "count": 1
+            },
+            "NSSQLRow": {
+              "bytes": 0,
+              "count": 0
+            },
+            "SwiftData.ModelContext weak object map": {
+              "bytes": 3162112,
+              "count": 1
+            },
+            "SwiftData._KKMDBackingData<ASTRAModels.AgentTask>": {
+              "bytes": 140480,
+              "count": 2195
+            },
+            "TaskEvent": {
+              "bytes": 0,
+              "count": 0
+            },
+            "TaskRun": {
+              "bytes": 0,
+              "count": 0
+            },
+            "Workspace": {
+              "bytes": 2208,
+              "count": 23
+            }
+          }
+        }
+      },
+      "heap_exit_status": {
+        "final-idle": 0,
+        "warm-idle": 0
+      },
+      "initial_task_folder_files": 0,
+      "leaks": {
+        "leak_count": 284,
+        "leaked_bytes": 14208
+      },
+      "leaks_exit_status": 1,
+      "load_after": [
+        9.521484375,
+        10.00048828125,
+        11.3818359375
+      ],
+      "samples": [
+        {
+          "elapsed_s": 9.153601,
+          "peak_physical_footprint_bytes": 180879360,
+          "physical_footprint_bytes": 173749043,
+          "stage": "launch"
+        },
+        {
+          "elapsed_s": 58.251040333,
+          "peak_physical_footprint_bytes": 301780173,
+          "physical_footprint_bytes": 271686042,
+          "stage": "warm-idle"
+        },
+        {
+          "elapsed_s": 96.988935375,
+          "peak_physical_footprint_bytes": 307652198,
+          "physical_footprint_bytes": 255118541,
+          "stage": "cycle-1"
+        },
+        {
+          "elapsed_s": 108.184796875,
+          "peak_physical_footprint_bytes": 307652198,
+          "physical_footprint_bytes": 255118541,
+          "stage": "idle-1"
+        },
+        {
+          "elapsed_s": 143.291376583,
+          "peak_physical_footprint_bytes": 307652198,
+          "physical_footprint_bytes": 213385216,
+          "stage": "cycle-2"
+        },
+        {
+          "elapsed_s": 154.465952375,
+          "peak_physical_footprint_bytes": 307652198,
+          "physical_footprint_bytes": 213280358,
+          "stage": "idle-2"
+        },
+        {
+          "elapsed_s": 189.594419458,
+          "peak_physical_footprint_bytes": 307652198,
+          "physical_footprint_bytes": 203948032,
+          "stage": "cycle-3"
+        },
+        {
+          "elapsed_s": 200.6721925,
+          "peak_physical_footprint_bytes": 307652198,
+          "physical_footprint_bytes": 203843174,
+          "stage": "idle-3"
+        },
+        {
+          "elapsed_s": 205.599245875,
+          "peak_physical_footprint_bytes": 307652198,
+          "physical_footprint_bytes": 203843174,
+          "stage": "final-idle"
+        }
+      ]
+    }
+  ],
+  "omit_task_files": true,
+  "run_count": 3,
+  "save_dispatch_to_mirror": {
+    "max_ms": 9771.32,
+    "median_ms": 9074.04,
+    "n": 9,
+    "p95_ms": 9771.32
+  },
+  "schema_version": 1
+}
