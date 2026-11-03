@@ -465,3 +465,8 @@ assert_targets 'SidebarFolderResponsivenessTelemetryTests|StartupCleanupTelemetr
   Tests/SidebarFolderResponsivenessTelemetryTests.swift \
   Tests/StartupCleanupTelemetryTests.swift \
   Tests/CredentialCleanupStartupTests.swift
+
+assert_targets 'WorkspaceCleanupMirrorBatchTests' \
+  Astra/Services/Persistence/WorkspaceCleanupMirrorBatch.swift \
+  Astra/Services/Persistence/WorkspaceCleanupStoreGeneration.swift \
+  Tests/WorkspaceCleanupMirrorBatchTests.swift

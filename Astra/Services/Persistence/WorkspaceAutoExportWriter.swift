@@ -191,18 +191,26 @@ public final class WorkspaceAutoExportGate: @unchecked Sendable {
 
     /// Renaming and superseding share the gate. A failed encoding, staging or
     /// rename leaves the old read/publication fully eligible as a fallback.
-    func writeIfCurrent(_ ticket: ExplicitTicket, data: Data, to url: URL) throws -> Ticket? {
+    func writeIfCurrent(_ ticket: ExplicitTicket, data: Data, to url: URL,
+                        sourceGeneration: WorkspaceCleanupStoreGeneration? = nil) throws -> Ticket? {
         try withStagedFile(data, to: url) { staging in
-            lock.lock()
-            defer { lock.unlock() }
-            guard canPublish(ticket) else { return nil }
-            try replace(staging, at: url)
-            generations[ticket.workspaceID, default: 0] += 1
-            publishedReadRevisions[ticket.workspaceID] = ticket.coveredReadRevision
-            publishedExplicitRevisions[ticket.workspaceID] = ticket.revision
-            return Ticket(workspaceID: ticket.workspaceID, generation: generations[ticket.workspaceID, default: 0],
-                coveredReadRevision: ticket.coveredReadRevision)
+            if let sourceGeneration {
+                return try sourceGeneration.withCurrent { try publish(ticket, staging: staging, to: url) }
+            }
+            return try publish(ticket, staging: staging, to: url)
         }
+    }
+
+    private func publish(_ ticket: ExplicitTicket, staging: URL, to url: URL) throws -> Ticket? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard canPublish(ticket) else { return nil }
+        try replace(staging, at: url)
+        generations[ticket.workspaceID, default: 0] += 1
+        publishedReadRevisions[ticket.workspaceID] = ticket.coveredReadRevision
+        publishedExplicitRevisions[ticket.workspaceID] = ticket.revision
+        return Ticket(workspaceID: ticket.workspaceID, generation: generations[ticket.workspaceID, default: 0],
+            coveredReadRevision: ticket.coveredReadRevision)
     }
 
     private func withStagedFile<T>(_ data: Data, to url: URL, publish: (URL) throws -> T) throws -> T {
@@ -242,12 +250,12 @@ actor WorkspaceAutoExportWriter {
 
     private enum Publication: Sendable {
         case prepared(WorkspaceAutoExportGate.Ticket)
-        case explicit(WorkspaceAutoExportGate.ExplicitTicket)
+        case explicit(WorkspaceAutoExportGate.ExplicitTicket, WorkspaceCleanupStoreGeneration?)
 
         var isCurrent: Bool {
             switch self {
             case .prepared(let ticket): WorkspaceAutoExportGate.shared.isCurrent(ticket)
-            case .explicit(let ticket): WorkspaceAutoExportGate.shared.isCurrent(ticket)
+            case .explicit(let ticket, let source): WorkspaceAutoExportGate.shared.isCurrent(ticket) && (source?.isCurrent ?? true)
             }
         }
 
@@ -255,8 +263,8 @@ actor WorkspaceAutoExportWriter {
             switch self {
             case .prepared(let ticket):
                 return try WorkspaceAutoExportGate.shared.publishIfCurrent(ticket, data: data, to: url)
-            case .explicit(let ticket):
-                return try WorkspaceAutoExportGate.shared.writeIfCurrent(ticket, data: data, to: url)
+            case .explicit(let ticket, let source):
+                return try WorkspaceAutoExportGate.shared.writeIfCurrent(ticket, data: data, to: url, sourceGeneration: source)
             }
         }
     }
@@ -280,8 +288,8 @@ actor WorkspaceAutoExportWriter {
 
     @discardableResult
     func write(_ config: WorkspaceConfigManager.WorkspaceConfig, to url: URL, workspaceID: String,
-               ticket: WorkspaceAutoExportGate.ExplicitTicket) async -> Bool {
-        await write(config, to: url, workspaceID: workspaceID, publication: .explicit(ticket))
+               ticket: WorkspaceAutoExportGate.ExplicitTicket, sourceGeneration: WorkspaceCleanupStoreGeneration? = nil) async -> Bool {
+        await write(config, to: url, workspaceID: workspaceID, publication: .explicit(ticket, sourceGeneration))
     }
 
     private func write(_ config: WorkspaceConfigManager.WorkspaceConfig, to url: URL, workspaceID: String,

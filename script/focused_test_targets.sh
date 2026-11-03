@@ -23,6 +23,9 @@ target_for_path() {
     ASTRACore/LaunchDiagnosticClock.swift|Astra/Services/Diagnostics/SidebarFolderResponsivenessTelemetry.swift|Astra/Services/Persistence/StartupCleanupTelemetry.swift|Astra/Services/Capabilities/CredentialCleanupStartupMirrors.swift|Tests/SidebarFolderResponsivenessTelemetryTests.swift|Tests/StartupCleanupTelemetryTests.swift|Tests/CredentialCleanupStartupTests.swift)
       add_target "SidebarFolderResponsivenessTelemetryTests|StartupCleanupTelemetryTests|CredentialCleanupStartupTests|MainThreadPhaseTests"
       ;;
+    Astra/Services/Persistence/WorkspaceCleanupMirrorBatch.swift|Astra/Services/Persistence/WorkspaceCleanupStoreGeneration.swift|Tests/WorkspaceCleanupMirrorBatchTests.swift)
+      add_target "WorkspaceCleanupMirrorBatchTests"
+      ;;
   esac
 
   case "$path" in
