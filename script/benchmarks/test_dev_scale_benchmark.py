@@ -79,7 +79,8 @@ class FixturePathTests(unittest.TestCase):
             stored.execute('CREATE TABLE ZARTIFACT (ZPATH TEXT)')
             stored.execute('INSERT INTO ZARTIFACT VALUES (?)', (str(workspace / 'synthetic.txt'),))
             for table in ['ZAGENTTASK', 'ZTASKEVENT', 'ZTASKRUN']:
-                stored.execute(f'CREATE TABLE {table} (Z_PK INTEGER)')
+                columns = 'Z_PK INTEGER, ZGOAL TEXT' if table == 'ZAGENTTASK' else 'Z_PK INTEGER'
+                stored.execute(f'CREATE TABLE {table} ({columns})')
             stored.commit()
         benchmark.write_json(fixture / 'synthetic-fixture.json', {'format': 1, 'profile': 'full', 'seed': 42362})
         benchmark.write_json(fixture / 'seed-counts.json', {'profile': 'full', 'seed': 42362, 'task_folder_files': 1,
@@ -168,6 +169,58 @@ class FixturePathTests(unittest.TestCase):
                     benchmark.prepare_store(fixture, root / 'support', run, include_files=files)
                 self.assertFalse((run / 'Workspaces').exists())
                 self.assertEqual({p.name: p.read_bytes() for p in fixture.iterdir() if p.is_file()}, before)
+
+
+class GoalMetadataTests(unittest.TestCase):
+    fixture = FixturePathTests.fixture
+
+    def test_reuse_corrects_reported_bytes_without_rewriting_capture(self):
+        import json
+        for goal, expected in [('Synthetic goal. ' * 336, 5376), ('é', 2)]:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temporary:
+                fixture = self.fixture(Path(temporary))
+                with closing(sqlite3.connect(fixture / 'default.store')) as stored:
+                    stored.execute('INSERT INTO ZAGENTTASK VALUES (?, ?)', (1, goal))
+                    stored.commit()
+                manifest = json.loads((fixture / 'seed-counts.json').read_text())
+                manifest['verified_counts']['tasks'] = 1
+                manifest['goal_bytes_per_task'] = 5040
+                benchmark.write_json(fixture / 'seed-counts.json', manifest)
+                before = {p.relative_to(fixture): p.read_bytes() for p in fixture.rglob('*') if p.is_file()}
+                result = benchmark.preflight_fixture(fixture, 'full')
+                self.assertEqual(result['goal_bytes_per_task'], expected)
+                self.assertEqual(result['goal_bytes_per_task_recorded'], 5040)
+                self.assertEqual({p.relative_to(fixture): p.read_bytes() for p in fixture.rglob('*') if p.is_file()}, before)
+
+    def test_mixed_goal_sizes_are_not_misreported_as_uniform(self):
+        import json
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.fixture(Path(temporary))
+            with closing(sqlite3.connect(fixture / 'default.store')) as stored:
+                stored.executemany('INSERT INTO ZAGENTTASK VALUES (?, ?)', [(1, 'a'), (2, 'é')])
+                stored.commit()
+            manifest = json.loads((fixture / 'seed-counts.json').read_text())
+            manifest['verified_counts']['tasks'] = 2
+            benchmark.write_json(fixture / 'seed-counts.json', manifest)
+            with self.assertRaisesRegex(ValueError, 'one UTF-8 byte size'):
+                benchmark.preflight_fixture(fixture, 'full')
+
+    def test_historical_metadata_correction_preserves_every_captured_measurement(self):
+        import hashlib
+        import json
+        for condition in ['full', 'no-files']:
+            with self.subTest(condition=condition):
+                path = benchmark.REPO / f'docs/performance/baselines/2026-11-02-b7908367-{condition}.json'
+                report = json.loads(path.read_text())
+                self.assertEqual(report['fixture']['goal_bytes_per_task'], 5376)
+                correction, = report.pop('metadata_corrections')
+                self.assertEqual(correction['field'], 'fixture.goal_bytes_per_task')
+                self.assertEqual(correction['recorded_value'], 5040)
+                self.assertEqual(correction['corrected_value'], 5376)
+                self.assertFalse(correction['measurement_values_changed'])
+                report['fixture']['goal_bytes_per_task'] = correction['recorded_value']
+                restored = (json.dumps(report, indent=2, sort_keys=True) + '\n').encode()
+                self.assertEqual(hashlib.sha256(restored).hexdigest(), correction['original_summary_sha256'])
 
 
 class LifecycleTests(unittest.TestCase):

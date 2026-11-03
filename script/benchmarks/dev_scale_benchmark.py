@@ -17,6 +17,7 @@ import time
 import uuid
 
 REPO = Path(__file__).resolve().parents[2]
+SUPPORT = REPO / "script/benchmarks/Support/Sources/DevScaleBenchmarkSupport"
 
 
 def command(args, **kwargs):
@@ -62,8 +63,9 @@ def compile_tools(build, output):
         objects.extend(found)
     common = ["xcrun", "swiftc", "-target", "arm64-apple-macosx14.0", "-module-cache-path", output / "module-cache"]
     command(common + ["-parse-as-library", "-I", modules, REPO / "script/benchmarks/DevWorkspaceFixture.swift",
-        REPO / "Astra/Views/SidebarTaskFetch.swift", *objects, "-o", output / "fixture"])
-    command(common + [REPO / "script/benchmarks/DevScaleAX.swift", "-o", output / "ax"])
+        SUPPORT / "FixtureGoals.swift", REPO / "Astra/Views/SidebarTaskFetch.swift", *objects, "-o", output / "fixture"])
+    command(common + ["-parse-as-library", REPO / "script/benchmarks/DevScaleAX.swift",
+        SUPPORT / "AXReadiness.swift", "-o", output / "ax"])
     return {str(p.name): hashlib.sha256(p.read_bytes()).hexdigest() for p in objects}
 
 
@@ -128,8 +130,20 @@ def preflight_fixture(fixture, profile):
         counts = {name: source.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
                   for name, table in [("workspaces", "ZWORKSPACE"), ("tasks", "ZAGENTTASK"),
                                       ("events", "ZTASKEVENT"), ("runs", "ZTASKRUN"), ("artifacts", "ZARTIFACT")]}
+        goal_sizes = set()
+        for (goal,) in source.execute("SELECT ZGOAL FROM ZAGENTTASK"):
+            if not isinstance(goal, str):
+                raise ValueError("Fixture goal is not text")
+            goal_sizes.add(len(goal.encode("utf-8")))
+        if len(goal_sizes) > 1:
+            raise ValueError("Fixture goals do not have one UTF-8 byte size")
     if counts != manifest["verified_counts"]:
         raise ValueError("Reusable fixture row counts differ from its seed manifest")
+    if goal_sizes:
+        actual = goal_sizes.pop()
+        if "goal_bytes_per_task" in manifest and manifest["goal_bytes_per_task"] != actual:
+            manifest["goal_bytes_per_task_recorded"] = manifest["goal_bytes_per_task"]
+        manifest["goal_bytes_per_task"] = actual
     return manifest
 
 
@@ -298,6 +312,7 @@ def execute_benchmark(args, source, info, output, report):
                   "invocation": __import__("sys").argv, "runs": []})
         report["input_sha256"] = {p.name: sha256(p) for p in [Path(__file__),
             Path(__file__).with_name("DevScaleAX.swift"), Path(__file__).with_name("DevWorkspaceFixture.swift"),
+            SUPPORT / "AXReadiness.swift", SUPPORT / "FixtureGoals.swift",
             args.plan, tools / "ax", tools / "fixture", source / "Contents/MacOS" / info["CFBundleExecutable"]]}
         write_json(output / "report.json", report)
         plan = json.loads(args.plan.read_text()) if args.plan else []

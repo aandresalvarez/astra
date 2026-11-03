@@ -136,7 +136,7 @@
     }
   },
   "fixture": {
-    "goal_bytes_per_task": 5040,
+    "goal_bytes_per_task": 5376,
     "history_workspace_events": 15259,
     "history_workspace_tasks": 425,
     "long_thread_events": 30000,
@@ -699,6 +699,23 @@
           "stage": "final-idle"
         }
       ]
+    }
+  ],
+  "metadata_corrections": [
+    {
+      "corrected_value": 5376,
+      "evidence": {
+        "goal_sha256": "12284ba9afd5fd60f3cadc7cd5652da2aeeb2ed0bce5ceceb4400f5974e8b23f",
+        "maximum_utf8_bytes": 5376,
+        "minimum_utf8_bytes": 5376,
+        "persisted_tasks": 2195
+      },
+      "field": "fixture.goal_bytes_per_task",
+      "measurement_values_changed": false,
+      "original_summary_commit": "141e1f0e282cd6b8a652e29ab9cf94984427694b",
+      "original_summary_sha256": "b6da45f115e636be788dbc67b8f7d917c4a7a746f0b84d9891af1ed60d6d3d8a",
+      "reason": "Full/no-files goals retain 336 repetitions of the 16-byte UTF-8 string Synthetic goal. (including its trailing space). Only sidebar goals are 5040 bytes.",
+      "recorded_value": 5040
     }
   ],
   "omit_task_files": true,

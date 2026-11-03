@@ -68,8 +68,7 @@ struct DevWorkspaceFixture {
                         let wid = id(1, w)
                         let workspace = try c.fetch(FetchDescriptor<Workspace>(predicate: #Predicate { $0.id == wid })).first!
                         let title = t == 425 ? "Long thread" : (t == 426 ? "Short thread" : String(format: "Task %04d", t))
-                        let prefix = "Synthetic sidebar task \(t). "
-                        let goal = sidebarOnly ? prefix + String(repeating: "g", count: 5040 - prefix.utf8.count) : String(repeating: "Synthetic goal. ", count: 336)
+                        let goal = FixtureGoals.make(index: t, sidebarOnly: sidebarOnly)
                         let task = AgentTask(title: title, goal: goal, workspace: workspace)
                         task.id = id(2, t)
                         task.status = .completed
@@ -149,7 +148,7 @@ struct DevWorkspaceFixture {
         if ["seed", "resume"].contains(args[1]) { guard files == (profile == "full" ? 48414 : 0) else { fail("file count mismatch: \(files)") } }
         var record: [String: Any] = ["seed": seed, "profile": profile, "verified_counts": counts, "task_folder_files": files,
             "task_folder_logical_bytes": logicalBytes, "task_folder_allocated_bytes": allocatedBytes,
-            "goal_bytes_per_task": 5040, "long_thread_events": sidebarOnly ? 0 : 30000, "history_workspace_tasks": sidebarOnly ? 0 : 425,
+            "long_thread_events": sidebarOnly ? 0 : 30000, "history_workspace_tasks": sidebarOnly ? 0 : 425,
             "history_workspace_events": sidebarOnly ? 0 : 15259]
         if args[1] == "sidebar" {
             // Reuse the real descriptor and field reads from the existing sidebar
@@ -167,6 +166,11 @@ struct DevWorkspaceFixture {
             record["checksum"] = checksum
             withExtendedLifetime(tasks) { print("sidebar measured") }
         }
+        // Read actual persisted goals only after the sidebar timing/footprint
+        // samples, preserving both the workload and its measurement boundary.
+        let goals = try c.fetch(FetchDescriptor<AgentTask>()).lazy.map(\.goal)
+        guard let goalBytes = FixtureGoals.uniformByteCount(goals) else { fail("fixture goals do not have one UTF-8 byte size") }
+        record["goal_bytes_per_task"] = goalBytes
         try json(record, to: root.appendingPathComponent("\(args[1] == "resume" ? "seed" : args[1])-counts.json"))
         print(String(decoding: try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), as: UTF8.self))
     }

@@ -95,7 +95,12 @@ removed. Do not remove the normal Astra/AstraDev roots or other chats' outputs.
 ## Fixture dimensions
 
 Seed: `0xA57A` (42362). IDs and record timestamps are deterministic; paths vary
-with the disposable root. Every task has a distinct ID and a 5,040-byte goal.
+with the disposable root. Every task has a distinct ID. Full/no-files goals are
+5,376 UTF-8 bytes (336 repetitions of the 16-byte string `Synthetic goal. `).
+Sidebar-control goals remain distinct 5,040-byte strings. The fixture recorder
+derives the byte count from persisted goals, after sidebar timing and footprint
+samples. Reuse derives it through immutable SQLite without rewriting the seed
+manifest; `goal_bytes_per_task_recorded` retains any older mislabeled value.
 All tasks and runs are terminal, with no execution requests or schedules.
 
 | Dimension | Full fixture |
@@ -187,8 +192,11 @@ presses last 50 ms. The workspace context menu uses its supported `AXShowMenu`
 action; its item and the Files toolbar use `AXPress`. These activations are
 labeled separately from mouse-click timings. Readiness queries batch
 attributes, stop at the first match, exclude global macOS menus, and poll every
-20 ms between queries. Failed/incomplete accessibility reads cannot prove an
-element absent. `last_ready_probe_ms` exposes the final query's observation cost.
+20 ms between queries. Each attribute result is decoded independently: transient
+AX errors in children or relevant matching attributes keep a poll incomplete.
+Unsupported/no-value attributes and documented CFNull results are allowed missing
+values. Both wait paths require a complete result before accepting absence.
+`last_ready_probe_ms` exposes the final query's observation cost.
 
 These are **click-to-accessibility-ready upper bounds**, including UI input
 queueing, view work, accessibility query cost and polling. They do not measure
@@ -233,6 +241,7 @@ ready conditions. Failed preparation attempts are excluded from baseline runs.
 
 ```sh
 python3 script/benchmarks/test_dev_scale_benchmark.py
+script/swift_test.sh --package-path script/benchmarks/Support --no-parallel
 script/swift_test.sh --package-path Tests/ArchitectureFitnessTests
 git diff --check
 ```
@@ -246,6 +255,9 @@ preference cleanup errors, log closure and diagnostic retention. A child that
 cannot be stopped keeps its bundle and produces a failed run. These checks also
 run through `script/prepush.sh` and the focused CI job.
 These tests do not launch the application or assert machine-specific performance.
+The isolated Swift support package exercises real per-attribute AX error values,
+readiness across transient/present/closed observations, and generated goal sizes.
+Both helper suites run through pre-push and focused CI.
 
 ## Recorded baseline
 
