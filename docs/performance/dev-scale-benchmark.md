@@ -59,6 +59,25 @@ that run's own output directory. No user store, task text, task folder, plugin,
 credential, or provider execution is used as fixture input. Development logging
 still follows the application's existing channel logging policy.
 
+Reusable fixtures must stay at their seeded location. The runner reads the
+marker, counts and stored paths through read-only SQLite; it does not open the
+reusable store through SwiftData or rewrite its metadata. Immutable reads avoid
+WAL/shared-memory bookkeeping; nonempty WAL input is rejected so pending data is
+never ignored. A moved fixture whose
+paths still reference its old location is rejected before staging or launch;
+re-seed at the new location. Absolute paths must resolve below the current
+fixture's `Workspaces` root and artifacts must belong to registered workspaces.
+Symlinks anywhere in the fixture are rejected in both file-volume modes. Mapping
+uses relative path components, and the copied workspace/artifact paths and
+symlink checks are repeated before launch.
+
+Cleanup ownership begins before setup. Staging, preference import, log creation,
+launch and workload failures mark the report failed. Process termination,
+preference removal, bundle removal and log closure are attempted independently;
+a preference cleanup error cannot leave the owned app copy behind. Diagnostic
+files and synthetic stores remain available, and cleanup errors are recorded.
+If an owned child cannot be stopped, its bundle is retained and the run fails.
+
 `lsof` verifies that the launched PID actually opened its disposable store and
 did not open the normal production/development store. The runner never uses
 `open`, `killall`, cross-bundle takeover, or process-name termination. It stops
@@ -220,8 +239,12 @@ git diff --check
 
 The Python tests verify footprint units/peak parsing and that SQLite relocation
 changes only the disposable backup, leaving the source database and files intact.
-They also inject disk-full during bundle staging and verify that only the partial
-copy is removed.
+They reject moved fixtures, invalid stored paths and symlink escapes in both
+file-volume modes, including a link introduced during cloning or setup. Injected
+staging/import/launch/workload failures exercise failed reporting, child ownership,
+preference cleanup errors, log closure and diagnostic retention. A child that
+cannot be stopped keeps its bundle and produces a failed run. These checks also
+run through `script/prepush.sh` and the focused CI job.
 These tests do not launch the application or assert machine-specific performance.
 
 ## Recorded baseline

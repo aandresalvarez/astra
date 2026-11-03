@@ -95,6 +95,7 @@ while IFS= read -r path; do
 done < <(changed_paths)
 
 run python3 script/permission_repair_test_harness_tests.py
+run python3 script/benchmarks/test_dev_scale_benchmark.py
 run script/test_architecture.sh
 if ((${#changed_files[@]} > 0)); then
   run_validation_plan "$(script/focused_validation_plan.sh "${changed_files[@]}")"
