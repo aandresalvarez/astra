@@ -26,16 +26,19 @@ enum WorkspaceSavedExportSnapshot {
     }
 
     static func capture(container: ModelContainer, workspaceID: String) throws -> CapturedStore {
-        guard container.configurations.count == 1,
-              let source = container.configurations.first, !source.isStoredInMemoryOnly else {
-            throw SnapshotError.unsupportedStoreConfiguration
+        try WorkspacePersistenceWork.snapshotCopy(workspaceID: workspaceID) {
+            guard container.configurations.count == 1,
+                  let source = container.configurations.first, !source.isStoredInMemoryOnly else {
+                throw SnapshotError.unsupportedStoreConfiguration
+            }
+            let directory = try WorkspaceSnapshotDirectory.reserve(beside: source.url)
+            try WorkspacePersistenceWork.measure("mirror_store_snapshot", workspaceID: workspaceID) {
+                try WorkspaceRecoveryService.copyStoreSnapshot(from: source.url,
+                    to: directory.root.appendingPathComponent("snapshot.store"))
+                WorkspacePersistenceWork.copiedSnapshot(at: directory.root.appendingPathComponent("snapshot.store"))
+            }
+            return CapturedStore(directory: directory, schema: container.schema)
         }
-        let directory = try WorkspaceSnapshotDirectory.reserve(beside: source.url)
-        try WorkspacePersistenceWork.measure("mirror_store_snapshot", workspaceID: workspaceID) {
-            try WorkspaceRecoveryService.copyStoreSnapshot(from: source.url,
-                to: directory.root.appendingPathComponent("snapshot.store"))
-        }
-        return CapturedStore(directory: directory, schema: container.schema)
     }
 
     static func read<T>(container: ModelContainer, workspaceID: String = "none",

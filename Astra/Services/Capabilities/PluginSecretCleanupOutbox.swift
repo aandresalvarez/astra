@@ -133,7 +133,7 @@ struct PluginSecretCleanupOutbox {
         do { heldLease = try PluginCredentialProducerLease.acquire(modelContext: modelContext) }
         catch { return }
         defer { withExtendedLifetime(heldLease) {} }
-        let rewrite = rewriteMirrors ?? { await CredentialCleanupStartupMirrors.rewrite(modelContext: $0) }
+        let rewrite = rewriteMirrors ?? { await CredentialCleanupStartupMirrors.rewrite(modelContext: $0, trigger: .pluginSecretOutbox) }
         guard let saved = await rewrite(modelContext), !Task.isCancelled,
               WorkspaceRecoveryTrust.allowsCleanup,
               let current = try? outbox?.pending(), let currentKeys = try? outbox?.pendingKeys() else { return }

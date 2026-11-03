@@ -297,11 +297,12 @@ actor WorkspaceAutoExportWriter {
         guard !Task.isCancelled, current else { return false }
         do {
             let data = try WorkspacePersistenceWork.measure("mirror_encode", workspaceID: workspaceID) {
-                try encoder.encode(config)
+                try WorkspacePersistenceWork.jsonEncode(workspaceID: workspaceID) { try encoder.encode(config) }
             }
             guard !Task.isCancelled else { return false }
             let ticket = try WorkspacePersistenceWork.measure("mirror_write", workspaceID: workspaceID) {
-                try publication.publish(data, to: url)
+                try WorkspacePersistenceWork.jsonWrite(workspaceID: workspaceID, bytes: data.count,
+                    published: { $0 != nil }) { try publication.publish(data, to: url) }
             }
             if let ticket {
                 await WorkspacePersistenceCoordinator.autoExportDidWrite(ticket)

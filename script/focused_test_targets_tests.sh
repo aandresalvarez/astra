@@ -455,3 +455,12 @@ assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nA
   "ASTRACore/BinaryRunner.swift" \
   "Tests/BinaryRunnerTests.swift" \
   "Tests/ProcessDescriptorIsolationTests.swift"
+
+assert_targets 'SidebarFolderResponsivenessTelemetryTests|StartupCleanupTelemetryTests|CredentialCleanupStartupTests|MainThreadPhaseTests' \
+  ASTRACore/LaunchDiagnosticClock.swift \
+  Astra/Services/Diagnostics/SidebarFolderResponsivenessTelemetry.swift \
+  Astra/Services/Persistence/StartupCleanupTelemetry.swift \
+  Astra/Services/Capabilities/CredentialCleanupStartupMirrors.swift \
+  Tests/SidebarFolderResponsivenessTelemetryTests.swift \
+  Tests/StartupCleanupTelemetryTests.swift \
+  Tests/CredentialCleanupStartupTests.swift

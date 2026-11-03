@@ -404,6 +404,7 @@ struct TaskSidebarView: View {
     @State private var renamingTask: AgentTask?
     @State private var renameTaskText = ""
     @State private var expandedWorkspaceTaskLists: Set<UUID> = []
+    @State private var folderTelemetry = SidebarFolderResponsivenessTelemetry()
     @State private var isShowingNewTaskNudge = false
     @State private var isNewTaskNudgePulsing = false
     @State private var workspaceOrderingState = WorkspaceSidebarOrderingStore.load()
@@ -664,6 +665,7 @@ struct TaskSidebarView: View {
         // the hierarchy mid-drag (window close, split collapse) their
         // repeating timers must not outlive it.
         .onDisappear {
+            folderTelemetry.cancel(reason: "sidebar_disappeared")
             endTaskDrag()
             endWorkspaceDrag()
             indexRebuildScheduler.cancel()
@@ -1385,19 +1387,29 @@ struct TaskSidebarView: View {
     /// permanent guide rail that used to consume title width and dominate the
     /// scan path. The row surface still spans the same width as the parent
     /// workspace row so hover and selection chrome stay stable.
-    @ViewBuilder
     private func workspaceListRow(for workspace: Workspace, using taskIndex: SidebarTaskIndex) -> some View {
+        let preparationStart = DispatchTime.now().uptimeNanoseconds
+        let phase = MainThreadPhase.push("sidebar_drawer_prepare")
+        defer {
+            if phase { MainThreadPhase.pop() }
+            folderTelemetry.prepared(workspaceID: workspace.id,
+                milliseconds: PerformanceTelemetry.elapsedMilliseconds(since: preparationStart))
+        }
         let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
-        let workspaceTasks = tasksForWorkspace(workspace, using: taskIndex)
+        let workspaceTasks = MainThreadPhase.tracking("sidebar_drawer_eligible_rows") {
+            tasksForWorkspace(workspace, using: taskIndex)
+        }
         let hasTasks = !workspaceTasks.isEmpty
-        let hasAny = hasAnyTask(in: workspace, isExpanded: isExpanded, using: taskIndex)
+        let hasAny = MainThreadPhase.tracking("sidebar_drawer_relationship") {
+            hasAnyTask(in: workspace, isExpanded: isExpanded, using: taskIndex)
+        }
         let isShowingAll = expandedWorkspaceTaskLists.contains(workspace.id)
         let visibleTasks = SidebarWorkspaceTaskList.visibleTasks(workspaceTasks, isShowingAll: isShowingAll)
         let hiddenTaskCount = SidebarWorkspaceTaskList.hiddenTaskCount(
             totalTasks: workspaceTasks.count,
             visibleTasks: visibleTasks.count
         )
-        let workspaceAppRows = appsForWorkspace(workspace)
+        let workspaceAppRows = MainThreadPhase.tracking("sidebar_drawer_apps") { appsForWorkspace(workspace) }
         let showGroupLabels = !workspaceAppRows.isEmpty && hasTasks  // label groups only when both exist
         let showsEmptyDrawer = SidebarWorkspaceDrawer.showsEmptyState(
             hasDrawerTasks: hasTasks,
@@ -1405,7 +1417,11 @@ struct TaskSidebarView: View {
             hasApps: !workspaceAppRows.isEmpty
         )
 
-        VStack(spacing: 0) {
+        let readiness = folderTelemetry.readiness(workspaceID: workspace.id, expanded: isExpanded,
+            eligible: workspaceTasks.count, displayed: visibleTasks.count,
+            apps: workspaceAppRows.count, empty: showsEmptyDrawer)
+
+        return VStack(spacing: 0) {
             workspaceRow(for: workspace, using: taskIndex)
 
             if isExpanded {
@@ -1466,6 +1482,7 @@ struct TaskSidebarView: View {
                 .transition(.opacity)
             }
         }
+        .modifier(SidebarFolderReadinessProbe(readiness: readiness, telemetry: folderTelemetry))
         // Clips children that briefly extend past the row's natural
         // bounds during the collapse animation — without this, tasks
         // can render outside the row's footprint while the container
@@ -1648,8 +1665,14 @@ struct TaskSidebarView: View {
             activityCounts: activityCounts,
             allowsReordering: workspaceSortMode == .manual,
             onToggle: {
-                withAnimation(accordionAnimation) {
-                    toggleWorkspaceOpenState(workspace, using: taskIndex)
+                // Capture before any lookup/state work. The AppKit event's
+                // boot-clock timestamp includes time spent waiting for us.
+                let input = SidebarFolderInput.capture()
+                folderTelemetry.begin(workspaceID: workspace.id, input: input)
+                MainThreadPhase.tracking("sidebar_folder_toggle") {
+                    withAnimation(accordionAnimation) {
+                        toggleWorkspaceOpenState(workspace, using: taskIndex)
+                    }
                 }
             },
             onNewTask: { startNewTask(in: workspace) },
@@ -1739,11 +1762,14 @@ struct TaskSidebarView: View {
 
     private func toggleWorkspaceOpenState(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
         let wasExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
-        setAccordionState(WorkspaceSidebarAccordion.toggling(
-            workspace.id,
-            in: accordion,
-            wasExpanded: wasExpanded
-        ))
+        folderTelemetry.setTarget(expanded: !wasExpanded)
+        MainThreadPhase.tracking("sidebar_folder_state_update") {
+            setAccordionState(WorkspaceSidebarAccordion.toggling(
+                workspace.id,
+                in: accordion,
+                wasExpanded: wasExpanded
+            ))
+        }
     }
 
     /// The one writer of the accordion state. Closing a drawer — explicitly

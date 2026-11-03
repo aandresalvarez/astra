@@ -65,7 +65,7 @@ enum UIResponsivenessDiagnostics {
             guard entry.category == "Performance",
                   let rawEvent = fields["event"],
                   isResponsivenessEvent(rawEvent),
-                  let rawDuration = fields["duration_ms"],
+                  let rawDuration = fields[rawEvent == "sidebar_folder_handler" ? "input_queue_ms" : "duration_ms"],
                   let duration = Double(rawDuration), duration >= 0
             else { return nil }
 
@@ -170,6 +170,8 @@ enum UIResponsivenessDiagnostics {
 
     private static func isResponsivenessEvent(_ event: String) -> Bool {
         event == "task_selection_timeout"
+            || event == "sidebar_folder_handler"
+            || event == "sidebar_folder_view_ready"
             || event.hasPrefix("task_selection_to_")
             || event.hasPrefix("screen_transition_to_")
             || event.hasPrefix("task_open_")
@@ -228,6 +230,10 @@ enum UIResponsivenessDiagnostics {
     }
 
     private static func displayEvent(_ event: String, fields: [String: String]) -> String {
+        if event == "sidebar_folder_handler" { return "sidebar_folder_input_queue" }
+        if event == "sidebar_folder_view_ready" {
+            return "sidebar_folder_handler_to_view_ready:\(fields["action"] ?? "unknown")"
+        }
         if ["task_open_phase", "run_finalize_phase", "files_shelf_phase"].contains(event), let phase = fields["phase"] {
             return "\(event):\(phase)"
         }

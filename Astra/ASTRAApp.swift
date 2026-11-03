@@ -737,6 +737,7 @@ public struct ASTRAApp: App {
     private let startupBlocker: PersistentStoreRecoveryBlocker?
 
     public init() {
+        LaunchDiagnosticClock.markLaunch()
         // Must run before any code constructs a WorkspaceExecutionEnvironment
         // with credential projections or reads TaskRoleProfile.runtime — see
         // RuntimeSeamRegistration.swift.
@@ -996,18 +997,25 @@ public struct ASTRAApp: App {
                 // Keep its destructive ordering in one retained task, while
                 // background mirror writes allow the scheduler and UI to run.
                 credentialCleanupAfterLaunch = Task { @MainActor in
-                    guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
-                    WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
-                                                                  movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
-                    await ConnectorCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
-                    await SkillCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
-                    guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
-                    ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
-                    await PluginSecretCleanupOutbox.resumePendingAsync(modelContext: modelContext)
-                    guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
-                    WorkspaceDeletionCleanupService.dropUnconfirmed(
-                        modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker
-                    )
+                    await WorkspacePersistenceWork.withCleanupJob {
+                        guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
+                        MainThreadPhase.tracking("startup_cleanup_workspace_deletions") {
+                            WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
+                                movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
+                        }
+                        await ConnectorCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
+                        await SkillCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
+                        guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
+                        MainThreadPhase.tracking("startup_cleanup_connector_outbox") {
+                            ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
+                        }
+                        await PluginSecretCleanupOutbox.resumePendingAsync(modelContext: modelContext)
+                        guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
+                        MainThreadPhase.tracking("startup_cleanup_drop_unconfirmed") {
+                            WorkspaceDeletionCleanupService.dropUnconfirmed(
+                                modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker)
+                        }
+                    }
                 }
             }
         }
