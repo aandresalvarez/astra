@@ -16,11 +16,17 @@ enum WorkspaceSavedExportSnapshot {
 
         func read<T>(_ body: (ModelContainer) throws -> T) throws -> T {
             try withExtendedLifetime(directory) {
-                let snapshot = try ModelContainer(for: schema, configurations: [
-                    ModelConfiguration(schema: schema, url: directory.root.appendingPathComponent("snapshot.store"),
-                        allowsSave: false, cloudKitDatabase: .none)
-                ])
-                return try body(snapshot)
+                // Core Data's Objective-C readers can outlive Swift's last
+                // strong reference until the autorelease pool drains. Drain
+                // them while the copy still exists and its lease is held,
+                // including when opening or projecting throws.
+                try autoreleasepool {
+                    let snapshot = try ModelContainer(for: schema, configurations: [
+                        ModelConfiguration(schema: schema, url: directory.root.appendingPathComponent("snapshot.store"),
+                            allowsSave: false, cloudKitDatabase: .none)
+                    ])
+                    return try body(snapshot)
+                }
             }
         }
     }
@@ -32,8 +38,8 @@ enum WorkspaceSavedExportSnapshot {
         }
         let directory = try WorkspaceSnapshotDirectory.reserve(beside: source.url)
         try WorkspacePersistenceWork.measure("mirror_store_snapshot", workspaceID: workspaceID) {
-            try WorkspaceRecoveryService.copyStoreSnapshot(from: source.url,
-                to: directory.root.appendingPathComponent("snapshot.store"))
+            try WorkspaceExportFileIO.copySnapshot(source.url,
+                directory.root.appendingPathComponent("snapshot.store"))
         }
         return CapturedStore(directory: directory, schema: container.schema)
     }
