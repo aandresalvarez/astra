@@ -42,6 +42,7 @@ public final class WorkspaceCleanupMirrorBatch {
             // Register generation BEFORE fetching the final committed scope.
             // A different context can commit during admission or capture.
             let generation = try WorkspaceCleanupStoreGeneration(source: source)
+            guard generation.isCurrent else { return nil }
             let scope = try WorkspacePersistenceWork.measure("cleanup_mirror_workspaces", workspaceID: "none") {
                 try autoreleasepool {
                     let saved = ModelContext(modelContext.container)
