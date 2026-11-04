@@ -32,8 +32,16 @@ extension TaskPublicationDecisionEvidenceReader {
         }
         var entry: Entry?
         var work = Work()
-        let mutations: MutationTracker
+        private var observedOwnerID: PersistentIdentifier?
+        private(set) var mutations: MutationTracker
         init(container: ModelContainer) { mutations = MutationTracker(container: container) }
+
+        func selectOwner(_ ownerID: PersistentIdentifier, container: ModelContainer) {
+            guard observedOwnerID != ownerID || mutations.containerID != ObjectIdentifier(container) else { return }
+            entry = nil
+            observedOwnerID = ownerID
+            mutations = MutationTracker(container: container, ownerID: ownerID)
+        }
     }
 
     /// Cache readers observe existing evidence edits/deletions; insertions and
@@ -46,6 +54,7 @@ extension TaskPublicationDecisionEvidenceReader {
     /// Callbacks inspect changes on the saving thread; only locked value state
     /// crosses to the reader. Context references are weak.
     final class MutationTracker: @unchecked Sendable {
+        let containerID: ObjectIdentifier
         private struct PendingSave {
             weak var context: ModelContext?
             let relevant: Bool
@@ -58,6 +67,7 @@ extension TaskPublicationDecisionEvidenceReader {
         init(container: ModelContainer, ownerID: PersistentIdentifier? = nil,
              observeInsertedEvidence: Bool = false, onRelevantCommit: (@Sendable () -> Void)? = nil) {
             let containerID = ObjectIdentifier(container)
+            self.containerID = containerID
             observers.append(NotificationCenter.default.addObserver(forName: ModelContext.willSave, object: nil, queue: nil) { [weak self] note in
                 guard let context = note.object as? ModelContext,
                       ObjectIdentifier(context.container) == containerID else { return }

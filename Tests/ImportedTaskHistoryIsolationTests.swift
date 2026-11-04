@@ -199,7 +199,7 @@ struct ImportedTaskHistoryIsolationTests {
     }
 
     @Test("Scheduled results resolve the source within the schedule's local workspace")
-    func scheduledResultCannotWriteAnotherCopy() throws {
+    func scheduledResultCannotWriteAnotherCopy() async throws {
         let (container, original, copy) = try fixture()
         let context = container.mainContext
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -208,9 +208,6 @@ struct ImportedTaskHistoryIsolationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let a = Workspace(name: "A", primaryPath: root.appendingPathComponent("A").path)
         let b = Workspace(name: "B", primaryPath: root.appendingPathComponent("B").path)
-        // This test routes an export; settle its own obligation before another
-        // suite inspects the process-wide pending-export count.
-        defer { WorkspacePersistenceCoordinator.flushPendingExport(workspace: b, modelContext: context) }
         context.insert(a); context.insert(b)
         original.workspace = a; copy.workspace = b
         let scheduled = AgentTask(title: "Scheduled", goal: "Result", workspace: b)
@@ -225,6 +222,9 @@ struct ImportedTaskHistoryIsolationTests {
         #expect(original.runs.isEmpty && original.tokensUsed == 0)
         #expect(copy.runs.count == 1 && copy.tokensUsed == 123)
         #expect(copy.runs.first?.output == "B RESULT")
+        // Await this export before deleting its directory. The flush helper
+        // starts a replacement export rather than synchronously draining one.
+        await WorkspacePersistenceCoordinator.waitForPendingExport(workspaceID: b.id)
     }
 
     private final class PageGate {

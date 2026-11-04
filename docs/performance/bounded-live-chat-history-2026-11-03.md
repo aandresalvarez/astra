@@ -63,16 +63,16 @@ Apple Swift 6.4.2, arm64, macOS 26.6.2 (25G83).
 | Stored events at completion | 6,000 | 6,000 |
 | Maximum retained snapshot events | 6,000 | 300 |
 | Maximum eager conversation rows | 6,002 | 302 |
-| Starting physical footprint | 39 MiB | 39 MiB |
+| Starting physical footprint | 39 MiB | 38 MiB |
 | Sampled workload peak | 410 MiB | 65 MiB |
-| Footprint after two seconds idle | 410 MiB | 63 MiB |
+| Footprint after two seconds idle | 410 MiB | 59 MiB |
 
 The two extra rows are the goal and active run. At each 1,000-event checkpoint,
 the before footprints were **98, 157, 205, 260, 327, 410 MiB**; after they were
-**58, 63, 60, 58, 59, 63 MiB**. The table uses the final-source after run; earlier after runs measured
+**58, 63, 58, 58, 62, 59 MiB**. The table uses the final-source after run; earlier after runs measured
 64–71 MiB peak and 54–66 MiB idle with the same 300-event/302-row bound. These are
 sequential runs on a shared developer machine, not a statistical performance
-claim. Test execution took 241.719 seconds before and 73.883 seconds in the final
+claim. Test execution took 241.719 seconds before and 75.632 seconds in the final
 after run, excluding compilation;
 there is no timing gate.
 
@@ -191,10 +191,10 @@ measurements are the after column above.
 
 The opt-in `TaskPublicationTailReplayTests` mirrors the review fixture with fresh
 read contexts. Non-PR reads at 100/750/1,500 failures measured
-1.47–1.54 / 1.64–1.84 / 1.97–2.59 ms (three reads each). The review's
+1.55–2.16 / 1.94–2.26 / 2.20–2.77 ms (three reads each). The review's
 `bcef2f5e` observations were about 22–29 / 187–203 / 441–473 ms. A PR-intent
-store performed its initial 1,500-row search in 449.93 ms; the next two reads
-were 4.16 and 3.75 ms with the scan/lookup counts unchanged at 1,500.
+store performed its initial 1,500-row search in 511.25 ms; the next two reads
+were 4.27 and 4.08 ms with the scan/lookup counts unchanged at 1,500.
 These are observations, with no wall-clock CI threshold. Run with:
 
 ```bash
@@ -216,8 +216,14 @@ publication evidence commits, even when task timestamps and counts stay equal.
 It also handles inserted failures and receipts without invalidating prior
 failure evidence for ordinary new tool uses. Changed publication packet values
 participate in snapshot-trigger equality. Relevant commits evict that owner's
-terminal cache entries and change its cache generation; a build predating that
-generation cannot repopulate the cache.
+terminal cache entries. Each entry retains its owner's save observation while
+inactive, and carries the paired-save revision captured before its source read.
+Lookup rejects a changed revision synchronously; a late build cannot store a
+snapshot under a later revision. Observations are reused for the same owner and
+container and released with cache eviction (at most twelve cached entries),
+alongside the active view's observation. The observation retains no context or
+container. Publication saves do not advance a UUID-wide history token, so
+imported owners sharing a portable task UUID cannot invalidate one another.
 
 Disk-backed view-model regressions cover a terminal cache hit followed by 400
 new messages while browsing, pausing the final build without an extra refresh,
@@ -238,3 +244,31 @@ The final cache-seed extension passed the 23-test view/owner/commit group,
 including direct earlier paging with waiting activity. The unchanged isolated
 main-actor scaling gate passed: at 5,000 events, send measured 152.84 ms, view
 refresh 5.22 ms, and the full-history control 336.36 ms.
+
+The inactive-owner regression warms A, selects B, edits A's evicted failure
+without changing its timestamp or event count, and reopens A. Both actionable
+and cleared transitions agree with the durable resolver. A separate parameter
+case gives A and B the same portable UUID. B remains a cache hit with zero
+extra history reads, and B's ordinary append leaves A cached. A weak-reference
+test verifies immediate rejection after a save revision changes and observation
+release on eviction. The final 25-test focused group and broader 310-test /
+27-suite pass succeeded, alongside 14 package tests.
+
+The reader's single evidence-cache entry also scopes its mutation observation
+to its current persistent owner, before capturing the read revision. An added
+counter regression reproduced 1,501 extra failure scans and tool lookups after a
+different owner (with the same portable UUID) was edited. With the scope fixed,
+the subsequent ordinary append adds zero scans/lookups; edits to the actual
+owner still invalidate normally. The 25-test combined group passed this check.
+
+The latest isolated current-source send gate missed its unchanged bound
+(176.32 ms send versus 170.21 ms), after an earlier miss of 191.58 versus
+175.89 ms. An isolated checkout of original main
+`37aca81f8b5ea7df61658582ea9ca363b3e0fec7`, using the identical scaling-test
+file, also failed that gate: 204.76 ms send versus 172.67 ms. The corresponding
+current/main view-update costs were 6.10/6.56 ms against full-history controls
+of 340.41/345.34 ms. These runs establish that this gate also fails on the
+baseline here; they do not establish a cause or a statistical speedup. No
+threshold was changed. Functional history/decision/export coverage passed
+310 tests in 27 suites plus 14 package tests after the fixture awaited its
+own export before cleanup.

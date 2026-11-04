@@ -19,6 +19,7 @@ enum TaskPublicationDecisionEvidenceReader {
         in context: ModelContext
     ) throws -> [TaskEventSnapshot] {
         guard let runID else { return [] }
+        cache?.selectOwner(ownerID, container: context.container)
         let editsAtStart = readRevision ?? cache?.mutations.revision
         var evidence: [TaskEventSnapshot] = []
         if let request = try newest(ownerID: ownerID, runID: runID,

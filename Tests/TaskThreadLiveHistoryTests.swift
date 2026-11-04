@@ -4,7 +4,9 @@ import Testing
 import ASTRAModels
 @testable import ASTRA
 
-@Suite("Bounded live task history")
+// Cache-hit assertions need a working set below the process-wide 12-entry LRU.
+// Explicit gates still exercise read/build races; other suites run concurrently.
+@Suite("Bounded live task history", .serialized)
 @MainActor
 struct TaskThreadLiveHistoryTests {
     private func fixture() throws -> (ModelContainer, ModelContext, AgentTask, URL) {
@@ -526,6 +528,123 @@ struct TaskThreadLiveHistoryTests {
         vm.reset(for: task, modelContext: context)
         await vm.waitForPendingWorkForTesting()
         #expect(!dock())
+    }
+
+    @Test("Inactive terminal owners invalidate only their own cached decision", arguments: [false, true])
+    func inactiveOwnerDecision(sharedPortableID: Bool) async throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        task.goal = "Fix the bug and create a pull request"
+        task.status = .completed
+        let run = TaskRun(task: task)
+        run.status = .completed
+        context.insert(run)
+        let failed = append(0, task: task, context: context, type: "tool.result.failed", run: run)
+        failed.payload = "unrelated command failed"
+        for index in 1..<345 { append(index, task: task, context: context) }
+        let other = AgentTask(title: "B", goal: "Unrelated")
+        other.status = .completed
+        if sharedPortableID { other.id = task.id }
+        context.insert(other)
+        append(0, task: other, context: context)
+        try context.save()
+        let timestamp = task.updatedAt
+        let vm = TaskThreadViewModel()
+        func open(_ owner: AgentTask) async {
+            vm.reset(for: owner, modelContext: context)
+            await vm.waitForPendingWorkForTesting()
+        }
+        func dock() -> Bool {
+            TaskDecisionOutcomeResolver.outcomes(task: task, snapshot: vm.snapshot,
+                decisionArtifactPaths: [], modelContext: context).hasGitPublishRequest
+        }
+        await open(task)
+        await open(task)
+        #expect(vm.lastSnapshotCacheState == "hit" && !dock())
+        await open(other)
+        // Ordinary appends for B must leave A's cache and evidence cold.
+        append(1, task: other, context: context)
+        other.updatedAt = Date()
+        try context.save()
+        vm.refreshSnapshot(for: other)
+        await vm.waitForPendingWorkForTesting()
+        await open(task)
+        #expect(vm.lastSnapshotCacheState == "hit")
+        #expect(vm.historyReadCountForTesting == 0)
+        await open(other)
+        #expect(vm.lastSnapshotCacheState == "hit")
+        let otherRevision = vm.appliedSnapshotRevision
+        failed.payload = "gh pr create: permission denied"
+        try context.save()
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.appliedSnapshotRevision == otherRevision)
+        #expect(vm.historyReadCountForTesting == 0)
+        vm.refreshSnapshot(for: other)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.lastSnapshotCacheState == "hit")
+        #expect(vm.historyReadCountForTesting == 0)
+        await open(task)
+        #expect(vm.historyReadCountForTesting > 0)
+        #expect(task.updatedAt == timestamp)
+        #expect(dock())
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) != nil)
+        await open(task)
+        #expect(vm.lastSnapshotCacheState == "hit" && dock())
+        await open(other)
+        #expect(vm.lastSnapshotCacheState == "hit")
+        failed.payload = "unrelated command failed"
+        try context.save()
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.historyReadCountForTesting == 0)
+        await open(task)
+        #expect(vm.historyReadCountForTesting > 0)
+        #expect(task.updatedAt == timestamp)
+        #expect(!dock())
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) == nil)
+        await open(task)
+        #expect(vm.lastSnapshotCacheState == "hit" && !dock())
+    }
+
+    @Test("Terminal cache observation revisions reject stale values and eviction releases observers")
+    func terminalCacheObservationLifetime() throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        task.status = .completed
+        let failed = append(0, task: task, context: context, type: "tool.result.failed")
+        let other = AgentTask(title: "Other", goal: "Unrelated")
+        other.status = .completed
+        context.insert(other)
+        try context.save()
+        let key = try #require(TaskThreadSnapshotCacheKey(task: task, maxRuns: 12))
+        let otherKey = try #require(TaskThreadSnapshotCacheKey(task: other, maxRuns: 12))
+        let snapshot = TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
+        var cache = TaskThreadSnapshotCache(maxEntries: 1)
+        weak var held: TaskPublicationDecisionEvidenceReader.MutationTracker?
+        do {
+            let observation = TaskPublicationDecisionEvidenceReader.MutationTracker(container: container,
+                ownerID: task.persistentModelID, observeInsertedEvidence: true)
+            held = observation
+            cache.store(snapshot, for: key, saveObservation: observation, readRevision: observation.revision)
+        }
+        #expect(held != nil)
+        #expect(cache.snapshot(for: key) != nil)
+        failed.payload = "gh pr create: permission denied"
+        // This is the pre-commit half of a failed/abandoned save. Lookup must
+        // reject the old revision immediately, without waiting for didSave.
+        NotificationCenter.default.post(name: ModelContext.willSave, object: context)
+        #expect(cache.snapshot(for: key) == nil)
+        #expect(held == nil)
+        context.rollback()
+        do {
+            let observation = TaskPublicationDecisionEvidenceReader.MutationTracker(container: container,
+                ownerID: task.persistentModelID, observeInsertedEvidence: true)
+            held = observation
+            cache.store(snapshot, for: key, saveObservation: observation, readRevision: observation.revision)
+        }
+        #expect(held != nil)
+        cache.store(snapshot, for: otherKey)
+        #expect(cache.stats.entryCount == 1)
+        #expect(held == nil)
     }
 
     @Test("A mode change or older-page merge during a read cannot restore a stale window")

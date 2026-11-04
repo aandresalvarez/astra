@@ -73,8 +73,9 @@ enum TaskThreadHistoryReader {
         publicationCache: TaskPublicationDecisionEvidenceReader.Cache? = nil,
         historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryPage {
-        let publicationRevision = publicationCache?.mutations.revision
         let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
+        publicationCache?.selectOwner(ownerID, container: modelContext.container)
+        let publicationRevision = publicationCache?.mutations.revision
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let runResult = try latestRuns(
             ownerID: ownerID,
@@ -115,8 +116,9 @@ enum TaskThreadHistoryReader {
         publicationCache: TaskPublicationDecisionEvidenceReader.Cache? = nil,
         historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryPage {
-        let publicationRevision = publicationCache?.mutations.revision
         let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
+        publicationCache?.selectOwner(ownerID, container: modelContext.container)
+        let publicationRevision = publicationCache?.mutations.revision
         guard cursor.ownerID == nil || cursor.ownerID == ownerID else { throw TaskHistoryScope.Failure.ambiguousOwner }
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate {
@@ -160,8 +162,9 @@ enum TaskThreadHistoryReader {
         publicationCache: TaskPublicationDecisionEvidenceReader.Cache? = nil,
         historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryTailPage {
-        let publicationRevision = publicationCache?.mutations.revision
         let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: modelContext)
+        publicationCache?.selectOwner(ownerID, container: modelContext.container)
+        let publicationRevision = publicationCache?.mutations.revision
         guard cursor.ownerID == nil || cursor.ownerID == ownerID else { throw TaskHistoryScope.Failure.ambiguousOwner }
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let eventResult = try eventsSince(

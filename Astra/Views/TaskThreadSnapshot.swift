@@ -1789,6 +1789,17 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
 }
 
 struct TaskThreadSnapshotCache {
+    private struct Entry {
+        let snapshot: TaskThreadSnapshot
+        // The observation lives with the cached owner, including while another
+        // task is selected. Eviction releases it; at most maxEntries are held.
+        let saveObservation: TaskPublicationDecisionEvidenceReader.MutationTracker?
+        let readRevision: Int?
+
+        var isCurrent: Bool {
+            saveObservation.map { $0.revision == readRevision } ?? true
+        }
+    }
     struct Stats: Equatable {
         var hitCount = 0
         var missCount = 0
@@ -1796,7 +1807,7 @@ struct TaskThreadSnapshotCache {
     }
 
     private let maxEntries: Int
-    private var entries: [TaskThreadSnapshotCacheKey: TaskThreadSnapshot] = [:]
+    private var entries: [TaskThreadSnapshotCacheKey: Entry] = [:]
     private var recentKeys: [TaskThreadSnapshotCacheKey] = []
     private(set) var stats = Stats()
 
@@ -1805,17 +1816,31 @@ struct TaskThreadSnapshotCache {
     }
 
     mutating func snapshot(for key: TaskThreadSnapshotCacheKey) -> TaskThreadSnapshot? {
-        guard let snapshot = entries[key] else {
+        guard let entry = entries[key], entry.isCurrent else {
+            entries.removeValue(forKey: key)
+            recentKeys.removeAll { $0 == key }
+            stats.entryCount = entries.count
             stats.missCount += 1
             return nil
         }
         stats.hitCount += 1
         markRecentlyUsed(key)
-        return snapshot
+        return entry.snapshot
     }
 
-    mutating func store(_ snapshot: TaskThreadSnapshot, for key: TaskThreadSnapshotCacheKey) {
-        entries[key] = snapshot
+    func saveObservation(ownerID: PersistentIdentifier, container: ModelContainer) -> TaskPublicationDecisionEvidenceReader.MutationTracker? {
+        for key in recentKeys.reversed() where key.ownerID == ownerID {
+            if let observation = entries[key]?.saveObservation,
+               observation.containerID == ObjectIdentifier(container) { return observation }
+        }
+        return nil
+    }
+
+    mutating func store(_ snapshot: TaskThreadSnapshot, for key: TaskThreadSnapshotCacheKey,
+                       saveObservation: TaskPublicationDecisionEvidenceReader.MutationTracker? = nil,
+                       readRevision: Int? = nil) {
+        guard saveObservation.map({ $0.revision == readRevision }) ?? true else { return }
+        entries[key] = Entry(snapshot: snapshot, saveObservation: saveObservation, readRevision: readRevision)
         markRecentlyUsed(key)
         trimIfNeeded()
         stats.entryCount = entries.count

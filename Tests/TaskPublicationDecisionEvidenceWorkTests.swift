@@ -37,6 +37,11 @@ struct TaskPublicationDecisionEvidenceWorkTests {
             failures.append(event("tool.result.failed", "unrelated command failed", at: Double(10 + index)))
         }
         let firstTail = event("user.message", "ordinary", at: 10_000)
+        let foreignTask = AgentTask(title: "Foreign owner", goal: "Unrelated")
+        foreignTask.id = task.id
+        context.insert(foreignTask)
+        let foreignFailure = TaskEvent(task: foreignTask, type: "tool.result.failed", payload: "foreign failure")
+        context.insert(foreignFailure)
         try context.save()
         let store = TaskThreadHistoryStore(container: container)
         func tail(_ cursor: TaskThreadEventCursor, invalidation: Int = 0) async throws -> TaskThreadHistoryTailPage {
@@ -65,6 +70,17 @@ struct TaskPublicationDecisionEvidenceWorkTests {
         let repeated = await store.publicationWorkForTesting()
         #expect(repeated.failureRowsScanned == primed.failureRowsScanned)
         #expect(repeated.toolUseLookups == primed.toolUseLookups)
+        // A different persistent owner can share the portable UUID. Its edit
+        // must not make the next ordinary append rescan this run's failures.
+        foreignFailure.payload = "foreign failure edited"
+        try context.save()
+        let afterForeign = event("user.message", "ordinary", at: 10_020)
+        try context.save()
+        _ = try await tail(cursor)
+        cursor = TaskThreadEventCursor(timestamp: afterForeign.timestamp, id: afterForeign.id, ownerID: task.persistentModelID)
+        let foreignWork = await store.publicationWorkForTesting()
+        #expect(foreignWork.failureRowsScanned == repeated.failureRowsScanned)
+        #expect(foreignWork.toolUseLookups == repeated.toolUseLookups)
         if prIntent {
             #expect(repeated.cacheHits >= primed.cacheHits + 12)
             // This is not the newest failed row or selected evidence. Its

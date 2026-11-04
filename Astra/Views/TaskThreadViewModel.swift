@@ -3,6 +3,23 @@ import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 
+private let taskThreadPublicationEvidenceDidCommit = Notification.Name("astra.taskThreadPublicationEvidenceDidCommit")
+private struct TaskThreadPublicationEvidenceCommit: Sendable {
+    let ownerID: PersistentIdentifier
+}
+
+private final class TaskThreadPublicationCommitSubscription {
+    private let observer: NSObjectProtocol
+    init(receive: @escaping @Sendable (PersistentIdentifier) -> Void) {
+        observer = NotificationCenter.default.addObserver(forName: taskThreadPublicationEvidenceDidCommit,
+            object: nil, queue: .main) { notification in
+            guard let change = notification.object as? TaskThreadPublicationEvidenceCommit else { return }
+            receive(change.ownerID)
+        }
+    }
+    deinit { NotificationCenter.default.removeObserver(observer) }
+}
+
 /// Stable correlation data supplied by the task-open trace while its initial
 /// snapshot is being prepared. It contains no user content and keeps the
 /// snapshot pipeline independent of the UI telemetry implementation.
@@ -100,6 +117,8 @@ final class TaskThreadViewModel {
         let input: TaskThreadSnapshotInput
         let trigger: TaskThreadSnapshotTrigger
         let cacheKey: TaskThreadSnapshotCacheKey?
+        let publicationSaveObservation: TaskPublicationDecisionEvidenceReader.MutationTracker?
+        let publicationReadRevision: Int?
         let taskID: UUID
         let ownerID: PersistentIdentifier
         let workspaceID: UUID?
@@ -201,7 +220,8 @@ final class TaskThreadViewModel {
     private var expansionRunCount: Int = TaskThreadHistoryPagePolicy.runCount
     private var historyPersistence: HistoryPersistence?
     @ObservationIgnored private var historySaveObservation: TaskPublicationDecisionEvidenceReader.MutationTracker?
-    private var historySaveObservationID = UUID()
+    @ObservationIgnored private var publicationCommitSubscription: TaskThreadPublicationCommitSubscription?
+    private var historyPublicationReadRevision: Int?
     private var historyCursor: TaskThreadHistoryCursor?
     /// Cached snapshots establish browsing boundaries, but run inputs and
     /// evidence must be re-read before an earlier page builds a replacement.
@@ -295,6 +315,9 @@ final class TaskThreadViewModel {
     ) {
         self.snapshotBuilder = snapshotBuilder
         self.livePacer = livePacer ?? TaskThreadLiveSnapshotPacer()
+        publicationCommitSubscription = TaskThreadPublicationCommitSubscription { [weak self] ownerID in
+            MainActor.assumeIsolated { self?.publicationEvidenceDidSave(ownerID: ownerID) }
+        }
     }
 
     func reset(
@@ -312,6 +335,7 @@ final class TaskThreadViewModel {
             historyTaskID = task.id
             historyTask = task
             observePublicationSaves(for: task, context: modelContext)
+            historyPublicationReadRevision = nil
             historyCursor = nil
             historyNeedsCachedSeed = false
             historyTailCursor = nil
@@ -374,26 +398,31 @@ final class TaskThreadViewModel {
 
     private func observePublicationSaves(for task: AgentTask, context: ModelContext?) {
         historySaveObservation = nil
-        let observationID = UUID()
-        historySaveObservationID = observationID
         guard let context else { return }
+        let ownerID = task.persistentModelID
+        if let cached = Self.terminalSnapshotCache.saveObservation(ownerID: ownerID, container: context.container) {
+            historySaveObservation = cached
+            return
+        }
         historySaveObservation = TaskPublicationDecisionEvidenceReader.MutationTracker(
-            container: context.container, ownerID: task.persistentModelID, observeInsertedEvidence: true
-        ) { [weak self] in
+            container: context.container, ownerID: ownerID, observeInsertedEvidence: true
+        ) {
             if Thread.isMainThread {
-                MainActor.assumeIsolated { self?.publicationEvidenceDidSave(observationID: observationID) }
+                MainActor.assumeIsolated { Self.publicationEvidenceCommitted(ownerID: ownerID) }
             } else {
-                Task { @MainActor [weak self] in self?.publicationEvidenceDidSave(observationID: observationID) }
+                Task { @MainActor in Self.publicationEvidenceCommitted(ownerID: ownerID) }
             }
         }
     }
 
-    private func publicationEvidenceDidSave(observationID: UUID) {
-        guard historySaveObservationID == observationID, let task = historyTask, !task.isDeleted else { return }
-        // Same-count edits can leave updatedAt untouched. The token also makes
-        // old terminal cache keys unusable after a relevant committed save.
-        TaskThreadHistoryInvalidation.invalidate(taskID: task.id)
-        Self.terminalSnapshotCache.remove(ownerID: task.persistentModelID)
+    private static func publicationEvidenceCommitted(ownerID: PersistentIdentifier) {
+        terminalSnapshotCache.remove(ownerID: ownerID)
+        NotificationCenter.default.post(name: taskThreadPublicationEvidenceDidCommit,
+                                       object: TaskThreadPublicationEvidenceCommit(ownerID: ownerID))
+    }
+
+    private func publicationEvidenceDidSave(ownerID: PersistentIdentifier) {
+        guard let task = historyTask, !task.isDeleted, task.persistentModelID == ownerID else { return }
         snapshotTrigger = nil
         requestSnapshotRefresh(for: task)
     }
@@ -505,6 +534,7 @@ final class TaskThreadViewModel {
         // whole key's revision term -- stops moving once a task is terminal.
         let readIsBehindLiveTask = (inputGeneration.map { $0 != task.updatedAt } ?? false)
             || (preparedInput != nil && historyInvalidationToken != currentInvalidation)
+            || (preparedInput != nil && historyPublicationReadRevision != historySaveObservation?.revision)
         let applicableCacheKey = bypassCache || readIsBehindLiveTask || isBrowsingHistory ? nil : cacheKey
         if preparedInput == nil, let cacheKey = applicableCacheKey,
            let cachedSnapshot = Self.terminalSnapshotCache.snapshot(for: cacheKey) {
@@ -517,6 +547,7 @@ final class TaskThreadViewModel {
             livePacer.reset()
             let cacheApplyStart = DispatchTime.now().uptimeNanoseconds
             snapshot = cachedSnapshot
+            historyPublicationReadRevision = historySaveObservation?.revision
             appliedSnapshotRevision += 1
             appliedSnapshotTaskID = task.id
             appliedSnapshotOwnerID = task.persistentModelID
@@ -631,6 +662,8 @@ final class TaskThreadViewModel {
             input: input,
             trigger: resolvedTrigger,
             cacheKey: applicableCacheKey,
+            publicationSaveObservation: historySaveObservation,
+            publicationReadRevision: historyPublicationReadRevision,
             taskID: taskID,
             ownerID: task.persistentModelID,
             workspaceID: workspaceID,
@@ -794,7 +827,8 @@ final class TaskThreadViewModel {
         appliedSnapshotOwnerID = request.ownerID
         if let cacheKey = request.cacheKey,
            cacheKey.historyInvalidation == TaskThreadHistoryInvalidation.token(for: request.taskID) {
-            Self.terminalSnapshotCache.store(builtSnapshot, for: cacheKey)
+            Self.terminalSnapshotCache.store(builtSnapshot, for: cacheKey,
+                saveObservation: request.publicationSaveObservation, readRevision: request.publicationReadRevision)
         }
         lastSnapshotApplyAt = Date()
         lastSnapshotAppliedUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
@@ -1074,6 +1108,7 @@ final class TaskThreadViewModel {
         do {
             var initializedHistory = false
             var generation = task.updatedAt
+            let publicationRevision = historySaveObservation?.revision
             if historyCursor == nil || historyNeedsCachedSeed {
                 let seedingCachedHistory = historyNeedsCachedSeed
                 guard flushPendingHistoryWrites() else {
@@ -1096,7 +1131,7 @@ final class TaskThreadViewModel {
                 if seedingCachedHistory {
                     hasNewerHistory = hasNewerHistory || initialPage.totalEventCount > historyTotalEventCount
                 }
-                replaceHistory(with: initialPage)
+                replaceHistory(with: initialPage, publicationRevision: publicationRevision)
                 initializedHistory = true
             }
             guard let cursor = historyCursor, cursor.hasEarlierHistory else {
@@ -1198,7 +1233,9 @@ final class TaskThreadViewModel {
         // `TaskThreadHistoryInvalidation`) disqualifies the tail for one cycle
         // and makes the accumulated rows untrustworthy, not just incomplete.
         let invalidationToken = TaskThreadHistoryInvalidation.token(for: taskID)
+        let publicationRevision = historySaveObservation?.revision
         let tailIsTrusted = invalidationToken == historyInvalidationToken
+            && publicationRevision == historyPublicationReadRevision
         do {
             if isBrowsingHistory, let cursor = historyCursor {
                 let generation = task.updatedAt
@@ -1215,7 +1252,7 @@ final class TaskThreadViewModel {
                 guard isCurrentHistoryRead(task, windowRevision: windowRevision) else { return }
                 historyReadCountForTesting += 1
                 hasNewerHistory = hasNewerHistory || page.totalEventCount > historyTotalEventCount || !tailIsTrusted
-                replaceHistory(with: page)
+                replaceHistory(with: page, publicationRevision: publicationRevision)
                 historyInvalidationToken = invalidationToken
                 // Retained-row mutations may leave all trigger counts equal.
                 snapshotTrigger = nil
@@ -1236,6 +1273,7 @@ final class TaskThreadViewModel {
                 guard isCurrentHistoryRead(task, windowRevision: windowRevision) else { return }
                 historyTailReadCountForTesting += 1
                 if applyTailPage(tail) {
+                    historyPublicationReadRevision = publicationRevision
                     historyReadCountForTesting += 1
                     applyHistoryRead(for: task, generation: generation)
                     return
@@ -1254,7 +1292,7 @@ final class TaskThreadViewModel {
             guard isCurrentHistoryRead(task, windowRevision: windowRevision) else { return }
             historyFullReadCountForTesting += 1
             historyReadCountForTesting += 1
-            replaceHistory(with: page)
+            replaceHistory(with: page, publicationRevision: publicationRevision)
             if isBrowsingHistory { browsingRunIDs.formUnion(page.runs.map(\.id)) }
             // A same-count replacement must not be deduped away.
             if !tailIsTrusted { snapshotTrigger = nil }
@@ -1480,7 +1518,8 @@ final class TaskThreadViewModel {
         }
     }
 
-    private func replaceHistory(with page: TaskThreadHistoryPage) {
+    private func replaceHistory(with page: TaskThreadHistoryPage, publicationRevision: Int?) {
+        historyPublicationReadRevision = publicationRevision
         historyNeedsCachedSeed = false
         loadedPublicationEvents = page.publicationEvents
         loadedHistoryRuns = Dictionary(uniqueKeysWithValues: page.runs.map { ($0.id, $0) })
