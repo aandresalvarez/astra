@@ -782,6 +782,49 @@ struct TaskThreadLiveHistoryTests {
         #expect(vm.lastSnapshotCacheState == "hit" && !dock())
     }
 
+    @Test("Browsing uses an authoritative empty publication packet instead of pinned legacy evidence")
+    func browsingClearsObsoletePublicationEvidence() async throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        task.goal = "Fix the bug and create a pull request"
+        let run = TaskRun(task: task)
+        run.startedAt = Date(timeIntervalSince1970: 1)
+        context.insert(run)
+        let use = append(0, task: task, context: context, type: "tool.use", run: run)
+        use.payload = "gh pr create --draft"
+        let failure = append(2, task: task, context: context, type: "tool.result.failed", run: run)
+        failure.payload = "permission denied"
+        try context.save()
+        let vm = TaskThreadViewModel()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        vm.pauseFollowingLatestHistory(for: task)
+        await vm.waitForPendingWorkForTesting()
+        func pending() -> Bool {
+            TaskDecisionOutcomeResolver.outcomes(task: task, snapshot: vm.snapshot,
+                decisionArtifactPaths: [], modelContext: context).hasGitPublishRequest
+        }
+        #expect(pending())
+        let before = TaskDecisionOutcomeRefresh.Key(task: task, snapshot: vm.snapshot,
+            artifactPaths: [], saveRevision: 0)
+        let oldRevision = task.updatedAt
+        let intervening = append(1, task: task, context: context, type: "tool.use", run: run)
+        intervening.payload = "git status"
+        task.updatedAt = oldRevision
+        try context.save()
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) == nil)
+        #expect(vm.snapshot?.sortedEvents.contains { $0.id == intervening.id } == false)
+        #expect(vm.snapshot?.sortedEvents.contains { $0.id == use.id } == true)
+        #expect(vm.snapshot?.sortedEvents.contains { $0.id == failure.id } == true)
+        #expect(!pending())
+        let after = TaskDecisionOutcomeRefresh.Key(task: task, snapshot: vm.snapshot,
+            artifactPaths: [], saveRevision: 0)
+        #expect(after.events == before.events, "The pinned window evidence remains unchanged")
+        #expect(after != before)
+    }
+
     @Test("Backdated tool-use inserts invalidate inactive terminal decisions while later uses stay cached")
     func backdatedToolUseInvalidatesTerminalCache() async throws {
         let (container, context, task, root) = try fixture()

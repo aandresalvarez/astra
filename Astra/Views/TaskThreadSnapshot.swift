@@ -224,7 +224,9 @@ struct TaskRunSnapshotInput: Identifiable, Sendable {
 }
 
 struct TaskThreadSnapshotInput: Sendable {
-    let publicationEvents: [TaskEventSnapshot]
+    /// Nil is a non-storage input that derives evidence from its window; an
+    /// empty array is an authoritative storage answer with no publication work.
+    let publicationEvents: [TaskEventSnapshot]?
     let goal: String
     let createdAt: Date
     let events: [TaskEventSnapshot]
@@ -289,7 +291,7 @@ struct TaskThreadSnapshotInput: Sendable {
         omittedEventCount: Int,
         totalRunCount: Int,
         omittedRunCount: Int,
-        publicationEvents: [TaskEventSnapshot] = []
+        publicationEvents: [TaskEventSnapshot]? = nil
     ) {
         self.publicationEvents = publicationEvents
         self.goal = goal
@@ -947,7 +949,7 @@ struct TaskThreadSnapshot: Sendable {
         omittedEventCount: Int,
         totalRunCount: Int?,
         omittedRunCount: Int,
-        publicationEvents: [TaskEventSnapshot] = [],
+        publicationEvents: [TaskEventSnapshot]? = nil,
         cancellationCheck: () throws -> Void
     ) throws {
         try cancellationCheck()
@@ -1643,7 +1645,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
     let latestRunStatus: RunStatus?
     let latestRunOutputBucket: Int
     let latestRunOutputCount: Int
-    private let publicationEvents: [TaskEventSnapshot]
+    private let publicationEvents: [TaskEventSnapshot]?
 
     init(task: AgentTask) {
         let start = DispatchTime.now().uptimeNanoseconds
@@ -1654,7 +1656,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
         ownerID = task.persistentModelID
         revision = task.updatedAt
         usesDurableRevision = false
-        publicationEvents = []
+        publicationEvents = nil
         eventCount = events.count
         visibleEventCount = events.reduce(0) { count, event in
             Self.highFrequencyEventTypes.contains(event.type) ? count : count + 1

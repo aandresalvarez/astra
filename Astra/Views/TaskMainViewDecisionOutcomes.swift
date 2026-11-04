@@ -71,9 +71,9 @@ enum TaskDecisionOutcomeResolver {
         let startedAt: Date
     }
 
-    /// Use the snapshot's bounded decision evidence, which includes publication
-    /// failures/receipts outside the rendered transcript. No history read occurs
-    /// here; the background history store owns that projection.
+    /// Use the authoritative background publication packet alone. The visible
+    /// transcript can retain legacy evidence superseded by a backdated write.
+    /// No history read occurs here; the history store owns that projection.
     static func outcomes(
         task: AgentTask,
         snapshot: TaskThreadSnapshot?,
@@ -83,7 +83,7 @@ enum TaskDecisionOutcomeResolver {
         outcomes(
             task: task,
             latestRun: snapshot?.latestRun.map { .init(id: $0.id, startedAt: $0.startedAt) },
-            windowEvents: (snapshot?.decisionOutcomeInputs.events ?? []).map {
+            windowEvents: (snapshot?.decisionOutcomeInputs.publicationEvents ?? []).map {
                 TaskOutcomeEventRecord(id: $0.id, runID: $0.runID, type: $0.type,
                                        payload: $0.payload, timestamp: $0.timestamp)
             },
