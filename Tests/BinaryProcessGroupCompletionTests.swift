@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Testing
 import ASTRACore
+@testable import ASTRA
 
 @Suite("Joined preparation process evidence")
 struct BinaryProcessGroupCompletionTests {
@@ -22,6 +23,11 @@ struct BinaryProcessGroupCompletionTests {
         #expect(result.exitCode == 0)
         #expect(kill(child, 0) == 0)
         #expect(result.processGroupStopped == false)
+        let groupID = getpgid(child)
+        try #require(groupID > 1 && groupID != getpgrp())
+        let reapedLeader = RuntimeProcessIdentity(pid: groupID, startedSeconds: 0, startedMicroseconds: 0)
+        #expect(kill(groupID, 0) == -1 && errno == ESRCH)
+        #expect(!reapedLeader.processAndGroupAreAbsent)
     }
 
     @Test("Cancellation returns joined evidence only after an uncooperative child is reaped")

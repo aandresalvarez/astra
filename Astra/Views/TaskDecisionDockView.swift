@@ -375,6 +375,7 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
              .openPlan,
              .runApprovedPlan,
              .runTask,
+             .checkTimedOutRun,
              .retry,
              .resume,
              .openArtifact,
@@ -413,6 +414,8 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
             "RunTaskButton"
         case .retry:
             "RetryTaskButton"
+        case .checkTimedOutRun:
+            "CheckTimedOutRunButton"
         case .resume:
             "ResumeTaskButton"
         case .reportProblem:

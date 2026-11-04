@@ -155,6 +155,9 @@ final class RuntimeExecutionOwner {
             let continuesOwner = resumesWorkspace || (previous.map {
                 RuntimeCompletedUserTurnContinuation.permits($0, task: task, request: userRequest, context: context)
             } ?? false)
+            if continuesOwner, previous?.stopProof?.groupObservedEmptyAt != nil {
+                try RuntimeWorkspaceContinuation.requireNoKnownRemoteWork(task: task, context: context)
+            }
             if let previous {
                 if previous.cancellationRequested == true, previous.resourcesReleased != true,
                    !previous.canReplace, !previous.canRecoverPreparation, !continuesOwner {
