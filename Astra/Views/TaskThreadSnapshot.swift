@@ -1789,8 +1789,15 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
 }
 
 struct TaskThreadSnapshotCache {
-    private struct Entry {
+    struct Value {
         let snapshot: TaskThreadSnapshot
+        /// The reader's page boundary can name a state event omitted by the
+        /// presentation projection. It cannot be rebuilt from rendered rows.
+        let historyCursor: TaskThreadHistoryCursor?
+    }
+
+    private struct Entry {
+        let value: Value
         // The observation lives with the cached owner, including while another
         // task is selected. Eviction releases it; at most maxEntries are held.
         let saveObservation: TaskPublicationDecisionEvidenceReader.MutationTracker?
@@ -1816,6 +1823,10 @@ struct TaskThreadSnapshotCache {
     }
 
     mutating func snapshot(for key: TaskThreadSnapshotCacheKey) -> TaskThreadSnapshot? {
+        value(for: key)?.snapshot
+    }
+
+    mutating func value(for key: TaskThreadSnapshotCacheKey) -> Value? {
         guard let entry = entries[key], entry.isCurrent else {
             entries.removeValue(forKey: key)
             recentKeys.removeAll { $0 == key }
@@ -1825,7 +1836,7 @@ struct TaskThreadSnapshotCache {
         }
         stats.hitCount += 1
         markRecentlyUsed(key)
-        return entry.snapshot
+        return entry.value
     }
 
     func saveObservation(ownerID: PersistentIdentifier, container: ModelContainer) -> TaskPublicationDecisionEvidenceReader.MutationTracker? {
@@ -1837,10 +1848,12 @@ struct TaskThreadSnapshotCache {
     }
 
     mutating func store(_ snapshot: TaskThreadSnapshot, for key: TaskThreadSnapshotCacheKey,
+                       historyCursor: TaskThreadHistoryCursor? = nil,
                        saveObservation: TaskPublicationDecisionEvidenceReader.MutationTracker? = nil,
                        readRevision: Int? = nil) {
         guard saveObservation.map({ $0.revision == readRevision }) ?? true else { return }
-        entries[key] = Entry(snapshot: snapshot, saveObservation: saveObservation, readRevision: readRevision)
+        entries[key] = Entry(value: Value(snapshot: snapshot, historyCursor: historyCursor),
+                             saveObservation: saveObservation, readRevision: readRevision)
         markRecentlyUsed(key)
         trimIfNeeded()
         stats.entryCount = entries.count

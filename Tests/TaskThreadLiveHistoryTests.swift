@@ -411,6 +411,140 @@ struct TaskThreadLiveHistoryTests {
         #expect(vm.retainedHistoryEventCountForTesting == 300)
     }
 
+    @Test("Rolling equal-count rows still follow layout while a real user scroll pins history")
+    func rollingRowsHaveDistinctScrollRevisions() async throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        let run = TaskRun(task: task)
+        run.status = .running
+        run.setOutput("unchanged unfinished output")
+        context.insert(run)
+        for index in 0..<300 { append(index, task: task, context: context) }
+        try context.save()
+        let vm = TaskThreadViewModel()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        let before = try #require(vm.snapshot)
+        let beforeRevision = vm.appliedSnapshotReadiness
+        let follow = TaskChatFollowLayoutState()
+        follow.noteSnapshotHandled(beforeRevision)
+        let replacement = append(300, task: task, context: context)
+        replacement.payload = String(repeating: "taller replacement ", count: 100)
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        let after = try #require(vm.snapshot)
+        #expect(after.conversationItems.count == before.conversationItems.count)
+        #expect(after.conversationItems.last?.id == before.conversationItems.last?.id)
+        #expect(after.latestRun?.output == before.latestRun?.output)
+        #expect(after.latestRun?.status == before.latestRun?.status)
+        let revision = vm.appliedSnapshotReadiness
+        #expect(revision != beforeRevision)
+        // The view consumes this source revision, including geometry delivered
+        // before its deferred onChange callback has armed the double follow.
+        #expect(follow.shouldDeferBottomChange(isFollowing: true, snapshot: revision))
+        follow.noteSnapshotHandled(revision)
+        let pending = follow.beginFollow(snapshot: revision)
+        let token = try #require(pending)
+        #expect(follow.shouldDeferBottomChange(isFollowing: true, snapshot: revision))
+        follow.finish(token)
+        let next = append(301, task: task, context: context)
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.snapshot?.sortedEvents.contains { $0.id == next.id } == true)
+        #expect(vm.retainedHistoryEventCountForTesting == 300)
+        follow.noteUserScroll(snapshot: vm.appliedSnapshotReadiness)
+        #expect(!follow.shouldDeferBottomChange(isFollowing: true, snapshot: vm.appliedSnapshotReadiness))
+        vm.pauseFollowingLatestHistory(for: task)
+        await vm.waitForPendingWorkForTesting()
+        let waiting = append(302, task: task, context: context)
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.hasNewerHistory)
+        #expect(vm.snapshot?.sortedEvents.contains { $0.id == waiting.id } == false)
+        #expect(vm.snapshot?.sortedEvents.contains { $0.id == next.id } == true)
+        vm.followLatestHistory(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.snapshot?.sortedEvents.contains { $0.id == waiting.id } == true)
+    }
+
+    @Test("A cached state-only page keeps the storage boundary ahead of older messages and anchors")
+    func cacheHitPagesStateOnlyLatestWindow() async throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        task.status = .completed
+        let run = TaskRun(task: task)
+        run.status = .completed
+        context.insert(run)
+        let receipt = append(-100, task: task, context: context, type: "git.publish.receipt", run: run)
+        receipt.payload = #"{"pullRequestNumber":1,"pullRequestURL":"https://github.com/acme/widgets/pull/1","isDraft":true}"#
+        let messages = (0..<60).map { append($0, task: task, context: context).id }
+        for index in 1_000..<1_300 {
+            append(index, task: task, context: context, type: "astra.todo.replace", run: run)
+        }
+        try context.save()
+        let vm = TaskThreadViewModel()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.lastSnapshotCacheState == "hit")
+        #expect(vm.hasEarlierHistory)
+        #expect(vm.snapshot?.sortedEvents.contains { $0.type == "user.message" } == false)
+        vm.loadEarlierHistory(for: task)
+        await vm.waitForPendingWorkForTesting()
+        let displayed = Set(vm.snapshot?.sortedEvents.map(\.id) ?? [])
+        #expect(Set(messages).isSubset(of: displayed))
+        #expect(!vm.hasEarlierHistory)
+        #expect(try ModelContext(container).fetchCount(FetchDescriptor<TaskEvent>()) == 361)
+    }
+
+    @Test("Browsing a cache hit keeps both displayed receipts without moving its paging boundary")
+    func cacheHitKeepsDisplayedReceiptsWhileBrowsing() async throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        task.status = .completed
+        let run = TaskRun(task: task)
+        run.status = .completed
+        context.insert(run)
+        let messages = (0..<340).map { append($0, task: task, context: context).id }
+        let receipts = [340, 341].map { index in
+            let event = append(index, task: task, context: context, type: "git.publish.receipt", run: run)
+            event.payload = #"{"pullRequestNumber":1,"pullRequestURL":"https://github.com/acme/widgets/pull/1","isDraft":true}"#
+            return event
+        }
+        try context.save()
+        let vm = TaskThreadViewModel()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.lastSnapshotCacheState == "hit")
+        let recordIDs: () -> Set<UUID> = {
+            Set(vm.snapshot?.conversationItems.compactMap { item in
+                if case .externalAction(let record) = item { return record.id }
+                return nil
+            } ?? [])
+        }
+        #expect(recordIDs() == Set(receipts.map(\.id)))
+        vm.pauseFollowingLatestHistory(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(recordIDs() == Set(receipts.map(\.id)))
+        receipts[0].payload = #"{"pullRequestNumber":2,"pullRequestURL":"https://github.com/acme/widgets/pull/2","isDraft":true}"#
+        try context.save()
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.snapshot?.sortedEvents.first { $0.id == receipts[0].id }?.payload == receipts[0].payload)
+        context.delete(receipts[0])
+        try context.save()
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(recordIDs() == [receipts[1].id])
+        vm.loadEarlierHistory(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(Set(messages).isSubset(of: Set(vm.snapshot?.sortedEvents.map(\.id) ?? [])))
+        #expect(!vm.hasEarlierHistory)
+    }
+
     @Test("A cached terminal transcript keeps its pinned anchor when activity resumes", arguments: [false, true])
     func cacheHitPinsDisplayedRows(earlierWithNewActivity: Bool) async throws {
         let (container, context, task, root) = try fixture()

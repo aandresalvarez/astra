@@ -63,17 +63,17 @@ Apple Swift 6.4.2, arm64, macOS 26.6.2 (25G83).
 | Stored events at completion | 6,000 | 6,000 |
 | Maximum retained snapshot events | 6,000 | 300 |
 | Maximum eager conversation rows | 6,002 | 302 |
-| Starting physical footprint | 39 MiB | 39 MiB |
-| Sampled workload peak | 410 MiB | 57 MiB |
-| Footprint after two seconds idle | 410 MiB | 49 MiB |
+| Starting physical footprint | 39 MiB | 38 MiB |
+| Sampled workload peak | 410 MiB | 56 MiB |
+| Footprint after two seconds idle | 410 MiB | 51 MiB |
 
 The two extra rows are the goal and active run. At each 1,000-event checkpoint,
 the before footprints were **98, 157, 205, 260, 327, 410 MiB**; after they were
-**46, 50, 50, 49, 49, 50 MiB**. The after run includes main
+**49, 51, 56, 51, 52, 51 MiB**. The after run includes main
 `8b4569f9d4dadb39b1349bd3f96266e6957d6e54` (#580 and #582). Earlier after runs measured
-64–71 MiB peak and 54–66 MiB idle with the same 300-event/302-row bound. These are
+57–71 MiB peak and 49–66 MiB idle with the same 300-event/302-row bound. These are
 sequential runs on a shared developer machine, not a statistical performance
-claim. Test execution took 241.719 seconds before and 76.396 seconds in the final
+claim. Test execution took 241.719 seconds before and 70.196 seconds in the final
 after run, excluding compilation;
 there is no timing gate.
 
@@ -285,8 +285,27 @@ The merged saved-export lease keeps #580's context-scoped replacement intent
 and prior-mirror admission before reserving the new export read. The chat fix
 still checks context reference identity before assuming an executor or retiring
 leases. The dedicated credential-upgrade suite passed eight tests. The combined
-history, decision and saved-export run passed 356 tests in 27 suites, including
+history, scroll, view, decision and saved-export run passed 385 tests in 32 suites, including
 unrelated-owner saves, moved chats and blocked prior writes. The repeated hosted
 replay passed with all 6,000 events durable; its measurements appear above.
+
+Follow-up review reproduced two cached-page failures: a latest page containing
+only state events could lose its earlier-page cursor, and browsing could drop
+an older displayed publication receipt. Cache entries now carry the original
+storage cursor captured with their snapshot. Displayed state rows are pinned
+separately from that cursor and the latest-value anchors; retained reads refresh
+their edits and deletions. Both disk regressions pass, including an older receipt
+anchor before the messages that the earlier page must still reach.
+
+The scroll trigger uses the applied snapshot revision, including equal-count
+rolling windows whose last run row has not changed. Pending follow layout cannot
+pause history. Native user scrolling samples the same bottom sentinel and pins
+immediately; input revisions reject older queued geometry, and input cancels
+pending follows. This bookkeeping is not observable, so each input event does
+not rebuild the eager transcript. Four policy/native tests and three disk-backed
+regressions pass, alongside the existing deferred-view-mutation guards. The
+complete 385-test scoped run passed after these changes. The final replay above
+uses the unchanged measurement test; it still does not render the full task UI.
+
 Full-suite and CI results for the integration revision are recorded in
 [PR #584](https://github.com/aandresalvarez/astra/pull/584).
