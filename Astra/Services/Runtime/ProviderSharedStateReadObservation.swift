@@ -132,7 +132,7 @@ struct ProviderSharedStateReadObservation: Codable, Equatable, Sendable {
         return TimeInterval(info.st_ctimespec.tv_sec) + 1 <= bootedAt.timeIntervalSince1970
     }
 
-    private static func noRemoteRegistrations(for taskID: UUID, store: RuntimeExecutionOwnerStore) -> Bool {
+    static func noRemoteRegistrations(for taskID: UUID, store: RuntimeExecutionOwnerStore) -> Bool {
         let directory = store.root.deletingLastPathComponent().appendingPathComponent("remote-jobs")
         var info = stat()
         if lstat(directory.path, &info) != 0 { return errno == ENOENT }

@@ -8,13 +8,17 @@ import ASTRAModels
 @MainActor
 struct ProviderSharedStateMigrationTests {
     @Test("A second task may read a legacy writer's settings only after verified local settlement and reboot",
-          arguments: ["settled", "missingPointerJournal", "sameBoot", "unknownBoot", "remoteJob", "missingHistory",
+          arguments: ["settled", "missingPointerJournal", "sameBoot", "unknownBoot", "unknownEnvironment", "missingHistory",
                       "unsettled", "unboundRun", "zeroLaunches", "missingLaunchCount", "contradictoryUsage"])
     func historicalReader(fixture: String) async throws {
-        let h = try HeadlessChatHarness(persistentStore: true)
+        // This fixture deliberately retains a provider-wide legacy claim. Use
+        // a real on-disk journal visible only to the gates that opt into it,
+        // so concurrently running provider suites cannot inherit its claim.
+        let h = try HeadlessChatHarness()
         defer { h.cleanup() }
         let holder = h.makeTask(runtime: .antigravityCLI, goal: "Previous writer", model: "test")
         let store = RuntimeExecutionOwner.store(in: h.context)
+        defer { try? FileManager.default.removeItem(at: store.root) }
         let blocked = h.makeTask(runtime: .antigravityCLI, goal: "New reader", model: "test")
         let independent = h.rootURL.appendingPathComponent("reader-workspace")
         try FileManager.default.createDirectory(at: independent, withIntermediateDirectories: true)
@@ -35,6 +39,7 @@ struct ProviderSharedStateMigrationTests {
             return run
         }
         let original = completedRun(.antigravityCLI, secondsAgo: 20)
+        if fixture == "unknownEnvironment" { original.executionEnvironmentSnapshotJSON = nil }
         let oldKey = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: h.rootURL.path + "/old/settings.json")
         var writer = try RuntimeRecoveryTestReceipt.install(task: holder, run: original, context: h.context, toolsStopped: false)
         writer.providerSharedStateKey = oldKey.rawValue
@@ -88,10 +93,6 @@ struct ProviderSharedStateMigrationTests {
             try lease.save(current)
             if fixture == "settled" { try store.retain(current) }
         }
-        if fixture == "remoteJob" {
-            let jobs = store.root.deletingLastPathComponent().appendingPathComponent("remote-jobs/" + holder.id.uuidString)
-            try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
-        }
         if fixture == "missingPointerJournal" {
             // A separate writer's pointer survives even when its store disappears.
             let other = h.makeTask(runtime: .antigravityCLI, goal: "Orphaned writer", model: "test")
@@ -134,6 +135,19 @@ struct ProviderSharedStateMigrationTests {
             #expect(try store.read(taskID: holder.id, taskOwnerID: holder.persistentModelID) == current)
         }
         await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await gate.acquire(key) }
+    }
+
+    @Test("A protected remote job registration precludes a reboot observation for its owner")
+    func protectedRemoteRegistration() throws {
+        let h = try HeadlessChatHarness()
+        defer { h.cleanup() }
+        let store = RuntimeExecutionOwnerStore(root: h.rootURL.appendingPathComponent("runtime-owners"))
+        let taskID = UUID()
+        #expect(ProviderSharedStateReadObservation.noRemoteRegistrations(for: taskID, store: store))
+        let jobs = h.rootURL.appendingPathComponent("remote-jobs/" + taskID.uuidString)
+        try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
+        #expect(!ProviderSharedStateReadObservation.noRemoteRegistrations(for: taskID, store: store))
+        #expect(ProviderSharedStateReadObservation.noRemoteRegistrations(for: UUID(), store: store))
     }
 
     @Test("Legacy current and retained claims block a new identity without rewriting the journal", arguments: [false, true])
