@@ -5,6 +5,13 @@ import ASTRACore
 
 @MainActor
 public enum WorkspacePersistenceCoordinator {
+    /// Keeps a validated caller's cached retention metadata current without
+    /// publishing a mirror or committing unrelated editor work.
+    public static func refreshPluginCredentialEvidence(_ records: [RetiredPluginActivation],
+        workspace: Workspace, modelContext: ModelContext) throws {
+        try PluginCredentialEvidenceUpgrade.refresh(records, workspace: workspace, context: modelContext)
+    }
+
     /// The workspace is retained through debounce, projection and write so a
     /// termination flush can drain the current mirror synchronously.
     private struct PendingExport {
@@ -204,8 +211,6 @@ public enum WorkspacePersistenceCoordinator {
                                       reader: WorkspaceSavedAutoExport = .shared,
                                       completion: (@MainActor (Bool) -> Void)? = nil) -> Task<Void, Never>? {
         let workspaceID = workspace.id
-        let ticket = WorkspaceAutoExportGate.shared.beginRead(for: workspaceID.uuidString)
-        let lease = WorkspaceSavedExportLease(context: modelContext, workspace: workspace, ticket: ticket)
         let container = modelContext.container
         let source = WorkspaceSavedExportSource(container)
         let requestID = UUID()
@@ -215,7 +220,7 @@ public enum WorkspacePersistenceCoordinator {
         // Record the newer obligation before destination or registry setup.
         // Even a successful older fallback cannot complete this newer save.
         savedExports[workspaceID] = PendingExport(
-            id: requestID, workspace: workspace, context: modelContext, source: source, lease: lease,
+            id: requestID, workspace: workspace, context: modelContext, source: source, lease: nil,
             task: nil
         )
         let target = WorkspaceConfigManager.autoExportTarget(for: workspace.primaryPath)
@@ -229,6 +234,19 @@ public enum WorkspacePersistenceCoordinator {
             completion?(false)
             return nil
         }
+        do {
+            try PluginCredentialEvidenceUpgrade.admit(workspace: workspace, context: modelContext)
+        } catch {
+            logSkippedExport(workspace: workspace, reason: "credential_evidence_admission_failed")
+            completion?(false)
+            return nil
+        }
+        // Admission may save new evidence. Reserve the read only after it so
+        // its own save cannot invalidate the projection being dispatched.
+        let ticket = WorkspaceAutoExportGate.shared.beginRead(for: workspaceID.uuidString)
+        let lease = WorkspaceSavedExportLease(context: modelContext, workspace: workspace, ticket: ticket)
+        savedExports[workspaceID] = PendingExport(id: requestID, workspace: workspace,
+            context: modelContext, source: source, lease: lease, task: nil)
         savedExports[workspaceID]?.task = Task { @MainActor in
             var written = false
             defer {
@@ -338,8 +356,10 @@ public enum WorkspacePersistenceCoordinator {
 
     /// Count workspaces, even if both committed and unsaved work is pending.
     public static var pendingExportWorkspaceCount: Int {
-        Set(savedExports.keys).union(debouncedExports.keys).count
+        pendingExportWorkspaceIDs.count
     }
+
+    static var pendingExportWorkspaceIDs: Set<UUID> { Set(savedExports.keys).union(debouncedExports.keys) }
 
     /// Wait for the committed projection first, without saving pending edits.
     /// With only a debounce queued, wait for that scheduled attempt instead.
@@ -370,15 +390,30 @@ public enum WorkspacePersistenceCoordinator {
     /// `autoExportTarget` + `exportToFileResult` shape for the same reason.
     @discardableResult
     public static func flushAllPendingExports(modelContext: ModelContext) -> Int {
-        var pending = savedExports
-        for (id, entry) in debouncedExports {
+        drainPendingExports(modelContext: modelContext, workspaceIDs: nil)
+    }
+
+    /// Runs the same synchronous drain for one owner, preserving unrelated
+    /// committed exports and debounces.
+    @discardableResult
+    static func flushPendingExportSynchronously(workspaceID: UUID, modelContext: ModelContext) -> Int {
+        drainPendingExports(modelContext: modelContext, workspaceIDs: [workspaceID])
+    }
+
+    private static func drainPendingExports(modelContext: ModelContext, workspaceIDs: Set<UUID>?) -> Int {
+        let saved = savedExports.filter { workspaceIDs?.contains($0.key) ?? true }
+        let debounced = debouncedExports.filter { workspaceIDs?.contains($0.key) ?? true }
+        var pending = saved
+        for (id, entry) in debounced {
             if entry.context != nil, entry.source.resolve() != nil { pending[id] = entry }
             else if pending[id] == nil { pending[id] = entry }
         }
-        for entry in savedExports.values { entry.task?.cancel() }
-        for entry in debouncedExports.values { entry.task?.cancel() }
-        savedExports.removeAll()
-        debouncedExports.removeAll()
+        for entry in saved.values { entry.task?.cancel() }
+        for entry in debounced.values { entry.task?.cancel() }
+        for id in Set(saved.keys).union(debounced.keys) {
+            savedExports[id] = nil
+            debouncedExports[id] = nil
+        }
         for workspaceID in pending.keys {
             // A read/encode already executing off-main cannot be cancelled by
             // cancelling its waiter. Invalidate it before the synchronous drain
@@ -402,12 +437,19 @@ public enum WorkspacePersistenceCoordinator {
             guard let context = entry.context,
                   let container = entry.source.resolve(workspaceID: workspaceID.uuidString) else { continue }
             defer { withExtendedLifetime(container) {} }
+            if workspaceIDs != nil && context.hasChanges {
+                savedExports[workspaceID] = entry
+                continue
+            }
             let owner = ObjectIdentifier(context)
             if savedContexts.insert(owner).inserted {
                 saveWithoutAutoExport(modelContext: context,
                     auditFields: ["operation": "pending_export_drain"])
             }
+            var admitted = false
             do {
+                try PluginCredentialEvidenceUpgrade.admit(workspace: entry.workspace, context: context)
+                admitted = true
                 // Use only stable IDs and freshly read committed rows, even
                 // after successful saves: an old context may have invalidated
                 // lazy relationship snapshots after rollback or replacement.
@@ -421,6 +463,7 @@ public enum WorkspacePersistenceCoordinator {
                     workspaceID: workspaceID.uuidString, to: url)
                 if result.didExport { exported += 1 }
             } catch {
+                if !admitted { savedExports[workspaceID] = entry }
                 AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                     "result": "auto_export_failed", "operation": "pending_export_drain_saved_rows",
                     "workspace_id": workspaceID.uuidString, "error_type": String(describing: type(of: error))

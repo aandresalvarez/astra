@@ -28,12 +28,17 @@ final class WorkspaceSavedExportLease: @unchecked Sendable {
     /// A save requesting a replacement may keep that owner's last committed
     /// copy until preparation succeeds. Other affected owners must retire
     /// their sealed copies, including the source of a moved chat.
-    @MainActor
+    @TaskLocal fileprivate static var replacementWorkspaces: [ObjectIdentifier: Set<UUID>] = [:]
+
     static func preservingPriorProjection<T>(for workspaceID: UUID?, context: ModelContext,
                                              during save: () throws -> T) rethrows -> T {
         guard let workspaceID else { return try save() }
-        return try SavedExportContextObservation.shared(for: context)
-            .preservingPriorProjection(for: workspaceID, during: save)
+        // willSave/didSave consume this synchronous, stack-scoped intent on
+        // the context's own executor. A background context needs no observer
+        // or hop to MainActor merely to save credential admission evidence.
+        var replacements = replacementWorkspaces
+        replacements[ObjectIdentifier(context), default: []].insert(workspaceID)
+        return try $replacementWorkspaces.withValue(replacements, operation: save)
     }
 
     @MainActor
@@ -75,7 +80,6 @@ private final class SavedExportContextObservation: @unchecked Sendable {
     private var withdrawn: Set<UUID>?
     private var observers: [NSObjectProtocol] = []
     @MainActor private weak var context: ModelContext?
-    @MainActor private var replacementWorkspaces = Set<UUID>()
 
     @MainActor
     static func shared(for context: ModelContext) -> SavedExportContextObservation {
@@ -119,7 +123,8 @@ private final class SavedExportContextObservation: @unchecked Sendable {
                 })
                 let withdrawn = Set(pending.compactMap { id, entry -> UUID? in
                     guard affected.contains(id), let workspaceID = UUID(uuidString: entry.ticket.workspaceID) else { return nil }
-                    guard self.replacementWorkspaces.contains(workspaceID), let workspace = entry.workspace else { return id }
+                    guard WorkspaceSavedExportLease.replacementWorkspaces[ObjectIdentifier(context)]?.contains(workspaceID) == true,
+                          let workspace = entry.workspace else { return id }
                     return workspace.isDeleted || workspace.primaryPath != entry.sourcePath ? id : nil
                 })
                 self.lock.withLock { self.affected = affected; self.withdrawn = withdrawn }
@@ -148,16 +153,6 @@ private final class SavedExportContextObservation: @unchecked Sendable {
             for ticket in tickets.1 { WorkspaceAutoExportGate.shared.invalidateIfCurrent(ticket) }
             for ticket in tickets.2 { WorkspaceAutoExportGate.shared.retireIfCurrentEpoch(ticket) }
         })
-    }
-
-    @MainActor
-    func preservingPriorProjection<T>(for workspaceID: UUID, during save: () throws -> T) rethrows -> T {
-        // Stack-scoped save intent, not another owner of persisted state.
-        // didSave consumes the scope synchronously; failed saves retire none.
-        let previous = replacementWorkspaces
-        replacementWorkspaces.insert(workspaceID)
-        defer { replacementWorkspaces = previous }
-        return try save()
     }
 
     @MainActor

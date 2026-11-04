@@ -53,7 +53,7 @@ extension PluginOperations {
         let prepared = replacements.isEmpty ? nil : try PluginCredentialGenerationTransaction.prepare(
             activation: activation, workspaceID: workspace.id, replacements: replacements,
             skillName: package.name, modelContext: modelContext, persistence: secrets ?? SkillSecretSeam.required, vault: vault)
-        if let prepared { WorkspaceCapabilityActivation.setCredentialNamespaceSeed(prepared.generation, on: activation) }
+        if let prepared { prepared.publish(on: activation) }
         for change in changes {
             let secret = Skill.isSecretEnvironmentKey(change.key)
             WorkspaceCapabilityActivation.setConfigValue(secret ? nil : change.value, forKey: change.field, on: activation)
