@@ -64,15 +64,15 @@ Apple Swift 6.4.2, arm64, macOS 26.6.2 (25G83).
 | Maximum retained snapshot events | 6,000 | 300 |
 | Maximum eager conversation rows | 6,002 | 302 |
 | Starting physical footprint | 39 MiB | 39 MiB |
-| Sampled workload peak | 410 MiB | 66 MiB |
-| Footprint after two seconds idle | 410 MiB | 58 MiB |
+| Sampled workload peak | 410 MiB | 65 MiB |
+| Footprint after two seconds idle | 410 MiB | 63 MiB |
 
 The two extra rows are the goal and active run. At each 1,000-event checkpoint,
 the before footprints were **98, 157, 205, 260, 327, 410 MiB**; after they were
-**59, 63, 57, 56, 54, 58 MiB**. The table uses the final-source after run; earlier after runs measured
-64–71 MiB peak and 54–61 MiB idle with the same 300-event/302-row bound. These are
+**58, 63, 60, 58, 59, 63 MiB**. The table uses the final-source after run; earlier after runs measured
+64–71 MiB peak and 54–66 MiB idle with the same 300-event/302-row bound. These are
 sequential runs on a shared developer machine, not a statistical performance
-claim. Test execution took 241.719 seconds before and 74.777 seconds in the final
+claim. Test execution took 241.719 seconds before and 73.883 seconds in the final
 after run, excluding compilation;
 there is no timing gate.
 
@@ -191,13 +191,50 @@ measurements are the after column above.
 
 The opt-in `TaskPublicationTailReplayTests` mirrors the review fixture with fresh
 read contexts. Non-PR reads at 100/750/1,500 failures measured
-1.50–1.73 / 1.79–2.45 / 2.00–2.46 ms (three reads each). The review's
+1.47–1.54 / 1.64–1.84 / 1.97–2.59 ms (three reads each). The review's
 `bcef2f5e` observations were about 22–29 / 187–203 / 441–473 ms. A PR-intent
-store performed its initial 1,500-row search in 458.39 ms; the next two reads
-were 3.91 and 3.78 ms with the scan/lookup counts unchanged at 1,500.
+store performed its initial 1,500-row search in 449.93 ms; the next two reads
+were 4.16 and 3.75 ms with the scan/lookup counts unchanged at 1,500.
 These are observations, with no wall-clock CI threshold. Run with:
 
 ```bash
 ASTRA_MEASURE_PUBLICATION_TAIL=1 script/swift_test.sh --no-parallel \
   --filter TaskPublicationTailReplayTests
 ```
+
+## Cached and final view state
+
+An applied terminal cache hit seeds the browsing cursor and baseline totals
+from that snapshot. The first retained/earlier read restores run inputs and
+evidence before building a replacement. The placeholder never supplies this baseline. Pausing
+pins the displayed identities and queues a retained-window replacement; it
+cannot discard the final build and wait for another event that may never come.
+Explicit earlier paging owns its own replacement and scroll anchor.
+
+An owner-scoped save observation requests a paced history refresh after relevant
+publication evidence commits, even when task timestamps and counts stay equal.
+It also handles inserted failures and receipts without invalidating prior
+failure evidence for ordinary new tool uses. Changed publication packet values
+participate in snapshot-trigger equality. Relevant commits evict that owner's
+terminal cache entries and change its cache generation; a build predating that
+generation cannot repopulate the cache.
+
+Disk-backed view-model regressions cover a terminal cache hit followed by 400
+new messages while browsing, pausing the final build without an extra refresh,
+and saved same-count failure edits in both live and cached terminal tasks. They
+compare the real dock resolver to the durable decision and verify that clearing
+the failure remains cleared after reopening. Imported-owner paging additionally
+checks New activity and Jump to latest across the A-to-B-to-A cancellation race.
+
+Combining that owner suite with the real background commit replay exposed an
+existing saved-export observer accepting another context's notification before
+assuming MainActor isolation. Both save boundaries now check reference identity;
+the view-side save observer does too. The imported schedule fixture settles its
+own export in disposable paths so it cannot leave global pending work behind.
+The combined 42-test view/commit/owner/export run passed.
+The broader pass completed 308 tests in 27 suites plus 14 package tests with no
+failures. The final hosted allocation replay also passed with the same bounds.
+The final cache-seed extension passed the 23-test view/owner/commit group,
+including direct earlier paging with waiting activity. The unchanged isolated
+main-actor scaling gate passed: at 5,000 events, send measured 152.84 ms, view
+refresh 5.22 ms, and the full-history control 336.36 ms.

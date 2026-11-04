@@ -1628,6 +1628,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
     let latestRunStatus: RunStatus?
     let latestRunOutputBucket: Int
     let latestRunOutputCount: Int
+    private let publicationEvents: [TaskEventSnapshot]
 
     init(task: AgentTask) {
         let start = DispatchTime.now().uptimeNanoseconds
@@ -1638,6 +1639,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
         ownerID = task.persistentModelID
         revision = task.updatedAt
         usesDurableRevision = false
+        publicationEvents = []
         eventCount = events.count
         visibleEventCount = events.reduce(0) { count, event in
             Self.highFrequencyEventTypes.contains(event.type) ? count : count + 1
@@ -1678,6 +1680,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
         ownerID = task.persistentModelID
         revision = inputRevision
         usesDurableRevision = true
+        publicationEvents = input.publicationEvents
         eventCount = input.totalEventCount
         // Storage-backed refresh is already driven by the durable task revision
         // and typed insertion notifications. Avoid rescanning loaded events just
@@ -1693,6 +1696,8 @@ struct TaskThreadSnapshotTrigger: Equatable {
 
     static func == (lhs: TaskThreadSnapshotTrigger, rhs: TaskThreadSnapshotTrigger) -> Bool {
         lhs.taskID == rhs.taskID &&
+            lhs.ownerID == rhs.ownerID &&
+            lhs.publicationEvents == rhs.publicationEvents &&
             (!lhs.usesDurableRevision && !rhs.usesDurableRevision || lhs.revision == rhs.revision) &&
             lhs.visibleEventCount == rhs.visibleEventCount &&
             lhs.runCount == rhs.runCount &&
@@ -1755,10 +1760,12 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
     let createdAt: Date
     let completedAt: Date?
     let maxRuns: Int
+    let historyInvalidation: Int
 
     init?(
         task: AgentTask,
-        maxRuns: Int
+        maxRuns: Int,
+        historyInvalidation: Int = 0
     ) {
         guard Self.isCacheable(status: task.status) else { return nil }
         taskID = task.id
@@ -1768,6 +1775,7 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
         createdAt = task.createdAt
         completedAt = task.completedAt
         self.maxRuns = maxRuns
+        self.historyInvalidation = historyInvalidation
     }
 
     private static func isCacheable(status: TaskStatus) -> Bool {
@@ -1817,6 +1825,12 @@ struct TaskThreadSnapshotCache {
         entries.removeAll()
         recentKeys.removeAll()
         stats = Stats()
+    }
+
+    mutating func remove(ownerID: PersistentIdentifier) {
+        entries = entries.filter { $0.key.ownerID != ownerID }
+        recentKeys.removeAll { $0.ownerID == ownerID }
+        stats.entryCount = entries.count
     }
 
     private mutating func markRecentlyUsed(_ key: TaskThreadSnapshotCacheKey) {

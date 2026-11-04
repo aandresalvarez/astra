@@ -639,6 +639,7 @@ struct TaskMainView: View {
         .background {
             TaskDecisionOutcomeSaveObserver(task: task, modelContext: modelContext) {
                 decisionOutcomeSaveRevision &+= 1
+                threadViewModel.requestSnapshotRefresh(for: task)
             }
         }
         .background {

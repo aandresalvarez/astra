@@ -368,6 +368,10 @@ struct TaskThreadLiveHistoryTests {
     func pauseDuringSnapshotBuild() async throws {
         let (container, context, task, root) = try fixture()
         defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        let run = TaskRun(task: task)
+        run.status = .running
+        run.setOutput("initial output")
+        context.insert(run)
         for i in 0..<300 { append(i, task: task, context: context) }
         try context.save()
         let gate = LiveHistoryBuildGate()
@@ -379,18 +383,23 @@ struct TaskThreadLiveHistoryTests {
         await vm.waitForPendingWorkForTesting()
         let displayedIDs = Set(vm.snapshot?.sortedEvents.map(\.id) ?? [])
         await gate.arm()
+        task.status = .completed
+        task.updatedAt = Date()
+        run.status = .completed
+        run.setOutput("FINAL output")
         append(300, task: task, context: context)
         vm.refreshSnapshot(for: task)
         await gate.waitUntilParked()
         // The read has evicted event 0, but the UI still displays it.
         vm.pauseFollowingLatestHistory(for: task)
-        vm.refreshSnapshot(for: task)
         await gate.release()
         await vm.waitForPendingWorkForTesting()
         let retainedIDs = Set(vm.snapshot?.sortedEvents.map(\.id) ?? [])
         #expect(retainedIDs.isSuperset(of: displayedIDs))
         #expect(vm.retainedHistoryEventCountForTesting == 301)
         #expect(vm.hasNewerHistory)
+        #expect(vm.snapshot?.latestRun?.status == .completed)
+        #expect(vm.snapshot?.latestRun?.output == "FINAL output")
         task.status = .completed
         vm.refreshSnapshot(for: task)
         await vm.waitForPendingWorkForTesting()
@@ -398,6 +407,125 @@ struct TaskThreadLiveHistoryTests {
         vm.reset(for: task, modelContext: context)
         await vm.waitForPendingWorkForTesting()
         #expect(vm.retainedHistoryEventCountForTesting == 300)
+    }
+
+    @Test("A cached terminal transcript keeps its pinned anchor when activity resumes", arguments: [false, true])
+    func cacheHitPinsDisplayedRows(earlierWithNewActivity: Bool) async throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        task.status = .completed
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.setOutput("cached final output")
+        context.insert(run)
+        for index in 0..<340 { append(index, task: task, context: context) }
+        try context.save()
+        let vm = TaskThreadViewModel()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.lastSnapshotCacheState == "hit")
+        if earlierWithNewActivity {
+            let anchor = try #require(vm.snapshot?.sortedEvents.first?.id)
+            task.status = .running
+            task.updatedAt = Date()
+            run.status = .running
+            for index in 340..<740 { append(index, task: task, context: context) }
+            try context.save()
+            vm.loadEarlierHistory(for: task)
+            await vm.waitForPendingWorkForTesting()
+            #expect(vm.snapshot?.sortedEvents.contains { $0.id == anchor } == true)
+            #expect(vm.snapshot?.latestRun?.id == run.id)
+            #expect(vm.snapshot?.latestRun?.status == .running)
+            #expect(vm.retainedHistoryEventCountForTesting == 340)
+            #expect(vm.hasNewerHistory && !vm.hasEarlierHistory)
+            vm.followLatestHistory(for: task)
+            await vm.waitForPendingWorkForTesting()
+            #expect(vm.retainedHistoryEventCountForTesting == 300)
+            #expect(!vm.hasNewerHistory)
+            return
+        }
+        vm.loadEarlierHistory(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.retainedHistoryEventCountForTesting == 340)
+        #expect(vm.snapshot?.latestRun?.id == run.id)
+        #expect(vm.snapshot?.latestRun?.output == "cached final output")
+        vm.followLatestHistory(for: task)
+        await vm.waitForPendingWorkForTesting()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.lastSnapshotCacheState == "hit")
+        let anchor = try #require(vm.snapshot?.sortedEvents.first?.id)
+        vm.pauseFollowingLatestHistory(for: task)
+        task.status = .running
+        task.updatedAt = Date()
+        run.status = .running
+        for index in 340..<740 { append(index, task: task, context: context) }
+        try context.save()
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.snapshot?.sortedEvents.contains { $0.id == anchor } == true)
+        #expect(vm.hasNewerHistory)
+        #expect(vm.retainedHistoryEventCountForTesting == 300)
+        vm.loadEarlierHistory(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(!vm.hasEarlierHistory && vm.hasNewerHistory)
+        #expect(vm.retainedHistoryEventCountForTesting == 340)
+        vm.followLatestHistory(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.retainedHistoryEventCountForTesting == 300)
+        #expect(!vm.hasNewerHistory)
+    }
+
+    @Test("Committed same-count publication edits reach live and cached terminal decisions", arguments: [false, true])
+    func savedEvidenceRefreshesTheDecision(terminal: Bool) async throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        task.goal = "Fix the bug and create a pull request"
+        task.status = terminal ? .completed : .running
+        let run = TaskRun(task: task)
+        run.status = terminal ? .completed : .running
+        context.insert(run)
+        let failed = append(0, task: task, context: context, type: "tool.result.failed", run: run)
+        failed.payload = "unrelated command failed"
+        for index in 1..<345 { append(index, task: task, context: context) }
+        try context.save()
+        let vm = TaskThreadViewModel()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        if terminal {
+            vm.reset(for: task, modelContext: context)
+            await vm.waitForPendingWorkForTesting()
+            #expect(vm.lastSnapshotCacheState == "hit")
+        }
+        func dock() -> Bool {
+            TaskDecisionOutcomeResolver.outcomes(task: task, snapshot: vm.snapshot,
+                decisionArtifactPaths: [], modelContext: context).hasGitPublishRequest
+        }
+        #expect(!dock())
+        let timestamp = task.updatedAt
+        let before = vm.appliedSnapshotRevision
+        failed.payload = "gh pr create: permission denied"
+        try context.save()
+        // No explicit refresh: the real committed-save observer owns delivery.
+        await vm.waitForPendingWorkForTesting()
+        #expect(task.updatedAt == timestamp)
+        #expect(vm.appliedSnapshotRevision > before)
+        #expect(dock())
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) != nil)
+        #expect(vm.retainedHistoryEventCountForTesting <= 300)
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(dock())
+        // A same-count resolving edit must also clear the cached decision.
+        failed.payload = "unrelated command failed"
+        try context.save()
+        await vm.waitForPendingWorkForTesting()
+        #expect(!dock())
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        #expect(!dock())
     }
 
     @Test("A mode change or older-page merge during a read cannot restore a stale window")

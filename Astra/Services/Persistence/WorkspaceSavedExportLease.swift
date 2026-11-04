@@ -92,8 +92,14 @@ private final class SavedExportContextObservation: @unchecked Sendable {
     @MainActor
     private init(_ context: ModelContext) {
         self.context = context
+        // Reference identity is the isolation boundary even when a bridged
+        // object matches NotificationCenter's filter. Check before assuming
+        // the source context's executor or retiring any of its projections.
+        let contextID = ObjectIdentifier(context)
         observers.append(NotificationCenter.default.addObserver(forName: ModelContext.willSave,
-            object: context, queue: nil) { [weak self] _ in
+            object: context, queue: nil) { [weak self] notification in
+            guard let source = notification.object as? ModelContext,
+                  ObjectIdentifier(source) == contextID else { return }
             MainActor.assumeIsolated {
                 guard let self, let context = self.context else { return }
                 let pending = self.lock.withLock {
@@ -120,7 +126,9 @@ private final class SavedExportContextObservation: @unchecked Sendable {
             }
         })
         observers.append(NotificationCenter.default.addObserver(forName: ModelContext.didSave,
-            object: context, queue: nil) { [weak self] _ in
+            object: context, queue: nil) { [weak self] notification in
+            guard let source = notification.object as? ModelContext,
+                  ObjectIdentifier(source) == contextID else { return }
             guard let self else { return }
             let tickets = self.lock.withLock {
                 let reads = self.entries.compactMap { id, entry in

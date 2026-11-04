@@ -36,8 +36,10 @@ extension TaskPublicationDecisionEvidenceReader {
         init(container: ModelContainer) { mutations = MutationTracker(container: container) }
     }
 
-    /// Only existing publication/tool-evidence edits or deletions invalidate
-    /// the cache. Insertions/backdating are checked by the persisted signature.
+    /// Cache readers observe existing evidence edits/deletions; insertions and
+    /// backdating are checked by the persisted signature. A view model can also
+    /// observe inserted failures/receipts to request a committed-state refresh.
+    /// New tool uses do not invalidate prior-failure evidence on ordinary appends.
     /// Both save boundaries advance the revision: a read during an in-flight
     /// commit must not remain cached after didSave. Failed saves never block
     /// readers, and the next willSave replaces that context's pending scope.
@@ -53,14 +55,19 @@ extension TaskPublicationDecisionEvidenceReader {
         private var pending: [ObjectIdentifier: PendingSave] = [:]
         private var observers: [NSObjectProtocol] = []
 
-        init(container: ModelContainer) {
+        init(container: ModelContainer, ownerID: PersistentIdentifier? = nil,
+             observeInsertedEvidence: Bool = false, onRelevantCommit: (@Sendable () -> Void)? = nil) {
             let containerID = ObjectIdentifier(container)
             observers.append(NotificationCenter.default.addObserver(forName: ModelContext.willSave, object: nil, queue: nil) { [weak self] note in
                 guard let context = note.object as? ModelContext,
                       ObjectIdentifier(context.container) == containerID else { return }
                 let inserted = Set(context.insertedModelsArray.map { ObjectIdentifier($0 as AnyObject) })
                 let relevant = (context.changedModelsArray + context.deletedModelsArray).contains { model in
-                    guard !inserted.contains(ObjectIdentifier(model as AnyObject)), let event = model as? TaskEvent else { return false }
+                    guard let event = model as? TaskEvent else { return false }
+                    if inserted.contains(ObjectIdentifier(model as AnyObject)),
+                       !observeInsertedEvidence || event.type == "tool.use" { return false }
+                    if let ownerID, event.task?.persistentModelID != ownerID,
+                       !(event.isDeleted && event.task == nil) { return false }
                     return event.type.hasPrefix("git.publish.") || event.type == "tool.result.failed" || event.type == "tool.use"
                 }
                 self?.willSave(context, relevant: relevant)
@@ -68,7 +75,7 @@ extension TaskPublicationDecisionEvidenceReader {
             observers.append(NotificationCenter.default.addObserver(forName: ModelContext.didSave, object: nil, queue: nil) { [weak self] note in
                 guard let context = note.object as? ModelContext,
                       ObjectIdentifier(context.container) == containerID else { return }
-                self?.didSave(context)
+                if self?.didSave(context) == true { onRelevantCommit?() }
             })
         }
 
@@ -86,13 +93,14 @@ extension TaskPublicationDecisionEvidenceReader {
             if relevant { sequence &+= 1 }
         }
 
-        private func didSave(_ context: ModelContext) {
+        private func didSave(_ context: ModelContext) -> Bool {
             lock.lock(); defer { lock.unlock() }
             // An observer installed after willSave must still invalidate a
             // read captured before that already-in-flight save commits.
             let relevant = pending.removeValue(forKey: ObjectIdentifier(context))?.relevant ?? true
             pending = pending.filter { $0.value.context != nil }
             if relevant { sequence &+= 1 }
+            return relevant
         }
     }
 }
