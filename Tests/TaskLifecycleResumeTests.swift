@@ -588,6 +588,59 @@ struct TaskLifecycleResumeTests {
         #expect(!TaskLifecycleCoordinator.resumeContinuationMessage(for: task).contains("original goal"))
     }
 
+    @Test("Retry on another provider delivers the original unlaunched instruction in the same task",
+          arguments: [TaskExecutionRequestKind.followUp, .retry])
+    func retryUndeliveredProviderMessage(kind: TaskExecutionRequestKind) async throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let args = h.rootURL.appendingPathComponent("alternate-provider-args.txt")
+        let binary = try h.writeExecutable(named: "opencode", script: Self.fakeOpenCodeScript(argsFile: args))
+        var settings = AgentRuntimeProviderSettings()
+        settings.setExecutablePath(binary, for: .openCodeCLI)
+        let queue = TaskQueue(poolSize: 1)
+        queue.applySettings(claudePath: nil, providerSettings: settings, defaultRuntimeID: .openCodeCLI,
+            timeoutSeconds: 5, validationModel: "opencode/big-pickle")
+        let task = h.makeTask(runtime: .antigravityCLI, goal: "Original task", model: "test")
+        let instruction = "List the three pending changes in the saved draft."
+        let submission = try (kind == .followUp
+            ? ExecutionRequestSubmissionService.submitFollowUp(message: instruction, for: task, into: h.context)
+            : ExecutionRequestSubmissionService.submitRetry(message: instruction, continuation: true, for: task, into: h.context)).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context))
+        let run = TaskRun(task: task)
+        run.runtimeID = AgentRuntimeID.antigravityCLI.rawValue
+        run.status = .failed
+        run.stopReason = RuntimeProviderResourceRegistry.Block.stopReason
+        run.completedAt = Date()
+        h.context.insert(run)
+        task.status = .pendingUser
+        #expect(TaskTurnRequestStateMachine.transition(request, to: .failed, runID: run.id, terminalReason: run.stopReason).changed)
+        var receipt = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context)
+        receipt.state = .notStarted
+        receipt.providerLaunchCount = 0
+        receipt.providerProcess = nil
+        receipt.stopProof = nil
+        do {
+            let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: h.context)
+            try lease.save(receipt)
+        }
+        try h.context.save()
+        let coordinator = TaskLifecycleCoordinator(modelContext: h.context, taskQueue: queue)
+        let prompt = RuntimeSensitiveDataSwitchPrompt()
+        var handle: Task<Void, Never>?
+        TaskComposerCoordinator.requestDockRuntimeSwitch(to: AgentRuntimeID.openCodeCLI.rawValue, task: task,
+            cache: .init(), prompt: prompt, blockedRunID: run.id) { handle = coordinator.retryTask(task) }
+        if prompt.pending != nil { prompt.confirm() }
+        let retry = try #require(handle)
+        await retry.value
+        #expect(task.status == .completed && task.runs.count == 2)
+        #expect(request.state == .failed && run.stopReason == RuntimeProviderResourceRegistry.Block.stopReason)
+        let raw = try String(contentsOf: args, encoding: .utf8)
+        #expect(raw.contains("User's follow-up request:\n" + instruction))
+        #expect(!raw.contains("User's follow-up request:\nContinue where you left off"))
+        let requests = try TaskTurnRequestRepository.requests(for: task, in: h.context)
+        #expect(requests.map(\.state) == [.failed, .completed])
+    }
+
     @Test("Verified Retry continues the latest actionable objective without replaying its command")
     func retryReplaysLatestActionableFollowUpInsteadOfOriginalTaskSeed() async throws {
         let harness = try HeadlessChatHarness()

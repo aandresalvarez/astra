@@ -291,6 +291,12 @@ final class RuntimeExecutionOwner {
         try save(nil, audit: true)
     }
 
+    func recheckLegacyProviderReader(_ block: RuntimeProviderResourceRegistry.Block, bootedAt: Date?) throws -> Bool {
+        guard isActive, record.state == .preparing, record.preparationResource == block.key.rawValue,
+              record.cancellationRequested != true, record.taskID != block.taskID else { return false }
+        return try ProviderSharedStateReadObservation.reconcile(block, in: context, bootedAt: bootedAt)
+    }
+
     func finishedWaitingForProviderState() throws {
         guard isActive, record.state == .preparing, record.cancellationRequested != true else {
             throw RuntimeExecutionOwnerStore.Failure.busy

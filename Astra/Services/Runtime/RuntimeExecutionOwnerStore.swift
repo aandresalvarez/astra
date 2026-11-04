@@ -143,6 +143,12 @@ final class RuntimeExecutionOwnerStore {
             // not rewrite or invalidate that immutable, still-unattributed copy.
             var attributed = existing
             if attributed.taskOwnerID == nil { attributed.taskOwnerID = record.taskOwnerID }
+            // A read-only verification can also arrive after a crash archived
+            // this generation. It expires with the current generation and need
+            // not be written into its already immutable predecessor.
+            if attributed.legacyProviderReadObservation == nil {
+                attributed.legacyProviderReadObservation = record.legacyProviderReadObservation
+            }
             guard attributed == record else { throw Failure.unreadable }
             return
         }

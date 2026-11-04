@@ -192,8 +192,18 @@ enum TaskComposerCoordinator {
         task: AgentTask,
         cache: RuntimeModelAvailabilityCache,
         prompt: RuntimeSensitiveDataSwitchPrompt,
+        blockedRunID: UUID? = nil,
         then: @escaping () -> Void
     ) {
+        func stillApplies() -> Bool {
+            guard let blockedRunID else { return true }
+            guard !task.isDone, let context = task.modelContext, task.status == .pendingUser || task.status == .failed,
+                  let run = RuntimeProviderResourceRegistry.unstartedRun(task: task, context: context),
+                  run.id == blockedRunID, run.runtimeID == AgentRuntimeID.antigravityCLI.rawValue,
+                  let active = try? TaskTurnRequestRepository.activeRequests(for: task, in: context) else { return false }
+            return active.isEmpty
+        }
+        guard stillApplies() else { return }
         let update = runtimeUpdate(
             previousRuntime: task.runtimeID,
             selectedRuntime: runtime,
@@ -214,12 +224,13 @@ enum TaskComposerCoordinator {
             ),
             guard: sensitiveDataSwitchGuard(for: task)
         ) {
+            guard stillApplies() else { return }
             applyRuntimeSwitch(
                 to: runtime,
                 requestedModel: update.resolvedModel,
                 task: task,
                 cache: cache,
-                source: "policy_block_switch_action"
+                source: blockedRunID == nil ? "policy_block_switch_action" : "provider_reservation_retry"
             )
             then()
         }

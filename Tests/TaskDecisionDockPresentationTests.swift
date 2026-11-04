@@ -6,6 +6,21 @@ import ASTRAModels
 
 @Suite("Task decision dock presentation")
 struct TaskDecisionDockPresentationTests {
+    @Test("A blocked provider can be switched only when Retry has a ready alternative", arguments: [true, false])
+    func blockedProviderAlternative(canRetry: Bool) throws {
+        var input = context(status: .pendingUser)
+        let runID = UUID()
+        input.recoveryBlockMessage = "The provider settings are reserved."
+        input.canRetry = canRetry
+        input.providerRecoveryAlternative = .init(runtime: .codexCLI, blockedRunID: runID)
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.primaryAction?.title == (canRetry ? "Check again" : nil))
+        #expect(dock.secondaryActions.map(\.kind) == (canRetry ? [.switchRuntime] : []))
+        #expect(dock.secondaryActions.first?.providerRetryRunID == (canRetry ? runID : nil))
+        input.providerRecoveryAlternative = nil
+        #expect(TaskDecisionDockPresentation.build(input)?.secondaryActions.isEmpty == true)
+    }
+
     @Test("An unlaunched provider reservation cannot expose result approval or blind retry")
     func reservedProviderHasNoResultToApprove() throws {
         var input = context(status: .pendingUser)

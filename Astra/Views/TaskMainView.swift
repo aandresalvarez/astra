@@ -3533,8 +3533,22 @@ struct TaskMainView: View {
             repair: TaskRunStopEvidence.presentationRepair(events: sortedEvents, runID: latestRun?.id, task: task),
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails,
-            recoveryBlockMessage: recoveryBlockMessage
+            recoveryBlockMessage: recoveryBlockMessage,
+            providerRecoveryAlternative: recoveryBlockMessage == nil ? nil : providerRecoveryAlternative
         ))
+    }
+
+    private var providerRecoveryAlternative: TaskDecisionDockPresentation.ProviderRecoveryAlternative? {
+        guard latestRun?.stopReason == RuntimeProviderResourceRegistry.Block.stopReason,
+              let run = RuntimeProviderResourceRegistry.unstartedRun(task: task, context: modelContext),
+              run.runtimeID == AgentRuntimeID.antigravityCLI.rawValue else { return nil }
+        let ready = AgentRuntimeAdapterRegistry.runtimeIDs.filter { $0 != .antigravityCLI && runtimeReadinessStates[$0] == .ready }
+        let previous = currentThreadSnapshot.sortedRuns.reversed().lazy
+            .filter { $0.status == .completed }
+            .compactMap { $0.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)) }
+            .first(where: ready.contains)
+        guard let runtime = previous ?? ready.first else { return nil }
+        return .init(runtime: runtime, blockedRunID: run.id)
     }
 
     /// Cached: `body` resolves the decision dock once per pass, including the
@@ -3894,7 +3908,8 @@ struct TaskMainView: View {
             toggleTaskDoneFromDecisionDock()
         case .switchRuntime:
             guard let runtime = action.payload else { return }
-            TaskComposerCoordinator.requestDockRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, prompt: sensitiveDataSwitchPrompt) {
+            TaskComposerCoordinator.requestDockRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache,
+                prompt: sensitiveDataSwitchPrompt, blockedRunID: action.providerRetryRunID) {
                 onRetryTask?(task)
             }
         }

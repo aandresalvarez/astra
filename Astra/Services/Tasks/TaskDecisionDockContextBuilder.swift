@@ -92,6 +92,7 @@ enum TaskDecisionDockContextBuilder {
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail]
         var recoveryBlockMessage: String? = nil
+        var providerRecoveryAlternative: TaskDecisionDockPresentation.ProviderRecoveryAlternative? = nil
     }
 
     struct ExtraDetailsInput {
@@ -171,7 +172,8 @@ enum TaskDecisionDockContextBuilder {
                 mission: input.mission,
                 isPlanCanvasVisible: input.isPlanCanvasVisible
             ),
-            recoveryBlockMessage: input.recoveryBlockMessage
+            recoveryBlockMessage: input.recoveryBlockMessage,
+            providerRecoveryAlternative: input.providerRecoveryAlternative
         )
     }
 
