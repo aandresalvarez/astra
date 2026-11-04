@@ -193,6 +193,30 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
+    public static func credentialRecoveryEvidence(of activation: PluginActivation) -> PluginCredentialRecoveryEvidence? {
+        guard let workspace = activation.workspace else { return nil }
+        return retiredActivations(of: workspace).first { $0.pluginID == activation.pluginID }?.credentialRecoveryEvidence
+    }
+
+    /// Keeps unresolved recovery facts until the activation is explicitly
+    /// removed. Learning a definition's components or recording one key does
+    /// not prove that an absent legacy marker list was complete.
+    public static func preserveCredentialRecoveryEvidence(_ evidence: PluginCredentialRecoveryEvidence, on activation: PluginActivation) {
+        guard !evidence.isEmpty, let workspace = activation.workspace else { return }
+        var entries = retiredActivations(of: workspace)
+        if let index = entries.firstIndex(where: { $0.pluginID == activation.pluginID }) {
+            let merged = evidence.merging(entries[index].credentialRecoveryEvidence)
+            guard merged != entries[index].credentialRecoveryEvidence else { return }
+            entries[index].credentialRecoveryEvidence = merged
+        } else {
+            var entry = RetiredPluginActivation(pluginID: activation.pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: [])
+            entry.credentialRecoveryEvidence = evidence
+            entries.append(entry)
+        }
+        setRetired(entries, on: workspace)
+        touch(activation)
+    }
+
     /// Sets the seed mixed into the activation's projected IDs.
     public static func setNamespaceSeed(_ seed: String, on activation: PluginActivation) {
         guard activation.namespaceSeed != seed else { return }

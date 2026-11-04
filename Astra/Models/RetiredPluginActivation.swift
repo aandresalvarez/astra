@@ -63,6 +63,12 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
     /// `source`; Remove of the plugin drops it.
     public var pendingImport: PendingImport?
 
+    /// Uncertainty recovered for a still-live activation. Kept in the
+    /// workspace's existing recovery JSON, independently of the definition's
+    /// component history; migration cannot turn it into knowledge of secrets.
+    /// Remove drops it: a later Add starts a fresh credential generation.
+    public var credentialRecoveryEvidence: PluginCredentialRecoveryEvidence?
+
     public struct PendingImport: Codable, Equatable, Sendable {
         public struct Account: Codable, Equatable, Sendable {
             public var componentID: String
@@ -158,6 +164,7 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
     var keepsAnything: Bool {
         !namespaceSeed.isEmpty || overridingRowIDs.contains { UUID(uuidString: $0) != nil } || !(pendingOverrides ?? []).isEmpty
             || pendingImport != nil
+            || credentialRecoveryEvidence != nil
             || !(retainedAccounts ?? []).isEmpty || !(retainedTemplateIDs ?? [:]).isEmpty
     }
 
@@ -356,12 +363,15 @@ extension WorkspaceCapabilityActivation {
         where !activation.overriddenComponentIDs.contains(override.componentID) && rowExists(override.rowID, near: workspace) {
             setOverridden(true, componentID: override.componentID, rowID: override.rowID, on: activation)
         }
-        // A pending import for another copy or source keeps waiting.
+        // A pending import for another copy/source and unresolved recovery
+        // evidence of a live activation survive Add/reconcile. Only Remove
+        // retires the credential generation and drops that evidence.
         setRetired(all.compactMap { other in
             guard other.pluginID == activation.pluginID else { return other }
-            guard let pendingImport = other.pendingImport else { return nil }
+            guard other.pendingImport != nil || other.credentialRecoveryEvidence != nil else { return nil }
             var waiting = RetiredPluginActivation(pluginID: other.pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: [])
-            waiting.pendingImport = pendingImport
+            waiting.pendingImport = other.pendingImport
+            waiting.credentialRecoveryEvidence = other.credentialRecoveryEvidence
             return waiting
         }, on: workspace)
     }
@@ -433,7 +443,8 @@ extension WorkspaceCapabilityActivation {
     /// overrides.
     public static func restoreRetired(_ entries: [RetiredPluginActivation], to workspace: Workspace) {
         let active = Set(activations(of: workspace).map(\.pluginID))
-        let kept = retiredActivations(of: workspace).filter { entry in !entries.contains { $0.pluginID == entry.pluginID } }
+        let current = retiredActivations(of: workspace)
+        let kept = current.filter { entry in !entries.contains { $0.pluginID == entry.pluginID } }
         let restored = entries.map { entry in
             guard active.contains(entry.pluginID) else { return entry }
             var pending = RetiredPluginActivation(
@@ -441,6 +452,9 @@ extension WorkspaceCapabilityActivation {
                 pendingOverrides: entry.pendingOverrides
             )
             pending.pendingImport = entry.pendingImport
+            let recovered = current.first { $0.pluginID == entry.pluginID }?.credentialRecoveryEvidence
+            pending.credentialRecoveryEvidence = recovered.map { $0.merging(entry.credentialRecoveryEvidence) }
+                ?? entry.credentialRecoveryEvidence
             return pending
         }
         setRetired(kept + restored.filter(\.keepsAnything), on: workspace)
@@ -481,5 +495,41 @@ extension WorkspaceCapabilityActivation {
         var tools = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.id == id })
         tools.fetchLimit = 1
         return ((try? context.fetchCount(tools)) ?? 0) > 0
+    }
+}
+
+/// Value-free evidence that recovery could not fully represent in activation
+/// settings or account bindings. Only the explicit activation owner writes it;
+/// ordinary migration/reconciliation never silently clears it.
+public struct PluginCredentialRecoveryEvidence: Codable, Equatable, Sendable {
+    public struct Account: Codable, Hashable, Sendable {
+        public var componentID: String
+        public var connectorID: String
+
+        public init(componentID: String, connectorID: String) {
+            self.componentID = componentID
+            self.connectorID = connectorID
+        }
+    }
+
+    public var secretSettingKeysUnknown: Bool
+    public var unresolvedSettingKeys: [String]
+    public var unresolvedAccounts: [Account]
+    public var hasUnresolvedReferences: Bool { !unresolvedSettingKeys.isEmpty || !unresolvedAccounts.isEmpty }
+    public var isEmpty: Bool { !secretSettingKeysUnknown && !hasUnresolvedReferences }
+
+    public init(secretSettingKeysUnknown: Bool = false, unresolvedSettingKeys: [String] = [], unresolvedAccounts: [Account] = []) {
+        self.secretSettingKeysUnknown = secretSettingKeysUnknown
+        self.unresolvedSettingKeys = unresolvedSettingKeys
+        self.unresolvedAccounts = unresolvedAccounts
+    }
+
+    public func merging(_ other: Self?) -> Self {
+        guard let other else { return self }
+        return Self(secretSettingKeysUnknown: secretSettingKeysUnknown || other.secretSettingKeysUnknown,
+            unresolvedSettingKeys: Set(unresolvedSettingKeys + other.unresolvedSettingKeys).sorted(),
+            unresolvedAccounts: Set(unresolvedAccounts + other.unresolvedAccounts).sorted {
+                $0.componentID == $1.componentID ? $0.connectorID < $1.connectorID : $0.componentID < $1.componentID
+            })
     }
 }

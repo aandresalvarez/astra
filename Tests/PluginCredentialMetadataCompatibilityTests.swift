@@ -126,8 +126,12 @@ struct PluginCredentialMetadataCompatibilityTests {
         }
     }
 
-    @Test("Legacy single-key ownership survives recovery, real export and outbox reread", arguments: [false, true], [false, true])
-    func legacySingleKeyRoundTrip(override: Bool, matchingDefinition: Bool) throws {
+    @Test("Legacy single-key ownership survives recovery, migration, real export and outbox reread", arguments: [false, true], [
+        (false, false, false), (false, true, false), (true, false, false), (true, true, false),
+        (false, false, true), (false, true, true), (true, false, true), (true, true, true)
+    ])
+    func legacySingleKeyRoundTrip(override: Bool, scenario: (Bool, Bool, Bool)) throws {
+        let (matchingDefinition, migrate, legacyEmptyMarkers) = scenario
         let env = try PluginRecoveryMirrorCredentialTests.Fixture()
         defer { env.removeFiles() }
         let previous = WorkspaceRecoveryTrust.loadedMirrors
@@ -148,6 +152,7 @@ struct PluginCredentialMetadataCompatibilityTests {
             settings: override ? nil : ["skill:agent#REGION": "synthetic-region"],
             overriddenComponentIDs: override ? ["skill:agent"] : nil,
             overridingRowIDs: override ? [row.id.uuidString] : nil,
+            secretSettingKeys: legacyEmptyMarkers ? [] : nil,
             namespaceSeed: "legacy-runtime", credentialNamespaceSeed: "legacy-generation",
             digest: matchingDefinition ? PluginDefinitionDigest.content(of: package) : nil)]
         let encoder = JSONEncoder()
@@ -172,6 +177,15 @@ struct PluginCredentialMetadataCompatibilityTests {
             let activation = try #require(WorkspaceCapabilityActivation.activation(for: pluginID, in: restored))
             #expect(activation.knownComponentIDs.isEmpty && activation.secretSettingKeys.isEmpty)
             #expect(activation.recordedDigest.isEmpty == !matchingDefinition)
+            if migrate {
+                _ = try PluginActivationMigration.migrate(modelContext: env.context,
+                    packages: matchingDefinition ? [package] : [], secrets: MetadataFakeSecrets.self,
+                    sourceStore: PluginSourceStore(root: env.root.appendingPathComponent("sources")),
+                    persist: { try $0.save() }, rewriteMirror: {
+                        (try? WorkspaceConfigManager.exportToFile(workspace: $0, modelContext: env.context, url: mirror)) != nil
+                    }, vault: MetadataInertVault())
+                #expect(activation.knownComponentIDs == (matchingDefinition ? ["skill:agent"] : []))
+            }
             try env.outbox.journal([key])
             MetadataFakeSecrets.seed([namespace])
             let settle = {
@@ -196,11 +210,80 @@ struct PluginCredentialMetadataCompatibilityTests {
             resume(env)
             #expect(MetadataFakeSecrets.value(namespace) == "synthetic-token")
             #expect(try env.outbox.pendingKeys() == [key])
+            // Recording one later key does not discover the old missing
+            // list, and its known marker must still survive export.
+            WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: "skill:agent#OTHER_TOKEN", on: activation)
+            try env.context.save()
+            settle()
+            let partial = try WorkspaceConfigManager.loadConfig(from: mirror)
+            #expect(partial.installedPlugins?.first?.secretSettingKeys == ["skill:agent#OTHER_TOKEN"])
+            let partialOwnership = try #require(PluginCredentialMirrorReferences.capture(modelContext: env.context, extraMirrors: []))
+            #expect(partialOwnership.holdsSkill(namespace, key: key.key))
+            #expect(MetadataFakeSecrets.value(namespace) == "synthetic-token")
+            #expect(try env.outbox.pendingKeys() == [key])
             // The hold is ownership, not a permanently blocked outbox.
             env.context.delete(activation)
             try env.context.save()
             settle()
             #expect(MetadataFakeSecrets.value(namespace) == nil)
+            #expect(try env.outbox.entries().isEmpty)
+        }
+    }
+
+    @Test("Own recovery retains unresolved evidence through saved export and another recovery", arguments: ["account", "setting", "empty"])
+    func inconsistentOwnEmptyInventory(evidence: String) throws {
+        let env = try PluginRecoveryMirrorCredentialTests.Fixture(onDisk: true)
+        defer { env.removeFiles() }
+        let previous = WorkspaceRecoveryTrust.loadedMirrors
+        defer { WorkspaceRecoveryTrust.recordLoadedMirrors(previous) }
+        WorkspaceRecoveryTrust.recordLoadedMirrors([])
+        let mirror = env.ownMirror, workspaceID = env.workspace.id
+        let package = emptyPackage()
+        var config = try #require(WorkspaceConfigManager.export(workspace: env.workspace, modelContext: env.context))
+        config.installedPlugins = [.init(id: package.id, version: package.version,
+            settings: evidence == "setting" ? ["unresolved-legacy-key": "synthetic-private-value"] : nil,
+            accounts: evidence == "account" ? [.init(componentID: "connector:rest_api:account", connectorID: UUID().uuidString, isDefault: true)] : nil,
+            credentialComponentIDs: [], secretSettingKeys: [], digest: PluginDefinitionDigest.content(of: package))]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try encoder.encode(config).write(to: mirror)
+        let namespace = PluginActivation.credentialID(workspaceID: workspaceID, pluginID: package.id, componentID: "skill:agent")
+        let orphan = UUID(), key = PluginUpdateService.StaleSecret(key: "API_TOKEN", skillID: namespace)
+        try env.outbox.journal([key])
+        try env.outbox.write([orphan])
+        MetadataFakeSecrets.seed([namespace, orphan])
+        try withDefinitions([package]) {
+            #expect((PluginCredentialMirrorReferences.capture(modelContext: env.context, extraMirrors: []) == nil) == (evidence != "empty"))
+            env.context.delete(env.workspace)
+            try env.context.save()
+            for _ in 0..<2 {
+                let loaded = try WorkspaceConfigManager.loadConfig(from: mirror)
+                let restored = WorkspaceConfigManager.importWorkspace(from: loaded, modelContext: env.context,
+                    capabilityTrust: .preserveRecordedState)
+                try env.context.save()
+                // Export from a reopened disk store, not the import's live objects.
+                let reopened = try env.reopen()
+                let saved = reopened.mainContext
+                saved.autosaveEnabled = false
+                PluginSecretCleanupOutbox.resumePending(modelContext: saved, outbox: env.outbox,
+                    secrets: MetadataFakeSecrets.self, rewriteMirror: {
+                        (try? WorkspaceConfigManager.exportToFile(workspace: $0, modelContext: saved, url: mirror)) != nil
+                    })
+                let held = evidence != "empty"
+                #expect(MetadataFakeSecrets.value(namespace) == (held ? "synthetic-token" : nil))
+                #expect(MetadataFakeSecrets.value(orphan) == (held ? "synthetic-token" : nil))
+                #expect(try env.outbox.pendingKeys() == (held ? [key] : []))
+                #expect(try env.outbox.pending() == (held ? [orphan] : []))
+                #expect((PluginCredentialMirrorReferences.capture(modelContext: saved, extraMirrors: []) == nil) == held)
+                env.context.delete(restored)
+                try env.context.save()
+            }
+            // Removing the activation and its mirror releases the hold.
+            try FileManager.default.removeItem(at: mirror)
+            resume(env)
+            #expect(MetadataFakeSecrets.value(namespace) == nil)
+            #expect(MetadataFakeSecrets.value(orphan) == nil)
             #expect(try env.outbox.entries().isEmpty)
         }
     }
@@ -355,4 +438,12 @@ private enum MetadataFakeSecrets: SkillSecretPersisting {
     static func deleteSecret(key: String, skillID: UUID) -> Bool { deleteAllSecretsReportingResult(skillID: skillID) }
     static func deleteAllSecrets(skillID: UUID) { _ = deleteAllSecretsReportingResult(skillID: skillID) }
     static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool { values.withLock { $0[skillID] = nil }; return true }
+}
+
+private struct MetadataInertVault: SecretStore {
+    func load(key: String, entityID: String) -> String? { nil }
+    func save(key: String, value: String, entityID: String, label: String?) -> Bool { false }
+    func delete(key: String, entityID: String) -> Bool { false }
+    func deleteAll(entityID: String) {}
+    func exists(key: String, entityID: String) -> Bool { false }
 }

@@ -36,6 +36,10 @@ struct PluginCredentialMirrorReferences {
             var namespaces = Set<UUID>()
             for plugin in listed.installedPlugins ?? [] {
                 guard let workspaceID = file.workspaceID else { return nil }
+                guard plugin.credentialRecoveryEvidence?.hasUnresolvedReferences != true else {
+                    ambiguousMetadata(workspaceID: workspaceID, pluginID: plugin.id)
+                    return nil
+                }
                 let recorded = plugin.secretSettingKeys ?? []
                 let plain = Array((plugin.settings ?? [:]).keys)
                 let known = Set(plugin.knownComponentIDs ?? [])
@@ -68,7 +72,8 @@ struct PluginCredentialMirrorReferences {
                     // A derived inventory does not prove a legacy marker list.
                     // Empty arrays from an earlier rewrite of unknown state
                     // must retain the same key hold as a missing list.
-                    if !known.contains(component) && recorded.isEmpty { result.unknownKeys.insert(id) }
+                    if plugin.credentialRecoveryEvidence?.secretSettingKeysUnknown == true || plugin.secretSettingKeys == nil
+                        || (!known.contains(component) && recorded.isEmpty) { result.unknownKeys.insert(id) }
                     for setting in recorded + plain where PluginActivation.componentID(ofSettingKey: setting) == component {
                         let key = String(setting.dropFirst(component.count + 1))
                         if recorded.contains(setting) || Skill.isSecretEnvironmentKey(key) { result.keys.insert(.init(key: key, skillID: id)) }
@@ -124,6 +129,7 @@ struct PluginCredentialMirrorReferences {
             let knownComponentIDs: [String]?
             let credentialComponentIDs: [String]?
             let secretSettingKeys: [String]?
+            let credentialRecoveryEvidence: PluginCredentialRecoveryEvidence?
             let namespaceSeed: String?
             let credentialNamespaceSeed: String?
         }

@@ -27,6 +27,7 @@ extension WorkspaceConfigManager {
             knownComponentIDs: [String]? = nil,
             credentialComponentIDs: [String]? = nil,
             secretSettingKeys: [String]? = nil,
+            credentialRecoveryEvidence: PluginCredentialRecoveryEvidence? = nil,
             namespaceSeed: String? = nil,
             credentialNamespaceSeed: String? = nil,
             digest: String? = nil,
@@ -45,6 +46,7 @@ extension WorkspaceConfigManager {
             self.knownComponentIDs = knownComponentIDs
             self.credentialComponentIDs = credentialComponentIDs
             self.secretSettingKeys = secretSettingKeys
+            self.credentialRecoveryEvidence = credentialRecoveryEvidence
             self.namespaceSeed = namespaceSeed
             self.credentialNamespaceSeed = credentialNamespaceSeed
             self.digest = digest
@@ -76,6 +78,8 @@ extension WorkspaceConfigManager {
         /// The secret settings (`componentID#KEY`) the activation stored in
         /// the Keychain. The values themselves are never in the file.
         public var secretSettingKeys: [String]?
+        /// Derived from durable recovery facts, never from component history.
+        public var credentialRecoveryEvidence: PluginCredentialRecoveryEvidence?
         /// The activation's namespace seed; restored only from the
         /// workspace's own mirror.
         public var namespaceSeed: String?
@@ -156,6 +160,7 @@ extension WorkspaceConfigManager {
         awaitedSource: (_ pluginID: String) -> String? = { _ in nil }
     ) -> [InstalledPluginRef] {
         var refs = WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
+            let evidence = WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: activation)
             let configuration = PluginLaunchConfiguration.activation(activation)
             let settings = Dictionary(zip(configuration.keys, configuration.values), uniquingKeysWith: { _, last in last })
             // An empty model array also represents unreconciled legacy state.
@@ -164,17 +169,19 @@ extension WorkspaceConfigManager {
                 ? PluginCredentialComponentInventorySeam.componentIDs(pluginID: activation.pluginID,
                     version: activation.recordedVersion, digest: activation.recordedDigest)
                 : activation.knownComponentIDs
-            let credentialComponents = inventory.map {
+            let credentialComponents = evidence?.hasUnresolvedReferences == true ? nil : inventory.map {
                 Set($0 + activation.overriddenComponentIDs
                     + activation.bindings.filter { !$0.isDeleted }.map(\.componentID)
                     + (activation.configKeys + activation.secretSettingKeys).compactMap(PluginActivation.componentID(ofSettingKey:)))
                     .sorted()
             }
-            // An empty model marker array also represents a legacy file with
-            // no list. Only the durable component contract or a proved empty
-            // inventory can make that absence an affirmative empty list.
+            // Component history can be seeded without discovering secrets.
+            // Recovered uncertainty is independent and survives migration;
+            // only a proved empty inventory makes unknown markers irrelevant.
+            let unknownMarkers = evidence?.secretSettingKeysUnknown == true
+                || (activation.secretSettingKeys.isEmpty && activation.knownComponentIDs.isEmpty)
             let secretKeys: [String]? = activation.secretSettingKeys.isEmpty
-                && activation.knownComponentIDs.isEmpty && credentialComponents != []
+                && (evidence?.hasUnresolvedReferences == true || (unknownMarkers && credentialComponents != []))
                 ? nil : activation.secretSettingKeys
             let accounts = activation.bindings
                 .filter { !$0.isDeleted }
@@ -199,6 +206,7 @@ extension WorkspaceConfigManager {
                 knownComponentIDs: activation.knownComponentIDs.isEmpty ? nil : activation.knownComponentIDs,
                 credentialComponentIDs: credentialComponents,
                 secretSettingKeys: secretKeys,
+                credentialRecoveryEvidence: evidence,
                 namespaceSeed: activation.namespaceSeed.isEmpty ? nil : activation.namespaceSeed,
                 credentialNamespaceSeed: activation.credentialNamespaceSeed.isEmpty ? nil : activation.credentialNamespaceSeed,
                 digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest,
@@ -316,6 +324,21 @@ extension WorkspaceConfigManager {
                 }
             }
             func allowed(_ componentID: String) -> Bool { declared?.contains(componentID) ?? true }
+
+            if declared == nil {
+                // The own mirror is authoritative even where its settings or
+                // account rows cannot be restored. Preserve the evidence,
+                // without values, before those loops filter it out.
+                let evidence = PluginCredentialRecoveryEvidence(
+                    secretSettingKeysUnknown: ref.secretSettingKeys == nil
+                        || (ref.secretSettingKeys == [] && (ref.knownComponentIDs ?? []).isEmpty),
+                    unresolvedSettingKeys: (Array((ref.settings ?? [:]).keys) + (ref.secretSettingKeys ?? []))
+                        .filter { PluginActivation.componentID(ofSettingKey: $0) == nil }.sorted(),
+                    unresolvedAccounts: (ref.accounts ?? []).filter { connectorsByID[$0.connectorID] == nil }
+                        .map { .init(componentID: $0.componentID, connectorID: $0.connectorID) })
+                WorkspaceCapabilityActivation.preserveCredentialRecoveryEvidence(
+                    evidence.merging(ref.credentialRecoveryEvidence), on: activation)
+            }
 
             func allowedSetting(_ key: String) -> Bool {
                 PluginActivation.componentID(ofSettingKey: key).map(allowed) ?? false
