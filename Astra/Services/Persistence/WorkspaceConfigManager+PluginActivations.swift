@@ -188,13 +188,12 @@ extension WorkspaceConfigManager {
                     + (activation.configKeys + activation.secretSettingKeys).compactMap(PluginActivation.componentID(ofSettingKey:)))
                     .sorted()
             }
-            // Component history can be seeded without discovering secrets.
-            // Recovered uncertainty is independent and survives migration;
-            // only a proved empty inventory makes unknown markers irrelevant.
-            let unknownMarkers = evidence?.secretSettingKeysUnknown == true
-                || (activation.secretSettingKeys.isEmpty && activation.knownComponentIDs.isEmpty)
-            let secretKeys: [String]? = activation.secretSettingKeys.isEmpty
-                && (evidence?.isAmbiguous == true || (unknownMarkers && credentialComponents != []))
+            // An existing store may have migrated component history but no
+            // evidence record: launch recovery skips its already-saved ID.
+            // An empty durable marker array therefore remains unknown, even
+            // before the first new export. Only independently proved zero
+            // namespaces make that absence an affirmative empty list.
+            let secretKeys: [String]? = activation.secretSettingKeys.isEmpty && credentialComponents != []
                 ? nil : activation.secretSettingKeys
             let accounts = activation.bindings
                 .filter { !$0.isDeleted }
