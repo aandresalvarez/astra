@@ -36,22 +36,26 @@ struct PluginCredentialMirrorReferences {
             var namespaces = Set<UUID>()
             for plugin in listed.installedPlugins ?? [] {
                 guard let workspaceID = file.workspaceID else { return nil }
-                let recorded = plugin.secretSettingKeys ?? []
-                let plain = Array((plugin.settings ?? [:]).keys)
-                let components = Set((plugin.knownComponentIDs ?? []) + (plugin.overriddenComponentIDs ?? [])
-                    + (recorded + plain).compactMap(PluginActivation.componentID(ofSettingKey:)))
-                guard !components.isEmpty else { return nil }
-                for component in components {
+                let evidence = plugin.credentialRecoveryEvidence.flatMap {
+                    $0.appliesTo(namespaceSeed: plugin.namespaceSeed ?? "", credentialNamespaceSeed: plugin.credentialNamespaceSeed ?? "") ? $0 : nil
+                }
+                guard let references = PluginCredentialMetadataPolicy.references(
+                    pluginID: plugin.id, version: plugin.version, digest: plugin.digest,
+                    knownComponentIDs: plugin.knownComponentIDs, credentialComponentIDs: plugin.credentialComponentIDs,
+                    secretSettingKeys: plugin.secretSettingKeys, settingKeys: Array((plugin.settings ?? [:]).keys),
+                    overriddenComponentIDs: plugin.overriddenComponentIDs, accountComponentIDs: (plugin.accounts ?? []).map(\.componentID),
+                    recoveryEvidence: evidence) else {
+                    ambiguousMetadata(workspaceID: workspaceID, pluginID: plugin.id)
+                    return nil
+                }
+                for component in references.componentIDs {
                     let id = PluginActivation.credentialID(workspaceID: workspaceID, pluginID: plugin.id,
                         componentID: component, runtimeSeed: plugin.namespaceSeed ?? "", generation: plugin.credentialNamespaceSeed ?? "")
                     namespaces.insert(id)
-                    // Current exports omit an empty marker array. A known
-                    // component contract plus no markers means no secrets;
-                    // older partial records without that contract are unknown.
-                    if plugin.secretSettingKeys == nil && plugin.knownComponentIDs == nil { result.unknownKeys.insert(id) }
-                    for setting in recorded + plain where PluginActivation.componentID(ofSettingKey: setting) == component {
+                    if references.unknownSecretComponentIDs.contains(component) { result.unknownKeys.insert(id) }
+                    for setting in references.secretSettingKeys where PluginActivation.componentID(ofSettingKey: setting) == component {
                         let key = String(setting.dropFirst(component.count + 1))
-                        if recorded.contains(setting) || Skill.isSecretEnvironmentKey(key) { result.keys.insert(.init(key: key, skillID: id)) }
+                        result.keys.insert(.init(key: key, skillID: id))
                     }
                 }
             }
@@ -85,13 +89,26 @@ struct PluginCredentialMirrorReferences {
         return result
     }
 
+    private static func ambiguousMetadata(workspaceID: UUID, pluginID: String) {
+        AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+            "scope": "plugin_credential_mirror", "reason": "ambiguous_plugin_credential_metadata",
+            "workspace_id": workspaceID.uuidString, "plugin_id": pluginID
+        ], level: .warning)
+    }
+
     private struct Listed: Decodable {
         struct Plugin: Decodable {
+            struct Account: Decodable { let componentID: String }
             let id: String
+            let version: String?
+            let digest: String?
             let settings: [String: String]?
+            let accounts: [Account]?
             let overriddenComponentIDs: [String]?
             let knownComponentIDs: [String]?
+            let credentialComponentIDs: [String]?
             let secretSettingKeys: [String]?
+            let credentialRecoveryEvidence: PluginCredentialRecoveryEvidence?
             let namespaceSeed: String?
             let credentialNamespaceSeed: String?
         }

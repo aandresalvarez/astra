@@ -63,6 +63,12 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
     /// `source`; Remove of the plugin drops it.
     public var pendingImport: PendingImport?
 
+    /// Uncertainty recovered for a still-live activation. Kept in the
+    /// workspace's existing recovery JSON, independently of the definition's
+    /// component history; migration cannot turn it into knowledge of secrets.
+    /// Remove drops it: a later Add starts a fresh credential generation.
+    public var credentialRecoveryEvidence: PluginCredentialRecoveryEvidence?
+
     public struct PendingImport: Codable, Equatable, Sendable {
         public struct Account: Codable, Equatable, Sendable {
             public var componentID: String
@@ -155,11 +161,13 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
         )
     }
 
-    var keepsAnything: Bool {
+    var hasRetirementState: Bool {
         !namespaceSeed.isEmpty || overridingRowIDs.contains { UUID(uuidString: $0) != nil } || !(pendingOverrides ?? []).isEmpty
             || pendingImport != nil
             || !(retainedAccounts ?? []).isEmpty || !(retainedTemplateIDs ?? [:]).isEmpty
     }
+
+    public var keepsAnything: Bool { hasRetirementState || credentialRecoveryEvidence != nil }
 
     /// Each kept override's component and row.
     var overrides: [(componentID: String, rowID: UUID)] {
@@ -173,6 +181,12 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
 extension WorkspaceCapabilityActivation {
     /// What Remove kept of the workspace's removed activations.
     public static func retiredActivations(of workspace: Workspace) -> [RetiredPluginActivation] {
+        retentionRecords(of: workspace).filter(\.hasRetirementState)
+    }
+
+    /// The same durable field also holds internal evidence for live
+    /// activations. Every owner mutation and rollback must retain those rows.
+    static func retentionRecords(of workspace: Workspace) -> [RetiredPluginActivation] {
         guard let json = workspace.retiredPluginActivationsJSON, let data = json.data(using: .utf8) else { return [] }
         return (try? JSONDecoder().decode([RetiredPluginActivation].self, from: data)) ?? []
     }
@@ -180,7 +194,7 @@ extension WorkspaceCapabilityActivation {
     /// The rows a removed activation named as overrides: kept out of the
     /// workspace's ambient scope (`overridingRowIDs(of:)`).
     public static func retiredOverrideRowIDs(of workspace: Workspace) -> Set<UUID> {
-        Set(retiredActivations(of: workspace).flatMap { $0.overrides.map(\.rowID) })
+        Set(retentionRecords(of: workspace).flatMap { $0.overrides.map(\.rowID) })
     }
 
     /// Keeps `activation`'s seed and overrides before Remove deletes it,
@@ -188,7 +202,7 @@ extension WorkspaceCapabilityActivation {
     /// pending as its overrides stay pending, for the next Add. `source` is
     /// where the removed copy came from (`RetiredPluginActivation.source`).
     public static func retire(_ activation: PluginActivation, in workspace: Workspace, source: String? = nil) {
-        let all = retiredActivations(of: workspace)
+        let all = retentionRecords(of: workspace)
         var retired = all.filter { $0.pluginID != activation.pluginID }
         var entry = RetiredPluginActivation(activation)
         entry.pendingOverrides = all.first { $0.pluginID == activation.pluginID }?.pendingOverrides
@@ -208,7 +222,7 @@ extension WorkspaceCapabilityActivation {
     /// Records that the authored row `rowID` came from `componentID` of a
     /// plugin whose definition is missing (`pendingOverrides`).
     public static func recordPendingOverride(componentID: String, rowID: UUID, pluginID: String, in workspace: Workspace) {
-        var all = retiredActivations(of: workspace)
+        var all = retentionRecords(of: workspace)
         let pending = RetiredPluginActivation.PendingOverride(componentID: componentID, rowID: rowID.uuidString)
         if let index = all.firstIndex(where: { $0.pluginID == pluginID }) {
             guard !(all[index].pendingOverrides ?? []).contains(pending) else { return }
@@ -224,7 +238,7 @@ extension WorkspaceCapabilityActivation {
     /// Keeps a chosen file's activation `pluginID` this Mac couldn't accept
     /// (`pendingImport`), replacing an earlier one.
     public static func recordPendingImport(_ pending: RetiredPluginActivation.PendingImport, pluginID: String, in workspace: Workspace) {
-        var all = retiredActivations(of: workspace)
+        var all = retentionRecords(of: workspace)
         if let index = all.firstIndex(where: { $0.pluginID == pluginID }) {
             all[index].pendingImport = pending
         } else {
@@ -237,18 +251,18 @@ extension WorkspaceCapabilityActivation {
 
     /// The pending import for `pluginID` in `workspace`, if one waits.
     public static func pendingImport(pluginID: String, in workspace: Workspace) -> RetiredPluginActivation.PendingImport? {
-        retiredActivations(of: workspace).first { $0.pluginID == pluginID }?.pendingImport
+        retentionRecords(of: workspace).first { $0.pluginID == pluginID }?.pendingImport
     }
 
     /// The plugins a pending import waits for in `workspace`.
     public static func pendingImportPluginIDs(of workspace: Workspace) -> Set<String> {
-        Set(retiredActivations(of: workspace).filter { $0.pendingImport != nil }.map(\.pluginID))
+        Set(retentionRecords(of: workspace).filter { $0.pendingImport != nil }.map(\.pluginID))
     }
 
     /// Forgets the pending import for `pluginID`: restored, or its plugin
     /// removed.
     public static func dropPendingImport(pluginID: String, in workspace: Workspace) {
-        var all = retiredActivations(of: workspace)
+        var all = retentionRecords(of: workspace)
         guard let index = all.firstIndex(where: { $0.pluginID == pluginID }), all[index].pendingImport != nil else { return }
         all[index].pendingImport = nil
         setRetired(all.filter(\.keepsAnything), on: workspace)
@@ -261,7 +275,7 @@ extension WorkspaceCapabilityActivation {
     public static func retainedAccounts(
         of pluginID: String, in workspace: Workspace, addingFrom source: String?
     ) -> [(componentID: String, account: Connector, isDefault: Bool)] {
-        guard let entry = retiredActivations(of: workspace).first(where: { $0.pluginID == pluginID }),
+        guard let entry = retentionRecords(of: workspace).first(where: { $0.pluginID == pluginID }),
               sameSource(entry.source, source) else { return [] }
         return (entry.retainedAccounts ?? []).compactMap { retained in
             guard let account = workspace.connectors.first(where: { !$0.isDeleted && $0.id.uuidString == retained.accountID })
@@ -275,7 +289,7 @@ extension WorkspaceCapabilityActivation {
     /// where the removed copy came from (`source`).
     public static func retainTemplateIDs(_ ids: [String: UUID], pluginID: String, in workspace: Workspace, source: String? = nil) {
         guard !ids.isEmpty else { return }
-        var all = retiredActivations(of: workspace)
+        var all = retentionRecords(of: workspace)
         let recorded = ids.mapValues(\.uuidString)
         if let index = all.firstIndex(where: { $0.pluginID == pluginID }) {
             all[index].retainedTemplateIDs = (all[index].retainedTemplateIDs ?? [:]).merging(recorded) { _, new in new }
@@ -297,7 +311,7 @@ extension WorkspaceCapabilityActivation {
     /// as for `retainedAccounts`. A template written under an old ID is
     /// what the person's schedules run, so another copy never takes it.
     public static func retainedTemplateIDs(of pluginID: String, in workspace: Workspace, addingFrom source: String?) -> [String: UUID] {
-        guard let entry = retiredActivations(of: workspace).first(where: { $0.pluginID == pluginID }),
+        guard let entry = retentionRecords(of: workspace).first(where: { $0.pluginID == pluginID }),
               sameSource(entry.source, source), let recorded = entry.retainedTemplateIDs else { return [:] }
         return recorded.compactMapValues(UUID.init(uuidString:))
     }
@@ -311,7 +325,7 @@ extension WorkspaceCapabilityActivation {
 
     /// The plugins whose kept rows are pending as overrides in `workspace`.
     public static func pendingOverridePluginIDs(of workspace: Workspace) -> Set<String> {
-        Set(retiredActivations(of: workspace).filter { !($0.pendingOverrides ?? []).isEmpty }.map(\.pluginID))
+        Set(retentionRecords(of: workspace).filter { !($0.pendingOverrides ?? []).isEmpty }.map(\.pluginID))
     }
 
     /// Makes each row pending for `activation`'s plugin the override of the
@@ -322,7 +336,7 @@ extension WorkspaceCapabilityActivation {
     /// leaves the workspace's shared lists, as a migrated override does, so
     /// it is on exactly while the activation is.
     public static func adoptPendingOverrides(on activation: PluginActivation, declaring componentIDs: [String], in workspace: Workspace) {
-        var all = retiredActivations(of: workspace)
+        var all = retentionRecords(of: workspace)
         guard let index = all.firstIndex(where: { $0.pluginID == activation.pluginID }),
               let pending = all[index].pendingOverrides else { return }
         let declared = Set(componentIDs)
@@ -347,7 +361,7 @@ extension WorkspaceCapabilityActivation {
     /// record.
     public static func reinstateRetired(on activation: PluginActivation, declaring componentIDs: [String], in workspace: Workspace) {
         adoptPendingOverrides(on: activation, declaring: componentIDs, in: workspace)
-        let all = retiredActivations(of: workspace)
+        let all = retentionRecords(of: workspace)
         guard let entry = all.first(where: { $0.pluginID == activation.pluginID }) else { return }
         if activation.namespaceSeed.isEmpty, !entry.namespaceSeed.isEmpty {
             setNamespaceSeed(entry.namespaceSeed, on: activation)
@@ -356,12 +370,15 @@ extension WorkspaceCapabilityActivation {
         where !activation.overriddenComponentIDs.contains(override.componentID) && rowExists(override.rowID, near: workspace) {
             setOverridden(true, componentID: override.componentID, rowID: override.rowID, on: activation)
         }
-        // A pending import for another copy or source keeps waiting.
+        // A pending import for another copy/source and unresolved recovery
+        // evidence of a live activation survive Add/reconcile. Only Remove
+        // retires the credential generation and drops that evidence.
         setRetired(all.compactMap { other in
             guard other.pluginID == activation.pluginID else { return other }
-            guard let pendingImport = other.pendingImport else { return nil }
+            guard other.pendingImport != nil || other.credentialRecoveryEvidence != nil else { return nil }
             var waiting = RetiredPluginActivation(pluginID: other.pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: [])
-            waiting.pendingImport = pendingImport
+            waiting.pendingImport = other.pendingImport
+            waiting.credentialRecoveryEvidence = other.credentialRecoveryEvidence
             return waiting
         }, on: workspace)
     }
@@ -433,14 +450,20 @@ extension WorkspaceCapabilityActivation {
     /// overrides.
     public static func restoreRetired(_ entries: [RetiredPluginActivation], to workspace: Workspace) {
         let active = Set(activations(of: workspace).map(\.pluginID))
-        let kept = retiredActivations(of: workspace).filter { entry in !entries.contains { $0.pluginID == entry.pluginID } }
-        let restored = entries.map { entry in
+        let current = retentionRecords(of: workspace)
+        let kept = current.filter { entry in !entries.contains { $0.pluginID == entry.pluginID } }
+        let restored = entries.map { original in
+            var entry = original
+            entry.credentialRecoveryEvidence?.admittedActivationID = nil
             guard active.contains(entry.pluginID) else { return entry }
             var pending = RetiredPluginActivation(
                 pluginID: entry.pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: [],
                 pendingOverrides: entry.pendingOverrides
             )
             pending.pendingImport = entry.pendingImport
+            let recovered = current.first { $0.pluginID == entry.pluginID }?.credentialRecoveryEvidence
+            pending.credentialRecoveryEvidence = recovered.map { $0.merging(entry.credentialRecoveryEvidence) }
+                ?? entry.credentialRecoveryEvidence
             return pending
         }
         setRetired(kept + restored.filter(\.keepsAnything), on: workspace)
