@@ -11,8 +11,10 @@ existing retired-activation JSON field. This does not change the SwiftData
 schema. Export also reads raw durable setting key names before portable
 configuration removes secret values and malformed fields.
 
-Startup admits the already-loaded prior own mirror for existing workspace IDs
-without reimporting them. The saved export, direct own-file export and
+Startup rereads the current own mirror for existing workspace UUIDs at first
+admission, without reimporting them. A file replaced after the asynchronous
+scan must contribute its current proof. UUID text case does not change identity;
+malformed or different workspace IDs fail closed. The saved export, direct own-file export and
 termination paths provide the same admission boundary when startup has not
 completed it. Admission considers the same plugin activation and credential
 generation. It records missing references and a completion marker through the

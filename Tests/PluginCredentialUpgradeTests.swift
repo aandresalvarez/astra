@@ -177,6 +177,104 @@ struct PluginCredentialUpgradeTests {
         #expect(!(try String(contentsOf: env.ownMirror, encoding: .utf8)).contains("synthetic-private-value"))
     }
 
+    @Test("First admission rereads a replaced scan file and compares UUID identities",
+        arguments: ["changed", "lowercase", "control", "invalid", "different", "read-once"])
+    func firstAdmissionBoundary(mode: String) async throws {
+        let env = try PluginRecoveryMirrorCredentialTests.Fixture(onDisk: true)
+        defer { env.removeFiles() }
+        defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: env.context) }
+        let trust = WorkspaceRecoveryTrust.state, mirrors = WorkspaceRecoveryTrust.loadedMirrors
+        defer { WorkspaceRecoveryTrust.set(trust); WorkspaceRecoveryTrust.recordLoadedMirrors(mirrors) }
+        let mirror = env.ownMirror, root = env.workspace.primaryPath
+        let package = PluginPackage(id: "synthetic-admission-boundary-" + UUID().uuidString, name: "Admission", icon: "testtube.2",
+            description: "Synthetic", author: "Tests", category: "Tests", tags: [], version: "1.0.0", skills: [],
+            connectors: [], localTools: [], mcpServers: [], templates: [])
+        let packs = AstraPackCatalog()
+        let inputs = CapabilityResolutionInputs(libraryDirectory: CapabilityLibrary().directory.standardizedFileURL,
+            packageDefinitions: [package], approvalsDirectory: CapabilityApprovalStore().directory.standardizedFileURL,
+            approvalRecords: [], packBuiltInDirectory: packs.builtInDirectory?.standardizedFileURL,
+            packLocalStorageRoot: packs.localStorageRoot?.standardizedFileURL, packCatalog: .init(entries: [], diagnostics: []))
+        try await CapabilityResolutionInputs.$pinned.withValue(inputs) {
+            let activation = PluginActivation(pluginID: package.id, recordedVersion: package.version,
+                recordedDigest: PluginDefinitionDigest.content(of: package))
+            env.context.insert(activation)
+            activation.workspace = env.workspace
+            try env.context.save()
+            var config = try #require(WorkspaceConfigManager.export(workspace: env.workspace, modelContext: env.context))
+            #expect(config.installedPlugins?.first?.credentialComponentIDs == [])
+            #expect(config.installedPlugins?.first?.secretSettingKeys == [])
+            if mode == "lowercase" { config.id = config.id?.lowercased() }
+            if mode == "invalid" { config.id = "invalid-workspace-id" }
+            if mode == "different" { config.id = UUID().uuidString }
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let original = try encoder.encode(config)
+            var replacement = config
+            replacement.installedPlugins?[0].settings = ["unresolved-legacy-key": "synthetic-private-value"]
+            replacement.installedPlugins?[0].credentialComponentIDs = nil
+            replacement.installedPlugins?[0].secretSettingKeys = nil
+            let replaced = try encoder.encode(replacement)
+            try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try original.write(to: mirror, options: .atomic)
+            let namespace = PluginRuntimeProjection.credentialID(of: activation, componentID: "skill:agent")
+            let key = PluginUpdateService.StaleSecret(key: "API_TOKEN", skillID: namespace)
+            let outbox = try #require(PluginSecretCleanupOutbox(for: env.context))
+            try outbox.journal([key])
+            var loaded = 0, reimported = false, replacementFailed = false
+            let recovered = await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(modelContext: env.context,
+                extraRoots: [root], includeDefaultRoots: false, pendingCleanup: true, registeredFolders: [root],
+                afterImport: { reimported = true }, loadedMirrors: { files in
+                    loaded = files.count
+                    WorkspaceRecoveryTrust.recordLoadedMirrors(files.map(\.path))
+                    if mode == "changed" {
+                        do { try replaced.write(to: mirror, options: .atomic) }
+                        catch { replacementFailed = true }
+                    }
+                }, discover: { ([mirror], true) }).value
+            #expect(recovered && loaded == 1 && !reimported && !replacementFailed)
+            WorkspaceRecoveryTrust.set(.trusted)
+            if mode == "changed" { #expect(PluginCredentialMirrorReferences.capture(modelContext: env.context) == nil) }
+            if mode == "read-once" {
+                // A completed admission belongs to the durable store. Future
+                // saved projections can repair a damaged cache without trying
+                // to admit it again or losing their committed obligation.
+                try #require(WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: activation)?.hasAdmittedMirror(for: activation) == true)
+                try Data("synthetic damaged cache after admission".utf8).write(to: mirror, options: .atomic)
+            }
+            UpgradeSecrets.seed(namespace)
+            let diagnostics = StartupCleanupAggregate()
+            await WorkspacePersistenceWork.$cleanupJob.withValue(diagnostics) {
+                await PluginSecretCleanupOutbox.resumePendingAsync(modelContext: env.context, secrets: UpgradeSecrets.self)
+            }
+            let rejected = ["invalid", "different"].contains(mode)
+            let held = mode == "changed" || rejected
+            #expect(UpgradeSecrets.value(namespace) == (held ? "synthetic-token" : nil))
+            #expect(try outbox.pendingKeys() == (held ? [key] : []))
+            #expect(((Int(diagnostics.fields()["copy_succeeded"] ?? "0") ?? 0) > 0) == !rejected)
+            let direct = WorkspaceConfigManager.exportToFileResult(workspace: env.workspace, modelContext: env.context, url: mirror)
+            #expect(direct.didExport == !rejected)
+            if rejected {
+                #expect(try Data(contentsOf: mirror) == original)
+                #expect(WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: activation)?.hasAdmittedMirror(for: activation) != true)
+                // Repairing the header retries the ordinary writer/outbox;
+                // the failed admission neither committed proof nor stranded it.
+                var repaired = config
+                repaired.id = env.workspace.id.uuidString
+                try encoder.encode(repaired).write(to: mirror, options: .atomic)
+                #expect(await WorkspacePersistenceCoordinator.exportSavedMirrorNow(workspace: env.workspace, modelContext: env.context))
+                await PluginSecretCleanupOutbox.resumePendingAsync(modelContext: env.context, secrets: UpgradeSecrets.self)
+                #expect(UpgradeSecrets.value(namespace) == nil)
+                #expect(try outbox.pendingKeys().isEmpty)
+                #expect(WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: activation)?.hasAdmittedMirror(for: activation) == true)
+            } else {
+                #expect(WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: activation)?.hasAdmittedMirror(for: activation) == true)
+                let written = try WorkspaceConfigManager.loadConfig(from: mirror)
+                if mode == "changed" { #expect(written.installedPlugins?.first?.credentialReferences() == nil) }
+                #expect(!(try String(contentsOf: mirror, encoding: .utf8)).contains("synthetic-private-value"))
+            }
+        }
+    }
+
     @Test("Recovered evidence follows its credential generation through rollback and replacement",
         arguments: ["inventory", "ambiguous", "unresolved-account", "unresolved-setting"])
     func recoveredGenerationReplacement(evidence: String) async throws {

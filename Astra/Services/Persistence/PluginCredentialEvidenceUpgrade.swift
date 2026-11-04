@@ -16,7 +16,6 @@ enum PluginCredentialEvidenceUpgrade {
     }
 
     static func admit(workspace: Workspace, context: ModelContext,
-        prior: WorkspaceConfigManager.WorkspaceConfig? = nil,
         load: (URL) throws -> WorkspaceConfigManager.WorkspaceConfig? = loadPrior,
         save: (ModelContext) throws -> Void = { try $0.save() }
     ) throws {
@@ -25,7 +24,10 @@ enum PluginCredentialEvidenceUpgrade {
         }
         guard !activations.isEmpty else { return }
         let url = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath))
-        let config = try prior ?? load(url)
+        // Discovery runs asynchronously. Its decoded value may no longer
+        // describe this path when admission starts. Read the current own file
+        // once here; the durable completion marker skips future admissions.
+        let config = try load(url)
         // A pre-reset read-only store may have no mirror yet. There is no
         // prior proof to destroy, and the raw durable projection is safe to
         // export without trying to save bookkeeping into that source store.
@@ -39,7 +41,7 @@ enum PluginCredentialEvidenceUpgrade {
             if config != nil { throw AdmissionError.pendingChanges }
             return
         }
-        if let id = config?.id, id != workspace.id.uuidString { throw AdmissionError.workspaceIdentityMismatch }
+        if let id = config?.id, UUID(uuidString: id) != workspace.id { throw AdmissionError.workspaceIdentityMismatch }
         let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         for activation in activations {
             let refs = (config?.installedPlugins ?? []).filter { ref in

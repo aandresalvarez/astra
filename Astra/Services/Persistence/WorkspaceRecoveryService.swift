@@ -831,7 +831,7 @@ public enum WorkspaceRecoveryService {
 
         var imported = 0
         let existing = fetchExistingWorkspaces(modelContext: modelContext)
-        var existingIDs = Set(existing.map { $0.id.uuidString })
+        var existingIDs = Set(existing.map(\.id))
         var existingPaths = Set(existing.map { normalizePath($0.primaryPath) })
 
         for configURL in configs {
@@ -843,7 +843,7 @@ public enum WorkspaceRecoveryService {
                 config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL)
                     .standardizedFileURL
                     .path
-                let configID = config.id
+                let configID = config.id.flatMap(UUID.init(uuidString:))
                 let configPath = normalizePath(config.primaryPath)
                 if let configID, existingIDs.contains(configID) {
                     continue
@@ -859,7 +859,7 @@ public enum WorkspaceRecoveryService {
                     taskRecoveryTrustPolicy: .trustedLocalRecovery,
                     capabilityTrust: .preserveRecordedState
                 )
-                existingIDs.insert(workspace.id.uuidString)
+                existingIDs.insert(workspace.id)
                 existingPaths.insert(normalizePath(workspace.primaryPath))
                 imported += 1
             } catch {
@@ -889,26 +889,19 @@ public enum WorkspaceRecoveryService {
         var imported = 0
         var skippedForLater = false
         let existing = fetchExistingWorkspaces(modelContext: modelContext)
-        var existingIDs = Set(existing.map { $0.id.uuidString })
+        var existingIDs = Set(existing.map(\.id))
         var existingPaths = Set(existing.map { normalizePath($0.primaryPath) })
 
         // Existing IDs are not reimported, but an older store may have lost
-        // fields during its original recovery. Admit this already-loaded own
-        // mirror before the first upgraded serializer can replace it.
+        // fields during its original recovery. Admit the current own mirror
+        // before the first upgraded serializer can replace it.
         do {
             for loaded in configs {
                 guard let workspace = existing.first(where: {
-                    loaded.config.id == $0.id.uuidString && PluginCredentialEvidenceUpgrade.isOwnMirror(loaded.mirrorFile, workspace: $0)
+                    loaded.config.id.flatMap(UUID.init(uuidString:)) == $0.id
+                        && PluginCredentialEvidenceUpgrade.isOwnMirror(loaded.mirrorFile, workspace: $0)
                 }) else { continue }
-                let current = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath))
-                if loaded.mirrorFile.standardizedFileURL == current.standardizedFileURL {
-                    try PluginCredentialEvidenceUpgrade.admit(workspace: workspace, context: modelContext,
-                        prior: loaded.config, save: save)
-                } else {
-                    // A newer legacy-path copy is not proof about the current
-                    // file this store's next export will replace.
-                    try PluginCredentialEvidenceUpgrade.admit(workspace: workspace, context: modelContext, save: save)
-                }
+                try PluginCredentialEvidenceUpgrade.admit(workspace: workspace, context: modelContext, save: save)
             }
         } catch {
             AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
@@ -920,7 +913,7 @@ public enum WorkspaceRecoveryService {
 
         for loaded in configs {
             let config = loaded.config
-            let configID = config.id
+            let configID = config.id.flatMap(UUID.init(uuidString:))
             let configPath = normalizePath(config.primaryPath)
             if let configID, existingIDs.contains(configID) {
                 continue
@@ -939,7 +932,7 @@ public enum WorkspaceRecoveryService {
                 taskRecoveryTrustPolicy: .trustedLocalRecovery,
                 capabilityTrust: .preserveRecordedState
             )
-            existingIDs.insert(workspace.id.uuidString)
+            existingIDs.insert(workspace.id)
             existingPaths.insert(normalizePath(workspace.primaryPath))
             imported += 1
         }
