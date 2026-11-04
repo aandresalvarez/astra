@@ -18,7 +18,8 @@ assert_targets() {
 
 assert_targets "PluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests
 PluginCredentialUpgradeTests
-PluginActivationReviewTests|PluginConnectorFieldTrustTests" \
+PluginActivationReviewTests|PluginConnectorFieldTrustTests
+CapabilityUninstallerTests" \
   "ASTRACore/PluginCredentialComponentInventorySeam.swift" \
   "Astra/Models/PluginCredentialMetadataPolicy.swift" \
   "Astra/Models/PluginCredentialRecoveryEvidence.swift" \

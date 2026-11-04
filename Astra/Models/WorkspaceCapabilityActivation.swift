@@ -195,7 +195,7 @@ public enum WorkspaceCapabilityActivation {
 
     public static func credentialRecoveryEvidence(of activation: PluginActivation) -> PluginCredentialRecoveryEvidence? {
         guard let workspace = activation.workspace,
-              let evidence = retiredActivations(of: workspace).first(where: { $0.pluginID == activation.pluginID })?.credentialRecoveryEvidence,
+              let evidence = retentionRecords(of: workspace).first(where: { $0.pluginID == activation.pluginID })?.credentialRecoveryEvidence,
               evidence.appliesTo(namespaceSeed: activation.namespaceSeed, credentialNamespaceSeed: activation.credentialNamespaceSeed)
         else { return nil }
         return evidence
@@ -206,7 +206,7 @@ public enum WorkspaceCapabilityActivation {
     /// not prove that an absent legacy marker list was complete.
     public static func preserveCredentialRecoveryEvidence(_ evidence: PluginCredentialRecoveryEvidence, on activation: PluginActivation) {
         guard !evidence.isEmpty, let workspace = activation.workspace else { return }
-        var entries = retiredActivations(of: workspace)
+        var entries = retentionRecords(of: workspace)
         if let index = entries.firstIndex(where: { $0.pluginID == activation.pluginID }) {
             let merged = evidence.merging(entries[index].credentialRecoveryEvidence)
             guard merged != entries[index].credentialRecoveryEvidence else { return }
@@ -239,7 +239,7 @@ public enum WorkspaceCapabilityActivation {
     public static func publishCredentialGeneration(_ seed: String, on activation: PluginActivation) {
         guard UUID(uuidString: seed) != nil, seed != activation.credentialNamespaceSeed else { return }
         if let workspace = activation.workspace {
-            var entries = retiredActivations(of: workspace)
+            var entries = retentionRecords(of: workspace)
             if let index = entries.firstIndex(where: { $0.pluginID == activation.pluginID }),
                var prior = entries[index].credentialRecoveryEvidence, prior.credentialNamespaceSeed == nil {
                 prior.namespaceSeed = activation.namespaceSeed
@@ -621,7 +621,7 @@ public enum WorkspaceCapabilityActivation {
         Snapshot(
             state: state(of: workspace),
             activations: activations(of: workspace).map(PluginActivationRecord.init),
-            retired: retiredActivations(of: workspace),
+            retired: retentionRecords(of: workspace),
             pendingLegacy: pendingLegacyState(of: workspace),
             updatedAt: workspace.updatedAt
         )

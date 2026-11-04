@@ -26,6 +26,7 @@ target_for_path() {
       # upgrade fixtures separately from other suites that temporarily set it.
       add_target "PluginCredentialUpgradeTests"
       add_target "PluginActivationReviewTests|PluginConnectorFieldTrustTests"
+      add_target "CapabilityUninstallerTests"
       ;;
   esac
 

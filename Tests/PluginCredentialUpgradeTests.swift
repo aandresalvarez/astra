@@ -45,6 +45,19 @@ struct PluginCredentialUpgradeTests {
         try PluginCredentialEvidenceUpgrade.admit(workspace: env.workspace, context: env.context,
             load: { _ in reads += 1; return config })
         #expect(reads == 2)
+        let proof = try #require(WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: activation))
+        #expect(WorkspaceCapabilityActivation.retiredActivations(of: env.workspace).isEmpty)
+        let other = PluginActivation(pluginID: "unrelated-retirement-" + UUID().uuidString)
+        env.context.insert(other)
+        other.workspace = env.workspace
+        WorkspaceCapabilityActivation.setNamespaceSeed("unrelated-retired-seed", on: other)
+        try env.context.save()
+        let otherID = other.pluginID
+        WorkspaceCapabilityActivation.retire(other, in: env.workspace)
+        env.context.delete(other)
+        try env.context.save()
+        #expect(WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: activation) == proof)
+        #expect(WorkspaceCapabilityActivation.retiredActivations(of: env.workspace).map(\.pluginID) == [otherID])
         let reopened = try env.reopen()
         let context = reopened.mainContext
         context.autosaveEnabled = false

@@ -8,7 +8,9 @@ old empty secret-marker array was complete.
 
 `WorkspaceCapabilityActivation` owns value-free recovery evidence in the
 existing retired-activation JSON field. This does not change the SwiftData
-schema. Export also reads raw durable setting key names before portable
+schema. Internal retention records include live credential evidence; the public
+retirement view contains only kept retirement state. Owner mutations and
+transaction snapshots retain both kinds of record. Export also reads raw durable setting key names before portable
 configuration removes secret values and malformed fields.
 
 Startup rereads the current own mirror for existing workspace UUIDs at first
