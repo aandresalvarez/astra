@@ -19,13 +19,20 @@ assert_targets() {
 assert_targets "PluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests
 PluginCredentialUpgradeTests
 PluginActivationReviewTests|PluginConnectorFieldTrustTests
-CapabilityUninstallerTests" \
+CapabilityUninstallerTests
+PluginActivationOwnershipTests
+PluginMigrationUnreadableSkillSecretTests
+PluginSecretSettingWriterTests
+PluginSourceInstallationTests
+PluginSourcesTests
+PluginStaleCredentialOwnerTests" \
   "ASTRACore/PluginCredentialComponentInventorySeam.swift" \
   "Astra/Models/PluginCredentialMetadataPolicy.swift" \
   "Astra/Models/PluginCredentialRecoveryEvidence.swift" \
   "Astra/Models/RetiredPluginActivation.swift" \
   "Astra/Models/WorkspaceCapabilityActivation.swift" \
   "Astra/Services/Capabilities/PluginActivationMigration.swift" \
+  "Astra/Services/Capabilities/PluginActivationAdmission.swift" \
   "Astra/Services/Capabilities/PluginCredentialComponentInventory.swift" \
   "Astra/Services/Capabilities/PluginCredentialMirrorReferences.swift" \
   "Astra/Services/Persistence/WorkspaceConfigManager+PluginActivations.swift" \

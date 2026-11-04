@@ -217,7 +217,18 @@ public enum WorkspaceCapabilityActivation {
             entries.append(entry)
         }
         setRetired(entries, on: workspace)
-        touch(activation)
+        // Retention knowledge is workspace bookkeeping. It does not change
+        // the activation's executable contract or its revision.
+    }
+
+    /// Refreshes only saved retention facts after a capability contract has
+    /// been validated. A cached context must not overwrite newer evidence.
+    public static func preserveCredentialRecoveryEvidence(from records: [RetiredPluginActivation], in workspace: Workspace) {
+        for record in records {
+            guard let evidence = record.credentialRecoveryEvidence,
+                  let activation = activation(for: record.pluginID, in: workspace) else { continue }
+            preserveCredentialRecoveryEvidence(evidence, on: activation)
+        }
     }
 
     /// Sets the seed mixed into the activation's projected IDs.

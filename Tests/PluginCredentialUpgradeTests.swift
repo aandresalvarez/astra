@@ -36,14 +36,14 @@ struct PluginCredentialUpgradeTests {
         var reads = 0
         #expect(throws: Injected.self) {
             try PluginCredentialEvidenceUpgrade.admit(workspace: env.workspace, context: env.context,
-                load: { _ in reads += 1; return config }, save: { _ in throw Injected.save })
+                load: { _ in reads += 1; return .init(config) }, save: { _ in throw Injected.save })
         }
         #expect(try Data(contentsOf: env.ownMirror) == bytes)
         #expect(try outbox.pendingKeys() == [key])
         #expect(WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: activation) == nil)
         try env.context.save()
         try PluginCredentialEvidenceUpgrade.admit(workspace: env.workspace, context: env.context,
-            load: { _ in reads += 1; return config })
+            load: { _ in reads += 1; return .init(config) })
         #expect(reads == 2)
         let proof = try #require(WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: activation))
         #expect(WorkspaceCapabilityActivation.retiredActivations(of: env.workspace).isEmpty)
@@ -72,31 +72,78 @@ struct PluginCredentialUpgradeTests {
         #expect(!(try String(decoding: encoder.encode(projected), as: UTF8.self)).contains("synthetic-private-value"))
     }
 
+    @Test("Freshness admission refreshes saved retention facts without changing the activation contract")
+    func freshnessKeepsNewerEvidence() throws {
+        let env = try PluginRecoveryMirrorCredentialTests.Fixture(onDisk: true)
+        defer { env.removeFiles() }
+        let activation = PluginActivation(pluginID: "synthetic-freshness-" + UUID().uuidString, recordedVersion: "1.0.0")
+        env.context.insert(activation)
+        activation.workspace = env.workspace
+        WorkspaceCapabilityActivation.setKnownComponents(["skill:agent"], on: activation)
+        try env.context.save()
+        let revision = activation.revision
+        let cached = ModelContext(env.context.container)
+        cached.autosaveEnabled = false
+        let workspace = try #require(cached.fetch(FetchDescriptor<Workspace>()).first)
+        let reader = try #require(WorkspaceCapabilityActivation.activation(for: activation.pluginID, in: workspace))
+        #expect(WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: reader) == nil)
+        var config = try #require(WorkspaceConfigManager.export(workspace: env.workspace, modelContext: env.context))
+        config.installedPlugins?[0].settings = ["unparsed-legacy-field": "synthetic-private-value"]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try FileManager.default.createDirectory(at: env.ownMirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try encoder.encode(config).write(to: env.ownMirror)
+        try PluginCredentialEvidenceUpgrade.admit(workspace: env.workspace, context: env.context)
+        #expect(activation.revision == revision)
+        try PluginActivationAdmission.requireCurrent(in: workspace, modelContext: cached)
+        #expect(!cached.hasChanges)
+        #expect(reader.revision == revision)
+        #expect(WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: reader)?.isAmbiguous == true)
+        WorkspaceCapabilityActivation.setConfigValue("synthetic-region", forKey: "skill:agent#REGION", on: reader)
+        try cached.save()
+        let reopened = try env.reopen()
+        let stored = try #require(reopened.mainContext.fetch(FetchDescriptor<PluginActivation>()).first)
+        #expect(WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: stored)?.unresolvedSettingKeys == ["unparsed-legacy-field"])
+    }
+
     @Test("A failed admission keeps the prior file and committed export pending through drain and retry")
     func admissionFailureRetainsPending() async throws {
         let env = try PluginRecoveryMirrorCredentialTests.Fixture(onDisk: true)
         defer { env.removeFiles() }
-        defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: env.context) }
+        defer { WorkspacePersistenceCoordinator.flushPendingExportSynchronously(workspaceID: env.workspace.id, modelContext: env.context) }
         let activation = PluginActivation(pluginID: "synthetic-failed-admission-" + UUID().uuidString, recordedVersion: "1.0.0")
         env.context.insert(activation)
         activation.workspace = env.workspace
         WorkspaceCapabilityActivation.setKnownComponents(["skill:agent"], on: activation)
         try env.context.save()
         let config = try #require(WorkspaceConfigManager.export(workspace: env.workspace, modelContext: env.context))
+        let foreignRoot = env.root.appendingPathComponent("foreign-pending-workspace")
+        let foreign = Workspace(name: "Unrelated pending export", primaryPath: foreignRoot.path)
+        env.context.insert(foreign)
+        try env.context.save()
+        WorkspacePersistenceCoordinator.enqueueSavedAutoExport(workspace: foreign, modelContext: env.context)
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(foreign.id))
+        defer {
+            try? FileManager.default.createDirectory(at: foreignRoot, withIntermediateDirectories: true)
+            WorkspacePersistenceCoordinator.flushPendingExportSynchronously(workspaceID: foreign.id, modelContext: env.context)
+        }
         let invalid = Data("synthetic unreadable prior mirror".utf8)
         try FileManager.default.createDirectory(at: env.ownMirror.deletingLastPathComponent(), withIntermediateDirectories: true)
         try invalid.write(to: env.ownMirror)
         #expect(await WorkspacePersistenceCoordinator.exportSavedMirrorNow(workspace: env.workspace, modelContext: env.context) == false)
-        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 1)
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(env.workspace.id))
         #expect(try Data(contentsOf: env.ownMirror) == invalid)
-        #expect(WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: env.context) == 0)
-        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 1)
+        #expect(WorkspacePersistenceCoordinator.flushPendingExportSynchronously(workspaceID: env.workspace.id, modelContext: env.context) == 0)
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(env.workspace.id))
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(foreign.id))
+        #expect(!FileManager.default.fileExists(atPath: foreignRoot.path))
         #expect(try Data(contentsOf: env.ownMirror) == invalid)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(config).write(to: env.ownMirror)
         #expect(await WorkspacePersistenceCoordinator.exportSavedMirrorNow(workspace: env.workspace, modelContext: env.context))
-        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 0)
+        #expect(!WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(env.workspace.id))
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(foreign.id))
         let restored = try WorkspaceConfigManager.loadConfig(from: env.ownMirror)
         #expect(restored.installedPlugins?.first?.secretSettingKeys == nil)
     }
@@ -195,7 +242,7 @@ struct PluginCredentialUpgradeTests {
     func firstAdmissionBoundary(mode: String) async throws {
         let env = try PluginRecoveryMirrorCredentialTests.Fixture(onDisk: true)
         defer { env.removeFiles() }
-        defer { WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: env.context) }
+        defer { WorkspacePersistenceCoordinator.flushPendingExportSynchronously(workspaceID: env.workspace.id, modelContext: env.context) }
         let trust = WorkspaceRecoveryTrust.state, mirrors = WorkspaceRecoveryTrust.loadedMirrors
         defer { WorkspaceRecoveryTrust.set(trust); WorkspaceRecoveryTrust.recordLoadedMirrors(mirrors) }
         let mirror = env.ownMirror, root = env.workspace.primaryPath

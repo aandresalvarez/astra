@@ -20,13 +20,19 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
-    ASTRACore/PluginCredentialComponentInventorySeam.swift|Astra/Models/PluginCredentialMetadataPolicy.swift|Astra/Models/PluginCredentialRecoveryEvidence.swift|Astra/Models/RetiredPluginActivation.swift|Astra/Models/WorkspaceCapabilityActivation.swift|Astra/Services/Capabilities/PluginActivationMigration.swift|Astra/Services/Capabilities/PluginCredentialComponentInventory.swift|Astra/Services/Capabilities/PluginCredentialMirrorReferences.swift|Astra/Services/Persistence/WorkspaceConfigManager+PluginActivations.swift|Astra/Services/Persistence/WorkspaceConfigManager+PluginCredentialEvidence.swift|Astra/Services/Persistence/PluginCredentialEvidenceUpgrade.swift|Astra/Services/Persistence/WorkspaceConfigManager+FileExport.swift|Astra/Services/Capabilities/PluginCredentialGenerationTransaction.swift|Astra/Services/Capabilities/PluginOperations+Settings.swift|Astra/Services/Capabilities/PluginUpdateSkillCredentials.swift|Astra/Services/Capabilities/CapabilityInstaller.swift|Tests/PluginCredentialMetadataCompatibilityTests.swift|Tests/PluginCredentialUpgradeTests.swift|Tests/PluginRecoveryMirrorCredentialTests.swift|Tests/PendingTaskCredentialCleanupTests.swift)
+    ASTRACore/PluginCredentialComponentInventorySeam.swift|Astra/Models/PluginCredentialMetadataPolicy.swift|Astra/Models/PluginCredentialRecoveryEvidence.swift|Astra/Models/RetiredPluginActivation.swift|Astra/Models/WorkspaceCapabilityActivation.swift|Astra/Services/Capabilities/PluginActivationMigration.swift|Astra/Services/Capabilities/PluginActivationAdmission.swift|Astra/Services/Capabilities/PluginCredentialComponentInventory.swift|Astra/Services/Capabilities/PluginCredentialMirrorReferences.swift|Astra/Services/Persistence/WorkspaceConfigManager+PluginActivations.swift|Astra/Services/Persistence/WorkspaceConfigManager+PluginCredentialEvidence.swift|Astra/Services/Persistence/PluginCredentialEvidenceUpgrade.swift|Astra/Services/Persistence/WorkspaceConfigManager+FileExport.swift|Astra/Services/Capabilities/PluginCredentialGenerationTransaction.swift|Astra/Services/Capabilities/PluginOperations+Settings.swift|Astra/Services/Capabilities/PluginUpdateSkillCredentials.swift|Astra/Services/Capabilities/CapabilityInstaller.swift|Tests/PluginCredentialMetadataCompatibilityTests.swift|Tests/PluginCredentialUpgradeTests.swift|Tests/PluginRecoveryMirrorCredentialTests.swift|Tests/PendingTaskCredentialCleanupTests.swift)
       add_target "PluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests"
       # Startup's async writer uses process-wide recovery trust. Run its
       # upgrade fixtures separately from other suites that temporarily set it.
       add_target "PluginCredentialUpgradeTests"
       add_target "PluginActivationReviewTests|PluginConnectorFieldTrustTests"
       add_target "CapabilityUninstallerTests"
+      add_target "PluginActivationOwnershipTests"
+      add_target "PluginMigrationUnreadableSkillSecretTests"
+      add_target "PluginSecretSettingWriterTests"
+      add_target "PluginSourceInstallationTests"
+      add_target "PluginSourcesTests"
+      add_target "PluginStaleCredentialOwnerTests"
       ;;
   esac
 

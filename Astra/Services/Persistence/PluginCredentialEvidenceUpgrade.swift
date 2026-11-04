@@ -9,6 +9,18 @@ import ASTRAModels
 enum PluginCredentialEvidenceUpgrade {
     enum AdmissionError: Error { case pendingChanges, workspaceIdentityMismatch, readOnlyContext }
 
+    /// Recovery metadata needs no UI fields, dates or legacy row payloads.
+    /// Relevant malformed plugin fields still fail decoding and hold cleanup.
+    struct Source: Decodable {
+        let id: String?
+        let installedPlugins: [WorkspaceConfigManager.InstalledPluginRef]?
+
+        init(_ config: WorkspaceConfigManager.WorkspaceConfig) {
+            id = config.id
+            installedPlugins = config.installedPlugins
+        }
+    }
+
     static func isOwnMirror(_ url: URL, workspace: Workspace) -> Bool {
         [WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath),
          WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspace.primaryPath)]
@@ -16,7 +28,7 @@ enum PluginCredentialEvidenceUpgrade {
     }
 
     static func admit(workspace: Workspace, context: ModelContext,
-        load: (URL) throws -> WorkspaceConfigManager.WorkspaceConfig? = loadPrior,
+        load: (URL) throws -> Source? = loadPrior,
         save: (ModelContext) throws -> Void = { try $0.save() }
     ) throws {
         let activations = WorkspaceCapabilityActivation.activations(of: workspace).filter {
@@ -76,13 +88,30 @@ enum PluginCredentialEvidenceUpgrade {
         }
     }
 
-    private static func loadPrior(_ current: URL) throws -> WorkspaceConfigManager.WorkspaceConfig? {
+    static func refresh(_ records: [RetiredPluginActivation], workspace: Workspace, context: ModelContext) throws {
+        let before = WorkspaceCapabilityActivation.snapshot(workspace)
+        guard before.retired != records else { return }
+        guard !context.hasChanges else { throw AdmissionError.pendingChanges }
+        guard context.container.configurations.contains(where: { $0.allowsSave }) else { throw AdmissionError.readOnlyContext }
+        WorkspaceCapabilityActivation.preserveCredentialRecoveryEvidence(from: records, in: workspace)
+        guard WorkspaceCapabilityActivation.snapshot(workspace).retired != before.retired else { return }
+        do {
+            try WorkspaceSavedExportLease.preservingPriorProjection(for: workspace.id, context: context) { try context.save() }
+        } catch {
+            context.rollback()
+            WorkspaceCapabilityActivation.restore(before, to: workspace)
+            throw error
+        }
+    }
+
+    private static func loadPrior(_ current: URL) throws -> Source? {
         let root = WorkspaceFileLayout.workspaceRoot(forConfigFile: current).path
         let candidates = [current, URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: root))]
         for url in candidates {
             guard try WorkspaceFileLayout.itemIdentityConfirmingAbsence(at: url.path) != nil else { continue }
-            return try WorkspaceConfigManager.loadConfig(from: url,
-                accessIntent: .astraManagedStorage(root: URL(fileURLWithPath: root, isDirectory: true)))
+            let data = try HostFileAccessBroker().readData(at: url,
+                intent: .astraManagedStorage(root: URL(fileURLWithPath: root, isDirectory: true)))
+            return try JSONDecoder().decode(Source.self, from: data)
         }
         return nil
     }

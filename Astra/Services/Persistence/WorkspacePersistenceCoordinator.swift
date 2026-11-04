@@ -5,6 +5,13 @@ import ASTRACore
 
 @MainActor
 public enum WorkspacePersistenceCoordinator {
+    /// Keeps a validated caller's cached retention metadata current without
+    /// publishing a mirror or committing unrelated editor work.
+    public static func refreshPluginCredentialEvidence(_ records: [RetiredPluginActivation],
+        workspace: Workspace, modelContext: ModelContext) throws {
+        try PluginCredentialEvidenceUpgrade.refresh(records, workspace: workspace, context: modelContext)
+    }
+
     /// The workspace is retained through debounce, projection and write so a
     /// termination flush can drain the current mirror synchronously.
     private struct PendingExport {
@@ -349,8 +356,10 @@ public enum WorkspacePersistenceCoordinator {
 
     /// Count workspaces, even if both committed and unsaved work is pending.
     public static var pendingExportWorkspaceCount: Int {
-        Set(savedExports.keys).union(debouncedExports.keys).count
+        pendingExportWorkspaceIDs.count
     }
+
+    static var pendingExportWorkspaceIDs: Set<UUID> { Set(savedExports.keys).union(debouncedExports.keys) }
 
     /// Wait for the committed projection first, without saving pending edits.
     /// With only a debounce queued, wait for that scheduled attempt instead.
@@ -381,15 +390,30 @@ public enum WorkspacePersistenceCoordinator {
     /// `autoExportTarget` + `exportToFileResult` shape for the same reason.
     @discardableResult
     public static func flushAllPendingExports(modelContext: ModelContext) -> Int {
-        var pending = savedExports
-        for (id, entry) in debouncedExports {
+        drainPendingExports(modelContext: modelContext, workspaceIDs: nil)
+    }
+
+    /// Runs the same synchronous drain for one owner, preserving unrelated
+    /// committed exports and debounces.
+    @discardableResult
+    static func flushPendingExportSynchronously(workspaceID: UUID, modelContext: ModelContext) -> Int {
+        drainPendingExports(modelContext: modelContext, workspaceIDs: [workspaceID])
+    }
+
+    private static func drainPendingExports(modelContext: ModelContext, workspaceIDs: Set<UUID>?) -> Int {
+        let saved = savedExports.filter { workspaceIDs?.contains($0.key) ?? true }
+        let debounced = debouncedExports.filter { workspaceIDs?.contains($0.key) ?? true }
+        var pending = saved
+        for (id, entry) in debounced {
             if entry.context != nil, entry.source.resolve() != nil { pending[id] = entry }
             else if pending[id] == nil { pending[id] = entry }
         }
-        for entry in savedExports.values { entry.task?.cancel() }
-        for entry in debouncedExports.values { entry.task?.cancel() }
-        savedExports.removeAll()
-        debouncedExports.removeAll()
+        for entry in saved.values { entry.task?.cancel() }
+        for entry in debounced.values { entry.task?.cancel() }
+        for id in Set(saved.keys).union(debounced.keys) {
+            savedExports[id] = nil
+            debouncedExports[id] = nil
+        }
         for workspaceID in pending.keys {
             // A read/encode already executing off-main cannot be cancelled by
             // cancelling its waiter. Invalidate it before the synchronous drain
@@ -413,6 +437,10 @@ public enum WorkspacePersistenceCoordinator {
             guard let context = entry.context,
                   let container = entry.source.resolve(workspaceID: workspaceID.uuidString) else { continue }
             defer { withExtendedLifetime(container) {} }
+            if workspaceIDs != nil && context.hasChanges {
+                savedExports[workspaceID] = entry
+                continue
+            }
             let owner = ObjectIdentifier(context)
             if savedContexts.insert(owner).inserted {
                 saveWithoutAutoExport(modelContext: context,

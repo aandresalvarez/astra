@@ -1,10 +1,12 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
 
 /// A cached SwiftData graph is not authority to replace a newer saved plugin
 /// owner. Check its complete capability contract before preparing credentials
-/// or mutating it. This is a read-only admission check, not another state owner.
+/// or mutating it. Retention bookkeeping is refreshed separately through its
+/// owner; it cannot replace the activation's executable contract.
 @MainActor
 enum PluginActivationAdmission {
     /// Add may own its newly inserted onboarding workspace, but never an
@@ -45,9 +47,19 @@ enum PluginActivationAdmission {
         let actual = WorkspaceCapabilityActivation.snapshot(stored)
         // Workspace timestamps describe unrelated work too. The activation
         // records include their own revisions, timestamps and sorted bindings.
+        func retirementContract(_ records: [RetiredPluginActivation]) -> [RetiredPluginActivation] {
+            records.compactMap { original in
+                var record = original
+                record.credentialRecoveryEvidence = nil
+                return record.keepsAnything ? record : nil
+            }
+        }
         guard expected.state == actual.state, expected.activations == actual.activations,
-              expected.retired == actual.retired, expected.pendingLegacy == actual.pendingLegacy else {
+              retirementContract(expected.retired) == retirementContract(actual.retired),
+              expected.pendingLegacy == actual.pendingLegacy else {
             throw PluginOperations.OperationError.workspaceChanged
         }
+        try WorkspacePersistenceCoordinator.refreshPluginCredentialEvidence(actual.retired,
+            workspace: workspace, modelContext: modelContext)
     }
 }

@@ -22,6 +22,16 @@ completed it. Admission considers the same plugin activation and credential
 generation. It records missing references and a completion marker through the
 activation owner, then saves before creating the background projection lease.
 Later exports use the durable marker and do not read the prior file again.
+Admission decodes only the workspace ID and plugin credential projection. A
+supported legacy skills-only mirror does not need current UI fields to retry;
+unreadable or contradictory plugin fields still hold cleanup.
+
+Retention bookkeeping does not change activation revisions. Freshness checks
+still compare activation generations, settings, bindings, acceptance and real
+retirement state. After that check, a clean caller context refreshes newer saved
+retention facts through the owner before mutating or preparing credentials.
+This prevents bookkeeping from invalidating its own operation or a stale cached
+JSON field from overwriting newer retention evidence.
 The completion marker is local to that database. Export omits it and recovery
 ignores a copied marker; restoring a mirror still admits the current own file.
 A newer legacy-path copy cannot stand in for a current file that still exists.
@@ -30,7 +40,7 @@ current file is absent. It does not scan backup directories.
 
 A pending edit, unreadable prior file or failed admission save prevents
 replacement. The last file and committed export obligation remain available
-for retry. Admission does not save unrelated pending edits. Read-only
+for retry. A scoped synchronous drain preserves other workspace obligations. Admission does not save unrelated pending edits. Read-only
 pre-reset stores can create a first mirror without a bookkeeping save; an
 existing mirror remains untouched if admission cannot be saved.
 
