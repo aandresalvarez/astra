@@ -29,25 +29,37 @@ public final class WorkspaceCleanupMirrorBatch {
     @MainActor
     public static func prepare(modelContext: ModelContext) async -> WorkspaceCleanupMirrorBatch? {
         do {
-            // Register generation BEFORE even fetching scope. A different
-            // context can commit while the background backup is in progress.
-            let generation = try WorkspaceCleanupStoreGeneration(container: modelContext.container)
-            let saved = ModelContext(modelContext.container)
-            saved.autosaveEnabled = false
-            let workspaces = try WorkspacePersistenceWork.measure("cleanup_mirror_workspaces", workspaceID: "none") {
-                try saved.fetch(FetchDescriptor<Workspace>())
-            }
-            let scope = Dictionary(uniqueKeysWithValues: workspaces.map { ($0.id, $0.primaryPath) })
+            let source = WorkspaceSavedExportSource(modelContext.container)
+            guard source.resolve() != nil else { return nil }
             let skipsExports = WorkspacePersistenceCoordinator.shouldSkipAutoExport()
+            // Admission saves durable evidence from the current own files.
+            // Finish every such save before fencing or copying the store;
+            // otherwise the pass invalidates itself or projects older proof.
+            let admitted = try WorkspacePersistenceWork.measure("cleanup_mirror_evidence_admission", workspaceID: "none") {
+                try admitPriorMirrors(container: modelContext.container, skipsExports: skipsExports)
+            }
+            guard source.resolve() != nil, admitted.destinations.values.allSatisfy(\.isCurrent) else { return nil }
+            // Register generation BEFORE fetching the final committed scope.
+            // A different context can commit during admission or capture.
+            let generation = try WorkspaceCleanupStoreGeneration(container: modelContext.container)
+            let scope = try WorkspacePersistenceWork.measure("cleanup_mirror_workspaces", workspaceID: "none") {
+                try autoreleasepool {
+                    let saved = ModelContext(modelContext.container)
+                    saved.autosaveEnabled = false
+                    let workspaces = try saved.fetch(FetchDescriptor<Workspace>())
+                    guard workspaces.allSatisfy({ skipsExports || $0.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || !PluginCredentialEvidenceUpgrade.requiresAdmission(workspace: $0) }) else {
+                        throw PreparationError.unadmittedGeneration
+                    }
+                    return Dictionary(uniqueKeysWithValues: workspaces.map { ($0.id, $0.primaryPath) })
+                }
+            }
+            guard scope == admitted.scope, generation.isCurrent else { return nil }
+            let destinations = admitted.destinations
             var tickets: [UUID: WorkspaceAutoExportGate.ExplicitTicket] = [:]
-            var destinations: [UUID: WorkspaceCleanupMirrorDestination] = [:]
-            for (id, path) in scope where !skipsExports && !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let destination = try WorkspaceCleanupMirrorDestination(workspacePath: path)
-                guard WorkspaceMirrorRegistry(for: saved)?.register([destination.registeredWorkspacePath]) ?? true,
-                      destination.isCurrent else { return nil }
+            for id in destinations.keys {
                 // Never create a new ticket late for an already-old copy.
                 tickets[id] = WorkspaceAutoExportGate.shared.reserveExport(for: id.uuidString)
-                destinations[id] = destination
             }
             let needsCopy = !tickets.isEmpty
                 && !modelContext.container.configurations.allSatisfy(\.isStoredInMemoryOnly)
@@ -63,6 +75,31 @@ public final class WorkspaceCleanupMirrorBatch {
                 "error_type": String(describing: type(of: error))
             ], level: .error)
             return nil
+        }
+    }
+
+    private enum PreparationError: Error { case unavailableDestination, unadmittedGeneration }
+
+    @MainActor
+    private static func admitPriorMirrors(container: ModelContainer, skipsExports: Bool) throws
+        -> (scope: [UUID: String], destinations: [UUID: WorkspaceCleanupMirrorDestination]) {
+        try autoreleasepool {
+            // Never save unrelated pending edits in the caller's context.
+            let saved = ModelContext(container)
+            saved.autosaveEnabled = false
+            let workspaces = try saved.fetch(FetchDescriptor<Workspace>())
+            let scope = Dictionary(uniqueKeysWithValues: workspaces.map { ($0.id, $0.primaryPath) })
+            var destinations: [UUID: WorkspaceCleanupMirrorDestination] = [:]
+            for workspace in workspaces where !skipsExports && !workspace.primaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try Task.checkCancellation()
+                let destination = try WorkspaceCleanupMirrorDestination(workspacePath: workspace.primaryPath)
+                guard WorkspaceMirrorRegistry(for: saved)?.register([destination.registeredWorkspacePath]) ?? true,
+                      destination.isCurrent else { throw PreparationError.unavailableDestination }
+                destinations[workspace.id] = destination
+                try PluginCredentialEvidenceUpgrade.admit(workspace: workspace, context: saved)
+                guard destination.isCurrent else { throw PreparationError.unavailableDestination }
+            }
+            return (scope, destinations)
         }
     }
 
