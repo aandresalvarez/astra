@@ -1948,7 +1948,12 @@ struct TaskMainView: View {
             return
         }
 
-        hasUnseenChatActivity = true
+        // A scroll-only pause rebuilds the retained window and still needs a
+        // layout beat. Only changed content earns the new-activity indicator;
+        // arrivals outside the pinned window are reported by hasNewerHistory.
+        if newSignature.hasContentChange(from: oldSignature) {
+            hasUnseenChatActivity = true
+        }
     }
 
     private var currentSnapshotMatchesTaskHistory: Bool {

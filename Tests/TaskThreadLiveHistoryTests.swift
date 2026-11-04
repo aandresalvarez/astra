@@ -467,6 +467,49 @@ struct TaskThreadLiveHistoryTests {
         #expect(vm.snapshot?.sortedEvents.contains { $0.id == waiting.id } == true)
     }
 
+    @Test("An idle scroll pause changes layout readiness without reporting new content")
+    func pauseDoesNotReportUnseenContent() async throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        let run = TaskRun(task: task)
+        run.status = .running
+        run.setOutput("initial output")
+        context.insert(run)
+        let message = append(0, task: task, context: context)
+        try context.save()
+        let vm = TaskThreadViewModel()
+        vm.reset(for: task, modelContext: context)
+        await vm.waitForPendingWorkForTesting()
+        let before = vm.appliedSnapshotReadiness
+        vm.pauseFollowingLatestHistory(for: task)
+        await vm.waitForPendingWorkForTesting()
+        let paused = vm.appliedSnapshotReadiness
+        #expect(paused.revision > before.revision)
+        #expect(!paused.hasContentChange(from: before))
+        #expect(!vm.hasNewerHistory)
+
+        // Same-size edits and run output changes still count while browsing.
+        message.payload = "edited message"
+        task.updatedAt = Date()
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        let edited = vm.appliedSnapshotReadiness
+        #expect(edited.hasContentChange(from: paused))
+        #expect(!vm.hasNewerHistory)
+        run.setOutput("changed output")
+        task.updatedAt = Date()
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        let output = vm.appliedSnapshotReadiness
+        #expect(output.hasContentChange(from: edited))
+
+        let pending = append(1, task: task, context: context)
+        vm.refreshSnapshot(for: task)
+        await vm.waitForPendingWorkForTesting()
+        #expect(vm.hasNewerHistory)
+        #expect(vm.snapshot?.sortedEvents.contains { $0.id == pending.id } == false)
+    }
+
     @Test("A cached state-only page keeps the storage boundary ahead of older messages and anchors")
     func cacheHitPagesStateOnlyLatestWindow() async throws {
         let (container, context, task, root) = try fixture()
@@ -737,6 +780,56 @@ struct TaskThreadLiveHistoryTests {
         #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) == nil)
         await open(task)
         #expect(vm.lastSnapshotCacheState == "hit" && !dock())
+    }
+
+    @Test("Backdated tool-use inserts invalidate inactive terminal decisions while later uses stay cached")
+    func backdatedToolUseInvalidatesTerminalCache() async throws {
+        let (container, context, task, root) = try fixture()
+        defer { _ = container; try? FileManager.default.removeItem(at: root) }
+        task.goal = "Fix the bug and create a pull request"
+        task.status = .completed
+        let run = TaskRun(task: task)
+        run.status = .completed
+        context.insert(run)
+        let failure = append(0, task: task, context: context, type: "tool.result.failed", run: run)
+        failure.payload = "permission denied"
+        for index in 1..<345 { append(index, task: task, context: context) }
+        let other = AgentTask(title: "Other", goal: "Unrelated")
+        other.status = .completed
+        context.insert(other)
+        try context.save()
+        let timestamp = task.updatedAt
+        let vm = TaskThreadViewModel()
+        func open(_ owner: AgentTask) async {
+            vm.reset(for: owner, modelContext: context)
+            await vm.waitForPendingWorkForTesting()
+        }
+        func pending() -> Bool {
+            TaskDecisionOutcomeResolver.outcomes(task: task, snapshot: vm.snapshot,
+                decisionArtifactPaths: [], modelContext: context).hasGitPublishRequest
+        }
+        await open(task)
+        await open(task)
+        #expect(vm.lastSnapshotCacheState == "hit" && !pending())
+        await open(other)
+        let later = append(1, task: task, context: context, type: "tool.use", run: run)
+        later.payload = "gh pr create --draft"
+        task.updatedAt = timestamp
+        try context.save()
+        await open(task)
+        #expect(vm.lastSnapshotCacheState == "hit" && !pending())
+        #expect(vm.historyReadCountForTesting == 0)
+        await open(other)
+        let before = append(-1, task: task, context: context, type: "tool.use", run: run)
+        before.payload = "gh pr create --draft"
+        task.updatedAt = timestamp
+        try context.save()
+        #expect(task.updatedAt == timestamp)
+        await open(task)
+        #expect(vm.lastSnapshotCacheState != "hit")
+        #expect(vm.historyReadCountForTesting > 0)
+        #expect(pending())
+        #expect(TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: run) != nil)
     }
 
     @Test("Terminal cache observation revisions reject stale values and eviction releases observers")

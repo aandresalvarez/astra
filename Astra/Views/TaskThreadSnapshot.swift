@@ -820,6 +820,9 @@ struct TaskThreadSnapshot: Sendable {
     /// Transcript shape computed while building the snapshot, so task-open
     /// readiness logging never rescans user-visible content on the main actor.
     let transcriptMetrics: TaskThreadTranscriptMetrics
+    /// Derived alongside the snapshot on its build executor. The view compares
+    /// this value without scanning event payloads or run output on the main actor.
+    let contentFingerprint: Int
 
     private let activityByRunID: [UUID: TaskRunActivity]
     private let protocolByRunID: [UUID: TaskRunProtocolState]
@@ -1079,6 +1082,18 @@ struct TaskThreadSnapshot: Sendable {
             cancellationCheck: cancellationCheck
         )
         transcriptMetrics = try TaskThreadTranscriptMetrics(items: conversationItems, cancellationCheck: cancellationCheck)
+        var content = Hasher()
+        content.combine(goal)
+        content.combine(createdAt)
+        for event in sortedEvents {
+            try cancellationCheck()
+            content.combine(event)
+        }
+        for run in sortedRuns {
+            try cancellationCheck()
+            content.combine(run)
+        }
+        contentFingerprint = content.finalize()
     }
 
     func activityPresentation(for run: TaskRunSnapshot) -> RunActivityPresentation {

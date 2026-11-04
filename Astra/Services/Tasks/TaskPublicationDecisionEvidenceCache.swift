@@ -47,7 +47,8 @@ extension TaskPublicationDecisionEvidenceReader {
     /// Cache readers observe existing evidence edits/deletions; insertions and
     /// backdating are checked by the persisted signature. A view model can also
     /// observe inserted failures/receipts to request a committed-state refresh.
-    /// New tool uses do not invalidate prior-failure evidence on ordinary appends.
+    /// Snapshot observations skip inserted tool uses only when they cannot
+    /// precede an existing failure. Reader signatures also detect backdating.
     /// Both save boundaries advance the revision: a read during an in-flight
     /// commit must not remain cached after didSave. Failed saves never block
     /// readers, and the next willSave replaces that context's pending scope.
@@ -72,12 +73,16 @@ extension TaskPublicationDecisionEvidenceReader {
                 guard let context = note.object as? ModelContext,
                       ObjectIdentifier(context.container) == containerID else { return }
                 let inserted = Set(context.insertedModelsArray.map { ObjectIdentifier($0 as AnyObject) })
-                let relevant = (context.changedModelsArray + context.deletedModelsArray).contains { model in
+                let relevant = (context.insertedModelsArray + context.changedModelsArray + context.deletedModelsArray).contains { model in
                     guard let event = model as? TaskEvent else { return false }
-                    if inserted.contains(ObjectIdentifier(model as AnyObject)),
-                       !observeInsertedEvidence || event.type == "tool.use" { return false }
                     if let ownerID, event.task?.persistentModelID != ownerID,
                        !(event.isDeleted && event.task == nil) { return false }
+                    if inserted.contains(ObjectIdentifier(model as AnyObject)) {
+                        guard observeInsertedEvidence else { return false }
+                        if event.type == "tool.use" {
+                            return Self.mayPrecedeFailure(event, in: context)
+                        }
+                    }
                     return event.type.hasPrefix("git.publish.") || event.type == "tool.result.failed" || event.type == "tool.use"
                 }
                 self?.willSave(context, relevant: relevant)
@@ -90,6 +95,20 @@ extension TaskPublicationDecisionEvidenceReader {
         }
 
         deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
+
+        private static func mayPrecedeFailure(_ event: TaskEvent, in context: ModelContext) -> Bool {
+            guard let ownerID = event.task?.persistentModelID, let runID = event.run?.id else { return true }
+            let timestamp = event.timestamp
+            let types = ["tool.result.failed", "git.publish.failed"]
+            var query = FetchDescriptor<TaskEvent>(predicate: #Predicate {
+                $0.task?.persistentModelID == ownerID && $0.run?.id == runID
+                    && types.contains($0.type) && $0.timestamp >= timestamp
+            })
+            query.fetchLimit = 1
+            // Inspect pending rows on their saving executor too: a use and its
+            // following failure may both have been inserted in this save.
+            return (try? context.fetch(query).isEmpty) != true
+        }
 
         var revision: Int {
             lock.lock(); defer { lock.unlock() }

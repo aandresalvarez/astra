@@ -60,6 +60,7 @@ enum TaskPublicationDecisionEvidenceReader {
             evidence.append(TaskEventSnapshot(event: receipt))
         }
         let signature: Signature?
+        var precedingSearch: Cache.Entry?
         if let cache {
             let current = try signatureFor(ownerID: ownerID, runID: runID, head: evidence,
                                            historyInvalidation: historyInvalidation,
@@ -71,6 +72,11 @@ enum TaskPublicationDecisionEvidenceReader {
                 cache.work.cacheHits += 1
                 return entry.events
             }
+            if let entry = cache.entry, try canExtend(entry, to: current, in: context),
+               try selectedEventsUnchanged(entry.events, ownerID: ownerID, in: context),
+               cache.mutations.revision == current.edits {
+                precedingSearch = entry
+            }
         } else { signature = nil }
         func finish(_ events: [TaskEventSnapshot]) -> [TaskEventSnapshot] {
             let result = deduplicated(events)
@@ -80,21 +86,27 @@ enum TaskPublicationDecisionEvidenceReader {
             return result
         }
         if let signature, signature.failureCount == 0 { return finish(evidence) }
-        let durableFailure = try firstMatching(ownerID: ownerID, runID: runID,
+        // A proven append extends the searched suffix. Keep at most the prior
+        // decision packet and one boundary, never a growing list of failures.
+        let cutoff = [receipt?.timestamp, precedingSearch?.signature.newestFailure?.timestamp].compactMap { $0 }.max()
+        var durableFailure = try firstMatching(ownerID: ownerID, runID: runID,
                                       type: TaskExternalOutcomeEventTypes.publicationFailed,
-                                      after: receipt?.timestamp, cache: cache, in: context) { event in
+                                      after: cutoff, cache: cache, in: context) { event in
             guard let data = event.payload.data(using: .utf8),
                   (try? TaskEventPayloadCodec.makeDecoder().decode(TaskRequiredExternalOutcomeFailure.self, from: data)) != nil else {
                 return nil
             }
             return [TaskEventSnapshot(event: event)]
         }
+        if durableFailure.isEmpty {
+            durableFailure = precedingSearch?.events.filter { $0.type == TaskExternalOutcomeEventTypes.publicationFailed } ?? []
+        }
         if !durableFailure.isEmpty {
             return finish(evidence + durableFailure)
         }
-        evidence += try firstMatching(ownerID: ownerID, runID: runID,
+        var legacyFailure = try firstMatching(ownerID: ownerID, runID: runID,
                                       type: TaskEventTypes.Tool.resultFailed.rawValue,
-                                      after: receipt?.timestamp, cache: cache, in: context) { failed in
+                                      after: cutoff, cache: cache, in: context) { failed in
             if TaskExternalOutcomeFailureClassifier.publicationFailureMessage(
                 payload: failed.payload, legacyPrecedingToolUse: ""
             ) != nil {
@@ -116,7 +128,36 @@ enum TaskPublicationDecisionEvidenceReader {
                   ) != nil else { return nil }
             return [TaskEventSnapshot(event: failed), TaskEventSnapshot(event: use)]
         }
-        return finish(evidence)
+        if legacyFailure.isEmpty {
+            legacyFailure = precedingSearch?.events.filter { $0.type == "tool.result.failed" || $0.type == "tool.use" } ?? []
+        }
+        return finish(evidence + legacyFailure)
+    }
+
+    private static func canExtend(_ entry: Cache.Entry, to current: Signature, in context: ModelContext) throws -> Bool {
+        let old = entry.signature
+        guard old.ownerID == current.ownerID, old.runID == current.runID,
+              old.historyInvalidation == current.historyInvalidation, old.edits == current.edits,
+              old.head == current.head, let previous = old.newestFailure,
+              let newest = current.newestFailure, newest.timestamp > previous.timestamp,
+              current.failureCount > old.failureCount else { return false }
+        let ownerID = current.ownerID, runID = current.runID, boundary = previous.timestamp
+        let types = ["tool.result.failed", "git.publish.failed"]
+        let additions = FetchDescriptor<TaskEvent>(predicate: #Predicate {
+            $0.task?.persistentModelID == ownerID && $0.run?.id == runID
+                && types.contains($0.type) && $0.timestamp > boundary
+        })
+        // Any backdated failure is outside this count. Edits/deletions are
+        // fenced by the paired-save revision; ties conservatively rescan.
+        guard try context.fetchCount(additions) == current.failureCount - old.failureCount else { return false }
+        let useType = "tool.use"
+        var uses = FetchDescriptor<TaskEvent>(predicate: #Predicate {
+            $0.task?.persistentModelID == ownerID && $0.run?.id == runID
+                && $0.type == useType && $0.timestamp <= boundary
+        }, sortBy: ordering)
+        guard try context.fetchCount(uses) == old.precedingUseCount else { return false }
+        uses.fetchLimit = 1
+        return try context.fetch(uses).first.map(TaskEventSnapshot.init) == old.newestPrecedingUse
     }
 
     private static func signatureFor(
@@ -192,12 +233,17 @@ enum TaskPublicationDecisionEvidenceReader {
         match: (TaskEvent) throws -> [TaskEventSnapshot]?
     ) throws -> [TaskEventSnapshot] {
         var descriptor = query(ownerID: ownerID, runID: runID, type: type)
+        if let cutoff {
+            descriptor = FetchDescriptor(predicate: #Predicate<TaskEvent> {
+                $0.task?.persistentModelID == ownerID && $0.run?.id == runID
+                    && $0.type == type && $0.timestamp > cutoff
+            }, sortBy: ordering)
+        }
         descriptor.fetchLimit = batchSize
         while true {
             let batch = try context.fetch(descriptor)
             for event in batch {
                 cache?.work.failureRowsScanned += 1
-                if let cutoff, event.timestamp <= cutoff { return [] }
                 if let evidence = try match(event) { return evidence }
             }
             guard batch.count == batchSize else { return [] }

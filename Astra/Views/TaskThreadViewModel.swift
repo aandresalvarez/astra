@@ -89,6 +89,12 @@ struct TaskThreadSnapshotReadiness: Equatable, Sendable {
     let taskID: UUID?
     var ownerID: PersistentIdentifier? = nil
     let revision: Int
+    var contentFingerprint: Int? = nil
+
+    func hasContentChange(from previous: Self) -> Bool {
+        taskID != previous.taskID || ownerID != previous.ownerID
+            || contentFingerprint != previous.contentFingerprint
+    }
 
     func isReady(for task: AgentTask) -> Bool {
         taskID == task.id && ownerID == task.persistentModelID && revision > 0
@@ -186,7 +192,8 @@ final class TaskThreadViewModel {
         TaskThreadSnapshotReadiness(
             taskID: appliedSnapshotTaskID,
             ownerID: appliedSnapshotOwnerID,
-            revision: appliedSnapshotRevision
+            revision: appliedSnapshotRevision,
+            contentFingerprint: snapshot?.contentFingerprint
         )
     }
 

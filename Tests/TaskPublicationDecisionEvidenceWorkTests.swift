@@ -7,6 +7,65 @@ import ASTRAModels
 @Suite("Publication evidence repeat work")
 @MainActor
 struct TaskPublicationDecisionEvidenceWorkTests {
+    @Test("Appended unrelated failures scan only new rows and backdating still forces a full search", arguments: [false, true])
+    func appendedFailuresDoNotRepeatLegacySearch(actionable: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try ModelContainer(for: Workspace.self, AgentTask.self, TaskEvent.self, TaskRun.self,
+            configurations: ModelConfiguration(url: root.appendingPathComponent("history.store")))
+        let context = container.mainContext
+        context.autosaveEnabled = false
+        let task = AgentTask(title: "Synthetic", goal: "Fix the bug and create a pull request")
+        context.insert(task)
+        let run = TaskRun(task: task)
+        context.insert(run)
+        @discardableResult
+        func insert(_ type: String, _ payload: String, _ time: Double) -> TaskEvent {
+            let event = TaskEvent(task: task, type: type, payload: payload, run: run)
+            event.timestamp = Date(timeIntervalSince1970: time)
+            context.insert(event)
+            return event
+        }
+        insert("tool.use", actionable ? "gh pr create --draft" : "git status", 1)
+        insert("tool.result.failed", "permission denied", 2)
+        insert("tool.use", "git status", 3)
+        for index in 0..<1_500 { insert("tool.result.failed", "unrelated failure", Double(10 + index)) }
+        let start = insert("user.message", "ordinary", 10_000)
+        try context.save()
+        let store = TaskThreadHistoryStore(container: container)
+        var cursor = TaskThreadEventCursor(timestamp: start.timestamp, id: start.id, ownerID: task.persistentModelID)
+        func read() async throws -> TaskThreadHistoryTailPage {
+            try await store.tailPage(taskID: task.id, ownerID: task.persistentModelID, since: cursor)
+        }
+        func verify(_ events: [TaskEventSnapshot]) throws {
+            let fresh = ModelContext(container)
+            let uncached = try TaskPublicationDecisionEvidenceReader.latest(ownerID: task.persistentModelID,
+                runID: run.id, in: fresh)
+            #expect(Set(events) == Set(uncached))
+        }
+        try verify(try await read().publicationEvents)
+        let primed = await store.publicationWorkForTesting()
+        for index in 0..<12 {
+            let time = Double(10_010 + index * 2)
+            insert("tool.use", "git status", time)
+            let failure = insert("tool.result.failed", "unrelated failure", time + 1)
+            try context.save()
+            try verify(try await read().publicationEvents)
+            cursor = TaskThreadEventCursor(timestamp: failure.timestamp, id: failure.id, ownerID: task.persistentModelID)
+        }
+        let appended = await store.publicationWorkForTesting()
+        #expect(appended.failureRowsScanned - primed.failureRowsScanned == 12)
+        #expect(appended.toolUseLookups - primed.toolUseLookups == 12)
+        let backdated = insert("tool.result.failed", "gh pr create: backdated failure", 1_000.5)
+        try context.save()
+        let changed = try await read()
+        try verify(changed.publicationEvents)
+        #expect(changed.publicationEvents.contains { $0.id == backdated.id })
+        let rescanned = await store.publicationWorkForTesting()
+        #expect(rescanned.failureRowsScanned > appended.failureRowsScanned + 12)
+    }
+
     @Test("Ordinary tail messages do not rescan failures, with or without PR intent", arguments: [false, true])
     func ordinaryAppendsDoNotRepeatLegacySearch(prIntent: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
