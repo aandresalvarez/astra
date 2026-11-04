@@ -1,0 +1,293 @@
+{
+  "baseline_app_revision": "b7908367b8fe09f1bc4381d1f0192d8e828a8636",
+  "host": {
+    "load_after": [
+      6.7548828125,
+      8.5615234375,
+      10.4609375
+    ],
+    "load_before": [
+      7.0576171875,
+      8.71142578125,
+      10.546875
+    ],
+    "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "started_at": "2026-11-02T18:11:25.537905-08:00"
+  },
+  "samples": [
+    {
+      "checksum": 289,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-4-small",
+      "run": 1,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 819224,
+      "sidebar_ms": 4.797958,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 17,
+        "workspaces": 4
+      }
+    },
+    {
+      "checksum": 289,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-4-small",
+      "run": 2,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 753664,
+      "sidebar_ms": 4.727,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 17,
+        "workspaces": 4
+      }
+    },
+    {
+      "checksum": 289,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-4-small",
+      "run": 3,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 851968,
+      "sidebar_ms": 4.97825,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 17,
+        "workspaces": 4
+      }
+    },
+    {
+      "checksum": 289,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-23-small",
+      "run": 1,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 933888,
+      "sidebar_ms": 7.272875,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 17,
+        "workspaces": 23
+      }
+    },
+    {
+      "checksum": 289,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-23-small",
+      "run": 2,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 999472,
+      "sidebar_ms": 7.244125,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 17,
+        "workspaces": 23
+      }
+    },
+    {
+      "checksum": 289,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-23-small",
+      "run": 3,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 983064,
+      "sidebar_ms": 7.401917,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 17,
+        "workspaces": 23
+      }
+    },
+    {
+      "checksum": 37320,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-4",
+      "run": 1,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 53772336,
+      "sidebar_ms": 211.200084,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 2195,
+        "workspaces": 4
+      }
+    },
+    {
+      "checksum": 37320,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-4",
+      "run": 2,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 53543008,
+      "sidebar_ms": 224.480083,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 2195,
+        "workspaces": 4
+      }
+    },
+    {
+      "checksum": 37320,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-4",
+      "run": 3,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 54018120,
+      "sidebar_ms": 218.992791,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 2195,
+        "workspaces": 4
+      }
+    },
+    {
+      "checksum": 37320,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-23",
+      "run": 1,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 54296672,
+      "sidebar_ms": 228.1345,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 2195,
+        "workspaces": 23
+      }
+    },
+    {
+      "checksum": 37320,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-23",
+      "run": 2,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 52412512,
+      "sidebar_ms": 231.57375,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 2195,
+        "workspaces": 23
+      }
+    },
+    {
+      "checksum": 37320,
+      "goal_bytes_per_task": 5040,
+      "history_workspace_events": 0,
+      "history_workspace_tasks": 0,
+      "long_thread_events": 0,
+      "profile": "sidebar-23",
+      "run": 3,
+      "seed": 42362,
+      "sidebar_footprint_delta_bytes": 52068448,
+      "sidebar_ms": 229.496166,
+      "task_folder_allocated_bytes": 0,
+      "task_folder_files": 0,
+      "task_folder_logical_bytes": 0,
+      "verified_counts": {
+        "artifacts": 0,
+        "events": 0,
+        "runs": 0,
+        "tasks": 2195,
+        "workspaces": 23
+      }
+    }
+  ],
+  "schema_version": 1,
+  "seed": 42362,
+  "tool_build": {
+    "linked_object_sha256": {
+      "ASTRACore.o": "8b5bf9f056d238427a37443655fd63a2f06bc5bb14188bea3ea558981b637cbd",
+      "ASTRALogging.o": "30593c729c79eeb02b3b8b53b513314e1a44f4073cbb320e5d24ea374d22364f",
+      "ASTRAModels.o": "db05e8e3e8b396cc32d584dd9b53d1c9c3fd1a06c6070d8ed2950559b59f51c2"
+    }
+  },
+  "tool_sha256": "3807f94427d20d2ebb3575887f26ce52cebf0685b8f81dfc6ae05e063c222174"
+}
