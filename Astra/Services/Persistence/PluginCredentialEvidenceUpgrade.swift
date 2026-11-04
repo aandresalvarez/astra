@@ -27,13 +27,19 @@ enum PluginCredentialEvidenceUpgrade {
             .contains { URL(fileURLWithPath: $0).standardizedFileURL == url.standardizedFileURL }
     }
 
+    static func requiresAdmission(workspace: Workspace) -> Bool {
+        WorkspaceCapabilityActivation.activations(of: workspace).contains(where: requiresAdmission)
+    }
+
+    private static func requiresAdmission(_ activation: PluginActivation) -> Bool {
+        WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: activation)?.hasAdmittedMirror(for: activation) != true
+    }
+
     static func admit(workspace: Workspace, context: ModelContext,
         load: (URL) throws -> Source? = loadPrior,
         save: (ModelContext) throws -> Void = { try $0.save() }
     ) throws {
-        let activations = WorkspaceCapabilityActivation.activations(of: workspace).filter {
-            WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: $0)?.hasAdmittedMirror(for: $0) != true
-        }
+        let activations = WorkspaceCapabilityActivation.activations(of: workspace).filter(requiresAdmission)
         guard !activations.isEmpty else { return }
         let url = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath))
         // Discovery runs asynchronously. Its decoded value may no longer

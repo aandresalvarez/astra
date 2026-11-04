@@ -518,3 +518,19 @@ assert_targets $'PluginCredentialMetadataCompatibilityTests|PluginRecoveryMirror
   Tests/TaskThreadLiveHistoryTests.swift \
   Tests/PluginCredentialMetadataCompatibilityTests.swift \
   Tests/TaskThreadLiveHistoryTests.swift
+
+assert_targets $'WorkspaceCleanupMirrorBatchTests\nWorkspaceCleanupEvidenceAdmissionTests\nPluginCredentialUpgradeTests\nPluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests' \
+  Astra/Services/Persistence/WorkspaceCleanupMirrorBatch.swift \
+  Astra/Services/Persistence/WorkspaceCleanupStoreGeneration.swift \
+  Astra/Services/Persistence/WorkspaceCleanupMirrorDestination.swift \
+  Tests/WorkspaceCleanupMirrorBatchTests.swift \
+  Tests/WorkspaceCleanupEvidenceAdmissionTests.swift
+
+# Cleanup admission and bounded-chat integration must select all protections,
+# including credential upgrades, without duplicating shared groups.
+assert_targets $'WorkspaceCleanupMirrorBatchTests\nWorkspaceCleanupEvidenceAdmissionTests\nPluginCredentialUpgradeTests\nPluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests\nPluginActivationReviewTests|PluginConnectorFieldTrustTests\nCapabilityUninstallerTests\nPluginActivationOwnershipTests\nPluginMigrationUnreadableSkillSecretTests\nPluginSecretSettingWriterTests\nPluginSourceInstallationTests\nPluginSourcesTests\nPluginStaleCredentialOwnerTests\nTaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests' \
+  Tests/WorkspaceCleanupEvidenceAdmissionTests.swift \
+  Tests/PluginCredentialUpgradeTests.swift \
+  Tests/TaskThreadLiveHistoryTests.swift \
+  Tests/TaskChatScrollFollowTests.swift \
+  Tests/WorkspaceCleanupMirrorBatchTests.swift

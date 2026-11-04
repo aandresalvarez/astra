@@ -38,6 +38,18 @@ A newer legacy-path copy cannot stand in for a current file that still exists.
 Admission reads only the current own mirror, or its legacy path when the
 current file is absent. It does not scan backup directories.
 
+Startup cleanup's shared-snapshot batch performs the same admission for every
+exported workspace in a fresh saved context, before creating its committed-store
+generation fence or taking its single backup. Admission cannot commit pending
+edits in the caller's context. Physical destinations stay bound through this
+phase. A fresh scope check under the generation fence rejects an activation
+that still needs admission, including a generation changed by another context.
+The batch then derives all mirrors from the admitted store snapshot. It does
+not depend on recovery discovery having run earlier in the launch.
+The generation fence retains the original pre-admission store identity through
+publication. Its initializer cannot accept a replacement file as a new baseline,
+even when that file has the same workspace UUIDs and paths.
+
 A pending edit, unreadable prior file or failed admission save prevents
 replacement. The last file and committed export obligation remain available
 for retry. A scoped synchronous drain preserves other workspace obligations. Admission does not save unrelated pending edits. Read-only
