@@ -39,7 +39,7 @@ final class PluginUpdateSkillCredentials {
         }
         prepared[activation.id] = transaction
         released.formUnion(previous)
-        WorkspaceCapabilityActivation.setCredentialNamespaceSeed(transaction.generation, on: activation)
+        transaction.publish(on: activation)
     }
 
     func owns(_ namespace: UUID) -> Bool { prepared.values.contains { $0.namespaces.contains(namespace) } }
