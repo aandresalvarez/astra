@@ -6,6 +6,10 @@ import SwiftData
 /// data_version belongs to this connection: it detects commits by *any* other
 /// context/connection, including saves that never request an auto-export.
 final class WorkspaceCleanupStoreGeneration: @unchecked Sendable {
+    // Scoped fault injection at the admission-to-generation boundary. The
+    // production operation is synchronous and never suspends between checks.
+    @TaskLocal static var beforeOpeningStore: @Sendable () throws -> Void = {}
+
     private let lock = NSLock()
     private let source: WorkspaceSavedExportSource
     private var database: OpaquePointer?
@@ -13,9 +17,12 @@ final class WorkspaceCleanupStoreGeneration: @unchecked Sendable {
     private var observer: NSObjectProtocol?
     private var invalidated = false
 
-    init(container: ModelContainer) throws {
-        source = WorkspaceSavedExportSource(container)
-        guard source.resolve() != nil else { throw CocoaError(.fileReadUnknown) }
+    init(source: WorkspaceSavedExportSource) throws {
+        try Self.beforeOpeningStore()
+        // Retain the identity captured before admission. Recapturing here
+        // could accept a replacement as the generation's new baseline.
+        self.source = source
+        guard let container = source.resolve() else { throw CocoaError(.fileReadUnknown) }
         if container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
             // No SQLite generation exists for previews/tests. Hold cleanup
             // before any save to this container while the batch exists. A

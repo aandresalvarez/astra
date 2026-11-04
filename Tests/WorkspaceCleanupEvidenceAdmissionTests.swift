@@ -10,6 +10,84 @@ import ASTRAModels
 @MainActor
 @Suite("Startup batch prior-mirror evidence admission", .serialized)
 struct WorkspaceCleanupEvidenceAdmissionTests {
+    @Test("A replacement store with the same workspace scope cannot release pending cleanup",
+          arguments: ["generation", "capture", "staging"])
+    func replacementAcrossGenerationBoundary(phase: String) async throws {
+        let env = try PluginRecoveryMirrorCredentialTests.Fixture(onDisk: true)
+        defer { env.removeFiles() }
+        let trust = WorkspaceRecoveryTrust.state, mirrors = WorkspaceRecoveryTrust.loadedMirrors
+        defer { WorkspaceRecoveryTrust.set(trust); WorkspaceRecoveryTrust.recordLoadedMirrors(mirrors) }
+        WorkspaceRecoveryTrust.set(.trusted)
+        WorkspaceRecoveryTrust.recordLoadedMirrors([])
+        try FileManager.default.createDirectory(atPath: env.workspace.primaryPath, withIntermediateDirectories: true)
+        try #require(WorkspaceConfigManager.exportMirrorNow(workspace: env.workspace, modelContext: env.context))
+        let original = try Data(contentsOf: env.ownMirror)
+        let source = try #require(env.container.configurations.first?.url)
+        let seed = env.root.appendingPathComponent("replacement-seed.store")
+        let replacement = env.root.appendingPathComponent("replacement.store")
+        let displaced = env.root.appendingPathComponent("displaced.store")
+        try WorkspaceRecoveryService.copyStoreSnapshot(from: source, to: seed)
+        try autoreleasepool {
+            let other = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(url: seed)])
+            let context = ModelContext(other)
+            context.autosaveEnabled = false
+            let workspace = try #require(context.fetch(FetchDescriptor<Workspace>()).first)
+            #expect(workspace.id == env.workspace.id)
+            #expect(workspace.primaryPath == env.workspace.primaryPath)
+            workspace.name = "Different contents at the same store path"
+            try context.save()
+            // Make a self-contained backup of the changed base and WAL.
+            try WorkspaceRecoveryService.copyStoreSnapshot(from: seed, to: replacement)
+        }
+        let key = PluginUpdateService.StaleSecret(key: "API_TOKEN", skillID: UUID())
+        let outbox = try #require(PluginSecretCleanupOutbox(for: env.context))
+        try outbox.journal([key])
+        AdmissionSecrets.seed(key.skillID)
+        let replaced = OSAllocatedUnfairLock(initialState: false)
+        let swap: @Sendable () throws -> Void = {
+            // Replace the main SQLite file while existing source readers
+            // retain their open descriptors and WAL. Restore it after the pass.
+            try FileManager.default.moveItem(at: source, to: displaced)
+            try FileManager.default.moveItem(at: replacement, to: source)
+            replaced.withLock { $0 = true }
+        }
+        defer {
+            if FileManager.default.fileExists(atPath: displaced.path) {
+                try? FileManager.default.removeItem(at: source)
+                try? FileManager.default.moveItem(at: displaced, to: source)
+            }
+        }
+        let totals = StartupCleanupAggregate()
+        let copy = WorkspaceExportFileIO.copySnapshot
+        let stage = WorkspaceExportFileIO.writeStaging
+        await WorkspaceCleanupStoreGeneration.$beforeOpeningStore.withValue({
+            if phase == "generation" { try swap() }
+        }) {
+            await WorkspaceExportFileIO.$copySnapshot.withValue({ from, to in
+                try copy(from, to)
+                if phase == "capture" { try swap() }
+            }) {
+                await WorkspaceExportFileIO.$writeStaging.withValue({ data, url in
+                    try stage(data, url)
+                    if phase == "staging" { try swap() }
+                }) {
+                    await WorkspacePersistenceWork.$cleanupJob.withValue(totals) {
+                        // Default async outbox, real snapshot and real writer.
+                        await PluginSecretCleanupOutbox.resumePendingAsync(modelContext: env.context, secrets: AdmissionSecrets.self)
+                    }
+                }
+            }
+        }
+        #expect(replaced.withLock { $0 })
+        #expect(try Data(contentsOf: env.ownMirror) == original)
+        #expect(AdmissionSecrets.value(key.skillID) == "synthetic-token")
+        #expect(try outbox.pendingKeys() == [key])
+        #expect(totals.fields()["copy_attempts"] == (phase == "generation" ? "0" : "1"))
+        #expect(totals.fields()["json_write_succeeded"] == "0")
+        #expect(totals.fields()["mirror_request_succeeded"] == "0")
+    }
+
     @Test("All workspace admissions precede one backup, preserve caller edits and fence subsequent saves", arguments: [false, true])
     func multipleAdmissions(concurrentCommit: Bool) async throws {
         let env = try WorkspaceCleanupMirrorBatchTests.Fixture(count: 3)

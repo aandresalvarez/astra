@@ -46,6 +46,9 @@ phase. A fresh scope check under the generation fence rejects an activation
 that still needs admission, including a generation changed by another context.
 The batch then derives all mirrors from the admitted store snapshot. It does
 not depend on recovery discovery having run earlier in the launch.
+The generation fence retains the original pre-admission store identity through
+publication. Its initializer cannot accept a replacement file as a new baseline,
+even when that file has the same workspace UUIDs and paths.
 
 A pending edit, unreadable prior file or failed admission save prevents
 replacement. The last file and committed export obligation remain available
