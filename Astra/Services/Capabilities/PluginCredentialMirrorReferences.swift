@@ -36,47 +36,23 @@ struct PluginCredentialMirrorReferences {
             var namespaces = Set<UUID>()
             for plugin in listed.installedPlugins ?? [] {
                 guard let workspaceID = file.workspaceID else { return nil }
-                guard plugin.credentialRecoveryEvidence?.hasUnresolvedReferences != true else {
+                guard let references = PluginCredentialMetadataPolicy.references(
+                    pluginID: plugin.id, version: plugin.version, digest: plugin.digest,
+                    knownComponentIDs: plugin.knownComponentIDs, credentialComponentIDs: plugin.credentialComponentIDs,
+                    secretSettingKeys: plugin.secretSettingKeys, settingKeys: Array((plugin.settings ?? [:]).keys),
+                    overriddenComponentIDs: plugin.overriddenComponentIDs, accountComponentIDs: (plugin.accounts ?? []).map(\.componentID),
+                    recoveryEvidence: plugin.credentialRecoveryEvidence) else {
                     ambiguousMetadata(workspaceID: workspaceID, pluginID: plugin.id)
                     return nil
                 }
-                let recorded = plugin.secretSettingKeys ?? []
-                let plain = Array((plugin.settings ?? [:]).keys)
-                let known = Set(plugin.knownComponentIDs ?? [])
-                var components = Set(Array(known) + (plugin.overriddenComponentIDs ?? []) + (plugin.accounts ?? []).map(\.componentID)
-                    + (recorded + plain).compactMap(PluginActivation.componentID(ofSettingKey:)))
-                let matched: [String]?
-                if known.isEmpty || plugin.credentialComponentIDs == [],
-                   let version = plugin.version, let digest = plugin.digest {
-                    matched = PluginCredentialComponentInventorySeam.componentIDs(pluginID: plugin.id, version: version, digest: digest)
-                } else { matched = nil }
-                // A supplied [] is a claim, not independent evidence. Current
-                // exports must be complete and agree with the accepted copy;
-                // neither partial nor contradictory recovery files may clear it.
-                if plugin.credentialComponentIDs == [] {
-                    guard matched == [], plugin.secretSettingKeys == [], components.isEmpty, plain.isEmpty else {
-                        ambiguousMetadata(workspaceID: workspaceID, pluginID: plugin.id)
-                        return nil
-                    }
-                }
-                components.formUnion(plugin.credentialComponentIDs ?? [])
-                components.formUnion(matched ?? [])
-                guard !components.isEmpty || (matched == [] && recorded.isEmpty && plain.isEmpty) else {
-                    ambiguousMetadata(workspaceID: workspaceID, pluginID: plugin.id)
-                    return nil
-                }
-                for component in components {
+                for component in references.componentIDs {
                     let id = PluginActivation.credentialID(workspaceID: workspaceID, pluginID: plugin.id,
                         componentID: component, runtimeSeed: plugin.namespaceSeed ?? "", generation: plugin.credentialNamespaceSeed ?? "")
                     namespaces.insert(id)
-                    // A derived inventory does not prove a legacy marker list.
-                    // Empty arrays from an earlier rewrite of unknown state
-                    // must retain the same key hold as a missing list.
-                    if plugin.credentialRecoveryEvidence?.secretSettingKeysUnknown == true || plugin.secretSettingKeys == nil
-                        || (!known.contains(component) && recorded.isEmpty) { result.unknownKeys.insert(id) }
-                    for setting in recorded + plain where PluginActivation.componentID(ofSettingKey: setting) == component {
+                    if references.unknownSecretComponentIDs.contains(component) { result.unknownKeys.insert(id) }
+                    for setting in references.secretSettingKeys where PluginActivation.componentID(ofSettingKey: setting) == component {
                         let key = String(setting.dropFirst(component.count + 1))
-                        if recorded.contains(setting) || Skill.isSecretEnvironmentKey(key) { result.keys.insert(.init(key: key, skillID: id)) }
+                        result.keys.insert(.init(key: key, skillID: id))
                     }
                 }
             }

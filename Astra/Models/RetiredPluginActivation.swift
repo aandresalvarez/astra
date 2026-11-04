@@ -515,13 +515,27 @@ public struct PluginCredentialRecoveryEvidence: Codable, Equatable, Sendable {
     public var secretSettingKeysUnknown: Bool
     public var unresolvedSettingKeys: [String]
     public var unresolvedAccounts: [Account]
+    /// The source mirror failed the shared proof rules. A runtime graph
+    /// that drops the contradictory fields cannot upgrade that verdict.
+    public var inventoryAmbiguous: Bool?
+    /// Positive references the source reader held, independently of the
+    /// definition history migration may seed. These contain no values.
+    public var retainedComponentIDs: [String]?
+    public var retainedSecretSettingKeys: [String]?
     public var hasUnresolvedReferences: Bool { !unresolvedSettingKeys.isEmpty || !unresolvedAccounts.isEmpty }
-    public var isEmpty: Bool { !secretSettingKeysUnknown && !hasUnresolvedReferences }
+    public var isAmbiguous: Bool { inventoryAmbiguous == true || hasUnresolvedReferences }
+    public var isEmpty: Bool {
+        !secretSettingKeysUnknown && !isAmbiguous && (retainedComponentIDs ?? []).isEmpty && (retainedSecretSettingKeys ?? []).isEmpty
+    }
 
-    public init(secretSettingKeysUnknown: Bool = false, unresolvedSettingKeys: [String] = [], unresolvedAccounts: [Account] = []) {
+    public init(secretSettingKeysUnknown: Bool = false, unresolvedSettingKeys: [String] = [], unresolvedAccounts: [Account] = [],
+        inventoryAmbiguous: Bool? = nil, retainedComponentIDs: [String]? = nil, retainedSecretSettingKeys: [String]? = nil) {
         self.secretSettingKeysUnknown = secretSettingKeysUnknown
         self.unresolvedSettingKeys = unresolvedSettingKeys
         self.unresolvedAccounts = unresolvedAccounts
+        self.inventoryAmbiguous = inventoryAmbiguous
+        self.retainedComponentIDs = retainedComponentIDs
+        self.retainedSecretSettingKeys = retainedSecretSettingKeys
     }
 
     public func merging(_ other: Self?) -> Self {
@@ -530,6 +544,8 @@ public struct PluginCredentialRecoveryEvidence: Codable, Equatable, Sendable {
             unresolvedSettingKeys: Set(unresolvedSettingKeys + other.unresolvedSettingKeys).sorted(),
             unresolvedAccounts: Set(unresolvedAccounts + other.unresolvedAccounts).sorted {
                 $0.componentID == $1.componentID ? $0.connectorID < $1.connectorID : $0.componentID < $1.componentID
-            })
+            }, inventoryAmbiguous: inventoryAmbiguous == true || other.inventoryAmbiguous == true ? true : nil,
+            retainedComponentIDs: Set((retainedComponentIDs ?? []) + (other.retainedComponentIDs ?? [])).sorted(),
+            retainedSecretSettingKeys: Set((retainedSecretSettingKeys ?? []) + (other.retainedSecretSettingKeys ?? [])).sorted())
     }
 }

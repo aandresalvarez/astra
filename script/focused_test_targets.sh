@@ -20,7 +20,7 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
-    ASTRACore/PluginCredentialComponentInventorySeam.swift|Astra/Models/RetiredPluginActivation.swift|Astra/Models/WorkspaceCapabilityActivation.swift|Astra/Services/Capabilities/PluginActivationMigration.swift|Astra/Services/Capabilities/PluginCredentialComponentInventory.swift|Astra/Services/Capabilities/PluginCredentialMirrorReferences.swift|Astra/Services/Persistence/WorkspaceConfigManager+PluginActivations.swift|Tests/PluginCredentialMetadataCompatibilityTests.swift|Tests/PluginRecoveryMirrorCredentialTests.swift|Tests/PendingTaskCredentialCleanupTests.swift)
+    ASTRACore/PluginCredentialComponentInventorySeam.swift|Astra/Models/PluginCredentialMetadataPolicy.swift|Astra/Models/RetiredPluginActivation.swift|Astra/Models/WorkspaceCapabilityActivation.swift|Astra/Services/Capabilities/PluginActivationMigration.swift|Astra/Services/Capabilities/PluginCredentialComponentInventory.swift|Astra/Services/Capabilities/PluginCredentialMirrorReferences.swift|Astra/Services/Persistence/WorkspaceConfigManager+PluginActivations.swift|Tests/PluginCredentialMetadataCompatibilityTests.swift|Tests/PluginRecoveryMirrorCredentialTests.swift|Tests/PendingTaskCredentialCleanupTests.swift)
       add_target "PluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests"
       ;;
   esac

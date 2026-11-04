@@ -197,7 +197,7 @@ struct PluginCredentialMetadataCompatibilityTests {
             settle()
             var rewritten = try WorkspaceConfigManager.loadConfig(from: mirror)
             #expect(rewritten.installedPlugins?.first?.secretSettingKeys == nil)
-            #expect(rewritten.installedPlugins?.first?.credentialComponentIDs == (matchingDefinition ? ["skill:agent"] : nil))
+            #expect(rewritten.installedPlugins?.first?.credentialComponentIDs == ["skill:agent"])
             let after = try #require(PluginCredentialMirrorReferences.capture(modelContext: env.context, extraMirrors: []))
             #expect(after.holdsSkill(namespace, key: key.key))
             #expect(MetadataFakeSecrets.value(namespace) == "synthetic-token")
@@ -230,7 +230,10 @@ struct PluginCredentialMetadataCompatibilityTests {
         }
     }
 
-    @Test("Own recovery retains unresolved evidence through saved export and another recovery", arguments: ["account", "setting", "empty"])
+    @Test("Own recovery never weakens ambiguity or positive credential holds", arguments: [
+        "bare", "unverified", "missing-markers", "wrong-version", "wrong-digest", "override", "setting", "known", "secret", "account", "nonempty-definition",
+        "unparsed-setting", "inventory-only", "positive-plain-key", "positive-recorded-key", "empty"
+    ])
     func inconsistentOwnEmptyInventory(evidence: String) throws {
         let env = try PluginRecoveryMirrorCredentialTests.Fixture(onDisk: true)
         defer { env.removeFiles() }
@@ -238,12 +241,14 @@ struct PluginCredentialMetadataCompatibilityTests {
         defer { WorkspaceRecoveryTrust.recordLoadedMirrors(previous) }
         WorkspaceRecoveryTrust.recordLoadedMirrors([])
         let mirror = env.ownMirror, workspaceID = env.workspace.id
-        let package = emptyPackage()
+        let (package, raw) = emptyInventoryFixture(evidence)
+        var plugin = raw
+        // The own-mirror importer requires a version string. Keep the bare
+        // proof absent while providing that minimum decodable field.
+        if plugin["version"] == nil { plugin["version"] = "0.0.0" }
         var config = try #require(WorkspaceConfigManager.export(workspace: env.workspace, modelContext: env.context))
-        config.installedPlugins = [.init(id: package.id, version: package.version,
-            settings: evidence == "setting" ? ["unresolved-legacy-key": "synthetic-private-value"] : nil,
-            accounts: evidence == "account" ? [.init(componentID: "connector:rest_api:account", connectorID: UUID().uuidString, isDefault: true)] : nil,
-            credentialComponentIDs: [], secretSettingKeys: [], digest: PluginDefinitionDigest.content(of: package))]
+        config.installedPlugins = [try JSONDecoder().decode(WorkspaceConfigManager.InstalledPluginRef.self,
+            from: JSONSerialization.data(withJSONObject: plugin))]
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -251,10 +256,16 @@ struct PluginCredentialMetadataCompatibilityTests {
         let namespace = PluginActivation.credentialID(workspaceID: workspaceID, pluginID: package.id, componentID: "skill:agent")
         let orphan = UUID(), key = PluginUpdateService.StaleSecret(key: "API_TOKEN", skillID: namespace)
         try env.outbox.journal([key])
-        try env.outbox.write([orphan])
+        try env.outbox.write([namespace, orphan])
         MetadataFakeSecrets.seed([namespace, orphan])
         try withDefinitions([package]) {
-            #expect((PluginCredentialMirrorReferences.capture(modelContext: env.context, extraMirrors: []) == nil) == (evidence != "empty"))
+            let ambiguous = !["empty", "inventory-only", "positive-plain-key", "positive-recorded-key"].contains(evidence)
+            let before = PluginCredentialMirrorReferences.capture(modelContext: env.context, extraMirrors: [])
+            #expect((before == nil) == ambiguous)
+            if !ambiguous {
+                #expect(before?.holdsSkill(namespace) == (evidence != "empty"))
+                #expect(before?.holdsSkill(namespace, key: key.key) == (evidence != "empty"))
+            }
             env.context.delete(env.workspace)
             try env.context.save()
             for _ in 0..<2 {
@@ -272,14 +283,26 @@ struct PluginCredentialMetadataCompatibilityTests {
                     })
                 let held = evidence != "empty"
                 #expect(MetadataFakeSecrets.value(namespace) == (held ? "synthetic-token" : nil))
-                #expect(MetadataFakeSecrets.value(orphan) == (held ? "synthetic-token" : nil))
-                #expect(try env.outbox.pendingKeys() == (held ? [key] : []))
-                #expect(try env.outbox.pending() == (held ? [orphan] : []))
-                #expect((PluginCredentialMirrorReferences.capture(modelContext: saved, extraMirrors: []) == nil) == held)
+                #expect(MetadataFakeSecrets.value(orphan) == (ambiguous ? "synthetic-token" : nil))
+                // A recorded live key settles its journal entry without
+                // deletion; mirror-only unknown keys must remain owed.
+                #expect(try env.outbox.pendingKeys() == (held && evidence != "positive-recorded-key" ? [key] : []))
+                let pending = try env.outbox.pending()
+                #expect(Set(pending) == Set(ambiguous ? [namespace, orphan] : evidence == "inventory-only" ? [namespace] : []))
+                let after = PluginCredentialMirrorReferences.capture(modelContext: saved, extraMirrors: [])
+                #expect((after == nil) == ambiguous)
+                if !ambiguous {
+                    #expect(after?.holdsSkill(namespace) == held)
+                    #expect(after?.holdsSkill(namespace, key: key.key) == held)
+                }
                 env.context.delete(restored)
                 try env.context.save()
             }
             // Removing the activation and its mirror releases the hold.
+            // Remove journals namespaces that were live (and therefore
+            // previously acknowledged without deleting their credentials).
+            try env.outbox.journal([key])
+            try env.outbox.write(Array(Set(try env.outbox.pending() + [namespace])))
             try FileManager.default.removeItem(at: mirror)
             resume(env)
             #expect(MetadataFakeSecrets.value(namespace) == nil)
@@ -296,26 +319,7 @@ struct PluginCredentialMetadataCompatibilityTests {
         defer { env.removeFiles() }
         let previous = WorkspaceRecoveryTrust.loadedMirrors
         defer { WorkspaceRecoveryTrust.recordLoadedMirrors(previous) }
-        var package = emptyPackage()
-        if evidence == "nonempty-definition" {
-            package.skills = [PluginSkill(name: "Agent", icon: "testtube.2", description: "Synthetic", allowedTools: [],
-                disallowedTools: [], customTools: [], behaviorInstructions: "Fixture", environmentKeys: [], environmentValues: [])]
-        }
-        var plugin: [String: Any] = ["id": package.id, "credentialComponentIDs": [String](),
-            "version": package.version, "digest": PluginDefinitionDigest.content(of: package), "secretSettingKeys": [String]()]
-        switch evidence {
-        case "bare": plugin = ["id": package.id, "credentialComponentIDs": [String]()]
-        case "unverified": plugin["digest"] = "unverified-legacy"
-        case "missing-markers": plugin.removeValue(forKey: "secretSettingKeys")
-        case "wrong-version": plugin["version"] = "0.0.0"
-        case "wrong-digest": plugin["digest"] = "content-v1:other"
-        case "override": plugin["overriddenComponentIDs"] = ["skill:agent"]
-        case "setting": plugin["settings"] = ["skill:agent#REGION": "synthetic-region"]
-        case "known": plugin["knownComponentIDs"] = ["skill:agent"]
-        case "secret": plugin["secretSettingKeys"] = ["skill:agent#API_TOKEN"]
-        case "account": plugin["accounts"] = [["componentID": "connector:rest_api:account", "connectorID": UUID().uuidString, "isDefault": true]]
-        default: break
-        }
+        let (package, plugin) = emptyInventoryFixture(evidence)
         let extra = env.root.appendingPathComponent("ambiguous-extra.json")
         let extraWorkspaceID = UUID(), orphan = UUID()
         let namespace = PluginActivation.credentialID(workspaceID: extraWorkspaceID, pluginID: package.id, componentID: "skill:agent")
@@ -397,6 +401,39 @@ struct PluginCredentialMetadataCompatibilityTests {
             author: "Tests", category: "Tests", tags: [], version: "1.0.0", skills: [], connectors: [], localTools: [],
             mcpServers: [PluginMCPServer(id: "synthetic-server", displayName: "Synthetic MCP", transport: .http,
                 url: URL(string: "https://mcp.example.invalid")!)], templates: [])
+    }
+
+    private func emptyInventoryFixture(_ evidence: String) -> (PluginPackage, [String: Any]) {
+        var package = emptyPackage()
+        if evidence == "nonempty-definition" {
+            package.skills = [PluginSkill(name: "Agent", icon: "testtube.2", description: "Synthetic", allowedTools: [],
+                disallowedTools: [], customTools: [], behaviorInstructions: "Fixture", environmentKeys: [], environmentValues: [])]
+        }
+        var plugin: [String: Any] = ["id": package.id, "credentialComponentIDs": [String](),
+            "version": package.version, "digest": PluginDefinitionDigest.content(of: package), "secretSettingKeys": [String]()]
+        switch evidence {
+        case "bare": plugin = ["id": package.id, "credentialComponentIDs": [String]()]
+        case "unverified": plugin["digest"] = "unverified-legacy"
+        case "missing-markers": plugin.removeValue(forKey: "secretSettingKeys")
+        case "wrong-version": plugin["version"] = "0.0.0"
+        case "wrong-digest": plugin["digest"] = "content-v1:other"
+        case "override": plugin["overriddenComponentIDs"] = ["skill:agent"]
+        case "setting": plugin["settings"] = ["skill:agent#REGION": "synthetic-region"]
+        case "unparsed-setting": plugin["settings"] = ["unresolved-legacy-key": "synthetic-private-value"]
+        case "known": plugin["knownComponentIDs"] = ["skill:agent"]
+        case "secret": plugin["secretSettingKeys"] = ["skill:agent#API_TOKEN"]
+        case "account": plugin["accounts"] = [["componentID": "connector:rest_api:account", "connectorID": UUID().uuidString, "isDefault": true]]
+        case "inventory-only":
+            plugin["credentialComponentIDs"] = ["skill:agent"]
+            plugin.removeValue(forKey: "secretSettingKeys")
+        case "positive-plain-key", "positive-recorded-key":
+            plugin.removeValue(forKey: "credentialComponentIDs")
+            plugin["knownComponentIDs"] = ["skill:agent"]
+            if evidence == "positive-plain-key" { plugin["settings"] = ["skill:agent#API_TOKEN": "synthetic-private-value"] }
+            else { plugin["secretSettingKeys"] = ["skill:agent#API_TOKEN"] }
+        default: break
+        }
+        return (package, plugin)
     }
 
     private func addActivation(_ package: PluginPackage, in env: PluginRecoveryMirrorCredentialTests.Fixture) {
