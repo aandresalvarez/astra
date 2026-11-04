@@ -161,7 +161,7 @@ public struct RetiredPluginActivation: Codable, Equatable, Sendable {
         )
     }
 
-    var keepsAnything: Bool {
+    public var keepsAnything: Bool {
         !namespaceSeed.isEmpty || overridingRowIDs.contains { UUID(uuidString: $0) != nil } || !(pendingOverrides ?? []).isEmpty
             || pendingImport != nil
             || credentialRecoveryEvidence != nil
@@ -445,7 +445,9 @@ extension WorkspaceCapabilityActivation {
         let active = Set(activations(of: workspace).map(\.pluginID))
         let current = retiredActivations(of: workspace)
         let kept = current.filter { entry in !entries.contains { $0.pluginID == entry.pluginID } }
-        let restored = entries.map { entry in
+        let restored = entries.map { original in
+            var entry = original
+            entry.credentialRecoveryEvidence?.admittedActivationID = nil
             guard active.contains(entry.pluginID) else { return entry }
             var pending = RetiredPluginActivation(
                 pluginID: entry.pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: [],
@@ -495,57 +497,5 @@ extension WorkspaceCapabilityActivation {
         var tools = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.id == id })
         tools.fetchLimit = 1
         return ((try? context.fetchCount(tools)) ?? 0) > 0
-    }
-}
-
-/// Value-free evidence that recovery could not fully represent in activation
-/// settings or account bindings. Only the explicit activation owner writes it;
-/// ordinary migration/reconciliation never silently clears it.
-public struct PluginCredentialRecoveryEvidence: Codable, Equatable, Sendable {
-    public struct Account: Codable, Hashable, Sendable {
-        public var componentID: String
-        public var connectorID: String
-
-        public init(componentID: String, connectorID: String) {
-            self.componentID = componentID
-            self.connectorID = connectorID
-        }
-    }
-
-    public var secretSettingKeysUnknown: Bool
-    public var unresolvedSettingKeys: [String]
-    public var unresolvedAccounts: [Account]
-    /// The source mirror failed the shared proof rules. A runtime graph
-    /// that drops the contradictory fields cannot upgrade that verdict.
-    public var inventoryAmbiguous: Bool?
-    /// Positive references the source reader held, independently of the
-    /// definition history migration may seed. These contain no values.
-    public var retainedComponentIDs: [String]?
-    public var retainedSecretSettingKeys: [String]?
-    public var hasUnresolvedReferences: Bool { !unresolvedSettingKeys.isEmpty || !unresolvedAccounts.isEmpty }
-    public var isAmbiguous: Bool { inventoryAmbiguous == true || hasUnresolvedReferences }
-    public var isEmpty: Bool {
-        !secretSettingKeysUnknown && !isAmbiguous && (retainedComponentIDs ?? []).isEmpty && (retainedSecretSettingKeys ?? []).isEmpty
-    }
-
-    public init(secretSettingKeysUnknown: Bool = false, unresolvedSettingKeys: [String] = [], unresolvedAccounts: [Account] = [],
-        inventoryAmbiguous: Bool? = nil, retainedComponentIDs: [String]? = nil, retainedSecretSettingKeys: [String]? = nil) {
-        self.secretSettingKeysUnknown = secretSettingKeysUnknown
-        self.unresolvedSettingKeys = unresolvedSettingKeys
-        self.unresolvedAccounts = unresolvedAccounts
-        self.inventoryAmbiguous = inventoryAmbiguous
-        self.retainedComponentIDs = retainedComponentIDs
-        self.retainedSecretSettingKeys = retainedSecretSettingKeys
-    }
-
-    public func merging(_ other: Self?) -> Self {
-        guard let other else { return self }
-        return Self(secretSettingKeysUnknown: secretSettingKeysUnknown || other.secretSettingKeysUnknown,
-            unresolvedSettingKeys: Set(unresolvedSettingKeys + other.unresolvedSettingKeys).sorted(),
-            unresolvedAccounts: Set(unresolvedAccounts + other.unresolvedAccounts).sorted {
-                $0.componentID == $1.componentID ? $0.connectorID < $1.connectorID : $0.componentID < $1.componentID
-            }, inventoryAmbiguous: inventoryAmbiguous == true || other.inventoryAmbiguous == true ? true : nil,
-            retainedComponentIDs: Set((retainedComponentIDs ?? []) + (other.retainedComponentIDs ?? [])).sorted(),
-            retainedSecretSettingKeys: Set((retainedSecretSettingKeys ?? []) + (other.retainedSecretSettingKeys ?? [])).sorted())
     }
 }

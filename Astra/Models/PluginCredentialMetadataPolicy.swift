@@ -5,6 +5,7 @@ import ASTRACore
 /// recovery. Nil means ambiguous; an empty result independently proves no
 /// credential namespaces. Recovery must preserve a positive result or nil,
 /// rather than recomputing a weaker answer from the restored runtime graph.
+/// Callers supply recovery evidence for the record's credential identity.
 public enum PluginCredentialMetadataPolicy {
     public struct References: Sendable {
         public let componentIDs: [String]
@@ -40,9 +41,10 @@ public enum PluginCredentialMetadataPolicy {
         components.formUnion(credentialComponentIDs ?? [])
         components.formUnion(matched ?? [])
         guard !components.isEmpty || (matched == [] && recorded.isEmpty && settingKeys.isEmpty) else { return nil }
+        let complete = recoveryEvidence?.hasCompleteMarkerList == true && secretSettingKeys != nil
         let unknown = components.filter {
-            recoveryEvidence?.secretSettingKeysUnknown == true || secretSettingKeys == nil
-                || (!known.contains($0) && recorded.isEmpty)
+            !complete && (recoveryEvidence?.secretSettingKeysUnknown == true || secretSettingKeys == nil
+                || (!known.contains($0) && recorded.isEmpty))
         }
         let positiveKeys = settings.filter { setting in
             guard let component = PluginActivation.componentID(ofSettingKey: setting) else { return false }

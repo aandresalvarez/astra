@@ -892,6 +892,32 @@ public enum WorkspaceRecoveryService {
         var existingIDs = Set(existing.map { $0.id.uuidString })
         var existingPaths = Set(existing.map { normalizePath($0.primaryPath) })
 
+        // Existing IDs are not reimported, but an older store may have lost
+        // fields during its original recovery. Admit this already-loaded own
+        // mirror before the first upgraded serializer can replace it.
+        do {
+            for loaded in configs {
+                guard let workspace = existing.first(where: {
+                    loaded.config.id == $0.id.uuidString && PluginCredentialEvidenceUpgrade.isOwnMirror(loaded.mirrorFile, workspace: $0)
+                }) else { continue }
+                let current = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath))
+                if loaded.mirrorFile.standardizedFileURL == current.standardizedFileURL {
+                    try PluginCredentialEvidenceUpgrade.admit(workspace: workspace, context: modelContext,
+                        prior: loaded.config, save: save)
+                } else {
+                    // A newer legacy-path copy is not proof about the current
+                    // file this store's next export will replace.
+                    try PluginCredentialEvidenceUpgrade.admit(workspace: workspace, context: modelContext, save: save)
+                }
+            }
+        } catch {
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "admit_existing_plugin_credential_evidence",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return (0, false)
+        }
+
         for loaded in configs {
             let config = loaded.config
             let configID = config.id

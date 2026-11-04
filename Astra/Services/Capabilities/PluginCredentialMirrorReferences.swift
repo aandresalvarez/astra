@@ -36,12 +36,15 @@ struct PluginCredentialMirrorReferences {
             var namespaces = Set<UUID>()
             for plugin in listed.installedPlugins ?? [] {
                 guard let workspaceID = file.workspaceID else { return nil }
+                let evidence = plugin.credentialRecoveryEvidence.flatMap {
+                    $0.appliesTo(namespaceSeed: plugin.namespaceSeed ?? "", credentialNamespaceSeed: plugin.credentialNamespaceSeed ?? "") ? $0 : nil
+                }
                 guard let references = PluginCredentialMetadataPolicy.references(
                     pluginID: plugin.id, version: plugin.version, digest: plugin.digest,
                     knownComponentIDs: plugin.knownComponentIDs, credentialComponentIDs: plugin.credentialComponentIDs,
                     secretSettingKeys: plugin.secretSettingKeys, settingKeys: Array((plugin.settings ?? [:]).keys),
                     overriddenComponentIDs: plugin.overriddenComponentIDs, accountComponentIDs: (plugin.accounts ?? []).map(\.componentID),
-                    recoveryEvidence: plugin.credentialRecoveryEvidence) else {
+                    recoveryEvidence: evidence) else {
                     ambiguousMetadata(workspaceID: workspaceID, pluginID: plugin.id)
                     return nil
                 }
