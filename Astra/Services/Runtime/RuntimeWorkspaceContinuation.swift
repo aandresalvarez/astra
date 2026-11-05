@@ -228,7 +228,7 @@ enum RuntimeWorkspaceContinuation {
         return leases
     }
 
-    private static func requireNoKnownRemoteWork(task: AgentTask, context: ModelContext) throws {
+    static func requireNoKnownRemoteWork(task: AgentTask, context: ModelContext) throws {
         for config in try RemoteWorkspaceJobRegistration.loadAll(task: task, context: context) {
             guard try RemoteWorkspaceJobStore(rootPath: config.recordRootPath).records().allSatisfy({ $0.status.isTerminal }) else {
                 throw RuntimeExecutionOwnerStore.Failure.busy

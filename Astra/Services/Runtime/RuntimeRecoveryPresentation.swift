@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import ASTRAModels
 
@@ -41,10 +42,15 @@ enum RuntimeRecoveryPresentation {
     static func queuedRequestDock(
         _ waiting: TaskDecisionDockPresentation?,
         hasOpenApprovalRequest: Bool,
-        blockedMessage: String?
+        blockedMessage: String?,
+        timeoutRecoveryRunID: UUID? = nil
     ) -> TaskDecisionDockPresentation? {
         guard let waiting, !hasOpenApprovalRequest || blockedMessage != nil else { return nil }
-        return waitingDock(waiting, blockedMessage: blockedMessage)
+        var dock = waitingDock(waiting, blockedMessage: blockedMessage)
+        if blockedMessage != nil, let timeoutRecoveryRunID {
+            dock.secondaryActions.insert(TaskDecisionDockPresentation.checkTimedOutRun(timeoutRecoveryRunID), at: 0)
+        }
+        return dock
     }
 
     /// Keep the saved request's cancellation controls while explaining why its

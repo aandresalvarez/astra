@@ -3533,12 +3533,15 @@ struct TaskMainView: View {
     private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
         let permission = runtimePermissionState
         let recoveryBlockMessage = RuntimeRecoveryPresentation.blockedMessage(task: task, context: modelContext)
+        let timeoutRecoveryRunID = latestRun?.stopReason == TaskRunStopReason.providerRunWallClockExceeded.rawValue
+            ? latestRun?.id : nil
         // Preserve a live permission decision, but keep Cancel request
         // reachable when an older disconnected execution blocks this message.
         if let waitingPresentation = RuntimeRecoveryPresentation.queuedRequestDock(
             taskTurnWaitingDockPresentation,
             hasOpenApprovalRequest: permission.hasOpenApprovalRequest,
-            blockedMessage: recoveryBlockMessage
+            blockedMessage: recoveryBlockMessage,
+            timeoutRecoveryRunID: timeoutRecoveryRunID
         ) {
             return waitingPresentation
         }
@@ -3582,7 +3585,8 @@ struct TaskMainView: View {
             repair: TaskRunStopEvidence.presentationRepair(events: sortedEvents, runID: latestRun?.id, task: task),
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails,
-            recoveryBlockMessage: recoveryBlockMessage
+            recoveryBlockMessage: recoveryBlockMessage,
+            timeoutRecoveryRunID: timeoutRecoveryRunID
         ))
     }
 
@@ -3930,6 +3934,9 @@ struct TaskMainView: View {
             onRunTask?(task)
         case .retry:
             onRetryTask?(task)
+        case .checkTimedOutRun:
+            guard let runID = action.payload.flatMap(UUID.init) else { return }
+            taskQueue?.recheckTimedOutRun(runID, task: task, context: modelContext)
         case .resume:
             onResumeTask?(task)
         case .runRepair:
