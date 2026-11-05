@@ -27,11 +27,23 @@ output directory remains writable. Docker workspaces use the existing read-only
 mount path. If sandbox enforcement is Off, admission upgrades the request to a
 writer and preserves serialization; consultation launch then fails closed with
 an actionable diagnostic rather than granting the provider write access. Branch
-operations, test validation, and template-hook injection also retain exclusive
-admission and cannot launch a consultation until those settings are removed.
+operations, test validation, template-hook injection, and approved-plan command
+assertions also retain exclusive admission. A gate checks the frozen Consult
+intent before hooks, branch preparation, or plan artifact preparation run.
+Command-bearing plans are rejected in Consult, including final-only validation
+after their last step is done; switch to Work to execute them. The resource
+resolver retains a second check at provider launch. Final validation checks the
+originating request again if a plan update adds a command during the turn.
 The consultation guidance
 asks the provider to answer without making remote or connected-service changes;
 this feature does not introduce a separate sandbox for those external systems.
+That guidance remains in both native-resume and fresh fallback prompts.
+
+Consult does not infer file ownership from workspace-wide before/after changes
+or modification-time scans: those changes may belong to a concurrent writer.
+Later output discovery resolves the same durable request, including its source
+event when recovery has cleared the current attempt fields. Its own task-folder
+snapshots still record outputs created during the answer.
 
 Optional JSON consistency fields preserve old request and owner-receipt
 decoding. Missing fields keep stable-reader behavior, and older builds ignore
@@ -42,6 +54,10 @@ uncertain-execution rules are unchanged.
 `WorkspaceConsultationTests` covers writer overlap, read-only launch grants,
 FIFO admission, sandbox Off, intrinsic writes, immutable submitted claims,
 legacy JSON, resource-kind limits, normalization, and saved selection. The
+`WorkspaceConsultationRuntimeTests` suite uses fake providers and temporary Git
+repositories to exercise rejection before preparation, command-plan admission
+and final validation, concurrent writer attribution, task outputs, and native
+resume prompts. The
 existing `SharedWorkspaceExecutionBoundaryTests` exercises kernel write denial
 and the task-output exception. These checks are not evidence of six-provider
 native concurrency or of remote service mutation isolation.

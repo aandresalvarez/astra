@@ -20,6 +20,9 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift|Astra/Services/Runtime/RuntimeWorkspaceConsultationGate.swift|Astra/Services/Runtime/ApprovedPlanRuntimeSettlement.swift|Astra/Services/Persistence/TaskOutputWorkspaceDiscovery.swift|Tests/WorkspaceConsultationTests.swift|Tests/WorkspaceConsultationRuntimeTests.swift)
+      add_target "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests"
+      ;;
     Astra/Views/TaskMainView.swift|Astra/Views/TaskChatScrollFollow.swift|Tests/TaskChatScrollFollowTests.swift|Tests/TaskMainViewCrashRegressionTests.swift|Astra/Views/TaskThreadViewModel.swift|Astra/Services/Tasks/TaskThreadHistoryStore.swift|Astra/Services/Tasks/TaskThreadHistoryPagePolicy.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceReader.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceCache.swift|Tests/TaskPublicationDecisionEvidenceWorkTests.swift|Tests/TaskPublicationDecisionEvidenceCommitTests.swift|Tests/ImportedTaskHistoryIsolationTests.swift|Tests/TaskThreadLiveHistoryTests.swift)
       add_target "TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests"
       ;;
@@ -323,7 +326,7 @@ target_for_path() {
       add_target "ShelfPreviewFailureTests"
       add_target "ShelfMarkdownAsyncLoadingTests|ShelfFilesOwnershipTests"
       ;;
-    Astra/Services/Runtime/AgentRuntimeRunPersistence.swift|Astra/Services/Persistence/TaskOutputDiscovery.swift)
+    Astra/Services/Runtime/AgentRuntimeRunPersistence.swift|Astra/Services/Persistence/TaskOutputDiscovery.swift|Astra/Services/Persistence/TaskOutputWorkspaceDiscovery.swift)
       add_target "TaskOutputDiscoveryTests"
       add_target "AgentRuntimeRunPersistenceTests"
       ;;

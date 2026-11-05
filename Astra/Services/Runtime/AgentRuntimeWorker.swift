@@ -168,6 +168,11 @@ final class AgentRuntimeWorker {
         defer { withExtendedLifetime(launchProjection) {} }
         let launchTask = launchProjection?.task ?? task
         let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
+        let request = executionRequestID.flatMap { try? TaskTurnRequestRepository.request(id: $0, in: modelContext) }
+        guard RuntimeWorkspaceConsultationGate.validate(task: task, launchTask: launchTask, request: request,
+            workspaceAccess: executionPolicy.workspaceAccessOverride
+                ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: request),
+            approvedPlan: currentPlan, modelContext: modelContext) else { return }
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
             let admission: RuntimeExecutionOwner.SettlementAdmission
@@ -356,6 +361,12 @@ final class AgentRuntimeWorker {
         defer { providerWait = nil }
         processRunner.configureExecutionOwner(executionOwner)
         defer { processRunner.configureExecutionOwner(nil) }
+        let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
+            ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: request)
+        let requiresWorkspaceConsultation = TaskWorkspaceConsultationPolicy.isRequired(by: request, task: launchTask)
+        guard RuntimeWorkspaceConsultationGate.validate(task: task, launchTask: launchTask, request: request,
+            workspaceAccess: executionWorkspaceAccess, approvedPlan: approvedPlan?.plan,
+            modelContext: modelContext) else { return }
         // Reject competing owners before changing the live provider session or settings.
         AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
             task: launchTask, selectedRuntime: selectedRuntime, phase: auditPhase)
@@ -495,8 +506,6 @@ final class AgentRuntimeWorker {
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
         guard turnBegin.persisted else { return }
         executionPolicy.followsUpDeliveredRequest = TaskDeliverableExpectation.followsUpDeliveredRequest(run, in: task)
-        let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
-            ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: turnBegin.request)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
             appliedRuntime,
             task: task,
@@ -768,8 +777,7 @@ final class AgentRuntimeWorker {
             repositoryStatus: githubRepositoryStatus
         )
         var prompt = runEnvironment.appendingReadOnlyInputGuidance(to: readinessPrompt)
-        if executionWorkspaceAccess == .shared,
-           turnBegin.request?.resourceClaims.contains(where: { $0.kind == .workspace && $0.readConsistency == .live }) == true {
+        if requiresWorkspaceConsultation {
             prompt += "\n\n" + TaskWorkspaceConsultationPolicy.providerGuidance
         }
         var launchResourcePlan = TaskLaunchResourceResolver.resolve(
@@ -785,9 +793,7 @@ final class AgentRuntimeWorker {
             runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
             permissionPolicy: launchPermissionPolicy,
             workspaceAccess: executionWorkspaceAccess,
-            requiresWorkspaceConsultation: turnBegin.request?.resourceClaims.contains(where: {
-                $0.kind == .workspace && $0.readConsistency == .live
-            }) == true,
+            requiresWorkspaceConsultation: requiresWorkspaceConsultation,
             admittedWritableGitMetadataRoots: TaskExecutionResourceClaimResolver
                 .admittedWritableGitMetadataRoots(for: turnBegin.request, task: launchTask),
             // appliedRuntime.requirements is already resolved above (~line 528),
@@ -930,6 +936,9 @@ final class AgentRuntimeWorker {
                 task: executionTask, executionPolicy: executionPolicy,
                 permissionPolicy: launchPermissionPolicy, contextText: providerLaunchContextText,
                 repositoryStatus: githubRepositoryStatus, runEnvironment: runEnvironment))
+            if requiresWorkspaceConsultation {
+                prompt += "\n\n" + TaskWorkspaceConsultationPolicy.providerGuidance
+            }
         }
         prompt = workspaceOrientation.appending(to: prompt) + historyGuidance + reviewThreadGuidance
         prompt = repositoryInstructions?.appending(to: prompt) ?? prompt
@@ -970,7 +979,7 @@ final class AgentRuntimeWorker {
         ) else {
             return
         }
-        let beforeGitStatus = runtimeAdapter.recordsInferredFileChanges
+        let beforeGitStatus = runtimeAdapter.recordsInferredFileChanges && !requiresWorkspaceConsultation
             ? publicationBeforeGitStatus
             : nil
         var beforeDirtyFingerprints: [String: AgentFileChangeDetector.FileFingerprint]?

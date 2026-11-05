@@ -16,6 +16,17 @@ assert_targets() {
   fi
 }
 
+assert_targets "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests" \
+  "Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift" \
+  "Astra/Services/Runtime/RuntimeWorkspaceConsultationGate.swift" \
+  "Tests/WorkspaceConsultationTests.swift" \
+  "Tests/WorkspaceConsultationRuntimeTests.swift"
+
+assert_targets "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests
+TaskOutputDiscoveryTests
+AgentRuntimeRunPersistenceTests" \
+  "Astra/Services/Persistence/TaskOutputWorkspaceDiscovery.swift"
+
 assert_targets "PluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests
 PluginCredentialUpgradeTests
 PluginActivationReviewTests|PluginConnectorFieldTrustTests

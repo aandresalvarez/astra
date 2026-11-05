@@ -188,6 +188,25 @@ enum ApprovedPlanRuntimeSettlement {
         modelContext: ModelContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration
     ) async -> Bool {
+        // A provider can update the plan during its turn. Admission checked
+        // the accepted plan, but the reconstructed contract below must still
+        // respect that request's read-only consultation boundary.
+        if TaskWorkspaceConsultationPolicy.hasCommandAssertions(in: plan) {
+            let lastRun = task.runs.max { $0.startedAt < $1.startedAt }
+            let request: TaskTurnRequest?
+            do {
+                request = try lastRun.flatMap {
+                    try TaskTurnRequestRepository.origin(for: task, runID: $0.id, in: modelContext)
+                }
+            } catch {
+                pauseApprovedPlanForUser(task: task, modelContext: modelContext,
+                    message: "Plan validation cannot verify the originating request's workspace access.", run: lastRun)
+                return false
+            }
+            guard RuntimeWorkspaceConsultationGate.validate(task: task, launchTask: task, request: request,
+                workspaceAccess: TaskExecutionResourceClaimResolver.workspaceAccess(for: request),
+                approvedPlan: plan, modelContext: modelContext) else { return false }
+        }
         let contractEvaluation = await ValidationService.runContract(
             task: task,
             plan: plan,

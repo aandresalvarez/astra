@@ -20,6 +20,22 @@ enum TaskWorkspaceConsultationPolicy {
         return declarations == ["read_only"] && (task.constraints + task.inputs).contains(where: isConsultationDeclaration)
     }
 
+    static func isRequired(by request: TaskTurnRequest?, task: AgentTask) -> Bool {
+        // Once accepted, the request owns this intent even if the composer is
+        // changed before admission. Direct launches use their launch snapshot.
+        request.map { $0.resourceClaims.contains { $0.kind == .workspace && $0.readConsistency == .live } }
+            ?? isEnabled(for: task)
+    }
+
+    static func hasCommandAssertions(in plan: TaskPlanPayload?) -> Bool {
+        plan?.validationContract?.assertions.contains { $0.method == .command } == true
+    }
+
+    static func acceptedPlan(for request: TaskTurnRequest?, task: AgentTask) -> TaskPlanPayload? {
+        guard let request, let event = TaskHistoryRead.event(id: request.messageEventID, in: task) else { return nil }
+        return ExecutionRequestSubmissionService.decodeSourcePayload(event)?.planSnapshot
+    }
+
     static func apply(_ enabled: Bool, to task: AgentTask) {
         let wasConsultation = isEnabled(for: task)
         let shouldRemove: (String) -> Bool = {

@@ -352,7 +352,7 @@ enum ExecutionRequestSubmissionService {
         }
     }
 
-    static func decodeSourcePayload(_ event: some TaskEventValue) -> TaskExecutionSourcePayloadV1? {
+    nonisolated static func decodeSourcePayload(_ event: some TaskEventValue) -> TaskExecutionSourcePayloadV1? {
         guard [
             TaskEventTypes.ExecutionRequest.initial,
             TaskEventTypes.ExecutionRequest.retry,
@@ -391,6 +391,7 @@ enum ExecutionRequestSubmissionService {
             sourceEventType: eventType,
             sourcePayload: encoded,
             acceptedTurn: payload.message,
+            approvedPlan: payload.planSnapshot,
             permissionContinuation: payload.permissionContinuation,
             task: task,
             modelContext: modelContext,
@@ -406,6 +407,7 @@ enum ExecutionRequestSubmissionService {
         sourceEventType: String,
         sourcePayload: String,
         acceptedTurn: String? = nil,
+        approvedPlan: TaskPlanPayload? = nil,
         permissionContinuation: PermissionApprovalContinuation? = nil,
         attachmentPaths: [String] = [],
         task: AgentTask,
@@ -459,7 +461,8 @@ enum ExecutionRequestSubmissionService {
             kind: kind,
             resourceClaims: TaskExecutionResourceClaimResolver.claims(
                 for: task,
-                acceptedTurn: acceptedTurn
+                acceptedTurn: acceptedTurn,
+                approvedPlan: approvedPlan
             ),
             turnIntentSnapshot: turnIntentSnapshot,
             pluginDefinitions: TaskExecutionLaunchSnapshotApplicator.pluginDefinitions(for: task),

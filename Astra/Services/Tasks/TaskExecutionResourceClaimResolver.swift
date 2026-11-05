@@ -9,9 +9,11 @@ import ASTRAPersistence
 enum TaskExecutionResourceClaimResolver {
     static func claims(
         for task: AgentTask,
-        acceptedTurn: String? = nil
+        acceptedTurn: String? = nil,
+        approvedPlan: TaskPlanPayload? = nil
     ) -> [TaskExecutionResourceClaim] {
-        let access = workspaceAccess(for: task, acceptedTurn: acceptedTurn)
+        let access: TaskExecutionResourceAccess = TaskWorkspaceConsultationPolicy.hasCommandAssertions(in: approvedPlan)
+            ? .exclusive : workspaceAccess(for: task, acceptedTurn: acceptedTurn)
         let keys = workspaceKeys(for: task)
         // Workspace claims stay first: `workspaceClaim(for:task:)` and the
         // drift check both treat the leading claim as the canonical boundary.
@@ -124,6 +126,8 @@ enum TaskExecutionResourceClaimResolver {
             ?? task.validationStrategy
         let hooks = policy?.templateHooksJSON ?? task.templateHooksJSON
         return isolation == .gitBranch || validation == .runTests || (!hooks.isEmpty && hooks != "{}")
+            || TaskWorkspaceConsultationPolicy.hasCommandAssertions(
+                in: TaskWorkspaceConsultationPolicy.acceptedPlan(for: request, task: task))
     }
 
     static func workspaceAccess(for request: TaskTurnRequest?) -> TaskExecutionResourceAccess {
