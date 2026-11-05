@@ -31,11 +31,11 @@ struct RuntimeCancellationStreamEvidenceTests {
     }
 
     @Test("Known text and thinking bookkeeping permits proof only after a terminal frame", arguments: [
-        #"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text","text":""}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"thinking","thinking":""}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":""}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":""}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"signature_delta","signature":"signed"}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed"}}}"#,
         #"{"type":"assistant","message":{"content":[{"type":"text","text":""}]}}"#
     ])
     func knownTextBookkeeping(line: String) {
@@ -47,15 +47,18 @@ struct RuntimeCancellationStreamEvidenceTests {
     }
 
     @Test("Tools, malformed blocks and unfamiliar deltas remain uncertain", arguments: [
-        #"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"tool","name":"Bash","input":{}}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text"}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"thinking","thinking":42}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"future_tool","text":""}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{}"}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"signature_delta","signature":12}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"future_delta"}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"future_delta","text":"looks harmless"}}}"#,
-        #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":""}}}"#,
+        // Missing native block indices also retain uncertainty.
+        #"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text","text":""}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":""}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool","name":"Bash","input":{}}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text"}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":42}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"future_tool","text":""}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":12}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"future_delta"}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"future_delta","text":"looks harmless"}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}}"#,
         #"{"type":"assistant","message":{"content":[{"type":"text"}]}}"#,
         #"{"type":"assistant","message":{"id":"msg-test","content":[{"type":"text","text":"done"},{"type":"thinking"}]}}"#,
         #"{"type":"assistant","message":{"content":[{"type":"text","text":""},{"type":"future_tool"}]}}"#,
@@ -64,7 +67,7 @@ struct RuntimeCancellationStreamEvidenceTests {
     func uncertainFramesStaySticky(line: String) {
         let evidence = RuntimeExecutionProcessEvidence()
         observe(line, in: evidence)
-        observe(#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text","text":""}}}"#, in: evidence)
+        observe(#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#, in: evidence)
         observe(terminal, in: evidence)
         #expect(!evidence.toolsStopped)
     }
@@ -72,7 +75,7 @@ struct RuntimeCancellationStreamEvidenceTests {
     @Test("Recognized text bookkeeping cannot hide another parsed tool event in the frame")
     func bookkeepingCannotMaskToolEvent() {
         let evidence = RuntimeExecutionProcessEvidence()
-        let line = #"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text","text":""}}}"#
+        let line = #"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#
         evidence.observeFrame(line, parsesJSONLines: true, events: [
             .control(type: "stream_event.content_block_start"),
             .toolUse(name: "Bash", id: "tool", input: ["command": "sleep 10"])

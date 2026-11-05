@@ -6,7 +6,7 @@ import CoreFoundation
 /// The helper and ordinary frame classifier share the same message contract.
 enum RuntimeCopilotFrameMetadata {
     static func accepts(_ frame: [String: Any]) -> Bool {
-        guard envelope(frame), let type = frame["type"] as? String,
+        guard acceptsEnvelope(frame), let type = frame["type"] as? String,
               let data = frame["data"] as? [String: Any] else { return false }
         switch type {
         case "assistant.message": return message(data)
@@ -47,7 +47,7 @@ enum RuntimeCopilotFrameMetadata {
         }
     }
 
-    private static func envelope(_ frame: [String: Any]) -> Bool {
+    static func acceptsEnvelope(_ frame: [String: Any]) -> Bool {
         guard Set(frame.keys).isSubset(of: ["type", "data", "id", "timestamp", "parentId", "ephemeral"]),
               ["id", "timestamp"].allSatisfy({ frame[$0] == nil || frame[$0] is String }) else { return false }
         if let parent = frame["parentId"], !(parent is NSNull), !(parent is String) { return false }

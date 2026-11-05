@@ -52,8 +52,8 @@ target_for_path() {
   esac
 
   case "$path" in
-    Astra/Services/Runtime/RuntimeManagedSSHHelperEvidence.swift|Tests/RuntimeManagedSSHHelperEvidenceTests.swift|Astra/Services/Runtime/RuntimeCopilotFrame*.swift|Tests/RuntimeCopilotFrameMetadataTests.swift|Astra/Services/Runtime/RuntimeExecutionProcessEvidence.swift|Astra/Services/Runtime/RemoteWorkspaceJobBroker.swift)
-      add_target "RuntimeManagedSSHHelperEvidenceTests|RuntimeCopilotFrameMetadataTests|RuntimeProviderCompletionEvidenceTests|RuntimeWorkspaceContinuationTests"
+    Astra/Services/Runtime/RuntimeManagedSSH*.swift|Tests/RuntimeManagedSSH*Tests.swift|Astra/Services/Runtime/RuntimeCopilotFrame*.swift|Tests/RuntimeCopilotFrameMetadataTests.swift|Tests/RuntimeClaudeFrameMetadataTests.swift|Astra/Services/Runtime/RuntimeProviderFrameEvidence.swift|Astra/Services/Runtime/RuntimeExecutionProcessEvidence.swift|Astra/Services/Runtime/RemoteWorkspaceJobBroker.swift)
+      add_target "RuntimeManagedSSHHelperEvidenceTests|RuntimeManagedSSHHelperMetadataTests|RuntimeClaudeFrameMetadataTests|RuntimeCopilotFrameMetadataTests|RuntimeProviderCompletionEvidenceTests|RuntimeWorkspaceContinuationTests"
       ;;
   esac
 

@@ -1,5 +1,4 @@
 import Foundation
-import CoreFoundation
 import ASTRACore
 import WorkspaceToolSupport
 
@@ -48,7 +47,7 @@ struct RuntimeManagedSSHHelperEvidence {
     private mutating func call(id: String?, name: String?, input: Any?, started: Bool) -> Bool {
         guard let id, !id.isEmpty, let name, ["Bash", "bash"].contains(name),
               let input = input as? [String: Any], let command = input["command"] as? String,
-              Set(input.keys).isSubset(of: ["command", "description", "timeout", "timeout_ms"]),
+              RuntimeManagedSSHFrameMetadata.input(input),
               let tokens = HostControlCLIRelayPolicy.shellTokens(command), tokens.first == RemoteWorkspaceJobCLI.commandName,
               let parsed = try? RemoteWorkspaceJobCLI.parse(Array(tokens.dropFirst())), parsed != .help else { return false }
         if let previous = calls[id], previous != parsed { return false }
@@ -64,6 +63,7 @@ struct RuntimeManagedSSHHelperEvidence {
     }
 
     mutating func observe(_ frame: [String: Any], runtime: AgentRuntimeID) -> Bool {
+        guard RuntimeManagedSSHFrameMetadata.accepts(frame, runtime: runtime) else { return false }
         guard frame["parent_tool_use_id"] == nil || frame["parent_tool_use_id"] is NSNull else { return false }
         // Strip only the expected native tool marker. Redundant counters or
         // extra requests on any intermediate frame still disprove cleanup.
@@ -97,20 +97,14 @@ struct RuntimeManagedSSHHelperEvidence {
             var found = false
             for block in blocks {
                 switch block["type"] as? String {
-                case "text":
-                    guard block["text"] is String, Set(block.keys).isSubset(of: ["type", "text", "citations"]) else { return false }
-                case "thinking":
-                    guard block["thinking"] is String, Set(block.keys).isSubset(of: ["type", "thinking", "signature"]) else { return false }
+                case "text", "thinking": break
                 case "tool_use":
-                    guard Set(block.keys).isSubset(of: ["type", "id", "name", "input", "caller"]),
-                          Self.directCaller(block["caller"]),
-                          frame["type"] as? String == "assistant",
+                    guard frame["type"] as? String == "assistant",
                           call(id: block["id"] as? String, name: block["name"] as? String,
                                input: block["input"], started: true) else { return false }
                     found = true
                 case "tool_result":
-                    guard Set(block.keys).isSubset(of: ["type", "tool_use_id", "content", "is_error"]),
-                          frame["type"] as? String == "user", result(block["tool_use_id"] as? String) else { return false }
+                    guard frame["type"] as? String == "user", result(block["tool_use_id"] as? String) else { return false }
                     found = true
                 default: return false
                 }
@@ -127,8 +121,6 @@ struct RuntimeManagedSSHHelperEvidence {
             case "content_block_start":
                 guard let index = event["index"] as? Int, streamed[index] == nil,
                       let block = event["content_block"] as? [String: Any], block["type"] as? String == "tool_use",
-                      Set(block.keys).isSubset(of: ["type", "id", "name", "input", "caller"]),
-                      Self.directCaller(block["caller"]),
                       let id = block["id"] as? String, !id.isEmpty,
                       let name = block["name"] as? String, ["Bash", "bash"].contains(name),
                       let input = block["input"] as? [String: Any], input.isEmpty else { return false }
@@ -137,16 +129,16 @@ struct RuntimeManagedSSHHelperEvidence {
             case "content_block_delta":
                 guard let index = event["index"] as? Int, let id = streamed[index],
                       let delta = event["delta"] as? [String: Any], delta["type"] as? String == "input_json_delta",
-                      Set(delta.keys).isSubset(of: ["type", "partial_json"]),
                       let fragment = delta["partial_json"] as? String,
                       (fragments[id]?.utf8.count ?? 0) + fragment.utf8.count <= 131_072 else { return false }
                 fragments[id, default: ""] += fragment
                 return true
             case "content_block_stop":
-                guard let index = event["index"] as? Int, let id = streamed.removeValue(forKey: index),
-                      let text = fragments.removeValue(forKey: id), let name = streamedNames.removeValue(forKey: id),
+                guard let index = event["index"] as? Int, let id = streamed[index],
+                      let text = fragments[id], let name = streamedNames[id],
                       let input = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
                       call(id: id, name: name, input: input, started: true) else { return false }
+                streamed.removeValue(forKey: index); fragments.removeValue(forKey: id); streamedNames.removeValue(forKey: id)
                 return true
             case "message_delta":
                 guard let delta = event["delta"] as? [String: Any], delta["stop_reason"] as? String == "tool_use",
@@ -162,28 +154,17 @@ struct RuntimeManagedSSHHelperEvidence {
 
     private mutating func copilot(_ frame: [String: Any]) -> Bool {
         guard let data = frame["data"] as? [String: Any] else { return false }
-        if frame["type"] as? String == "assistant.message" {
-            guard RuntimeCopilotFrameMetadata.accepts(frame) else { return false }
-        } else {
-            guard Set(frame.keys).isSubset(of: ["type", "data", "id", "timestamp", "parentId", "ephemeral"]),
-                  Self.ephemeralMetadata(frame["ephemeral"]) else { return false }
-        }
         switch frame["type"] as? String {
         case "assistant.message":
             guard let requests = data["toolRequests"] as? [[String: Any]], !requests.isEmpty else { return false }
             for request in requests {
-                guard Set(request.keys).isSubset(of: ["toolCallId", "name", "arguments", "type", "intentionSummary"]),
-                      request["type"] == nil || request["type"] as? String == "function",
-                      request["intentionSummary"] == nil || request["intentionSummary"] is NSNull || request["intentionSummary"] is String,
-                      call(id: request["toolCallId"] as? String, name: request["name"] as? String,
+                guard call(id: request["toolCallId"] as? String, name: request["name"] as? String,
                     input: request["arguments"], started: false) else { return false }
             }
             var stripped = frame; var cleaned = data; cleaned["toolRequests"] = []; stripped["data"] = cleaned
             return !RuntimeStreamExecutionHints.containsWork(stripped)
         case "assistant.tool_call_delta":
-            guard Set(data.keys).isSubset(of: ["toolCallId", "toolName", "inputDelta", "toolType"]),
-                  data["toolType"] == nil || data["toolType"] as? String == "function",
-                  let id = data["toolCallId"] as? String, !id.isEmpty, !starts.contains(id),
+            guard let id = data["toolCallId"] as? String, !id.isEmpty, !starts.contains(id),
                   let name = data["toolName"] as? String, ["Bash", "bash"].contains(name),
                   let fragment = data["inputDelta"] as? String,
                   (fragments[id]?.utf8.count ?? 0) + fragment.utf8.count <= 131_072 else { return false }
@@ -191,40 +172,24 @@ struct RuntimeManagedSSHHelperEvidence {
             fragments[id, default: ""] += fragment; streamedNames[id] = name
             return true
         case "tool.execution_start":
-            guard Set(data.keys).isSubset(of: ["toolCallId", "toolName", "arguments", "turnId", "model", "interactionId", "rte"]) else { return false }
-            if let id = data["toolCallId"] as? String, let text = fragments.removeValue(forKey: id) {
-                guard let name = streamedNames.removeValue(forKey: id),
+            if let id = data["toolCallId"] as? String, let text = fragments[id] {
+                guard let name = streamedNames[id],
                       let input = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
                       call(id: id, name: name, input: input, started: false) else { return false }
+                fragments.removeValue(forKey: id); streamedNames.removeValue(forKey: id)
             }
             return !RuntimeStreamExecutionHints.containsWork(frame)
                 && call(id: data["toolCallId"] as? String, name: data["toolName"] as? String,
                     input: data["arguments"], started: true)
         case "tool.execution_complete":
-            guard Set(data.keys).isSubset(of: ["toolCallId", "success", "result", "error", "turnId", "model", "interactionId", "rte"]) else { return false }
             return !RuntimeStreamExecutionHints.containsWork(frame) && result(data["toolCallId"] as? String)
         case "tool.execution_partial_result", "tool.execution_progress":
             // Account only for native textual output from the already-bound call.
             // Extra payload fields retain native-tool uncertainty.
-            let outputKey = frame["type"] as? String == "tool.execution_partial_result" ? "partialOutput" : "progressMessage"
-            guard Set(data.keys).isSubset(of: ["toolCallId", outputKey]),
-                  data[outputKey] is String, let id = data["toolCallId"] as? String else { return false }
+            guard let id = data["toolCallId"] as? String else { return false }
             return calls[id] != nil && starts.contains(id) && !completed.contains(id)
         default: return false
         }
     }
 
-    // Captured native metadata is descriptive only in these exact shapes.
-    // Indirect callers, malformed flags and added work fields stay uncertain.
-    private static func directCaller(_ value: Any?) -> Bool {
-        guard let value else { return true }
-        guard let caller = value as? [String: Any] else { return false }
-        return Set(caller.keys) == ["type"] && caller["type"] as? String == "direct"
-    }
-
-    private static func ephemeralMetadata(_ value: Any?) -> Bool {
-        guard let value else { return true }
-        guard let flag = value as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else { return false }
-        return flag.boolValue
-    }
 }

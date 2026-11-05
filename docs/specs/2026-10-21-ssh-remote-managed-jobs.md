@@ -133,8 +133,15 @@ shell commands, unknown frames and redundant work counters remain fenced. Direct
 commands and inherited tool uncertainty require separate evidence. Copilot activity
 and bookkeeping frames share a typed metadata contract with helper announcements.
 Unsupported envelope or data fields, malformed metadata, subagent attribution and
-built-in edit work retain uncertainty even after a helper completes. Native text
-stays opaque; rendering a message does not establish cleanup. A user may
+built-in edit work retain uncertainty even after a helper completes. A pure helper
+metadata policy validates each supported envelope, input and result before call
+bookkeeping changes. The same Claude message/event policy guards already-supported
+ordinary text and stream frames, so rejected metadata cannot regain clean evidence
+through an activity classification. Claude wire inputs must match the exact declared tool IDs
+and inputs. Copilot terminal result blocks require a typed exit code; a completed
+tool event containing a still-running terminal cannot prove helper cleanup.
+Unsupported result extensions remain uncertain. Native result text stays opaque;
+rendering a message does not establish cleanup. A user may
 authorize one waiting request to continue after its listed jobs finish. For
 older jobs without a result or prior evidence of a launch, the host must first
 block the original launcher and check for its supervisor. This decision applies
