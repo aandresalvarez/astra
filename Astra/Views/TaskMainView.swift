@@ -241,6 +241,7 @@ struct TaskMainView: View {
     @State var threadViewModel = TaskThreadViewModel()
     @State private var sshConnections: [SSHConnection] = []
     @State private var isChatAtBottom = true
+    @State private var chatFollowLayout = TaskChatFollowLayoutState()
     @State private var hasUnseenChatActivity = false
     @State private var shouldScrollAfterUserMessage = false
     @State private var pendingInitialChatScrollTaskID: UUID?
@@ -429,12 +430,10 @@ struct TaskMainView: View {
         )
     }
 
-    private var threadScrollSignature: String {
-        let itemCount = currentThreadSnapshot.conversationItems.count
-        let lastItemID = currentThreadSnapshot.conversationItems.last?.id ?? "none"
-        let latestOutputCount = currentThreadSnapshot.latestRun?.output.count ?? 0
-        let latestStatus = currentThreadSnapshot.latestRun?.status.rawValue ?? "none"
-        return "count=\(itemCount)#last=\(lastItemID)#latest=\(latestOutputCount)#status=\(latestStatus)"
+    private var threadScrollSignature: TaskThreadSnapshotReadiness {
+        // A rolling window can replace rows without changing count, last item,
+        // output length or status. Every applied source revision needs layout.
+        threadViewModel.appliedSnapshotReadiness
     }
 
     // Separate compiler boundaries keep the transcript, sheets and lifecycle
@@ -639,6 +638,7 @@ struct TaskMainView: View {
         .background {
             TaskDecisionOutcomeSaveObserver(task: task, modelContext: modelContext) {
                 decisionOutcomeSaveRevision &+= 1
+                threadViewModel.requestSnapshotRefresh(for: task)
             }
         }
         .background {
@@ -693,8 +693,7 @@ struct TaskMainView: View {
             // this closure runs at the raw stream rate: a fresh `Date()` each
             // time invalidated the whole body outside every debounce, paying
             // two SwiftData fetches, the O(events) filter+sort in
-            // `TaskRuntimeHealth.evaluate`, and the O(output) grapheme walk in
-            // `threadScrollSignature` per pass. Its only consumer compares
+            // `TaskRuntimeHealth.evaluate` per pass. Its only consumer compares
             // against a five-minute `TaskRuntimeHealth.quietThreshold`, so whole
             // seconds is enough, and leaving it uncoalesced would make
             // `TaskThreadLiveSnapshotPacer` -- which sizes its interval from
@@ -750,6 +749,7 @@ struct TaskMainView: View {
             scope: taskOpenResponsivenessScope
         ) {
             isChatAtBottom = true
+            chatFollowLayout.reset()
             hasUnseenChatActivity = false
             shouldScrollAfterUserMessage = true
             pendingInitialChatScrollTaskID = task.id
@@ -1614,6 +1614,9 @@ struct TaskMainView: View {
                             .frame(height: 1)
                             .id("chatBottom")
                             .background(chatBottomPositionReader())
+                            .background(TaskChatScrollInteractionReader { isAtBottom in
+                                handleUserChatScroll(isAtBottom: isAtBottom)
+                            })
                     }
                     .frame(
                         maxWidth: TaskChatLayoutGeometry.columnMaxWidth(for: chatViewportWidth),
@@ -1635,8 +1638,15 @@ struct TaskMainView: View {
                         .animation(.easeOut(duration: 0.18), value: hasUnseenChatActivity)
                 }
                 .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in
+                    let measuredSnapshot = threadScrollSignature
+                    let measuredInput = chatFollowLayout.inputRevision
+                    let followingLayout = chatFollowLayout.shouldDeferBottomChange(
+                        isFollowing: isChatAtBottom && !isExpandingWindow, snapshot: measuredSnapshot)
                     deferTaskViewMutation {
-                        updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
+                        guard measuredSnapshot == threadScrollSignature,
+                              measuredInput == chatFollowLayout.inputRevision else { return }
+                        updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height,
+                                              followingLayoutAtMeasurement: followingLayout)
                     }
                     recordTranscriptReadinessIfAvailable()
                     // Not wrapped in deferTaskViewMutation: this only feeds the watchdog's
@@ -1794,7 +1804,8 @@ struct TaskMainView: View {
     }
 
     private func handleChatTopPositionChange(topMinY: CGFloat) {
-        guard topMinY > -300 else { return }
+        guard topMinY > -300, !isChatAtBottom else { return }
+        guard pendingInitialChatScrollTaskID != task.id else { return }
         guard threadViewModel.hasEarlierHistory else { return }
         guard !isExpandingWindow else { return }
         requestEarlierHistory()
@@ -1803,6 +1814,8 @@ struct TaskMainView: View {
     private func requestEarlierHistory() {
         guard threadViewModel.hasEarlierHistory else { return }
         guard !isExpandingWindow else { return }
+        chatFollowLayout.noteUserScroll(snapshot: threadScrollSignature)
+        isChatAtBottom = false
         isExpandingWindow = true
         expansionAnchorItemID = currentThreadSnapshot.conversationItems.first?.id
         threadViewModel.loadEarlierHistory(for: task)
@@ -1816,19 +1829,55 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private func newActivityPill(proxy: ScrollViewProxy) -> some View {
-        if !isChatAtBottom {
-            ChatJumpToLatestButton(hasUnseenActivity: hasUnseenChatActivity) {
-                scrollChatToBottom(proxy)
+        if !isChatAtBottom || threadViewModel.hasNewerHistory {
+            ChatJumpToLatestButton(hasUnseenActivity: hasUnseenChatActivity || threadViewModel.hasNewerHistory) {
+                resumeLatestHistory()
+                scrollChatToBottomAfterLayout(proxy, animated: false)
             }
         }
     }
 
-    private func updateChatBottomState(bottomMinY: CGFloat, viewportHeight: CGFloat) {
-        let wasAtBottom = isChatAtBottom
+    private func resumeLatestHistory() {
+        isExpandingWindow = false
+        expansionAnchorItemID = nil
+        isChatAtBottom = true
+        chatFollowLayout.resumeFollowing()
+        threadViewModel.followLatestHistory(for: task)
+    }
+
+    private func updateChatBottomState(bottomMinY: CGFloat, viewportHeight: CGFloat,
+                                       followingLayoutAtMeasurement: Bool) {
         let isNowAtBottom = ChatScrollMetrics.isAtBottom(bottomMinY: bottomMinY, viewportHeight: viewportHeight)
+        if !isNowAtBottom, isChatAtBottom,
+           followingLayoutAtMeasurement || chatFollowLayout.shouldDeferBottomChange(
+            isFollowing: !isExpandingWindow, snapshot: threadScrollSignature) { return }
+        setChatBottomState(isNowAtBottom)
+    }
+
+    private func handleUserChatScroll(isAtBottom: Bool) {
+        chatFollowLayout.noteUserScroll(snapshot: threadScrollSignature)
+        if isAtBottom {
+            chatFollowLayout.resumeFollowing()
+        } else {
+            shouldScrollAfterUserMessage = false
+            pendingInitialChatScrollTaskID = nil
+        }
+        // Native user input arrives before its deferred geometry preference.
+        // Pin now so a concurrent applied snapshot cannot resume auto-follow.
+        setChatBottomState(isAtBottom)
+    }
+
+    private func setChatBottomState(_ isNowAtBottom: Bool) {
+        let wasAtBottom = isChatAtBottom
         guard isNowAtBottom != isChatAtBottom else { return }
         isChatAtBottom = isNowAtBottom
-        if isChatAtBottom && !wasAtBottom { hasUnseenChatActivity = false }
+        if isChatAtBottom && !wasAtBottom {
+            chatFollowLayout.resumeFollowing()
+            hasUnseenChatActivity = false
+            if !isExpandingWindow { threadViewModel.followLatestHistory(for: task) }
+        } else if !isChatAtBottom {
+            threadViewModel.pauseFollowingLatestHistory(for: task)
+        }
     }
 
     /// `ChatScrollRecoveryWatchdog` calls this once a parked bottom-sentinel reading
@@ -1856,11 +1905,12 @@ struct TaskMainView: View {
     }
 
     private func handleThreadScrollChange(
-        oldSignature: String,
-        newSignature: String,
+        oldSignature: TaskThreadSnapshotReadiness,
+        newSignature: TaskThreadSnapshotReadiness,
         proxy: ScrollViewProxy
     ) {
-        guard oldSignature != newSignature else { return }
+        guard oldSignature != newSignature, newSignature == threadScrollSignature else { return }
+        chatFollowLayout.noteSnapshotHandled(newSignature)
 
         if let anchorID = expansionAnchorItemID {
             expansionAnchorItemID = nil
@@ -1879,6 +1929,7 @@ struct TaskMainView: View {
         }
 
         if shouldScrollAfterUserMessage {
+            resumeLatestHistory()
             scrollChatToBottom(proxy)
             shouldScrollAfterUserMessage = false
             return
@@ -1891,15 +1942,18 @@ struct TaskMainView: View {
             // be computed against the taller pre-collapse layout and land past the
             // new, shorter content once it settles — the parked-blank state
             // `scrollRecoveryWatchdog` exists to catch. Re-issuing after a layout
-            // beat targets that exact race, but unlike the initial-open path below
-            // (where the reader hasn't had a chance to scroll away yet), this fires
-            // mid-read: use the gesture-safe variant so a reader who scrolls up in
-            // that window isn't snapped back to the bottom by the delayed follow-up.
-            scrollChatToBottomAfterLayoutIfStillAtBottom(proxy, animated: false)
+            // beat targets that race. User-initiated native scrolling cancels
+            // both pending scrolls, so the follow never overrides the reader.
+            scrollChatToBottomAfterLayout(proxy, animated: false)
             return
         }
 
-        hasUnseenChatActivity = true
+        // A scroll-only pause rebuilds the retained window and still needs a
+        // layout beat. Only changed content earns the new-activity indicator;
+        // arrivals outside the pinned window are reported by hasNewerHistory.
+        if newSignature.hasContentChange(from: oldSignature) {
+            hasUnseenChatActivity = true
+        }
     }
 
     private var currentSnapshotMatchesTaskHistory: Bool {
@@ -1907,35 +1961,30 @@ struct TaskMainView: View {
     }
 
     private func scrollChatToBottomAfterLayout(_ proxy: ScrollViewProxy, animated: Bool) {
-        scrollChatToBottom(proxy, animated: animated)
+        guard isChatAtBottom, let token = chatFollowLayout.beginFollow(snapshot: threadScrollSignature) else { return }
+        scrollChatToBottom(proxy, animated: animated, following: token)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            scrollChatToBottom(proxy, animated: animated)
+            guard isChatAtBottom, chatFollowLayout.isCurrent(token, snapshot: threadScrollSignature) else { return }
+            scrollChatToBottom(proxy, animated: animated, following: token, completesFollow: true)
         }
     }
 
-    /// Same double-scroll as `scrollChatToBottomAfterLayout`, but re-checks
-    /// `isChatAtBottom` before the delayed follow-up fires, so a reader who
-    /// scrolls up in that 50ms window isn't yanked back down. The initial-open
-    /// call site doesn't need this — the reader hasn't had a chance to scroll yet
-    /// — but this one fires on every live tail-follow update mid-read.
-    private func scrollChatToBottomAfterLayoutIfStillAtBottom(_ proxy: ScrollViewProxy, animated: Bool) {
-        scrollChatToBottom(proxy, animated: animated)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            guard isChatAtBottom else { return }
-            scrollChatToBottom(proxy, animated: animated)
-        }
-    }
-
-    private func scrollChatToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+    private func scrollChatToBottom(_ proxy: ScrollViewProxy, animated: Bool = true,
+                                    following token: TaskChatFollowLayoutState.Token? = nil,
+                                    completesFollow: Bool = false) {
         hasUnseenChatActivity = false
         shouldScrollAfterUserMessage = false
         DispatchQueue.main.async {
+            if let token, !chatFollowLayout.isCurrent(token, snapshot: threadScrollSignature) { return }
             if animated {
                 withAnimation(.easeOut(duration: 0.18)) {
                     proxy.scrollTo("chatBottom", anchor: .bottom)
                 }
             } else {
                 proxy.scrollTo("chatBottom", anchor: .bottom)
+            }
+            if completesFollow, let token {
+                DispatchQueue.main.async { chatFollowLayout.finish(token) }
             }
         }
     }
@@ -4706,6 +4755,7 @@ struct TaskMainView: View {
            ) { return }
         shouldScrollAfterUserMessage = true
 
+        resumeLatestHistory()
         switch sendAction {
         case .none:
             return
@@ -4858,6 +4908,7 @@ struct TaskMainView: View {
         }
 
         shouldScrollAfterUserMessage = true
+        resumeLatestHistory()
         let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
         TaskEventInsertionService.insert(userEvent, attachmentPaths: attachmentPaths, into: modelContext)
         task.updatedAt = Date()

@@ -8,6 +8,44 @@ import ASTRAModels
 @MainActor
 @Suite("Saved export snapshot directory lifecycle", .serialized)
 struct WorkspaceSnapshotDirectoryTests {
+    @Test("One retained batch copy closes each reader before the next projection", arguments: ["success", "failure", "cancellation"])
+    func retainedBatchReadersClose(outcome: String) async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer(root)
+        try await Task.detached {
+            try autoreleasepool {
+                enum ProjectionFailure: Error { case injected }
+                let captured = try WorkspaceSavedExportSnapshot.capture(container: container, workspaceID: "synthetic")
+                let directory = captured.directory.root
+                for _ in 0..<3 {
+                    var identities = Set<SnapshotFileIdentity>()
+                    do {
+                        try captured.read { snapshot in
+                            let context = ModelContext(snapshot)
+                            context.autosaveEnabled = false
+                            _ = Unmanaged.passRetained(snapshot).autorelease()
+                            _ = Unmanaged.passRetained(context).autorelease()
+                            let workspace = try #require(context.fetch(FetchDescriptor<Workspace>()).first)
+                            _ = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+                            identities = try snapshotFileIdentities(in: directory)
+                            #expect(!openSnapshotDescriptors(identities).isEmpty)
+                            if outcome == "failure" { throw ProjectionFailure.injected }
+                            if outcome == "cancellation" { throw CancellationError() }
+                        }
+                    } catch is CancellationError { #expect(outcome == "cancellation") }
+                    catch ProjectionFailure.injected { #expect(outcome == "failure") }
+                    #expect(!identities.isEmpty)
+                    #expect(openSnapshotDescriptors(identities).isEmpty)
+                    #expect(FileManager.default.fileExists(atPath: directory.path))
+                }
+                withExtendedLifetime(captured) {}
+            }
+        }.value
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .filter { $0.hasPrefix(".astra-mirror-") && !$0.hasSuffix(".lock") }.isEmpty)
+    }
+
     @Test("Repeated projections close snapshot descriptors before removing their directory",
           arguments: ["success", "failure", "cancellation"])
     func fileDescriptorsClose(outcome: String) async throws {

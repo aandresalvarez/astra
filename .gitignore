@@ -39,3 +39,7 @@ dist/
 
 # Logs
 *.log
+
+# Disposable full-app scale benchmark stores, bundles and traces
+.artifacts/dev-scale*/
+script/benchmarks/__pycache__/

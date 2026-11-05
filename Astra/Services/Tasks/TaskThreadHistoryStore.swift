@@ -21,41 +21,55 @@ import ASTRAModels
 /// main context without saving (`AgentEventRecorder`).
 actor TaskThreadHistoryStore {
     private let container: ModelContainer
+    private lazy var publicationCache = TaskPublicationDecisionEvidenceReader.Cache(container: container)
+
+    #if DEBUG
+    func publicationWorkForTesting() -> TaskPublicationDecisionEvidenceReader.Work { publicationCache.work }
+    #endif
 
     init(container: ModelContainer) {
         self.container = container
     }
 
-    /// The newest page. `covering*` widen it to at least the window the caller
-    /// already holds — the page size is the floor, never the cap — because a
-    /// caller that has to *replace* what it accumulated (an announced mutation
-    /// invalidated it) would otherwise collapse a transcript the user paged
-    /// open back to a single page and lose their place. The widening is bounded
-    /// by rows the caller already holds plus at most one page of new rows.
+    /// The newest bounded page. An invalidation must use this same limit,
+    /// rather than widening it to the count accumulated during streaming.
+    /// Browsing an older window uses `retainedPage` instead.
     func initialPage(
         taskID: UUID,
         ownerID: PersistentIdentifier? = nil,
-        coveringEventCount: Int = 0,
-        previousTotalEventCount: Int? = nil,
-        coveringRunCount: Int = 0,
         runPageSize: Int = TaskThreadHistoryReader.defaultRunPageSize,
-        eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize
+        eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize,
+        historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryPage {
         // No `await` between the context and the return: the context must never
         // be alive across a suspension point.
         let context = makeContext()
-        let ownerID = try TaskHistoryScope.ownerID(taskID: taskID, ownerID: ownerID, in: context)
-        let growth: Int
-        if let previousTotalEventCount {
-            let count = try context.fetchCount(FetchDescriptor<ASTRAModels.TaskEvent>(predicate: #Predicate { $0.task?.persistentModelID == ownerID }))
-            growth = min(eventPageSize, max(0, count - previousTotalEventCount))
-        } else { growth = 0 }
         return try TaskThreadHistoryReader.initialPage(
             taskID: taskID,
             ownerID: ownerID,
             modelContext: context,
-            runPageSize: max(runPageSize, coveringRunCount),
-            eventPageSize: max(eventPageSize, coveringEventCount + growth)
+            runPageSize: runPageSize,
+            eventPageSize: eventPageSize,
+            publicationCache: publicationCache,
+            historyInvalidation: historyInvalidation
+        )
+    }
+
+    /// Re-read exactly the browsed rows, including deletions and replacements,
+    /// plus current live runs and state anchors. New conversation rows wait for
+    /// Jump to latest, so streaming never evicts the reader's scroll anchor.
+    func retainedPage(
+        taskID: UUID,
+        ownerID: PersistentIdentifier,
+        eventIDs: [UUID],
+        runIDs: [UUID],
+        cursor: TaskThreadHistoryCursor,
+        historyInvalidation: Int = 0
+    ) throws -> TaskThreadHistoryPage {
+        try TaskThreadHistoryReader.retainedPage(
+            taskID: taskID, ownerID: ownerID, eventIDs: eventIDs,
+            runIDs: runIDs, cursor: cursor, modelContext: makeContext(),
+            publicationCache: publicationCache, historyInvalidation: historyInvalidation
         )
     }
 
@@ -64,7 +78,8 @@ actor TaskThreadHistoryStore {
         ownerID: PersistentIdentifier? = nil,
         since cursor: TaskThreadEventCursor,
         runPageSize: Int = TaskThreadHistoryReader.defaultRunPageSize,
-        eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize
+        eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize,
+        historyInvalidation: Int = 0
     ) throws -> TaskThreadHistoryTailPage {
         try TaskThreadHistoryReader.tailPage(
             taskID: taskID,
@@ -72,7 +87,9 @@ actor TaskThreadHistoryStore {
             since: cursor,
             modelContext: makeContext(),
             runPageSize: runPageSize,
-            eventPageSize: eventPageSize
+            eventPageSize: eventPageSize,
+            publicationCache: publicationCache,
+            historyInvalidation: historyInvalidation
         )
     }
 

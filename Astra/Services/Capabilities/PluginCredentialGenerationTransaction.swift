@@ -15,6 +15,10 @@ struct PluginCredentialGenerationTransaction {
     private let outbox: PluginSecretCleanupOutbox?
     private let persistence: any SkillSecretPersisting.Type
 
+    func publish(on activation: PluginActivation) {
+        WorkspaceCapabilityActivation.publishCredentialGeneration(generation, on: activation)
+    }
+
     struct Replacement {
         let component: String
         let key: String

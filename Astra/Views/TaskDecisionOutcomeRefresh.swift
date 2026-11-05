@@ -49,12 +49,17 @@ enum TaskDecisionOutcomeRefresh {
     struct SnapshotInputs: Equatable, Sendable {
         let runs: [RunKey]
         let events: [TaskEventSnapshot]
+        /// A storage read supplies the entire bounded publication packet,
+        /// including an authoritative empty answer. Pinned transcript rows can
+        /// remain visible after they cease to describe the durable requirement.
+        let publicationEvents: [TaskEventSnapshot]
 
         init(events: [TaskEventSnapshot], runs: [TaskRunSnapshot]) {
             self.init(events: events, runs: runs, cancellationCheck: {})
         }
 
-        init(events window: [TaskEventSnapshot], runs: [TaskRunSnapshot], cancellationCheck: () throws -> Void) rethrows {
+        init(events window: [TaskEventSnapshot], runs: [TaskRunSnapshot],
+             publicationEvents: [TaskEventSnapshot]? = nil, cancellationCheck: () throws -> Void) rethrows {
             self.runs = runs.map(RunKey.init)
             var lastUse: [UUID?: TaskEventSnapshot] = [:]
             var legacyUses = Set<UUID>()
@@ -83,7 +88,16 @@ enum TaskDecisionOutcomeRefresh {
                 start = end
             }
             try cancellationCheck()
-            events = window.filter { affectsOutcomes($0.type) || legacyUses.contains($0.id) }
+            let windowEvidence = window.filter { affectsOutcomes($0.type) || legacyUses.contains($0.id) }
+            events = Dictionary((windowEvidence + (publicationEvents ?? [])).map { ($0.id, $0) },
+                                uniquingKeysWith: { _, fresh in fresh }).values.sorted {
+                $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp
+            }
+            self.publicationEvents = publicationEvents.map { packet in
+                packet.sorted {
+                    $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp
+                }
+            } ?? events
         }
     }
 
@@ -94,6 +108,7 @@ enum TaskDecisionOutcomeRefresh {
         let locations: [String]
         let runs: [RunKey]
         let events: [TaskEventSnapshot]
+        let publicationEvents: [TaskEventSnapshot]
         let artifactPaths: [String]
         let saveRevision: Int
         let historyInvalidation: Int
@@ -106,6 +121,7 @@ enum TaskDecisionOutcomeRefresh {
             locations = [task.workspace?.primaryPath ?? "", task.executionRootPath ?? ""]
             runs = snapshot?.decisionOutcomeInputs.runs ?? []
             events = snapshot?.decisionOutcomeInputs.events ?? []
+            publicationEvents = snapshot?.decisionOutcomeInputs.publicationEvents ?? []
             self.artifactPaths = artifactPaths
             self.saveRevision = saveRevision
             historyInvalidation = TaskThreadHistoryInvalidation.token(for: task.id)
