@@ -106,7 +106,12 @@ enum RuntimeProviderResourceRegistry {
     /// Claims inherited from earlier writers still need their own proof.
     static func conflicts(_ key: AgentRuntimeSharedStateKey, record: RuntimeExecutionOwnerRecord,
                           checkingHistoryIn store: RuntimeExecutionOwnerStore? = nil, requireExactWriter: Bool = false) -> Bool {
-        let observation = store == nil ? nil : record.legacyProviderReadObservation
+        let observationHistory = record.legacyProviderReadObservation == nil ? nil
+            : store.flatMap { try? $0.retainedExecutions(of: record) }
+        // Reuse requires the complete saved inventory fence, including keyless
+        // preparations that the writer-claim walk below intentionally skips.
+        let observation = observationHistory?.allSatisfy({ $0.pendingSSHJobSetDigest == nil }) == true
+            ? record.legacyProviderReadObservation : nil
         func permitsLegacyRead(_ writer: RuntimeExecutionOwnerRecord) -> Bool {
             observation?.covers(writer, heldBy: record, requested: key) == true
         }
@@ -114,13 +119,9 @@ enum RuntimeProviderResourceRegistry {
            store == nil || (!record.canReplace && !permitsLegacyRead(record)) { return true }
         var inherited = Set((record.retainedProviderSharedStateKeys ?? []).filter(key.conflicts))
         if requireExactWriter && record.providerSharedStateKey != key.rawValue { inherited.insert(key.rawValue) }
-        guard !inherited.isEmpty else {
-            if permitsLegacyRead(record), record.retainedExecutionHead != nil,
-               let store, (try? store.retainedExecutions(of: record)) == nil { return true }
-            return false
-        }
+        guard !inherited.isEmpty else { return false }
         if record.providerSharedStateReleased == false && record.providerSharedStateKey == nil { return true }
-        guard let store, let history = try? store.retainedExecutions(of: record) else { return true }
+        guard let store, let history = observationHistory ?? (try? store.retainedExecutions(of: record)) else { return true }
         var proven = Set<String>()
         for prior in history.reversed() {
             let carried = Set(prior.retainedProviderSharedStateKeys ?? []).intersection(inherited)

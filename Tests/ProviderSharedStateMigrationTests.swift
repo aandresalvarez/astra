@@ -11,7 +11,9 @@ struct ProviderSharedStateMigrationTests {
     @Test("A second task may read a legacy writer's settings only after verified local settlement and reboot",
           arguments: ["settled", "legacyFilename", "missingPointerJournal", "sameBoot", "unknownBoot", "unknownEnvironment", "missingHistory",
                       "unsettled", "unboundRun", "zeroLaunches", "missingLaunchCount", "contradictoryUsage",
-                      "pendingSSHCurrent", "pendingSSHRetained", "pendingSSHPreparation", "pendingSSHAfterObservation"])
+                      "pendingSSHCurrent", "pendingSSHRetained", "pendingSSHPreparation", "pendingSSHAfterObservation",
+                      "pendingSSHRetainedAfterObservation", "pendingSSHPreparationAfterObservation",
+                      "pendingSSHPreparationAfterObservationCurrentWriter"])
     func historicalReader(fixture: String) async throws {
         // This fixture deliberately retains a provider-wide legacy claim. Use
         // a real on-disk journal visible only to the gates that opt into it,
@@ -53,7 +55,7 @@ struct ProviderSharedStateMigrationTests {
         writer.inheritedToolUncertainty = true
         if fixture == "unboundRun" { writer.runID = UUID() }
         var history = [writer]
-        if ["zeroLaunches", "missingLaunchCount", "contradictoryUsage", "pendingSSHPreparation"].contains(fixture) {
+        if ["zeroLaunches", "missingLaunchCount", "contradictoryUsage"].contains(fixture) || fixture.contains("Preparation") {
             let stopped = completedRun(.antigravityCLI, secondsAgo: 15)
             stopped.status = .cancelled
             stopped.typedStopReason = .cancelled
@@ -71,18 +73,19 @@ struct ProviderSharedStateMigrationTests {
             preparation.retainedExecutionHead = writer.executionID
             history.append(preparation)
         }
-        let last = completedRun(.copilotCLI, secondsAgo: 10)
+        let currentWriter = fixture.hasSuffix("CurrentWriter")
+        let last = completedRun(currentWriter ? .antigravityCLI : .copilotCLI, secondsAgo: 10)
         holder.status = .completed
         try h.context.save()
         var current = writer
         current.executionID = UUID()
         current.runID = last.id
         current.state = .finished
-        current.runtime = AgentRuntimeID.copilotCLI.rawValue
-        current.providerSharedStateKey = nil
-        current.providerSharedStateReleased = nil
+        current.runtime = try #require(last.runtimeID)
+        current.providerSharedStateKey = currentWriter ? oldKey.rawValue : nil
+        current.providerSharedStateReleased = currentWriter ? false : nil
         current.retainedExecutionHead = history.last?.executionID
-        current.retainedProviderSharedStateKeys = [oldKey.rawValue]
+        current.retainedProviderSharedStateKeys = currentWriter ? [] : [oldKey.rawValue]
         current.stopProof = .init(executionID: current.executionID, process: try #require(current.providerProcess),
             reaped: true, processGroupEmpty: true, toolsStopped: false, remoteWorkExcluded: true, capturedAt: Date())
         if fixture == "pendingSSHCurrent" { current.pendingSSHJobSetDigest = "missing-registered-inventory" }
@@ -138,7 +141,7 @@ struct ProviderSharedStateMigrationTests {
         }
         let gate = AgentRuntimeSharedStateGate(processLockRoot: h.providerLockRoot, registeredStoreRoots: [store.root], hostBootTime: { boot })
         await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await gate.waitForPreviousWriter(key) }
-        if ["settled", "legacyFilename", "zeroLaunches", "missingPointerJournal", "pendingSSHAfterObservation"].contains(fixture) {
+        if ["settled", "legacyFilename", "zeroLaunches", "missingPointerJournal"].contains(fixture) || fixture.contains("AfterObservation") {
             if fixture != "missingPointerJournal" {
                 try await gate.waitForPreviousWriter(key, owner: reader)
                 let cold = AgentRuntimeSharedStateGate(processLockRoot: h.providerLockRoot, registeredStoreRoots: [])
@@ -160,20 +163,34 @@ struct ProviderSharedStateMigrationTests {
                 try store.retain(saved)
                 withExtendedLifetime(lease) {}
             }
-            if fixture == "pendingSSHAfterObservation" {
-                current.pendingSSHJobSetDigest = "new-registered-inventory"
-                do {
+            if fixture.contains("AfterObservation") {
+                if fixture == "pendingSSHAfterObservation" {
+                    current.pendingSSHJobSetDigest = "new-registered-inventory"
                     let lease = try store.acquire(taskID: holder.id, taskOwnerID: holder.persistentModelID)
                     try lease.save(current)
+                } else {
+                    // Restore an older archive with uncertainty after publication.
+                    // A saved observation must not bypass the reread of preparations
+                    // that carry no writer key, even when no inherited key is needed.
+                    let index = fixture.contains("Preparation") ? 1 : 0
+                    history[index].pendingSSHJobSetDigest = "new-registered-inventory"
+                    let archive = store.root.appendingPathComponent("retained/\(holder.id.uuidString)/\(writer.ownerID.uuidString)/\(history[index].executionID.uuidString).json")
+                    try JSONEncoder().encode(history[index]).write(to: archive)
                 }
                 let cold = AgentRuntimeSharedStateGate(processLockRoot: h.providerLockRoot, registeredStoreRoots: [])
                 await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await cold.waitForPreviousWriter(key) }
+                await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await gate.waitForPreviousWriter(key, owner: reader) }
+                #expect(try RuntimeTaskOwnerJournal.read(task: holder, context: h.context) == current)
+                #expect(try store.retainedExecutions(of: current) == Array(history.reversed()))
+                #expect(TaskHistoryRead.events(for: holder, ofTypes: [TaskEventTypes.System.legacyProviderReaderVerified.rawValue]).count == 1)
             }
         } else {
             await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await gate.waitForPreviousWriter(key, owner: reader) }
             #expect(try store.read(taskID: holder.id, taskOwnerID: holder.persistentModelID) == current)
         }
         await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await gate.acquire(key) }
+        reader.finish()
+        await h.cleanup().value
     }
 
     @Test("A protected remote job registration precludes a reboot observation for its owner")
