@@ -16,9 +16,36 @@ assert_targets() {
   fi
 }
 
-assert_targets "WorkspaceConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests" \
-  "Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift" \
-  "Tests/WorkspaceConsultationTests.swift"
+assert_targets "PluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests
+PluginCredentialUpgradeTests
+PluginActivationReviewTests|PluginConnectorFieldTrustTests
+CapabilityUninstallerTests
+PluginActivationOwnershipTests
+PluginMigrationUnreadableSkillSecretTests
+PluginSecretSettingWriterTests
+PluginSourceInstallationTests
+PluginSourcesTests
+PluginStaleCredentialOwnerTests" \
+  "ASTRACore/PluginCredentialComponentInventorySeam.swift" \
+  "Astra/Models/PluginCredentialMetadataPolicy.swift" \
+  "Astra/Models/PluginCredentialRecoveryEvidence.swift" \
+  "Astra/Models/RetiredPluginActivation.swift" \
+  "Astra/Models/WorkspaceCapabilityActivation.swift" \
+  "Astra/Services/Capabilities/PluginActivationMigration.swift" \
+  "Astra/Services/Capabilities/PluginActivationAdmission.swift" \
+  "Astra/Services/Capabilities/PluginCredentialComponentInventory.swift" \
+  "Astra/Services/Capabilities/PluginCredentialMirrorReferences.swift" \
+  "Astra/Services/Persistence/WorkspaceConfigManager+PluginActivations.swift" \
+  "Astra/Services/Persistence/WorkspaceConfigManager+PluginCredentialEvidence.swift" \
+  "Astra/Services/Persistence/PluginCredentialEvidenceUpgrade.swift" \
+  "Astra/Services/Capabilities/PluginCredentialGenerationTransaction.swift" \
+  "Astra/Services/Capabilities/PluginOperations+Settings.swift" \
+  "Astra/Services/Capabilities/PluginUpdateSkillCredentials.swift" \
+  "Astra/Services/Capabilities/CapabilityInstaller.swift" \
+  "Tests/PluginCredentialMetadataCompatibilityTests.swift" \
+  "Tests/PluginCredentialUpgradeTests.swift" \
+  "Tests/PluginRecoveryMirrorCredentialTests.swift" \
+  "Tests/PendingTaskCredentialCleanupTests.swift"
 
 assert_targets "TaskDecisionOutcomeRefreshTests|TaskDecisionOutcomeColdRefreshTests|TaskDeliverableFollowUpTests|TaskDecisionDock|TaskMainActorScalingGateTests" \
   "Astra/Views/TaskDecisionOutcomeRefresh.swift" \
@@ -142,6 +169,7 @@ for path in \
   Astra/Services/Persistence/WorkspaceConfigManager.swift \
   Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift \
   Astra/Services/Persistence/WorkspacePersistenceWork.swift \
+  Astra/Services/Persistence/WorkspaceExportFileIO.swift \
   Astra/Services/Persistence/WorkspaceSavedAutoExport.swift \
   Astra/Services/Persistence/WorkspaceExportChangeScope.swift \
   Astra/Services/Persistence/WorkspaceSavedExportLease.swift \
@@ -203,7 +231,7 @@ assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTe
   "Tests/TaskDecisionDockPresentationTests.swift" \
   "Astra/Services/Tasks/TaskDecisionDockPresentation.swift"
 
-assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
+assert_targets $'TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests\nTaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
   "Astra/Views/TaskMainView.swift"
 
 assert_targets $'ComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
@@ -459,3 +487,50 @@ assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nA
   "ASTRACore/BinaryRunner.swift" \
   "Tests/BinaryRunnerTests.swift" \
   "Tests/ProcessDescriptorIsolationTests.swift"
+
+assert_targets 'SidebarFolderResponsivenessTelemetryTests|StartupCleanupTelemetryTests|CredentialCleanupStartupTests|MainThreadPhaseTests' \
+  ASTRACore/LaunchDiagnosticClock.swift \
+  Astra/Services/Diagnostics/SidebarFolderResponsivenessTelemetry.swift \
+  Astra/Services/Persistence/StartupCleanupTelemetry.swift \
+  Astra/Services/Capabilities/CredentialCleanupStartupMirrors.swift \
+  Tests/SidebarFolderResponsivenessTelemetryTests.swift \
+  Tests/StartupCleanupTelemetryTests.swift \
+  Tests/CredentialCleanupStartupTests.swift
+
+assert_targets 'TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests' \
+  Astra/Views/TaskChatScrollFollow.swift \
+  Tests/TaskChatScrollFollowTests.swift \
+  Tests/TaskMainViewCrashRegressionTests.swift \
+  Astra/Views/TaskThreadViewModel.swift \
+  Astra/Services/Tasks/TaskThreadHistoryStore.swift \
+  Astra/Services/Tasks/TaskThreadHistoryPagePolicy.swift \
+  Astra/Services/Tasks/TaskPublicationDecisionEvidenceReader.swift \
+  Astra/Services/Tasks/TaskPublicationDecisionEvidenceCache.swift \
+  Tests/TaskPublicationDecisionEvidenceWorkTests.swift \
+  Tests/TaskPublicationDecisionEvidenceCommitTests.swift \
+  Tests/ImportedTaskHistoryIsolationTests.swift \
+  Tests/TaskThreadLiveHistoryTests.swift
+
+# A merge touching credential admission and chat history must retain both
+# independently selected protection groups, without duplicating either one.
+assert_targets $'PluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests\nPluginCredentialUpgradeTests\nPluginActivationReviewTests|PluginConnectorFieldTrustTests\nCapabilityUninstallerTests\nPluginActivationOwnershipTests\nPluginMigrationUnreadableSkillSecretTests\nPluginSecretSettingWriterTests\nPluginSourceInstallationTests\nPluginSourcesTests\nPluginStaleCredentialOwnerTests\nTaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests' \
+  Tests/PluginCredentialUpgradeTests.swift \
+  Tests/TaskThreadLiveHistoryTests.swift \
+  Tests/PluginCredentialMetadataCompatibilityTests.swift \
+  Tests/TaskThreadLiveHistoryTests.swift
+
+assert_targets $'WorkspaceCleanupMirrorBatchTests\nWorkspaceCleanupEvidenceAdmissionTests\nPluginCredentialUpgradeTests\nPluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests' \
+  Astra/Services/Persistence/WorkspaceCleanupMirrorBatch.swift \
+  Astra/Services/Persistence/WorkspaceCleanupStoreGeneration.swift \
+  Astra/Services/Persistence/WorkspaceCleanupMirrorDestination.swift \
+  Tests/WorkspaceCleanupMirrorBatchTests.swift \
+  Tests/WorkspaceCleanupEvidenceAdmissionTests.swift
+
+# Cleanup admission and bounded-chat integration must select all protections,
+# including credential upgrades, without duplicating shared groups.
+assert_targets $'WorkspaceCleanupMirrorBatchTests\nWorkspaceCleanupEvidenceAdmissionTests\nPluginCredentialUpgradeTests\nPluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests\nPluginActivationReviewTests|PluginConnectorFieldTrustTests\nCapabilityUninstallerTests\nPluginActivationOwnershipTests\nPluginMigrationUnreadableSkillSecretTests\nPluginSecretSettingWriterTests\nPluginSourceInstallationTests\nPluginSourcesTests\nPluginStaleCredentialOwnerTests\nTaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests' \
+  Tests/WorkspaceCleanupEvidenceAdmissionTests.swift \
+  Tests/PluginCredentialUpgradeTests.swift \
+  Tests/TaskThreadLiveHistoryTests.swift \
+  Tests/TaskChatScrollFollowTests.swift \
+  Tests/WorkspaceCleanupMirrorBatchTests.swift
