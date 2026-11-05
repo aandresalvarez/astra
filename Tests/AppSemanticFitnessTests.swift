@@ -77,6 +77,7 @@ struct AppSemanticFitnessTests {
             "execution.request.plan_step": .lifecycle,
             "execution.request.resume": .lifecycle,
             "execution.request.retry": .lifecycle,
+            "execution.request.run_associated": .lifecycle,
             "execution.request.scheduled": .lifecycle,
             "handoff.created": .lifecycle,
             "handoff.missing": .lifecycle,

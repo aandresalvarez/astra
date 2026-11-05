@@ -67,6 +67,18 @@ target_for_path() {
   esac
 
   case "$path" in
+    Astra/Services/Runtime/RuntimeManagedSSH*.swift|Tests/RuntimeManagedSSH*Tests.swift|Astra/Services/Runtime/RuntimeCopilotFrame*.swift|Tests/RuntimeCopilotFrameMetadataTests.swift|Tests/RuntimeClaudeFrameMetadataTests.swift|Astra/Services/Runtime/RuntimeProviderFrameEvidence.swift|Astra/Services/Runtime/RuntimeExecutionProcessEvidence.swift|Astra/Services/Runtime/RemoteWorkspaceJobBroker.swift)
+      add_target "RuntimeManagedSSHHelperEvidenceTests|RuntimeManagedSSHHelperMetadataTests|RuntimeClaudeFrameMetadataTests|RuntimeCopilotFrameMetadataTests|RuntimeProviderCompletionEvidenceTests|RuntimeWorkspaceContinuationTests"
+      ;;
+  esac
+
+  case "$path" in
+    Astra/Services/Tasks/TaskQueueRemoteAdmissionRefresh.swift|Astra/Services/Tasks/TaskQueueStoreSession.swift|Tests/TaskQueueStoreSessionTests.swift|Astra/Services/Runtime/RemoteWorkspaceJobEventReconciler.swift)
+      add_target "TaskQueueStoreSessionTests|RuntimeWorkspaceContinuationTests|RemoteWorkspaceJobPersistenceTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Runtime/RuntimeNativeSessionOwnership.swift|Tests/RuntimeNativeSessionOwnership*Tests.swift)
       add_target "RuntimeNativeSessionOwnershipTests|AgentRuntimeAsyncWorkTests|AgentProcessResultTests"
       ;;
@@ -100,8 +112,8 @@ target_for_path() {
   esac
 
   case "$path" in
-    Astra/Services/Runtime/RuntimeWorkspaceContinuation*.swift|Astra/Services/Runtime/RuntimeTimeoutRecoveryCheck.swift|Astra/Views/TaskWorkspaceContinuationPrompt.swift|Tests/RuntimeWorkspaceContinuation*Tests.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Tasks/TaskQueue+ResourceAdmission.swift)
-      add_target "RuntimeWorkspaceContinuation.*Tests|RuntimeCompletedUserTurnContinuationTests|RemoteWorkspaceJobPersistenceTests|TaskDecisionDock"
+    Astra/Services/Runtime/RuntimeWorkspaceContinuation*.swift|Astra/Services/Runtime/RuntimeTimeoutRecoveryCheck.swift|Astra/Services/Runtime/RuntimeWorkspaceRemoteJobs.swift|Astra/Services/Runtime/RuntimeHostNoToolReceiptReconciliation.swift|Astra/Views/TaskWorkspaceContinuationPrompt.swift|Tests/RuntimeWorkspaceContinuation*Tests.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Tasks/TaskQueue+ResourceAdmission.swift)
+      add_target "RuntimeWorkspaceContinuation.*Tests|RuntimeCompletedUserTurnContinuationTests|RuntimeHostNoToolReceiptReconciliationTests|RemoteWorkspaceJobPersistenceTests|TaskDecisionDock"
       ;;
   esac
 
@@ -143,7 +155,7 @@ target_for_path() {
   esac
 
   case "$path" in
-    ASTRACore/OpenCode*.swift|Astra/Services/Runtime/RuntimeStreamExecutionHints.swift|Astra/Services/Runtime/RuntimeCopilotFrameEvidence.swift|Astra/Services/Runtime/RuntimeUsageArithmetic.swift|Astra/Services/Runtime/RuntimeRecoveryPresentation.swift|Tests/RuntimeProvider*Tests.swift|Tests/RuntimeCleanupAuthorizationTests.swift|Tests/OpenCode*Tests.swift|Tests/Fixtures/ProviderStreams/*/recovery-captured-*.jsonl|Astra/Services/Runtime/RuntimeTemplateHookScope.swift|Tests/QueueLockTests.swift|Tests/RuntimeSettlementRecoveryFollowupTests.swift|Tests/LaunchSnapshotDisciplineTests.swift|Astra/Services/Tasks/TaskQueue*.swift|Astra/Services/Tasks/TaskWedgedWorkerLeaseReclaimer.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Runtime/RuntimeResourceOwnership.swift|Astra/Services/Runtime/RuntimeProvider*.swift|Astra/Services/Runtime/RuntimeUtilitySharedStateLease.swift|Astra/Services/Runtime/ProviderSharedStateProcessLock.swift|Astra/Services/Runtime/RuntimeSettlement*.swift|Astra/Services/Runtime/RuntimeFinalPlanSettlement.swift|Astra/Services/Runtime/RuntimeTurnOutcomeService.swift|Astra/Services/Runtime/AgentRuntimeSharedStateGate.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentRuntimeAsyncWork.swift|Astra/Services/Runtime/AgentInteractivePermissionChannel.swift|Tests/Fixtures/ProviderStreams/*/cancellation-tool-free.jsonl|Tests/RuntimeCancellation*Tests.swift|Tests/RuntimeSettlementCancellationTests.swift|Tests/TaskQueueWedgedWorkerReleaseTests.swift)
+    ASTRACore/OpenCode*.swift|Astra/Services/Runtime/RuntimeStreamExecutionHints.swift|Astra/Services/Runtime/RuntimeCopilotFrame*.swift|Tests/RuntimeCopilotFrameMetadataTests.swift|Astra/Services/Runtime/RuntimeUsageArithmetic.swift|Astra/Services/Runtime/RuntimeRecoveryPresentation.swift|Tests/RuntimeProvider*Tests.swift|Tests/RuntimeCleanupAuthorizationTests.swift|Tests/OpenCode*Tests.swift|Tests/Fixtures/ProviderStreams/*/recovery-captured-*.jsonl|Astra/Services/Runtime/RuntimeTemplateHookScope.swift|Tests/QueueLockTests.swift|Tests/RuntimeSettlementRecoveryFollowupTests.swift|Tests/LaunchSnapshotDisciplineTests.swift|Astra/Services/Tasks/TaskQueue*.swift|Astra/Services/Tasks/TaskWedgedWorkerLeaseReclaimer.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Runtime/RuntimeResourceOwnership.swift|Astra/Services/Runtime/RuntimeProvider*.swift|Astra/Services/Runtime/RuntimeUtilitySharedStateLease.swift|Astra/Services/Runtime/ProviderSharedStateProcessLock.swift|Astra/Services/Runtime/RuntimeSettlement*.swift|Astra/Services/Runtime/RuntimeFinalPlanSettlement.swift|Astra/Services/Runtime/RuntimeTurnOutcomeService.swift|Astra/Services/Runtime/AgentRuntimeSharedStateGate.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift|Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentRuntimeAsyncWork.swift|Astra/Services/Runtime/AgentInteractivePermissionChannel.swift|Tests/Fixtures/ProviderStreams/*/cancellation-tool-free.jsonl|Tests/RuntimeCancellation*Tests.swift|Tests/RuntimeSettlementCancellationTests.swift|Tests/TaskQueueWedgedWorkerReleaseTests.swift)
       add_target "RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode"
       ;;
   esac
@@ -173,7 +185,7 @@ target_for_path() {
       ;;
     Tests/ArchitectureFitnessTests/*)
       ;;
-    Tests/AppSemanticFitnessTests.swift)
+    Astra/Models/TaskEventTypes.swift|Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
       ;;
     Astra/Services/Persistence/TaskContextEventIndex.swift|Astra/Services/Persistence/TaskContextStateManager.swift|Astra/Services/Persistence/TaskActiveObjectiveResolver.swift|Astra/Models/TaskCorrectiveWorkQueries.swift|Tests/TaskContextEventIndexTests.swift|Tests/TaskContextDerivationPerformanceTests.swift|Tests/TaskContextStateOffMainRefreshTests.swift)
@@ -450,6 +462,7 @@ target_for_path() {
       add_target "RemoteWorkspaceJobTests"
       add_target "RemoteWorkspaceJobShimTests"
       add_target "RemoteWorkspaceJobSafetyTests"
+      add_target "RemoteWorkspaceJobBrokerProtocolTests"
       add_target "RemoteWorkspaceJobPersistenceTests"
       add_target "RemoteWorkspaceJobBundlingTests"
       add_target "RemoteWorkspaceJobOutputStateTests"
@@ -493,6 +506,12 @@ target_for_path() {
     Astra/Views/ContentView.swift|Astra/Views/WorkspaceCanvasItem.swift|Tests/PanelLayoutGeometryTests.swift|Tests/WorkspaceRightPanelLayoutTests.swift)
       add_target "WorkspaceRightPanelLayoutTests"
       add_target "PanelLayoutGeometryTests"
+      ;;
+  esac
+
+  case "$path" in
+    Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift|Astra/Views/TaskComposerDraft.swift|Astra/Views/TaskMainView.swift|Tests/TaskComposerGoalModeTests.swift)
+      add_target "TaskComposerGoalModeTests"
       ;;
   esac
 }

@@ -54,6 +54,19 @@ struct TaskComposerTextReader<Content: View>: View {
 }
 
 extension ComposerToolbar {
+    /// Keep the local Goal preference while presenting the durable task mode.
+    /// A captured binding must re-read that mode when another window changes it.
+    @MainActor
+    static func goalModeBinding(for task: AgentTask, selection: Binding<Bool>) -> Binding<Bool> {
+        Binding(
+            get: { TaskWorkspaceConsultationPolicy.goalModeSelection(for: task, localSelection: selection.wrappedValue) },
+            set: { enabled in
+                guard !enabled || TaskWorkspaceConsultationPolicy.goalModeSelection(for: task, localSelection: true) else { return }
+                selection.wrappedValue = enabled
+            }
+        )
+    }
+
     /// Build the mode binding without observing per-keystroke draft state.
     /// Selection cancels a pending send before updating the durable task mode.
     @MainActor

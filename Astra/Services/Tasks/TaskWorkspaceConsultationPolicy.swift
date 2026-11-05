@@ -26,6 +26,21 @@ enum TaskWorkspaceConsultationPolicy {
         draft.map(isEnabled(for:)) ?? newTaskSelection
     }
 
+    /// A window's Goal toggle cannot override another window's saved Consult
+    /// selection. Use the same derived value for presentation and new sends.
+    static func goalModeSelection(for task: AgentTask, localSelection: Bool) -> Bool {
+        localSelection && !isEnabled(for: task)
+    }
+
+    /// Check the current selection immediately before synchronous acceptance.
+    /// Work accepted here may finish after a later selection change; the
+    /// asynchronous result does not constitute a new planning submission.
+    @MainActor
+    static func acceptPlanningSubmission(for task: AgentTask, submit: () throws -> Bool) rethrows -> Bool {
+        guard goalModeSelection(for: task, localSelection: true) else { return false }
+        return try submit()
+    }
+
     static func isRequired(by request: TaskTurnRequest?, task: AgentTask) -> Bool {
         // Once accepted, the request owns this intent even if the composer is
         // changed before admission. Direct launches use their launch snapshot.
