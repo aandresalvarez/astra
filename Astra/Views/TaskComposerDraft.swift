@@ -1,5 +1,7 @@
 import SwiftUI
 import Observation
+import SwiftData
+import ASTRAModels
 
 /// The open task composer's per-keystroke state, kept out of `TaskMainView`'s
 /// own storage.
@@ -52,6 +54,23 @@ struct TaskComposerTextReader<Content: View>: View {
 }
 
 extension ComposerToolbar {
+    /// Build the mode binding without observing per-keystroke draft state.
+    /// Selection cancels a pending send before updating the durable task mode.
+    @MainActor
+    static func workspaceConsultationBinding(
+        for task: AgentTask,
+        in modelContext: ModelContext,
+        draft: TaskComposerDraft
+    ) -> Binding<Bool> {
+        Binding(
+            get: { TaskWorkspaceConsultationPolicy.isEnabled(for: task) },
+            set: { enabled in
+                draft.submissionIntent.cancel()
+                TaskWorkspaceConsultationPolicy.select(enabled, for: task, in: modelContext)
+            }
+        )
+    }
+
     /// The toolbar the parent built in its `body`, completed with the inputs
     /// that change per keystroke. Called from inside a `TaskComposerTextReader`.
     func composing(

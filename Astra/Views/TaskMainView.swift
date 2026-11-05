@@ -4202,10 +4202,8 @@ struct TaskMainView: View {
                 task.updatedAt = Date()
                 WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             },
-            consultationMode: Binding(
-                get: { TaskWorkspaceConsultationPolicy.isEnabled(for: task) },
-                set: selectWorkspaceConsultation
-            ),
+            consultationMode: ComposerToolbar.workspaceConsultationBinding(
+                for: task, in: modelContext, draft: composerDraft),
             consultationModeDisabled: task.status == .queued,
             showSecurityGate: true,
             sshConnections: sshConnections
@@ -4844,11 +4842,6 @@ struct TaskMainView: View {
         ))
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
-    }
-
-    private func selectWorkspaceConsultation(_ enabled: Bool) {
-        composerDraft.submissionIntent.cancel()
-        TaskWorkspaceConsultationPolicy.select(enabled, for: task, in: modelContext)
     }
 
     private func sendConversationMessage(_ msg: String, attachmentPaths: [String]) {
