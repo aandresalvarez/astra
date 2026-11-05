@@ -516,8 +516,15 @@ final class AgentRuntimeWorker {
         // any later save would leave the durable user message permanently
         // detached from the run that answered it.
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: launchTask)
-        PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task, fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
-        let turnBegin = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
+        let turnBegin: PersistedTurnRuntimeEventLinker.RuntimeBegin
+        do {
+            try PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task,
+                fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
+            turnBegin = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
+        } catch {
+            AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
+            turnBegin = .init(request: request, persisted: false)
+        }
         var settlementHandled = false
         defer {
             if !settlementHandled {

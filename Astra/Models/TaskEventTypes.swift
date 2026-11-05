@@ -84,6 +84,8 @@ public enum TaskEventTypes {
         public static let planStep: TaskEventType = "execution.request.plan_step"
         public static let chained: TaskEventType = "execution.request.chained"
         public static let permissionResume: TaskEventType = "execution.request.permission_resume"
+        /// Immutable attempt identity; payload is `TaskRunRequestAssociationPayload`.
+        public static let runAssociated: TaskEventType = "execution.request.run_associated"
     }
 
     public enum Tool {
@@ -265,6 +267,7 @@ public enum TaskEventTypes {
         ExecutionRequest.planStep,
         ExecutionRequest.chained,
         ExecutionRequest.permissionResume,
+        ExecutionRequest.runAssociated,
         Activity.compacted,
         Plan.created,
         Plan.updated,

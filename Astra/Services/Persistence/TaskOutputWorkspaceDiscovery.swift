@@ -101,8 +101,12 @@ public enum TaskOutputWorkspaceDiscovery {
         let taskID = task.id
         let runID = run.id
         do {
-            // Requeue clears the request's attempt fields. Its durable source
-            // still points to the prior run and retains the accepted claims.
+            // A later attempt moves both request.runID and source.run. The
+            // immutable identity event keeps the original accepted request.
+            if let request = try TaskRunRequestAssociation.request(for: run, in: context) {
+                return permitsWorkspaceInference(request)
+            }
+            // Pre-event attempts can still be resolved before reassociation.
             let userMessage = TaskEventTypes.Conversation.userMessage.rawValue
             let requestPrefix = "execution.request."
             let sourceEvents = try context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate {
@@ -118,16 +122,18 @@ public enum TaskOutputWorkspaceDiscovery {
             for request in requests {
                 guard let owner = owners.resolve(request) else { return false }
                 guard owner.persistentModelID == task.persistentModelID else { continue }
-                guard let claims = request.decodedResourceClaims else { return false }
-                if claims.contains(where: { $0.kind == .workspace && $0.readConsistency == .live }) {
-                    return false
-                }
+                if !permitsWorkspaceInference(request) { return false }
             }
             return true
         } catch {
             // An unreadable ownership record cannot authorize attribution.
             return false
         }
+    }
+
+    private static func permitsWorkspaceInference(_ request: TaskTurnRequest) -> Bool {
+        guard let claims = request.decodedResourceClaims else { return false }
+        return !claims.contains { $0.kind == .workspace && $0.readConsistency == .live }
     }
 
     private static func wasChangedDuringRun(_ values: URLResourceValues, run: TaskRun) -> Bool {

@@ -22,6 +22,11 @@ draft supplies the mode across windows; a new unsaved composer supplies its loca
 selection. Work preparation already admitted may finish, and the new request uses
 the mode current at submission. Accepted requests keep their frozen mode.
 
+Changing the draft mode controls new Goal, approval, and execution actions.
+An explicitly chosen Work planning call that has already started may finish in
+SpecEngine's read-only mode. Approving or running its plan re-checks the current
+durable selection; changing mode does not automatically cancel that planning call.
+
 Template execution requires **Work**, including templates with before or after
 phases. Consult reports "Choose Work" before preparing a checkout or creating
 phase tasks. The queued action checks again before preparation, and the template
@@ -55,9 +60,14 @@ That guidance remains in both native-resume and fresh fallback prompts.
 
 Consult does not infer file ownership from workspace-wide before/after changes
 or modification-time scans: those changes may belong to a concurrent writer.
-Later output discovery resolves the same durable request, including its source
-event when recovery has cleared the current attempt fields. Its own task-folder
-snapshots still record outputs created during the answer.
+Each attempt records an immutable run/request/source identity event, saved with
+the request's running state. Retries may move the source message and current
+attempt fields; historical discovery still reads that same request's frozen
+claims. Reassociation preserves attempts created before the identity event was
+introduced. Missing, corrupt, foreign, or conflicting references disable workspace
+inference, while legacy runs without a recorded reference keep their existing
+behavior. Its own task-folder snapshots still record outputs created during the
+answer.
 
 Optional JSON consistency fields preserve old request and owner-receipt
 decoding. Missing fields keep stable-reader behavior, and older builds ignore
@@ -71,7 +81,9 @@ legacy JSON, resource-kind limits, normalization, and saved selection. The
 `WorkspaceConsultationRuntimeTests` suite uses fake providers and temporary Git
 repositories to exercise rejection before preparation, command-plan admission
 and final validation, concurrent writer attribution, task outputs, and native
-resume prompts. `WorkspaceConsultationSubmissionTests` covers template rejection
+resume prompts. `WorkspaceConsultationHistoryTests` covers failed/cancelled retries,
+pre-event history, durable reload, idempotent association, invalid references,
+and failed-save preservation. `WorkspaceConsultationSubmissionTests` covers template rejection
 before task/request allocation, Work reuse of a Consult checkout, and queued or
 preparation-time mode changes in quick/spec creation. Worktree tests also check
 that completed Work preparation can feed a new Consult request. The

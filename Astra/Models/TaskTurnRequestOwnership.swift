@@ -49,7 +49,17 @@ public enum TaskTurnRequestOwnership {
     }
 
     public static func candidates(taskID: UUID, in context: ModelContext) throws -> [AgentTask] {
-        try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
+        // Refreshing full parent rows before inserting a run-bound event can
+        // discard an unsaved run's inverse at save. Resolve the same candidate
+        // identities through this context without refreshing its loaded graph.
+        // Pending duplicates and deletions still reach the existing Resolver.
+        let identifiers = try context.fetchIdentifiers(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
+        return try identifiers.map { identifier in
+            guard let task = context.model(for: identifier) as? AgentTask else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return task
+        }
     }
 
     public static func resolve(_ request: TaskTurnRequest, in context: ModelContext) throws -> AgentTask? {
