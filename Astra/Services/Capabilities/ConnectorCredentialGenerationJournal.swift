@@ -178,7 +178,7 @@ struct ConnectorCredentialGenerationJournal {
             guard WorkspaceRecoveryTrust.allowsCleanup,
                   let journal = try Self(modelContext: modelContext), !(try journal.pending()).isEmpty,
                   let lease = try? journal.acquireLease(),
-                  let saved = await CredentialCleanupStartupMirrors.rewrite(modelContext: modelContext) else { return }
+                  let saved = await CredentialCleanupStartupMirrors.rewrite(modelContext: modelContext, trigger: .connectorGeneration) else { return }
             journal.resumePending(modelContext: saved, rewriteMirror: { _, _ in true }, producerLease: lease)
             withExtendedLifetime(lease) {}
         } catch { auditStartupFailure() }

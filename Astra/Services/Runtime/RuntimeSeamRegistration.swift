@@ -36,6 +36,7 @@ enum RuntimeSeamRegistration {
         ConnectorSecretSeam.register(ConnectorSecretPersistence.self)
         ConnectorDeclaredCredentialFormatSeam.register(ConnectorDeclaredCredentialFormatResolver.self)
         ConnectorSettingStorageSeam.register(PluginConnectorFieldTrust.self)
+        PluginCredentialComponentInventorySeam.register(PluginCredentialComponentInventory.self)
         OutlookMailConnectionSeam.register(OutlookMailConnectionAdapter.self)
         ConnectorEnvironmentProjectionSeam.register(ConnectorEnvironmentProjectionAdapter.self)
         TaskForkStateInitializingSeam.register(TaskStateTransitionSeamAdapter.self)
@@ -56,7 +57,10 @@ extension ExecutionSandbox: ExecutionPathSafetyChecking {}
 
 extension AgentRuntimeAdapterRegistry: AgentRuntimeRegistryLookup {}
 
-extension AppLogger: AuditLogging {}
+extension AppLogger: AuditLogging {
+    static func beginMainThreadPhase(_ label: String) -> Bool { MainThreadPhase.push(label) }
+    static func endMainThreadPhase() { MainThreadPhase.pop() }
+}
 
 extension TaskPlanService: TaskPlanReconstructing {}
 

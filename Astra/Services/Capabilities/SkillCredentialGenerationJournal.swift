@@ -77,7 +77,7 @@ struct SkillCredentialGenerationJournal {
             guard WorkspaceRecoveryTrust.allowsCleanup,
                   let journal = try Self(modelContext: modelContext), !(try journal.pending()).isEmpty,
                   let lease = try? journal.acquireLease(),
-                  let saved = await CredentialCleanupStartupMirrors.rewrite(modelContext: modelContext) else { return }
+                  let saved = await CredentialCleanupStartupMirrors.rewrite(modelContext: modelContext, trigger: .skillGeneration) else { return }
             try journal.resumePending(modelContext: saved, rewriteMirror: { _, _ in true }, producerLease: lease)
             withExtendedLifetime(lease) {}
         } catch { audit("recovery_record_unreadable") }

@@ -55,8 +55,17 @@ struct CredentialCleanupStartupTests {
         try env.outbox.write([namespace])
         #expect(GenerationSecrets.saveSecretValue("orphan", key: "API_TOKEN", skillID: namespace,
             skillName: "Test", allowUserInteraction: false))
-        await PluginSecretCleanupOutbox.resumePendingAsync(modelContext: env.context,
-            outbox: env.outbox, secrets: GenerationSecrets.self)
+        let diagnostics = StartupCleanupAggregate()
+        await WorkspacePersistenceWork.$cleanupJob.withValue(diagnostics) {
+            await PluginSecretCleanupOutbox.resumePendingAsync(modelContext: env.context,
+                outbox: env.outbox, secrets: GenerationSecrets.self)
+        }
+        let fields = diagnostics.fields()
+        #expect(fields["pass_count"] == "1")
+        #expect(fields["copy_attempts"] == "1")
+        #expect(fields["copy_succeeded"] == "1")
+        #expect(Int(fields["logical_snapshot_bytes"] ?? "0") ?? 0 > 0)
+        #expect(Int(fields["json_written_bytes"] ?? "0") ?? 0 > 0)
         #expect(GenerationSecrets.value(in: namespace) == nil)
         #expect(try env.outbox.pending().isEmpty)
     }

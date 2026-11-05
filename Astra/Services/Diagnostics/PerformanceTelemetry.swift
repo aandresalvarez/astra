@@ -333,7 +333,8 @@ enum PerformanceTelemetry {
         if let durationMilliseconds {
             parts.append(String(format: "duration_ms=%.2f", durationMilliseconds))
         }
-        parts += fields
+        parts += ["launch_age_ms": LaunchDiagnosticClock.ageMilliseconds()]
+            .merging(fields, uniquingKeysWith: { _, explicit in explicit })
             .sorted { $0.key < $1.key }
             .map { "\($0.key)=\(PerformanceTelemetryFields.safeValue($0.value))" }
         let message = parts.joined(separator: " ")

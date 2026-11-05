@@ -36,7 +36,8 @@ enum GitHubHostControlPolicy {
             }
             return allow(operation, subcommands: ["status"])
         case "api":
-            return denial(operation, reason: "raw GitHub API access is not an explicit read-only operation")
+            return denial(operation, reason: "raw GitHub API access is not an explicit read-only operation. "
+                + "For inline PR comments use pr review-threads NUMBER --repo OWNER/REPO")
         default:
             return denial(operation, reason: "only explicit read-only GitHub operations are exposed")
         }

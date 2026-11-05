@@ -97,7 +97,6 @@ enum SidebarWorkspaceDrawerLog {
         PerformanceTelemetry.log(
             "sidebar_drawer_verdict",
             fields: [
-                "workspace": workspace.name,
                 "workspace_id": workspace.id.uuidString,
                 "shows_empty_state": PerformanceTelemetryFields.bool(empty),
                 "drawer_task_count": PerformanceTelemetryFields.count(tasks)

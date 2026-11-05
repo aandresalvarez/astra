@@ -8,6 +8,85 @@ import ASTRAModels
 @MainActor
 @Suite("Saved export snapshot directory lifecycle", .serialized)
 struct WorkspaceSnapshotDirectoryTests {
+    @Test("One retained batch copy closes each reader before the next projection", arguments: ["success", "failure", "cancellation"])
+    func retainedBatchReadersClose(outcome: String) async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer(root)
+        try await Task.detached {
+            try autoreleasepool {
+                enum ProjectionFailure: Error { case injected }
+                let captured = try WorkspaceSavedExportSnapshot.capture(container: container, workspaceID: "synthetic")
+                let directory = captured.directory.root
+                for _ in 0..<3 {
+                    var identities = Set<SnapshotFileIdentity>()
+                    do {
+                        try captured.read { snapshot in
+                            let context = ModelContext(snapshot)
+                            context.autosaveEnabled = false
+                            _ = Unmanaged.passRetained(snapshot).autorelease()
+                            _ = Unmanaged.passRetained(context).autorelease()
+                            let workspace = try #require(context.fetch(FetchDescriptor<Workspace>()).first)
+                            _ = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+                            identities = try snapshotFileIdentities(in: directory)
+                            #expect(!openSnapshotDescriptors(identities).isEmpty)
+                            if outcome == "failure" { throw ProjectionFailure.injected }
+                            if outcome == "cancellation" { throw CancellationError() }
+                        }
+                    } catch is CancellationError { #expect(outcome == "cancellation") }
+                    catch ProjectionFailure.injected { #expect(outcome == "failure") }
+                    #expect(!identities.isEmpty)
+                    #expect(openSnapshotDescriptors(identities).isEmpty)
+                    #expect(FileManager.default.fileExists(atPath: directory.path))
+                }
+                withExtendedLifetime(captured) {}
+            }
+        }.value
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .filter { $0.hasPrefix(".astra-mirror-") && !$0.hasSuffix(".lock") }.isEmpty)
+    }
+
+    @Test("Repeated projections close snapshot descriptors before removing their directory",
+          arguments: ["success", "failure", "cancellation"])
+    func fileDescriptorsClose(outcome: String) async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeContainer(root)
+        try await Task.detached {
+            try autoreleasepool {
+                enum ProjectionFailure: Error { case injected }
+                for _ in 0..<5 {
+                    var identities = Set<SnapshotFileIdentity>()
+                    do {
+                        try WorkspaceSavedExportSnapshot.read(container: container) { snapshot in
+                            let context = ModelContext(snapshot)
+                            context.autosaveEnabled = false
+                            // Reproduce Objective-C deferred ownership deterministically,
+                            // independently of the host framework's retention choices.
+                            _ = Unmanaged.passRetained(snapshot).autorelease()
+                            _ = Unmanaged.passRetained(context).autorelease()
+                            let workspace = try #require(context.fetch(FetchDescriptor<Workspace>()).first)
+                            _ = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+                            let directory = try #require(snapshot.configurations.first?.url.deletingLastPathComponent())
+                            identities = try snapshotFileIdentities(in: directory)
+                            #expect(!openSnapshotDescriptors(identities).isEmpty, "Exercise real disk-backed readers")
+                            if outcome == "failure" { throw ProjectionFailure.injected }
+                            if outcome == "cancellation" { withUnsafeCurrentTask { $0?.cancel() } }
+                            try Task.checkCancellation()
+                        }
+                    } catch is CancellationError {
+                        #expect(outcome == "cancellation")
+                    } catch ProjectionFailure.injected {
+                        #expect(outcome == "failure")
+                    }
+                    #expect(!identities.isEmpty)
+                    #expect(openSnapshotDescriptors(identities).isEmpty,
+                        "Snapshot files, including unlinked inodes, must have no open descriptors after projection")
+                }
+            }
+        }.value
+    }
+
     @Test("Only abandoned snapshot directories are reclaimed, including legacy copies")
     func orphanCleanup() throws {
         let root = try temporaryDirectory()
@@ -104,5 +183,30 @@ struct WorkspaceSnapshotDirectoryTests {
         container.mainContext.insert(Workspace(name: "Synthetic", primaryPath: root.path))
         try container.mainContext.save()
         return container
+    }
+}
+
+struct SnapshotFileIdentity: Hashable, Sendable {
+    let device: dev_t
+    let inode: ino_t
+    init(_ info: stat) { device = info.st_dev; inode = info.st_ino }
+}
+
+func snapshotFileIdentities(in directory: URL) throws -> Set<SnapshotFileIdentity> {
+    var identities = Set<SnapshotFileIdentity>()
+    for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        where file.lastPathComponent.hasPrefix("snapshot.store") {
+        var info = stat()
+        try #require(stat(file.path, &info) == 0)
+        identities.insert(SnapshotFileIdentity(info))
+    }
+    return identities
+}
+
+func openSnapshotDescriptors(_ identities: Set<SnapshotFileIdentity>) -> [String] {
+    (0..<Int32(getdtablesize())).compactMap { descriptor in
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, identities.contains(SnapshotFileIdentity(info)) else { return nil }
+        return "fd=\(descriptor), inode=\(info.st_ino), links=\(info.st_nlink)"
     }
 }

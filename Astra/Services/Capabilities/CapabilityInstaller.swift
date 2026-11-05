@@ -260,7 +260,7 @@ struct CapabilityInstaller {
                     skillName: package.name, persistence: skillSecrets,
                     additionalComponents: Set(package.skills.map(CapabilityResourceOrigin.componentID(for:))))
                 stagedGeneration = prepared
-                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(prepared.generation, on: existing)
+                prepared.publish(on: existing)
             }
 
             // The activation owns everything this workspace keeps for the
@@ -298,7 +298,7 @@ struct CapabilityInstaller {
                     skillName: package.name, persistence: skillSecrets,
                     additionalComponents: Set(package.skills.map(CapabilityResourceOrigin.componentID(for:))))
                 stagedGeneration = prepared
-                WorkspaceCapabilityActivation.setCredentialNamespaceSeed(prepared.generation, on: activation)
+                prepared.publish(on: activation)
             }
             let retainedRenames = PluginUpdateService.renames(in: package)
             for retained in retainedAccounts {

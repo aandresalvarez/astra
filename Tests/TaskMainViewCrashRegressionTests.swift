@@ -17,7 +17,15 @@ struct TaskMainViewCrashRegressionTests {
         #expect(source.contains("onGeneratedFilesChange: { noteGeneratedFilesChange() }"))
         #expect(source.contains("private func noteThreadSnapshotChange() {\n        deferTaskViewMutation {"))
         #expect(source.contains("private func noteGeneratedFilesChange() {\n        deferTaskViewMutation {"))
-        #expect(source.contains(".onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in\n                    deferTaskViewMutation {"))
+        let bottomStart = try #require(source.range(of: ".onPreferenceChange(ChatBottomPositionPreferenceKey.self)"))
+        let topStart = try #require(source.range(of: ".onPreferenceChange(ChatTopPositionPreferenceKey.self)",
+                                                range: bottomStart.upperBound..<source.endIndex))
+        let bottomCallback = String(source[bottomStart.lowerBound..<topStart.lowerBound])
+        let deferred = try #require(bottomCallback.range(of: "deferTaskViewMutation {"))
+        let mutation = try #require(bottomCallback.range(of: "updateChatBottomState("))
+        // Pure source/input measurements may be captured synchronously. The
+        // state-changing operation must still be deferred out of the callback.
+        #expect(deferred.lowerBound < mutation.lowerBound)
         #expect(source.contains(".onPreferenceChange(ChatTopPositionPreferenceKey.self) { topMinY in\n                    deferTaskViewMutation {"))
         #expect(!source.contains(".defaultScrollAnchor(.bottom)"))
         #expect(source.contains("guard isNowAtBottom != isChatAtBottom else { return }"))

@@ -87,6 +87,24 @@ actor WorkspaceSavedAutoExport {
         }
     }
 
+    func captureCleanupStore(container: ModelContainer, workspaceID: String) throws -> WorkspaceSavedExportSnapshot.CapturedStore {
+        try Task.checkCancellation()
+        return try WorkspaceSavedExportSnapshot.capture(container: container, workspaceID: workspaceID)
+    }
+
+    func prepareCleanupWorkspace(captured: WorkspaceSavedExportSnapshot.CapturedStore, workspaceID: UUID) -> Prepared? {
+        do {
+            try Task.checkCancellation()
+            return try captured.read { try Self.prepareRows(container: $0, workspaceID: workspaceID) }
+        } catch {
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "auto_export_failed", "operation": "cleanup_mirror_projection",
+                "workspace_id": workspaceID.uuidString, "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return nil
+        }
+    }
+
     /// A failed quit-time save must not mirror the source context's unsaved
     /// edits. Termination may synchronously read only its committed authority.
     @MainActor static func prepareForTermination(container: ModelContainer, workspaceID: UUID) throws -> Prepared? {

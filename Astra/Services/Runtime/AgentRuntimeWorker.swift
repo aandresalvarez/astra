@@ -901,6 +901,11 @@ final class AgentRuntimeWorker {
         let historyGuidance = runtimeCapabilityProfile.canDeliverHostControlPlane
             && appliedRuntime.requirements.offeredHostControlTools.contains("history")
             ? TaskHistoryRetrievalGuidance.prompt : ""
+        let offersGitHub = runtimeCapabilityProfile.canDeliverHostControlPlane
+            && appliedRuntime.requirements.offeredHostControlTools.contains("github")
+        let reviewThreadGuidance = offersGitHub ? GitHubCapabilityLaunchContext.reviewThreadGuidance(
+            usesCLIRelay: runtimeCapabilityProfile.usesHostControlCLIRelay
+        ) : ""
         // Said with the level the broker binding uses, so what the agent is
         // told a proposal does and what the broker does with it agree.
         let sshRoute = executionPolicy.remoteSSHRoute
@@ -909,15 +914,14 @@ final class AgentRuntimeWorker {
                 to: text,
                 policyLevel: manifest.policyLevel,
                 usesHostControlCLIRelay: runtimeCapabilityProfile.usesHostControlCLIRelay,
-                offersGitHubHostTool: runtimeCapabilityProfile.canDeliverHostControlPlane
-                    && appliedRuntime.requirements.offeredHostControlTools.contains("github")
+                offersGitHubHostTool: offersGitHub
             ), route: sshRoute)
         }
         prompt = autoSendGuidance(prompt)
         // Appended after the resource resolver read the prompt, so README text
         // never steers capability scoping; and to a native resume as well, whose
         // session may predate the orientation and whose folder may have changed.
-        let orientedPrompt = workspaceOrientation.appending(to: prompt) + historyGuidance
+        let orientedPrompt = workspaceOrientation.appending(to: prompt) + historyGuidance + reviewThreadGuidance
         let promptWithoutResume = repositoryInstructions?.appending(to: orientedPrompt) ?? orientedPrompt
         // Compact only after this launch has proved native continuation safe.
         // Fresh handoffs (including changed signatures) keep the wider context.
@@ -927,7 +931,7 @@ final class AgentRuntimeWorker {
                 permissionPolicy: launchPermissionPolicy, contextText: providerLaunchContextText,
                 repositoryStatus: githubRepositoryStatus, runEnvironment: runEnvironment))
         }
-        prompt = workspaceOrientation.appending(to: prompt) + historyGuidance
+        prompt = workspaceOrientation.appending(to: prompt) + historyGuidance + reviewThreadGuidance
         prompt = repositoryInstructions?.appending(to: prompt) ?? prompt
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
         guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
