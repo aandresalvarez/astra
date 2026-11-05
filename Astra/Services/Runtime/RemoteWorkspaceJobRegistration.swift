@@ -62,7 +62,16 @@ enum RemoteWorkspaceJobRegistration {
                              context: ModelContext) throws -> RemoteWorkspaceJobConfiguration? {
         let root = directory(taskID: task.id, executionID: owner.executionID, context: context)
         let url = root.appendingPathComponent("configuration.json")
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        // An execution with no registration has no directory. A missing
+        // configuration inside an existing directory can hide live job records.
+        do {
+            let directory = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard directory.isDirectory == true, directory.isSymbolicLink != true else {
+                throw RemoteWorkspaceJobError.invalidArgument("The remote job directory could not be verified.")
+            }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return nil
+        }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? Int.max) < 65_536 else {
             throw RemoteWorkspaceJobError.invalidArgument("The remote job registration could not be verified.")

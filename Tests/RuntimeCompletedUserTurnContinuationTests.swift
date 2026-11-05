@@ -115,6 +115,51 @@ struct RuntimeCompletedUserTurnContinuationTests {
         #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context) == receipt)
     }
 
+    @Test("A timeout recheck refuses live, stale or incomplete evidence", arguments:
+        ["live", "reusedPID", "unreaped", "wrongExecution", "wrongRun", "otherReason", "settling", "cancelled", "busy", "unreadableJobs", "missingRegistration"])
+    func timeoutRecheckFences(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let task = h.makeTask(runtime: .copilotCLI, goal: "Interrupted task", model: "test")
+        var record = try completed(task, context: h.context)
+        let run = try #require(task.runs.first)
+        run.status = .failed
+        run.typedStopReason = fault == "otherReason" ? .repetitionDetected : .providerRunWallClockExceeded
+        task.status = .pendingUser
+        record.state = .unverified
+        record.resourcesReleased = false
+        record.cancellationRequested = fault == "cancelled"
+        record.settlementInProgress = fault == "settling"
+        let dead = try #require(record.providerProcess)
+        let live = try #require(RuntimeProcessIdentity.read(ProcessInfo.processInfo.processIdentifier))
+        let identity: RuntimeProcessIdentity = switch fault {
+        case "live": live
+        case "reusedPID": .init(pid: live.pid, startedSeconds: 1, startedMicroseconds: 1)
+        default: dead
+        }
+        record.providerProcess = identity
+        record.stopProof = .init(executionID: fault == "wrongExecution" ? UUID() : record.executionID, process: identity,
+            reaped: fault != "unreaped", processGroupEmpty: false, toolsStopped: false, remoteWorkExcluded: false,
+            capturedAt: Date())
+        try save(record, context: h.context)
+        try h.context.save()
+        if fault == "unreadableJobs" || fault == "missingRegistration" {
+            let root = RemoteWorkspaceJobRegistration.directory(taskID: task.id, executionID: record.executionID, context: h.context)
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("jobs"), withIntermediateDirectories: true)
+            if fault == "unreadableJobs" {
+                try Data("{}".utf8).write(to: root.appendingPathComponent("configuration.json"))
+            }
+        }
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        let held = fault == "busy" ? try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID) : nil
+        defer { withExtendedLifetime(held) {} }
+        #expect(throws: (any Error).self) {
+            try RuntimeTimeoutRecoveryCheck.check(task: task, runID: fault == "wrongRun" ? UUID() : run.id, context: h.context)
+        }
+        #expect(try RuntimeTaskOwnerJournal.read(task: task, context: h.context) == record)
+        #expect(try TaskTurnRequestRepository.requests(for: task, in: h.context).isEmpty)
+    }
+
     @Test("The worker continues an interrupted task without changing its partial files or failed run")
     func workerContinuesInterruptedTurn() async throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
