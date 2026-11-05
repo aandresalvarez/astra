@@ -161,13 +161,16 @@ struct RuntimeManagedSSHHelperEvidence {
     }
 
     private mutating func copilot(_ frame: [String: Any]) -> Bool {
-        guard let data = frame["data"] as? [String: Any],
-              Set(frame.keys).isSubset(of: ["type", "data", "id", "timestamp", "parentId", "ephemeral"]),
-              Self.ephemeralMetadata(frame["ephemeral"]) else { return false }
+        guard let data = frame["data"] as? [String: Any] else { return false }
+        if frame["type"] as? String == "assistant.message" {
+            guard RuntimeCopilotFrameMetadata.accepts(frame) else { return false }
+        } else {
+            guard Set(frame.keys).isSubset(of: ["type", "data", "id", "timestamp", "parentId", "ephemeral"]),
+                  Self.ephemeralMetadata(frame["ephemeral"]) else { return false }
+        }
         switch frame["type"] as? String {
         case "assistant.message":
-            guard Self.copilotMessageMetadata(data),
-                  let requests = data["toolRequests"] as? [[String: Any]], !requests.isEmpty else { return false }
+            guard let requests = data["toolRequests"] as? [[String: Any]], !requests.isEmpty else { return false }
             for request in requests {
                 guard Set(request.keys).isSubset(of: ["toolCallId", "name", "arguments", "type", "intentionSummary"]),
                       request["type"] == nil || request["type"] as? String == "function",
@@ -209,35 +212,6 @@ struct RuntimeManagedSSHHelperEvidence {
             return calls[id] != nil && starts.contains(id) && !completed.contains(id)
         default: return false
         }
-    }
-
-    private static func copilotMessageMetadata(_ data: [String: Any]) -> Bool {
-        let strings: Set<String> = ["apiCallId", "clientRequestId", "content", "encryptedContent", "interactionId",
-            "messageId", "model", "originatingMessageId", "phase", "providerId", "reasoningOpaque", "reasoningText",
-            "reasoningWireField", "requestId", "serviceRequestId", "turnId"]
-        let numbers: Set<String> = ["outputTokens", "chunkCount", "chunkIndex"]
-        let allowed = strings.union(numbers).union(["toolRequests", "reasoningBlocks", "rte", "parentToolCallId", "serverTools"])
-        guard Set(data.keys).isSubset(of: allowed), data["content"] is String,
-              strings.allSatisfy({ data[$0] == nil || data[$0] is String }) else { return false }
-        for key in numbers {
-            guard let value = data[key] else { continue }
-            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-                  number.doubleValue.isFinite, number.doubleValue >= 0 else { return false }
-        }
-        if let value = data["rte"] {
-            guard let flag = value as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else { return false }
-        }
-        if let value = data["reasoningBlocks"] {
-            // The native schema preserves provider reasoning as opaque JSON.
-            // Only its descriptive envelope is accepted here; it grants no work.
-            guard let reasoning = value as? [String: Any],
-                  Set(reasoning.keys).isSubset(of: ["provider", "blocks", "orderedBlocks"]),
-                  let provider = reasoning["provider"] as? String, !provider.isEmpty,
-                  ["blocks", "orderedBlocks"].allSatisfy({ reasoning[$0] == nil || reasoning[$0] is [Any] }) else { return false }
-        }
-        // The shared work-hint guard validates parentToolCallId/serverTools,
-        // including text-only messages which do not enter this helper branch.
-        return true
     }
 
     // Captured native metadata is descriptive only in these exact shapes.

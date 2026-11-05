@@ -263,7 +263,7 @@ struct RuntimeManagedSSHHelperEvidenceTests {
     }
 
     @Test("Captured Copilot helper announcements preserve descriptive metadata and empty work hints",
-          arguments: [0, 1], ["captured", "empty", "null", "rteFalse", "descriptiveScalars"])
+          arguments: [0, 1], ["captured", "empty", "null", "rteFalse", "envelopeFalse", "descriptiveScalars"])
     func copilotAnnouncementNativeShape(messageIndex: Int, metadata: String) throws {
         var frames = try Self.capturedFrames(runtime: .copilotCLI, copilotMessageIndex: messageIndex)
         var data = try #require(frames[1]["data"] as? [String: Any])
@@ -274,6 +274,7 @@ struct RuntimeManagedSSHHelperEvidenceTests {
                                    "functionCallNamespaces": [String: String]()] as [String: Any]
         case "null": data["parentToolCallId"] = NSNull(); data["serverTools"] = NSNull()
         case "rteFalse": data["rte"] = false
+        case "envelopeFalse": frames[1]["ephemeral"] = false
         case "descriptiveScalars":
             data["outputTokens"] = 17; data["chunkCount"] = 2; data["chunkIndex"] = 0
             for key in ["clientRequestId", "providerId", "requestId", "serviceRequestId", "reasoningWireField"] {
@@ -379,5 +380,180 @@ struct RuntimeManagedSSHHelperEvidenceTests {
         evidence.processExited(naturally: true, stdoutEOF: true)
         #expect(evidence.managedSSHOnly == withHelper)
         #expect(evidence.toolsStopped == !withHelper)
+    }
+
+    static func capturedCopilotTextFrame(type: String, messageIndex: Int = 0) throws -> [String: Any] {
+        let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/ProviderStreams/copilot/answer-write-signoff.jsonl")
+        let captured = try String(contentsOf: path, encoding: .utf8).split(separator: "\n").map {
+            try #require(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+        }
+        if type == "assistant.reasoning_delta" {
+            // No captured reasoning delta exists; use the primary SDK's exact
+            // data shape within a captured ephemeral reasoning envelope.
+            var frame = try #require(captured.first { $0["type"] as? String == "assistant.reasoning" })
+            frame["type"] = type; frame["ephemeral"] = true
+            frame["data"] = ["reasoningId": "fixture-reasoning", "deltaContent": "Synthetic reasoning"]
+            return frame
+        }
+        let selected = captured.filter {
+            $0["type"] as? String == type
+                && (($0["data"] as? [String: Any])?["toolRequests"] as? [Any])?.isEmpty != false
+                // parseAll omits empty completed messages; they already retain
+                // uncertainty. Exercise the actual text-bearing parser route.
+                && (type != "assistant.message" || (($0["data"] as? [String: Any])?["content"] as? String)?.isEmpty == false)
+        }.dropFirst(messageIndex).first
+        return try #require(selected)
+    }
+
+    static func textEvidence(_ frame: [String: Any], withHelper: Bool) throws -> RuntimeExecutionProcessEvidence {
+        var frames = try Self.capturedFrames(runtime: .copilotCLI)
+        if withHelper { frames.insert(frame, at: frames.count - 1) }
+        else { frames = [frame, try #require(frames.last)] }
+        let broker = RuntimeManagedSSHBrokerEvidence()
+        if withHelper { broker.acknowledge(Self.admitted) }
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .copilotCLI, managedSSHBroker: broker)
+        for frame in frames { try Self.observe(frame, runtime: .copilotCLI, in: evidence) }
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        return evidence
+    }
+
+    @Test("Text-only Copilot messages reject unsupported structural metadata with absent or empty tool requests",
+          arguments: ["afterHelperAbsent", "afterHelperEmpty", "withoutHelperAbsent", "withoutHelperEmpty"],
+          ["arguments", "toolName", "unknown", "reasoningNumber", "reasoningUnknown", "knownCounter"])
+    func copilotTextMessageRejectsUnsupportedMetadata(route: String, fault: String) throws {
+        var frame = try Self.capturedCopilotTextFrame(type: "assistant.message")
+        var data = try #require(frame["data"] as? [String: Any])
+        if route.hasSuffix("Absent") { data.removeValue(forKey: "toolRequests") }
+        else { data["toolRequests"] = [Any]() }
+        switch fault {
+        case "arguments": data["arguments"] = ["command": "ssh elsewhere 'sleep 10 &'"]
+        case "toolName": data["toolName"] = "unrelated"
+        case "unknown": data["unknown_native_work"] = true
+        case "reasoningNumber": data["reasoningBlocks"] = 1
+        case "reasoningUnknown": data["reasoningBlocks"] = ["provider": "fixture", "unknown_native_work": true] as [String: Any]
+        default: data["queued_turn_count"] = 1
+        }
+        frame["data"] = data
+        let evidence = try Self.textEvidence(frame, withHelper: route.hasPrefix("afterHelper"))
+        #expect(evidence.providerTurnEnded)
+        #expect(!evidence.managedSSHOnly && !evidence.toolsStopped)
+    }
+
+    @Test("Copilot text siblings reject unsupported structural metadata on both execution routes",
+          arguments: ["messageDeltaAfter", "messageDeltaWithout", "reasoningAfter", "reasoningWithout", "reasoningDeltaAfter", "reasoningDeltaWithout"],
+          ["arguments", "toolName", "unknown", "identityNumber", "knownCounter"])
+    func copilotTextSiblingRejectsUnsupportedMetadata(route: String, fault: String) throws {
+        let type = route.hasPrefix("messageDelta") ? "assistant.message_delta"
+            : route.hasPrefix("reasoningDelta") ? "assistant.reasoning_delta" : "assistant.reasoning"
+        var frame = try Self.capturedCopilotTextFrame(type: type)
+        var data = try #require(frame["data"] as? [String: Any])
+        switch fault {
+        case "arguments": data["arguments"] = ["command": "ssh elsewhere 'sleep 10 &'"]
+        case "toolName": data["toolName"] = "unrelated"
+        case "unknown": data["unknown_native_work"] = true
+        case "identityNumber": data[type == "assistant.message_delta" ? "messageId" : "reasoningId"] = 1
+        default: data["queued_turn_count"] = 1
+        }
+        frame["data"] = data
+        let evidence = try Self.textEvidence(frame, withHelper: route.hasSuffix("After"))
+        #expect(evidence.providerTurnEnded)
+        #expect(!evidence.managedSSHOnly && !evidence.toolsStopped)
+    }
+
+    @Test("Captured native text metadata and JSON-looking content preserve text-only cleanup",
+          arguments: [false, true], ["message0", "message1", "messageFalseFlags", "messageAbsent", "messageJSON", "messageDelta", "reasoning", "reasoningDelta"])
+    func copilotTextNativeMetadataPreservesCleanup(withHelper: Bool, shape: String) throws {
+        let type = shape == "messageDelta" ? "assistant.message_delta"
+            : shape == "reasoning" ? "assistant.reasoning"
+            : shape == "reasoningDelta" ? "assistant.reasoning_delta" : "assistant.message"
+        let index = shape == "message1" ? 1 : 0
+        var frame = try Self.capturedCopilotTextFrame(type: type, messageIndex: index)
+        var data = try #require(frame["data"] as? [String: Any])
+        if shape == "messageAbsent" { data.removeValue(forKey: "toolRequests") }
+        if shape == "messageFalseFlags" { frame["ephemeral"] = false; data["rte"] = false }
+        if shape == "messageJSON" {
+            data["content"] = #"{"arguments":{"command":"ssh elsewhere 'sleep 10 &'"},"toolName":"unrelated","unknown_native_work":true}"#
+        }
+        frame["data"] = data
+        let evidence = try Self.textEvidence(frame, withHelper: withHelper)
+        #expect(evidence.providerTurnEnded)
+        #expect(evidence.managedSSHOnly == withHelper)
+        #expect(evidence.toolsStopped == !withHelper)
+    }
+
+    @Test("All supported Copilot text envelopes reject unsupported attribution and malformed metadata",
+          arguments: ["assistant.message", "assistant.message_delta", "assistant.reasoning", "assistant.reasoning_delta"],
+          ["afterHelper", "withoutHelper"].flatMap { route in
+              ["unknown", "agentId", "agentIdEmpty", "agentIdNull", "agentIdNumber", "idNumber", "timestampNumber",
+               "parentNumber", "ephemeralNumber", "knownCounter"].map { "\(route):\($0)" }
+          })
+    func copilotTextEnvelopeRejectsUnsupportedMetadata(type: String, variation: String) throws {
+        let parts = variation.split(separator: ":")
+        var frame = try Self.capturedCopilotTextFrame(type: type)
+        switch parts[1] {
+        case "unknown": frame["unknown_native_work"] = true
+        case "agentId": frame["agentId"] = "unrelated-subagent"
+        case "agentIdEmpty": frame["agentId"] = ""
+        case "agentIdNull": frame["agentId"] = NSNull()
+        case "agentIdNumber": frame["agentId"] = 0
+        case "idNumber": frame["id"] = 1
+        case "timestampNumber": frame["timestamp"] = 1
+        case "parentNumber": frame["parentId"] = 0
+        case "ephemeralNumber": frame["ephemeral"] = 1
+        default: frame["queued_turn_count"] = 1
+        }
+        let evidence = try Self.textEvidence(frame, withHelper: parts[0] == "afterHelper")
+        #expect(evidence.providerTurnEnded)
+        #expect(!evidence.managedSSHOnly && !evidence.toolsStopped)
+    }
+
+    @Test("Native text envelopes accept a null chronological parent without granting child work",
+          arguments: ["assistant.message", "assistant.message_delta", "assistant.reasoning", "assistant.reasoning_delta"], [false, true])
+    func copilotTextNativeEnvelopePreservesCleanup(type: String, withHelper: Bool) throws {
+        var frame = try Self.capturedCopilotTextFrame(type: type)
+        frame["parentId"] = NSNull()
+        let evidence = try Self.textEvidence(frame, withHelper: withHelper)
+        #expect(evidence.providerTurnEnded)
+        #expect(evidence.managedSSHOnly == withHelper)
+        #expect(evidence.toolsStopped == !withHelper)
+    }
+
+    @Test("Turn-end bookkeeping cannot hide unsupported structural work after managed helper completion",
+          arguments: [false, true], ["native", "arguments", "unknown"])
+    func copilotBookkeepingUnsupportedWork(withHelper: Bool, metadata: String) throws {
+        var frame = try Self.capturedCopilotTextFrame(type: "assistant.turn_end")
+        var data = try #require(frame["data"] as? [String: Any])
+        if metadata == "arguments" { data["arguments"] = ["command": "ssh elsewhere 'sleep 10 &'"] }
+        if metadata == "unknown" { data["unknown_native_work"] = true }
+        frame["data"] = data
+        let evidence = try Self.textEvidence(frame, withHelper: withHelper)
+        #expect(evidence.providerTurnEnded)
+        if metadata == "native" {
+            #expect(evidence.managedSSHOnly == withHelper)
+            #expect(evidence.toolsStopped == !withHelper)
+        } else {
+            #expect(!evidence.managedSSHOnly && !evidence.toolsStopped)
+        }
+    }
+
+    @Test("Native model bookkeeping retains built-in edit work and rejects malformed absence claims",
+          arguments: [false, true], ["capturedFalse", "capturedTrue", "number", "string"])
+    func copilotBookkeepingBuiltInEditWork(withHelper: Bool, metadata: String) throws {
+        var frame = try Self.capturedCopilotTextFrame(type: "model.call_finished", messageIndex: metadata == "capturedTrue" ? 1 : 0)
+        var data = try #require(frame["data"] as? [String: Any])
+        if metadata == "number" { data["containsBuiltInFileEditRequest"] = 0 }
+        if metadata == "string" { data["containsBuiltInFileEditRequest"] = "false" }
+        if metadata == "capturedTrue" { #expect(data["containsBuiltInFileEditRequest"] as? Bool == true) }
+        if metadata == "capturedFalse" { #expect(data["containsBuiltInFileEditRequest"] as? Bool == false) }
+        frame["data"] = data
+        let evidence = try Self.textEvidence(frame, withHelper: withHelper)
+        #expect(evidence.providerTurnEnded)
+        if metadata == "capturedFalse" {
+            #expect(evidence.managedSSHOnly == withHelper)
+            #expect(evidence.toolsStopped == !withHelper)
+        } else {
+            #expect(!evidence.managedSSHOnly && !evidence.toolsStopped)
+        }
     }
 }

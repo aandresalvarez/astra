@@ -130,7 +130,11 @@ registered job inventory must match the owner's saved digest. Native Claude and
 Copilot tool frames count as managed attempts only for exact single helper
 invocations acknowledged by this execution's broker; unrelated tools, compound
 shell commands, unknown frames and redundant work counters remain fenced. Direct SSH
-commands and inherited tool uncertainty require separate evidence. A user may
+commands and inherited tool uncertainty require separate evidence. Copilot activity
+and bookkeeping frames share a typed metadata contract with helper announcements.
+Unsupported envelope or data fields, malformed metadata, subagent attribution and
+built-in edit work retain uncertainty even after a helper completes. Native text
+stays opaque; rendering a message does not establish cleanup. A user may
 authorize one waiting request to continue after its listed jobs finish. For
 older jobs without a result or prior evidence of a launch, the host must first
 block the original launcher and check for its supervisor. This decision applies

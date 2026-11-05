@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 /// Redundant provider signals catch omitted tool-start frames. These counters
 /// can disprove cleanup, but zero counters never establish cleanup on their own.
@@ -21,6 +22,9 @@ enum RuntimeStreamExecutionHints {
             if let parent = object["parent_tool_use_id"], !(parent is NSNull) { return true }
             if let parent = object["parentToolCallId"], !(parent is NSNull), (parent as? String)?.isEmpty != true { return true }
             if let serverTools = object["serverTools"], serverToolsContainWork(serverTools) { return true }
+            if let edits = object["containsBuiltInFileEditRequest"] {
+                guard let flag = edits as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID(), !flag.boolValue else { return true }
+            }
             if object["stop_reason"] as? String == "tool_use" { return true }
             if let count = object["queued_turn_count"], (count as? Int) != 0 { return true }
             if let stats = object["subagent_stats"], !zeroCounters(stats) { return true }
