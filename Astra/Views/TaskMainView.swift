@@ -3587,7 +3587,7 @@ struct TaskMainView: View {
             extraDetails: taskDecisionExtraDetails,
             recoveryBlockMessage: recoveryBlockMessage,
             timeoutRecoveryRunID: timeoutRecoveryRunID,
-            providerRecoveryAlternative: recoveryBlockMessage == nil ? nil : providerRecoveryAlternative
+            providerRecoveryAlternative: providerRecoveryAlternative
         ))
     }
 

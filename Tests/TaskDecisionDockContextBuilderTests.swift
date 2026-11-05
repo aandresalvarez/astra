@@ -244,6 +244,65 @@ struct TaskDecisionDockContextBuilderTests {
         #expect(dock.secondaryActions.first?.providerRetryRunID == (timeout ? nil : runID))
     }
 
+    @Test("Settled legacy provider blocks retain their dock switch without a recovery warning",
+          arguments: [TaskStatus.pendingUser, .failed], [true, false])
+    @MainActor
+    func settledProviderAlternative(status: TaskStatus, canRetry: Bool) throws {
+        let harness = try HeadlessChatHarness(persistentStore: true)
+        defer { harness.cleanup() }
+        let task = harness.makeTask(runtime: .antigravityCLI, goal: "Continue a blocked task", model: "test")
+        task.status = status
+        let run = TaskRun(task: task)
+        run.runtimeID = AgentRuntimeID.antigravityCLI.rawValue
+        run.status = .failed
+        run.stopReason = RuntimeProviderResourceRegistry.Block.stopReason
+        run.completedAt = Date()
+        run.tokensUsed = 100
+        run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+        harness.context.insert(run)
+        var receipt = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: harness.context)
+        receipt.settlementInProgress = false
+        receipt.settlementLocalWorkStopped = true
+        receipt.settlementToolsStopped = true
+        do {
+            let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: harness.context)
+            try lease.save(receipt)
+        }
+        let ownership = TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self), run: run)
+        harness.context.insert(ownership)
+        try harness.context.save()
+        #expect(receipt.state == .stopped && receipt.providerLaunchCount == nil && receipt.canReplace)
+        #expect(RuntimeCompletedUserTurnContinuation.hasSettledTurn(receipt, task: task, context: harness.context))
+        let snapshot = TaskRunSnapshot(input: .init(run: run))
+        let terminal = RuntimeLaunchPresentation.terminalDetail(run: snapshot, events: [.init(event: ownership)])
+        #expect(terminal == nil)
+        var value = input(status: status)
+        value.extraDetails = terminal.map { [$0] } ?? []
+        value.canRetry = canRetry
+        value.pendingReviewState = PendingTaskReviewPolicy.reviewState(for: task, latestRun: run)
+        value.recoveryBlockMessage = RuntimeRecoveryPresentation.blockedMessage(task: task, context: harness.context)
+        value.providerRecoveryAlternative = TaskComposerCoordinator.providerRecoveryAlternative(
+            for: task, context: harness.context, latestRun: snapshot, recentRuns: [snapshot],
+            readinessStates: [.antigravityCLI: .ready, .codexCLI: .ready])
+        #expect(value.recoveryBlockMessage == nil)
+        #expect(value.providerRecoveryAlternative?.blockedRunID == run.id)
+        let dock = try #require(TaskDecisionDockContextBuilder.build(value))
+        #expect(dock.id != "recovery-blocked")
+        let switches = dock.secondaryActions.filter { $0.kind == .switchRuntime }
+        #expect(switches.count == (canRetry ? 1 : 0))
+        guard canRetry else { return }
+        let action = try #require(switches.first)
+        #expect(action.payload == AgentRuntimeID.codexCLI.rawValue && action.providerRetryRunID == run.id)
+        var retried = false
+        let prompt = RuntimeSensitiveDataSwitchPrompt()
+        TaskComposerCoordinator.requestDockRuntimeSwitch(to: try #require(action.payload), task: task,
+            cache: .init(), prompt: prompt, blockedRunID: action.providerRetryRunID) { retried = true }
+        if prompt.pending != nil { prompt.confirm() }
+        #expect(retried && task.resolvedRuntimeID == .codexCLI)
+        #expect(run.status == .failed && task.runs.count == 1)
+    }
+
     @Test("extra detail builder preserves runtime pending approval and routine states")
     func extraDetailBuilderPreservesRuntimePendingApprovalAndRoutineStates() {
         let details = TaskDecisionDockContextBuilder.extraDetails(TaskDecisionDockContextBuilder.ExtraDetailsInput(

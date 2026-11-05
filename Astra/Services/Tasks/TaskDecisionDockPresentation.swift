@@ -207,8 +207,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 metrics: metrics(context), details: details(context),
                 primaryAction: context.canRetry ? (context.timeoutRecoveryRunID.map(checkTimedOutRun)
                     ?? action(.retry, title: "Check again", systemImage: "arrow.clockwise")) : nil,
-                secondaryActions: [runtimeSwitchAction(context.providerRecoveryAlternative?.runtime, canRetry: context.canRetry,
-                    blockedRunID: context.providerRecoveryAlternative?.blockedRunID)].compactMap { $0 },
+                secondaryActions: [providerRecoverySwitchAction(context)].compactMap { $0 },
                 overflowActions: closeOverflowActions(context, closeTitle: nil),
                 prefersExpandedDetails: false
             )
@@ -574,7 +573,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 )
                 : nil,
             secondaryActions: [
-                isBlocked ? suggestedRuntimeSwitchAction(context) : nil,
+                providerRecoverySwitchAction(context) ?? (isBlocked ? suggestedRuntimeSwitchAction(context) : nil),
                 context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
                 firstArtifactAction(context)
             ].compactMap { $0 },
@@ -584,6 +583,11 @@ struct TaskDecisionDockPresentation: Equatable {
             ),
             prefersExpandedDetails: isBlocked || isMissingArtifact
         )
+    }
+
+    private static func providerRecoverySwitchAction(_ context: Context) -> TaskDecisionDockAction? {
+        runtimeSwitchAction(context.providerRecoveryAlternative?.runtime, canRetry: context.canRetry,
+            blockedRunID: context.providerRecoveryAlternative?.blockedRunID)
     }
 
     private static func suggestedRuntimeSwitchAction(_ context: Context) -> TaskDecisionDockAction? {
@@ -666,6 +670,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 ? action(.resume, title: "Resume", systemImage: "play.fill")
                 : (context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil),
             secondaryActions: [
+                providerRecoverySwitchAction(context),
                 context.canResume && context.hasProviderSession && context.canRetry
                     ? action(.retry, title: "Retry", systemImage: "arrow.clockwise")
                     : nil,
