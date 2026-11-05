@@ -122,7 +122,9 @@ final class RuntimeExecutionOwnerStore {
             guard try RuntimeExecutionOwnerStore.read(legacyURL) == legacy else { throw Failure.unreadable }
             var bound = legacy
             bound.taskOwnerID = taskOwnerID
-            try save(bound, at: legacyURL)
+            // Reading an already-attributed legacy receipt must preserve its
+            // change time: recovery uses that as evidence it predates boot.
+            if bound != legacy { try save(bound, at: legacyURL) }
             recordURL = legacyURL
         }
 
@@ -180,7 +182,17 @@ final class RuntimeExecutionOwnerStore {
             // not rewrite or invalidate that immutable, still-unattributed copy.
             var attributed = existing
             if attributed.taskOwnerID == nil { attributed.taskOwnerID = record.taskOwnerID }
-            guard try attributed == record || reconciledRecord(attributed) == record else { throw Failure.unreadable }
+            // Keep a later read observation out of the attested source digest.
+            // It expires with this generation and is only needed when comparing
+            // the original receipt or its verified release with the current one.
+            func matchesCurrent(_ candidate: RuntimeExecutionOwnerRecord) -> Bool {
+                var comparable = candidate
+                if comparable.legacyProviderReadObservation == nil {
+                    comparable.legacyProviderReadObservation = record.legacyProviderReadObservation
+                }
+                return comparable == record
+            }
+            guard try matchesCurrent(attributed) || matchesCurrent(reconciledRecord(attributed)) else { throw Failure.unreadable }
             return
         }
         let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)

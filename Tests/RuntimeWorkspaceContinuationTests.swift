@@ -488,8 +488,11 @@ struct RuntimeWorkspaceContinuationTests {
         #expect(try RuntimeExecutionOwner.store(in: h.context).workspaceContinuation(requestID: request.id) == nil)
     }
 
-    @Test("SSH release preserves immutable receipts and allows predecessor follow-up", arguments: [false, true], [false, true])
-    func releasePreservesHistory(advanceReview: Bool, legacyArchive: Bool) throws {
+    @Test("SSH release preserves immutable receipts, later observations, and predecessor follow-up",
+          arguments: [false, true], ["plain", "legacyArchive", "laterObservation", "legacyArchiveAndObservation"])
+    func releasePreservesHistory(advanceReview: Bool, archiveCase: String) throws {
+        let legacyArchive = archiveCase.hasPrefix("legacyArchive")
+        let laterObservation = archiveCase.contains("Observation")
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let (a, initial) = try completed(h)
         let jobs = try sshStore(h, task: a, owner: initial)
@@ -529,13 +532,28 @@ struct RuntimeWorkspaceContinuationTests {
         try save(original, h)
         try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: h.context)
         #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context) == released)
+        let attestation = store.root.appendingPathComponent("reconciliations/\(original.executionID.uuidString).release")
+        let attestedBytes = try Data(contentsOf: attestation)
+        if laterObservation {
+            // The annotation may arrive after this generation was archived.
+            // It must not become an input to the original release digest.
+            try store.retain(released)
+            if archived == nil { archived = try Data(contentsOf: archive) }
+            var observed = released
+            observed.legacyProviderReadObservation = .init(executionID: released.executionID,
+                retainedHead: released.retainedExecutionHead, legacyKey: "antigravity_cli:/synthetic/legacy/settings",
+                bootedAt: Date())
+            try save(observed, h)
+        }
         let submission = try ExecutionRequestSubmissionService.submitFollowUp(message: "Continue the original task", for: a, into: h.context).get()
         let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context))
-        let owner = try #require(RuntimeExecutionOwner.acquire(task: a, context: h.context, maxRunSeconds: 60,
-            newUserTurn: true, newUserRequest: true, userRequest: request))
+        let acquisition = RuntimeExecutionOwner.acquire(task: a, context: h.context, maxRunSeconds: 60,
+            newUserTurn: true, newUserRequest: true, userRequest: request)
+        let owner = try #require(acquisition)
         defer { owner.finish() }
         let history = try store.retainedExecutions(of: owner.record)
         #expect(history.first == released)
+        #expect(try Data(contentsOf: attestation) == attestedBytes)
         if let archived { #expect(try Data(contentsOf: archive) == archived) }
         else { #expect(try RuntimeExecutionOwnerStore.read(archive) == released) }
         var unrelated = released; unrelated.limits.tokensSpent += 1

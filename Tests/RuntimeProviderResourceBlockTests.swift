@@ -8,6 +8,40 @@ import ASTRAModels
 @Suite("Provider shared-state blocks explain retained ownership", .serialized)
 @MainActor
 struct RuntimeProviderResourceBlockTests {
+    @Test("A stale provider switch cannot change the task or replay another run",
+          arguments: ["stale", "closed", "pending", "wrongRun", "wrongRuntime", "uncertainTools", "cancelled"])
+    func switchRequiresSafeCurrentTurn(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let task = h.makeTask(runtime: .antigravityCLI, goal: "Blocked", model: "test")
+        task.status = .pendingUser
+        let run = TaskRun(task: task)
+        run.runtimeID = AgentRuntimeID.antigravityCLI.rawValue
+        run.status = .failed
+        run.stopReason = RuntimeProviderResourceRegistry.Block.stopReason
+        run.completedAt = Date()
+        h.context.insert(run)
+        var record = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context)
+        record.state = .notStarted
+        record.providerLaunchCount = 0
+        record.providerProcess = nil
+        record.stopProof = nil
+        if fault == "wrongRun" { record.runID = UUID() }
+        if fault == "wrongRuntime" { record.runtime = AgentRuntimeID.codexCLI.rawValue }
+        if fault == "uncertainTools" { record.inheritedToolUncertainty = true }
+        if fault == "cancelled" { record.cancellationRequested = true }
+        do { let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: h.context); try lease.save(record) }
+        task.isDone = fault == "closed"
+        if fault == "pending" {
+            _ = try ExecutionRequestSubmissionService.submitFollowUp(message: "A newer request", for: task, into: h.context).get()
+        }
+        let prompt = RuntimeSensitiveDataSwitchPrompt()
+        var retried = false
+        TaskComposerCoordinator.requestDockRuntimeSwitch(to: AgentRuntimeID.codexCLI.rawValue, task: task,
+            cache: .init(), prompt: prompt, blockedRunID: fault == "stale" ? UUID() : run.id) { retried = true }
+        #expect(!retried && prompt.pending == nil && task.resolvedRuntimeID == .antigravityCLI)
+    }
+
     private func retainedOwner(_ h: HeadlessChatHarness, key: AgentRuntimeSharedStateKey,
                                missingClaims: Bool = false) throws -> RuntimeExecutionOwnerRecord {
         let task = h.makeTask(runtime: .antigravityCLI, goal: "Previous unverified execution", model: "test")

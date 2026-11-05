@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRACore
 import ASTRAModels
 
@@ -183,6 +184,23 @@ enum TaskComposerCoordinator {
         ])
     }
 
+    @MainActor
+    static func providerRecoveryAlternative(
+        for task: AgentTask, context: ModelContext, latestRun: TaskRunSnapshot?,
+        recentRuns: [TaskRunSnapshot], readinessStates: [AgentRuntimeID: RuntimeReadinessState]
+    ) -> TaskDecisionDockPresentation.ProviderRecoveryAlternative? {
+        guard latestRun?.stopReason == RuntimeProviderResourceRegistry.Block.stopReason,
+              let run = RuntimeProviderResourceRegistry.retryableBlockedRun(task: task, context: context),
+              run.runtimeID == AgentRuntimeID.antigravityCLI.rawValue else { return nil }
+        let ready = AgentRuntimeAdapterRegistry.runtimeIDs.filter { $0 != .antigravityCLI && readinessStates[$0] == .ready }
+        let previous = recentRuns.reversed().lazy
+            .filter { $0.status == .completed }
+            .compactMap { $0.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)) }
+            .first(where: ready.contains)
+        guard let runtime = previous ?? ready.first else { return nil }
+        return .init(runtime: runtime, blockedRunID: run.id)
+    }
+
     /// The decision dock's "Switch to …" for a policy-blocked task: the same
     /// acknowledgement gate as the composer, then `then` (the retry) only once
     /// the switch has actually been applied.
@@ -192,8 +210,18 @@ enum TaskComposerCoordinator {
         task: AgentTask,
         cache: RuntimeModelAvailabilityCache,
         prompt: RuntimeSensitiveDataSwitchPrompt,
+        blockedRunID: UUID? = nil,
         then: @escaping () -> Void
     ) {
+        func stillApplies() -> Bool {
+            guard let blockedRunID else { return true }
+            guard !task.isDone, let context = task.modelContext, task.status == .pendingUser || task.status == .failed,
+                  let run = RuntimeProviderResourceRegistry.retryableBlockedRun(task: task, context: context),
+                  run.id == blockedRunID, run.runtimeID == AgentRuntimeID.antigravityCLI.rawValue,
+                  let active = try? TaskTurnRequestRepository.activeRequests(for: task, in: context) else { return false }
+            return active.isEmpty
+        }
+        guard stillApplies() else { return }
         let update = runtimeUpdate(
             previousRuntime: task.runtimeID,
             selectedRuntime: runtime,
@@ -214,12 +242,13 @@ enum TaskComposerCoordinator {
             ),
             guard: sensitiveDataSwitchGuard(for: task)
         ) {
+            guard stillApplies() else { return }
             applyRuntimeSwitch(
                 to: runtime,
                 requestedModel: update.resolvedModel,
                 task: task,
                 cache: cache,
-                source: "policy_block_switch_action"
+                source: blockedRunID == nil ? "policy_block_switch_action" : "provider_reservation_retry"
             )
             then()
         }

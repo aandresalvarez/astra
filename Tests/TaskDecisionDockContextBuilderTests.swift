@@ -227,6 +227,152 @@ struct TaskDecisionDockContextBuilderTests {
         ]))
     }
 
+    @Test("Recovery context routes timeout checks and alternate-provider retries separately", arguments: [true, false])
+    func recoveryContextPreservesActions(timeout: Bool) throws {
+        var value = input(status: .pendingUser)
+        let runID = UUID()
+        value.recoveryBlockMessage = "The previous execution requires a recovery check."
+        if timeout {
+            value.timeoutRecoveryRunID = runID
+        } else {
+            value.providerRecoveryAlternative = .init(runtime: .codexCLI, blockedRunID: runID)
+        }
+        let dock = try #require(TaskDecisionDockContextBuilder.build(value))
+        #expect(dock.primaryAction?.kind == (timeout ? .checkTimedOutRun : .retry))
+        #expect(dock.primaryAction?.payload == (timeout ? runID.uuidString : nil))
+        #expect(dock.secondaryActions.map(\.kind) == (timeout ? [] : [.switchRuntime]))
+        #expect(dock.secondaryActions.first?.providerRetryRunID == (timeout ? nil : runID))
+    }
+
+    @Test("Settled legacy provider blocks retain their dock switch without a recovery warning",
+          arguments: [TaskStatus.pendingUser, .failed], [true, false])
+    @MainActor
+    func settledProviderAlternative(status: TaskStatus, canRetry: Bool) throws {
+        let harness = try HeadlessChatHarness(persistentStore: true)
+        defer { harness.cleanup() }
+        let task = harness.makeTask(runtime: .antigravityCLI, goal: "Continue a blocked task", model: "test")
+        task.status = status
+        let run = TaskRun(task: task)
+        run.runtimeID = AgentRuntimeID.antigravityCLI.rawValue
+        run.status = .failed
+        run.stopReason = RuntimeProviderResourceRegistry.Block.stopReason
+        run.completedAt = Date()
+        run.tokensUsed = 100
+        run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+        harness.context.insert(run)
+        var receipt = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: harness.context)
+        receipt.settlementInProgress = false
+        receipt.settlementLocalWorkStopped = true
+        receipt.settlementToolsStopped = true
+        do {
+            let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: harness.context)
+            try lease.save(receipt)
+        }
+        let ownership = TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self), run: run)
+        harness.context.insert(ownership)
+        try harness.context.save()
+        #expect(receipt.state == .stopped && receipt.providerLaunchCount == nil && receipt.canReplace)
+        #expect(RuntimeCompletedUserTurnContinuation.hasSettledTurn(receipt, task: task, context: harness.context))
+        let snapshot = TaskRunSnapshot(input: .init(run: run))
+        let terminal = RuntimeLaunchPresentation.terminalDetail(run: snapshot, events: [.init(event: ownership)])
+        #expect(terminal == nil)
+        var value = input(status: status)
+        value.extraDetails = terminal.map { [$0] } ?? []
+        value.canRetry = canRetry
+        value.pendingReviewState = PendingTaskReviewPolicy.reviewState(for: task, latestRun: run)
+        value.recoveryBlockMessage = RuntimeRecoveryPresentation.blockedMessage(task: task, context: harness.context)
+        value.providerRecoveryAlternative = TaskComposerCoordinator.providerRecoveryAlternative(
+            for: task, context: harness.context, latestRun: snapshot, recentRuns: [snapshot],
+            readinessStates: [.antigravityCLI: .ready, .codexCLI: .ready])
+        #expect(value.recoveryBlockMessage == nil)
+        #expect(value.providerRecoveryAlternative?.blockedRunID == run.id)
+        let dock = try #require(TaskDecisionDockContextBuilder.build(value))
+        #expect(dock.id != "recovery-blocked")
+        let switches = dock.secondaryActions.filter { $0.kind == .switchRuntime }
+        #expect(switches.count == (canRetry ? 1 : 0))
+        guard canRetry else { return }
+        let action = try #require(switches.first)
+        #expect(action.payload == AgentRuntimeID.codexCLI.rawValue && action.providerRetryRunID == run.id)
+        var retried = false
+        let prompt = RuntimeSensitiveDataSwitchPrompt()
+        TaskComposerCoordinator.requestDockRuntimeSwitch(to: try #require(action.payload), task: task,
+            cache: .init(), prompt: prompt, blockedRunID: action.providerRetryRunID) { retried = true }
+        if prompt.pending != nil { prompt.confirm() }
+        #expect(retried && task.resolvedRuntimeID == .codexCLI)
+        #expect(run.status == .failed && task.runs.count == 1)
+    }
+
+    @Test("A retained zero-launch follow-up exposes only safe alternate-provider recovery",
+          arguments: [TaskStatus.pendingUser, .failed, .cancelled], [true, false])
+    @MainActor
+    func unlaunchedProviderAlternative(status: TaskStatus, canRetry: Bool) throws {
+        let harness = try HeadlessChatHarness(persistentStore: true)
+        defer { harness.cleanup() }
+        let task = harness.makeTask(runtime: .antigravityCLI, goal: "Preserve the completed answer", model: "test")
+        let original = TaskRun(task: task)
+        original.runtimeID = AgentRuntimeID.antigravityCLI.rawValue
+        original.status = .completed; original.typedStopReason = .completed
+        original.completedAt = Date(); original.setOutput("Earlier answer")
+        original.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+        harness.context.insert(original); task.status = .completed
+        var prior = try RuntimeRecoveryTestReceipt.install(task: task, run: original, context: harness.context)
+        prior.state = .finished; prior.settlementInProgress = false
+        prior.settlementLocalWorkStopped = true; prior.settlementToolsStopped = true
+        do {
+            let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: harness.context)
+            try lease.save(prior)
+        }
+        let submission = try ExecutionRequestSubmissionService.submitFollowUp(
+            message: "Continue the saved answer", for: task, into: harness.context).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: harness.context))
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: harness.context,
+            maxRunSeconds: 60, userRequest: request))
+        defer { owner.finish() }
+        let run = TaskRun(task: task); run.runtimeID = AgentRuntimeID.antigravityCLI.rawValue
+        run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+        harness.context.insert(run); try owner.bind(run: run)
+        #expect(TaskTurnRequestStateMachine.transition(request, to: .admitted).changed)
+        #expect(TaskTurnRequestStateMachine.transition(request, to: .running, runID: run.id).changed)
+        TaskHistoryRead.event(id: request.sourceEventID, in: task)?.run = run
+        try owner.beginSettlement(); try owner.completeSettlement(localWorkStopped: true, toolsStopped: true)
+        run.status = .failed; run.stopReason = RuntimeProviderResourceRegistry.Block.stopReason; run.completedAt = Date()
+        #expect(TaskTurnRequestStateMachine.transition(request, to: .failed, terminalReason: run.stopReason).changed)
+        task.status = status; owner.finish()
+        let receipt = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))
+        #expect(receipt.state == .notStarted && receipt.providerLaunchCount == 0 && receipt.canReplace)
+        #expect(receipt.retainedExecutionHead == prior.executionID)
+        #expect(RuntimeCompletedUserTurnContinuation.hasUnlaunchedPreparation(receipt, task: task, context: harness.context))
+        let ownership = TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self), run: run)
+        harness.context.insert(ownership); try harness.context.save()
+        let snapshot = TaskRunSnapshot(input: .init(run: run))
+        let terminal = try #require(RuntimeLaunchPresentation.terminalDetail(run: snapshot, events: [.init(event: ownership)]))
+        var value = input(status: status)
+        value.extraDetails = [terminal]; value.canRetry = canRetry
+        value.recoveryBlockMessage = RuntimeRecoveryPresentation.blockedMessage(task: task, context: harness.context)
+        value.providerRecoveryAlternative = TaskComposerCoordinator.providerRecoveryAlternative(
+            for: task, context: harness.context, latestRun: snapshot, recentRuns: [snapshot],
+            readinessStates: [.antigravityCLI: .ready, .codexCLI: .ready])
+        #expect(value.recoveryBlockMessage == nil && value.providerRecoveryAlternative?.blockedRunID == run.id)
+        let dock = try #require(TaskDecisionDockContextBuilder.build(value))
+        #expect(dock.id == "unlaunched" && dock.primaryAction == nil)
+        #expect(!dock.secondaryActions.contains { $0.kind == .retry || $0.kind == .approveResult })
+        let switches = dock.secondaryActions.filter { $0.kind == .switchRuntime }
+        let eligible = canRetry && status != .cancelled
+        #expect(switches.count == (eligible ? 1 : 0))
+        guard eligible else { return }
+        let action = try #require(switches.first)
+        var retried = false
+        let prompt = RuntimeSensitiveDataSwitchPrompt()
+        TaskComposerCoordinator.requestDockRuntimeSwitch(to: try #require(action.payload), task: task,
+            cache: .init(), prompt: prompt, blockedRunID: action.providerRetryRunID) { retried = true }
+        if prompt.pending != nil { prompt.confirm() }
+        #expect(retried && task.resolvedRuntimeID == .codexCLI)
+        #expect(original.status == .completed && original.output == "Earlier answer")
+        #expect(run.status == .failed && request.state == .failed && task.runs.count == 2)
+    }
+
     @Test("extra detail builder preserves runtime pending approval and routine states")
     func extraDetailBuilderPreservesRuntimePendingApprovalAndRoutineStates() {
         let details = TaskDecisionDockContextBuilder.extraDetails(TaskDecisionDockContextBuilder.ExtraDetailsInput(
