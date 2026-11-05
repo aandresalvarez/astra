@@ -325,6 +325,69 @@ struct RuntimeWorkspaceContinuationTests {
         #expect(task.runs.count == 1 && request.runID == nil)
     }
 
+    @Test("Resumed timeout preparation revalidates retained SSH registrations", arguments:
+        ["terminal", "running", "unreadable", "missingRegistration"], [1, 2])
+    func resumedTimeoutPreparationChecksRemoteJobs(fault: String, preparationCount: Int) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (task, original) = try completed(h)
+        let run = try #require(task.runs.first)
+        run.status = .failed; run.typedStopReason = .providerRunWallClockExceeded
+        task.status = .pendingUser
+        var record = original
+        record.state = .unverified; record.resourcesReleased = false
+        let proof = try #require(record.stopProof)
+        record.stopProof = .init(executionID: proof.executionID, process: proof.process, reaped: true,
+            processGroupEmpty: false, toolsStopped: false, remoteWorkExcluded: false, capturedAt: proof.capturedAt)
+        try save(record, h)
+        let jobs = try registerRemoteJobs(for: task, receipt: record, in: h)
+        var job = RemoteWorkspaceJobRecord(jobID: UUID().uuidString.lowercased(), taskID: task.id.uuidString,
+            runID: run.id.uuidString, connection: .init(id: "fixture", name: "Fixture", target: "fixture", arguments: ["fixture"]),
+            command: "true", createdAt: Date())
+        job.status = .succeeded
+        try jobs.create(job)
+        try RuntimeTimeoutRecoveryCheck.check(task: task, runID: run.id, context: h.context)
+        let checked = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(checked.stopProof?.groupObservedEmptyAt != nil)
+        let submitted = try ExecutionRequestSubmissionService.submitFollowUp(message: "New question", for: task, into: h.context).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submitted.requestID, in: h.context))
+        for _ in 0..<preparationCount {
+            let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context,
+                maxRunSeconds: 60, userRequest: request))
+            owner.finish() // End preparation without crossing the provider launch boundary.
+        }
+        let interrupted = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(interrupted.stopProof == nil && interrupted.providerProcess == nil)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        let retained = try store.retainedExecutions(of: interrupted)
+        #expect(retained.count == preparationCount && retained.last == checked)
+        let registration = RemoteWorkspaceJobRegistration.directory(taskID: task.id,
+            executionID: checked.executionID, context: h.context).appendingPathComponent("configuration.json")
+        switch fault {
+        case "running": try jobs.update(jobID: job.jobID) { $0.status = .running }
+        case "unreadable": try Data("{}".utf8).write(to: registration)
+        case "missingRegistration": try FileManager.default.removeItem(at: registration)
+        default: break
+        }
+        // Local continuation still has a valid basis. Admission must also reread
+        // the original registration even though the current receipt has no proof.
+        #expect(RuntimeCompletedUserTurnContinuation.permits(task: task, request: request, context: h.context))
+        let resumed = RuntimeExecutionOwner.acquire(task: task, context: h.context,
+            maxRunSeconds: 60, userRequest: request)
+        defer { resumed?.finish() }
+        if fault == "terminal" {
+            let resumed = try #require(resumed)
+            #expect(resumed.record.ownerID == checked.ownerID)
+            #expect(resumed.record.continuingUserRequestID == request.id)
+            #expect(resumed.record.resourcesReleased == false)
+        } else {
+            #expect(resumed == nil)
+            #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context) == interrupted)
+            #expect(try store.retainedExecutions(of: interrupted) == retained)
+        }
+        #expect(task.runs.count == 1 && request.runID == nil && request.startedAt == nil)
+        #expect(run.status == .failed && run.typedStopReason == .providerRunWallClockExceeded)
+    }
+
     @Test("Large predecessor sets use protected entries and partial or corrupt chains fail closed", arguments: ["valid", "missing", "cycle", "symlink"])
     func pagedAuthorization(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
