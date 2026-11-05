@@ -837,6 +837,20 @@ public final class HostControlMCPServer {
                     diagnostics: diagnosticsRecorder
                 )
             }
+            if let argv = stringArray(arguments["arguments"]) {
+                do {
+                    if let executionArguments = try GitHubReviewReadCommand.ghArguments(for: argv) {
+                        guard Set(arguments.keys).isSubset(of: ["arguments", "timeout_seconds"]) else {
+                            throw GitHubReviewReadCommand.InvalidArguments()
+                        }
+                        return runProcessTool(
+                            toolName: normalizedToolName, executable: configuration.githubExecutable,
+                            arguments: argv, executionArguments: executionArguments,
+                            timeout: timeoutSeconds(from: arguments["timeout_seconds"])
+                        )
+                    }
+                } catch { return .error(code: -32602, message: error.localizedDescription) }
+            }
             return handleProcessTool(
                 toolName: normalizedToolName,
                 executable: configuration.githubExecutable,
@@ -922,10 +936,16 @@ public final class HostControlMCPServer {
             )
             return .error(code: -32602, message: rejection)
         }
-        let timeout = timeoutSeconds(from: arguments["timeout_seconds"])
+        return runProcessTool(toolName: toolName, executable: executable, arguments: argv,
+                              executionArguments: argv, timeout: timeoutSeconds(from: arguments["timeout_seconds"]))
+    }
+
+    private func runProcessTool(
+        toolName: String, executable: String, arguments: [String], executionArguments: [String], timeout: TimeInterval
+    ) -> MCPServerReply {
         let result = processRunner.run(
             executablePath: executable,
-            arguments: argv,
+            arguments: executionArguments,
             timeoutSeconds: timeout,
             environment: configuration.environment,
             currentDirectory: configuration.currentDirectory
@@ -933,7 +953,7 @@ public final class HostControlMCPServer {
         let redacted = redactedResult(result)
         diagnosticsRecorder?.record(
             toolName: toolName,
-            summary: "\(toolName) \(argv.joined(separator: " "))",
+            summary: "\(toolName) \(arguments.joined(separator: " "))",
             result: redacted
         )
         return encodeCommandResult(result: redacted)
@@ -1243,9 +1263,11 @@ public final class HostControlMCPServer {
             GitHubReviewPostPolicy.githubSchema(base: processSchema(
                 name: "github",
                 description: "Run GitHub CLI control-plane commands on the host through ASTRA without provider Bash, "
+                    + "including inline PR review threads through pr review-threads and pr thread-comments, "
                     + "or ask ASTRA to post a pull-request review file you wrote with operation post_review. "
                     + "ASTRA posts it only as the task's permission level allows; the reply says whether it was posted.",
-                argumentDescription: "Arguments for gh, for example [\"pr\", \"view\", \"123\", \"--comments\"]. Omit with operation."
+                argumentDescription: "Arguments for gh. ASTRA also provides \(GitHubReviewReadCommand.usage) "
+                    + "Use reviewThreads.pageInfo for more threads and a thread's comments.pageInfo for more replies. Omit with operation."
             )),
             processSchema(
                 name: "gcloud",

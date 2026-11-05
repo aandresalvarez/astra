@@ -56,7 +56,7 @@ let package = Package(
         ),
         .target(
             name: "HostControlToolSupport",
-            dependencies: ["MCPServerKit"],
+            dependencies: ["MCPServerKit", .product(name: "ASTRAGitContracts", package: "ASTRAGitContracts")],
             path: "Tools/HostControlToolSupport"
         ),
         .target(
