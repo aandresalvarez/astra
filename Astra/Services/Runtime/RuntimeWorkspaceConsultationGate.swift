@@ -16,6 +16,16 @@ enum RuntimeWorkspaceConsultationGate {
         approvedPlan: TaskPlanPayload? = nil,
         modelContext: ModelContext
     ) -> Bool {
+        // Settlement may reload a historical request after admission. A
+        // corrupt snapshot must not become writable legacy-empty claims.
+        if let request, request.decodedResourceClaims == nil {
+            _ = TaskTurnRequestStateMachine.transition(request, to: .failed,
+                terminalReason: RuntimeExecutionAdmission.RequestReadFailure.invalidResourceClaims.rawValue)
+            RuntimeExecutionAdmission.rejectRequest(
+                RuntimeExecutionAdmission.RequestReadFailure.invalidResourceClaims,
+                task: task, context: modelContext)
+            return false
+        }
         guard TaskWorkspaceConsultationPolicy.isRequired(by: request, task: launchTask) else { return true }
         let commandAssertions = TaskWorkspaceConsultationPolicy.hasCommandAssertions(in: approvedPlan)
             || TaskWorkspaceConsultationPolicy.hasCommandAssertions(

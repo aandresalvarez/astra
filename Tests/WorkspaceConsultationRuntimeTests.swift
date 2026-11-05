@@ -9,6 +9,80 @@ import ASTRAPersistence
 @Suite("Workspace consultation runtime boundaries", .serialized)
 @MainActor
 struct WorkspaceConsultationRuntimeTests {
+    @Test("Malformed accepted claims stop every launch before writable preparation",
+          arguments: ["initial", "resume", "full_plan", "final_only"],
+          ["syntax", "unknown_consistency"])
+    func malformedClaimsStopBeforeExecution(route: String, fault: String) async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Explain the workspace", model: "claude-sonnet-4-6")
+        try git(["init", "--initial-branch=fixture-main"], at: harness.workspaceURL)
+        try git(["-c", "user.name=ASTRA Tests", "-c", "user.email=tests@example.invalid", "-c",
+                 "commit.gpgsign=false", "commit", "--allow-empty", "-m", "Fixture"], at: harness.workspaceURL)
+        task.templateHooksJSON = #"{"PreToolUse":[{"matcher":"Read","hooks":[]}]}"#
+        task.isolationStrategy = .gitBranch
+        task.validationStrategy = .runTests
+        task.testCommand = "make test"
+        TaskWorkspaceConsultationPolicy.apply(true, to: task)
+        let marker = harness.workspaceURL.appendingPathComponent("malformed-claims-command-ran")
+        try ".PHONY: test\ntest:\n\t@printf 'ran\\n' >> malformed-claims-command-ran\n"
+            .write(to: harness.workspaceURL.appendingPathComponent("Makefile"), atomically: true, encoding: .utf8)
+        let plan = TaskPlanPayload(title: "Synthetic plan", goal: task.goal,
+            steps: [.init(id: "explain", title: "Explain", status: route == "final_only" ? .done : .pending)],
+            validationContract: .init(assertions: [.init(id: "command", description: "Synthetic command",
+                method: .command, command: "make test")]))
+        let request: TaskTurnRequest
+        if route == "initial" {
+            request = try submit(task, context: harness.context)
+        } else {
+            if route == "resume" { task.status = .completed }
+            let result = route == "resume"
+                ? ExecutionRequestSubmissionService.submitFollowUp(message: "Explain again", for: task, into: harness.context)
+                : ExecutionRequestSubmissionService.submitPlan(plan: plan,
+                    mode: route == "final_only" ? .nextStep : .fullPlan,
+                    mutation: .existingTask, for: task, into: harness.context)
+            guard case .success(let submission) = result else {
+                Issue.record("Could not submit the synthetic Consult request"); return
+            }
+            request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: harness.context))
+        }
+        #expect(request.resourceClaims.contains { $0.readConsistency == .live })
+        corruptClaims(request, fault: fault)
+        _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
+        // Current composer settings cannot repair unreadable accepted intent.
+        TaskWorkspaceConsultationPolicy.apply(false, to: task)
+        try harness.context.save()
+        let policy = admissionPolicy(request, task: task)
+        let fake = FakeAgentProcessRunner()
+        fake.streamLines = [#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Synthetic answer."}]}}"#]
+        let worker = makeWorker(fake, runtime: .claudeCode, root: harness.rootURL)
+        switch route {
+        case "initial":
+            DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: harness.context)
+            await worker.execute(task: task, modelContext: harness.context, executionRequestID: request.id,
+                executionPolicy: policy) { _ in }
+        case "resume":
+            DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: harness.context)
+            await worker.continueSession(task: task, message: "Explain again", turnRequestID: request.id,
+                modelContext: harness.context, executionPolicy: policy) { _ in }
+        default:
+            DirectWorkerLaunchAdmission.admitApprovedPlanRun(task, modelContext: harness.context)
+            await worker.executeApprovedPlan(task: task, plan: plan,
+                mode: route == "final_only" ? .nextStep : .fullPlan, executionRequestID: request.id,
+                modelContext: harness.context, executionPolicy: policy) { _ in }
+        }
+        #expect(task.status == .failed)
+        let markerCount = (try? String(contentsOf: marker, encoding: .utf8))?.split(separator: "\n").count ?? 0
+        #expect(markerCount == 0)
+        #expect(fake.receivedPrompts.isEmpty)
+        #expect(task.runs.isEmpty)
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: harness.context) == nil)
+        #expect(task.events.contains { $0.eventType == TaskEventTypes.System.error })
+        #expect(!FileManager.default.fileExists(atPath: harness.workspaceURL.appendingPathComponent(".claude").path))
+        #expect(try String(contentsOf: harness.workspaceURL.appendingPathComponent(".git/HEAD"), encoding: .utf8)
+            == "ref: refs/heads/fixture-main\n")
+    }
+
     @Test("An unverifiable supplied request never becomes a direct launch",
           arguments: ["initial", "resume", "full_plan", "final_only"],
           ["missing", "unreadable", "wrong_owner", "wrong_context", "wrong_id"])
@@ -79,8 +153,8 @@ struct WorkspaceConsultationRuntimeTests {
         #expect(foreignRequest == nil || foreignRequest?.state == .admitted)
     }
 
-    @Test("An omitted request ID still permits direct Work final validation")
-    func directWorkValidationDoesNotReadARequest() async throws {
+    @Test("Direct Work and valid legacy-empty claims retain exclusive final validation", arguments: [false, true])
+    func directWorkValidationDoesNotReadARequest(legacyRequest: Bool) async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
         let task = harness.makeTask(runtime: .claudeCode, goal: "Validate the workspace", model: "claude-sonnet-4-6")
@@ -91,16 +165,26 @@ struct WorkspaceConsultationRuntimeTests {
             steps: [.init(id: "check", title: "Check", status: .done)],
             validationContract: .init(assertions: [.init(id: "command", description: "Synthetic command",
                 method: .command, command: "make test")]))
+        let request = legacyRequest ? try submit(task, context: harness.context) : nil
+        request?.resourceClaimsJSON = "[]"
+        if let request {
+            #expect(request.decodedResourceClaims == [])
+            #expect(admissionPolicy(request, task: task).workspaceAccessOverride == .exclusive)
+            // Empty legacy claims retain their exclusive contract, without
+            // acquiring a new intent from the current composer selection.
+            TaskWorkspaceConsultationPolicy.apply(true, to: task)
+        }
         var reads = 0
         let fake = FakeAgentProcessRunner()
         let worker = makeWorker(fake, runtime: .claudeCode, root: harness.rootURL, requestReader: { _, _ in
             reads += 1
+            if let request { return request }
             throw FixtureError.read
         })
         DirectWorkerLaunchAdmission.admitApprovedPlanRun(task, modelContext: harness.context)
         await worker.executeApprovedPlan(task: task, plan: plan, mode: .nextStep,
-            modelContext: harness.context) { _ in }
-        #expect(reads == 0)
+            executionRequestID: request?.id, modelContext: harness.context) { _ in }
+        #expect(reads == (legacyRequest ? 1 : 0))
         #expect(task.status == .completed)
         #expect(try String(contentsOf: marker, encoding: .utf8) == "ran\n")
         #expect(fake.receivedPrompts.isEmpty)
@@ -181,12 +265,14 @@ struct WorkspaceConsultationRuntimeTests {
         #expect(!FileManager.default.fileExists(atPath: marker.path))
     }
 
-    @Test("Consult does not claim a concurrent writer's files but retains its task outputs", arguments: [true, false])
-    func inferredWorkspaceOwnership(consultation: Bool) async throws {
+    @Test("Consult and unreadable claims do not claim a concurrent writer's files but retain task outputs",
+          arguments: ["consult", "work", "syntax", "unknown_consistency"])
+    func inferredWorkspaceOwnership(scenario: String) async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
         let task = harness.makeTask(runtime: .codexCLI, goal: "Explain the workspace", model: "gpt-5.4", tokenBudget: 0)
         try git(["init"], at: harness.workspaceURL)
+        let consultation = scenario != "work"
         TaskWorkspaceConsultationPolicy.apply(consultation, to: task)
         let request = try submit(task, context: harness.context)
         let changed = harness.workspaceURL.appendingPathComponent("concurrent-writer.swift")
@@ -194,6 +280,9 @@ struct WorkspaceConsultationRuntimeTests {
         let fake = FakeAgentProcessRunner()
         fake.streamLines = [#"{"type":"item.completed","item":{"type":"agent_message","text":"The workspace contains a synthetic example."}}"#]
         fake.onLaunch = { _, _ in
+            if scenario == "syntax" || scenario == "unknown_consistency" {
+                corruptClaims(request, fault: scenario)
+            }
             // This write represents a separate task during the provider turn;
             // the consultation provider emits no file-change tool events.
             do {
@@ -230,8 +319,9 @@ struct WorkspaceConsultationRuntimeTests {
         #expect(TaskOutputDiscovery.files(for: task, run: run).contains { $0.path == changed.path } == !consultation)
     }
 
-    @Test("A plan updated during Consult stays read-only, and Work can retry final validation", arguments: [false, true])
-    func providerPlanUpdateCannotWidenValidationAccess(retryInWork: Bool) async throws {
+    @Test("Late plan validation retains frozen Consult intent and rejects unreadable claims; Work can retry",
+          arguments: ["consult", "work_retry", "syntax", "unknown_consistency"])
+    func providerPlanUpdateCannotWidenValidationAccess(scenario: String) async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
         let task = harness.makeTask(runtime: .claudeCode, goal: "Explain the workspace", model: "claude-sonnet-4-6", tokenBudget: 0)
@@ -253,6 +343,9 @@ struct WorkspaceConsultationRuntimeTests {
         let fake = FakeAgentProcessRunner()
         fake.streamLines = [#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The workspace contains synthetic files."}]}}"#]
         fake.onLaunch = { _, _ in
+            if scenario == "syntax" || scenario == "unknown_consistency" {
+                corruptClaims(request, fault: scenario)
+            }
             var updated = plan
             updated.steps[0].status = .done
             updated.validationContract = .init(assertions: [.init(id: "late-command",
@@ -266,9 +359,11 @@ struct WorkspaceConsultationRuntimeTests {
             executionPolicy: policy) { _ in }
         #expect(fake.receivedPrompts.count == 1)
         #expect(request.state == .failed)
-        #expect(request.terminalReason == "consultation_plan_commands")
+        let rejection = scenario == "syntax" || scenario == "unknown_consistency"
+            ? "execution_request_invalid_resource_claims" : "consultation_plan_commands"
+        #expect(request.terminalReason == rejection)
         #expect(!FileManager.default.fileExists(atPath: marker.path))
-        guard retryInWork else { return }
+        guard scenario == "work_retry" else { return }
 
         let originalRun = try #require(task.runs.first)
         #expect(try TaskTurnRequestRepository.origin(for: task, runID: originalRun.id, in: harness.context)?.id == request.id)
@@ -328,6 +423,11 @@ struct WorkspaceConsultationRuntimeTests {
         for prompt in fake.receivedPrompts {
             #expect(prompt.contains(TaskWorkspaceConsultationPolicy.providerGuidance))
         }
+    }
+
+    private func corruptClaims(_ request: TaskTurnRequest, fault: String) {
+        request.resourceClaimsJSON = fault == "syntax" ? "{"
+            : request.resourceClaimsJSON.replacingOccurrences(of: "\"live\"", with: "\"future_consistency\"")
     }
 
     private func submit(_ task: AgentTask, context: ModelContext) throws -> TaskTurnRequest {

@@ -118,7 +118,8 @@ public enum TaskOutputWorkspaceDiscovery {
             for request in requests {
                 guard let owner = owners.resolve(request) else { return false }
                 guard owner.persistentModelID == task.persistentModelID else { continue }
-                if request.resourceClaims.contains(where: { $0.kind == .workspace && $0.readConsistency == .live }) {
+                guard let claims = request.decodedResourceClaims else { return false }
+                if claims.contains(where: { $0.kind == .workspace && $0.readConsistency == .live }) {
                     return false
                 }
             }

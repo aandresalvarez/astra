@@ -326,8 +326,17 @@ public final class TaskTurnRequest {
         Self.decode(TaskExecutionPolicySnapshotV1.self, from: executionPolicySnapshotJSON)
     }
 
+    /// Nil means the frozen claims cannot be read, not a legacy empty claim
+    /// set. Execution and ownership inference must reject that ambiguity.
+    /// A successfully decoded empty array retains legacy exclusive admission.
+    public var decodedResourceClaims: [TaskExecutionResourceClaim]? {
+        Self.decode([TaskExecutionResourceClaim].self, from: resourceClaimsJSON)
+    }
+
+    /// Compatibility projection for scheduling, whose empty-claim fallback
+    /// retains an exclusive lease. It does not authorize runtime execution.
     public var resourceClaims: [TaskExecutionResourceClaim] {
-        Self.decode([TaskExecutionResourceClaim].self, from: resourceClaimsJSON) ?? []
+        decodedResourceClaims ?? []
     }
 
     public var snapshot: TaskTurnRequestSnapshot {

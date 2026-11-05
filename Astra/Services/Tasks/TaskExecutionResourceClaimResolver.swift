@@ -78,8 +78,9 @@ enum TaskExecutionResourceClaimResolver {
     }
 
     /// Returns the immutable admission set. Empty, malformed, and legacy
-    /// snapshots fail closed to one exclusive workspace claim; a broken JSON
-    /// envelope must never make a request appear resource-free.
+    /// snapshots retain one exclusive workspace claim; a broken JSON envelope
+    /// must never make a request appear resource-free. This lease fallback is
+    /// not execution authority: runtime rejects unreadable frozen claims.
     ///
     /// Prepared-worktree metadata is also claimed for old requests that predate
     /// that grant. Direct/no-request admission applies its fallback access to

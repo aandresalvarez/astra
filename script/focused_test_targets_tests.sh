@@ -17,7 +17,9 @@ assert_targets() {
 }
 
 assert_targets "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|NewTaskWorktreeConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests" \
+  "Astra/Models/TaskTurnRequest.swift" \
   "Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift" \
+  "Astra/Services/Tasks/TaskExecutionResourceClaimResolver.swift" \
   "Astra/Services/Runtime/RuntimeWorkspaceConsultationGate.swift" \
   "Astra/Views/ChatPanelView.swift" \
   "Astra/Views/ChatPanelViewWorktreeCreation.swift" \

@@ -15,6 +15,7 @@ enum RuntimeExecutionAdmission {
         case missing = "execution_request_missing"
         case invalidOwner = "execution_request_invalid_owner"
         case unreadable = "execution_request_unreadable"
+        case invalidResourceClaims = "execution_request_invalid_resource_claims"
     }
 
     /// Only an omitted ID denotes a direct launch. A supplied ID must retain
@@ -32,6 +33,7 @@ enum RuntimeExecutionAdmission {
                   request.taskID == task.id,
                   try TaskTurnRequestOwnership.resolve(request, in: context)?.persistentModelID == task.persistentModelID
             else { throw RequestReadFailure.invalidOwner }
+            guard request.decodedResourceClaims != nil else { throw RequestReadFailure.invalidResourceClaims }
             return request
         } catch let failure as RequestReadFailure {
             throw failure
@@ -48,7 +50,7 @@ enum RuntimeExecutionAdmission {
         guard task.isLive, task.modelContext === context else { return }
         TaskStateMachine.failFromRuntime(task, modelContext: context)
         context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error,
-            payload: "The saved execution request could not be verified. No work was started."))
+            payload: "The saved execution request could not be verified. Further execution was blocked."))
         WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: context)
     }
 
