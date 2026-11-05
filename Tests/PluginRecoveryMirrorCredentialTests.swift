@@ -187,17 +187,23 @@ struct PluginRecoveryMirrorCredentialTests {
         let outbox: PluginSecretCleanupOutbox
         var ownMirror: URL { URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath)) }
 
-        init() throws {
+        init(onDisk: Bool = false) throws {
             root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-mirror-credentials-\(UUID())")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
-                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+                configurations: [onDisk ? ModelConfiguration(url: root.appendingPathComponent("store.store"))
+                    : ModelConfiguration(isStoredInMemoryOnly: true)])
             context = container.mainContext
             context.autosaveEnabled = false
             workspace = Workspace(name: "Current", primaryPath: root.appendingPathComponent("workspace").path)
             context.insert(workspace)
             try context.save()
             outbox = PluginSecretCleanupOutbox(fileURL: root.appendingPathComponent("cleanup.json"))
+        }
+
+        func reopen() throws -> ModelContainer {
+            try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(url: root.appendingPathComponent("store.store"))])
         }
         /// A real exported mirror with an active immutable request, after
         /// its live activation/account have been removed. The newer store

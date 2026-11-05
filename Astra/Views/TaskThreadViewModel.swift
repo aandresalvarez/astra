@@ -3,6 +3,23 @@ import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 
+private let taskThreadPublicationEvidenceDidCommit = Notification.Name("astra.taskThreadPublicationEvidenceDidCommit")
+private struct TaskThreadPublicationEvidenceCommit: Sendable {
+    let ownerID: PersistentIdentifier
+}
+
+private final class TaskThreadPublicationCommitSubscription {
+    private let observer: NSObjectProtocol
+    init(receive: @escaping @Sendable (PersistentIdentifier) -> Void) {
+        observer = NotificationCenter.default.addObserver(forName: taskThreadPublicationEvidenceDidCommit,
+            object: nil, queue: .main) { notification in
+            guard let change = notification.object as? TaskThreadPublicationEvidenceCommit else { return }
+            receive(change.ownerID)
+        }
+    }
+    deinit { NotificationCenter.default.removeObserver(observer) }
+}
+
 /// Stable correlation data supplied by the task-open trace while its initial
 /// snapshot is being prepared. It contains no user content and keeps the
 /// snapshot pipeline independent of the UI telemetry implementation.
@@ -72,6 +89,12 @@ struct TaskThreadSnapshotReadiness: Equatable, Sendable {
     let taskID: UUID?
     var ownerID: PersistentIdentifier? = nil
     let revision: Int
+    var contentFingerprint: Int? = nil
+
+    func hasContentChange(from previous: Self) -> Bool {
+        taskID != previous.taskID || ownerID != previous.ownerID
+            || contentFingerprint != previous.contentFingerprint
+    }
 
     func isReady(for task: AgentTask) -> Bool {
         taskID == task.id && ownerID == task.persistentModelID && revision > 0
@@ -100,6 +123,9 @@ final class TaskThreadViewModel {
         let input: TaskThreadSnapshotInput
         let trigger: TaskThreadSnapshotTrigger
         let cacheKey: TaskThreadSnapshotCacheKey?
+        let historyCursor: TaskThreadHistoryCursor?
+        let publicationSaveObservation: TaskPublicationDecisionEvidenceReader.MutationTracker?
+        let publicationReadRevision: Int?
         let taskID: UUID
         let ownerID: PersistentIdentifier
         let workspaceID: UUID?
@@ -166,7 +192,8 @@ final class TaskThreadViewModel {
         TaskThreadSnapshotReadiness(
             taskID: appliedSnapshotTaskID,
             ownerID: appliedSnapshotOwnerID,
-            revision: appliedSnapshotRevision
+            revision: appliedSnapshotRevision,
+            contentFingerprint: snapshot?.contentFingerprint
         )
     }
 
@@ -200,15 +227,37 @@ final class TaskThreadViewModel {
     private var historyTask: AgentTask?
     private var expansionRunCount: Int = TaskThreadHistoryPagePolicy.runCount
     private var historyPersistence: HistoryPersistence?
+    @ObservationIgnored private var historySaveObservation: TaskPublicationDecisionEvidenceReader.MutationTracker?
+    @ObservationIgnored private var publicationCommitSubscription: TaskThreadPublicationCommitSubscription?
+    private var historyPublicationReadRevision: Int?
     private var historyCursor: TaskThreadHistoryCursor?
+    /// Cached snapshots establish browsing boundaries, but run inputs and
+    /// evidence must be re-read before an earlier page builds a replacement.
+    private var historyNeedsCachedSeed = false
     /// Newest event seen by a completed read. Independent of `historyCursor`,
     /// which walks backwards for explicit paging and must never move it.
     private var historyTailCursor: TaskThreadEventCursor?
     private var loadedHistoryEvents: [UUID: TaskEventSnapshot] = [:]
+    /// Displayed state rows (such as multiple publication receipts) stay
+    /// pinned independently of latest-value anchors and the storage cursor.
+    private var pinnedHistoryStateEvents: [UUID: TaskEventSnapshot] = [:]
+    private var retainedHistoryEventIDs: [UUID] {
+        Array(Set(loadedHistoryEvents.keys).union(pinnedHistoryStateEvents.keys))
+    }
     private var loadedHistoryStateAnchors: [TaskThreadStateEventKey: TaskEventSnapshot] = [:]
     private var loadedHistoryRuns: [UUID: TaskRunSnapshotInput] = [:]
+    /// At most six background-read publication records for the current run,
+    /// independent of the rendered/paged event window.
+    private var loadedPublicationEvents: [TaskEventSnapshot] = []
     private var historyTotalEventCount = 0
     private var historyTotalRunCount = 0
+    /// Presentation mode only: the store and provider context stay complete.
+    /// Browsing holds event identities, while the latest run page and its state
+    /// anchors still refresh. Only explicit paging may enlarge this window.
+    private var isBrowsingHistory = false
+    private var browsingRunIDs: Set<UUID> = []
+    private var historyWindowRevision = 0
+    private(set) var hasNewerHistory = false
     private(set) var historyLoadState: TaskThreadHistoryLoadState = .idle
     private(set) var hasEarlierHistory = false
     private var lastSnapshotApplyAt: Date = .distantPast
@@ -264,6 +313,9 @@ final class TaskThreadViewModel {
     var mainActorStallSamplerForTesting: TaskThreadMainActorStallSampler { mainActorStallSampler }
     @ObservationIgnored
     var livePacerForTesting: TaskThreadLiveSnapshotPacer { livePacer }
+    var retainedHistoryEventCountForTesting: Int { loadedHistoryEvents.count + pinnedHistoryStateEvents.count }
+    var retainedHistoryRunCountForTesting: Int { loadedHistoryRuns.count }
+    var retainedHistoryAnchorCountForTesting: Int { loadedHistoryStateAnchors.count }
     #endif
 
     private static var terminalSnapshotCache = TaskThreadSnapshotCache()
@@ -277,6 +329,9 @@ final class TaskThreadViewModel {
     ) {
         self.snapshotBuilder = snapshotBuilder
         self.livePacer = livePacer ?? TaskThreadLiveSnapshotPacer()
+        publicationCommitSubscription = TaskThreadPublicationCommitSubscription { [weak self] ownerID in
+            MainActor.assumeIsolated { self?.publicationEvidenceDidSave(ownerID: ownerID) }
+        }
     }
 
     func reset(
@@ -293,13 +348,22 @@ final class TaskThreadViewModel {
             historyPersistence = modelContext.map(HistoryPersistence.init)
             historyTaskID = task.id
             historyTask = task
+            observePublicationSaves(for: task, context: modelContext)
+            historyPublicationReadRevision = nil
             historyCursor = nil
+            historyNeedsCachedSeed = false
             historyTailCursor = nil
             loadedHistoryEvents = [:]
+            pinnedHistoryStateEvents = [:]
             loadedHistoryStateAnchors = [:]
             loadedHistoryRuns = [:]
+            loadedPublicationEvents = []
             historyTotalEventCount = 0
             historyTotalRunCount = 0
+            isBrowsingHistory = false
+            browsingRunIDs = []
+            historyWindowRevision &+= 1
+            hasNewerHistory = false
             historyLoadState = .idle
             hasEarlierHistory = false
             historyReadCountForTesting = 0
@@ -345,6 +409,37 @@ final class TaskThreadViewModel {
 
     func refreshSnapshot(for task: AgentTask) {
         refreshSnapshot(for: task, preparedInput: nil, bypassCache: false)
+    }
+
+    private func observePublicationSaves(for task: AgentTask, context: ModelContext?) {
+        historySaveObservation = nil
+        guard let context else { return }
+        let ownerID = task.persistentModelID
+        if let cached = Self.terminalSnapshotCache.saveObservation(ownerID: ownerID, container: context.container) {
+            historySaveObservation = cached
+            return
+        }
+        historySaveObservation = TaskPublicationDecisionEvidenceReader.MutationTracker(
+            container: context.container, ownerID: ownerID, observeInsertedEvidence: true
+        ) {
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { Self.publicationEvidenceCommitted(ownerID: ownerID) }
+            } else {
+                Task { @MainActor in Self.publicationEvidenceCommitted(ownerID: ownerID) }
+            }
+        }
+    }
+
+    private static func publicationEvidenceCommitted(ownerID: PersistentIdentifier) {
+        terminalSnapshotCache.remove(ownerID: ownerID)
+        NotificationCenter.default.post(name: taskThreadPublicationEvidenceDidCommit,
+                                       object: TaskThreadPublicationEvidenceCommit(ownerID: ownerID))
+    }
+
+    private func publicationEvidenceDidSave(ownerID: PersistentIdentifier) {
+        guard let task = historyTask, !task.isDeleted, task.persistentModelID == ownerID else { return }
+        snapshotTrigger = nil
+        requestSnapshotRefresh(for: task)
     }
 
     /// Coalesces high-frequency typed invalidations before they touch SwiftData.
@@ -443,17 +538,22 @@ final class TaskThreadViewModel {
         // trigger. It uses only the task's durable revision and O(1) counts,
         // keeping repeated opens of long completed histories off the main
         // actor's event scan path.
-        let cacheKey = TaskThreadSnapshotCacheKey(task: task, maxRuns: expansionRunCount)
+        let currentInvalidation = TaskThreadHistoryInvalidation.token(for: task.id)
+        let cacheKey = TaskThreadSnapshotCacheKey(task: task, maxRuns: expansionRunCount,
+                                                historyInvalidation: currentInvalidation)
         // Never cache a page read under a key claiming a generation the page
         // does not contain. The read runs across an `await`, so the completion
         // envelope and the last coalesced chunk can both land during the
         // suspension; storing that stale page under the post-completion key
         // would poison every later open of the task, because `updatedAt` -- the
         // whole key's revision term -- stops moving once a task is terminal.
-        let readIsBehindLiveTask = inputGeneration.map { $0 != task.updatedAt } ?? false
-        let applicableCacheKey = bypassCache || readIsBehindLiveTask ? nil : cacheKey
+        let readIsBehindLiveTask = (inputGeneration.map { $0 != task.updatedAt } ?? false)
+            || (preparedInput != nil && historyInvalidationToken != currentInvalidation)
+            || (preparedInput != nil && historyPublicationReadRevision != historySaveObservation?.revision)
+        let applicableCacheKey = bypassCache || readIsBehindLiveTask || isBrowsingHistory ? nil : cacheKey
         if preparedInput == nil, let cacheKey = applicableCacheKey,
-           let cachedSnapshot = Self.terminalSnapshotCache.snapshot(for: cacheKey) {
+           let cached = Self.terminalSnapshotCache.value(for: cacheKey) {
+            let cachedSnapshot = cached.snapshot
             snapshotRevision += 1
             pendingSnapshotRequest = nil
             supersedeSnapshotWorker()
@@ -463,13 +563,23 @@ final class TaskThreadViewModel {
             livePacer.reset()
             let cacheApplyStart = DispatchTime.now().uptimeNanoseconds
             snapshot = cachedSnapshot
+            historyPublicationReadRevision = historySaveObservation?.revision
             appliedSnapshotRevision += 1
             appliedSnapshotTaskID = task.id
             appliedSnapshotOwnerID = task.persistentModelID
             lastSnapshotCacheState = "hit"
             lastSnapshotApplyAt = Date()
             lastSnapshotAppliedUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
-            hasEarlierHistory = cachedSnapshot.omittedRunCount > 0 || cachedSnapshot.omittedEventCount > 0
+            hasEarlierHistory = cached.historyCursor?.hasEarlierHistory
+                ?? (cachedSnapshot.omittedRunCount > 0 || cachedSnapshot.omittedEventCount > 0)
+            if historyCursor == nil {
+                historyNeedsCachedSeed = historyPersistence != nil
+                // Only an applied cache entry has authoritative baseline counts;
+                // the initial placeholder must never seed a browsing window.
+                historyTotalEventCount = cachedSnapshot.totalEventCount
+                historyTotalRunCount = cachedSnapshot.totalRunCount
+                historyCursor = cached.historyCursor
+            }
             if let responsivenessContext {
                 PerformanceTelemetry.log(
                     "task_open_snapshot_cache_apply",
@@ -561,6 +671,9 @@ final class TaskThreadViewModel {
             input: input,
             trigger: resolvedTrigger,
             cacheKey: applicableCacheKey,
+            historyCursor: historyPersistence == nil ? nil : historyCursor,
+            publicationSaveObservation: historySaveObservation,
+            publicationReadRevision: historyPublicationReadRevision,
             taskID: taskID,
             ownerID: task.persistentModelID,
             workspaceID: workspaceID,
@@ -722,8 +835,11 @@ final class TaskThreadViewModel {
         appliedSnapshotRevision += 1
         appliedSnapshotTaskID = request.taskID
         appliedSnapshotOwnerID = request.ownerID
-        if let cacheKey = request.cacheKey {
-            Self.terminalSnapshotCache.store(builtSnapshot, for: cacheKey)
+        if let cacheKey = request.cacheKey,
+           cacheKey.historyInvalidation == TaskThreadHistoryInvalidation.token(for: request.taskID) {
+            Self.terminalSnapshotCache.store(builtSnapshot, for: cacheKey,
+                historyCursor: request.historyCursor,
+                saveObservation: request.publicationSaveObservation, readRevision: request.publicationReadRevision)
         }
         lastSnapshotApplyAt = Date()
         lastSnapshotAppliedUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
@@ -890,9 +1006,101 @@ final class TaskThreadViewModel {
         refreshSnapshot(for: task)
     }
 
+    /// Called after a deferred scroll-position change, before the next live
+    /// merge can remove rows above the reader. Also used by explicit paging.
+    func pauseFollowingLatestHistory(for task: AgentTask) {
+        pauseFollowingLatestHistory(for: task, refreshRetainedWindow: true)
+    }
+
+    private func pauseFollowingLatestHistory(for task: AgentTask, refreshRetainedWindow: Bool) {
+        guard ownsHistory(task), !isBrowsingHistory else { return }
+        isBrowsingHistory = true
+        browsingRunIDs = Set(loadedHistoryRuns.keys)
+        // A read can be ahead of the rendered snapshot. Pin its surviving
+        // displayed rows too, and reject the build that would evict them.
+        // This adds at most one bounded live page, never a stream-sized buffer.
+        if let snapshot {
+            hasNewerHistory = historyTotalEventCount > snapshot.totalEventCount
+            browsingRunIDs.formUnion(snapshot.sortedRuns.map(\.id))
+            let displayedRecordIDs = Set(snapshot.conversationItems.compactMap { item -> UUID? in
+                if case .externalAction(let record) = item { return record.id }
+                return nil
+            })
+            for event in snapshot.sortedEvents where TaskThreadStateEventPolicy.contains(event.type)
+                && displayedRecordIDs.contains(event.id) {
+                pinnedHistoryStateEvents[event.id] = loadedHistoryEvents.removeValue(forKey: event.id) ?? event
+            }
+            for event in snapshot.sortedEvents where !TaskThreadStateEventPolicy.contains(event.type) {
+                if loadedHistoryEvents[event.id] == nil { loadedHistoryEvents[event.id] = event }
+            }
+            let oldest = loadedHistoryEvents.values.sorted {
+                $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp
+            }.first
+            var earlierEvent = historyCursor?.event
+            if let oldest, earlierEvent.map({ cursor in
+                oldest.timestamp == cursor.timestamp
+                    ? oldest.id.uuidString < cursor.id.uuidString : oldest.timestamp < cursor.timestamp
+            }) ?? true {
+                earlierEvent = TaskThreadEventCursor(timestamp: oldest.timestamp, id: oldest.id,
+                                                     ownerID: task.persistentModelID)
+            }
+            var earlierRun: TaskThreadRunCursor? = historyCursor?.run
+            if let displayedRun = snapshot.sortedRuns.first {
+                let isEarlier = earlierRun.map { cursor in
+                    if displayedRun.startedAt == cursor.startedAt {
+                        return displayedRun.id.uuidString < cursor.id.uuidString
+                    }
+                    return displayedRun.startedAt < cursor.startedAt
+                } ?? true
+                if isEarlier {
+                    earlierRun = TaskThreadRunCursor(startedAt: displayedRun.startedAt, id: displayedRun.id)
+                }
+            }
+            historyCursor = historyCursor.map {
+                TaskThreadHistoryCursor(
+                    run: earlierRun,
+                    event: earlierEvent,
+                    hasEarlierRuns: $0.hasEarlierRuns, hasEarlierEvents: $0.hasEarlierEvents,
+                    ownerID: task.persistentModelID
+                )
+            }
+        }
+        snapshotRevision += 1
+        pendingSnapshotRequest = nil
+        historyWindowRevision &+= 1
+        snapshotTrigger = nil
+        if refreshRetainedWindow {
+            // Pinning supersedes a build, including the stream's final build.
+            // Always replace it even when no subsequent event will arrive.
+            refreshSnapshot(for: task, preparedInput: nil, bypassCache: true)
+        }
+    }
+
+    func followLatestHistory(for task: AgentTask) {
+        guard ownsHistory(task), isBrowsingHistory else { return }
+        isBrowsingHistory = false
+        pinnedHistoryStateEvents = [:]
+        browsingRunIDs = []
+        hasNewerHistory = false
+        historyWindowRevision &+= 1
+        snapshotRevision += 1
+        pendingSnapshotRequest = nil
+        historyLoadTask?.cancel()
+        historyLoadTask = nil
+        historyLoadID = nil
+        deferredHistoryApply = nil
+        historyLoadState = .idle
+        // Force a bounded replacement, not a tail merge of the browsed pages.
+        historyTailCursor = nil
+        snapshotTrigger = nil
+        refreshSnapshot(for: task, preparedInput: nil, bypassCache: true)
+    }
+
     func loadEarlierHistory(for task: AgentTask) {
         guard ownsHistory(task) else { return }
         guard historyLoadState != .loading else { return }
+        // The earlier-page load itself supplies the replacement snapshot.
+        pauseFollowingLatestHistory(for: task, refreshRetainedWindow: false)
         guard let store = historyPersistence?.store else {
             expandWindow(for: task)
             return
@@ -928,16 +1136,30 @@ final class TaskThreadViewModel {
         do {
             var initializedHistory = false
             var generation = task.updatedAt
-            if historyCursor == nil {
+            let publicationRevision = historySaveObservation?.revision
+            if historyCursor == nil || historyNeedsCachedSeed {
+                let seedingCachedHistory = historyNeedsCachedSeed
                 guard flushPendingHistoryWrites() else {
                     reportHistoryFlushFailure(for: task, operation: "earlier")
                     return
                 }
-                let initialPage = try await store.initialPage(taskID: task.id, ownerID: task.persistentModelID)
+                let initialPage: TaskThreadHistoryPage
+                let invalidation = TaskThreadHistoryInvalidation.token(for: task.id)
+                if historyNeedsCachedSeed, let cursor = historyCursor {
+                    initialPage = try await store.retainedPage(taskID: task.id, ownerID: task.persistentModelID,
+                        eventIDs: retainedHistoryEventIDs, runIDs: Array(browsingRunIDs), cursor: cursor,
+                        historyInvalidation: invalidation)
+                } else {
+                    initialPage = try await store.initialPage(taskID: task.id, ownerID: task.persistentModelID,
+                                                             historyInvalidation: invalidation)
+                }
                 await notifyHistoryPageCapturedForTesting()
                 guard isCurrentHistoryRead(task) else { return }
                 historyReadCountForTesting += 1
-                replaceHistory(with: initialPage)
+                if seedingCachedHistory {
+                    hasNewerHistory = hasNewerHistory || initialPage.totalEventCount > historyTotalEventCount
+                }
+                replaceHistory(with: initialPage, publicationRevision: publicationRevision)
                 initializedHistory = true
             }
             guard let cursor = historyCursor, cursor.hasEarlierHistory else {
@@ -1034,12 +1256,37 @@ final class TaskThreadViewModel {
     private func readHistory(for task: AgentTask) async {
         guard let store = historyPersistence?.store, ownsHistory(task) else { return }
         let taskID = task.id
+        let windowRevision = historyWindowRevision
         // A mutation the tail read provably cannot observe (see
         // `TaskThreadHistoryInvalidation`) disqualifies the tail for one cycle
         // and makes the accumulated rows untrustworthy, not just incomplete.
         let invalidationToken = TaskThreadHistoryInvalidation.token(for: taskID)
+        let publicationRevision = historySaveObservation?.revision
         let tailIsTrusted = invalidationToken == historyInvalidationToken
+            && publicationRevision == historyPublicationReadRevision
         do {
+            if isBrowsingHistory, let cursor = historyCursor {
+                let generation = task.updatedAt
+                guard flushPendingHistoryWrites() else {
+                    reportHistoryFlushFailure(for: task, operation: "retained")
+                    return
+                }
+                let page = try await store.retainedPage(
+                    taskID: taskID, ownerID: task.persistentModelID,
+                    eventIDs: retainedHistoryEventIDs, runIDs: Array(browsingRunIDs), cursor: cursor,
+                    historyInvalidation: invalidationToken
+                )
+                await notifyHistoryPageCapturedForTesting()
+                guard isCurrentHistoryRead(task, windowRevision: windowRevision) else { return }
+                historyReadCountForTesting += 1
+                hasNewerHistory = hasNewerHistory || page.totalEventCount > historyTotalEventCount || !tailIsTrusted
+                replaceHistory(with: page, publicationRevision: publicationRevision)
+                historyInvalidationToken = invalidationToken
+                // Retained-row mutations may leave all trigger counts equal.
+                snapshotTrigger = nil
+                applyHistoryRead(for: task, generation: generation)
+                return
+            }
             if tailIsTrusted, let cursor = historyTailCursor, historyCursor != nil {
                 // Captured before the flush: writes that land from here on are
                 // not guaranteed to be in the page this read returns.
@@ -1048,11 +1295,13 @@ final class TaskThreadViewModel {
                     reportHistoryFlushFailure(for: task, operation: "latest")
                     return
                 }
-                let tail = try await store.tailPage(taskID: taskID, ownerID: task.persistentModelID, since: cursor)
+                let tail = try await store.tailPage(taskID: taskID, ownerID: task.persistentModelID, since: cursor,
+                                                    historyInvalidation: invalidationToken)
                 await notifyHistoryPageCapturedForTesting()
-                guard isCurrentHistoryRead(task) else { return }
+                guard isCurrentHistoryRead(task, windowRevision: windowRevision) else { return }
                 historyTailReadCountForTesting += 1
                 if applyTailPage(tail) {
+                    historyPublicationReadRevision = publicationRevision
                     historyReadCountForTesting += 1
                     applyHistoryRead(for: task, generation: generation)
                     return
@@ -1063,36 +1312,18 @@ final class TaskThreadViewModel {
                 reportHistoryFlushFailure(for: task, operation: "latest")
                 return
             }
-            // An untrusted read replaces rather than merges, so it must come
-            // back as wide as the window the user has paged open or the replace
-            // itself snaps them back to the latest page. The widening is
-            // bounded by rows already held, and only an announced mutation
-            // (compaction) ever asks for it.
-            let page = try await store.initialPage(
-                taskID: taskID,
-                ownerID: task.persistentModelID,
-                coveringEventCount: tailIsTrusted ? 0 : loadedHistoryEvents.count,
-                previousTotalEventCount: tailIsTrusted ? nil : historyTotalEventCount,
-                coveringRunCount: tailIsTrusted ? 0 : loadedHistoryRuns.count
-            )
+            // Live fallback and invalidation use the same fixed page limit.
+            // Only explicit earlier-page navigation can widen retained history.
+            let page = try await store.initialPage(taskID: taskID, ownerID: task.persistentModelID,
+                                                   historyInvalidation: invalidationToken)
             await notifyHistoryPageCapturedForTesting()
-            guard isCurrentHistoryRead(task) else { return }
+            guard isCurrentHistoryRead(task, windowRevision: windowRevision) else { return }
             historyFullReadCountForTesting += 1
             historyReadCountForTesting += 1
-            if tailIsTrusted {
-                mergeLatestHistoryPage(page)
-            } else {
-                // An announced mutation deleted rows this view model still
-                // holds. Merging would keep rendering them, so take the page as
-                // authoritative -- the same replace-on-shrink the full-read path
-                // used to reach by counting.
-                replaceHistory(with: page)
-                // Such a mutation can leave every trigger field identical (a
-                // one-row compaction swaps a deleted row for a backdated
-                // summary and moves no count and no revision), so the rebuilt
-                // page must not be deduped away.
-                snapshotTrigger = nil
-            }
+            replaceHistory(with: page, publicationRevision: publicationRevision)
+            if isBrowsingHistory { browsingRunIDs.formUnion(page.runs.map(\.id)) }
+            // A same-count replacement must not be deduped away.
+            if !tailIsTrusted { snapshotTrigger = nil }
             historyInvalidationToken = invalidationToken
             applyHistoryRead(for: task, generation: generation)
         } catch {
@@ -1118,6 +1349,17 @@ final class TaskThreadViewModel {
 
     private func isCurrentHistoryRead(_ task: AgentTask) -> Bool {
         ownsHistory(task) && !Task.isCancelled
+    }
+
+    /// A scroll mode change while the actor was reading must not evict a newly
+    /// pinned row or restore a browsed window after Jump to latest.
+    private func isCurrentHistoryRead(_ task: AgentTask, windowRevision: Int) -> Bool {
+        guard isCurrentHistoryRead(task) else { return false }
+        guard historyWindowRevision == windowRevision else {
+            pendingHistoryRead = task
+            return false
+        }
+        return true
     }
 
     /// `generation` is the `task.updatedAt` captured before the read was
@@ -1239,7 +1481,7 @@ final class TaskThreadViewModel {
     /// Applies an incremental tail read, or reports that it cannot be trusted
     /// so the caller re-reads the full page.
     private func applyTailPage(_ tail: TaskThreadHistoryTailPage) -> Bool {
-        guard !tail.overflowed, tail.totalRunCount >= loadedHistoryRuns.count else { return false }
+        guard !tail.overflowed, tail.totalRunCount >= historyTotalRunCount else { return false }
         let appended = tail.events.reduce(0) { $0 + (loadedHistoryEvents[$1.id] == nil ? 1 : 0) }
         // Backdated inserts and deletions are invisible to a tail read. What
         // this proves is narrower than "the tail observed every change": it
@@ -1251,6 +1493,7 @@ final class TaskThreadViewModel {
         // to any count and are handled by `TaskThreadHistoryInvalidation`
         // instead, which `readHistory` consults before choosing this path.
         guard tail.totalEventCount == historyTotalEventCount + appended else { return false }
+        loadedPublicationEvents = tail.publicationEvents
         for event in tail.events { loadedHistoryEvents[event.id] = event }
         // A refreshed anchor arrives as an ordinary tail row. Merge (never
         // replace) so anchors the tail page never refetches are retained.
@@ -1259,15 +1502,33 @@ final class TaskThreadViewModel {
         historyTotalRunCount = tail.totalRunCount
         historyTotalEventCount = tail.totalEventCount
         advanceTailCursor(with: tail.events)
+        boundLiveHistory()
+        return true
+    }
+
+    /// Bound the source dictionaries before building the snapshot used by the
+    /// eager conversation stack. State anchors are a separate, bounded latest
+    /// value per retained run/type; evicted runs cannot retain anchors forever.
+    private func boundLiveHistory() {
+        let events = loadedHistoryEvents.values.sorted {
+            $0.timestamp == $1.timestamp ? $0.id.uuidString > $1.id.uuidString : $0.timestamp > $1.timestamp
+        }.prefix(TaskThreadHistoryPagePolicy.eventCount)
+        let runs = loadedHistoryRuns.values.sorted {
+            $0.startedAt == $1.startedAt ? $0.id.uuidString > $1.id.uuidString : $0.startedAt > $1.startedAt
+        }.prefix(TaskThreadHistoryPagePolicy.runCount)
+        loadedHistoryEvents = Dictionary(uniqueKeysWithValues: events.map { ($0.id, $0) })
+        loadedHistoryRuns = Dictionary(uniqueKeysWithValues: runs.map { ($0.id, $0) })
+        loadedHistoryStateAnchors = loadedHistoryStateAnchors.filter { key, _ in
+            key.runID.map { loadedHistoryRuns[$0] != nil } ?? true
+        }
         historyCursor = TaskThreadHistoryCursor(
-            run: historyCursor?.run,
-            event: historyCursor?.event,
-            hasEarlierRuns: tail.totalRunCount > loadedHistoryRuns.count,
-            hasEarlierEvents: tail.totalEventCount > loadedHistoryEvents.count,
+            run: runs.last.map { TaskThreadRunCursor(startedAt: $0.startedAt, id: $0.id) },
+            event: events.last.map { TaskThreadEventCursor(timestamp: $0.timestamp, id: $0.id, ownerID: historyTask?.persistentModelID) },
+            hasEarlierRuns: historyTotalRunCount > loadedHistoryRuns.count,
+            hasEarlierEvents: historyTotalEventCount > loadedHistoryEvents.count,
             ownerID: historyTask?.persistentModelID
         )
         hasEarlierHistory = historyCursor?.hasEarlierHistory == true
-        return true
     }
 
     private func advanceTailCursor(with events: [TaskEventSnapshot]) {
@@ -1285,9 +1546,14 @@ final class TaskThreadViewModel {
         }
     }
 
-    private func replaceHistory(with page: TaskThreadHistoryPage) {
+    private func replaceHistory(with page: TaskThreadHistoryPage, publicationRevision: Int?) {
+        historyPublicationReadRevision = publicationRevision
+        historyNeedsCachedSeed = false
+        loadedPublicationEvents = page.publicationEvents
         loadedHistoryRuns = Dictionary(uniqueKeysWithValues: page.runs.map { ($0.id, $0) })
-        loadedHistoryEvents = Dictionary(uniqueKeysWithValues: page.events.map { ($0.id, $0) })
+        let pinnedIDs = Set(pinnedHistoryStateEvents.keys)
+        pinnedHistoryStateEvents = Dictionary(uniqueKeysWithValues: page.events.filter { pinnedIDs.contains($0.id) }.map { ($0.id, $0) })
+        loadedHistoryEvents = Dictionary(uniqueKeysWithValues: page.events.filter { !pinnedIDs.contains($0.id) }.map { ($0.id, $0) })
         loadedHistoryStateAnchors = Self.stateAnchorDictionary(page.stateAnchors)
         historyTotalRunCount = page.totalRunCount
         historyTotalEventCount = page.totalEventCount
@@ -1301,40 +1567,15 @@ final class TaskThreadViewModel {
         hasEarlierHistory = page.cursor.hasEarlierHistory
     }
 
-    private func mergeLatestHistoryPage(_ page: TaskThreadHistoryPage) {
-        if loadedHistoryRuns.isEmpty && loadedHistoryEvents.isEmpty {
-            replaceHistory(with: page)
-            return
-        }
-        if page.totalRunCount < loadedHistoryRuns.count || page.totalEventCount < loadedHistoryEvents.count {
-            // Compaction or deletion invalidated accumulated pages. Prefer an
-            // accurate latest page over retaining projections of deleted rows.
-            replaceHistory(with: page)
-            return
-        }
-        guard let currentCursor = historyCursor else {
-            replaceHistory(with: page)
-            return
-        }
-        for run in page.runs { loadedHistoryRuns[run.id] = run }
-        for event in page.events { loadedHistoryEvents[event.id] = event }
-        replaceLatestStateAnchors(with: page.stateAnchors, refreshedRuns: page.runs)
-        historyTotalRunCount = page.totalRunCount
-        historyTotalEventCount = page.totalEventCount
-        advanceTailCursor(with: page.events)
-        historyCursor = TaskThreadHistoryCursor(
-            run: currentCursor.run,
-            event: currentCursor.event,
-            hasEarlierRuns: page.totalRunCount > loadedHistoryRuns.count,
-            hasEarlierEvents: page.totalEventCount > loadedHistoryEvents.count,
-            ownerID: page.cursor.ownerID
-        )
-        hasEarlierHistory = historyCursor?.hasEarlierHistory == true
-    }
-
     private func mergeEarlierHistoryPage(_ page: TaskThreadHistoryPage) {
+        historyWindowRevision &+= 1
+        hasNewerHistory = hasNewerHistory || page.totalEventCount > historyTotalEventCount
+        browsingRunIDs.formUnion(page.runs.map(\.id))
         for run in page.runs { loadedHistoryRuns[run.id] = run }
-        for event in page.events { loadedHistoryEvents[event.id] = event }
+        for event in page.events {
+            if pinnedHistoryStateEvents[event.id] != nil { pinnedHistoryStateEvents[event.id] = event }
+            else { loadedHistoryEvents[event.id] = event }
+        }
         mergeStateAnchors(page.stateAnchors)
         historyTotalRunCount = page.totalRunCount
         historyTotalEventCount = page.totalEventCount
@@ -1351,7 +1592,8 @@ final class TaskThreadViewModel {
 
     private func storageBackedInput(for task: AgentTask) -> TaskThreadSnapshotInput {
         let anchorEvents = Dictionary(uniqueKeysWithValues: loadedHistoryStateAnchors.values.map { ($0.id, $0) })
-        let accumulatedEvents = loadedHistoryEvents.merging(anchorEvents) { pageEvent, _ in
+        let retainedEvents = loadedHistoryEvents.merging(pinnedHistoryStateEvents) { pageEvent, _ in pageEvent }
+        let accumulatedEvents = retainedEvents.merging(anchorEvents) { pageEvent, _ in
             pageEvent
         }
         let loadedRunIDs = Set(loadedHistoryRuns.keys)
@@ -1380,7 +1622,8 @@ final class TaskThreadViewModel {
             totalEventCount: historyTotalEventCount,
             omittedEventCount: omittedEventCount,
             totalRunCount: historyTotalRunCount,
-            omittedRunCount: omittedRunCount
+            omittedRunCount: omittedRunCount,
+            publicationEvents: loadedPublicationEvents
         )
     }
 
@@ -1390,18 +1633,6 @@ final class TaskThreadViewModel {
         Dictionary(anchors.map { (TaskThreadStateEventKey(event: $0), $0) }) { current, candidate in
             Self.isLaterStateAnchor(candidate, than: current) ? candidate : current
         }
-    }
-
-    private func replaceLatestStateAnchors(
-        with anchors: [TaskEventSnapshot],
-        refreshedRuns: [TaskRunSnapshotInput]
-    ) {
-        let refreshedRunIDs = Set(refreshedRuns.map(\.id))
-        loadedHistoryStateAnchors = loadedHistoryStateAnchors.filter { key, _ in
-            guard let runID = key.runID else { return false }
-            return !refreshedRunIDs.contains(runID)
-        }
-        mergeStateAnchors(anchors)
     }
 
     private func mergeStateAnchors(_ anchors: [TaskEventSnapshot]) {

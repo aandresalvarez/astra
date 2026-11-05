@@ -193,6 +193,44 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
+    public static func credentialRecoveryEvidence(of activation: PluginActivation) -> PluginCredentialRecoveryEvidence? {
+        guard let workspace = activation.workspace,
+              let evidence = retentionRecords(of: workspace).first(where: { $0.pluginID == activation.pluginID })?.credentialRecoveryEvidence,
+              evidence.appliesTo(namespaceSeed: activation.namespaceSeed, credentialNamespaceSeed: activation.credentialNamespaceSeed)
+        else { return nil }
+        return evidence
+    }
+
+    /// Keeps unresolved recovery facts until the activation is explicitly
+    /// removed. Learning a definition's components or recording one key does
+    /// not prove that an absent legacy marker list was complete.
+    public static func preserveCredentialRecoveryEvidence(_ evidence: PluginCredentialRecoveryEvidence, on activation: PluginActivation) {
+        guard !evidence.isEmpty, let workspace = activation.workspace else { return }
+        var entries = retentionRecords(of: workspace)
+        if let index = entries.firstIndex(where: { $0.pluginID == activation.pluginID }) {
+            let merged = evidence.merging(entries[index].credentialRecoveryEvidence)
+            guard merged != entries[index].credentialRecoveryEvidence else { return }
+            entries[index].credentialRecoveryEvidence = merged
+        } else {
+            var entry = RetiredPluginActivation(pluginID: activation.pluginID, namespaceSeed: "", overriddenComponentIDs: [], overridingRowIDs: [])
+            entry.credentialRecoveryEvidence = evidence
+            entries.append(entry)
+        }
+        setRetired(entries, on: workspace)
+        // Retention knowledge is workspace bookkeeping. It does not change
+        // the activation's executable contract or its revision.
+    }
+
+    /// Refreshes only saved retention facts after a capability contract has
+    /// been validated. A cached context must not overwrite newer evidence.
+    public static func preserveCredentialRecoveryEvidence(from records: [RetiredPluginActivation], in workspace: Workspace) {
+        for record in records {
+            guard let evidence = record.credentialRecoveryEvidence,
+                  let activation = activation(for: record.pluginID, in: workspace) else { continue }
+            preserveCredentialRecoveryEvidence(evidence, on: activation)
+        }
+    }
+
     /// Sets the seed mixed into the activation's projected IDs.
     public static func setNamespaceSeed(_ seed: String, on activation: PluginActivation) {
         guard activation.namespaceSeed != seed else { return }
@@ -204,6 +242,26 @@ public enum WorkspaceCapabilityActivation {
         guard activation.credentialNamespaceSeed != seed else { return }
         activation.credentialNamespaceSeed = seed
         touch(activation)
+    }
+
+    /// Only a prepared transaction with a fresh private destination calls
+    /// this. Restoring a legacy namespace uses setCredentialNamespaceSeed,
+    /// which never turns missing marker knowledge into a complete list.
+    public static func publishCredentialGeneration(_ seed: String, on activation: PluginActivation) {
+        guard UUID(uuidString: seed) != nil, seed != activation.credentialNamespaceSeed else { return }
+        if let workspace = activation.workspace {
+            var entries = retentionRecords(of: workspace)
+            if let index = entries.firstIndex(where: { $0.pluginID == activation.pluginID }),
+               var prior = entries[index].credentialRecoveryEvidence, prior.credentialNamespaceSeed == nil {
+                prior.namespaceSeed = activation.namespaceSeed
+                prior.credentialNamespaceSeed = activation.credentialNamespaceSeed
+                entries[index].credentialRecoveryEvidence = prior
+                setRetired(entries, on: workspace)
+            }
+        }
+        setCredentialNamespaceSeed(seed, on: activation)
+        preserveCredentialRecoveryEvidence(.init(namespaceSeed: activation.namespaceSeed,
+            credentialNamespaceSeed: seed, secretSettingKeysKnown: true), on: activation)
     }
 
     /// Records each plugin template row's content digest (by component) as a
@@ -574,7 +632,7 @@ public enum WorkspaceCapabilityActivation {
         Snapshot(
             state: state(of: workspace),
             activations: activations(of: workspace).map(PluginActivationRecord.init),
-            retired: retiredActivations(of: workspace),
+            retired: retentionRecords(of: workspace),
             pendingLegacy: pendingLegacyState(of: workspace),
             updatedAt: workspace.updatedAt
         )

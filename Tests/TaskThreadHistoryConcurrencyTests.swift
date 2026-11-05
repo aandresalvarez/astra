@@ -272,24 +272,23 @@ struct TaskThreadHistoryConcurrencyTests {
         } else {
             Issue.record("Expected .failed, got \(viewModel.historyLoadState)")
         }
-        // ...but the streamed row merged before the failure, and dropping its
-        // apply is the same silent stall as a frozen transcript.
-        #expect(viewModel.snapshot?.sortedEvents.count == TaskThreadHistoryReader.defaultEventPageSize + 1)
-        #expect(viewModel.snapshot?.sortedEvents.last?.payload == "streamed while paging")
+        // The mode change re-reads the pinned rows; the new message waits
+        // behind New activity instead of evicting the reader's anchor.
+        #expect(viewModel.snapshot?.sortedEvents.count == TaskThreadHistoryReader.defaultEventPageSize)
 
         // Retry still re-issues the earlier page rather than the latest one.
         viewModel.retryEarlierHistory(for: task)
         await viewModel.waitForPendingWorkForTesting()
 
         #expect(viewModel.historyLoadState == .idle)
-        #expect(viewModel.snapshot?.sortedEvents.count == 2 * TaskThreadHistoryReader.defaultEventPageSize + 1)
+        #expect(viewModel.snapshot?.sortedEvents.count == 2 * TaskThreadHistoryReader.defaultEventPageSize)
         #expect(viewModel.hasEarlierHistory)
         for _ in 0..<10 where viewModel.hasEarlierHistory {
             viewModel.loadEarlierHistory(for: task)
             await viewModel.waitForPendingWorkForTesting()
         }
-        #expect(viewModel.snapshot?.sortedEvents.count == 1_206)
-        #expect(Set(viewModel.snapshot?.sortedEvents.map(\.id) ?? []).count == 1_206)
+        #expect(viewModel.snapshot?.sortedEvents.count == 1_205)
+        #expect(Set(viewModel.snapshot?.sortedEvents.map(\.id) ?? []).count == 1_205)
         #expect(!viewModel.hasEarlierHistory)
     }
 

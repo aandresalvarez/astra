@@ -1101,6 +1101,10 @@ struct PluginSourcesTests {
         var fileE = config
         fileE.id = nil
         let workspaceE = WorkspaceConfigManager.importWorkspaceResult(from: fileE, modelContext: e.context, capabilityTrust: .validate(verifierE)).workspace
+        // Machine E has its own folder, as B/C/D do. Reusing A's physical
+        // mirror would overwrite a different workspace's recovery owner.
+        workspaceE.primaryPath = e.root.appendingPathComponent("Workspace-\(workspaceE.id)").path
+        try FileManager.default.createDirectory(atPath: workspaceE.primaryPath, withIntermediateDirectories: true)
         // This models the next launch after import, not an unsaved editor
         // transaction. Migration must not commit an import on its caller's behalf.
         try e.context.save()

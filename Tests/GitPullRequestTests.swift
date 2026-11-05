@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import ASTRA
 import ASTRACore
+import ASTRAGitContracts
 
 /// Coverage for creating a pull request directly via the `gh` CLI, including the
 /// argument contract, URL extraction, and the missing-`gh` fallback signal.
@@ -575,6 +576,9 @@ struct GitPullRequestTests {
         #expect(args.contains("owner=coral"))
         #expect(args.contains("name=astra"))
         #expect(args.contains("number=95"))
+        #expect(args == GitHubReviewThreads.pullRequestArguments(
+            owner: "coral", name: "astra", number: 95
+        ).joined(separator: "\n") + "\n")
     }
 
     @Test("default remote and web URL do not require origin")

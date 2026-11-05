@@ -199,10 +199,15 @@ struct ImportedTaskHistoryIsolationTests {
     }
 
     @Test("Scheduled results resolve the source within the schedule's local workspace")
-    func scheduledResultCannotWriteAnotherCopy() throws {
+    func scheduledResultCannotWriteAnotherCopy() async throws {
         let (container, original, copy) = try fixture()
         let context = container.mainContext
-        let a = Workspace(name: "A", primaryPath: "/tmp/history-a"), b = Workspace(name: "B", primaryPath: "/tmp/history-b")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("A"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("B"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let a = Workspace(name: "A", primaryPath: root.appendingPathComponent("A").path)
+        let b = Workspace(name: "B", primaryPath: root.appendingPathComponent("B").path)
         context.insert(a); context.insert(b)
         original.workspace = a; copy.workspace = b
         let scheduled = AgentTask(title: "Scheduled", goal: "Result", workspace: b)
@@ -217,6 +222,9 @@ struct ImportedTaskHistoryIsolationTests {
         #expect(original.runs.isEmpty && original.tokensUsed == 0)
         #expect(copy.runs.count == 1 && copy.tokensUsed == 123)
         #expect(copy.runs.first?.output == "B RESULT")
+        // Await this export before deleting its directory. The flush helper
+        // starts a replacement export rather than synchronously draining one.
+        await WorkspacePersistenceCoordinator.waitForPendingExport(workspaceID: b.id)
     }
 
     private final class PageGate {
@@ -278,8 +286,17 @@ struct ImportedTaskHistoryIsolationTests {
         await newLoad.value
         await vm.waitForPendingWorkForTesting()
         #expect(vm.historyLoadState == .idle)
-        #expect(vm.snapshot?.sortedEvents.count == seededCount + 2)
+        // Paging pins this owner's rows; the new tail waits behind New activity.
+        #expect(vm.snapshot?.sortedEvents.count == seededCount + 1)
         #expect(!vm.hasEarlierHistory)
+        #expect(vm.snapshot?.sortedEvents.contains { $0.payload == "Imported" } == false)
+        #expect(vm.snapshot?.sortedEvents.contains { $0.payload == "A new tail" } == false)
+        #expect(vm.hasNewerHistory)
+        vm.followLatestHistory(for: a)
+        await vm.waitForPendingWorkForTesting()
+        #expect(!vm.hasNewerHistory)
+        #expect(vm.snapshot?.sortedEvents.count == TaskThreadHistoryPagePolicy.eventCount)
+        #expect(vm.hasEarlierHistory)
         #expect(vm.snapshot?.sortedEvents.contains { $0.payload == "Imported" } == false)
         #expect(vm.snapshot?.sortedEvents.contains { $0.payload == "A new tail" } == true)
     }

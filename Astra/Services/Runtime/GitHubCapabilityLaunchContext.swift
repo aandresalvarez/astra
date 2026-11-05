@@ -2,6 +2,17 @@ import Foundation
 import ASTRACore
 
 enum GitHubCapabilityLaunchContext {
+    static func reviewThreadGuidance(usesCLIRelay: Bool) -> String {
+        let request = usesCLIRelay
+            ? "run `astra-host-control github -- pr review-threads NUMBER --repo OWNER/REPO`"
+            : #"call ASTRA's GitHub tool (`mcp__astra_host__github`) with `{"arguments":["pr","review-threads","NUMBER","--repo","OWNER/REPO"]}`"#
+        return """
+
+
+        For inline PR comments, \(request). This uses the Git panel's host GitHub login and returns resolved and unresolved threads. Use this read first, including when earlier turns reported a connector or shell login failure. Follow reviewThreads.pageInfo.endCursor with --after while hasNextPage is true. For more replies in one thread, use pr thread-comments THREAD_ID --after END_CURSOR on the same tool. If output is truncated, retry the page with a smaller --limit.
+        """
+    }
+
     static func appendingProviderGuidance(
         to prompt: String,
         repositoryStatus: HealthStatus?
