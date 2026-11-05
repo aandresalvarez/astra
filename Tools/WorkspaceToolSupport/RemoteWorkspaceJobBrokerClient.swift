@@ -39,15 +39,21 @@ public enum RemoteWorkspaceJobBrokerClient {
                       record.executionID == configuration.ownerBinding?.executionID else {
                     throw RemoteWorkspaceJobError.notOffered
                 }
-                guard let remoteClock = record.remoteClock else {
-                    return .init(exitCode: 1, stdout: "remote_job_id: \(record.jobID)\nstatus: unverified\n",
-                        stderr: (record.message ?? "Remote clock unavailable; no command was launched.") + "\n")
-                }
                 try configuration.ownerBinding?.validateLaunch()
+                let permission = try exchange(.authorizeLaunch(jobID: record.jobID))
+                guard permission.record?.jobID == record.jobID,
+                      permission.record?.launchNonce == record.launchNonce,
+                      permission.record?.launchPermit == .issued,
+                      permission.record?.ownerID == record.ownerID,
+                      permission.record?.executionID == record.executionID,
+                      let remoteClock = permission.record?.remoteClock else {
+                    return permission.output ?? .init(exitCode: 1, stdout: "remote_job_id: \(record.jobID)\n",
+                        stderr: "ASTRA did not grant permission to launch. Check the recorded job; no command was sent.\n")
+                }
                 let result = SSHRemoteWorkspaceJobTransport(sshExecutable: configuration.sshExecutable).run(
                     connection: connection, script: RemoteWorkspaceJobScripts.start(jobID: record.jobID,
                         command: record.command, timeoutSeconds: record.timeoutSeconds, nonce: nonce, clock: remoteClock), timeoutSeconds: 90)
-                if result.exitCode != 0 || result.timedOut {
+                if result.timedOut || (result.exitCode != 0 && result.exitCode != RemoteWorkspaceJobScripts.existingJobExitCode) {
                     return .init(exitCode: 1, stdout: "remote_job_id: \(record.jobID)\nstatus: unverified\n",
                         stderr: "The launch reply is uncertain. ASTRA is checking the existing job; do not repeat the remote command. \(result.stderr)\n")
                 }

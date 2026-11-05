@@ -27,14 +27,7 @@ public enum RemoteWorkspaceJobScripts {
         astra_root="$HOME/.astra"
         jobs_root="$astra_root/jobs"
         job_dir="$jobs_root/\(jobID)"
-        if [ -L "$astra_root" ] || [ -L "$jobs_root" ]; then exit \(unwritableRootExitCode); fi
-        mkdir -p "$jobs_root" || exit \(unwritableRootExitCode)
-        chmod 700 "$astra_root" "$jobs_root" || exit \(unwritableRootExitCode)
-        if ! mkdir "$job_dir" 2>/dev/null; then
-          echo 'astra_error=the job directory already exists on this host'
-          exit \(existingJobExitCode)
-        fi
-        printf '%s' '\(nonce)' > "$job_dir/nonce" || exit \(unwritableRootExitCode)
+        \(RemoteWorkspaceJobLaunchTicket.operation("start", jobID: jobID, nonce: nonce))
         cat > "$job_dir/command.sh" <<'\(commandDelimiter)'
         \(command)
         \(commandDelimiter)
@@ -55,8 +48,8 @@ public enum RemoteWorkspaceJobScripts {
         python(jobID: jobID, nonce: nonce, operation: "probe")
     }
 
-    public static func cancel(jobID: String, nonce: String) -> String {
-        python(jobID: jobID, nonce: nonce, operation: "cancel")
+    public static func cancel(jobID: String, nonce: String, legacyBootID: String? = nil) -> String {
+        python(jobID: jobID, nonce: nonce, operation: "cancel", legacyBootID: legacyBootID)
     }
 
     public static func tail(jobID: String, stream: String, lines: Int, nonce: String = "legacy") -> String {
@@ -64,9 +57,11 @@ public enum RemoteWorkspaceJobScripts {
             lines: max(1, min(lines, maximumTailLines)))
     }
 
-    private static func python(jobID: String, nonce: String, operation: String, stream: String = "stdout", lines: Int = 120) -> String {
+    private static func python(jobID: String, nonce: String, operation: String, stream: String = "stdout", lines: Int = 120,
+                               legacyBootID: String? = nil) -> String {
         """
-        python3 - '\(jobID)' '\(nonce)' '\(operation)' '\(stream)' '\(lines)' <<'ASTRA_JOB_PROBE_PY'
+        python3 - '\(jobID)' '\(nonce)' '\(operation)' '\(stream)' '\(lines)' '\(Data((legacyBootID ?? "").utf8).base64EncodedString())' <<'ASTRA_JOB_PROBE_PY'
+        \(RemoteWorkspaceJobLaunchTicket.source)
         \(RemoteWorkspaceJobProbe.source)
         ASTRA_JOB_PROBE_PY
         """

@@ -8,19 +8,24 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
     private let lock = NSLock()
     private let runtime: AgentRuntimeID
     private var toolsOrUnknownExecution = false
+    private var unaccountedExecution = false
+    private var managedHelper: RuntimeManagedSSHHelperEvidence?
     private var terminalFrameSeen = false
     private var openCodeStopSeen = false
 
-    init(runtime: AgentRuntimeID = .claudeCode) { self.runtime = runtime }
+    init(runtime: AgentRuntimeID = .claudeCode, managedSSHBroker: RuntimeManagedSSHBrokerEvidence? = nil) {
+        self.runtime = runtime
+        self.managedHelper = managedSSHBroker.map(RuntimeManagedSSHHelperEvidence.init)
+    }
 
     /// Explicit ASTRA-owned events (including interactive permission tools).
     func observe(_ event: ParsedEvent) {
         lock.withLock {
-            if Self.uncertain(event) { toolsOrUnknownExecution = true }
+            if Self.uncertain(event) { toolsOrUnknownExecution = true; unaccountedExecution = true }
             switch event {
             case .result: terminalFrameSeen = true
             case .text, .thinking, .systemInit: terminalFrameSeen = false; openCodeStopSeen = false
-            case .control: toolsOrUnknownExecution = true
+            case .control: toolsOrUnknownExecution = true; unaccountedExecution = true
             default: break
             }
         }
@@ -31,6 +36,7 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
               let frame = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else {
             lock.withLock {
                 toolsOrUnknownExecution = true
+                unaccountedExecution = true
                 terminalFrameSeen = false
                 openCodeStopSeen = false
             }
@@ -39,6 +45,11 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
         let kind = RuntimeProviderFrameEvidence.classify(frame, runtime: runtime)
         let containsWork = RuntimeStreamExecutionHints.containsWork(frame)
         lock.withLock {
+            let managed = managedHelper?.observe(frame, runtime: runtime) == true
+            if !managed && (containsWork || events.contains(where: Self.uncertain)
+                || kind == .uncertain || kind == .postTurnReport || kind == .terminalWithoutCleanupProof) {
+                unaccountedExecution = true
+            }
             if containsWork || events.contains(where: Self.uncertain) { toolsOrUnknownExecution = true }
             switch kind {
             case .uncertain:
@@ -64,6 +75,7 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
         lock.withLock {
             if !stdoutEOF {
                 toolsOrUnknownExecution = true
+                unaccountedExecution = true
                 terminalFrameSeen = false
             }
             if runtime == .openCodeCLI { terminalFrameSeen = naturally && stdoutEOF && openCodeStopSeen }
@@ -80,5 +92,10 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
 
     /// A terminal response can coexist with an unverified tool or external job.
     var providerTurnEnded: Bool { lock.withLock { terminalFrameSeen } }
-    var toolsStopped: Bool { lock.withLock { terminalFrameSeen && !toolsOrUnknownExecution } }
+    var toolsStopped: Bool {
+        lock.withLock { terminalFrameSeen && !toolsOrUnknownExecution && managedHelper?.hasBrokerActivity != true }
+    }
+    var managedSSHOnly: Bool {
+        lock.withLock { terminalFrameSeen && toolsOrUnknownExecution && !unaccountedExecution && managedHelper?.fullyAccounted == true }
+    }
 }

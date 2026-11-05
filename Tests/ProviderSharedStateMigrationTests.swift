@@ -10,7 +10,8 @@ import ASTRAModels
 struct ProviderSharedStateMigrationTests {
     @Test("A second task may read a legacy writer's settings only after verified local settlement and reboot",
           arguments: ["settled", "legacyFilename", "missingPointerJournal", "sameBoot", "unknownBoot", "unknownEnvironment", "missingHistory",
-                      "unsettled", "unboundRun", "zeroLaunches", "missingLaunchCount", "contradictoryUsage"])
+                      "unsettled", "unboundRun", "zeroLaunches", "missingLaunchCount", "contradictoryUsage",
+                      "pendingSSHCurrent", "pendingSSHRetained", "pendingSSHPreparation", "pendingSSHAfterObservation"])
     func historicalReader(fixture: String) async throws {
         // This fixture deliberately retains a provider-wide legacy claim. Use
         // a real on-disk journal visible only to the gates that opt into it,
@@ -52,7 +53,7 @@ struct ProviderSharedStateMigrationTests {
         writer.inheritedToolUncertainty = true
         if fixture == "unboundRun" { writer.runID = UUID() }
         var history = [writer]
-        if ["zeroLaunches", "missingLaunchCount", "contradictoryUsage"].contains(fixture) {
+        if ["zeroLaunches", "missingLaunchCount", "contradictoryUsage", "pendingSSHPreparation"].contains(fixture) {
             let stopped = completedRun(.antigravityCLI, secondsAgo: 15)
             stopped.status = .cancelled
             stopped.typedStopReason = .cancelled
@@ -84,6 +85,12 @@ struct ProviderSharedStateMigrationTests {
         current.retainedProviderSharedStateKeys = [oldKey.rawValue]
         current.stopProof = .init(executionID: current.executionID, process: try #require(current.providerProcess),
             reaped: true, processGroupEmpty: true, toolsStopped: false, remoteWorkExcluded: true, capturedAt: Date())
+        if fixture == "pendingSSHCurrent" { current.pendingSSHJobSetDigest = "missing-registered-inventory" }
+        if fixture == "pendingSSHRetained" {
+            history[0].pendingSSHJobSetDigest = "missing-registered-inventory"
+            writer = history[0]
+        }
+        if fixture == "pendingSSHPreparation" { history[1].pendingSSHJobSetDigest = "missing-registered-inventory" }
         do {
             let lease = try store.acquire(taskID: holder.id, taskOwnerID: holder.persistentModelID)
             try lease.save(writer)
@@ -93,6 +100,10 @@ struct ProviderSharedStateMigrationTests {
             if fixture != "missingHistory" { for execution in history { try store.retain(execution) } }
             try lease.save(current)
             if fixture == "settled" { try store.retain(current) }
+        }
+        if fixture.hasPrefix("pendingSSH") {
+            // A disappeared directory must not erase the protected inventory fence.
+            #expect(ProviderSharedStateReadObservation.noRemoteRegistrations(for: holder.id, store: store))
         }
         if fixture == "missingPointerJournal" {
             // A separate writer's pointer survives even when its store disappears.
@@ -127,7 +138,7 @@ struct ProviderSharedStateMigrationTests {
         }
         let gate = AgentRuntimeSharedStateGate(processLockRoot: h.providerLockRoot, registeredStoreRoots: [store.root], hostBootTime: { boot })
         await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await gate.waitForPreviousWriter(key) }
-        if ["settled", "legacyFilename", "zeroLaunches", "missingPointerJournal"].contains(fixture) {
+        if ["settled", "legacyFilename", "zeroLaunches", "missingPointerJournal", "pendingSSHAfterObservation"].contains(fixture) {
             if fixture != "missingPointerJournal" {
                 try await gate.waitForPreviousWriter(key, owner: reader)
                 let cold = AgentRuntimeSharedStateGate(processLockRoot: h.providerLockRoot, registeredStoreRoots: [])
@@ -148,6 +159,15 @@ struct ProviderSharedStateMigrationTests {
                 let lease = try store.acquire(taskID: holder.id, taskOwnerID: holder.persistentModelID)
                 try store.retain(saved)
                 withExtendedLifetime(lease) {}
+            }
+            if fixture == "pendingSSHAfterObservation" {
+                current.pendingSSHJobSetDigest = "new-registered-inventory"
+                do {
+                    let lease = try store.acquire(taskID: holder.id, taskOwnerID: holder.persistentModelID)
+                    try lease.save(current)
+                }
+                let cold = AgentRuntimeSharedStateGate(processLockRoot: h.providerLockRoot, registeredStoreRoots: [])
+                await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await cold.waitForPreviousWriter(key) }
             }
         } else {
             await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await gate.waitForPreviousWriter(key, owner: reader) }

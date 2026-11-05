@@ -38,6 +38,7 @@ struct RuntimeExecutionStopProof: Codable, Equatable, Sendable {
     let toolsStopped: Bool
     let remoteWorkExcluded: Bool
     let capturedAt: Date
+    var managedSSHOnly: Bool? = nil
     /// A later local observation for a new human turn. Replacement still requires the original proof.
     var groupObservedEmptyAt: Date? = nil
     var permitsReplacement: Bool { reaped && processGroupEmpty && toolsStopped && remoteWorkExcluded }
@@ -85,10 +86,13 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     /// Successful launches in the bound run, retained when a fallback clears its current process.
     var providerLaunchCount: Int? = nil
     var resourcesReleased: Bool? = nil
+    /// Exact registered SSH inventory for a settled process; managed helper
+    /// attempts still need protected no-dispatch evidence before release.
+    var pendingSSHJobSetDigest: String? = nil
     var cancellationRequested: Bool? = nil
     /// The pre-journal run that `RuntimeRecoveryLegacyReconciliation` admitted this owner on.
     var legacySettledRunID: UUID? = nil
-    /// Original protected evidence retained when an unused SSH route was the only fence.
+    /// Original protected process evidence retained by SSH release reconciliation.
     var hostNoToolReconciliationOriginalProof: RuntimeExecutionStopProof? = nil
     /// Linked immutable receipts retained by an explicit continuation. Cleanup
     /// uncertainty and reservations belong to the logical owner across turns.
@@ -105,7 +109,7 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     /// A new user instruction is distinct from replaying unfinished work. It
     /// still cannot compete with the old provider or its local process group.
     var hasUnverifiedTools: Bool {
-        sessionVerificationPending == true || inheritedToolUncertainty == true || stopProof?.toolsStopped == false
+        sessionVerificationPending == true || pendingSSHJobSetDigest != nil || inheritedToolUncertainty == true || stopProof?.toolsStopped == false
             || stopProof?.remoteWorkExcluded == false || settlementToolsStopped == false
     }
 

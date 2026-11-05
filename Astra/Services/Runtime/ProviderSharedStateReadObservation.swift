@@ -18,6 +18,7 @@ struct ProviderSharedStateReadObservation: Codable, Equatable, Sendable {
         owner.executionID == executionID && owner.retainedExecutionHead == retainedHead
             && owner.state == .finished && owner.cancellationRequested != true
             && owner.settlementInProgress == false && owner.sessionVerificationPending != true
+            && owner.pendingSSHJobSetDigest == nil
             && key.runtimeName == AgentRuntimeID.antigravityCLI.rawValue && key.filePath != nil
             && legacyKey.hasPrefix("antigravity_cli:/") && writer.providerSharedStateKey == legacyKey
             && writer.runtime == key.runtimeName && Self.endedLocally(writer, before: bootedAt)
@@ -43,6 +44,7 @@ struct ProviderSharedStateReadObservation: Codable, Equatable, Sendable {
     private static func endedLocally(_ record: RuntimeExecutionOwnerRecord, before boot: Date) -> Bool {
         guard record.state == .finished || record.state == .stopped || record.state == .unverified,
               record.sessionVerificationPending != true, record.cancellationRequested != true,
+              record.pendingSSHJobSetDigest == nil,
               record.settlementInProgress == false, record.settlementLocalWorkStopped == true,
               record.settlementToolsStopped == true, let proof = record.stopProof,
               proof.executionID == record.executionID, proof.process == record.providerProcess,
@@ -87,7 +89,9 @@ struct ProviderSharedStateReadObservation: Codable, Equatable, Sendable {
         let runs = Dictionary(grouping: owner.runs, by: \.id)
         var boundRuns = Set<UUID>()
         for execution in history {
+            // A missing directory does not discharge a saved remote-work inventory.
             guard execution.taskOwnerID == owner.persistentModelID, execution.sessionVerificationPending != true,
+                  execution.pendingSSHJobSetDigest == nil,
                   execution.resourceClaims != nil, let id = execution.runID, boundRuns.insert(id).inserted,
                   let matches = runs[id], matches.count == 1, let run = matches.first, run.runtimeID == execution.runtime,
                   let ended = run.completedAt, run.status != .running, run.startedAt <= ended, ended < bootedAt,

@@ -3,6 +3,7 @@ import SwiftData
 import Testing
 import ASTRAModels
 import ASTRAPersistence
+import WorkspaceToolSupport
 @testable import ASTRA
 
 @Suite("Task queue store lifetime")
@@ -14,6 +15,78 @@ struct TaskQueueStoreSessionTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
         )
+    }
+
+    @Test("A batch of durable SSH acknowledgements refreshes and wakes once without losing later changes")
+    func remoteAcknowledgementsCoalesce() async throws {
+        let h = try HeadlessChatHarness(); defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic acknowledgements", model: "test")
+        task.status = .completed
+        try h.context.save()
+        let jobs = RemoteWorkspaceJobStore(rootPath: h.rootURL.appendingPathComponent("acknowledged-jobs").path)
+        let queue = TaskQueue(poolSize: 0)
+        await queue.processQueue(modelContext: h.context)
+        let wakes = queue.observedDispatchWakeCount
+        var delivered = Set<UUID>()
+        var firstJobID: String?
+        for _ in 0..<200 {
+            let job = RemoteWorkspaceJobRecord(jobID: UUID().uuidString.lowercased(), taskID: task.id.uuidString,
+                connection: .init(id: "fixture", name: "Fixture", target: "fixture", arguments: ["fixture"]),
+                command: "true", createdAt: Date())
+            firstJobID = firstJobID ?? job.jobID
+            try jobs.create(job)
+            let saved = try jobs.update(jobID: job.jobID) { $0.requestCancellation(at: Date()) }
+            delivered.formUnion((saved.pendingTransitions ?? []).map(\.id))
+            try RemoteWorkspaceJobEventReconciler.reconcile(saved, task: task, context: h.context, store: jobs)
+        }
+        #expect(queue.remoteAdmissionRefresh.isPending)
+        #expect(queue.remoteAdmissionRefresh.completedRefreshCount == 0)
+        #expect(queue.observedDispatchWakeCount == wakes)
+        #expect(try jobs.records().allSatisfy { $0.pendingTransitions?.isEmpty == true })
+        #expect(delivered.isSubset(of: Set(task.events.map(\.id))))
+        for _ in 0..<100 where queue.remoteAdmissionRefresh.isPending { await Task.yield() }
+        #expect(!queue.remoteAdmissionRefresh.isPending)
+        #expect(queue.remoteAdmissionRefresh.completedRefreshCount == 1)
+        #expect(queue.observedDispatchWakeCount == wakes + 1)
+        #expect(queue.ownedCoroutineCount == 0)
+
+        // A later committed transition receives its own refresh; the prior
+        // batch's pending identity cannot suppress it.
+        let jobID = try #require(firstJobID)
+        let later = try jobs.update(jobID: jobID) { $0.status = .cancelled }
+        try RemoteWorkspaceJobEventReconciler.reconcile(later, task: task, context: h.context, store: jobs)
+        #expect(queue.remoteAdmissionRefresh.isPending)
+        for _ in 0..<100 where queue.remoteAdmissionRefresh.isPending { await Task.yield() }
+        #expect(queue.remoteAdmissionRefresh.completedRefreshCount == 2)
+        #expect(queue.observedDispatchWakeCount == wakes + 2)
+        #expect(try jobs.load(jobID: jobID).pendingTransitions?.isEmpty == true)
+        #expect(await queue.cancelAllAndWait())
+    }
+
+    @Test("Shutdown drains a pending SSH refresh and releases its borrowed context before rebinding")
+    func shutdownDrainsRemoteRefresh() async throws {
+        let container = try makeContainer()
+        let queue = TaskQueue(poolSize: 0)
+        weak var borrowed: ModelContext?
+        autoreleasepool {
+            let context = ModelContext(container)
+            borrowed = context
+            _ = queue.processQueueIfIdle(modelContext: context)
+            NotificationCenter.default.post(name: RemoteWorkspaceJobEventReconciler.admissionDidChange, object: context)
+        }
+        #expect(queue.remoteAdmissionRefresh.isPending && borrowed != nil)
+        #expect(queue.ownedCoroutineCount == 2) // processing plus the coalesced lifecycle task
+        #expect(await queue.cancelAllAndWait())
+        #expect(!queue.remoteAdmissionRefresh.isPending && !queue.hasBoundStoreSession)
+        #expect(queue.remoteAdmissionRefresh.completedRefreshCount == 0 && queue.ownedCoroutineCount == 0)
+        #expect(borrowed == nil)
+
+        let replacement = ModelContext(container)
+        await queue.processQueue(modelContext: replacement)
+        NotificationCenter.default.post(name: RemoteWorkspaceJobEventReconciler.admissionDidChange, object: replacement)
+        for _ in 0..<100 where queue.remoteAdmissionRefresh.isPending { await Task.yield() }
+        #expect(queue.remoteAdmissionRefresh.completedRefreshCount == 1)
+        #expect(await queue.cancelAllAndWait())
     }
 
     @Test("Legacy request repair runs once per bound store session")

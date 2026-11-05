@@ -979,7 +979,8 @@ final class AgentRuntimeProcessRunner {
                 return result
             }
         }
-        let processEvidence = RuntimeExecutionProcessEvidence(runtime: plan.runtime)
+        let processEvidence = RuntimeExecutionProcessEvidence(runtime: plan.runtime,
+            managedSSHBroker: RemoteWorkspaceJobLaunchPolicy.managedHelperEvidence(taskID: taskID))
         let usageAccounting = RuntimeStreamUsageAccounting(runtime: plan.runtime, sessionInput: reportedUsageBaseline.input, sessionOutput: reportedUsageBaseline.output)
         let processStartedAt = ProcessInfo.processInfo.systemUptime
         let deliveryChannel = AgentLivePermissionDeliveryChannel()
@@ -1248,7 +1249,8 @@ final class AgentRuntimeProcessRunner {
                 processResult.executionStopProof = proc.stopProof(executionID: executionID,
                     toolsStopped: processEvidence.toolsStopped,
                     remoteWorkExcluded: remoteWorkExcluded ||
-                        (!plan.executionEnvironment.providerRunsInsideContainer && processEvidence.toolsStopped))
+                        (!plan.executionEnvironment.providerRunsInsideContainer && processEvidence.toolsStopped),
+                    managedSSHOnly: processEvidence.managedSSHOnly)
                 processResult.executionTurnsSpent = max(1, monitor.turnCount)
                 processResult.executionTokensSpent = monitor.recoveryTokensConsumed(estimatedInputTokens: estimatedInputTokens)
                 processResult.executionSecondsSpent = ProcessInfo.processInfo.systemUptime - processStartedAt

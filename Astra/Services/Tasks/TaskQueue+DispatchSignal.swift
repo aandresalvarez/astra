@@ -45,6 +45,7 @@ extension TaskQueue {
     func wakeDispatchWaiters() {
         #if DEBUG
         TaskQueue.dispatchWakeCountForTesting += 1
+        observedDispatchWakeCount += 1
         #endif
         let parked = dispatchWaiters
         dispatchWaiters.removeAll()

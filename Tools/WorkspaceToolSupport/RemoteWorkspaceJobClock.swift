@@ -5,6 +5,10 @@ import Foundation
 /// earlier remote instant is conservative: transit can only shorten the job.
 public enum RemoteWorkspaceJobClock {
     static let domain = "posix-clock-monotonic-v1"
+    enum ReservationError: LocalizedError {
+        case alreadyExists
+        var errorDescription: String? { "The remote job directory already exists. No command was launched." }
+    }
 
     // Python <3.10 on macOS makes time.monotonic() process-relative. The
     // explicitly selected POSIX clock has one epoch across SSH processes.
@@ -35,8 +39,16 @@ print(json.dumps({'astra_clock': 2, 'clock_domain': '\#(domain)', 'boot_id': boo
 ASTRA_CLOCK_PY
 """#
 
-    static func sample(_ transport: RemoteWorkspaceJobTransport, connection: RemoteWorkspaceJobConnection) throws -> (bootID: String, monotonic: TimeInterval) {
-        let result = transport.run(connection: connection, script: script, timeoutSeconds: 30)
+    static func sample(_ transport: RemoteWorkspaceJobTransport, connection: RemoteWorkspaceJobConnection,
+                       registering job: RemoteWorkspaceJobRecord? = nil) throws -> (bootID: String, monotonic: TimeInterval) {
+        let preparation = job.map {
+            RemoteWorkspaceJobLaunchTicket.operation("reserve", jobID: $0.jobID, nonce: $0.launchNonce ?? "")
+        } ?? ""
+        let result = transport.run(connection: connection, script: "set -e\n" + preparation + "\n" + script, timeoutSeconds: 30)
+        if let job, !result.isTransportFailure, result.exitCode == RemoteWorkspaceJobScripts.existingJobExitCode,
+           result.stdout.split(separator: "\n").contains(Substring("astra_reservation_exists=" + job.jobID)) {
+            throw ReservationError.alreadyExists
+        }
         guard !result.timedOut, result.exitCode == 0, result.stdout.utf8.count < 8192,
               let object = try? JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any],
               object["astra_clock"] as? Int == 2, object["clock_domain"] as? String == domain,

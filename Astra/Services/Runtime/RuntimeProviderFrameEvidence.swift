@@ -33,7 +33,8 @@ enum RuntimeProviderFrameEvidence {
             default: return .uncertain
             }
         case "assistant", "user":
-            guard let message = frame["message"] as? [String: Any], textBlocks(message["content"]) else { return .uncertain }
+            guard cursor || RuntimeManagedSSHFrameMetadata.acceptsClaudeFrame(frame),
+                  let message = frame["message"] as? [String: Any], textBlocks(message["content"]) else { return .uncertain }
             if let role = message["role"] as? String, role != frame["type"] as? String { return .uncertain }
             return .activity
         case "thinking" where cursor:
@@ -49,7 +50,8 @@ enum RuntimeProviderFrameEvidence {
             let info = frame["rate_limit_info"] as? [String: Any]
             return ["allowed", "allowed_warning", "rejected"].contains(info?["status"] as? String ?? "") ? .bookkeeping : .uncertain
         case "stream_event" where !cursor:
-            guard let event = frame["event"] as? [String: Any] else { return .uncertain }
+            guard RuntimeManagedSSHFrameMetadata.acceptsClaudeFrame(frame),
+                  let event = frame["event"] as? [String: Any] else { return .uncertain }
             switch event["type"] as? String {
             case "message_start":
                 guard let message = event["message"] as? [String: Any], textBlocks(message["content"]) else { return .uncertain }

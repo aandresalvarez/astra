@@ -47,6 +47,8 @@ enum RemoteWorkspaceJobLaunchPolicy {
         return prepared
     }
 
+    static func managedHelperEvidence(taskID: UUID) -> RuntimeManagedSSHBrokerEvidence? { brokers[taskID]?.evidence }
+
     static func activate(owner: RuntimeExecutionOwner) throws {
         try preparations[owner.record.taskID]?(owner)
     }

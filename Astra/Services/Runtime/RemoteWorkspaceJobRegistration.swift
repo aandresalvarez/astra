@@ -50,6 +50,10 @@ enum RemoteWorkspaceJobRegistration {
 
     static func loadAll(task: AgentTask, context: ModelContext) throws -> [RemoteWorkspaceJobConfiguration] {
         guard let owner = try RuntimeExecutionOwner.existing(task: task, context: context) else { return [] }
+        return try loadAll(task: task, owner: owner, context: context)
+    }
+
+    static func loadAll(task: AgentTask, owner: RuntimeExecutionOwnerRecord, context: ModelContext) throws -> [RemoteWorkspaceJobConfiguration] {
         let executions = [owner] + (try RuntimeExecutionOwner.store(in: context).retainedExecutions(of: owner))
         return try executions.compactMap { try load(task: task, owner: $0, context: context) }
     }
