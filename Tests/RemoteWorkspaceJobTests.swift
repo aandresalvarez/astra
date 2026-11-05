@@ -296,15 +296,26 @@ struct RemoteWorkspaceJobTests {
         var forged = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: ticket)) as? [String: Any])
         forged["state"] = "cancel"
         try JSONSerialization.data(withJSONObject: forged).write(to: ticket)
-        for name in ["process.json", "result.json", "stdout", "stderr"] {
+        for name in ["process.json", "result.json", "stdout.log", "stderr.log"] {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
         }
         #expect(Darwin.kill(launch.pid, 0) == 0)
-        if legacyPermit { try manager.store.update(jobID: job.jobID) { $0.launchPermit = nil } }
-        let observed = try #require(record(manager.cancel(jobID: job.jobID)))
+        let forgedReply = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path).run(connection: host.connections[0],
+            script: RemoteWorkspaceJobScripts.probe(jobID: job.jobID, nonce: try #require(job.launchNonce)), timeoutSeconds: 20)
+        let forgedSnapshot = try #require(RemoteWorkspaceJobHostSnapshot.parse(forgedReply.stdout))
+        #expect(forgedSnapshot.launchFence == .cancelledBeforeStart && forgedSnapshot.evidence == nil)
+        #expect(forgedSnapshot.stdoutBytes == nil && forgedSnapshot.stderrBytes == nil)
+        // Persist the cancellation intent, then observe without delivering a
+        // signal that could terminate the live process and race this attack.
+        try manager.store.update(jobID: job.jobID) {
+            $0.requestCancellation(at: Date())
+            if legacyPermit { $0.launchPermit = nil }
+        }
+        let observed = try #require(record(manager.status(jobID: job.jobID)))
         #expect(observed.launch == nil && observed.launchFence == .cancelledBeforeStart)
         #expect(observed.status == .unverified && !observed.status.isTerminal)
         #expect(observed.launchPermit == (legacyPermit ? nil : .issued))
+        #expect(Darwin.kill(launch.pid, 0) == 0)
         #expect(throws: (any Error).self) { try manager.authorizeLaunch(jobID: job.jobID) }
     }
 
