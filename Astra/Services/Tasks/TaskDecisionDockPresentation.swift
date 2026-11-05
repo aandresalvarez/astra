@@ -254,7 +254,7 @@ struct TaskDecisionDockPresentation: Equatable {
             return TaskDecisionDockPresentation(id: "unlaunched", icon: terminal.systemImage, tone: .attention,
                 title: terminal.title, summary: terminal.summary, compactMeta: "Provider never started",
                 metrics: metrics(context), details: details(context), primaryAction: nil,
-                secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
+                secondaryActions: [providerRecoverySwitchAction(context), firstArtifactAction(context)].compactMap { $0 },
                 overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil), prefersExpandedDetails: false)
         }
 
@@ -490,6 +490,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 isEnabled: correction.status != "approved"
             ),
             secondaryActions: [
+                providerRecoverySwitchAction(context),
                 firstArtifactAction(context),
                 action(.createCorrectionTask, title: "Create task", systemImage: "plus.square", payload: correction.correctiveStepID)
             ].compactMap { $0 },
@@ -527,6 +528,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 isEnabled: context.canRunApprovedPlan
             ),
             secondaryActions: [
+                providerRecoverySwitchAction(context),
                 context.canOpenPlan
                     ? action(
                         .openPlan,
@@ -586,7 +588,8 @@ struct TaskDecisionDockPresentation: Equatable {
     }
 
     private static func providerRecoverySwitchAction(_ context: Context) -> TaskDecisionDockAction? {
-        runtimeSwitchAction(context.providerRecoveryAlternative?.runtime, canRetry: context.canRetry,
+        guard context.status == .pendingUser || context.status == .failed else { return nil }
+        return runtimeSwitchAction(context.providerRecoveryAlternative?.runtime, canRetry: context.canRetry,
             blockedRunID: context.providerRecoveryAlternative?.blockedRunID)
     }
 

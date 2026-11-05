@@ -54,17 +54,22 @@ struct TaskDecisionDockPresentationTests {
         #expect(dock.primaryAction == nil && dock.summary.contains("new instruction"))
     }
 
-    @Test("Unlaunched outcomes preserve approved-plan and correction decisions", arguments: [false, true])
-    func unlaunchedKeepsPlanDecisions(correction: Bool) throws {
+    @Test("Plan and correction decisions preserve their primary action and provider recovery",
+          arguments: [false, true], [false, true])
+    func unlaunchedKeepsPlanDecisions(correction: Bool, unlaunched: Bool) throws {
         var input = context(status: .pendingUser, mission: correction ? missionNeedingCorrection() : nil)
         input.hasExecutableApprovedPlan = true
         input.canRunApprovedPlan = true; input.canOpenPlan = true
         input.planActionTitle = "Approve next step"
-        input.extraDetails = [.init(id: "runtime-unlaunched-terminal", title: "Provider did not start",
-            summary: "Waiting for provider configuration exceeded the preparation limit.", systemImage: "stop.circle", tone: .attention)]
+        input.extraDetails = unlaunched ? [.init(id: "runtime-unlaunched-terminal", title: "Provider did not start",
+            summary: "Waiting for provider configuration exceeded the preparation limit.", systemImage: "stop.circle", tone: .attention)] : []
+        let runID = UUID()
+        input.providerRecoveryAlternative = .init(runtime: .codexCLI, blockedRunID: runID)
         let dock = try #require(TaskDecisionDockPresentation.build(input))
         #expect(dock.primaryAction?.kind == (correction ? .approveCorrection : .runApprovedPlan))
-        #expect(dock.details.contains { $0.id == "runtime-unlaunched-terminal" })
+        #expect(dock.details.contains { $0.id == "runtime-unlaunched-terminal" } == unlaunched)
+        let recovery = try #require(dock.secondaryActions.first { $0.kind == .switchRuntime })
+        #expect(recovery.payload == AgentRuntimeID.codexCLI.rawValue && recovery.providerRetryRunID == runID)
         if !correction { #expect(dock.secondaryActions.contains { $0.kind == .openPlan }) }
     }
 
