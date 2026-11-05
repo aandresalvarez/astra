@@ -5,6 +5,18 @@ import ASTRAModels
 import ASTRAPersistence
 
 enum WorkspaceCommandService {
+    enum TemplateExecutionError: LocalizedError {
+        case consultationRequiresWork
+
+        var errorDescription: String? {
+            "Choose Work to run a template. Consult is for questions about the workspace."
+        }
+    }
+
+    static func requireTemplateWork(consultation: Bool) throws {
+        if consultation { throw TemplateExecutionError.consultationRequiresWork }
+    }
+
     typealias InitialExecutionSubmitter = @MainActor (
         AgentTask,
         ModelContext
@@ -143,11 +155,15 @@ enum WorkspaceCommandService {
         workspace: Workspace,
         modelContext: ModelContext,
         source: String,
+        consultation: Bool,
         checkoutSource: AgentTask? = nil,
         submitInitial: InitialExecutionSubmitter = { task, context in
             ExecutionRequestSubmissionService.submitInitial(for: task, into: context)
         }
-    ) -> TemplateTaskCreation {
+    ) throws -> TemplateTaskCreation {
+        // Composer intent is independent from the checkout being inherited.
+        // Reject before constructing tasks, copying pins, or submitting work.
+        try requireTemplateWork(consultation: consultation)
         // The tasks run in the checkout of the conversation that chose the
         // template, including its worktree; the after phase inherits it when
         // it is chained.

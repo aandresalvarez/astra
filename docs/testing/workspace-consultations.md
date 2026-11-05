@@ -15,6 +15,20 @@ the task later cannot change that accepted request. The mode cannot be changed
 while a task is queued or running. Switch back to Work before asking the task
 to implement changes; the question's wording does not silently widen access.
 
+Quick tasks and tasks created from a specification re-read the current composer's
+mode before checkout preparation and again after it finishes. The final read and
+initial request submission happen in one synchronous MainActor segment. A saved
+draft supplies the mode across windows; a new unsaved composer supplies its local
+selection. Work preparation already admitted may finish, and the new request uses
+the mode current at submission. Accepted requests keep their frozen mode.
+
+Template execution requires **Work**, including templates with before or after
+phases. Consult reports "Choose Work" before preparing a checkout or creating
+phase tasks. The queued action checks again before preparation, and the template
+service checks the fresh composer selection afterward, before allocating tasks or
+submitting work. Composer intent is separate from checkout inheritance: a new
+explicit Work action can reuse an existing Consult task's checkout.
+
 Live readers bypass workspace writer contention and workspace FIFO contention.
 They do not bypass worker capacity, native session ownership, Git metadata,
 account, browser, Docker, or remote resource conflicts. Existing shared readers
@@ -57,7 +71,10 @@ legacy JSON, resource-kind limits, normalization, and saved selection. The
 `WorkspaceConsultationRuntimeTests` suite uses fake providers and temporary Git
 repositories to exercise rejection before preparation, command-plan admission
 and final validation, concurrent writer attribution, task outputs, and native
-resume prompts. The
+resume prompts. `WorkspaceConsultationSubmissionTests` covers template rejection
+before task/request allocation, Work reuse of a Consult checkout, and queued or
+preparation-time mode changes in quick/spec creation. Worktree tests also check
+that completed Work preparation can feed a new Consult request. The
 existing `SharedWorkspaceExecutionBoundaryTests` exercises kernel write denial
 and the task-output exception. These checks are not evidence of six-provider
 native concurrency or of remote service mutation isolation.

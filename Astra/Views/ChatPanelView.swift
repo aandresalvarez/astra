@@ -1430,34 +1430,37 @@ struct ChatPanelView: View {
         task.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
 
         performTaskCreation {
-            try await prepareTaskCheckout(task)
-            TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
-            modelContext.insert(task)
-            TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
-            recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "quick_run")
-            saveConversationAsEvents(on: task)
-            guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
-                draftTask = try TaskWorktreeService.recoverFailedSubmission(
-                    task: task, existingDraft: composerDraft, modelContext: modelContext
-                )
-                taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
-                return
-            }
-            var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
-            auditFields["trace_id"] = traceID
-            auditFields["use_agent_team"] = String(useAgentTeam)
-            auditFields["team_size"] = String(teamSize)
-            AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
-            try promoteDraft(to: task)
-            messageText = ""
-            messages = []
-            attachedFiles = []
-            pendingPlan = nil
-            isApprovedPlanHistoryExpanded = false
-            isPlanMode = false
-            worktreeSelection.resetTaskChoice()
+            try await NewTaskWorktreeComposerFlow.prepareAndSubmit(task, consultationSelection: { isConsultationMode }) {
+                try await prepareTaskCheckout(task)
+            } submit: {
+                TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
+                modelContext.insert(task)
+                TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
+                recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "quick_run")
+                saveConversationAsEvents(on: task)
+                guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
+                    draftTask = try TaskWorktreeService.recoverFailedSubmission(
+                        task: task, existingDraft: composerDraft, modelContext: modelContext
+                    )
+                    taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
+                    return
+                }
+                var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
+                auditFields["trace_id"] = traceID
+                auditFields["use_agent_team"] = String(useAgentTeam)
+                auditFields["team_size"] = String(teamSize)
+                AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
+                try promoteDraft(to: task)
+                messageText = ""
+                messages = []
+                attachedFiles = []
+                pendingPlan = nil
+                isApprovedPlanHistoryExpanded = false
+                isPlanMode = false
+                worktreeSelection.resetTaskChoice()
 
-            onQuickRun?(task)
+                onQuickRun?(task)
+            }
         }
     }
 
@@ -1658,42 +1661,45 @@ struct ChatPanelView: View {
         task.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
 
         performTaskCreation {
-            try await prepareTaskCheckout(task)
-            TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
-            modelContext.insert(task)
-            TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
-            recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "conversation_spec")
+            try await NewTaskWorktreeComposerFlow.prepareAndSubmit(task, consultationSelection: { isConsultationMode }) {
+                try await prepareTaskCheckout(task)
+            } submit: {
+                TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
+                modelContext.insert(task)
+                TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
+                recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "conversation_spec")
 
-            // Persist conversation history as events so it survives draft→queued→draft transitions
-            saveConversationAsEvents(on: task)
+                // Persist conversation history as events so it survives draft→queued→draft transitions
+                saveConversationAsEvents(on: task)
 
-            guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
-                draftTask = try TaskWorktreeService.recoverFailedSubmission(
-                    task: task, existingDraft: composerDraft, modelContext: modelContext
-                )
-                taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
-                return
+                guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
+                    draftTask = try TaskWorktreeService.recoverFailedSubmission(
+                        task: task, existingDraft: composerDraft, modelContext: modelContext
+                    )
+                    taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
+                    return
+                }
+                var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
+                auditFields["trace_id"] = traceID
+                auditFields["inputs_count"] = String(task.inputs.count)
+                auditFields["criteria_count"] = String(task.acceptanceCriteria.count)
+                AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
+                try promoteDraft(to: task)
+
+                // Reset state
+                messageText = ""
+                messages = []
+                extractedSpec = nil
+                showSpecCard = false
+                pendingPlan = nil
+                isApprovedPlanHistoryExpanded = false
+                attachedFiles = []
+                chainedGoal = ""
+                isPlanMode = false
+                worktreeSelection.resetTaskChoice()
+
+                onTaskCreated?(task)
             }
-            var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
-            auditFields["trace_id"] = traceID
-            auditFields["inputs_count"] = String(task.inputs.count)
-            auditFields["criteria_count"] = String(task.acceptanceCriteria.count)
-            AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
-            try promoteDraft(to: task)
-
-            // Reset state
-            messageText = ""
-            messages = []
-            extractedSpec = nil
-            showSpecCard = false
-            pendingPlan = nil
-            isApprovedPlanHistoryExpanded = false
-            attachedFiles = []
-            chainedGoal = ""
-            isPlanMode = false
-            worktreeSelection.resetTaskChoice()
-
-            onTaskCreated?(task)
         }
     }
 
@@ -2058,10 +2064,13 @@ struct ChatPanelView: View {
 
             let taskTitle = json["taskTitle"] as? String ?? tmpl.name
             let variables = json["variables"] as? [String: String] ?? [:]
+            do { try WorkspaceCommandService.requireTemplateWork(consultation: isConsultationMode) }
+            catch { reportTaskCreationError(error); return }
 
             performTaskCreation {
+                try WorkspaceCommandService.requireTemplateWork(consultation: isConsultationMode)
                 let checkoutSource = try await templateCheckoutSource(branchTitle: taskTitle)
-                let creation = WorkspaceCommandService.createTemplateTasks(
+                let creation = try WorkspaceCommandService.createTemplateTasks(
                     template: tmpl,
                     taskTitle: taskTitle,
                     variables: variables,
@@ -2071,6 +2080,7 @@ struct ChatPanelView: View {
                     workspace: ws,
                     modelContext: modelContext,
                     source: "template",
+                    consultation: isConsultationMode,
                     checkoutSource: checkoutSource
                 )
                 activeSlashContext = nil

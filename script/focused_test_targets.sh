@@ -20,8 +20,14 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
-    Astra/Models/TaskTurnRequest.swift|Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift|Astra/Services/Tasks/TaskExecutionResourceClaimResolver.swift|Astra/Services/Runtime/RuntimeWorkspaceConsultationGate.swift|Astra/Services/Runtime/RuntimeExecutionAdmission.swift|Astra/Services/Runtime/ApprovedPlanRuntimeSettlement.swift|Astra/Services/Runtime/RuntimeFinalPlanSettlement.swift|Astra/Services/Persistence/TaskOutputWorkspaceDiscovery.swift|Astra/Views/ChatPanelView.swift|Astra/Views/ChatPanelViewWorktreeCreation.swift|Tests/WorkspaceConsultationTests.swift|Tests/WorkspaceConsultationRuntimeTests.swift)
-      add_target "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|NewTaskWorktreeConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests"
+    Astra/Services/Tasks/WorkspaceCommandService.swift|Tests/WorkspaceCommandServiceTests.swift)
+      add_target "WorkspaceCommandServiceTests|RuntimeModelAvailabilityTests"
+      ;;
+  esac
+
+  case "$path" in
+    Astra/Models/TaskTurnRequest.swift|Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift|Astra/Services/Tasks/TaskExecutionResourceClaimResolver.swift|Astra/Services/Runtime/RuntimeWorkspaceConsultationGate.swift|Astra/Services/Runtime/RuntimeExecutionAdmission.swift|Astra/Services/Runtime/ApprovedPlanRuntimeSettlement.swift|Astra/Services/Runtime/RuntimeFinalPlanSettlement.swift|Astra/Services/Persistence/TaskOutputWorkspaceDiscovery.swift|Astra/Views/ChatPanelView.swift|Astra/Views/ChatPanelViewWorktreeCreation.swift|Astra/Views/NewTaskWorktreeComposerFlow.swift|Astra/Services/Tasks/WorkspaceCommandService.swift|Tests/WorkspaceConsultationTests.swift|Tests/WorkspaceConsultationRuntimeTests.swift|Tests/WorkspaceConsultationSubmissionTests.swift)
+      add_target "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|WorkspaceConsultationSubmissionTests|NewTaskWorktreeConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests"
       ;;
     Astra/Views/TaskMainView.swift|Astra/Views/TaskChatScrollFollow.swift|Tests/TaskChatScrollFollowTests.swift|Tests/TaskMainViewCrashRegressionTests.swift|Astra/Views/TaskThreadViewModel.swift|Astra/Services/Tasks/TaskThreadHistoryStore.swift|Astra/Services/Tasks/TaskThreadHistoryPagePolicy.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceReader.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceCache.swift|Tests/TaskPublicationDecisionEvidenceWorkTests.swift|Tests/TaskPublicationDecisionEvidenceCommitTests.swift|Tests/ImportedTaskHistoryIsolationTests.swift|Tests/TaskThreadLiveHistoryTests.swift)
       add_target "TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests"

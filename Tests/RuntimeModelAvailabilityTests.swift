@@ -357,7 +357,7 @@ struct RuntimeModelAvailabilityTests {
         template.mainModel = AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode)
         context.insert(template)
 
-        let creation = WorkspaceCommandService.createTemplateTasks(
+        let creation = try WorkspaceCommandService.createTemplateTasks(
             template: template,
             taskTitle: "Run template",
             variables: [:],
@@ -366,7 +366,7 @@ struct RuntimeModelAvailabilityTests {
             defaultRuntimeID: AgentRuntimeID.copilotCLI.rawValue,
             workspace: workspace,
             modelContext: context,
-            source: "test"
+            source: "test", consultation: false
         )
 
         #expect(creation.mainTask.resolvedRuntimeID == .copilotCLI)

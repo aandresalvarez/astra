@@ -96,6 +96,44 @@ struct NewTaskWorktreeConsultationTests {
         #expect(try FileManager.default.subpathsOfDirectory(atPath: fixture.root.path).sorted() == filesBefore)
         #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
     }
+
+    @Test("Admitted Work preparation completes before a new Consult request is frozen")
+    func completedWorkPreparationUsesCurrentSubmissionMode() async throws {
+        let fixture = try NewTaskWorktreeFixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try NewTaskWorktreeFixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "Synthetic", primaryPath: repository.path)
+        let composer = AgentTask(title: "Work", goal: "Prepare a change", workspace: workspace)
+        composer.status = .draft
+        context.insert(composer)
+        let created = AgentTask(title: "New task", goal: composer.goal, workspace: workspace)
+        var requestID: UUID?
+        try await NewTaskWorktreeComposerFlow.prepareAndSubmit(created, consultationSelection: {
+            TaskWorkspaceConsultationPolicy.composerSelection(for: composer, newTaskSelection: false)
+        }) {
+            try await TaskWorktreeService.prepare(
+                task: created, request: .init(repositoryPath: repository.path), modeSource: composer,
+                modelContext: context, resourceQueue: fixture.resourceQueue,
+                worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            )
+            #expect(TaskWorktreeService.activeWorktreeBinding(for: created) != nil)
+            TaskWorkspaceConsultationPolicy.select(true, for: composer, in: context, persist: { try context.save() })
+            await Task.yield()
+        } submit: {
+            context.insert(created)
+            guard case .success(let submission) = ExecutionRequestSubmissionService.submitInitial(for: created, into: context)
+            else { Issue.record("Synthetic submission failed"); return }
+            requestID = submission.requestID
+        }
+        let id = try #require(requestID)
+        let request = try #require(try TaskTurnRequestRepository.request(id: id, in: context))
+        #expect(TaskWorkspaceConsultationPolicy.isRequired(by: request, task: created))
+        #expect(TaskExecutionResourceClaimResolver.workspaceAccess(for: request) == .shared)
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: created) != nil)
+        #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
+    }
 }
 
 /// Only read-only preflight is expected. A regression records mutation attempts
