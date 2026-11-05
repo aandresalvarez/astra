@@ -20,6 +20,7 @@ enum TaskLaunchResourceResolver {
         runtimePermissionGrants: [PermissionGrant] = [],
         permissionPolicy: PermissionPolicy = .autonomous,
         workspaceAccess: TaskExecutionResourceAccess = .exclusive,
+        requiresWorkspaceConsultation: Bool = false,
         // Git common directories the admitted request claimed exclusively.
         // `nil` is a direct launch with no durable request; see
         // `restrictingGitWrites`.
@@ -51,6 +52,14 @@ enum TaskLaunchResourceResolver {
         var providerRequirements: [RuntimeProviderRequirement] = []
         var controlPlaneResources: [RuntimeControlPlaneResource] = []
         var diagnostics: [RuntimeResourceDiagnostic] = []
+        if requiresWorkspaceConsultation, workspaceAccess != .shared {
+            diagnostics.append(RuntimeResourceDiagnostic(
+                severity: .error,
+                code: "consultation_requires_read_only_workspace",
+                message: "Consult cannot start with writable workspace access.",
+                repairAction: "Enable sandbox enforcement and disable branch changes, automatic tests, and template hooks, or switch to Work."
+            ))
+        }
         let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
             for: task,
             providerLaunchContextText: contextText,

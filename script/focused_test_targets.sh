@@ -20,6 +20,21 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Tasks/WorkspaceCommandService.swift|Tests/WorkspaceCommandServiceTests.swift)
+      add_target "WorkspaceCommandServiceTests|RuntimeModelAvailabilityTests"
+      ;;
+  esac
+
+  case "$path" in
+    Astra/Models/TaskRunRequestAssociationPayload.swift|Astra/Models/TaskTurnRequestOwnership.swift|Astra/Models/TaskEventTypes.swift|Astra/Services/Persistence/TaskRunRequestAssociation.swift|Astra/Services/Tasks/PersistedTurnRuntimeEventLinker.swift|Tests/WorkspaceConsultationHistoryTests.swift)
+      add_target "WorkspaceConsultationHistoryTests|TaskTurnRequestAdmissionTests|RuntimeTurnSettlementTests|RequestUsageBudgetTests|ImportedTaskHistoryIsolationTests"
+      ;;
+  esac
+
+  case "$path" in
+    Astra/Models/TaskTurnRequest.swift|Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift|Astra/Services/Tasks/TaskExecutionResourceClaimResolver.swift|Astra/Services/Runtime/RuntimeWorkspaceConsultationGate.swift|Astra/Services/Runtime/RuntimeExecutionAdmission.swift|Astra/Services/Runtime/ApprovedPlanRuntimeSettlement.swift|Astra/Services/Runtime/RuntimeFinalPlanSettlement.swift|Astra/Services/Persistence/TaskOutputWorkspaceDiscovery.swift|Astra/Views/ChatPanelView.swift|Astra/Views/ChatPanelViewWorktreeCreation.swift|Astra/Views/NewTaskWorktreeComposerFlow.swift|Astra/Services/Tasks/WorkspaceCommandService.swift|Tests/WorkspaceConsultationTests.swift|Tests/WorkspaceConsultationRuntimeTests.swift|Tests/WorkspaceConsultationSubmissionTests.swift)
+      add_target "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|WorkspaceConsultationSubmissionTests|WorkspaceConsultationHistoryTests|NewTaskWorktreeConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests"
+      ;;
     Astra/Views/TaskMainView.swift|Astra/Views/TaskChatScrollFollow.swift|Tests/TaskChatScrollFollowTests.swift|Tests/TaskMainViewCrashRegressionTests.swift|Astra/Views/TaskThreadViewModel.swift|Astra/Services/Tasks/TaskThreadHistoryStore.swift|Astra/Services/Tasks/TaskThreadHistoryPagePolicy.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceReader.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceCache.swift|Tests/TaskPublicationDecisionEvidenceWorkTests.swift|Tests/TaskPublicationDecisionEvidenceCommitTests.swift|Tests/ImportedTaskHistoryIsolationTests.swift|Tests/TaskThreadLiveHistoryTests.swift)
       add_target "TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests"
       ;;
@@ -170,7 +185,7 @@ target_for_path() {
       ;;
     Tests/ArchitectureFitnessTests/*)
       ;;
-    Tests/AppSemanticFitnessTests.swift)
+    Astra/Models/TaskEventTypes.swift|Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
       ;;
     Astra/Services/Persistence/TaskContextEventIndex.swift|Astra/Services/Persistence/TaskContextStateManager.swift|Astra/Services/Persistence/TaskActiveObjectiveResolver.swift|Astra/Models/TaskCorrectiveWorkQueries.swift|Tests/TaskContextEventIndexTests.swift|Tests/TaskContextDerivationPerformanceTests.swift|Tests/TaskContextStateOffMainRefreshTests.swift)
@@ -335,7 +350,7 @@ target_for_path() {
       add_target "ShelfPreviewFailureTests"
       add_target "ShelfMarkdownAsyncLoadingTests|ShelfFilesOwnershipTests"
       ;;
-    Astra/Services/Runtime/AgentRuntimeRunPersistence.swift|Astra/Services/Persistence/TaskOutputDiscovery.swift)
+    Astra/Services/Runtime/AgentRuntimeRunPersistence.swift|Astra/Services/Persistence/TaskOutputDiscovery.swift|Astra/Services/Persistence/TaskOutputWorkspaceDiscovery.swift)
       add_target "TaskOutputDiscoveryTests"
       add_target "AgentRuntimeRunPersistenceTests"
       ;;
@@ -491,6 +506,18 @@ target_for_path() {
     Astra/Views/ContentView.swift|Astra/Views/WorkspaceCanvasItem.swift|Tests/PanelLayoutGeometryTests.swift|Tests/WorkspaceRightPanelLayoutTests.swift)
       add_target "WorkspaceRightPanelLayoutTests"
       add_target "PanelLayoutGeometryTests"
+      ;;
+  esac
+
+  case "$path" in
+    Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift|Astra/Views/TaskComposerDraft.swift|Astra/Views/TaskMainView.swift|Tests/TaskComposerGoalModeTests.swift)
+      add_target "TaskComposerGoalModeTests"
+      ;;
+  esac
+
+  case "$path" in
+    Astra/Services/Tasks/TaskApprovedPlanRunCommand.swift|Astra/Views/TaskMainView.swift|Tests/TaskApprovedPlanRunCommandTests.swift)
+      add_target "TaskApprovedPlanRunCommandTests"
       ;;
   esac
 }

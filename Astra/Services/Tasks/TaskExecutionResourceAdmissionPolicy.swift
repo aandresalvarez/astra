@@ -67,7 +67,7 @@ enum TaskExecutionResourceAdmissionPolicy {
         let newlyAcquired = claims.filter { claim in
             !inheritedClaims.contains { prior in
                 prior.resourceKind == claim.resourceKind && prior.resourceKey == claim.resourceKey
-                    && (prior.accessMode == .write || claim.accessMode == .readOnly)
+                    && prior.coversAccess(of: claim)
             }
         }
         return earlierCompetingClaim(

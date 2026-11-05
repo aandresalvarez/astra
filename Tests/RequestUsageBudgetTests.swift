@@ -142,7 +142,7 @@ extension HeadlessChatScenarioTests {
         let request = try #require(try TaskTurnRequestRepository.request(id: submitted.requestID, in: h.context))
         #expect(RuntimeExecutionAdmission.resolve(request: request, task: task) == .userInstruction)
         let run = TaskRun(task: task); h.context.insert(run)
-        PersistedTurnRuntimeEventLinker.link(eventID: submitted.eventID, to: run, for: task,
+        try PersistedTurnRuntimeEventLinker.link(eventID: submitted.eventID, to: run, for: task,
             fallbackType: TaskEventTypes.Conversation.userMessage.rawValue, fallbackPayload: "One request", in: h.context)
         _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
         _ = TaskTurnRequestStateMachine.transition(request, to: .running, runID: run.id)

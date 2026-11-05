@@ -6,6 +6,13 @@ import ASTRAPersistence
 
 @MainActor
 enum ApprovedPlanRuntimeSettlement {
+    enum ValidationAdmission {
+        case originatingRun
+        /// A final-only request reuses a run, but owns a new admission. A nil
+        /// request denotes a direct launch, never the reused run's old request.
+        case currentTurn(request: TaskTurnRequest?, launchTask: AgentTask, workspaceAccess: TaskExecutionResourceAccess)
+    }
+
     /// Returns false when the run was rejected (checkpoint, provider blocker,
     /// or contract) so the caller can terminalize the durable turn as failed
     /// instead of completed. A pause that only awaits the NEXT step's approval
@@ -183,11 +190,42 @@ enum ApprovedPlanRuntimeSettlement {
     static func validateApprovedPlanContractForFinalCompletion(
         task: AgentTask,
         plan: TaskPlanPayload,
+        validationAdmission: ValidationAdmission = .originatingRun,
         workspacePath: String? = nil,
         sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
         modelContext: ModelContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration
     ) async -> Bool {
+        // A provider can update the plan during its turn. Original-run
+        // settlement retains that request's boundary; a final-only retry
+        // instead uses its explicitly supplied current admission.
+        if TaskWorkspaceConsultationPolicy.hasCommandAssertions(in: plan) {
+            let lastRun = task.runs.max { $0.startedAt < $1.startedAt }
+            let request: TaskTurnRequest?
+            let launchTask: AgentTask
+            let workspaceAccess: TaskExecutionResourceAccess
+            switch validationAdmission {
+            case .currentTurn(let submitted, let snapshot, let admittedAccess):
+                request = submitted
+                launchTask = snapshot
+                workspaceAccess = admittedAccess
+            case .originatingRun:
+                do {
+                    request = try lastRun.flatMap {
+                        try TaskTurnRequestRepository.origin(for: task, runID: $0.id, in: modelContext)
+                    }
+                } catch {
+                    pauseApprovedPlanForUser(task: task, modelContext: modelContext,
+                        message: "Plan validation cannot verify the originating request's workspace access.", run: lastRun)
+                    return false
+                }
+                launchTask = task
+                workspaceAccess = TaskExecutionResourceClaimResolver.workspaceAccess(for: request)
+            }
+            guard RuntimeWorkspaceConsultationGate.validate(task: task, launchTask: launchTask, request: request,
+                workspaceAccess: workspaceAccess,
+                approvedPlan: plan, modelContext: modelContext) else { return false }
+        }
         let contractEvaluation = await ValidationService.runContract(
             task: task,
             plan: plan,

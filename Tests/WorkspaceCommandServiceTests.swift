@@ -120,7 +120,7 @@ struct WorkspaceCommandServiceTests {
         let template = TaskTemplate(name: "Review", mainGoal: "Review the change", workspace: fixture.workspace)
         fixture.context.insert(template)
 
-        let creation = WorkspaceCommandService.createTemplateTasks(
+        let creation = try WorkspaceCommandService.createTemplateTasks(
             template: template,
             taskTitle: "Review",
             variables: [:],
@@ -129,7 +129,7 @@ struct WorkspaceCommandServiceTests {
             defaultRuntimeID: "claude_code",
             workspace: fixture.workspace,
             modelContext: fixture.context,
-            source: "test"
+            source: "test", consultation: false
         )
 
         let requests = try TaskTurnRequestRepository.requests(for: creation.mainTask, in: fixture.context)
@@ -151,7 +151,7 @@ struct WorkspaceCommandServiceTests {
         template.beforeGoal = "Prepare the checkout"
         fixture.context.insert(template)
 
-        let creation = WorkspaceCommandService.createTemplateTasks(
+        let creation = try WorkspaceCommandService.createTemplateTasks(
             template: template,
             taskTitle: "Review",
             variables: [:],
@@ -160,7 +160,7 @@ struct WorkspaceCommandServiceTests {
             defaultRuntimeID: "claude_code",
             workspace: fixture.workspace,
             modelContext: fixture.context,
-            source: "test"
+            source: "test", consultation: false
         )
 
         let before = try #require(creation.beforeTask)
@@ -182,7 +182,7 @@ struct WorkspaceCommandServiceTests {
         }
         fixture.context.insert(template)
 
-        let creation = WorkspaceCommandService.createTemplateTasks(
+        let creation = try WorkspaceCommandService.createTemplateTasks(
             template: template,
             taskTitle: "Review",
             variables: [:],
@@ -191,7 +191,7 @@ struct WorkspaceCommandServiceTests {
             defaultRuntimeID: "claude_code",
             workspace: fixture.workspace,
             modelContext: fixture.context,
-            source: "test",
+            source: "test", consultation: false,
             submitInitial: { _, _ in .failure(.persistenceFailed("forced_test_failure")) }
         )
 

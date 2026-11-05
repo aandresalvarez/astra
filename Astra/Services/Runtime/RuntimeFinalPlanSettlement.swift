@@ -1,11 +1,14 @@
 import Foundation
 import SwiftData
+import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
 @MainActor
 enum RuntimeFinalPlanSettlement {
     static func validate(task: AgentTask, plan: TaskPlanPayload, owner: RuntimeExecutionOwner,
+                         validationAdmission: ApprovedPlanRuntimeSettlement.ValidationAdmission,
+                         sandboxEnforcementSnapshot: ExecutionSandboxEnforcement?,
                          modelContext: ModelContext, verifierRuntime: AgentUtilityRuntimeConfiguration) async {
         do { try owner.beginSettlement() } catch { return }
         let scope = RuntimeSettlementExecutionScope(mayLaunch: true)
@@ -14,7 +17,9 @@ enum RuntimeFinalPlanSettlement {
         if owner.record.cancellationRequested == true { scope.cancel() }
         let valid = await RuntimeSettlementExecutionScope.$current.withValue(scope) {
             await ApprovedPlanRuntimeSettlement.validateApprovedPlanContractForFinalCompletion(
-                task: task, plan: plan, modelContext: modelContext, verifierRuntime: verifierRuntime)
+                task: task, plan: plan, validationAdmission: validationAdmission,
+                sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
+                modelContext: modelContext, verifierRuntime: verifierRuntime)
         }
         scope.seal()
         do { try owner.completeSettlement(localWorkStopped: scope.localWorkStopped, toolsStopped: scope.toolsStopped) }

@@ -9,14 +9,20 @@ import ASTRAPersistence
 enum TaskExecutionResourceClaimResolver {
     static func claims(
         for task: AgentTask,
-        acceptedTurn: String? = nil
+        acceptedTurn: String? = nil,
+        approvedPlan: TaskPlanPayload? = nil
     ) -> [TaskExecutionResourceClaim] {
-        let access = workspaceAccess(for: task, acceptedTurn: acceptedTurn)
+        let access: TaskExecutionResourceAccess = TaskWorkspaceConsultationPolicy.hasCommandAssertions(in: approvedPlan)
+            ? .exclusive : workspaceAccess(for: task, acceptedTurn: acceptedTurn)
         let keys = workspaceKeys(for: task)
         // Workspace claims stay first: `workspaceClaim(for:task:)` and the
         // drift check both treat the leading claim as the canonical boundary.
         let workspaceClaims = keys.map {
-            TaskExecutionResourceClaim(kind: .workspace, key: $0, access: access)
+            TaskExecutionResourceClaim(kind: .workspace, key: $0, access: access,
+                // Preserve the accepted consultation intent even when an
+                // intrinsic workflow needs an exclusive lease. Launch must
+                // reject that combination rather than grant provider writes.
+                readConsistency: TaskWorkspaceConsultationPolicy.isEnabled(for: task) ? .live : nil)
         }
         let readOnlyClaims = readOnlyWorkspaceKeys(for: task).map {
             TaskExecutionResourceClaim(kind: .workspace, key: $0, access: .shared)
@@ -72,8 +78,9 @@ enum TaskExecutionResourceClaimResolver {
     }
 
     /// Returns the immutable admission set. Empty, malformed, and legacy
-    /// snapshots fail closed to one exclusive workspace claim; a broken JSON
-    /// envelope must never make a request appear resource-free.
+    /// snapshots retain one exclusive workspace claim; a broken JSON envelope
+    /// must never make a request appear resource-free. This lease fallback is
+    /// not execution authority: runtime rejects unreadable frozen claims.
     ///
     /// Prepared-worktree metadata is also claimed for old requests that predate
     /// that grant. Direct/no-request admission applies its fallback access to
@@ -120,6 +127,8 @@ enum TaskExecutionResourceClaimResolver {
             ?? task.validationStrategy
         let hooks = policy?.templateHooksJSON ?? task.templateHooksJSON
         return isolation == .gitBranch || validation == .runTests || (!hooks.isEmpty && hooks != "{}")
+            || TaskWorkspaceConsultationPolicy.hasCommandAssertions(
+                in: TaskWorkspaceConsultationPolicy.acceptedPlan(for: request, task: task))
     }
 
     static func workspaceAccess(for request: TaskTurnRequest?) -> TaskExecutionResourceAccess {
