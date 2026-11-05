@@ -95,6 +95,7 @@ extension ChatPanelView {
                 task: task,
                 request: request,
                 inheritingFrom: NewTaskWorktreeComposerFlow.checkoutSource(draft: draft, isSelectedDraft: draftToLoad != nil),
+                modeSource: draft,
                 modelContext: modelContext, resourceQueue: taskQueue
             )
             try Task.checkCancellation()

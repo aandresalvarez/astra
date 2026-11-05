@@ -8,6 +8,77 @@ import ASTRAPersistence
 @Suite("Workspace consultations", .serialized)
 @MainActor
 struct WorkspaceConsultationTests {
+    @Test("Saving an existing draft does not reapply a window-local consultation selection")
+    func existingDraftDoesNotOverwriteDurableMode() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Astra/Views/ChatPanelView.swift"), encoding: .utf8)
+        let save = try #require(source.range(of: "func saveDraft()"))
+        let existing = try #require(source[save.upperBound...].range(of: "if let draft = composerDraft {"))
+        let newDraft = try #require(source[existing.upperBound...].range(of: "} else {"))
+        #expect(!source[existing.upperBound..<newDraft.lowerBound].contains("TaskWorkspaceConsultationPolicy.apply("))
+        #expect(source.contains("TaskWorkspaceConsultationPolicy.composerSelection(for: composerDraft, newTaskSelection: newTaskConsultationMode)"))
+        #expect(!source.contains("TaskWorkspaceConsultationPolicy.apply(newTaskConsultationMode"))
+    }
+
+    @Test("Consult hides and blocks stale Goal actions before planning or approval")
+    func consultationGatesStaleGoalActions() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Astra/Views/ChatPanelView.swift"), encoding: .utf8)
+        #expect(source.contains("!isConsultationMode && (isPlanMode || pendingPlan != nil || approvedDraftPlan != nil)"))
+        #expect(source.contains("get: { !isConsultationMode && isPlanMode }"))
+        #expect(source.contains("let shouldUseGoalMode = !isConsultationMode && isPlanMode"))
+        for action in ["generatePlanFromConversation()", "approvePendingPlan()", "runApprovedPlan(_ plan:"] {
+            let start = try #require(source.range(of: "private func " + action))
+            let next = try #require(source[start.upperBound...].range(of: "private func "))
+            #expect(source[start.upperBound..<next.lowerBound].contains("guard !isConsultationMode"))
+        }
+        let preparation = try String(contentsOf: root.appendingPathComponent("Astra/Views/ChatPanelViewWorktreeCreation.swift"), encoding: .utf8)
+        #expect(preparation.contains("modeSource: draft"))
+    }
+
+    @Test("Two composer selections follow the saved draft and freeze its mode on submission", arguments: [false, true])
+    func crossWindowSelectionUsesDurableDraft(consultation: Bool) throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+        let draft = harness.makeTask(runtime: .claudeCode, goal: "Explain the workspace", model: "claude-sonnet-4-6")
+        draft.status = .draft
+        draft.constraints = ["Preserve user guidance"]
+        draft.inputs = ["Previous task context"]
+        // Each window retains its old new-task selection. The shared draft,
+        // changed by the other window, is the authoritative selection now.
+        let firstWindowLocal = !consultation
+        let secondWindowLocal = consultation
+        TaskWorkspaceConsultationPolicy.select(consultation, for: draft, in: harness.context)
+        let savedConstraints = draft.constraints
+        let selectionEvents = draft.events.filter { $0.eventType == TaskEventTypes.ResourceLock.consultationSelected }
+        #expect(selectionEvents.count == 1)
+        let first = TaskWorkspaceConsultationPolicy.composerSelection(for: draft, newTaskSelection: firstWindowLocal)
+        let second = TaskWorkspaceConsultationPolicy.composerSelection(for: draft, newTaskSelection: secondWindowLocal)
+        #expect(first == consultation && second == consultation)
+
+        // An unrelated draft edit/save must not replay either window's cache.
+        // existingDraftDoesNotOverwriteDurableMode pins the actual UI save path.
+        draft.draftMessages = "Updated conversation from the first window"
+        try harness.context.save()
+        #expect(draft.constraints == savedConstraints)
+        #expect(draft.inputs == ["Previous task context"])
+        #expect(draft.events.filter { $0.eventType == TaskEventTypes.ResourceLock.consultationSelected }.count == 1)
+
+        // Quick/spec creation copies the resolved selection into the new task.
+        let created = harness.makeTask(runtime: .claudeCode, goal: "Run the selected mode", model: "claude-sonnet-4-6")
+        TaskWorkspaceConsultationPolicy.apply(first, to: created)
+        guard case .success(let submission) = ExecutionRequestSubmissionService.submitInitial(for: created, into: harness.context) else {
+            Issue.record("Could not submit the cross-window selection"); return
+        }
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: harness.context))
+        #expect(TaskWorkspaceConsultationPolicy.isRequired(by: request, task: created) == consultation)
+        TaskWorkspaceConsultationPolicy.select(!consultation, for: draft, in: harness.context)
+        #expect(TaskWorkspaceConsultationPolicy.composerSelection(for: draft, newTaskSelection: firstWindowLocal) == !consultation)
+        #expect(TaskWorkspaceConsultationPolicy.composerSelection(for: draft, newTaskSelection: secondWindowLocal) == !consultation)
+        #expect(TaskWorkspaceConsultationPolicy.isRequired(by: request, task: created) == consultation)
+        #expect(TaskWorkspaceConsultationPolicy.composerSelection(for: nil, newTaskSelection: firstWindowLocal) == firstWindowLocal)
+    }
+
     @Test("Consultation runs alongside a writer but still launches read-only")
     func consultationAdmissionAndLaunch() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-consult-\(UUID())")

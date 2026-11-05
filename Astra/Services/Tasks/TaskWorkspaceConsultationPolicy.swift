@@ -20,6 +20,12 @@ enum TaskWorkspaceConsultationPolicy {
         return declarations == ["read_only"] && (task.constraints + task.inputs).contains(where: isConsultationDeclaration)
     }
 
+    /// A saved draft is shared across windows. Local selection owns only the
+    /// new composer before a durable draft exists.
+    static func composerSelection(for draft: AgentTask?, newTaskSelection: Bool) -> Bool {
+        draft.map(isEnabled(for:)) ?? newTaskSelection
+    }
+
     static func isRequired(by request: TaskTurnRequest?, task: AgentTask) -> Bool {
         // Once accepted, the request owns this intent even if the composer is
         // changed before admission. Direct launches use their launch snapshot.

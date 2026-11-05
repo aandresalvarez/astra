@@ -102,7 +102,7 @@ struct ChatPanelView: View {
     @State private var slashSelectedIndex: Int = 0
     @State private var activeSlashContext: String?
     @State private var isPlanMode = false
-    @State private var isConsultationMode = false
+    @State private var newTaskConsultationMode = false
     @State private var pendingPlan: TaskPlanPayload?
     // In-flight planning chat round-trips. Cancelled in `.onDisappear` so a dismissed composer
     // tears down the utility LLM subprocess instead of running it to completion for an assistant
@@ -295,13 +295,14 @@ struct ChatPanelView: View {
     }
 
     private var hasGoalModeSurface: Bool {
-        isPlanMode || pendingPlan != nil || approvedDraftPlan != nil
+        !isConsultationMode && (isPlanMode || pendingPlan != nil || approvedDraftPlan != nil)
     }
 
     private var goalModeBinding: Binding<Bool> {
         Binding(
-            get: { isPlanMode },
+            get: { !isConsultationMode && isPlanMode },
             set: { enabled in
+                guard !enabled || !isConsultationMode else { return }
                 if enabled {
                     isPlanMode = true
                 } else {
@@ -1310,7 +1311,7 @@ struct ChatPanelView: View {
         let recapContext: String? = (lower == "/recap" || lower.hasPrefix("/recap "))
             ? buildRecapContext()
             : nil
-        let shouldUseGoalMode = isPlanMode && activeSlashContext == nil && recapContext == nil
+        let shouldUseGoalMode = !isConsultationMode && isPlanMode && activeSlashContext == nil && recapContext == nil
 
         messages.append(ChatMessage(role: "user", content: input))
         messageText = ""
@@ -1336,6 +1337,7 @@ struct ChatPanelView: View {
             do {
                 let planningDraft = try await saveDraft()
                 try Task.checkCancellation()
+                guard !shouldUseGoalMode || !isConsultationMode else { return }
                 if shouldUseGoalMode, let planningDraft {
                     try await ensurePlanningWorktree(for: planningDraft)
                     guard planningDraft.isLive else { return }
@@ -1461,7 +1463,7 @@ struct ChatPanelView: View {
 
     /// Generate a concrete plan candidate from the full planning conversation.
     private func generatePlanFromConversation() {
-        guard !messages.isEmpty, !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }
+        guard !isConsultationMode, !messages.isEmpty, !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }
 
         isThinking = true
         taskCreationError = nil
@@ -1488,6 +1490,7 @@ struct ChatPanelView: View {
             do {
                 let planningDraft = try await saveDraft()
                 try Task.checkCancellation()
+                guard !isConsultationMode else { return }
                 if let planningDraft {
                     try await ensurePlanningWorktree(for: planningDraft)
                     guard planningDraft.isLive else { return }
@@ -1531,9 +1534,9 @@ struct ChatPanelView: View {
     }
 
     private func approvePendingPlan() {
-        guard var plan = pendingPlan else { return }
+        guard !isConsultationMode, var plan = pendingPlan else { return }
         performTaskCreation {
-            guard let task = try await saveDraft() else { return }
+            guard let task = try await saveDraft(), !TaskWorkspaceConsultationPolicy.isEnabled(for: task) else { return }
             task.inputs = ComposerAttachments.inputs(task.inputs, replacingPathsWith: attachedFiles)
 
             if let existingPlan = TaskPlanService.reconstruct(for: task).plan {
@@ -1567,7 +1570,7 @@ struct ChatPanelView: View {
     }
 
     private func runApprovedPlan(_ plan: TaskPlanPayload, worktreeReady: Bool = false) {
-        guard let task = draftTask,
+        guard !isConsultationMode, let task = draftTask,
               task.status != .running, worktreeReady || !isPreparingWorktree else { return }
 
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
@@ -2182,7 +2185,6 @@ struct ChatPanelView: View {
                 composerFlagged: composerRuntimeExplicitlySelected
             )
             draft.inputs = ComposerAttachments.inputs(draft.inputs, replacingPathsWith: attachedFiles)
-            TaskWorkspaceConsultationPolicy.apply(isConsultationMode, to: draft)
             draft.skills = AgentTask.storableSkills(scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles), in: draft.workspace)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
@@ -2316,20 +2318,22 @@ struct ChatPanelView: View {
         """
     }
 
+    private var isConsultationMode: Bool {
+        TaskWorkspaceConsultationPolicy.composerSelection(for: composerDraft, newTaskSelection: newTaskConsultationMode)
+    }
+
     private var consultationModeBinding: Binding<Bool> {
         Binding(get: { isConsultationMode }, set: { enabled in
             submissionIntent.cancel()
-            if let draftTask {
-                TaskWorkspaceConsultationPolicy.select(enabled, for: draftTask, in: modelContext)
-                isConsultationMode = TaskWorkspaceConsultationPolicy.isEnabled(for: draftTask)
+            if let draft = composerDraft {
+                TaskWorkspaceConsultationPolicy.select(enabled, for: draft, in: modelContext)
             } else {
-                isConsultationMode = enabled
+                newTaskConsultationMode = enabled
             }
         })
     }
 
     private func loadDraftMessages(_ task: AgentTask) {
-        isConsultationMode = TaskWorkspaceConsultationPolicy.isEnabled(for: task)
         // Adopt this draft's own persisted runtime pick and chips, not whatever this view held before.
         composerRuntimeExplicitlySelected = task.runtimeExplicitlySelected
         attachedFiles = ComposerAttachments.paths(in: task.inputs)
@@ -2357,11 +2361,11 @@ struct ChatPanelView: View {
                 break
             }
         }
+        draftTask = task
         if !restored.isEmpty {
             messages = restored
             isPlanMode = !isConsultationMode
         }
-        draftTask = task
     }
 
     /// Save current chat messages as TaskEvent records on the task

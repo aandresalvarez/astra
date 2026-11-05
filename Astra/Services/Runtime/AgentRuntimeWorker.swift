@@ -43,6 +43,7 @@ final class AgentRuntimeWorker {
     var supervisionEnabled = true
     var supervisionInvestigatorOverride: RuntimeSupervisionSession.Investigator?
     private let providerSettingsSnapshotProvider: () -> ProviderSettingsSnapshot
+    private let executionRequestReader: RuntimeExecutionAdmission.RequestReader
     var budgetEnforcementModeOverride: BudgetEnforcementMode?
     var permissionPromotionPersistence: (() throws -> Void)?
     /// Home directory in which provider session stores are looked up before a
@@ -100,11 +101,15 @@ final class AgentRuntimeWorker {
         antigravityLaunchPreparation: AntigravityLaunchPreparation? = nil,
         providerSettingsSnapshotProvider: @escaping () -> ProviderSettingsSnapshot = {
             RuntimeSettingsSnapshotStore.providerSnapshot()
+        },
+        executionRequestReader: @escaping RuntimeExecutionAdmission.RequestReader = {
+            try TaskTurnRequestRepository.request(id: $0, in: $1)
         }
     ) {
         self.processRunner = processRunner
         self.antigravityLaunchPreparation = antigravityLaunchPreparation ?? AntigravityLaunchPreparation()
         self.providerSettingsSnapshotProvider = providerSettingsSnapshotProvider
+        self.executionRequestReader = executionRequestReader
         AppLogger.audit(.workerStarted, category: "Worker", fields: [
             "phase": "initialized",
             "default_runtime": defaultRuntimeID.rawValue,
@@ -168,7 +173,14 @@ final class AgentRuntimeWorker {
         defer { withExtendedLifetime(launchProjection) {} }
         let launchTask = launchProjection?.task ?? task
         let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
-        let request = executionRequestID.flatMap { try? TaskTurnRequestRepository.request(id: $0, in: modelContext) }
+        let request: TaskTurnRequest?
+        do {
+            request = try RuntimeExecutionAdmission.readSubmittedRequest(id: executionRequestID,
+                task: task, context: modelContext, read: executionRequestReader)
+        } catch {
+            RuntimeExecutionAdmission.rejectRequest(error, task: task, context: modelContext)
+            return
+        }
         let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
             ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: request)
         guard RuntimeWorkspaceConsultationGate.validate(task: task, launchTask: launchTask, request: request,
@@ -351,7 +363,14 @@ final class AgentRuntimeWorker {
             ], level: .warning)
             return
         }
-        let request = turnRequestID.flatMap { try? TaskTurnRequestRepository.request(id: $0, in: modelContext) }
+        let request: TaskTurnRequest?
+        do {
+            request = try RuntimeExecutionAdmission.readSubmittedRequest(id: turnRequestID,
+                task: task, context: modelContext, read: executionRequestReader)
+        } catch {
+            RuntimeExecutionAdmission.rejectRequest(error, task: task, context: modelContext)
+            return
+        }
         let admission = RuntimeExecutionAdmission.resolve(request: request, task: task)
         guard let executionOwner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
             maxRunSeconds: maxRunSeconds, newUserTurn: admission.isNewUserTurn,
