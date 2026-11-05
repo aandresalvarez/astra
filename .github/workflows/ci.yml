@@ -1,81 +1,193 @@
-name: CI
+# LOCAL REVIEW ARTIFACT ONLY. Creating this file does not authorize publishing
+# a workflow, creating a remote ref/commit, or dispatching it.
+#
+# Host this artifact ONLY as a replacement of .github/workflows/ci.yml on the
+# disposable alvaro/pr578-remote-publisher-20261104 branch. That workflow path
+# already exists on the default branch and can therefore be dispatched using
+# the disposable ref's version. Do not create a new workflow path. This file
+# must never enter the PR candidate tree; checkout below uses its immutable SHA.
+# GITHUB_TOKEN contents:write is repository-scoped, not ref-scoped. The fixed
+# commands below and repository branch protection constrain its intended use;
+# they do not narrow the token's underlying capability.
+name: Publish PR 578 through unchanged hooks
 
 on:
   workflow_dispatch:
-  pull_request:
-  push:
-    branches:
-      - main
+
+permissions:
+  contents: write
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: astra-pr578-reviewed-candidate-publication
+  cancel-in-progress: false
 
 jobs:
-  focused-swift-tests:
-    name: Focused Swift tests
-    runs-on: macos-26
-    # Cold builds plus the expanded protection suites can exceed 30 minutes.
-    # Keep the same bounded 45-minute ceiling as the full-suite job.
-    timeout-minutes: 45
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: Cache SwiftPM
-        uses: actions/cache@v5
-        with:
-          path: |
-            .build
-            ~/.swiftpm
-          key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved') }}
-          restore-keys: |
-            ${{ runner.os }}-swiftpm-
-
-      - name: Run focused Swift protection suites
-        run: script/prepush.sh
-
-      - name: Verify process progress with one cooperative worker
-        timeout-minutes: 5
-        env:
-          LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
-        run: script/swift_test.sh --filter 'ProcessWaitExecutorTests|ProcessDescriptorIsolationTests|ProcessBinaryRunnerTests|SpawnedChildSignalStateTests|OpenCodeRunnerCompletionTests|OpenCodeCompletionProofTests|HostControlParentDeathSupervisorTests'
-
-  full-swift-test-suite:
-    name: Full Swift test suite
-    # Runs on every trigger the workflow supports (pull_request, push to
-    # main, workflow_dispatch). This job previously deadlocked
-    # 100% of the time on pull_request: Swift Testing executes tests
-    # concurrently, and the suite's synchronous process-spawning tests
-    # exhaust the 3-4 core runner's cooperative thread pool - every test
-    # reports "started", zero ever complete, and the job burns a macOS
-    # runner until the 6-hour cap (evidence: run 28639570525 - 4,002
-    # started / 0 finished / orphaned bash+sleep children at cleanup;
-    # three more runs hung identically). Locally the wider core count
-    # masks the deadlock. --no-parallel below serializes execution and
-    # fixed it - the suite itself runs in ~3-4 minutes once built, and the
-    # full job (checkout, cache restore, build, test) completes in
-    # ~13-14 minutes on a warm cache (PR #209's own run: 13m30s). Two
-    # further CI-only failures (real, unmocked host dependencies in
-    # scenario tests - gh auth status, then
-    # ~/.astra/tools/astra-host-control - both only present on a
-    # developer machine, not a clean runner) were found and fixed in
-    # #207 and #208. Gating restored on pull_request after a final green
-    # dispatch run (28767049711) on main with both fixes merged.
-    # Cold compilation of the source/lifecycle stack can consume ~23 minutes,
-    # followed by 20+ minutes of serial tests. Keep a bounded 60-minute cap
-    # so a normal cold run can finish without removing regression coverage.
+  publish-reviewed-candidate:
+    if: >-
+      github.repository == 'aandresalvarez/astra' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/alvaro/pr578-remote-publisher-20261104' &&
+      github.workflow_ref == 'aandresalvarez/astra/.github/workflows/ci.yml@refs/heads/alvaro/pr578-remote-publisher-20261104'
     runs-on: macos-26
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Suppress generated Python bytecode only; test selection and assertions
+      # are unchanged. Evidence and the Swift wrapper live outside checkout.
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - name: Checkout
+      - name: Checkout the immutable reviewed candidate
         uses: actions/checkout@v5
         with:
+          repository: aandresalvarez/astra
+          ref: 3843d0ce0a8e1bb9e5550232735bcd258c874c3b
           fetch-depth: 0
+          # The action's ephemeral GITHUB_TOKEN is used only by normal Git.
+          # No PAT, SSH key, signing secret, or other user secret is supplied.
+          persist-credentials: true
 
-      - name: Cache SwiftPM
+      - name: Verify candidate and prepare runner-only hook guards
+        run: |
+          set -euo pipefail
+          publication_dir="$RUNNER_TEMP/astra-pr578-publication"
+          mkdir -p "$publication_dir/bin" "$publication_dir/hooks"
+          exec > >(tee -a "$publication_dir/preflight.log") 2>&1
+
+          test "$GITHUB_REPOSITORY" = "aandresalvarez/astra"
+          test "$(git rev-parse HEAD)" = "3843d0ce0a8e1bb9e5550232735bcd258c874c3b"
+          test "$(git rev-parse 'HEAD^{tree}')" = "105207ffb574d1140e3581d414eeed6e6b6e3b82"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+          git remote set-url origin https://github.com/aandresalvarez/astra.git
+          test "$(git remote get-url --all --push origin)" = "https://github.com/aandresalvarez/astra.git"
+          test "$(git ls-remote --heads origin refs/heads/alvaro/parallel-workspace-questions)" = $'0c8bff065bc56a1e7b186bc68a88e31a6da9ea81\trefs/heads/alvaro/parallel-workspace-questions'
+          test "$(git ls-remote --heads origin refs/heads/main)" = $'1e6f65d08da457bcf6644383a04dad18a0b09b22\trefs/heads/main'
+          git fetch --no-tags origin refs/heads/alvaro/parallel-workspace-questions:refs/remotes/origin/alvaro/parallel-workspace-questions
+          test "$(git rev-parse refs/remotes/origin/alvaro/parallel-workspace-questions)" = "0c8bff065bc56a1e7b186bc68a88e31a6da9ea81"
+          git merge-base --is-ancestor 0c8bff065bc56a1e7b186bc68a88e31a6da9ea81 HEAD
+          git merge-base --is-ancestor 1e6f65d08da457bcf6644383a04dad18a0b09b22 HEAD
+
+          git switch --create alvaro/pr578-remote-publication-run 3843d0ce0a8e1bb9e5550232735bcd258c874c3b
+          git branch --set-upstream-to=origin/alvaro/parallel-workspace-questions alvaro/pr578-remote-publication-run
+          test "$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')" = "origin/alvaro/parallel-workspace-questions"
+          # This upstream makes the actual hook see all candidate changes
+          # relative to the original PR head, including the current-main merge.
+          git diff --name-only 0c8bff065bc56a1e7b186bc68a88e31a6da9ea81...HEAD > "$publication_dir/changed-paths.txt"
+          test -s "$publication_dir/changed-paths.txt"
+
+          test "$(git hash-object .githooks/pre-push)" = "af1eae4c1f032048136e4ae63ad59ce9311cb1d3"
+          test "$(git hash-object script/prepush.sh)" = "da560df7bac094105157cde010f67e0d13558955"
+          test "$(git hash-object script/swift_test.sh)" = "1c654d64ba6b2ee90649384afe09d92507560df8"
+          test -x .githooks/pre-push
+          git config --local push.followTags false
+
+          # The same transparent wrapper used for local validation: add jobs 2
+          # only when no job count was supplied; forward all other arguments.
+          cat > "$publication_dir/bin/swift" <<'SWIFT_WRAPPER'
+          #!/bin/bash
+          set -euo pipefail
+          case "${1:-}" in
+            build|test|run)
+              swift_command="$1"
+              shift
+              for argument in "$@"; do
+                case "$argument" in
+                  -j|--jobs|--jobs=*|-j[0-9]*) exec /usr/bin/swift "$swift_command" "$@" ;;
+                esac
+              done
+              exec /usr/bin/swift "$swift_command" --jobs 2 "$@"
+              ;;
+            *) exec /usr/bin/swift "$@" ;;
+          esac
+          SWIFT_WRAPPER
+          chmod 755 "$publication_dir/bin/swift"
+          printf '%s\n' "$publication_dir/bin" >> "$GITHUB_PATH"
+
+          # Runner-only hooksPath wraps the exact, unchanged repository hook.
+          # The wrapper runs that real hook once with its original args/stdin,
+          # then revalidates immediately before returning success to Git.
+          cat > "$publication_dir/hooks/pre-push" <<'PRE_PUSH_WRAPPER'
+          #!/bin/bash
+          set -euo pipefail
+          publication_dir="$RUNNER_TEMP/astra-pr578-publication"
+          repository_root="$(git rev-parse --show-toplevel)"
+          test "$repository_root" = "$GITHUB_WORKSPACE"
+          cd "$repository_root"
+
+          verify_checked_out_candidate() {
+            test "$GITHUB_REPOSITORY" = "aandresalvarez/astra"
+            test "$(git remote get-url --all --push origin)" = "https://github.com/aandresalvarez/astra.git"
+            test "$(git rev-parse HEAD)" = "3843d0ce0a8e1bb9e5550232735bcd258c874c3b"
+            test "$(git rev-parse 'HEAD^{tree}')" = "105207ffb574d1140e3581d414eeed6e6b6e3b82"
+            test "$(git symbolic-ref -q HEAD)" = "refs/heads/alvaro/pr578-remote-publication-run"
+            test -z "$(git status --porcelain=v1 --untracked-files=all)"
+            test "$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')" = "origin/alvaro/parallel-workspace-questions"
+            test "$(git rev-parse '@{upstream}')" = "0c8bff065bc56a1e7b186bc68a88e31a6da9ea81"
+            test "$(git config --local --get core.hooksPath)" = "$publication_dir/hooks"
+            test "$(git config --local --get push.followTags)" = "false"
+            test "$(git hash-object .githooks/pre-push)" = "af1eae4c1f032048136e4ae63ad59ce9311cb1d3"
+            test "$(git hash-object script/prepush.sh)" = "da560df7bac094105157cde010f67e0d13558955"
+            test "$(git hash-object script/swift_test.sh)" = "1c654d64ba6b2ee90649384afe09d92507560df8"
+            test -x .githooks/pre-push
+            test "$(shasum -a 256 "$publication_dir/hooks/pre-push" | awk '{print $1}')" = "$ASTRA_PR578_PRE_PUSH_WRAPPER_SHA256"
+            test "$(shasum -a 256 "$publication_dir/bin/swift" | awk '{print $1}')" = "$ASTRA_PR578_SWIFT_WRAPPER_SHA256"
+            test "$(command -v swift)" = "$publication_dir/bin/swift"
+            git merge-base --is-ancestor 0c8bff065bc56a1e7b186bc68a88e31a6da9ea81 HEAD
+            git merge-base --is-ancestor 1e6f65d08da457bcf6644383a04dad18a0b09b22 HEAD
+          }
+
+          verify_live_remote_refs() {
+            test "$(git ls-remote --heads --sort=refname origin refs/heads/alvaro/parallel-workspace-questions refs/heads/main)" = $'0c8bff065bc56a1e7b186bc68a88e31a6da9ea81\trefs/heads/alvaro/parallel-workspace-questions\n1e6f65d08da457bcf6644383a04dad18a0b09b22\trefs/heads/main'
+          }
+
+          test "$#" -eq 2
+          test "$1" = "origin"
+          test "$2" = "https://github.com/aandresalvarez/astra.git"
+          stdin_receipt="$(mktemp "$publication_dir/pre-push-stdin.XXXXXX")"
+          cat > "$stdin_receipt"
+          test "$(wc -l < "$stdin_receipt" | tr -d '[:space:]')" = "1"
+          IFS=$' \t' read -r local_ref local_sha remote_ref remote_sha extra < "$stdin_receipt"
+          case "$local_ref" in
+            HEAD|refs/heads/alvaro/pr578-remote-publication-run) ;;
+            *) printf 'Unexpected source ref in Git pre-push stdin.\n' >&2; exit 1 ;;
+          esac
+          test "$local_sha" = "3843d0ce0a8e1bb9e5550232735bcd258c874c3b"
+          test "$remote_ref" = "refs/heads/alvaro/parallel-workspace-questions"
+          test "$remote_sha" = "0c8bff065bc56a1e7b186bc68a88e31a6da9ea81"
+          test -z "$extra"
+          verify_checked_out_candidate
+          verify_live_remote_refs
+
+          printf 'Invoking the unchanged repository pre-push hook once.\n'
+          if "$repository_root/.githooks/pre-push" "$@" < "$stdin_receipt"; then
+            printf 'Repository hook passed; revalidating immediately before publication.\n'
+          else
+            hook_status=$?
+            printf 'Repository hook failed with status %s; publication blocked.\n' "$hook_status" >&2
+            exit "$hook_status"
+          fi
+
+          verify_checked_out_candidate
+          # This is the last guard before success returns to Git. It closes
+          # the long hook interval; Git's normal expected-old-ref check also
+          # applies. A tiny race remains: GitHub does not offer an atomic
+          # transaction spanning this feature update and the read of main.
+          verify_live_remote_refs
+          exit 0
+          PRE_PUSH_WRAPPER
+          chmod 755 "$publication_dir/hooks/pre-push"
+          test "$(shasum -a 256 "$publication_dir/hooks/pre-push" | awk '{print $1}')" = "0080463b88de2281363369370398a635f4c4679e7988726a6a349dbc6f15f1b2"
+          test "$(shasum -a 256 "$publication_dir/bin/swift" | awk '{print $1}')" = "90af964951af0a0f60e3ec72e9f46b8e1b816c138efbc35d6afe0603a65c691c"
+          printf '%s\n' 'ASTRA_PR578_PRE_PUSH_WRAPPER_SHA256=0080463b88de2281363369370398a635f4c4679e7988726a6a349dbc6f15f1b2' >> "$GITHUB_ENV"
+          printf '%s\n' 'ASTRA_PR578_SWIFT_WRAPPER_SHA256=90af964951af0a0f60e3ec72e9f46b8e1b816c138efbc35d6afe0603a65c691c' >> "$GITHUB_ENV"
+          shasum -a 256 "$publication_dir/hooks/pre-push" "$publication_dir/bin/swift" > "$publication_dir/wrapper-hashes.txt"
+          git config --local core.hooksPath "$publication_dir/hooks"
+          test "$(git config --local --get core.hooksPath)" = "$publication_dir/hooks"
+          git rev-parse HEAD 'HEAD^{tree}' > "$publication_dir/candidate.txt"
+
+      - name: Cache SwiftPM using the repository CI policy
         uses: actions/cache@v5
         with:
           path: |
@@ -85,26 +197,74 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-swiftpm-
 
-      - name: Run full Swift test suite
+      - name: Perform the ordinary feature push through guarded unchanged hook
         run: |
-          python3 script/permission_repair_test_harness_tests.py
-          script/swift_test.sh --no-parallel
+          set -euo pipefail
+          publication_dir="$RUNNER_TEMP/astra-pr578-publication"
+          exec > >(tee -a "$publication_dir/ordinary-push.log") 2>&1
 
-  whitespace:
-    name: Whitespace
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+          # No tests run separately. Git invokes the runner-only guard, which
+          # runs the real repository hook exactly once and guards again after
+          # it passes. The candidate's hooks/tests/check definitions are intact.
+          test "$GITHUB_REPOSITORY" = "aandresalvarez/astra"
+          test "$(git remote get-url --all --push origin)" = "https://github.com/aandresalvarez/astra.git"
+          test "$(git rev-parse HEAD)" = "3843d0ce0a8e1bb9e5550232735bcd258c874c3b"
+          test "$(git rev-parse 'HEAD^{tree}')" = "105207ffb574d1140e3581d414eeed6e6b6e3b82"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test "$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')" = "origin/alvaro/parallel-workspace-questions"
+          test "$(git rev-parse '@{upstream}')" = "0c8bff065bc56a1e7b186bc68a88e31a6da9ea81"
+          test "$(git config --local --get core.hooksPath)" = "$publication_dir/hooks"
+          test "$(git config --local --get push.followTags)" = "false"
+          test "$(git hash-object .githooks/pre-push)" = "af1eae4c1f032048136e4ae63ad59ce9311cb1d3"
+          test "$(git hash-object script/prepush.sh)" = "da560df7bac094105157cde010f67e0d13558955"
+          test "$(git hash-object script/swift_test.sh)" = "1c654d64ba6b2ee90649384afe09d92507560df8"
+          test -x .githooks/pre-push
+          test "$(shasum -a 256 "$publication_dir/hooks/pre-push" | awk '{print $1}')" = "0080463b88de2281363369370398a635f4c4679e7988726a6a349dbc6f15f1b2"
+          test "$ASTRA_PR578_PRE_PUSH_WRAPPER_SHA256" = "0080463b88de2281363369370398a635f4c4679e7988726a6a349dbc6f15f1b2"
+          test "$(shasum -a 256 "$publication_dir/bin/swift" | awk '{print $1}')" = "90af964951af0a0f60e3ec72e9f46b8e1b816c138efbc35d6afe0603a65c691c"
+          test "$ASTRA_PR578_SWIFT_WRAPPER_SHA256" = "90af964951af0a0f60e3ec72e9f46b8e1b816c138efbc35d6afe0603a65c691c"
+          test "$(command -v swift)" = "$publication_dir/bin/swift"
+          git merge-base --is-ancestor 0c8bff065bc56a1e7b186bc68a88e31a6da9ea81 HEAD
+          git merge-base --is-ancestor 1e6f65d08da457bcf6644383a04dad18a0b09b22 HEAD
+          test "$(git ls-remote --heads origin refs/heads/main)" = $'1e6f65d08da457bcf6644383a04dad18a0b09b22\trefs/heads/main'
+          test "$(git ls-remote --heads origin refs/heads/alvaro/parallel-workspace-questions)" = $'0c8bff065bc56a1e7b186bc68a88e31a6da9ea81\trefs/heads/alvaro/parallel-workspace-questions'
+
+          # The only original-ref write. No force, no bypass, no main update,
+          # no tag push, and no direct API ref update. Git blocks this write if
+          # the real pre-push hook or either guard fails, and enforces normal
+          # remote ref compare/update and fast-forward checks afterward.
+          git push --porcelain origin HEAD:refs/heads/alvaro/parallel-workspace-questions
+
+          test "$(git ls-remote --heads origin refs/heads/alvaro/parallel-workspace-questions)" = $'3843d0ce0a8e1bb9e5550232735bcd258c874c3b\trefs/heads/alvaro/parallel-workspace-questions'
+          test "$(git rev-parse HEAD)" = "3843d0ce0a8e1bb9e5550232735bcd258c874c3b"
+          test "$(git rev-parse 'HEAD^{tree}')" = "105207ffb574d1140e3581d414eeed6e6b6e3b82"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          printf '%s\n' 'Verified PR 578 head: 3843d0ce0a8e1bb9e5550232735bcd258c874c3b' > "$publication_dir/published-head.txt"
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          PR #578 was updated to `3843d0ce0a8e1bb9e5550232735bcd258c874c3b` through an ordinary Git push after the unchanged repository pre-push hook and runner-only post-hook guards passed. The candidate tree is `105207ffb574d1140e3581d414eeed6e6b6e3b82`. Only the runner's local `core.hooksPath` points to the guard wrapper; the PR's hook/test/check files are unchanged.
+
+          The push used the ephemeral `GITHUB_TOKEN`. It may not trigger the normal PR CI workflow automatically. After independently verifying the exact PR head, the operator must check for the normal CI run and manually dispatch `ci.yml` on `alvaro/parallel-workspace-questions` if needed. This publication workflow does not dispatch CI, merge, approve, or resolve reviews.
+          SUMMARY
+
+      - name: Preserve publication evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          fetch-depth: 0
+          name: astra-pr578-publication-evidence
+          path: ${{ runner.temp }}/astra-pr578-publication/
+          if-no-files-found: warn
+          retention-days: 14
 
-      - name: Check whitespace
-        run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            git fetch origin "${{ github.base_ref }}"
-            git diff --check "origin/${{ github.base_ref }}...HEAD"
-          else
-            git diff-tree --check --no-commit-id --root -r HEAD
-          fi
+# No cleanup deletes repository data or other runs' files. The hosted runner
+# owns the temporary directory and removes its environment after completion.
+# Checkout performs its standard credential cleanup. GitHub retains the job
+# log, and the evidence upload preserves the preflight and full hook/push logs.
+#
+# Separate operator cleanup plan (not performed by this workflow): after the
+# run has finished, retain/download its logs and ref/SHA stdin receipt, verify
+# the original feature ref is the exact candidate, and verify normal CI on that
+# head. Then check the disposable publisher ref still equals the exact helper
+# commit created for this run before deleting only that owned remote ref. Never
+# merge its ci.yml replacement into the PR or main. Keep the signed candidate
+# temporary ref until the candidate is verified reachable from the original
+# feature branch. No worktree or unrelated ref/artifact deletion is included.
