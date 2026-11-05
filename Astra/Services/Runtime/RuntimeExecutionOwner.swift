@@ -456,10 +456,12 @@ final class RuntimeExecutionOwner {
         if task.isLive, task.status == .completed, let run, run.isLive, run.status == .completed,
            record.stopProof?.reaped == true, record.stopProof?.processGroupEmpty == true { record.state = .finished }
         if !writeFailed, task.isLive, record.state == .finished,
-           record.canReplace || RuntimeHostNoToolReceiptReconciliation.reconciled(record, task: task) != nil {
+           record.canReplace || RuntimeHostNoToolReceiptReconciliation.reconciled(record, task: task) != nil
+                || record.stopProof?.managedSSHOnly == true {
             do {
                 let jobs = try RuntimeWorkspaceRemoteJobs.releaseEvidence(task: task, owner: record, context: context)
-                if !jobs.safe { record.pendingSSHJobSetDigest = jobs.identity }
+                if record.stopProof?.managedSSHOnly == true { record.pendingSSHJobSetDigest = jobs.identity ?? "unreadable" }
+                else if !jobs.safe { record.pendingSSHJobSetDigest = jobs.identity }
             } catch {
                 // Without the original identities, a later empty directory is
                 // not proof that the remote work was withdrawn.

@@ -11,6 +11,7 @@ public struct RemoteWorkspaceJobTransition: Codable, Equatable, Sendable {
     public let cancellation: Bool
     public let message: String?
     public let launchFence: RemoteWorkspaceJobLaunchFence?
+    public var launchPermit: RemoteWorkspaceJobLaunchPermit? = nil
 
     public init(record: RemoteWorkspaceJobRecord, cancellation: Bool = false) {
         id = UUID(); jobID = record.jobID
@@ -18,5 +19,6 @@ public struct RemoteWorkspaceJobTransition: Codable, Equatable, Sendable {
         status = record.status; observation = record.lastObservation
         self.cancellation = cancellation; message = record.message
         launchFence = record.launchFence
+        launchPermit = record.launchPermit
     }
 }

@@ -114,7 +114,7 @@ assert_targets "BrowserToolShimTests" \
   "ASTRACore/SSHKnownHostsOption.swift" \
   "Tests/BrowserToolShimTests.swift"
 
-assert_targets $'RemoteWorkspaceJobTests\nRemoteWorkspaceJobShimTests\nRemoteWorkspaceJobSafetyTests\nRemoteWorkspaceJobPersistenceTests\nRemoteWorkspaceJobBundlingTests\nRemoteWorkspaceJobOutputStateTests\nRemoteWorkspaceSSHRouteTests\nRemoteWorkspacePromptGuidanceTests' \
+assert_targets $'RemoteWorkspaceJobTests\nRemoteWorkspaceJobShimTests\nRemoteWorkspaceJobSafetyTests\nRemoteWorkspaceJobBrokerProtocolTests\nRemoteWorkspaceJobPersistenceTests\nRemoteWorkspaceJobBundlingTests\nRemoteWorkspaceJobOutputStateTests\nRemoteWorkspaceSSHRouteTests\nRemoteWorkspacePromptGuidanceTests' \
   "Tools/WorkspaceToolSupport/RemoteWorkspaceJobManager.swift" \
   "Tools/AstraWorkspaceJobTool/main.swift" \
   "Astra/Services/Runtime/RemoteWorkspaceJobShim.swift" \

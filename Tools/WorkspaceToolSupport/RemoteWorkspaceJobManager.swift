@@ -321,6 +321,7 @@ public final class RemoteWorkspaceJobManager {
             timeoutSeconds: remaining.map { min(timeoutSeconds ?? $0, $0) } ?? timeoutSeconds,
             createdAt: now()
         )
+        record.launchPermit = .pending
         record.ownerID = configuration.ownerBinding?.ownerID
         record.executionID = configuration.ownerBinding?.executionID
         let intentParts = [configuration.taskID ?? "", configuration.runID ?? "",
@@ -348,6 +349,20 @@ public final class RemoteWorkspaceJobManager {
         }
     }
 
+    /// The local journal arbitrates cancel versus dispatch before the helper can
+    /// send a start script. Issued permission is irreversible, including lost replies.
+    public func authorizeLaunch(jobID: String) throws -> RemoteWorkspaceJobRecord {
+        try store.update(jobID: jobID) { record in
+            _ = try connection(forRecord: record)
+            try configuration.ownerBinding?.validateLaunch()
+            guard record.launchPermit == .pending, record.cancellationRequestedAt == nil,
+                  record.remoteClock != nil else {
+                throw RemoteWorkspaceJobError.invalidArgument("This job no longer has unused permission to launch. Check its recorded status; do not repeat the command.")
+            }
+            record.launchPermit = .issued
+        }
+    }
+
     public func start(
         connectionTarget: String?,
         command: String,
@@ -369,6 +384,8 @@ public final class RemoteWorkspaceJobManager {
         guard let remoteClock = record.remoteClock else {
             return .failure(message: record.message ?? "Remote clock unavailable; no command was launched.", record: record)
         }
+        do { _ = try authorizeLaunch(jobID: jobID) }
+        catch { return .failure(message: error.localizedDescription, record: try? store.load(jobID: jobID)) }
         let script = RemoteWorkspaceJobScripts.start(jobID: jobID, command: command, timeoutSeconds: record.timeoutSeconds,
             nonce: record.launchNonce!, clock: remoteClock)
         let observedAt = now()
@@ -438,7 +455,10 @@ public final class RemoteWorkspaceJobManager {
         do {
             // Persist intent before contacting SSH; a disconnected host or an
             // ASTRA restart cannot lose a requested cancellation.
-            try store.update(jobID: jobID) { if $0.cancellationRequestedAt == nil { $0.cancellationRequestedAt = now() } }
+            try store.update(jobID: jobID) {
+                _ = try connection(forRecord: $0)
+                $0.requestCancellation(at: now())
+            }
             return status(jobID: jobID)
         } catch { return .failure(message: error.localizedDescription, record: nil) }
     }

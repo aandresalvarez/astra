@@ -52,10 +52,16 @@ enum RuntimeWorkspaceRemoteJobs {
                 // A previous session's process scan cannot approve a legacy
                 // handoff after restart. Allow a probe timeout plus two polls.
                 let age = job.lastObservation.map { -$0.at.timeIntervalSinceNow } ?? .infinity
+                // A cancellation projected by an older app from host-only
+                // metadata must not silently become a terminal reviewed job.
+                let status: RemoteWorkspaceJobStatus = [3, RemoteWorkspaceJobRecord.currentSchemaVersion].contains(job.schemaVersion)
+                    && job.launchFence == .cancelledBeforeStart && job.launchPermit != .withdrawn ? .unverified : job.status
                 let reviewed = ReviewedWorkspaceSSHJob(jobID: job.jobID, executionID: binding.executionID, nonce: nonce,
-                    legacy: job.schemaVersion == 2, status: job.status,
-                    sealed: job.schemaVersion == 2 && job.status == .unverified && job.launch == nil &&
-                        job.cancellationRequestedAt != nil && job.launchFence == .legacySealed && reachable && (0...90).contains(age),
+                    legacy: job.schemaVersion == 2, status: status,
+                    sealed: status == .unverified && job.launch == nil && job.cancellationRequestedAt != nil
+                        && ((job.schemaVersion == 2 && job.launchFence == .legacySealed)
+                            || ([3, RemoteWorkspaceJobRecord.currentSchemaVersion].contains(job.schemaVersion) && job.launchFence == .cancelledBeforeStart))
+                        && reachable && (0...90).contains(age),
                     reachable: reachable)
                 jobs.append((reviewed, job))
             }
@@ -68,7 +74,7 @@ enum RuntimeWorkspaceRemoteJobs {
     }
 
     /// Keep the exact identities in the owner's decision even if a registration
-    /// later disappears. Only a v3 receipt proving the command never started
+    /// later disappears. Only a protected permit proving dispatch was never authorized
     /// can supplement independently clean provider and settlement evidence.
     static func releaseEvidence(task: AgentTask, owner: RuntimeExecutionOwnerRecord, context: ModelContext) throws -> (identity: String?, safe: Bool) {
         let jobs = try records(task: task, owner: owner, context: context)
@@ -76,7 +82,7 @@ enum RuntimeWorkspaceRemoteJobs {
         let identities = jobs.map { identity, _ in [identity.executionID, identity.jobID, identity.nonce] }.sorted { $0.lexicographicallyPrecedes($1) }
         let digest = SHA256.hash(data: try JSONEncoder().encode(identities)).map { String(format: "%02x", $0) }.joined()
         let safe = jobs.allSatisfy { identity, record in
-            record.schemaVersion == 3 && record.launchFence == .cancelledBeforeStart &&
+            record.schemaVersion == RemoteWorkspaceJobRecord.currentSchemaVersion && record.launchPermit == .withdrawn && record.launchFence == .cancelledBeforeStart &&
                 identity.status == .cancelled && record.cancellationRequestedAt != nil && record.launch == nil && identity.reachable
         }
         return (digest, safe)

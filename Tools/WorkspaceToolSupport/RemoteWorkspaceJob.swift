@@ -7,9 +7,9 @@ import Glibc
 
 /// A detached job on an SSH workspace's host, as ASTRA last verified it.
 ///
-/// The host owns whether the job is alive and how it ended (its fixed job
-/// directory under `$HOME/.astra/jobs`); the task folder's record owns which
-/// jobs exist and what ASTRA last saw. See
+/// The host reports observations from `$HOME/.astra/jobs`. ASTRA's protected
+/// local journal owns admitted job identities, dispatch permission, and the
+/// last observation. Command-writable host metadata cannot prove no dispatch. See
 /// docs/specs/2026-10-21-ssh-remote-managed-jobs.md.
 public enum RemoteWorkspaceJobStatus: String, Codable, Equatable, Sendable {
     /// Recorded before the launch was confirmed by the host's evidence.
@@ -108,16 +108,22 @@ public enum RemoteWorkspaceJobLaunchFence: String, Codable, Sendable {
     case legacySealed = "legacy_sealed"
 }
 
-public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 3
+/// Authority persisted by the local broker, never supplied by the remote host.
+public enum RemoteWorkspaceJobLaunchPermit: String, Codable, Sendable {
+    case pending, issued, withdrawn
+}
 
+public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion = 4
+
+    /// Missing for older registrations: absence never proves that no launch was issued.
+    public var launchPermit: RemoteWorkspaceJobLaunchPermit? = nil
     public var schemaVersion: Int
     public var jobID: String
     public var taskID: String?
     public var runID: String?
-    /// Display only. Anything that later reaches the host again resolves the
-    /// connection from the workspace by `connectionID`; the record sits in an
-    /// agent-writable folder and is never a source of `ssh` arguments.
+    /// Display and binding metadata. Operations revalidate these against the
+    /// protected execution configuration; labels never supply `ssh` arguments.
     public var connectionID: String
     public var connectionName: String
     public var connectionTarget: String
@@ -144,6 +150,13 @@ public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
     public var remoteClock: RemoteWorkspaceJobClock.Reference?
     public var launchFence: RemoteWorkspaceJobLaunchFence?
     public var pendingTransitions: [RemoteWorkspaceJobTransition]?
+
+    /// Must run under the local store lock so permission and cancellation have
+    /// exactly one winner, including cancellation delivered after an app restart.
+    public mutating func requestCancellation(at date: Date) {
+        if cancellationRequestedAt == nil { cancellationRequestedAt = date }
+        if launchPermit == .pending { launchPermit = .withdrawn }
+    }
 
     var legacyCancellationBootID: String? {
         guard schemaVersion == 2, cancellationRequestedAt != nil, !status.isTerminal,
@@ -389,8 +402,12 @@ public enum RemoteWorkspaceJobStatusDerivation {
             }
             var result: RemoteWorkspaceJobDerivedState
             switch fence {
-            case .cancelledBeforeStart where record.schemaVersion == 3:
-                result = .init(status: .cancelled, completedAt: fencedAt, message: "The host cancelled this job before its command started.")
+            case .cancelledBeforeStart where [3, RemoteWorkspaceJobRecord.currentSchemaVersion].contains(record.schemaVersion):
+                if record.schemaVersion == RemoteWorkspaceJobRecord.currentSchemaVersion && record.launchPermit == .withdrawn {
+                    result = .init(status: .cancelled, completedAt: fencedAt, message: "ASTRA withdrew this job before granting permission to launch.")
+                } else {
+                    result = unverified("The host reports a cancelled launch, but ASTRA may have already issued permission to start. Earlier remote effects remain unverified.")
+                }
             case .legacySealed where record.legacyCancellationBootID != nil:
                 result = unverified("The host blocked a delayed launch and found no matching supervisor. This older job has no execution result.")
             default:

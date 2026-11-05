@@ -13,6 +13,8 @@ public enum RemoteWorkspaceJobCLI {
 
     public enum Command: Codable, Equatable, Sendable {
         case start(connection: String?, label: String?, timeoutSeconds: Int?, command: String)
+        /// Broker protocol only; never accepted by the command-line parser.
+        case authorizeLaunch(jobID: String)
         case status(jobID: String)
         case cancel(jobID: String)
         case tail(jobID: String, stream: String, lines: Int)
@@ -49,6 +51,8 @@ public enum RemoteWorkspaceJobCLI {
 
     public static func run(_ command: Command, manager: RemoteWorkspaceJobManager) -> Output {
         switch command {
+        case .authorizeLaunch:
+            return Output(exitCode: 1, stdout: "", stderr: "Launch permission is available only through the protected broker.\n")
         case .help:
             return Output(exitCode: 0, stdout: usage + "\n", stderr: "")
         case .start(let connection, let label, let timeoutSeconds, let remoteCommand):

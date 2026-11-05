@@ -57,7 +57,16 @@ def reserve(root, nonce, state):
             directory.mkdir(mode=0o700)
             flush_dir(directory.parent)
         except FileExistsError: pass
-        if directory.is_symlink() or not directory.is_dir(): raise ValueError('unsafe job root')
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(fd)
+            if info.st_uid != os.getuid(): raise ValueError('foreign job root owner')
+            os.fchmod(fd, 0o700)
+            named = directory.lstat()
+            if (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino):
+                raise ValueError('job root changed')
+            os.fsync(fd)
+        finally: os.close(fd)
     # v2 launchers also require this exact mkdir to succeed.
     root.mkdir(mode=0o700)
     with (root / 'nonce').open('x') as output:

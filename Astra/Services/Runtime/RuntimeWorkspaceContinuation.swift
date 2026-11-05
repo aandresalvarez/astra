@@ -20,6 +20,7 @@ struct RuntimeWorkspaceContinuationAuthorization: Codable, Equatable {
     let sourceEventID: UUID
     let approvedAt: Date
     let sources: [Source]
+    var beneficiaryReceiptDigest: String? = nil
     var workspaceScope: WorkspaceScope? = nil
     var inheritedAuthorizationID: UUID? = nil
 
@@ -92,7 +93,7 @@ enum RuntimeWorkspaceContinuation {
         let covered = Set(sources.flatMap { workspaceClaims($0.receipt) })
         guard Set(conflicts).isSubset(of: covered) else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         return .init(taskID: task.id, taskOwnerID: task.persistentModelID, requestID: request.id, sourceEventID: request.sourceEventID,
-            approvedAt: Date(), sources: sources.sorted { $0.receipt.taskID.uuidString < $1.receipt.taskID.uuidString })
+            approvedAt: Date(), sources: sources.sorted { $0.receipt.taskID.uuidString < $1.receipt.taskID.uuidString }, beneficiaryReceiptDigest: try previous.map(RuntimeExecutionOwnerStore.receiptDigest))
     }
 
     static func authorize(_ proposed: RuntimeWorkspaceContinuationAuthorization, task: AgentTask,
@@ -104,7 +105,10 @@ enum RuntimeWorkspaceContinuation {
         guard proposed.workspaceScope == nil, proposed.inheritedAuthorizationID == nil else { throw RuntimeExecutionOwnerStore.Failure.busy }
         let reviewedJobs = proposed.sources.contains { $0.reviewedSSHJobs != nil }
         guard !reviewedJobs || !rememberWorkspace else { throw RuntimeExecutionOwnerStore.Failure.busy }
-        let fresh = try preview(task: task, request: request, context: context, reviewSSHJobs: reviewedJobs)
+        let previous = try beneficiary.read()
+        guard try previous.map(RuntimeExecutionOwnerStore.receiptDigest) == proposed.beneficiaryReceiptDigest else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        let fresh = try preview(task: task, request: request, context: context,
+            previous: previous, reviewSSHJobs: reviewedJobs)
         guard fresh.taskID == proposed.taskID, fresh.taskOwnerID == proposed.taskOwnerID,
               fresh.requestID == proposed.requestID, fresh.sourceEventID == proposed.sourceEventID,
               fresh.sources.map(\.receipt) == proposed.sources.map(\.receipt),
@@ -167,9 +171,10 @@ enum RuntimeWorkspaceContinuation {
         guard try RuntimeWorkspaceContinuationScope.validates(authorization, task: task, request: request,
             context: context, claims: claims, previous: previous) else { throw RuntimeExecutionOwnerStore.Failure.busy }
         if let previous {
-            let freshInherited = authorization.inheritedAuthorizationID != nil && authorization.requestID == request.id
+            let freshDecision = try authorization.requestID == request.id
+                && (authorization.inheritedAuthorizationID != nil || authorization.beneficiaryReceiptDigest == RuntimeExecutionOwnerStore.receiptDigest(previous))
                 && isNewManualInstruction(request, task: task, previous: previous, context: context)
-            guard freshInherited || (previous.workspaceContinuationRequestID == authorizationID
+            guard freshDecision || (previous.workspaceContinuationRequestID == authorizationID
                 && (resumesPreparation(previous, task: task, request: request, context: context)
                     || RuntimeCompletedUserTurnContinuation.permits(previous, task: task, request: request, context: context))) else { return nil }
         } else {
@@ -206,6 +211,9 @@ enum RuntimeWorkspaceContinuation {
 
     static func isNewManualInstruction(_ request: TaskTurnRequest, task: AgentTask,
                                        previous: RuntimeExecutionOwnerRecord?, context: ModelContext) -> Bool {
+        guard task.isLive, task.modelContext === context, request.modelContext === context,
+              request.state.isActive, request.taskID == task.id,
+              (try? TaskTurnRequestOwnership.resolve(request, in: context))?.persistentModelID == task.persistentModelID else { return false }
         guard let previous else { return isInitialInstruction(request, task: task, context: context) }
         return RuntimeExecutionAdmission.resolve(request: request, task: task) == .userInstruction
             && RuntimeCompletedUserTurnContinuation.hasCompletedTurn(previous, task: task, context: context)

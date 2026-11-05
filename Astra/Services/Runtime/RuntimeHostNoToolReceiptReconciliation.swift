@@ -4,17 +4,19 @@ import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
-/// Repairs the old configured-SSH fence only from the protected process receipt.
-/// toolsStopped is the runner's complete terminal stream with *no* tools or
-/// unknown execution, not a model statement or an empty list of persisted events.
+/// Repairs configured-SSH fences from protected process and job evidence.
+/// Native helper frames remain uncertain until their exact broker-accounted job
+/// inventory proves permission was withdrawn before dispatch. Unrelated tools
+/// and unknown execution are never promoted by a model statement or host scan.
 @MainActor
 enum RuntimeHostNoToolReceiptReconciliation {
-    static func reconciled(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask) -> RuntimeExecutionOwnerRecord? {
+    static func reconciled(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask, managedSSHJobsVerified: Bool = false) -> RuntimeExecutionOwnerRecord? {
         guard saved.taskID == task.id, saved.state == .finished,
               saved.resourcesReleased == false, saved.cancellationRequested != true,
               saved.inheritedToolUncertainty != true, saved.settlementInProgress == false,
               saved.settlementLocalWorkStopped == true, saved.settlementToolsStopped == true,
-              let proof = saved.stopProof, !proof.remoteWorkExcluded, proof.toolsStopped,
+              let proof = saved.stopProof, !proof.remoteWorkExcluded || !proof.toolsStopped,
+              proof.toolsStopped || (managedSSHJobsVerified && proof.managedSSHOnly == true),
               proof.reaped, proof.processGroupEmpty, proof.executionID == saved.executionID,
               proof.process == saved.providerProcess, proof.process.presence == .absent,
               let runID = saved.runID, let run = task.runs.first(where: { $0.id == runID }),
@@ -28,7 +30,7 @@ enum RuntimeHostNoToolReceiptReconciliation {
         result.hostNoToolReconciliationOriginalProof = proof
         result.stopProof = .init(executionID: proof.executionID, process: proof.process,
             reaped: proof.reaped, processGroupEmpty: proof.processGroupEmpty,
-            toolsStopped: proof.toolsStopped, remoteWorkExcluded: true, capturedAt: proof.capturedAt)
+            toolsStopped: true, remoteWorkExcluded: true, capturedAt: proof.capturedAt, managedSSHOnly: proof.managedSSHOnly)
         guard result.canReplace else { return nil }
         result.resourcesReleased = true
         result.providerSharedStateReleased = true
@@ -40,7 +42,8 @@ enum RuntimeHostNoToolReceiptReconciliation {
     /// task lease. Live workers, unreadable receipts and uncertain tools stay fenced.
     static func reconcile(in store: RuntimeExecutionOwnerStore, context: ModelContext) throws {
         let candidates = try store.records().filter {
-            $0.state == .finished && $0.resourcesReleased == false && $0.stopProof?.toolsStopped == true
+            $0.state == .finished && $0.resourcesReleased == false
+                && ($0.stopProof?.toolsStopped == true || $0.stopProof?.managedSSHOnly == true)
                 && ($0.stopProof?.remoteWorkExcluded == false || $0.pendingSSHJobSetDigest != nil)
         }
         guard !candidates.isEmpty else { return }
@@ -66,8 +69,9 @@ enum RuntimeHostNoToolReceiptReconciliation {
                       RuntimeCompletedUserTurnContinuation.hasCompletedTurn(saved, task: task, context: context) else { continue }
                 repaired.pendingSSHJobSetDigest = nil
             }
-            if saved.stopProof?.remoteWorkExcluded == false {
-                guard let value = reconciled(repaired, task: task) else { continue }
+            if saved.stopProof?.remoteWorkExcluded == false || saved.stopProof?.toolsStopped == false {
+                guard let value = reconciled(repaired, task: task,
+                    managedSSHJobsVerified: saved.pendingSSHJobSetDigest != nil && jobs.identity != nil) else { continue }
                 repaired = value
             } else {
                 guard repaired.canReplace else { continue }
@@ -77,7 +81,7 @@ enum RuntimeHostNoToolReceiptReconciliation {
             }
             // The journal retains the original proof even if an audit save is
             // interrupted. No task, request, run, usage or output is rewritten.
-            try lease.save(repaired)
+            repaired = try lease.saveReconciliation(from: saved, to: repaired)
             context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
                 payload: TaskEvent.payloadString(repaired, fallback: "{}"),
                 run: task.runs.first { $0.id == repaired.runID }))

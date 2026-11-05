@@ -52,6 +52,12 @@ target_for_path() {
   esac
 
   case "$path" in
+    Astra/Services/Runtime/RuntimeManagedSSHHelperEvidence.swift|Tests/RuntimeManagedSSHHelperEvidenceTests.swift|Astra/Services/Runtime/RuntimeExecutionProcessEvidence.swift|Astra/Services/Runtime/RemoteWorkspaceJobBroker.swift)
+      add_target "RuntimeManagedSSHHelperEvidenceTests|RuntimeProviderCompletionEvidenceTests|RuntimeWorkspaceContinuationTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Runtime/RuntimeNativeSessionOwnership.swift|Tests/RuntimeNativeSessionOwnership*Tests.swift)
       add_target "RuntimeNativeSessionOwnershipTests|AgentRuntimeAsyncWorkTests|AgentProcessResultTests"
       ;;
@@ -435,6 +441,7 @@ target_for_path() {
       add_target "RemoteWorkspaceJobTests"
       add_target "RemoteWorkspaceJobShimTests"
       add_target "RemoteWorkspaceJobSafetyTests"
+      add_target "RemoteWorkspaceJobBrokerProtocolTests"
       add_target "RemoteWorkspaceJobPersistenceTests"
       add_target "RemoteWorkspaceJobBundlingTests"
       add_target "RemoteWorkspaceJobOutputStateTests"

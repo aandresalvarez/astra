@@ -109,7 +109,7 @@ extension TaskMainView {
         }()
         let workspaceAction: TaskDecisionDockAction? = {
             guard taskQueue != nil, taskActivityPresentation.kind == .waitingForResource,
-                  let dockRequest, dockRequest.kind == .initial, dockRequest.blockingTaskID != nil else { return nil }
+                  let dockRequest, [.initial, .followUp].contains(dockRequest.kind), dockRequest.blockingTaskID != nil else { return nil }
             return TaskDecisionDockAction(kind: .reviewWorkspaceContinuation,
                 title: "Review workspace", systemImage: "arrow.triangle.branch",
                 payload: dockRequest.id.uuidString,
