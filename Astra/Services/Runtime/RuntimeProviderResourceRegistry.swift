@@ -1,5 +1,7 @@
 import Foundation
+import SwiftData
 import ASTRACore
+import ASTRAModels
 
 /// Registered store roots are a cache of locations, not release authority.
 /// Every acquisition reads durable receipts again, including after restart.
@@ -11,13 +13,15 @@ enum RuntimeProviderResourceRegistry {
         let key: AgentRuntimeSharedStateKey
         let taskID: UUID
         let ownerID: UUID
+        let journalRoot: String
         let missingClaims: Bool
         let legacyIdentity: Bool
 
-        init(key: AgentRuntimeSharedStateKey, record: RuntimeExecutionOwnerRecord, missingClaims: Bool = false) {
+        init(key: AgentRuntimeSharedStateKey, record: RuntimeExecutionOwnerRecord, journalRoot: String, missingClaims: Bool = false) {
             self.key = key
             taskID = record.taskID
             ownerID = record.ownerID
+            self.journalRoot = journalRoot
             self.missingClaims = missingClaims
             legacyIdentity = key.filePath != nil && ([record.providerSharedStateKey].compactMap { $0 }
                 + (record.retainedProviderSharedStateKeys ?? [])).contains { $0 != key.rawValue && key.conflicts(withRecorded: $0) }
@@ -36,6 +40,29 @@ enum RuntimeProviderResourceRegistry {
         }
 
         var errorDescription: String? { message }
+    }
+
+    /// Safe replacement permits a provider switch even when a legacy receipt
+    /// cannot prove that the saved instruction never reached a provider.
+    @MainActor static func retryableBlockedRun(task: AgentTask, context: ModelContext) -> TaskRun? {
+        retryableBlockedExecution(task: task, context: context)?.run
+    }
+
+    /// Replaying the saved message needs the stronger, explicit no-launch proof.
+    @MainActor static func unstartedRun(task: AgentTask, context: ModelContext) -> TaskRun? {
+        guard let candidate = retryableBlockedExecution(task: task, context: context),
+              candidate.receipt.provesNoProviderLaunch(for: candidate.run) else { return nil }
+        return candidate.run
+    }
+
+    @MainActor private static func retryableBlockedExecution(task: AgentTask, context: ModelContext)
+        -> (run: TaskRun, receipt: RuntimeExecutionOwnerRecord)? {
+        guard let run = task.runs.max(by: { $0.startedAt < $1.startedAt }), run.status == .failed,
+              run.stopReason == RuntimeProviderResourceRegistry.Block.stopReason,
+              let receipt = try? RuntimeTaskOwnerJournal.read(task: task, context: context),
+              receipt.taskOwnerID == task.persistentModelID, receipt.runID == run.id, receipt.runtime == run.runtimeID,
+              receipt.canReplace, receipt.cancellationRequested != true else { return nil }
+        return (run, receipt)
     }
 
     private static let lock = NSLock()
@@ -65,11 +92,11 @@ enum RuntimeProviderResourceRegistry {
                         do { let lease = try store.acquire(taskID: record.taskID); withExtendedLifetime(lease) {} }
                         catch RuntimeExecutionOwnerStore.Failure.busy { continue }
                     }
-                    throw Block(key: key, record: record)
+                    throw Block(key: key, record: record, journalRoot: root.path)
                 }
                 if record.resourceClaims == nil, record.runtime == "antigravity_cli",
                    !record.canReplace && !record.canBeginNewTurn {
-                    throw Block(key: key, record: record, missingClaims: true)
+                    throw Block(key: key, record: record, journalRoot: root.path, missingClaims: true)
                 }
             }
         }
@@ -79,20 +106,30 @@ enum RuntimeProviderResourceRegistry {
     /// Claims inherited from earlier writers still need their own proof.
     static func conflicts(_ key: AgentRuntimeSharedStateKey, record: RuntimeExecutionOwnerRecord,
                           checkingHistoryIn store: RuntimeExecutionOwnerStore? = nil, requireExactWriter: Bool = false) -> Bool {
+        let observationHistory = record.legacyProviderReadObservation == nil ? nil
+            : store.flatMap { try? $0.retainedExecutions(of: record) }
+        // Reuse requires the complete saved inventory fence, including keyless
+        // preparations that the writer-claim walk below intentionally skips.
+        let observation = observationHistory?.allSatisfy({ $0.pendingSSHJobSetDigest == nil }) == true
+            ? record.legacyProviderReadObservation : nil
+        func permitsLegacyRead(_ writer: RuntimeExecutionOwnerRecord) -> Bool {
+            observation?.covers(writer, heldBy: record, requested: key) == true
+        }
         if let current = record.providerSharedStateKey, key.conflicts(withRecorded: current),
-           store == nil || !record.canReplace { return true }
+           store == nil || (!record.canReplace && !permitsLegacyRead(record)) { return true }
         var inherited = Set((record.retainedProviderSharedStateKeys ?? []).filter(key.conflicts))
         if requireExactWriter && record.providerSharedStateKey != key.rawValue { inherited.insert(key.rawValue) }
         guard !inherited.isEmpty else { return false }
         if record.providerSharedStateReleased == false && record.providerSharedStateKey == nil { return true }
-        guard let store, let history = try? store.retainedExecutions(of: record) else { return true }
+        guard let store, let history = observationHistory ?? (try? store.retainedExecutions(of: record)) else { return true }
         var proven = Set<String>()
         for prior in history.reversed() {
             let carried = Set(prior.retainedProviderSharedStateKeys ?? []).intersection(inherited)
             guard carried.isSubset(of: proven) else { return true }
             if prior.providerSharedStateReleased == false && prior.providerSharedStateKey == nil { return true }
             guard let written = prior.providerSharedStateKey, inherited.contains(written) else { continue }
-            guard prior.providerSharedStateReleased == true || prior.canReplace || prior.canRecoverPreparation else { return true }
+            guard prior.providerSharedStateReleased == true || prior.canReplace || prior.canRecoverPreparation
+                    || permitsLegacyRead(prior) else { return true }
             proven.insert(written)
         }
         return !inherited.isSubset(of: proven)

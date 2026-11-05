@@ -904,7 +904,6 @@ struct StorageBackedTaskThreadViewModelTests {
     func compactionPreservesThePagedOpenWindow() async throws {
         let (container, context, task) = try fixture()
         defer { _ = container }
-        TaskThreadHistoryInvalidation.resetForTesting()
 
         // The summary adds a backdated row to an already expanded transcript.
         let strandedPayload = "tool call retained through summarization"

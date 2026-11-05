@@ -59,6 +59,7 @@ struct TaskDecisionDockAction: Equatable, Identifiable {
     var payload: String?
     var help: String?
     var isEnabled: Bool = true
+    var providerRetryRunID: UUID? = nil
 }
 
 struct TaskDecisionDockMetric: Equatable, Identifiable {
@@ -78,6 +79,11 @@ struct TaskDecisionDockDetail: Equatable, Identifiable {
 }
 
 struct TaskDecisionDockPresentation: Equatable {
+    struct ProviderRecoveryAlternative: Equatable {
+        let runtime: AgentRuntimeID
+        let blockedRunID: UUID
+    }
+
     struct Context: Equatable {
         var status: TaskStatus
         var isClosed: Bool
@@ -132,6 +138,7 @@ struct TaskDecisionDockPresentation: Equatable {
         var visibleThreadAffordances: Set<TaskThreadAffordance> = []
         var recoveryBlockMessage: String? = nil
         var timeoutRecoveryRunID: UUID? = nil
+        var providerRecoveryAlternative: ProviderRecoveryAlternative? = nil
 
         /// Auto allows a connector's credentials for the task without asking, so
         /// a credential card reaches an Auto task only when that grant could not
@@ -200,7 +207,8 @@ struct TaskDecisionDockPresentation: Equatable {
                 metrics: metrics(context), details: details(context),
                 primaryAction: context.canRetry ? (context.timeoutRecoveryRunID.map(checkTimedOutRun)
                     ?? action(.retry, title: "Check again", systemImage: "arrow.clockwise")) : nil,
-                secondaryActions: [], overflowActions: closeOverflowActions(context, closeTitle: nil),
+                secondaryActions: [providerRecoverySwitchAction(context)].compactMap { $0 },
+                overflowActions: closeOverflowActions(context, closeTitle: nil),
                 prefersExpandedDetails: false
             )
         }
@@ -246,7 +254,7 @@ struct TaskDecisionDockPresentation: Equatable {
             return TaskDecisionDockPresentation(id: "unlaunched", icon: terminal.systemImage, tone: .attention,
                 title: terminal.title, summary: terminal.summary, compactMeta: "Provider never started",
                 metrics: metrics(context), details: details(context), primaryAction: nil,
-                secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
+                secondaryActions: [providerRecoverySwitchAction(context), firstArtifactAction(context)].compactMap { $0 },
                 overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil), prefersExpandedDetails: false)
         }
 
@@ -482,6 +490,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 isEnabled: correction.status != "approved"
             ),
             secondaryActions: [
+                providerRecoverySwitchAction(context),
                 firstArtifactAction(context),
                 action(.createCorrectionTask, title: "Create task", systemImage: "plus.square", payload: correction.correctiveStepID)
             ].compactMap { $0 },
@@ -519,6 +528,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 isEnabled: context.canRunApprovedPlan
             ),
             secondaryActions: [
+                providerRecoverySwitchAction(context),
                 context.canOpenPlan
                     ? action(
                         .openPlan,
@@ -565,7 +575,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 )
                 : nil,
             secondaryActions: [
-                isBlocked ? suggestedRuntimeSwitchAction(context) : nil,
+                providerRecoverySwitchAction(context) ?? (isBlocked ? suggestedRuntimeSwitchAction(context) : nil),
                 context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
                 firstArtifactAction(context)
             ].compactMap { $0 },
@@ -577,20 +587,30 @@ struct TaskDecisionDockPresentation: Equatable {
         )
     }
 
+    private static func providerRecoverySwitchAction(_ context: Context) -> TaskDecisionDockAction? {
+        guard context.status == .pendingUser || context.status == .failed else { return nil }
+        return runtimeSwitchAction(context.providerRecoveryAlternative?.runtime, canRetry: context.canRetry,
+            blockedRunID: context.providerRecoveryAlternative?.blockedRunID)
+    }
+
     private static func suggestedRuntimeSwitchAction(_ context: Context) -> TaskDecisionDockAction? {
         // Gated on canRetry like the adjacent .retry action — without a
         // handler to actually run the switched task, offering this button
         // would silently no-op when tapped.
-        guard context.canRetry,
-              let rawID = context.launchBlock?.suggestedRuntimeID,
-              let runtime = AgentRuntimeID(rawValue: rawID) else { return nil }
-        return action(
+        runtimeSwitchAction(context.launchBlock?.suggestedRuntimeID.flatMap(AgentRuntimeID.init(rawValue:)), canRetry: context.canRetry)
+    }
+
+    private static func runtimeSwitchAction(_ runtime: AgentRuntimeID?, canRetry: Bool, blockedRunID: UUID? = nil) -> TaskDecisionDockAction? {
+        guard canRetry, let runtime else { return nil }
+        var result = action(
             .switchRuntime,
             title: "Switch to \(runtime.displayName)",
             systemImage: "arrow.triangle.2.circlepath",
-            payload: rawID,
+            payload: runtime.rawValue,
             help: "Switch this task to \(runtime.displayName) and retry."
         )
+        result.providerRetryRunID = blockedRunID
+        return result
     }
 
     private static func queuedPresentation(_ context: Context) -> TaskDecisionDockPresentation {
@@ -653,6 +673,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 ? action(.resume, title: "Resume", systemImage: "play.fill")
                 : (context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil),
             secondaryActions: [
+                providerRecoverySwitchAction(context),
                 context.canResume && context.hasProviderSession && context.canRetry
                     ? action(.retry, title: "Retry", systemImage: "arrow.clockwise")
                     : nil,

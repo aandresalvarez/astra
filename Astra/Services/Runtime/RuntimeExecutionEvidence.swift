@@ -98,6 +98,8 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     /// uncertainty and reservations belong to the logical owner across turns.
     var retainedExecutionHead: UUID? = nil
     var retainedProviderSharedStateKeys: [String]? = nil
+    /// A host reboot verified for readers of an older Antigravity settings claim.
+    var legacyProviderReadObservation: ProviderSharedStateReadObservation? = nil
     var continuingUserRequestID: UUID? = nil
     /// Protected, request-scoped user permission to continue a reserved workspace.
     var workspaceContinuationRequestID: UUID? = nil
@@ -112,6 +114,14 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     }
 
     var hasProviderLaunch: Bool { (providerLaunchCount ?? 0) > 0 || providerProcess != nil }
+
+    /// A legacy "not started" label can follow a fallback that already spent tokens.
+    /// Replaying a message or clearing a reader requires explicit zero launches for this run.
+    func provesNoProviderLaunch(for run: TaskRun) -> Bool {
+        state == .notStarted && runID == run.id && runtime == run.runtimeID && providerLaunchCount == 0
+            && providerProcess == nil && stopProof == nil && run.tokensUsed == 0
+            && run.inputTokens == 0 && run.outputTokens == 0 && run.costUSD == 0
+    }
 
     // A new instruction cannot bypass cleanup required of an automatic retry.
     var canAcceptUserTurn: Bool { canReplace }

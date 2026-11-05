@@ -131,6 +131,7 @@ struct AppSemanticFitnessTests {
             "runtime.supervision.usage": .system,
             "runtime.recovery": .system,
             "runtime.execution_ownership": .system,
+            "runtime.legacy_provider_reader_verified": .system,
             "runtime.workspace_continuation_authorized": .system,
             "runtime.reconciliation.required": .system,
             "runtime.schedule_result.routed": .system,
