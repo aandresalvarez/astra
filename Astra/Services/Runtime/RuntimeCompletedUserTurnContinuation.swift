@@ -112,9 +112,11 @@ enum RuntimeCompletedUserTurnContinuation {
               saved.settlementToolsStopped == true,
               saved.resourceClaims != nil,
               let proof = saved.stopProof, proof.executionID == saved.executionID,
-              proof.process == saved.providerProcess, proof.reaped, proof.processGroupEmpty,
+              proof.process == saved.providerProcess, proof.reaped,
               proof.process.presence == .absent,
               let runID = saved.runID, let run = task.runs.first(where: { $0.id == runID }),
+              proof.processGroupEmpty || (!requiresSuccess && proof.groupObservedEmptyAt != nil
+                && run.typedStopReason == .providerRunWallClockExceeded),
               settledOutcome(run, requiresSuccess: requiresSuccess,
                 cancelled: cancelledAttempt(saved, task: task, context: context)), run.completedAt != nil,
               task.runs.filter({ !ignored.contains($0.id) }).max(by: { $0.startedAt < $1.startedAt })?.id == runID,

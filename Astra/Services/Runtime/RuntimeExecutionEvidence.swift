@@ -22,6 +22,12 @@ struct RuntimeProcessIdentity: Codable, Equatable, Sendable {
         if let current = Self.read(pid) { return current == self ? .present : .absent }
         return kill(pid, 0) == -1 && errno == ESRCH ? .absent : .unknown
     }
+
+    /// AgentExecutionScopedProcess starts a group with the provider's PID.
+    /// Require both numbers to be unused. A recycled PID or EPERM is inconclusive.
+    var processAndGroupAreAbsent: Bool {
+        pid > 1 && kill(pid, 0) == -1 && errno == ESRCH && kill(-pid, 0) == -1 && errno == ESRCH
+    }
 }
 
 struct RuntimeExecutionStopProof: Codable, Equatable, Sendable {
@@ -32,6 +38,8 @@ struct RuntimeExecutionStopProof: Codable, Equatable, Sendable {
     let toolsStopped: Bool
     let remoteWorkExcluded: Bool
     let capturedAt: Date
+    /// A later local observation for a new human turn. Replacement still requires the original proof.
+    var groupObservedEmptyAt: Date? = nil
     var permitsReplacement: Bool { reaped && processGroupEmpty && toolsStopped && remoteWorkExcluded }
 }
 
