@@ -169,9 +169,10 @@ final class AgentRuntimeWorker {
         let launchTask = launchProjection?.task ?? task
         let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
         let request = executionRequestID.flatMap { try? TaskTurnRequestRepository.request(id: $0, in: modelContext) }
+        let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
+            ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: request)
         guard RuntimeWorkspaceConsultationGate.validate(task: task, launchTask: launchTask, request: request,
-            workspaceAccess: executionPolicy.workspaceAccessOverride
-                ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: request),
+            workspaceAccess: executionWorkspaceAccess,
             approvedPlan: currentPlan, modelContext: modelContext) else { return }
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
@@ -198,6 +199,8 @@ final class AgentRuntimeWorker {
             cancellationRequested = false
             defer { owner.settlementScope = nil; owner.finish(); currentExecutionOwner = nil; isRunning = false }
             await RuntimeFinalPlanSettlement.validate(task: task, plan: currentPlan, owner: owner,
+                validationAdmission: .currentTurn(request: request, launchTask: launchTask, workspaceAccess: executionWorkspaceAccess),
+                sandboxEnforcementSnapshot: executionPolicy.sandboxEnforcementSnapshot,
                 modelContext: modelContext, verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
                     fallbackRuntime: runtimeConfiguration.selectedRuntime(for: launchTask),
                     preferredModel: validationModel, modelContext: modelContext))

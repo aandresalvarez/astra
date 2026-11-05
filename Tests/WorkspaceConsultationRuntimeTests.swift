@@ -133,8 +133,8 @@ struct WorkspaceConsultationRuntimeTests {
         #expect(TaskOutputDiscovery.files(for: task, run: run).contains { $0.path == changed.path } == !consultation)
     }
 
-    @Test("A plan updated during Consult cannot add an executable command assertion")
-    func providerPlanUpdateCannotWidenValidationAccess() async throws {
+    @Test("A plan updated during Consult stays read-only, and Work can retry final validation", arguments: [false, true])
+    func providerPlanUpdateCannotWidenValidationAccess(retryInWork: Bool) async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
         let task = harness.makeTask(runtime: .claudeCode, goal: "Explain the workspace", model: "claude-sonnet-4-6", tokenBudget: 0)
@@ -151,13 +151,15 @@ struct WorkspaceConsultationRuntimeTests {
         _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
         DirectWorkerLaunchAdmission.admitApprovedPlanRun(task, modelContext: harness.context)
         let marker = harness.workspaceURL.appendingPathComponent("late-assertion-ran")
+        try ".PHONY: test\ntest:\n\t@printf 'validated\\n' >> late-assertion-ran\n"
+            .write(to: harness.workspaceURL.appendingPathComponent("Makefile"), atomically: true, encoding: .utf8)
         let fake = FakeAgentProcessRunner()
         fake.streamLines = [#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The workspace contains synthetic files."}]}}"#]
         fake.onLaunch = { _, _ in
             var updated = plan
             updated.steps[0].status = .done
             updated.validationContract = .init(assertions: [.init(id: "late-command",
-                description: "Command added during the turn", method: .command, command: "touch '\(marker.path)'")])
+                description: "Command added during the turn", method: .command, command: "make test")])
             TaskPlanService.recordUpdated(updated, task: task, modelContext: harness.context)
             // Exercise the immutable request when the live composer changes.
             TaskWorkspaceConsultationPolicy.apply(false, to: task)
@@ -169,6 +171,34 @@ struct WorkspaceConsultationRuntimeTests {
         #expect(request.state == .failed)
         #expect(request.terminalReason == "consultation_plan_commands")
         #expect(!FileManager.default.fileExists(atPath: marker.path))
+        guard retryInWork else { return }
+
+        let originalRun = try #require(task.runs.first)
+        #expect(try TaskTurnRequestRepository.origin(for: task, runID: originalRun.id, in: harness.context)?.id == request.id)
+        let completedPlan = try #require(TaskPlanService.reconstruct(for: task).plan)
+        #expect(TaskPlanService.nextExecutableStep(in: completedPlan) == nil)
+        TaskWorkspaceConsultationPolicy.apply(false, to: task)
+        guard case .success(let retry) = ExecutionRequestSubmissionService.submitPlan(plan: completedPlan,
+            mode: .nextStep, mutation: .existingTask, for: task, into: harness.context) else {
+            Issue.record("Could not submit the Work final-validation retry"); return
+        }
+        let workRequest = try #require(try TaskTurnRequestRepository.request(id: retry.requestID, in: harness.context))
+        let workPolicy = admissionPolicy(workRequest, task: task)
+        #expect(workPolicy.workspaceAccessOverride == .exclusive)
+        #expect(workRequest.resourceClaims.allSatisfy { $0.readConsistency != .live })
+        _ = TaskTurnRequestStateMachine.transition(workRequest, to: .admitted)
+        // The accepted Work request stays authoritative if the composer changes.
+        TaskWorkspaceConsultationPolicy.apply(true, to: task)
+        DirectWorkerLaunchAdmission.admitApprovedPlanRun(task, modelContext: harness.context)
+        await makeWorker(fake, runtime: .claudeCode, root: harness.rootURL).executeApprovedPlan(task: task,
+            plan: completedPlan, mode: .nextStep, executionRequestID: workRequest.id, modelContext: harness.context,
+            executionPolicy: workPolicy) { _ in }
+        #expect(task.status == .completed)
+        #expect(workRequest.terminalReason != "consultation_plan_commands")
+        #expect(try String(contentsOf: marker, encoding: .utf8) == "validated\n")
+        #expect(fake.receivedPrompts.count == 1)
+        #expect(task.runs.count == 1 && task.runs.first?.id == originalRun.id)
+        #expect(request.state == .failed && request.terminalReason == "consultation_plan_commands")
     }
 
     @Test("Native Consult resumes retain the live-read restrictions")

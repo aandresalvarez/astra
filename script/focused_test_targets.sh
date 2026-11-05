@@ -20,7 +20,7 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
-    Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift|Astra/Services/Runtime/RuntimeWorkspaceConsultationGate.swift|Astra/Services/Runtime/ApprovedPlanRuntimeSettlement.swift|Astra/Services/Persistence/TaskOutputWorkspaceDiscovery.swift|Tests/WorkspaceConsultationTests.swift|Tests/WorkspaceConsultationRuntimeTests.swift)
+    Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift|Astra/Services/Runtime/RuntimeWorkspaceConsultationGate.swift|Astra/Services/Runtime/ApprovedPlanRuntimeSettlement.swift|Astra/Services/Runtime/RuntimeFinalPlanSettlement.swift|Astra/Services/Persistence/TaskOutputWorkspaceDiscovery.swift|Tests/WorkspaceConsultationTests.swift|Tests/WorkspaceConsultationRuntimeTests.swift)
       add_target "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests"
       ;;
     Astra/Views/TaskMainView.swift|Astra/Views/TaskChatScrollFollow.swift|Tests/TaskChatScrollFollowTests.swift|Tests/TaskMainViewCrashRegressionTests.swift|Astra/Views/TaskThreadViewModel.swift|Astra/Services/Tasks/TaskThreadHistoryStore.swift|Astra/Services/Tasks/TaskThreadHistoryPagePolicy.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceReader.swift|Astra/Services/Tasks/TaskPublicationDecisionEvidenceCache.swift|Tests/TaskPublicationDecisionEvidenceWorkTests.swift|Tests/TaskPublicationDecisionEvidenceCommitTests.swift|Tests/ImportedTaskHistoryIsolationTests.swift|Tests/TaskThreadLiveHistoryTests.swift)
