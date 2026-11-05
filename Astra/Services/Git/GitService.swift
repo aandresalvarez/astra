@@ -446,43 +446,6 @@ class GitService: GitRepositoryOperating {
     private static let defaultGitTimeout: TimeInterval = 30
     /// Extended budget for network operations (fetch/pull/push) that legitimately run longer.
     static let networkGitTimeout: TimeInterval = 300
-    private static let pullRequestCommentsGraphQLQuery = """
-    query($owner: String!, $name: String!, $number: Int!) {
-      repository(owner: $owner, name: $name) {
-        pullRequest(number: $number) {
-          comments(first: 100) {
-            totalCount
-            pageInfo { hasNextPage }
-            nodes {
-              author { login }
-              body
-              createdAt
-              url
-            }
-          }
-          reviewThreads(first: 100) {
-            totalCount
-            pageInfo { hasNextPage }
-            nodes {
-              isResolved
-              path
-              line
-              comments(first: 100) {
-                totalCount
-                pageInfo { hasNextPage }
-                nodes {
-                  author { login }
-                  body
-                  createdAt
-                  url
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    """
 
     /// Builds the non-interactive environment used for every git invocation.
     ///
@@ -1162,13 +1125,9 @@ class GitService: GitRepositoryOperating {
             return .unavailable("ASTRA could not identify the GitHub repository for this pull request.")
         }
 
-        let arguments = [
-            "api", "graphql",
-            "-f", "query=\(Self.pullRequestCommentsGraphQLQuery)",
-            "-F", "owner=\(locator.owner)",
-            "-F", "name=\(locator.name)",
-            "-F", "number=\(pullRequest.number)"
-        ]
+        let arguments = GitHubReviewThreads.pullRequestArguments(
+            owner: locator.owner, name: locator.name, number: pullRequest.number
+        )
         do {
             let output = try await runProcess(
                 executableURL: URL(fileURLWithPath: ghPath),

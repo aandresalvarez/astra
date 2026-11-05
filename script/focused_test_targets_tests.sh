@@ -231,7 +231,7 @@ assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTe
   "Tests/TaskDecisionDockPresentationTests.swift" \
   "Astra/Services/Tasks/TaskDecisionDockPresentation.swift"
 
-assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
+assert_targets $'TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests\nTaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
   "Astra/Views/TaskMainView.swift"
 
 assert_targets $'ComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
@@ -497,9 +497,40 @@ assert_targets 'SidebarFolderResponsivenessTelemetryTests|StartupCleanupTelemetr
   Tests/StartupCleanupTelemetryTests.swift \
   Tests/CredentialCleanupStartupTests.swift
 
+assert_targets 'TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests' \
+  Astra/Views/TaskChatScrollFollow.swift \
+  Tests/TaskChatScrollFollowTests.swift \
+  Tests/TaskMainViewCrashRegressionTests.swift \
+  Astra/Views/TaskThreadViewModel.swift \
+  Astra/Services/Tasks/TaskThreadHistoryStore.swift \
+  Astra/Services/Tasks/TaskThreadHistoryPagePolicy.swift \
+  Astra/Services/Tasks/TaskPublicationDecisionEvidenceReader.swift \
+  Astra/Services/Tasks/TaskPublicationDecisionEvidenceCache.swift \
+  Tests/TaskPublicationDecisionEvidenceWorkTests.swift \
+  Tests/TaskPublicationDecisionEvidenceCommitTests.swift \
+  Tests/ImportedTaskHistoryIsolationTests.swift \
+  Tests/TaskThreadLiveHistoryTests.swift
+
+# A merge touching credential admission and chat history must retain both
+# independently selected protection groups, without duplicating either one.
+assert_targets $'PluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests\nPluginCredentialUpgradeTests\nPluginActivationReviewTests|PluginConnectorFieldTrustTests\nCapabilityUninstallerTests\nPluginActivationOwnershipTests\nPluginMigrationUnreadableSkillSecretTests\nPluginSecretSettingWriterTests\nPluginSourceInstallationTests\nPluginSourcesTests\nPluginStaleCredentialOwnerTests\nTaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests' \
+  Tests/PluginCredentialUpgradeTests.swift \
+  Tests/TaskThreadLiveHistoryTests.swift \
+  Tests/PluginCredentialMetadataCompatibilityTests.swift \
+  Tests/TaskThreadLiveHistoryTests.swift
+
 assert_targets $'WorkspaceCleanupMirrorBatchTests\nWorkspaceCleanupEvidenceAdmissionTests\nPluginCredentialUpgradeTests\nPluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests' \
   Astra/Services/Persistence/WorkspaceCleanupMirrorBatch.swift \
   Astra/Services/Persistence/WorkspaceCleanupStoreGeneration.swift \
   Astra/Services/Persistence/WorkspaceCleanupMirrorDestination.swift \
   Tests/WorkspaceCleanupMirrorBatchTests.swift \
   Tests/WorkspaceCleanupEvidenceAdmissionTests.swift
+
+# Cleanup admission and bounded-chat integration must select all protections,
+# including credential upgrades, without duplicating shared groups.
+assert_targets $'WorkspaceCleanupMirrorBatchTests\nWorkspaceCleanupEvidenceAdmissionTests\nPluginCredentialUpgradeTests\nPluginCredentialMetadataCompatibilityTests|PluginRecoveryMirrorCredentialTests|PendingTaskCredentialCleanupTests\nPluginActivationReviewTests|PluginConnectorFieldTrustTests\nCapabilityUninstallerTests\nPluginActivationOwnershipTests\nPluginMigrationUnreadableSkillSecretTests\nPluginSecretSettingWriterTests\nPluginSourceInstallationTests\nPluginSourcesTests\nPluginStaleCredentialOwnerTests\nTaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests' \
+  Tests/WorkspaceCleanupEvidenceAdmissionTests.swift \
+  Tests/PluginCredentialUpgradeTests.swift \
+  Tests/TaskThreadLiveHistoryTests.swift \
+  Tests/TaskChatScrollFollowTests.swift \
+  Tests/WorkspaceCleanupMirrorBatchTests.swift

@@ -72,7 +72,8 @@ struct TaskDecisionOutcomeSaveObserver: View {
 
     var body: some View {
         Color.clear
-            .onReceive(NotificationCenter.default.publisher(for: ModelContext.willSave, object: modelContext)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: ModelContext.willSave, object: modelContext)) { notification in
+                guard let source = notification.object as? ModelContext, source === modelContext else { return }
                 if tracker.record(context: modelContext, task: task) { onRelevantSave() }
             }
     }
