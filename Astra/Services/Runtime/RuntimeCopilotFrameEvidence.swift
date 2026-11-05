@@ -13,7 +13,8 @@ enum RuntimeCopilotFrameEvidence {
             return CopilotStreamEventParser.hasResultPayload(frame) ? .terminalWithoutCleanupProof : .uncertain
         }
         if type == "usage" || type == "stats" { return .bookkeeping }
-        guard let data = frame["data"] as? [String: Any] else { return .uncertain }
+        guard RuntimeCopilotFrameMetadata.accepts(frame),
+              let data = frame["data"] as? [String: Any] else { return .uncertain }
         if let requests = data["toolRequests"], (requests as? [Any])?.isEmpty != true { return .uncertain }
         switch type {
         case "assistant.message", "assistant.message_delta", "assistant.reasoning", "assistant.reasoning_delta", "user.message":

@@ -48,6 +48,12 @@ The host requires Python 3.9 or later, `clock_gettime(CLOCK_MONOTONIC)`, and a u
 an outer supervisor plus an anchored process group. The supervisor tracks the
 command and ordinary children even when the original shell exits first.
 
+Version 3 reserves the job directory and records a launch ticket while sampling
+the host clock, before the broker hands the launcher a job ID. Start and cancel
+lock the same nonce file and atomically decide the ticket. If cancellation wins,
+even a delayed launcher cannot execute the command. If start wins, cancellation
+and status follow the supervisor and its recorded result.
+
 Cancellation is saved locally before SSH. The probe writes a nonce-bound cancel
 request in the admitted job directory. Only the original live scope signals its
 own process group: TERM first, then KILL after a grace interval even if children
@@ -111,6 +117,40 @@ The task's Remote jobs panel shows the observed status, last successful check,
 connection errors, cancellation pending, bounded output and why the workspace
 remains reserved. Check now, Read output and Cancel job use the same service.
 Stopping the task also requests cancellation of registered remote jobs.
+
+After an SSH transition is saved, the queue checks its waiting requests again.
+Only a protected local launch permit withdrawn before dispatch, together with a
+matching host cancellation fence, can release an otherwise fully settled owner.
+New registrations use schema v4 so older host-only release checks cannot accept
+them. Registration writes a pending permit; the helper must obtain a one-shot broker
+grant before dispatch, atomically changing it to issued. Cancellation changes a
+still-pending permit to withdrawn. Issued or missing permits remain uncertain
+even if command-writable host metadata claims no launch. The exact complete
+registered job inventory must match the owner's saved digest. Native Claude and
+Copilot tool frames count as managed attempts only for exact single helper
+invocations acknowledged by this execution's broker; unrelated tools, compound
+shell commands, unknown frames and redundant work counters remain fenced. Direct SSH
+commands and inherited tool uncertainty require separate evidence. Copilot activity
+and bookkeeping frames share a typed metadata contract with helper announcements.
+Unsupported envelope or data fields, malformed metadata, subagent attribution and
+built-in edit work retain uncertainty even after a helper completes. A pure helper
+metadata policy validates each supported envelope, input and result before call
+bookkeeping changes. The same Claude message/event policy guards already-supported
+ordinary text and stream frames, so rejected metadata cannot regain clean evidence
+through an activity classification. Claude wire inputs must match the exact declared tool IDs
+and inputs. Copilot terminal result blocks require a typed exit code; a completed
+tool event containing a still-running terminal cannot prove helper cleanup.
+Unsupported result extensions remain uncertain. Native result text stays opaque;
+rendering a message does not establish cleanup. A user may
+authorize one waiting request to continue after its listed jobs finish. For
+older jobs without a result or prior evidence of a launch, the host must first
+block the original launcher and check for its supervisor. This decision applies
+only to the reviewed request and preserves the previous owner's history. A new
+manual follow-up can obtain its own decision, bound to the receiver's current
+protected receipt; a prior request's SSH decision is never reused implicitly.
+Reviewed inventories and predecessor sources use bounded protected pages with
+complete-count and identity checks. Verified releases append an exact original
+to reconciled receipt attestation; archived execution bytes are never rewritten.
 
 Every admission/status/cancellation transition is kept in a durable outbox in
 the protected job record. The monitor reconciles it to typed task events with a

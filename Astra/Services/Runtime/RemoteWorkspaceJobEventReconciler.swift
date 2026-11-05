@@ -6,6 +6,7 @@ import WorkspaceToolSupport
 
 @MainActor
 enum RemoteWorkspaceJobEventReconciler {
+    static let admissionDidChange = Notification.Name("ASTRA.remoteJobAdmissionDidChange")
     static func reconcile(_ job: RemoteWorkspaceJobRecord, task: AgentTask, context: ModelContext,
                           store: RemoteWorkspaceJobStore) throws {
         guard task.isLive, task.modelContext === context else { return }
@@ -29,5 +30,6 @@ enum RemoteWorkspaceJobEventReconciler {
         try store.update(jobID: job.jobID) { record in
             record.pendingTransitions?.removeAll { delivered.contains($0.id) }
         }
+        NotificationCenter.default.post(name: admissionDidChange, object: context)
     }
 }

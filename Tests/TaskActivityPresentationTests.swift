@@ -25,6 +25,15 @@ struct TaskActivityPresentationTests {
         return request.snapshot
     }
 
+    @Test("A workspace waiting on SSH shows the job identity in the dock")
+    func remoteJobReasonInDock() {
+        let task = makeTask(status: .queued)
+        let summary = WorkspaceSSHWait.summary(["12345678-0000-0000-0000-000000000000"])
+        let waiting = request(for: task, sequence: 1, state: .waitingForResource, blockerSummary: summary)
+        let activity = TaskActivityPresentation.resolve(taskID: task.id, taskStatus: task.status, requests: [waiting])
+        #expect(activity.dockTitle == "Waiting for confirmation of 1 SSH job (12345678).")
+    }
+
     @Test("Running wins task-level presentation while queued turns retain their own state")
     func taskActivityUsesDeterministicPrecedence() {
         let task = makeTask(status: .completed)

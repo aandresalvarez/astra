@@ -72,7 +72,7 @@ enum RemoteWorkspaceJobCancellationDelivery {
         guard receipt.configuration == configuration else { throw RemoteWorkspaceJobError.invalidArgument("Cancellation configuration changed.") }
         let store = RemoteWorkspaceJobStore(rootPath: configuration.recordRootPath)
         for job in try store.records() where receipt.cancelExecution && !job.status.isTerminal && job.cancellationRequestedAt == nil {
-            try store.update(jobID: job.jobID) { $0.cancellationRequestedAt = Date() }
+            try store.update(jobID: job.jobID) { $0.requestCancellation(at: Date()) }
         }
         return try store.records().filter { $0.cancellationRequestedAt != nil }
     }

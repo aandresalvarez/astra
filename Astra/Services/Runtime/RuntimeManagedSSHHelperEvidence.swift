@@ -1,0 +1,195 @@
+import Foundation
+import ASTRACore
+import WorkspaceToolSupport
+
+/// Broker observations are local, execution-scoped acknowledgements of exact
+/// parsed commands. Provider text alone cannot account for a helper attempt.
+final class RuntimeManagedSSHBrokerEvidence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var commands: [RemoteWorkspaceJobCLI.Command] = []
+    private var activity = false
+    func beginCommand() { lock.withLock { activity = true } }
+    var hasActivity: Bool { lock.withLock { activity } }
+    func acknowledge(_ command: RemoteWorkspaceJobCLI.Command) { lock.withLock { activity = true; commands.append(command) } }
+    func accounts(for observed: [RemoteWorkspaceJobCLI.Command]) -> Bool {
+        lock.withLock {
+            var remaining = commands
+            for command in observed {
+                guard let index = remaining.firstIndex(of: command) else { return false }
+                remaining.remove(at: index)
+            }
+            // The helper also asks the broker for status itself. Extra starts,
+            // unlike those read requests, indicate omitted provider tool frames.
+            return !remaining.contains { if case .start = $0 { true } else { false } }
+        }
+    }
+}
+
+/// Narrow exception for known helper frames, not general shell tool cleanup.
+/// The caller keeps unrelated/unknown work sticky and retains remote uncertainty
+/// until the exact protected job inventory proves local permission was withdrawn.
+struct RuntimeManagedSSHHelperEvidence {
+    private let broker: RuntimeManagedSSHBrokerEvidence
+    private var calls: [String: RemoteWorkspaceJobCLI.Command] = [:]
+    private var completed = Set<String>()
+    private var starts = Set<String>()
+    private var streamed: [Int: String] = [:]
+    private var fragments: [String: String] = [:]
+    private var streamedNames: [String: String] = [:]
+    init(broker: RuntimeManagedSSHBrokerEvidence) { self.broker = broker }
+
+    var hasBrokerActivity: Bool { broker.hasActivity }
+    var fullyAccounted: Bool {
+        !calls.isEmpty && starts == Set(calls.keys) && completed == Set(calls.keys)
+            && streamed.isEmpty && fragments.isEmpty && broker.accounts(for: Array(calls.values))
+    }
+
+    private mutating func call(id: String?, name: String?, input: Any?, started: Bool) -> Bool {
+        guard let id, !id.isEmpty, let name, ["Bash", "bash"].contains(name),
+              let input = input as? [String: Any], let command = input["command"] as? String,
+              RuntimeManagedSSHFrameMetadata.input(input),
+              let tokens = HostControlCLIRelayPolicy.shellTokens(command), tokens.first == RemoteWorkspaceJobCLI.commandName,
+              let parsed = try? RemoteWorkspaceJobCLI.parse(Array(tokens.dropFirst())), parsed != .help else { return false }
+        if let previous = calls[id], previous != parsed { return false }
+        guard !completed.contains(id) else { return false }
+        calls[id] = parsed
+        if started { starts.insert(id) }
+        return true
+    }
+
+    private mutating func result(_ id: String?) -> Bool {
+        guard let id, calls[id] != nil, starts.contains(id), completed.insert(id).inserted else { return false }
+        return true
+    }
+
+    mutating func observe(_ frame: [String: Any], runtime: AgentRuntimeID) -> Bool {
+        guard RuntimeManagedSSHFrameMetadata.accepts(frame, runtime: runtime) else { return false }
+        guard frame["parent_tool_use_id"] == nil || frame["parent_tool_use_id"] is NSNull else { return false }
+        // Strip only the expected native tool marker. Redundant counters or
+        // extra requests on any intermediate frame still disprove cleanup.
+        var hints = frame
+        if runtime == .copilotCLI, frame["type"] as? String == "assistant.message", var data = frame["data"] as? [String: Any] {
+            data["toolRequests"] = []; hints["data"] = data
+        }
+        if let type = frame["type"] as? String, ["assistant", "user"].contains(type), var message = frame["message"] as? [String: Any] {
+            if message["stop_reason"] as? String == "tool_use" { message.removeValue(forKey: "stop_reason") }
+            hints["message"] = message
+        }
+        if frame["type"] as? String == "stream_event", var event = frame["event"] as? [String: Any],
+           event["type"] as? String == "message_delta", var delta = event["delta"] as? [String: Any] {
+            if delta["stop_reason"] as? String == "tool_use" { delta.removeValue(forKey: "stop_reason") }
+            event["delta"] = delta; hints["event"] = event
+        }
+        guard !RuntimeStreamExecutionHints.containsWork(hints) else { return false }
+        switch runtime {
+        case .claudeCode, .cursorCLI: return claude(frame)
+        case .copilotCLI: return copilot(frame)
+        default: return false
+        }
+    }
+
+    private mutating func claude(_ frame: [String: Any]) -> Bool {
+        switch frame["type"] as? String {
+        case "assistant", "user":
+            guard let message = frame["message"] as? [String: Any],
+                  message["role"] == nil || message["role"] as? String == frame["type"] as? String,
+                  let blocks = message["content"] as? [[String: Any]], !blocks.isEmpty else { return false }
+            var found = false
+            for block in blocks {
+                switch block["type"] as? String {
+                case "text", "thinking": break
+                case "tool_use":
+                    guard frame["type"] as? String == "assistant",
+                          call(id: block["id"] as? String, name: block["name"] as? String,
+                               input: block["input"], started: true) else { return false }
+                    found = true
+                case "tool_result":
+                    guard frame["type"] as? String == "user", result(block["tool_use_id"] as? String) else { return false }
+                    found = true
+                default: return false
+                }
+            }
+            // Redundant usage/subagent counters remain independent evidence.
+            var stripped = frame
+            var cleaned = message; cleaned["content"] = []
+            if cleaned["stop_reason"] as? String == "tool_use" { cleaned.removeValue(forKey: "stop_reason") }
+            stripped["message"] = cleaned
+            return found && !RuntimeStreamExecutionHints.containsWork(stripped)
+        case "stream_event":
+            guard let event = frame["event"] as? [String: Any] else { return false }
+            switch event["type"] as? String {
+            case "content_block_start":
+                guard let index = event["index"] as? Int, streamed[index] == nil,
+                      let block = event["content_block"] as? [String: Any], block["type"] as? String == "tool_use",
+                      let id = block["id"] as? String, !id.isEmpty,
+                      let name = block["name"] as? String, ["Bash", "bash"].contains(name),
+                      let input = block["input"] as? [String: Any], input.isEmpty else { return false }
+                streamed[index] = id; fragments[id] = ""; streamedNames[id] = name
+                return true
+            case "content_block_delta":
+                guard let index = event["index"] as? Int, let id = streamed[index],
+                      let delta = event["delta"] as? [String: Any], delta["type"] as? String == "input_json_delta",
+                      let fragment = delta["partial_json"] as? String,
+                      (fragments[id]?.utf8.count ?? 0) + fragment.utf8.count <= 131_072 else { return false }
+                fragments[id, default: ""] += fragment
+                return true
+            case "content_block_stop":
+                guard let index = event["index"] as? Int, let id = streamed[index],
+                      let text = fragments[id], let name = streamedNames[id],
+                      let input = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
+                      call(id: id, name: name, input: input, started: true) else { return false }
+                streamed.removeValue(forKey: index); fragments.removeValue(forKey: id); streamedNames.removeValue(forKey: id)
+                return true
+            case "message_delta":
+                guard let delta = event["delta"] as? [String: Any], delta["stop_reason"] as? String == "tool_use",
+                      !calls.isEmpty else { return false }
+                var stripped = frame; var cleaned = event; var stop = delta
+                stop.removeValue(forKey: "stop_reason"); cleaned["delta"] = stop; stripped["event"] = cleaned
+                return !RuntimeStreamExecutionHints.containsWork(stripped)
+            default: return false
+            }
+        default: return false
+        }
+    }
+
+    private mutating func copilot(_ frame: [String: Any]) -> Bool {
+        guard let data = frame["data"] as? [String: Any] else { return false }
+        switch frame["type"] as? String {
+        case "assistant.message":
+            guard let requests = data["toolRequests"] as? [[String: Any]], !requests.isEmpty else { return false }
+            for request in requests {
+                guard call(id: request["toolCallId"] as? String, name: request["name"] as? String,
+                    input: request["arguments"], started: false) else { return false }
+            }
+            var stripped = frame; var cleaned = data; cleaned["toolRequests"] = []; stripped["data"] = cleaned
+            return !RuntimeStreamExecutionHints.containsWork(stripped)
+        case "assistant.tool_call_delta":
+            guard let id = data["toolCallId"] as? String, !id.isEmpty, !starts.contains(id),
+                  let name = data["toolName"] as? String, ["Bash", "bash"].contains(name),
+                  let fragment = data["inputDelta"] as? String,
+                  (fragments[id]?.utf8.count ?? 0) + fragment.utf8.count <= 131_072 else { return false }
+            if let existing = streamedNames[id], existing != name { return false }
+            fragments[id, default: ""] += fragment; streamedNames[id] = name
+            return true
+        case "tool.execution_start":
+            if let id = data["toolCallId"] as? String, let text = fragments[id] {
+                guard let name = streamedNames[id],
+                      let input = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
+                      call(id: id, name: name, input: input, started: false) else { return false }
+                fragments.removeValue(forKey: id); streamedNames.removeValue(forKey: id)
+            }
+            return !RuntimeStreamExecutionHints.containsWork(frame)
+                && call(id: data["toolCallId"] as? String, name: data["toolName"] as? String,
+                    input: data["arguments"], started: true)
+        case "tool.execution_complete":
+            return !RuntimeStreamExecutionHints.containsWork(frame) && result(data["toolCallId"] as? String)
+        case "tool.execution_partial_result", "tool.execution_progress":
+            // Account only for native textual output from the already-bound call.
+            // Extra payload fields retain native-tool uncertainty.
+            guard let id = data["toolCallId"] as? String else { return false }
+            return calls[id] != nil && starts.contains(id) && !completed.contains(id)
+        default: return false
+        }
+    }
+
+}

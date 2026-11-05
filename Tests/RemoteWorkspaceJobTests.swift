@@ -256,6 +256,116 @@ struct RemoteWorkspaceJobTests {
         #expect(try manager.register(connectionTarget: "pcornet-backup", command: "sleep 10").created == false)
     }
 
+    @Test("Host cancellation wins before SSH launch and survives a late start and reopen")
+    func cancelBeforeStart() throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let manager = host.manager()
+        let job = try manager.register(connectionTarget: "pcornet-backup", command: "touch should-not-start").record
+        let cancelled = try #require(record(manager.cancel(jobID: job.jobID)))
+        #expect(cancelled.status == .cancelled && cancelled.launchFence == .cancelledBeforeStart)
+        #expect(cancelled.launchPermit == .withdrawn)
+        #expect(throws: (any Error).self) { try manager.authorizeLaunch(jobID: job.jobID) }
+        #expect(record(manager.start(connectionTarget: "pcornet-backup", command: job.command))?.status == .cancelled)
+        let transport = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path)
+        let delayed = transport.run(connection: host.connections[0], script: RemoteWorkspaceJobScripts.start(
+            jobID: job.jobID, command: job.command, timeoutSeconds: 10, nonce: try #require(job.launchNonce),
+            clock: try #require(job.remoteClock)), timeoutSeconds: 10)
+        #expect(delayed.exitCode == RemoteWorkspaceJobScripts.existingJobExitCode)
+        let observed = try #require(record(host.manager().status(jobID: job.jobID)))
+        #expect(observed.launch == nil && observed.completedAt == cancelled.completedAt)
+        #expect(!FileManager.default.fileExists(atPath: host.home.appendingPathComponent("should-not-start").path))
+    }
+
+    @Test("Issued or unknown local permission defeats forged host cancellation after a lost reply", arguments: [false, true])
+    func forgedHostCancellation(legacyPermit: Bool) throws {
+        let host = try FakeSSHHost(); defer { host.cleanup() }
+        let manager = host.manager()
+        let job = try manager.register(connectionTarget: "pcornet-backup", command: "sleep 30").record
+        _ = try manager.authorizeLaunch(jobID: job.jobID)
+        #expect(throws: (any Error).self) { try manager.authorizeLaunch(jobID: job.jobID) }
+        // Execute the real start script but drop its reply before the manager
+        // sees it, as with an SSH transport failure after remote launch.
+        let reply = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path).run(connection: host.connections[0],
+            script: RemoteWorkspaceJobScripts.start(jobID: job.jobID, command: job.command, timeoutSeconds: 30,
+                nonce: try #require(job.launchNonce), clock: try #require(job.remoteClock)), timeoutSeconds: 20)
+        let launch = try #require(RemoteWorkspaceJobHostSnapshot.parse(reply.stdout)?.evidence)
+        defer { host.kill(launch) }
+        let directory = host.home.appendingPathComponent(job.remoteDirectory)
+        let ticket = directory.appendingPathComponent("launch-ticket.json")
+        var forged = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: ticket)) as? [String: Any])
+        forged["state"] = "cancel"
+        try JSONSerialization.data(withJSONObject: forged).write(to: ticket)
+        for name in ["process.json", "result.json", "stdout.log", "stderr.log"] {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
+        #expect(Darwin.kill(launch.pid, 0) == 0)
+        let forgedReply = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path).run(connection: host.connections[0],
+            script: RemoteWorkspaceJobScripts.probe(jobID: job.jobID, nonce: try #require(job.launchNonce)), timeoutSeconds: 20)
+        let forgedSnapshot = try #require(RemoteWorkspaceJobHostSnapshot.parse(forgedReply.stdout))
+        #expect(forgedSnapshot.launchFence == .cancelledBeforeStart && forgedSnapshot.evidence == nil)
+        #expect(forgedSnapshot.stdoutBytes == nil && forgedSnapshot.stderrBytes == nil)
+        // Persist the cancellation intent, then observe without delivering a
+        // signal that could terminate the live process and race this attack.
+        try manager.store.update(jobID: job.jobID) {
+            $0.requestCancellation(at: Date())
+            if legacyPermit { $0.launchPermit = nil }
+        }
+        let observed = try #require(record(manager.status(jobID: job.jobID)))
+        #expect(observed.launch == nil && observed.launchFence == .cancelledBeforeStart)
+        #expect(observed.status == .unverified && !observed.status.isTerminal)
+        #expect(observed.launchPermit == (legacyPermit ? nil : .issued))
+        #expect(Darwin.kill(launch.pid, 0) == 0)
+        #expect(throws: (any Error).self) { try manager.authorizeLaunch(jobID: job.jobID) }
+    }
+
+    @Test("Reservation hardens existing parent directories and rejects linked parents", arguments: ["permissions", "symlink"])
+    func existingParentProtection(fault: String) throws {
+        let host = try FakeSSHHost(); defer { host.cleanup() }
+        let astra = host.home.appendingPathComponent(".astra")
+        let jobs = astra.appendingPathComponent("jobs")
+        try FileManager.default.createDirectory(at: astra, withIntermediateDirectories: true)
+        if fault == "symlink" {
+            let outside = host.root.appendingPathComponent("outside")
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: jobs, withDestinationURL: outside)
+        } else {
+            try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
+            for directory in [astra, jobs] { try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: directory.path) }
+        }
+        let job = try host.manager().register(connectionTarget: "pcornet-backup", command: "true").record
+        if fault == "permissions" {
+            #expect(job.remoteClock != nil)
+            for directory in [astra, jobs] {
+                let permissions = try #require(FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber)
+                #expect(permissions.intValue & 0o777 == 0o700)
+            }
+        } else { #expect(job.remoteClock == nil) }
+    }
+
+    @Test("A missing legacy job can fence future launches but never attests to past cleanup")
+    func legacyCancellationFence() throws {
+        let host = try FakeSSHHost()
+        defer { host.cleanup() }
+        let manager = host.manager()
+        let transport = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path)
+        let sample = try RemoteWorkspaceJobClock.sample(transport, connection: host.connections[0])
+        var job = RemoteWorkspaceJobRecord(jobID: UUID().uuidString.lowercased(),
+            taskID: manager.configuration.taskID, runID: manager.configuration.runID, connection: host.connections[0],
+            command: "true", createdAt: Date().addingTimeInterval(-120))
+        job.schemaVersion = 2
+        job.remoteClock = .init(bootID: sample.bootID, deadline: sample.monotonic + 10)
+        try manager.store.create(job)
+        #expect(try #require(record(manager.status(jobID: job.jobID))).launchFence == nil)
+        let fenced = try #require(record(manager.cancel(jobID: job.jobID)))
+        #expect(fenced.status == .unverified && fenced.launchFence == .legacySealed && !fenced.cleanupVerified)
+        // The original v2 script requires exclusive mkdir before writing or running a command.
+        #expect(transport.run(connection: host.connections[0],
+            script: "mkdir \"$HOME/\(job.remoteDirectory)\"", timeoutSeconds: 10).exitCode != 0)
+        try host.setUnreachable(true)
+        #expect(try #require(record(manager.status(jobID: job.jobID))).lastObservation?.outcome == .unreachable)
+    }
+
     @Test("An admission that expires during SSH connection never starts its command")
     func expiredRemoteAdmission() async throws {
         let host = try FakeSSHHost()
