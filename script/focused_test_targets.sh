@@ -52,6 +52,12 @@ target_for_path() {
   esac
 
   case "$path" in
+    Astra/Services/Runtime/RuntimeManagedSSHHelperEvidence.swift|Tests/RuntimeManagedSSHHelperEvidenceTests.swift|Astra/Services/Runtime/RuntimeExecutionProcessEvidence.swift|Astra/Services/Runtime/RemoteWorkspaceJobBroker.swift)
+      add_target "RuntimeManagedSSHHelperEvidenceTests|RuntimeProviderCompletionEvidenceTests|RuntimeWorkspaceContinuationTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Runtime/RuntimeNativeSessionOwnership.swift|Tests/RuntimeNativeSessionOwnership*Tests.swift)
       add_target "RuntimeNativeSessionOwnershipTests|AgentRuntimeAsyncWorkTests|AgentProcessResultTests"
       ;;
@@ -85,8 +91,8 @@ target_for_path() {
   esac
 
   case "$path" in
-    Astra/Services/Runtime/RuntimeWorkspaceContinuation*.swift|Astra/Services/Runtime/RuntimeTimeoutRecoveryCheck.swift|Astra/Views/TaskWorkspaceContinuationPrompt.swift|Tests/RuntimeWorkspaceContinuation*Tests.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Tasks/TaskQueue+ResourceAdmission.swift)
-      add_target "RuntimeWorkspaceContinuation.*Tests|RuntimeCompletedUserTurnContinuationTests|RemoteWorkspaceJobPersistenceTests|TaskDecisionDock"
+    Astra/Services/Runtime/RuntimeWorkspaceContinuation*.swift|Astra/Services/Runtime/RuntimeTimeoutRecoveryCheck.swift|Astra/Services/Runtime/RuntimeWorkspaceRemoteJobs.swift|Astra/Services/Runtime/RuntimeHostNoToolReceiptReconciliation.swift|Astra/Views/TaskWorkspaceContinuationPrompt.swift|Tests/RuntimeWorkspaceContinuation*Tests.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Tasks/TaskQueue+ResourceAdmission.swift)
+      add_target "RuntimeWorkspaceContinuation.*Tests|RuntimeCompletedUserTurnContinuationTests|RuntimeHostNoToolReceiptReconciliationTests|RemoteWorkspaceJobPersistenceTests|TaskDecisionDock"
       ;;
   esac
 
@@ -435,6 +441,7 @@ target_for_path() {
       add_target "RemoteWorkspaceJobTests"
       add_target "RemoteWorkspaceJobShimTests"
       add_target "RemoteWorkspaceJobSafetyTests"
+      add_target "RemoteWorkspaceJobBrokerProtocolTests"
       add_target "RemoteWorkspaceJobPersistenceTests"
       add_target "RemoteWorkspaceJobBundlingTests"
       add_target "RemoteWorkspaceJobOutputStateTests"
