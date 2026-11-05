@@ -7,9 +7,9 @@ import Glibc
 
 /// A detached job on an SSH workspace's host, as ASTRA last verified it.
 ///
-/// The host owns whether the job is alive and how it ended (its fixed job
-/// directory under `$HOME/.astra/jobs`); the task folder's record owns which
-/// jobs exist and what ASTRA last saw. See
+/// The host reports observations from `$HOME/.astra/jobs`. ASTRA's protected
+/// local journal owns admitted job identities, dispatch permission, and the
+/// last observation. Command-writable host metadata cannot prove no dispatch. See
 /// docs/specs/2026-10-21-ssh-remote-managed-jobs.md.
 public enum RemoteWorkspaceJobStatus: String, Codable, Equatable, Sendable {
     /// Recorded before the launch was confirmed by the host's evidence.
@@ -102,16 +102,28 @@ public struct RemoteWorkspaceJobObservation: Codable, Equatable, Sendable {
     }
 }
 
-public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 2
+public enum RemoteWorkspaceJobLaunchFence: String, Codable, Sendable {
+    case cancelledBeforeStart = "cancel"
+    /// A v2 launcher now cannot win its mkdir. Earlier activity is unknown.
+    case legacySealed = "legacy_sealed"
+}
 
+/// Authority persisted by the local broker, never supplied by the remote host.
+public enum RemoteWorkspaceJobLaunchPermit: String, Codable, Sendable {
+    case pending, issued, withdrawn
+}
+
+public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion = 4
+
+    /// Missing for older registrations: absence never proves that no launch was issued.
+    public var launchPermit: RemoteWorkspaceJobLaunchPermit? = nil
     public var schemaVersion: Int
     public var jobID: String
     public var taskID: String?
     public var runID: String?
-    /// Display only. Anything that later reaches the host again resolves the
-    /// connection from the workspace by `connectionID`; the record sits in an
-    /// agent-writable folder and is never a source of `ssh` arguments.
+    /// Display and binding metadata. Operations revalidate these against the
+    /// protected execution configuration; labels never supply `ssh` arguments.
     public var connectionID: String
     public var connectionName: String
     public var connectionTarget: String
@@ -136,7 +148,22 @@ public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
     public var connectionArguments: [String]?
     public var cancellationRequestedAt: Date?
     public var remoteClock: RemoteWorkspaceJobClock.Reference?
+    public var launchFence: RemoteWorkspaceJobLaunchFence?
     public var pendingTransitions: [RemoteWorkspaceJobTransition]?
+
+    /// Must run under the local store lock so permission and cancellation have
+    /// exactly one winner, including cancellation delivered after an app restart.
+    public mutating func requestCancellation(at date: Date) {
+        if cancellationRequestedAt == nil { cancellationRequestedAt = date }
+        if launchPermit == .pending { launchPermit = .withdrawn }
+    }
+
+    var legacyCancellationBootID: String? {
+        guard schemaVersion == 2, cancellationRequestedAt != nil, !status.isTerminal,
+              launch == nil, exitCode == nil, stdoutBytes == nil, stderrBytes == nil,
+              remoteClock?.clockDomain == RemoteWorkspaceJobClock.domain else { return nil }
+        return remoteClock?.bootID
+    }
 
     /// POSIX process groups cannot contain tools which detach or start work on
     /// another host. Observations never grant the execution owner's stop proof.
@@ -191,6 +218,7 @@ public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
                 lastOutputAt = latest
             }
             status = derived.status
+            launchFence = derived.launchFence
             exitCode = derived.exitCode
             completedAt = derived.completedAt ?? (derived.status.isTerminal ? at : nil)
             message = derived.message
@@ -225,6 +253,7 @@ public struct RemoteWorkspaceJobDerivedState: Equatable, Sendable {
     public var exitCode: Int32?
     public var completedAt: Date?
     public var message: String?
+    public var launchFence: RemoteWorkspaceJobLaunchFence?
 
     public init(status: RemoteWorkspaceJobStatus, exitCode: Int32? = nil, completedAt: Date? = nil, message: String? = nil) {
         self.status = status
@@ -238,6 +267,8 @@ public struct RemoteWorkspaceJobDerivedState: Equatable, Sendable {
 public struct RemoteWorkspaceJobHostSnapshot: Equatable, Sendable {
     public var jobID: String? = nil
     public var nonce: String? = nil
+    public var launchFence: RemoteWorkspaceJobLaunchFence? = nil
+    public var fencedAt: Date? = nil
     public var directoryPresent: Bool
     public var hostBootID: String?
     public var evidence: RemoteWorkspaceJobLaunchEvidence?
@@ -322,6 +353,14 @@ public struct RemoteWorkspaceJobHostSnapshot: Equatable, Sendable {
         } else if fields["result"] != nil {
             return nil
         }
+        if let fence = fields["launch_fence"] {
+            guard let value = RemoteWorkspaceJobLaunchFence(rawValue: fence),
+                  let date = fields["fenced_at"].flatMap(isoDate), snapshot.directoryPresent,
+                  snapshot.evidence == nil, snapshot.resultStatus == nil,
+                  !snapshot.pidAlive, !snapshot.supervisorAlive else { return nil }
+            snapshot.launchFence = value
+            snapshot.fencedAt = date
+        }
         return snapshot
     }
 
@@ -350,6 +389,33 @@ public enum RemoteWorkspaceJobStatusDerivation {
         now: Date
     ) -> RemoteWorkspaceJobDerivedState {
         let withinLaunchGrace = now.timeIntervalSince(record.createdAt) < launchGraceSeconds
+        if let fence = snapshot.launchFence {
+            guard record.cancellationRequestedAt != nil, record.launch == nil,
+                  record.exitCode == nil, record.stdoutBytes == nil, record.stderrBytes == nil,
+                  snapshot.jobID == record.jobID, snapshot.nonce == record.launchNonce,
+                  let clock = record.remoteClock, clock.clockDomain == RemoteWorkspaceJobClock.domain,
+                  snapshot.hostBootID == clock.bootID, snapshot.directoryPresent,
+                  snapshot.evidence == nil, !snapshot.pidAlive, !snapshot.supervisorAlive,
+                  snapshot.resultStatus == nil, snapshot.stdoutBytes == nil, snapshot.stderrBytes == nil,
+                  let fencedAt = snapshot.fencedAt else {
+                return unverified("The SSH cancellation receipt does not match the original launch.")
+            }
+            var result: RemoteWorkspaceJobDerivedState
+            switch fence {
+            case .cancelledBeforeStart where [3, RemoteWorkspaceJobRecord.currentSchemaVersion].contains(record.schemaVersion):
+                if record.schemaVersion == RemoteWorkspaceJobRecord.currentSchemaVersion && record.launchPermit == .withdrawn {
+                    result = .init(status: .cancelled, completedAt: fencedAt, message: "ASTRA withdrew this job before granting permission to launch.")
+                } else {
+                    result = unverified("The host reports a cancelled launch, but ASTRA may have already issued permission to start. Earlier remote effects remain unverified.")
+                }
+            case .legacySealed where record.legacyCancellationBootID != nil:
+                result = unverified("The host blocked a delayed launch and found no matching supervisor. This older job has no execution result.")
+            default:
+                return unverified("The SSH cancellation receipt belongs to a different launch protocol.")
+            }
+            result.launchFence = fence
+            return result
+        }
         guard snapshot.directoryPresent else {
             guard record.launch == nil else {
                 return unverified("The job directory is missing. Earlier work may still be running; its reservation is preserved.")

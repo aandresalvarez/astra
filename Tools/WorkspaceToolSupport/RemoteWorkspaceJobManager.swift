@@ -321,6 +321,7 @@ public final class RemoteWorkspaceJobManager {
             timeoutSeconds: remaining.map { min(timeoutSeconds ?? $0, $0) } ?? timeoutSeconds,
             createdAt: now()
         )
+        record.launchPermit = .pending
         record.ownerID = configuration.ownerBinding?.ownerID
         record.executionID = configuration.ownerBinding?.executionID
         let intentParts = [configuration.taskID ?? "", configuration.runID ?? "",
@@ -332,17 +333,33 @@ public final class RemoteWorkspaceJobManager {
         return try store.register(record) { admitted in
             try configuration.ownerBinding?.validateLaunch()
             do {
-                let sample = try RemoteWorkspaceJobClock.sample(transport, connection: connection)
+                let sample = try RemoteWorkspaceJobClock.sample(transport, connection: connection, registering: admitted)
                 let wallRemaining = configuration.launchDeadline?.timeIntervalSince(now()) ?? Double(Self.maximumTimeoutSeconds)
                 let steadyRemaining = configuration.launchMonotonicDeadline.map { $0 - ProcessInfo.processInfo.systemUptime } ?? wallRemaining
                 let allowance = min(Double(timeoutSeconds ?? Self.maximumTimeoutSeconds), wallRemaining, steadyRemaining)
                 guard allowance > 0 else { throw RemoteWorkspaceJobError.invalidArgument("The original execution time limit expired during SSH connection. No command was launched.") }
                 try configuration.ownerBinding?.validateLaunch()
                 admitted.remoteClock = .init(bootID: sample.bootID, deadline: sample.monotonic + allowance)
+            } catch let error as RemoteWorkspaceJobClock.ReservationError {
+                admitted.markLaunchRefused(at: now(), message: error.localizedDescription)
             } catch {
                 admitted.message = error.localizedDescription
                 admitted.lastObservation = .init(at: now(), outcome: .unreachable, error: error.localizedDescription)
             }
+        }
+    }
+
+    /// The local journal arbitrates cancel versus dispatch before the helper can
+    /// send a start script. Issued permission is irreversible, including lost replies.
+    public func authorizeLaunch(jobID: String) throws -> RemoteWorkspaceJobRecord {
+        try store.update(jobID: jobID) { record in
+            _ = try connection(forRecord: record)
+            try configuration.ownerBinding?.validateLaunch()
+            guard record.launchPermit == .pending, record.cancellationRequestedAt == nil,
+                  record.remoteClock != nil else {
+                throw RemoteWorkspaceJobError.invalidArgument("This job no longer has unused permission to launch. Check its recorded status; do not repeat the command.")
+            }
+            record.launchPermit = .issued
         }
     }
 
@@ -367,13 +384,18 @@ public final class RemoteWorkspaceJobManager {
         guard let remoteClock = record.remoteClock else {
             return .failure(message: record.message ?? "Remote clock unavailable; no command was launched.", record: record)
         }
+        do { _ = try authorizeLaunch(jobID: jobID) }
+        catch { return .failure(message: error.localizedDescription, record: try? store.load(jobID: jobID)) }
         let script = RemoteWorkspaceJobScripts.start(jobID: jobID, command: command, timeoutSeconds: record.timeoutSeconds,
             nonce: record.launchNonce!, clock: remoteClock)
         let observedAt = now()
         let result = transport.run(connection: connection, script: script, timeoutSeconds: Self.startTransportTimeout)
 
-        if !result.isTransportFailure,
-           [RemoteWorkspaceJobScripts.existingJobExitCode, RemoteWorkspaceJobScripts.unwritableRootExitCode].contains(result.exitCode) {
+        if !result.isTransportFailure, result.exitCode == RemoteWorkspaceJobScripts.existingJobExitCode {
+            // Cancellation or another launcher won. Never overwrite its state.
+            return status(jobID: jobID)
+        }
+        if !result.isTransportFailure, result.exitCode == RemoteWorkspaceJobScripts.unwritableRootExitCode {
             let reason = Self.scriptError(in: result.stdout) ?? Self.oneLine(result.stderr)
             let updated = try? store.update(jobID: jobID) {
                 $0.markLaunchRefused(at: observedAt, message: "The host refused the launch: \(reason)")
@@ -418,7 +440,8 @@ public final class RemoteWorkspaceJobManager {
             connection: connection,
             script: record.cancellationRequestedAt == nil
                 ? RemoteWorkspaceJobScripts.probe(jobID: record.jobID, nonce: record.launchNonce!)
-                : RemoteWorkspaceJobScripts.cancel(jobID: record.jobID, nonce: record.launchNonce!),
+                : RemoteWorkspaceJobScripts.cancel(jobID: record.jobID, nonce: record.launchNonce!,
+                    legacyBootID: record.legacyCancellationBootID),
             timeoutSeconds: Self.probeTransportTimeout
         )
         do {
@@ -432,7 +455,10 @@ public final class RemoteWorkspaceJobManager {
         do {
             // Persist intent before contacting SSH; a disconnected host or an
             // ASTRA restart cannot lose a requested cancellation.
-            try store.update(jobID: jobID) { if $0.cancellationRequestedAt == nil { $0.cancellationRequestedAt = now() } }
+            try store.update(jobID: jobID) {
+                _ = try connection(forRecord: $0)
+                $0.requestCancellation(at: now())
+            }
             return status(jobID: jobID)
         } catch { return .failure(message: error.localizedDescription, record: nil) }
     }

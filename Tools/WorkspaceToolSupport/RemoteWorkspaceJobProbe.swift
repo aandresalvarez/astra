@@ -2,13 +2,20 @@ import Foundation
 
 enum RemoteWorkspaceJobProbe {
     static let source = #"""
-import json, os, pathlib, stat, subprocess, sys, uuid
-job, nonce, operation, stream, count = sys.argv[1:]
+import base64, subprocess
+job, nonce, operation, stream, count, legacy_boot = sys.argv[1:]
 if str(uuid.UUID(job)) != job or str(uuid.UUID(nonce)) != nonce:
     raise ValueError('invalid job identity')
-root = pathlib.Path.home() / '.astra' / 'jobs' / job
-for path in (root.parent.parent, root.parent, root):
-    if path.is_symlink(): raise ValueError('unsafe job directory')
+root = job_root(job)
+try:
+    boot = pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+except OSError:
+    boot = subprocess.check_output(['sysctl', '-n', 'kern.boottime'], text=True).strip()
+if not boot: raise ValueError('host identity unavailable')
+if operation == 'cancel' and legacy_boot and base64.b64decode(legacy_boot).decode() == boot and not root.exists():
+    # v2 cannot start after we win mkdir. This cannot prove past execution.
+    try: reserve(root, nonce, 'legacy_sealed')
+    except FileExistsError: pass
 present = root.is_dir()
 def read(name):
     path = root / name
@@ -21,6 +28,7 @@ if present:
     if identity.is_symlink() or identity.read_text() != nonce:
         raise ValueError('job identity mismatch')
 if operation == 'cancel' and present:
+    decide(root, nonce, 'cancel')
     temporary = root / ('cancel-request.tmp-' + str(os.getpid()))
     with temporary.open('x') as output:
         json.dump({'nonce': nonce}, output)
@@ -38,11 +46,6 @@ if operation == 'tail':
                 data = log.read(65536).decode('utf-8', errors='replace')
             print('\n'.join(data.splitlines()[-min(500, int(count)):]))
     sys.exit(0)
-try:
-    boot = pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-except OSError:
-    boot = subprocess.check_output(['sysctl', '-n', 'kern.boottime'], text=True).strip()
-if not boot: raise ValueError('host identity unavailable')
 def alive(pid):
     if not isinstance(pid, int) or pid <= 1: return (False, '')
     probe = subprocess.run(['ps', '-o', 'stat=', '-o', 'lstart=', '-p', str(pid)], capture_output=True, text=True)
@@ -64,6 +67,17 @@ fields = {'astra_probe': 2, 'job_id': job, 'nonce': nonce, 'host_boot_id': boot,
           'supervisor_start_marker': supervisor_marker}
 if evidence: fields.update({'evidence.' + key: value for key, value in evidence.items()})
 if result: fields['result'] = json.dumps(result)
+ticket = read_ticket(root, nonce) if present else None
+if ticket and ticket['state'] in ('cancel', 'legacy_sealed') and evidence is None and result is None:
+    if ticket['state'] == 'legacy_sealed':
+        # A deleted v2 directory may have had a live supervisor. An observed
+        # fence is eligible only for explicit review, never automatic cleanup.
+        processes = subprocess.check_output(['ps', '-axww', '-o', 'command='], text=True)
+        if any(str(root) in row and nonce in row for row in processes.splitlines()):
+            ticket = None
+    if ticket:
+        fields['launch_fence'] = ticket['state']
+        fields['fenced_at'] = ticket['at']
 if present:
     for name in ('stdout', 'stderr'):
         path = root / (name + '.log')

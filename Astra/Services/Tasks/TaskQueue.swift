@@ -40,6 +40,10 @@ final class TaskQueue {
 
     private var dispatchedRequestIDs: Set<UUID> = []
     private var storeSession: TaskQueueStoreSession?
+    let remoteAdmissionRefresh: TaskQueueRemoteAdmissionRefresh
+    #if DEBUG
+    var observedDispatchWakeCount = 0
+    #endif
     let wedgedLeaseReclaimer: TaskWedgedWorkerLeaseReclaimer
     @MainActor
     init(
@@ -57,6 +61,7 @@ final class TaskQueue {
         self.sandboxEnforcementProvider = sandboxEnforcementProvider
         self.workers = (0..<poolSize).map { _ in workerFactory() }
         self.requestTaskRegistry = ExecutionRequestTaskRegistry()
+        self.remoteAdmissionRefresh = TaskQueueRemoteAdmissionRefresh()
         self.wedgedLeaseReclaimer = TaskWedgedWorkerLeaseReclaimer(grace: wedgedWorkerReleaseGrace)
     }
     /// Number of currently busy workers
@@ -169,7 +174,23 @@ final class TaskQueue {
             return storeSession
         }
         refreshResourceOwnership(in: modelContext)
-        let session = TaskQueueStoreSession(modelContext: modelContext)
+        let session = TaskQueueStoreSession(modelContext: modelContext) { [weak self, weak modelContext] in
+            guard let self, let modelContext, let session = self.storeSession, session.matches(modelContext),
+                  !self.isStopping else { return }
+            let generation = self.turnAdmissionGeneration
+            self.remoteAdmissionRefresh.schedule(session: session, registry: self.requestTaskRegistry,
+                isCurrent: { [weak self] in
+                    self?.storeSession === $0 && self?.isStopping == false && self?.turnAdmissionGeneration == generation
+                }, refresh: { [weak self] context in
+                    guard let self, let session = self.storeSession else { return }
+                    self.refreshResourceOwnership(in: context)
+                    self.wakeAllTurnAdmissionWaiters()
+                    self.wakeDispatchWaiters()
+                    if !self.hasProcessingLoop, (try? TaskTurnRequestRepository.allActiveRequests(in: context))?.contains(where: { $0.state == .waitingForResource }) == true {
+                        _ = self.startProcessing(storeSession: session)
+                    }
+                })
+        }
         storeSession = session
         return session
     }

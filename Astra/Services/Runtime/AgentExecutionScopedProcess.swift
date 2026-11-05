@@ -72,12 +72,13 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     /// Captured at waitpid, before a late cancellation can change stopRequested.
     var naturalSuccessfulExit: Bool { lock.withLock { reapedNaturallyWithSuccess } }
 
-    func stopProof(executionID: UUID, toolsStopped: Bool, remoteWorkExcluded: Bool) -> RuntimeExecutionStopProof? {
+    func stopProof(executionID: UUID, toolsStopped: Bool, remoteWorkExcluded: Bool, managedSSHOnly: Bool = false) -> RuntimeExecutionStopProof? {
         lock.withLock {
             guard let identity = launchIdentity else { return nil }
             let empty = processGroupID > 0 && kill(-processGroupID, 0) == -1 && errno == ESRCH
             return .init(executionID: executionID, process: identity, reaped: reapedSuccessfully && !running,
-                processGroupEmpty: empty, toolsStopped: toolsStopped, remoteWorkExcluded: remoteWorkExcluded, capturedAt: Date())
+                processGroupEmpty: empty, toolsStopped: toolsStopped, remoteWorkExcluded: remoteWorkExcluded,
+                capturedAt: Date(), managedSSHOnly: managedSSHOnly ? true : nil)
         }
     }
 

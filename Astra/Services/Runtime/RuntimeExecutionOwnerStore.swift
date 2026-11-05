@@ -50,8 +50,22 @@ final class RuntimeExecutionOwnerStore {
             // Publish the small header last. A crash leaves only unreachable
             // entries, never a partial authorization. Each entry retains the
             // journal's size bound without limiting the number of predecessors.
-            for source in authorization.sources.reversed() {
-                let entry = WorkspaceContinuationEntry(source: source, next: next)
+            for original in authorization.sources.reversed() {
+                var source = original
+                var jobHead: UUID?
+                if let jobs = source.reviewedSSHJobs, !jobs.isEmpty {
+                    // Every identity is retained. Small pages also bound a single
+                    // protected read when one predecessor has thousands of jobs.
+                    for offset in stride(from: ((jobs.count - 1) / 32) * 32, through: 0, by: -32) {
+                        let page = WorkspaceContinuationJobPage(jobs: Array(jobs[offset..<min(offset + 32, jobs.count)]), next: jobHead)
+                        let id = UUID()
+                        try save(page, at: entries.appendingPathComponent(id.uuidString + ".handoffjobs"))
+                        jobHead = id
+                    }
+                    source.reviewedSSHJobs = nil
+                }
+                let entry = WorkspaceContinuationEntry(source: source, next: next,
+                    reviewedJobCount: jobHead == nil ? nil : original.reviewedSSHJobs?.count, reviewedJobHead: jobHead)
                 guard try JSONEncoder().encode(entry).count <= 32_768 else { throw Failure.unreadable }
                 let id = UUID()
                 try save(entry, at: entries.appendingPathComponent(id.uuidString + ".handoffentry"))
@@ -60,11 +74,13 @@ final class RuntimeExecutionOwnerStore {
             let header = WorkspaceContinuationHeader(taskID: authorization.taskID, taskOwnerID: authorization.taskOwnerID,
                 requestID: authorization.requestID, sourceEventID: authorization.sourceEventID,
                 approvedAt: authorization.approvedAt, count: authorization.sources.count, head: next!,
-                workspaceScope: authorization.workspaceScope, inheritedAuthorizationID: authorization.inheritedAuthorizationID)
+                workspaceScope: authorization.workspaceScope, inheritedAuthorizationID: authorization.inheritedAuthorizationID,
+                beneficiaryReceiptDigest: authorization.beneficiaryReceiptDigest)
             try save(header, at: directory.appendingPathComponent(authorization.requestID.uuidString + ".handoff"))
         }
         private func save<T: Encodable>(_ record: T, at recordURL: URL) throws {
             let data = try JSONEncoder().encode(record)
+            guard data.count <= 32_768 else { throw Failure.unreadable }
             let temporary = recordURL.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".tmp")
             let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
             guard fd >= 0 else { throw Failure.writeFailed }
@@ -75,6 +91,27 @@ final class RuntimeExecutionOwnerStore {
             guard parent >= 0 else { throw Failure.writeFailed }
             defer { close(parent) }
             guard fsync(parent) == 0 else { throw Failure.writeFailed }
+        }
+
+        func saveReconciliation(from original: RuntimeExecutionOwnerRecord, to reconciled: RuntimeExecutionOwnerRecord) throws -> RuntimeExecutionOwnerRecord {
+            guard try read() == original, original.taskID == reconciled.taskID,
+                  original.taskOwnerID == reconciled.taskOwnerID, original.ownerID == reconciled.ownerID,
+                  original.executionID == reconciled.executionID, original.runID == reconciled.runID,
+                  reconciled.resourcesReleased == true, reconciled.canReplace else { throw Failure.unreadable }
+            let directory = try RuntimeExecutionOwnerStore.reconciliations(root: recordURL.deletingLastPathComponent(), create: true)
+            let url = directory.appendingPathComponent(original.executionID.uuidString + ".release")
+            let entry = ExecutionReconciliation(originalDigest: try RuntimeExecutionOwnerStore.receiptDigest(original), reconciled: reconciled)
+            var published = reconciled
+            if let existing: ExecutionReconciliation = try RuntimeExecutionOwnerStore.readValue(url) {
+                var retry = entry.reconciled
+                retry.updatedAt = existing.reconciled.updatedAt
+                guard existing.originalDigest == entry.originalDigest, existing.reconciled == retry else { throw Failure.unreadable }
+                published = existing.reconciled
+            } else {
+                try save(entry, at: url)
+            }
+            try save(published)
+            return published
         }
 
         /// Attribute in place: remote helpers may already hold this receipt
@@ -143,7 +180,7 @@ final class RuntimeExecutionOwnerStore {
             // not rewrite or invalidate that immutable, still-unattributed copy.
             var attributed = existing
             if attributed.taskOwnerID == nil { attributed.taskOwnerID = record.taskOwnerID }
-            guard attributed == record else { throw Failure.unreadable }
+            guard try attributed == record || reconciledRecord(attributed) == record else { throw Failure.unreadable }
             return
         }
         let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
@@ -167,7 +204,9 @@ final class RuntimeExecutionOwnerStore {
                   previous.taskID == record.taskID, previous.ownerID == record.ownerID,
                   previous.taskOwnerID == nil || previous.taskOwnerID == record.taskOwnerID,
                   previous.executionID == id else { throw Failure.unreadable }
-            result.append(previous); head = previous.retainedExecutionHead
+            let effective = try reconciledRecord(previous)
+            guard effective.taskOwnerID == nil || effective.taskOwnerID == record.taskOwnerID else { throw Failure.unreadable }
+            result.append(effective); head = previous.retainedExecutionHead
         }
         return result
     }
@@ -204,6 +243,50 @@ final class RuntimeExecutionOwnerStore {
         let digest = SHA256.hash(data: try encoder.encode(owner)).map { String(format: "%02x", $0) }.joined()
         return root.appendingPathComponent(id.uuidString + "-" + digest + ".json")
     }
+    private struct ExecutionReconciliation: Codable, Equatable {
+        let originalDigest: String
+        let reconciled: RuntimeExecutionOwnerRecord
+    }
+
+    static func receiptDigest(_ record: RuntimeExecutionOwnerRecord) throws -> String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return SHA256.hash(data: try encoder.encode(record)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Project a verified release without rewriting the immutable historical receipt.
+    private func reconciledRecord(_ original: RuntimeExecutionOwnerRecord) throws -> RuntimeExecutionOwnerRecord {
+        let directory = root.appendingPathComponent("reconciliations")
+        guard FileManager.default.fileExists(atPath: directory.path) else { return original }
+        _ = try Self.reconciliations(root: root, create: false)
+        guard let entry: ExecutionReconciliation = try Self.readValue(directory.appendingPathComponent(original.executionID.uuidString + ".release")) else { return original }
+        var repaired = entry.reconciled
+        var beforeAttribution = original
+        if repaired.taskOwnerID == nil {
+            beforeAttribution.taskOwnerID = nil
+            repaired.taskOwnerID = original.taskOwnerID
+        } else if original.taskOwnerID == nil {
+            beforeAttribution.taskOwnerID = repaired.taskOwnerID
+        }
+        // The first archive can be made after release, or already contain the
+        // pre-release receipt. Both project identically without rewriting either.
+        if repaired == original { return original }
+        guard repaired.taskID == original.taskID,
+              repaired.taskOwnerID == (original.taskOwnerID ?? entry.reconciled.taskOwnerID),
+              repaired.ownerID == original.ownerID, repaired.executionID == original.executionID,
+              repaired.runID == original.runID, repaired.resourcesReleased == true, repaired.canReplace,
+              try entry.originalDigest == Self.receiptDigest(beforeAttribution) else { throw Failure.unreadable }
+        return repaired
+    }
+
+    private static func reconciliations(root: URL, create: Bool) throws -> URL {
+        let directory = root.appendingPathComponent("reconciliations")
+        if create { guard mkdir(directory.path, 0o700) == 0 || errno == EEXIST else { throw Failure.unsafePath } }
+        var info = stat()
+        guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+              info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { throw Failure.unsafePath }
+        return directory
+    }
+
     private struct WorkspaceContinuationHeader: Codable {
         let taskID: UUID
         let taskOwnerID: PersistentIdentifier
@@ -214,9 +297,16 @@ final class RuntimeExecutionOwnerStore {
         let head: UUID
         var workspaceScope: RuntimeWorkspaceContinuationAuthorization.WorkspaceScope? = nil
         var inheritedAuthorizationID: UUID? = nil
+        var beneficiaryReceiptDigest: String? = nil
     }
     private struct WorkspaceContinuationEntry: Codable {
         let source: RuntimeWorkspaceContinuationAuthorization.Source
+        let next: UUID?
+        var reviewedJobCount: Int? = nil
+        var reviewedJobHead: UUID? = nil
+    }
+    private struct WorkspaceContinuationJobPage: Codable {
+        let jobs: [ReviewedWorkspaceSSHJob]
         let next: UUID?
     }
 
@@ -241,12 +331,28 @@ final class RuntimeExecutionOwnerStore {
         while let id = next {
             guard sources.count < header.count, visited.insert(id).inserted,
                   let entry: WorkspaceContinuationEntry = try Self.readValue(entries.appendingPathComponent(id.uuidString + ".handoffentry")) else { throw Failure.unreadable }
-            sources.append(entry.source); next = entry.next
+            var source = entry.source
+            if let count = entry.reviewedJobCount {
+                guard count > 0, entry.reviewedJobHead != nil, source.reviewedSSHJobs == nil else { throw Failure.unreadable }
+                var jobs: [ReviewedWorkspaceSSHJob] = []
+                var visitedPages = Set<UUID>()
+                var jobNext = entry.reviewedJobHead
+                while let pageID = jobNext {
+                    guard jobs.count < count, visitedPages.insert(pageID).inserted,
+                          let page: WorkspaceContinuationJobPage = try Self.readValue(entries.appendingPathComponent(pageID.uuidString + ".handoffjobs")),
+                          !page.jobs.isEmpty, page.jobs.count <= count - jobs.count else { throw Failure.unreadable }
+                    jobs += page.jobs; jobNext = page.next
+                }
+                guard jobs.count == count,
+                      Set(jobs.map { [$0.executionID, $0.jobID, $0.nonce] }).count == count else { throw Failure.unreadable }
+                source.reviewedSSHJobs = jobs
+            } else if entry.reviewedJobHead != nil { throw Failure.unreadable }
+            sources.append(source); next = entry.next
         }
         guard sources.count == header.count else { throw Failure.unreadable }
         return .init(taskID: header.taskID, taskOwnerID: header.taskOwnerID, requestID: header.requestID,
             sourceEventID: header.sourceEventID, approvedAt: header.approvedAt, sources: sources,
-            workspaceScope: header.workspaceScope, inheritedAuthorizationID: header.inheritedAuthorizationID)
+            beneficiaryReceiptDigest: header.beneficiaryReceiptDigest, workspaceScope: header.workspaceScope, inheritedAuthorizationID: header.inheritedAuthorizationID)
     }
 
     func workspaceAuthorizations(workspaceOwnerID: PersistentIdentifier) throws -> [RuntimeWorkspaceContinuationAuthorization] {

@@ -221,7 +221,7 @@ enum HostControlCLIRelayPolicy {
         case double
     }
 
-    private static func shellTokens(_ command: String) -> [String]? {
+    static func shellTokens(_ command: String) -> [String]? {
         // A line break separates shell commands. Reject it before the
         // whitespace tokenizer could turn two commands into one valid call.
         guard !command.unicodeScalars.contains(where: { $0.value == 10 || $0.value == 13 }) else { return nil }

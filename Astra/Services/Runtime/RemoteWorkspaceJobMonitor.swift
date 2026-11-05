@@ -46,7 +46,7 @@ final class RemoteWorkspaceJobMonitor {
             let cancellation = try RuntimeExecutionOwner.existing(task: task, context: context)?.cancellationRequested == true
             if cancellation {
                 for job in before where !job.status.isTerminal && job.cancellationRequestedAt == nil {
-                    try store.update(jobID: job.jobID) { $0.cancellationRequestedAt = Date() }
+                    try store.update(jobID: job.jobID) { $0.requestCancellation(at: Date()) }
                 }
             }
             // Each task has an independent observation worker. A disconnected
@@ -90,7 +90,7 @@ final class RemoteWorkspaceJobMonitor {
             let delivery = try RemoteWorkspaceJobCancellationDelivery.persist(configuration: config, task: task, cancelExecution: jobID == nil)
             for job in jobs {
                 guard job.cancellationRequestedAt == nil else { continue }
-                let saved = try store.update(jobID: job.jobID) { $0.cancellationRequestedAt = Date() }
+                let saved = try store.update(jobID: job.jobID) { $0.requestCancellation(at: Date()) }
                 try RemoteWorkspaceJobEventReconciler.reconcile(saved, task: task, context: context, store: store)
             }
             presentations[key(task: task, context: context)] = .init(jobs: try store.records())
