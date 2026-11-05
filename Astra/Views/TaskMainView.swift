@@ -4864,9 +4864,8 @@ struct TaskMainView: View {
             "message_length": String(msg.count)
         ])
         if usesGoalMode {
-            if sendPlanningMessage(msg, attachmentPaths: attachmentPaths, traceID: traceID) {
-                (composerDraft.text, attachedFiles) = ("", [])
-            }
+            guard sendPlanningMessage(msg, attachmentPaths: attachmentPaths, traceID: traceID) else { return }
+            (composerDraft.text, attachedFiles) = ("", [])
             return
         }
         if task.status == .queued {
