@@ -42,14 +42,27 @@ enum RuntimeProviderResourceRegistry {
         var errorDescription: String? { message }
     }
 
-    /// Only a refusal before launch can safely replay the undelivered message.
+    /// Safe replacement permits a provider switch even when a legacy receipt
+    /// cannot prove that the saved instruction never reached a provider.
+    @MainActor static func retryableBlockedRun(task: AgentTask, context: ModelContext) -> TaskRun? {
+        retryableBlockedExecution(task: task, context: context)?.run
+    }
+
+    /// Replaying the saved message needs the stronger, explicit no-launch proof.
     @MainActor static func unstartedRun(task: AgentTask, context: ModelContext) -> TaskRun? {
+        guard let candidate = retryableBlockedExecution(task: task, context: context),
+              candidate.receipt.provesNoProviderLaunch(for: candidate.run) else { return nil }
+        return candidate.run
+    }
+
+    @MainActor private static func retryableBlockedExecution(task: AgentTask, context: ModelContext)
+        -> (run: TaskRun, receipt: RuntimeExecutionOwnerRecord)? {
         guard let run = task.runs.max(by: { $0.startedAt < $1.startedAt }), run.status == .failed,
               run.stopReason == RuntimeProviderResourceRegistry.Block.stopReason,
               let receipt = try? RuntimeTaskOwnerJournal.read(task: task, context: context),
-              receipt.taskOwnerID == task.persistentModelID, receipt.canReplace,
-              receipt.provesNoProviderLaunch(for: run), receipt.cancellationRequested != true else { return nil }
-        return run
+              receipt.taskOwnerID == task.persistentModelID, receipt.runID == run.id, receipt.runtime == run.runtimeID,
+              receipt.canReplace, receipt.cancellationRequested != true else { return nil }
+        return (run, receipt)
     }
 
     private static let lock = NSLock()

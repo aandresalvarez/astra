@@ -85,7 +85,9 @@ final class RuntimeExecutionOwnerStore {
             guard try RuntimeExecutionOwnerStore.read(legacyURL) == legacy else { throw Failure.unreadable }
             var bound = legacy
             bound.taskOwnerID = taskOwnerID
-            try save(bound, at: legacyURL)
+            // Reading an already-attributed legacy receipt must preserve its
+            // change time: recovery uses that as evidence it predates boot.
+            if bound != legacy { try save(bound, at: legacyURL) }
             recordURL = legacyURL
         }
 

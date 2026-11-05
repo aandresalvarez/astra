@@ -227,6 +227,23 @@ struct TaskDecisionDockContextBuilderTests {
         ]))
     }
 
+    @Test("Recovery context routes timeout checks and alternate-provider retries separately", arguments: [true, false])
+    func recoveryContextPreservesActions(timeout: Bool) throws {
+        var value = input(status: .pendingUser)
+        let runID = UUID()
+        value.recoveryBlockMessage = "The previous execution requires a recovery check."
+        if timeout {
+            value.timeoutRecoveryRunID = runID
+        } else {
+            value.providerRecoveryAlternative = .init(runtime: .codexCLI, blockedRunID: runID)
+        }
+        let dock = try #require(TaskDecisionDockContextBuilder.build(value))
+        #expect(dock.primaryAction?.kind == (timeout ? .checkTimedOutRun : .retry))
+        #expect(dock.primaryAction?.payload == (timeout ? runID.uuidString : nil))
+        #expect(dock.secondaryActions.map(\.kind) == (timeout ? [] : [.switchRuntime]))
+        #expect(dock.secondaryActions.first?.providerRetryRunID == (timeout ? nil : runID))
+    }
+
     @Test("extra detail builder preserves runtime pending approval and routine states")
     func extraDetailBuilderPreservesRuntimePendingApprovalAndRoutineStates() {
         let details = TaskDecisionDockContextBuilder.extraDetails(TaskDecisionDockContextBuilder.ExtraDetailsInput(

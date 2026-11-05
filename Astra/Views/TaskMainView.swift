@@ -3533,12 +3533,15 @@ struct TaskMainView: View {
     private var taskDecisionDockPresentation: TaskDecisionDockPresentation? {
         let permission = runtimePermissionState
         let recoveryBlockMessage = RuntimeRecoveryPresentation.blockedMessage(task: task, context: modelContext)
+        let timeoutRecoveryRunID = latestRun?.stopReason == TaskRunStopReason.providerRunWallClockExceeded.rawValue
+            ? latestRun?.id : nil
         // Preserve a live permission decision, but keep Cancel request
         // reachable when an older disconnected execution blocks this message.
         if let waitingPresentation = RuntimeRecoveryPresentation.queuedRequestDock(
             taskTurnWaitingDockPresentation,
             hasOpenApprovalRequest: permission.hasOpenApprovalRequest,
-            blockedMessage: recoveryBlockMessage
+            blockedMessage: recoveryBlockMessage,
+            timeoutRecoveryRunID: timeoutRecoveryRunID
         ) {
             return waitingPresentation
         }
@@ -3583,21 +3586,15 @@ struct TaskMainView: View {
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails,
             recoveryBlockMessage: recoveryBlockMessage,
+            timeoutRecoveryRunID: timeoutRecoveryRunID,
             providerRecoveryAlternative: recoveryBlockMessage == nil ? nil : providerRecoveryAlternative
         ))
     }
 
     private var providerRecoveryAlternative: TaskDecisionDockPresentation.ProviderRecoveryAlternative? {
-        guard latestRun?.stopReason == RuntimeProviderResourceRegistry.Block.stopReason,
-              let run = RuntimeProviderResourceRegistry.unstartedRun(task: task, context: modelContext),
-              run.runtimeID == AgentRuntimeID.antigravityCLI.rawValue else { return nil }
-        let ready = AgentRuntimeAdapterRegistry.runtimeIDs.filter { $0 != .antigravityCLI && runtimeReadinessStates[$0] == .ready }
-        let previous = currentThreadSnapshot.sortedRuns.reversed().lazy
-            .filter { $0.status == .completed }
-            .compactMap { $0.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)) }
-            .first(where: ready.contains)
-        guard let runtime = previous ?? ready.first else { return nil }
-        return .init(runtime: runtime, blockedRunID: run.id)
+        TaskComposerCoordinator.providerRecoveryAlternative(
+            for: task, context: modelContext, latestRun: latestRun,
+            recentRuns: currentThreadSnapshot.sortedRuns, readinessStates: runtimeReadinessStates)
     }
 
     /// Cached: `body` resolves the decision dock once per pass, including the
@@ -3944,6 +3941,9 @@ struct TaskMainView: View {
             onRunTask?(task)
         case .retry:
             onRetryTask?(task)
+        case .checkTimedOutRun:
+            guard let runID = action.payload.flatMap(UUID.init) else { return }
+            taskQueue?.recheckTimedOutRun(runID, task: task, context: modelContext)
         case .resume:
             onResumeTask?(task)
         case .runRepair:

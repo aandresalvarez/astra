@@ -9,23 +9,27 @@ import ASTRAModels
 @MainActor
 struct RuntimeProviderResourceBlockTests {
     @Test("A stale provider switch cannot change the task or replay another run",
-          arguments: ["stale", "closed", "pending", "missingCount", "usedTokens"])
-    func switchRequiresUnsentCurrentTurn(fault: String) throws {
+          arguments: ["stale", "closed", "pending", "wrongRun", "wrongRuntime", "uncertainTools", "cancelled"])
+    func switchRequiresSafeCurrentTurn(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
         let task = h.makeTask(runtime: .antigravityCLI, goal: "Blocked", model: "test")
         task.status = .pendingUser
         let run = TaskRun(task: task)
+        run.runtimeID = AgentRuntimeID.antigravityCLI.rawValue
         run.status = .failed
         run.stopReason = RuntimeProviderResourceRegistry.Block.stopReason
         run.completedAt = Date()
-        run.tokensUsed = fault == "usedTokens" ? 1 : 0
         h.context.insert(run)
         var record = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context)
         record.state = .notStarted
-        record.providerLaunchCount = fault == "missingCount" ? nil : 0
+        record.providerLaunchCount = 0
         record.providerProcess = nil
         record.stopProof = nil
+        if fault == "wrongRun" { record.runID = UUID() }
+        if fault == "wrongRuntime" { record.runtime = AgentRuntimeID.codexCLI.rawValue }
+        if fault == "uncertainTools" { record.inheritedToolUncertainty = true }
+        if fault == "cancelled" { record.cancellationRequested = true }
         do { let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: h.context); try lease.save(record) }
         task.isDone = fault == "closed"
         if fault == "pending" {

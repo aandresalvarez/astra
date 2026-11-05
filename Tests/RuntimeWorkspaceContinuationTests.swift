@@ -250,20 +250,27 @@ struct RuntimeWorkspaceContinuationTests {
         #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
     }
 
+    private func registerRemoteJobs(for task: AgentTask, receipt: RuntimeExecutionOwnerRecord,
+                                    in h: HeadlessChatHarness) throws -> RemoteWorkspaceJobStore {
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        let root = RemoteWorkspaceJobRegistration.directory(taskID: task.id, executionID: receipt.executionID, context: h.context)
+        let receiptURL = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID).recordURL
+        var config = RemoteWorkspaceJobConfiguration(recordRootPath: root.appendingPathComponent("jobs").path,
+            sshExecutable: "/usr/bin/ssh", connections: [], taskID: task.id.uuidString, runID: receipt.runID?.uuidString,
+            ownerBinding: .init(receiptPath: receiptURL.path, taskID: task.id.uuidString, runID: try #require(receipt.runID).uuidString,
+                ownerID: receipt.ownerID.uuidString, executionID: receipt.executionID.uuidString))
+        config.observationSSHOptions = RemoteWorkspaceJobRegistration.observationOptions(task: task)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try RemoteWorkspaceJobProtectedFile.write(JSONEncoder().encode(config), to: root.appendingPathComponent("configuration.json"))
+        return RemoteWorkspaceJobStore(rootPath: config.recordRootPath)
+    }
+
     @Test("Known nonterminal SSH jobs block continuation even in retained lineage", arguments: [false, true])
     func knownRemoteJobs(retained: Bool) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let (a, old) = try completed(h)
         let store = RuntimeExecutionOwner.store(in: h.context)
-        let root = RemoteWorkspaceJobRegistration.directory(taskID: a.id, executionID: old.executionID, context: h.context)
-        let receiptURL = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID).recordURL
-        var config = RemoteWorkspaceJobConfiguration(recordRootPath: root.appendingPathComponent("jobs").path,
-            sshExecutable: "/usr/bin/ssh", connections: [], taskID: a.id.uuidString, runID: old.runID?.uuidString,
-            ownerBinding: .init(receiptPath: receiptURL.path, taskID: a.id.uuidString, runID: try #require(old.runID).uuidString,
-                ownerID: old.ownerID.uuidString, executionID: old.executionID.uuidString))
-        config.observationSSHOptions = RemoteWorkspaceJobRegistration.observationOptions(task: a)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try RemoteWorkspaceJobProtectedFile.write(JSONEncoder().encode(config), to: root.appendingPathComponent("configuration.json"))
+        let jobs = try registerRemoteJobs(for: a, receipt: old, in: h)
         if retained {
             try store.retain(old)
             var current = old; current.executionID = UUID(); current.retainedExecutionHead = old.executionID
@@ -279,10 +286,106 @@ struct RuntimeWorkspaceContinuationTests {
             runID: old.runID?.uuidString, connection: .init(id: "fixture", name: "Fixture", target: "fixture", arguments: ["fixture"]),
             command: "true", createdAt: Date())
         job.status = .running
-        try RemoteWorkspaceJobStore(rootPath: config.recordRootPath).create(job)
+        try jobs.create(job)
         #expect(throws: (any Error).self) { try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: request, context: h.context) }
         #expect(throws: (any Error).self) { try RuntimeWorkspaceContinuation.preview(task: b, request: request, context: h.context) }
         #expect(try store.workspaceContinuation(requestID: request.id) == nil)
+    }
+
+    @Test("An unresolved SSH job blocks both the timeout check and a later launch")
+    func timeoutCheckRemoteJobs() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (task, original) = try completed(h)
+        let run = try #require(task.runs.first)
+        run.status = .failed; run.typedStopReason = .providerRunWallClockExceeded
+        task.status = .pendingUser
+        var record = original
+        record.state = .unverified; record.resourcesReleased = false
+        let proof = try #require(record.stopProof)
+        record.stopProof = .init(executionID: proof.executionID, process: proof.process, reaped: true,
+            processGroupEmpty: false, toolsStopped: false, remoteWorkExcluded: false, capturedAt: proof.capturedAt)
+        try save(record, h)
+        let jobs = try registerRemoteJobs(for: task, receipt: record, in: h)
+        func startJob() throws -> String {
+            let job = RemoteWorkspaceJobRecord(jobID: UUID().uuidString.lowercased(), taskID: task.id.uuidString,
+                runID: run.id.uuidString, connection: .init(id: "fixture", name: "Fixture", target: "fixture", arguments: ["fixture"]),
+                command: "true", createdAt: Date())
+            try jobs.create(job)
+            return job.jobID
+        }
+        let first = try startJob()
+        #expect(throws: (any Error).self) { try RuntimeTimeoutRecoveryCheck.check(task: task, runID: run.id, context: h.context) }
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context) == record)
+        try jobs.update(jobID: first) { $0.status = .succeeded }
+        try RuntimeTimeoutRecoveryCheck.check(task: task, runID: run.id, context: h.context)
+        _ = try startJob()
+        let submitted = try ExecutionRequestSubmissionService.submitFollowUp(message: "New question", for: task, into: h.context).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submitted.requestID, in: h.context))
+        #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
+        #expect(task.runs.count == 1 && request.runID == nil)
+    }
+
+    @Test("Resumed timeout preparation revalidates retained SSH registrations", arguments:
+        ["terminal", "running", "unreadable", "missingRegistration"], [1, 2])
+    func resumedTimeoutPreparationChecksRemoteJobs(fault: String, preparationCount: Int) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (task, original) = try completed(h)
+        let run = try #require(task.runs.first)
+        run.status = .failed; run.typedStopReason = .providerRunWallClockExceeded
+        task.status = .pendingUser
+        var record = original
+        record.state = .unverified; record.resourcesReleased = false
+        let proof = try #require(record.stopProof)
+        record.stopProof = .init(executionID: proof.executionID, process: proof.process, reaped: true,
+            processGroupEmpty: false, toolsStopped: false, remoteWorkExcluded: false, capturedAt: proof.capturedAt)
+        try save(record, h)
+        let jobs = try registerRemoteJobs(for: task, receipt: record, in: h)
+        var job = RemoteWorkspaceJobRecord(jobID: UUID().uuidString.lowercased(), taskID: task.id.uuidString,
+            runID: run.id.uuidString, connection: .init(id: "fixture", name: "Fixture", target: "fixture", arguments: ["fixture"]),
+            command: "true", createdAt: Date())
+        job.status = .succeeded
+        try jobs.create(job)
+        try RuntimeTimeoutRecoveryCheck.check(task: task, runID: run.id, context: h.context)
+        let checked = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(checked.stopProof?.groupObservedEmptyAt != nil)
+        let submitted = try ExecutionRequestSubmissionService.submitFollowUp(message: "New question", for: task, into: h.context).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submitted.requestID, in: h.context))
+        for _ in 0..<preparationCount {
+            let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context,
+                maxRunSeconds: 60, userRequest: request))
+            owner.finish() // End preparation without crossing the provider launch boundary.
+        }
+        let interrupted = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(interrupted.stopProof == nil && interrupted.providerProcess == nil)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        let retained = try store.retainedExecutions(of: interrupted)
+        #expect(retained.count == preparationCount && retained.last == checked)
+        let registration = RemoteWorkspaceJobRegistration.directory(taskID: task.id,
+            executionID: checked.executionID, context: h.context).appendingPathComponent("configuration.json")
+        switch fault {
+        case "running": try jobs.update(jobID: job.jobID) { $0.status = .running }
+        case "unreadable": try Data("{}".utf8).write(to: registration)
+        case "missingRegistration": try FileManager.default.removeItem(at: registration)
+        default: break
+        }
+        // Local continuation still has a valid basis. Admission must also reread
+        // the original registration even though the current receipt has no proof.
+        #expect(RuntimeCompletedUserTurnContinuation.permits(task: task, request: request, context: h.context))
+        let resumed = RuntimeExecutionOwner.acquire(task: task, context: h.context,
+            maxRunSeconds: 60, userRequest: request)
+        defer { resumed?.finish() }
+        if fault == "terminal" {
+            let resumed = try #require(resumed)
+            #expect(resumed.record.ownerID == checked.ownerID)
+            #expect(resumed.record.continuingUserRequestID == request.id)
+            #expect(resumed.record.resourcesReleased == false)
+        } else {
+            #expect(resumed == nil)
+            #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context) == interrupted)
+            #expect(try store.retainedExecutions(of: interrupted) == retained)
+        }
+        #expect(task.runs.count == 1 && request.runID == nil && request.startedAt == nil)
+        #expect(run.status == .failed && run.typedStopReason == .providerRunWallClockExceeded)
     }
 
     @Test("Large predecessor sets use protected entries and partial or corrupt chains fail closed", arguments: ["valid", "missing", "cycle", "symlink"])
@@ -619,6 +722,85 @@ struct RuntimeWorkspaceContinuationTests {
         _ = TaskTurnRequestStateMachine.transition(request, to: .completed)
         try h.context.save()
         return (old, task, request)
+    }
+
+    @Test("Check again lets a new Copilot message finish after a wall-clock timeout in a reserved workspace",
+          arguments: [false, true])
+    func recheckTimedOutCopilot(alreadyQueued: Bool) async throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let (holder, _, rootGrant) = try completedRememberedWorkspace(h)
+        let holderReceipt = try RuntimeExecutionOwner.existing(task: holder, context: h.context)
+        let task = h.makeTask(runtime: .copilotCLI, goal: "Preserve partial work", model: "gpt-5", tokenBudget: 200_000)
+        task.workspace = holder.workspace
+        let initial = try ExecutionRequestSubmissionService.submitInitial(for: task, into: h.context).get()
+        let expired = try #require(try TaskTurnRequestRepository.request(id: initial.requestID, in: h.context))
+
+        let marker = h.rootURL.appendingPathComponent("launches")
+        let fake = try h.writeExecutable(named: "copilot", script: HeadlessChatScenarioTests.copilotScript(body: """
+            if [ ! -f '\(marker.path)' ]; then
+              echo first > '\(marker.path)'
+              printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Partial output"}}'
+              exec /bin/sleep 60
+            fi
+            echo next >> '\(marker.path)'
+            printf '%s\\n' '{"type":"assistant.message","data":{"content":"The new instruction finished."}}' \
+              '{"type":"result","exitCode":0}'
+            """))
+        let worker = h.makeWorker(runtime: .copilotCLI, executablePath: fake, permissionPolicy: .autonomous,
+            sandboxEnforcementOverride: .off)
+        worker.maxRunSeconds = 5
+        let queue = TaskQueue(poolSize: 1, workerFactory: { worker }, sandboxEnforcementProvider: { .off })
+        await queue.signalExecutionRequest(id: expired.id, task: task, modelContext: h.context).value
+        let run = try #require(task.runs.first)
+        try #require(run.typedStopReason == .providerRunWallClockExceeded && expired.state == .failed)
+        let partial = run.output
+        var receipt = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        let original = try #require(receipt.stopProof)
+        let grant = try RuntimeExecutionOwner.store(in: h.context).workspaceContinuation(requestID: expired.id)
+        #expect(grant?.inheritedAuthorizationID == rootGrant.id)
+        // Reproduce the older capture made while the group was still draining.
+        // The timeout, reaped process identity, settlement and request are real.
+        receipt.stopProof = .init(executionID: original.executionID, process: original.process, reaped: original.reaped,
+            processGroupEmpty: false, toolsStopped: false, remoteWorkExcluded: false, capturedAt: original.capturedAt)
+        try save(receipt, h)
+        let initialBlock = RuntimeRecoveryPresentation.blockedMessage(task: task, context: h.context)
+        try #require(initialBlock != nil)
+        func submitNewMessage() throws -> TaskTurnRequest {
+            let result = try ExecutionRequestSubmissionService.submitFollowUp(message: "A new instruction", for: task, into: h.context).get()
+            return try #require(try TaskTurnRequestRepository.request(id: result.requestID, in: h.context))
+        }
+        worker.maxRunSeconds = 60
+        let queued = alreadyQueued ? try submitNewMessage() : nil
+        if let queued {
+            try #require(TaskTurnRequestStateMachine.transition(queued, to: .waitingForResource).changed)
+            try h.context.save()
+        }
+        queue.recheckTimedOutRun(run.id, task: task, context: h.context)
+        let checked = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        try #require(checked.stopProof?.groupObservedEmptyAt != nil)
+        #expect(checked.stopProof?.processGroupEmpty == false && checked.stopProof?.remoteWorkExcluded == false)
+        #expect(!checked.canReplace && checked.resourcesReleased == false && checked.limits == receipt.limits)
+        #expect(RuntimeRecoveryPresentation.blockedMessage(task: task, context: h.context) == nil)
+        let eventCount = task.events.count
+        queue.recheckTimedOutRun(run.id, task: task, context: h.context)
+        #expect(task.events.count == eventCount)
+        #expect(try TaskTurnRequestRepository.requests(for: task, in: h.context).count == (alreadyQueued ? 2 : 1))
+        #expect(try RuntimeExecutionOwner.existing(task: holder, context: h.context) == holderReceipt)
+
+        let request = try queued ?? submitNewMessage()
+        if !alreadyQueued {
+            _ = queue.signalExecutionRequest(id: request.id, task: task, modelContext: h.context)
+        }
+        let finished = await h.waitUntil(task: task, timeoutSeconds: 45) { _ in !request.state.isActive && !worker.isRunning }
+        await queue.cancelAllAndWait()
+        try #require(finished)
+        #expect(request.state == .completed && task.runs.count == 2)
+        #expect(expired.state == .failed && run.typedStopReason == .providerRunWallClockExceeded && run.output == partial)
+        #expect(try String(contentsOf: marker, encoding: .utf8) == "first\nnext\n")
+        let successor = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(successor.ownerID == receipt.ownerID && successor.inheritedToolUncertainty == true)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).retainedExecutions(of: successor).first == checked)
     }
 
     @Test("Remembered approval survives a store reopen and still serializes two successors")

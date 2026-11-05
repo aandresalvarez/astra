@@ -31,6 +31,7 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case runApprovedPlan
     case runTask
     case retry
+    case checkTimedOutRun
     case resume
     case reportProblem
     case openArtifact
@@ -136,6 +137,7 @@ struct TaskDecisionDockPresentation: Equatable {
         var extraDetails: [TaskDecisionDockDetail] = []
         var visibleThreadAffordances: Set<TaskThreadAffordance> = []
         var recoveryBlockMessage: String? = nil
+        var timeoutRecoveryRunID: UUID? = nil
         var providerRecoveryAlternative: ProviderRecoveryAlternative? = nil
 
         /// Auto allows a connector's credentials for the task without asking, so
@@ -203,8 +205,8 @@ struct TaskDecisionDockPresentation: Equatable {
                 id: "recovery-blocked", icon: "lock.fill", tone: .attention,
                 title: "Recovery blocked", summary: message,
                 metrics: metrics(context), details: details(context),
-                primaryAction: context.canRetry
-                    ? action(.retry, title: "Check again", systemImage: "arrow.clockwise") : nil,
+                primaryAction: context.canRetry ? (context.timeoutRecoveryRunID.map(checkTimedOutRun)
+                    ?? action(.retry, title: "Check again", systemImage: "arrow.clockwise")) : nil,
                 secondaryActions: [runtimeSwitchAction(context.providerRecoveryAlternative?.runtime, canRetry: context.canRetry,
                     blockedRunID: context.providerRecoveryAlternative?.blockedRunID)].compactMap { $0 },
                 overflowActions: closeOverflowActions(context, closeTitle: nil),
@@ -1122,6 +1124,10 @@ struct TaskDecisionDockPresentation: Equatable {
         )
     }
 
+    static func checkTimedOutRun(_ runID: UUID) -> TaskDecisionDockAction {
+        action(.checkTimedOutRun, title: "Check again", systemImage: "arrow.clockwise", payload: runID.uuidString)
+    }
+
     private static func action(
         _ kind: TaskDecisionDockActionKind,
         title: String,
@@ -1212,6 +1218,7 @@ private extension TaskDecisionDockActionKind {
              .runRepair,
              .runApprovedPlan,
              .runTask,
+             .checkTimedOutRun,
              .retry,
              .resume,
              .closeTask,

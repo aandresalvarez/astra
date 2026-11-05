@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 import ASTRACore
@@ -8,7 +9,7 @@ import ASTRAModels
 @MainActor
 struct ProviderSharedStateMigrationTests {
     @Test("A second task may read a legacy writer's settings only after verified local settlement and reboot",
-          arguments: ["settled", "missingPointerJournal", "sameBoot", "unknownBoot", "unknownEnvironment", "missingHistory",
+          arguments: ["settled", "legacyFilename", "missingPointerJournal", "sameBoot", "unknownBoot", "unknownEnvironment", "missingHistory",
                       "unsettled", "unboundRun", "zeroLaunches", "missingLaunchCount", "contradictoryUsage"])
     func historicalReader(fixture: String) async throws {
         // This fixture deliberately retains a provider-wide legacy claim. Use
@@ -105,10 +106,28 @@ struct ProviderSharedStateMigrationTests {
             try lock.handoff(key, reference: .init(journalRoot: store.root.path, taskID: other.id, ownerID: orphan.ownerID)) {}
             try FileManager.default.removeItem(at: lease.recordURL)
         }
-        let boot: Date? = fixture == "unknownBoot" ? nil : Date().addingTimeInterval(fixture == "sameBoot" ? -30 : 5)
+        let boot: Date?
+        if fixture == "legacyFilename" {
+            // Already-attributed journals may still use the pre-upgrade filename.
+            // Put the boot boundary in the past so acquisition cannot rewrite
+            // identical bytes and accidentally make the journal post-boot.
+            let legacyURL = store.root.appendingPathComponent(holder.id.uuidString + ".json")
+            do {
+                let lease = try store.acquire(taskID: holder.id, taskOwnerID: holder.persistentModelID)
+                try FileManager.default.moveItem(at: lease.recordURL, to: legacyURL)
+            }
+            var info = stat()
+            try #require(lstat(legacyURL.path, &info) == 0)
+            let boundary = Date(timeIntervalSince1970: TimeInterval(info.st_ctimespec.tv_sec) + 1)
+            try await Task.sleep(nanoseconds: UInt64((max(0, boundary.timeIntervalSinceNow) + 0.05) * 1_000_000_000))
+            try #require(boundary < Date())
+            boot = boundary
+        } else {
+            boot = fixture == "unknownBoot" ? nil : Date().addingTimeInterval(fixture == "sameBoot" ? -30 : 5)
+        }
         let gate = AgentRuntimeSharedStateGate(processLockRoot: h.providerLockRoot, registeredStoreRoots: [store.root], hostBootTime: { boot })
         await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await gate.waitForPreviousWriter(key) }
-        if ["settled", "zeroLaunches", "missingPointerJournal"].contains(fixture) {
+        if ["settled", "legacyFilename", "zeroLaunches", "missingPointerJournal"].contains(fixture) {
             if fixture != "missingPointerJournal" {
                 try await gate.waitForPreviousWriter(key, owner: reader)
                 let cold = AgentRuntimeSharedStateGate(processLockRoot: h.providerLockRoot, registeredStoreRoots: [])
@@ -118,7 +137,7 @@ struct ProviderSharedStateMigrationTests {
                     try await gate.waitForPreviousWriter(key, owner: reader)
                 }
             }
-            let saved = try #require(try store.read(taskID: holder.id, taskOwnerID: holder.persistentModelID))
+            let saved = try #require(try RuntimeTaskOwnerJournal.read(task: holder, context: h.context))
             let observation = try #require(saved.legacyProviderReadObservation)
             #expect(observation.executionID == current.executionID && observation.legacyKey == oldKey.rawValue)
             current.legacyProviderReadObservation = observation

@@ -92,6 +92,7 @@ enum TaskDecisionDockContextBuilder {
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail]
         var recoveryBlockMessage: String? = nil
+        var timeoutRecoveryRunID: UUID? = nil
         var providerRecoveryAlternative: TaskDecisionDockPresentation.ProviderRecoveryAlternative? = nil
     }
 
@@ -173,6 +174,7 @@ enum TaskDecisionDockContextBuilder {
                 isPlanCanvasVisible: input.isPlanCanvasVisible
             ),
             recoveryBlockMessage: input.recoveryBlockMessage,
+            timeoutRecoveryRunID: input.timeoutRecoveryRunID,
             providerRecoveryAlternative: input.providerRecoveryAlternative
         )
     }

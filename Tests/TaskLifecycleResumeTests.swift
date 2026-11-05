@@ -588,9 +588,9 @@ struct TaskLifecycleResumeTests {
         #expect(!TaskLifecycleCoordinator.resumeContinuationMessage(for: task).contains("original goal"))
     }
 
-    @Test("Retry on another provider delivers the original unlaunched instruction in the same task",
-          arguments: [TaskExecutionRequestKind.followUp, .retry])
-    func retryUndeliveredProviderMessage(kind: TaskExecutionRequestKind) async throws {
+    @Test("Provider fallback replays only proven unlaunched instructions and otherwise continues",
+          arguments: [TaskExecutionRequestKind.followUp, .retry], ["zeroLaunches", "missingCount", "usedTokens", "launched", "stopped"])
+    func retryUndeliveredProviderMessage(kind: TaskExecutionRequestKind, evidence: String) async throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
         let args = h.rootURL.appendingPathComponent("alternate-provider-args.txt")
@@ -611,19 +611,30 @@ struct TaskLifecycleResumeTests {
         run.status = .failed
         run.stopReason = RuntimeProviderResourceRegistry.Block.stopReason
         run.completedAt = Date()
+        run.tokensUsed = evidence == "usedTokens" || evidence == "stopped" ? 100 : 0
         h.context.insert(run)
         task.status = .pendingUser
         #expect(TaskTurnRequestStateMachine.transition(request, to: .failed, runID: run.id, terminalReason: run.stopReason).changed)
         var receipt = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context)
-        receipt.state = .notStarted
-        receipt.providerLaunchCount = 0
-        receipt.providerProcess = nil
-        receipt.stopProof = nil
+        receipt.providerLaunchCount = evidence == "zeroLaunches" || evidence == "usedTokens" ? 0 : nil
+        if evidence == "launched" { receipt.providerLaunchCount = 1 }
+        if evidence != "stopped" {
+            receipt.state = .notStarted
+            receipt.providerProcess = nil
+            receipt.stopProof = nil
+        }
         do {
             let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: h.context)
             try lease.save(receipt)
         }
         try h.context.save()
+        let expectedInstruction = evidence == "zeroLaunches" ? instruction
+            : TaskLifecycleCoordinator.resumeContinuationMessage(for: task)
+        let runSnapshot = TaskRunSnapshot(input: .init(run: run))
+        let alternative = try #require(TaskComposerCoordinator.providerRecoveryAlternative(
+            for: task, context: h.context, latestRun: runSnapshot, recentRuns: [runSnapshot],
+            readinessStates: [.antigravityCLI: .ready, .openCodeCLI: .ready]))
+        #expect(alternative.runtime == .openCodeCLI && alternative.blockedRunID == run.id)
         let coordinator = TaskLifecycleCoordinator(modelContext: h.context, taskQueue: queue)
         let prompt = RuntimeSensitiveDataSwitchPrompt()
         var handle: Task<Void, Never>?
@@ -635,10 +646,18 @@ struct TaskLifecycleResumeTests {
         #expect(task.status == .completed && task.runs.count == 2)
         #expect(request.state == .failed && run.stopReason == RuntimeProviderResourceRegistry.Block.stopReason)
         let raw = try String(contentsOf: args, encoding: .utf8)
-        #expect(raw.contains("User's follow-up request:\n" + instruction))
-        #expect(!raw.contains("User's follow-up request:\nContinue where you left off"))
+        #expect(raw.contains("User's follow-up request:\n" + expectedInstruction))
+        if evidence == "zeroLaunches" {
+            #expect(!raw.contains("User's follow-up request:\nContinue where you left off"))
+        } else {
+            #expect(expectedInstruction != instruction)
+        }
         let requests = try TaskTurnRequestRepository.requests(for: task, in: h.context)
         #expect(requests.map(\.state) == [.failed, .completed])
+        let retryRequest = try #require(requests.last)
+        let sourceEvent = try #require(TaskHistoryRead.event(id: retryRequest.sourceEventID, in: task))
+        let source = try #require(ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent))
+        #expect(source.launchMode == .continuation && source.message == expectedInstruction)
     }
 
     @Test("Verified Retry continues the latest actionable objective without replaying its command")

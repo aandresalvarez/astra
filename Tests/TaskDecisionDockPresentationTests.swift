@@ -137,6 +137,19 @@ struct TaskDecisionDockPresentationTests {
         #expect(presentation.primaryAction?.title == "Check again")
         #expect(!actionTitles(presentation).contains("Approve result"))
         #expect(!actionTitles(presentation).contains("Run remaining plan"))
+        let runID = UUID()
+        input.timeoutRecoveryRunID = runID
+        let timedOut = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(timedOut.primaryAction == TaskDecisionDockPresentation.checkTimedOutRun(runID))
+        #expect(timedOut.primaryAction?.kind == .checkTimedOutRun)
+        #expect(timedOut.primaryAction?.payload == runID.uuidString)
+        let waiting = TaskDecisionDockPresentation(id: "waiting", icon: "clock", tone: .attention,
+            title: "Waiting", summary: "", metrics: [], details: [], primaryAction: nil,
+            secondaryActions: [.init(kind: .cancelTurnRequest, title: "Cancel request", systemImage: "xmark")],
+            overflowActions: [], prefersExpandedDetails: false)
+        let queued = try #require(RuntimeRecoveryPresentation.queuedRequestDock(waiting, hasOpenApprovalRequest: false,
+            blockedMessage: input.recoveryBlockMessage, timeoutRecoveryRunID: runID))
+        #expect(queued.secondaryActions.map(\.kind) == [.checkTimedOutRun, .cancelTurnRequest])
     }
 
     @Test("Git publish request takes priority over generic pending review")
