@@ -58,6 +58,12 @@ target_for_path() {
   esac
 
   case "$path" in
+    Astra/Services/Tasks/TaskQueueRemoteAdmissionRefresh.swift|Astra/Services/Tasks/TaskQueueStoreSession.swift|Tests/TaskQueueStoreSessionTests.swift|Astra/Services/Runtime/RemoteWorkspaceJobEventReconciler.swift)
+      add_target "TaskQueueStoreSessionTests|RuntimeWorkspaceContinuationTests|RemoteWorkspaceJobPersistenceTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Runtime/RuntimeNativeSessionOwnership.swift|Tests/RuntimeNativeSessionOwnership*Tests.swift)
       add_target "RuntimeNativeSessionOwnershipTests|AgentRuntimeAsyncWorkTests|AgentProcessResultTests"
       ;;

@@ -38,17 +38,65 @@ struct RuntimeManagedSSHHelperEvidenceTests {
         ]
     }
 
-    static func evidence(runtime: AgentRuntimeID) throws -> RuntimeExecutionProcessEvidence {
+    /// Reuse captured native envelopes, replacing only the tool identity and
+    /// input with the synthetic helper. No provider or remote command runs.
+    static func capturedFrames(runtime: AgentRuntimeID, command: String = RuntimeManagedSSHHelperEvidenceTests.command,
+                               resultID: String = "helper-1") throws -> [[String: Any]] {
+        var frames = try Self.frames(runtime: runtime, command: command, resultID: resultID)
+        let provider = runtime == .copilotCLI ? "copilot" : "claude"
+        let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/ProviderStreams/\(provider)/answer-write-signoff.jsonl")
+        let captured = try String(contentsOf: path, encoding: .utf8).split(separator: "\n").map {
+            try #require(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+        }
+        let input = ["command": command]
+        if runtime == .copilotCLI {
+            var delta = try #require(captured.first { $0["type"] as? String == "assistant.tool_call_delta" })
+            var data = try #require(delta["data"] as? [String: Any])
+            #expect(delta["ephemeral"] as? Bool == true && data["toolType"] as? String == "function")
+            data["toolCallId"] = "helper-1"; data["toolName"] = "bash"
+            data["inputDelta"] = String(decoding: try JSONSerialization.data(withJSONObject: input), as: UTF8.self)
+            delta["data"] = data; frames[0] = delta
+        } else {
+            var start = try #require(captured.first {
+                let event = $0["event"] as? [String: Any]
+                return event?["type"] as? String == "content_block_start"
+                    && (event?["content_block"] as? [String: Any])?["type"] as? String == "tool_use"
+            })
+            var event = try #require(start["event"] as? [String: Any])
+            var block = try #require(event["content_block"] as? [String: Any])
+            #expect(block["caller"] as? [String: String] == ["type": "direct"])
+            block["id"] = "helper-1"; block["name"] = "Bash"; block["input"] = [String: String]()
+            event["index"] = 0; event["content_block"] = block; start["event"] = event; frames[0] = start
+            var assistant = try #require(captured.first {
+                (($0["message"] as? [String: Any])?["content"] as? [[String: Any]])?.contains {
+                    $0["type"] as? String == "tool_use"
+                } == true
+            })
+            var message = try #require(assistant["message"] as? [String: Any])
+            let blocks = try #require(message["content"] as? [[String: Any]])
+            var completed = try #require(blocks.first { $0["type"] as? String == "tool_use" })
+            #expect(completed["caller"] as? [String: String] == ["type": "direct"])
+            completed["id"] = "helper-1"; completed["name"] = "Bash"; completed["input"] = input
+            message["content"] = [completed]; assistant["message"] = message
+            assistant["wire_tool_inputs"] = ["helper-1": input]; frames[2] = assistant
+        }
+        return frames
+    }
+
+    static func evidence(runtime: AgentRuntimeID, capturedMetadata: Bool = true) throws -> RuntimeExecutionProcessEvidence {
         let broker = RuntimeManagedSSHBrokerEvidence(); broker.acknowledge(admitted)
         let evidence = RuntimeExecutionProcessEvidence(runtime: runtime, managedSSHBroker: broker)
-        for frame in try frames(runtime: runtime) { try observe(frame, runtime: runtime, in: evidence) }
+        let frames = try capturedMetadata ? Self.capturedFrames(runtime: runtime) : Self.frames(runtime: runtime)
+        for frame in frames { try observe(frame, runtime: runtime, in: evidence) }
         evidence.processExited(naturally: true, stdoutEOF: true)
         return evidence
     }
 
-    @Test("Real parser frames account only for exact broker-acknowledged helper work", arguments: [AgentRuntimeID.claudeCode, .copilotCLI])
-    func realFrames(runtime: AgentRuntimeID) throws {
-        let evidence = try Self.evidence(runtime: runtime)
+    @Test("Native parser frames account only for exact broker-acknowledged helper work",
+          arguments: [AgentRuntimeID.claudeCode, .copilotCLI], [false, true])
+    func realFrames(runtime: AgentRuntimeID, capturedMetadata: Bool) throws {
+        let evidence = try Self.evidence(runtime: runtime, capturedMetadata: capturedMetadata)
         #expect(evidence.providerTurnEnded && evidence.managedSSHOnly)
         #expect(!evidence.toolsStopped) // remote completion still needs protected job evidence
     }
@@ -69,7 +117,7 @@ struct RuntimeManagedSSHHelperEvidenceTests {
         case "background": command = Self.command + " &"
         default: command = Self.command
         }
-        var frames = try Self.frames(runtime: runtime, command: command, resultID: fault == "unmatched" ? "unknown" : "helper-1")
+        var frames = try Self.capturedFrames(runtime: runtime, command: command, resultID: fault == "unmatched" ? "unknown" : "helper-1")
         if fault == "missingResult" { frames.remove(at: frames.count - 2) }
         if fault == "omittedFrames" { frames = [try #require(frames.last)] }
         if fault == "unknown" { frames.insert(["type": "unknown.native.work"], at: 0) }
@@ -90,5 +138,55 @@ struct RuntimeManagedSSHHelperEvidenceTests {
         evidence.processExited(naturally: true, stdoutEOF: fault != "missingEOF")
         #expect(!evidence.managedSSHOnly)
         #expect(!evidence.toolsStopped)
+    }
+
+    @Test("Claude caller metadata permits only an exact direct caller",
+          arguments: [false, true], ["indirect", "extra", "null", "string"])
+    func invalidClaudeCaller(completed: Bool, fault: String) throws {
+        let broker = RuntimeManagedSSHBrokerEvidence(); broker.acknowledge(Self.admitted)
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .claudeCode, managedSSHBroker: broker)
+        var frames = try Self.capturedFrames(runtime: .claudeCode)
+        let caller: Any
+        switch fault {
+        case "indirect": caller = ["type": "code_execution"]
+        case "extra": caller = ["type": "direct", "subagent_stats": ["spawned": 1]] as [String: Any]
+        case "null": caller = NSNull()
+        default: caller = "direct"
+        }
+        if completed {
+            var message = try #require(frames[2]["message"] as? [String: Any])
+            var blocks = try #require(message["content"] as? [[String: Any]])
+            blocks[0]["caller"] = caller; message["content"] = blocks; frames[2]["message"] = message
+        } else {
+            var event = try #require(frames[0]["event"] as? [String: Any])
+            var block = try #require(event["content_block"] as? [String: Any])
+            block["caller"] = caller; event["content_block"] = block; frames[0]["event"] = event
+        }
+        for frame in frames { try Self.observe(frame, runtime: .claudeCode, in: evidence) }
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(!evidence.managedSSHOnly && !evidence.toolsStopped)
+    }
+
+    @Test("Copilot native metadata rejects malformed flags, unknown kinds and extra work",
+          arguments: ["number", "false", "string", "null", "toolType", "extra", "queued", "subagent"])
+    func invalidCopilotMetadata(fault: String) throws {
+        let broker = RuntimeManagedSSHBrokerEvidence(); broker.acknowledge(Self.admitted)
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .copilotCLI, managedSSHBroker: broker)
+        var frames = try Self.capturedFrames(runtime: .copilotCLI)
+        var data = try #require(frames[0]["data"] as? [String: Any])
+        switch fault {
+        case "number": frames[0]["ephemeral"] = 1
+        case "false": frames[0]["ephemeral"] = false
+        case "string": frames[0]["ephemeral"] = "true"
+        case "null": frames[0]["ephemeral"] = NSNull()
+        case "toolType": data["toolType"] = "custom"
+        case "extra": data["unknown_native_work"] = true
+        case "queued": data["queued_turn_count"] = 1
+        default: data["subagent_stats"] = ["spawned": 1]
+        }
+        frames[0]["data"] = data
+        for frame in frames { try Self.observe(frame, runtime: .copilotCLI, in: evidence) }
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(!evidence.managedSSHOnly && !evidence.toolsStopped)
     }
 }

@@ -427,9 +427,13 @@ struct RuntimeWorkspaceContinuationTests {
             $0.launchFence = legacy ? .legacySealed : .cancelledBeforeStart
             $0.lastObservation = .init(at: Date(), outcome: .reachable)
         }
-        let wakeCount = TaskQueue.dispatchWakeCountForTesting
+        let wakeCount = queue.observedDispatchWakeCount
+        let refreshCount = queue.remoteAdmissionRefresh.completedRefreshCount
         try RemoteWorkspaceJobEventReconciler.reconcile(closed, task: a, context: h.context, store: jobs)
-        #expect(TaskQueue.dispatchWakeCountForTesting > wakeCount)
+        #expect(queue.remoteAdmissionRefresh.isPending)
+        for _ in 0..<100 where queue.remoteAdmissionRefresh.isPending { await Task.yield() }
+        #expect(queue.remoteAdmissionRefresh.completedRefreshCount == refreshCount + 1)
+        #expect(queue.observedDispatchWakeCount > wakeCount)
         #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context)?.resourcesReleased == !legacy)
         for _ in 0..<500 where request.state.isActive { try await Task.sleep(for: .milliseconds(20)) }
         #expect(request.state == .completed && task.runs.count == 1)

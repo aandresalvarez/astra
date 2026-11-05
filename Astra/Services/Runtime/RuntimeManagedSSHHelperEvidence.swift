@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import ASTRACore
 import WorkspaceToolSupport
 
@@ -101,7 +102,8 @@ struct RuntimeManagedSSHHelperEvidence {
                 case "thinking":
                     guard block["thinking"] is String, Set(block.keys).isSubset(of: ["type", "thinking", "signature"]) else { return false }
                 case "tool_use":
-                    guard Set(block.keys).isSubset(of: ["type", "id", "name", "input"]),
+                    guard Set(block.keys).isSubset(of: ["type", "id", "name", "input", "caller"]),
+                          Self.directCaller(block["caller"]),
                           frame["type"] as? String == "assistant",
                           call(id: block["id"] as? String, name: block["name"] as? String,
                                input: block["input"], started: true) else { return false }
@@ -125,7 +127,8 @@ struct RuntimeManagedSSHHelperEvidence {
             case "content_block_start":
                 guard let index = event["index"] as? Int, streamed[index] == nil,
                       let block = event["content_block"] as? [String: Any], block["type"] as? String == "tool_use",
-                      Set(block.keys).isSubset(of: ["type", "id", "name", "input"]),
+                      Set(block.keys).isSubset(of: ["type", "id", "name", "input", "caller"]),
+                      Self.directCaller(block["caller"]),
                       let id = block["id"] as? String, !id.isEmpty,
                       let name = block["name"] as? String, ["Bash", "bash"].contains(name),
                       let input = block["input"] as? [String: Any], input.isEmpty else { return false }
@@ -159,7 +162,8 @@ struct RuntimeManagedSSHHelperEvidence {
 
     private mutating func copilot(_ frame: [String: Any]) -> Bool {
         guard let data = frame["data"] as? [String: Any],
-              Set(frame.keys).isSubset(of: ["type", "data", "id", "timestamp", "parentId"]) else { return false }
+              Set(frame.keys).isSubset(of: ["type", "data", "id", "timestamp", "parentId", "ephemeral"]),
+              Self.ephemeralMetadata(frame["ephemeral"]) else { return false }
         switch frame["type"] as? String {
         case "assistant.message":
             guard let requests = data["toolRequests"] as? [[String: Any]], !requests.isEmpty else { return false }
@@ -171,7 +175,8 @@ struct RuntimeManagedSSHHelperEvidence {
             var stripped = frame; var cleaned = data; cleaned["toolRequests"] = []; stripped["data"] = cleaned
             return !RuntimeStreamExecutionHints.containsWork(stripped)
         case "assistant.tool_call_delta":
-            guard Set(data.keys).isSubset(of: ["toolCallId", "toolName", "inputDelta"]),
+            guard Set(data.keys).isSubset(of: ["toolCallId", "toolName", "inputDelta", "toolType"]),
+                  data["toolType"] == nil || data["toolType"] as? String == "function",
                   let id = data["toolCallId"] as? String, !id.isEmpty, !starts.contains(id),
                   let name = data["toolName"] as? String, ["Bash", "bash"].contains(name),
                   let fragment = data["inputDelta"] as? String,
@@ -197,5 +202,19 @@ struct RuntimeManagedSSHHelperEvidence {
             return calls[id] != nil && starts.contains(id) && !completed.contains(id)
         default: return false
         }
+    }
+
+    // Captured native metadata is descriptive only in these exact shapes.
+    // Indirect callers, malformed flags and added work fields stay uncertain.
+    private static func directCaller(_ value: Any?) -> Bool {
+        guard let value else { return true }
+        guard let caller = value as? [String: Any] else { return false }
+        return Set(caller.keys) == ["type"] && caller["type"] as? String == "direct"
+    }
+
+    private static func ephemeralMetadata(_ value: Any?) -> Bool {
+        guard let value else { return true }
+        guard let flag = value as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else { return false }
+        return flag.boolValue
     }
 }
