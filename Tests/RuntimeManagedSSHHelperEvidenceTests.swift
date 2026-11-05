@@ -38,10 +38,10 @@ struct RuntimeManagedSSHHelperEvidenceTests {
         ]
     }
 
-    /// Reuse captured native envelopes, replacing only the tool identity and
+    /// Reuse captured native envelopes, replacing the tool identity, kind and
     /// input with the synthetic helper. No provider or remote command runs.
     static func capturedFrames(runtime: AgentRuntimeID, command: String = RuntimeManagedSSHHelperEvidenceTests.command,
-                               resultID: String = "helper-1") throws -> [[String: Any]] {
+                               resultID: String = "helper-1", copilotMessageIndex: Int = 0) throws -> [[String: Any]] {
         var frames = try Self.frames(runtime: runtime, command: command, resultID: resultID)
         let provider = runtime == .copilotCLI ? "copilot" : "claude"
         let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
@@ -57,6 +57,19 @@ struct RuntimeManagedSSHHelperEvidenceTests {
             data["toolCallId"] = "helper-1"; data["toolName"] = "bash"
             data["inputDelta"] = String(decoding: try JSONSerialization.data(withJSONObject: input), as: UTF8.self)
             delta["data"] = data; frames[0] = delta
+            let messages = captured.filter {
+                $0["type"] as? String == "assistant.message"
+                    && (($0["data"] as? [String: Any])?["toolRequests"] as? [[String: Any]])?.isEmpty == false
+            }
+            var message = try #require(messages.dropFirst(copilotMessageIndex).first)
+            var messageData = try #require(message["data"] as? [String: Any])
+            let requests = try #require(messageData["toolRequests"] as? [[String: Any]])
+            var request = try #require(requests.first)
+            request["toolCallId"] = "helper-1"; request["name"] = "bash"; request["arguments"] = input
+            // The second envelope originally announces a custom apply_patch.
+            // The replacement Bash command is a function; custom stays a negative case.
+            request["type"] = "function"
+            messageData["toolRequests"] = [request]; message["data"] = messageData; frames[1] = message
         } else {
             var start = try #require(captured.first {
                 let event = $0["event"] as? [String: Any]
@@ -188,5 +201,183 @@ struct RuntimeManagedSSHHelperEvidenceTests {
         for frame in frames { try Self.observe(frame, runtime: .copilotCLI, in: evidence) }
         evidence.processExited(naturally: true, stdoutEOF: true)
         #expect(!evidence.managedSSHOnly && !evidence.toolsStopped)
+    }
+
+    static func copilotProgressFrame(_ type: String) -> [String: Any] {
+        let outputKey = type == "tool.execution_partial_result" ? "partialOutput" : "progressMessage"
+        // Native shapes are also exercised by CopilotStreamRegressionTests.
+        // JSON-looking output is text, not another execution envelope.
+        return ["type": type, "ephemeral": true,
+                "data": ["toolCallId": "helper-1", outputKey: #"{"queued_turn_count":1,"toolRequests":[{"name":"ssh"}]}"#]]
+    }
+
+    @Test("Copilot helper progress preserves native output shapes",
+          arguments: ["tool.execution_partial_result", "tool.execution_progress"], [false, true])
+    func copilotProgressNativeShape(type: String, ephemeral: Bool) throws {
+        let broker = RuntimeManagedSSHBrokerEvidence(); broker.acknowledge(Self.admitted)
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .copilotCLI, managedSSHBroker: broker)
+        var frames = try Self.capturedFrames(runtime: .copilotCLI)
+        var progress = Self.copilotProgressFrame(type)
+        if !ephemeral { progress.removeValue(forKey: "ephemeral") }
+        frames.insert(progress, at: 3) // after the matching start, before completion
+        for frame in frames { try Self.observe(frame, runtime: .copilotCLI, in: evidence) }
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(evidence.managedSSHOnly && !evidence.toolsStopped)
+    }
+
+    @Test("Copilot helper progress rejects unvalidated work and invalid lifecycle identities",
+          arguments: ["tool.execution_partial_result", "tool.execution_progress"],
+          ["arguments", "toolName", "unknown", "queued", "subagent", "requests", "missingOutput", "numberOutput",
+           "objectOutput", "wrongOutput", "missingID", "unknownID", "emptyID", "beforeStart", "afterCompletion"])
+    func copilotProgressRejectsUnvalidatedWork(type: String, fault: String) throws {
+        let broker = RuntimeManagedSSHBrokerEvidence(); broker.acknowledge(Self.admitted)
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .copilotCLI, managedSSHBroker: broker)
+        var frames = try Self.capturedFrames(runtime: .copilotCLI)
+        var progress = Self.copilotProgressFrame(type)
+        var data = try #require(progress["data"] as? [String: Any])
+        let outputKey = type == "tool.execution_partial_result" ? "partialOutput" : "progressMessage"
+        var insertion = 3
+        switch fault {
+        case "arguments": data["arguments"] = ["command": "ssh elsewhere 'sleep 10 &'"]
+        case "toolName": data["toolName"] = "unrelated"
+        case "unknown": data["unknown_native_work"] = true
+        case "queued": data["queued_turn_count"] = 1
+        case "subagent": data["subagent_stats"] = ["spawned": 1]
+        case "requests": data["toolRequests"] = [["name": "ssh"]]
+        case "missingOutput": data.removeValue(forKey: outputKey)
+        case "numberOutput": data[outputKey] = 1
+        case "objectOutput": data[outputKey] = ["toolRequests": [["name": "ssh"]]]
+        case "wrongOutput":
+            data.removeValue(forKey: outputKey)
+            data[outputKey == "partialOutput" ? "progressMessage" : "partialOutput"] = "unrelated shape"
+        case "missingID": data.removeValue(forKey: "toolCallId")
+        case "unknownID": data["toolCallId"] = "unrelated"
+        case "emptyID": data["toolCallId"] = ""
+        case "beforeStart": insertion = 2
+        default: insertion = 4 // completion has already been observed
+        }
+        progress["data"] = data; frames.insert(progress, at: insertion)
+        for frame in frames { try Self.observe(frame, runtime: .copilotCLI, in: evidence) }
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(!evidence.managedSSHOnly && !evidence.toolsStopped)
+    }
+
+    @Test("Captured Copilot helper announcements preserve descriptive metadata and empty work hints",
+          arguments: [0, 1], ["captured", "empty", "null", "rteFalse", "descriptiveScalars"])
+    func copilotAnnouncementNativeShape(messageIndex: Int, metadata: String) throws {
+        var frames = try Self.capturedFrames(runtime: .copilotCLI, copilotMessageIndex: messageIndex)
+        var data = try #require(frames[1]["data"] as? [String: Any])
+        switch metadata {
+        case "empty":
+            data["parentToolCallId"] = ""
+            data["serverTools"] = ["provider": "openai-responses", "items": [], "rawContentBlocks": [],
+                                   "functionCallNamespaces": [String: String]()] as [String: Any]
+        case "null": data["parentToolCallId"] = NSNull(); data["serverTools"] = NSNull()
+        case "rteFalse": data["rte"] = false
+        case "descriptiveScalars":
+            data["outputTokens"] = 17; data["chunkCount"] = 2; data["chunkIndex"] = 0
+            for key in ["clientRequestId", "providerId", "requestId", "serviceRequestId", "reasoningWireField"] {
+                data[key] = "fixture"
+            }
+        default: break
+        }
+        frames[1]["data"] = data
+        let broker = RuntimeManagedSSHBrokerEvidence(); broker.acknowledge(Self.admitted)
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .copilotCLI, managedSSHBroker: broker)
+        for frame in frames { try Self.observe(frame, runtime: .copilotCLI, in: evidence) }
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(evidence.managedSSHOnly && !evidence.toolsStopped)
+    }
+
+    @Test("Copilot helper announcements reject unknown work and malformed descriptive metadata",
+          arguments: ["arguments", "toolName", "unknown", "contentNumber", "messageNumber", "reasoningNumber",
+                      "reasoningUnknown", "rteNumber", "outputTokensString", "outputTokensBool", "requestType", "requestSummary"])
+    func copilotAnnouncementRejectsUnvalidatedWork(fault: String) throws {
+        var frames = try Self.capturedFrames(runtime: .copilotCLI)
+        var data = try #require(frames[1]["data"] as? [String: Any])
+        switch fault {
+        case "arguments": data["arguments"] = ["command": "ssh elsewhere 'sleep 10 &'"]
+        case "toolName": data["toolName"] = "unrelated"
+        case "unknown": data["unknown_native_work"] = true
+        case "contentNumber": data["content"] = 1
+        case "messageNumber": data["messageId"] = 1
+        case "reasoningNumber": data["reasoningBlocks"] = 1
+        case "reasoningUnknown": data["reasoningBlocks"] = ["provider": "fixture", "unknown_native_work": true] as [String: Any]
+        case "rteNumber": data["rte"] = 1
+        case "outputTokensString": data["outputTokens"] = "17"
+        case "outputTokensBool": data["outputTokens"] = true
+        default:
+            var requests = try #require(data["toolRequests"] as? [[String: Any]])
+            if fault == "requestType" { requests[0]["type"] = "custom" }
+            else { requests[0]["intentionSummary"] = ["toolName": "unrelated"] }
+            data["toolRequests"] = requests
+        }
+        frames[1]["data"] = data
+        let broker = RuntimeManagedSSHBrokerEvidence(); broker.acknowledge(Self.admitted)
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .copilotCLI, managedSSHBroker: broker)
+        for frame in frames { try Self.observe(frame, runtime: .copilotCLI, in: evidence) }
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(!evidence.managedSSHOnly && !evidence.toolsStopped)
+    }
+
+    @Test("Native subagent and server-tool work stays uncertain with or without a managed helper",
+          arguments: ["announcement", "afterHelper", "withoutHelper"],
+          ["parent", "parentNumber", "parentFalse", "serverItems", "serverRaw", "serverNamespaces", "serverAdvisor",
+           "serverZero", "serverFalse", "serverUnknownZero", "serverMalformed"])
+    func copilotNativeWorkHintsRemainSticky(route: String, fault: String) throws {
+        var frames = try Self.capturedFrames(runtime: .copilotCLI)
+        var frame: [String: Any] = route == "announcement" ? frames[1]
+            : ["type": "assistant.message", "data": ["content": "Synthetic answer"]]
+        var data = try #require(frame["data"] as? [String: Any])
+        switch fault {
+        case "parent": data["parentToolCallId"] = "unrelated-subagent"
+        case "parentNumber": data["parentToolCallId"] = 0
+        case "parentFalse": data["parentToolCallId"] = false
+        case "serverItems": data["serverTools"] = ["provider": "fixture", "items": [["type": "tool_call"]]] as [String: Any]
+        case "serverRaw": data["serverTools"] = ["provider": "fixture", "rawContentBlocks": [["type": "tool_use"]]] as [String: Any]
+        case "serverNamespaces": data["serverTools"] = ["provider": "fixture", "functionCallNamespaces": ["call-1": "functions"]] as [String: Any]
+        case "serverAdvisor": data["serverTools"] = ["provider": "fixture", "advisorModel": "fixture-advisor"]
+        case "serverZero": data["serverTools"] = 0
+        case "serverFalse": data["serverTools"] = false
+        case "serverUnknownZero": data["serverTools"] = ["provider": "fixture", "unknown_native_work": 0] as [String: Any]
+        default: data["serverTools"] = ["provider": "fixture", "items": 0] as [String: Any]
+        }
+        frame["data"] = data
+        if route == "announcement" { frames[1] = frame }
+        else if route == "afterHelper" { frames.insert(frame, at: frames.count - 1) }
+        else { frames = [frame, try #require(frames.last)] }
+        let broker = RuntimeManagedSSHBrokerEvidence()
+        if route != "withoutHelper" { broker.acknowledge(Self.admitted) }
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .copilotCLI, managedSSHBroker: broker)
+        for frame in frames { try Self.observe(frame, runtime: .copilotCLI, in: evidence) }
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(!evidence.managedSSHOnly)
+        #expect(!evidence.toolsStopped)
+    }
+
+    @Test("Native empty subagent and server-tool metadata preserves text-only cleanup",
+          arguments: [false, true], ["omitted", "providerOnly", "empty", "null"])
+    func copilotNativeEmptyWorkHintsAllowText(withHelper: Bool, metadata: String) throws {
+        var frames = try Self.capturedFrames(runtime: .copilotCLI)
+        var data: [String: Any] = ["content": "Synthetic answer"]
+        switch metadata {
+        case "providerOnly": data["serverTools"] = ["provider": "openai-responses"]
+        case "empty":
+            data["parentToolCallId"] = ""
+            data["serverTools"] = ["provider": "fixture", "items": [], "rawContentBlocks": [],
+                                   "functionCallNamespaces": [String: String]()] as [String: Any]
+        case "null": data["parentToolCallId"] = NSNull(); data["serverTools"] = NSNull()
+        default: break
+        }
+        let frame: [String: Any] = ["type": "assistant.message", "data": data]
+        if withHelper { frames.insert(frame, at: frames.count - 1) }
+        else { frames = [frame, try #require(frames.last)] }
+        let broker = RuntimeManagedSSHBrokerEvidence()
+        if withHelper { broker.acknowledge(Self.admitted) }
+        let evidence = RuntimeExecutionProcessEvidence(runtime: .copilotCLI, managedSSHBroker: broker)
+        for frame in frames { try Self.observe(frame, runtime: .copilotCLI, in: evidence) }
+        evidence.processExited(naturally: true, stdoutEOF: true)
+        #expect(evidence.managedSSHOnly == withHelper)
+        #expect(evidence.toolsStopped == !withHelper)
     }
 }
