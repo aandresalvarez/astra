@@ -514,6 +514,12 @@ target_for_path() {
       add_target "TaskComposerGoalModeTests"
       ;;
   esac
+
+  case "$path" in
+    Astra/Services/Tasks/TaskApprovedPlanRunCommand.swift|Astra/Views/TaskMainView.swift|Tests/TaskApprovedPlanRunCommandTests.swift)
+      add_target "TaskApprovedPlanRunCommandTests"
+      ;;
+  esac
 }
 
 for path in "$@"; do

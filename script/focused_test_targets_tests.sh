@@ -265,7 +265,7 @@ assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTe
   "Tests/TaskDecisionDockPresentationTests.swift" \
   "Astra/Services/Tasks/TaskDecisionDockPresentation.swift"
 
-assert_targets $'TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests\nTaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests\nTaskComposerGoalModeTests' \
+assert_targets $'TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests\nTaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests\nTaskComposerGoalModeTests\nTaskApprovedPlanRunCommandTests' \
   "Astra/Views/TaskMainView.swift"
 
 assert_targets "TaskComposerGoalModeTests" \
@@ -616,3 +616,7 @@ assert_targets "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|Wor
 TaskOutputDiscoveryTests
 AgentRuntimeRunPersistenceTests" \
   "Astra/Services/Persistence/TaskOutputWorkspaceDiscovery.swift"
+
+assert_targets "TaskApprovedPlanRunCommandTests" \
+  "Astra/Services/Tasks/TaskApprovedPlanRunCommand.swift" \
+  "Tests/TaskApprovedPlanRunCommandTests.swift"

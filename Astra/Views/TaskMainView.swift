@@ -3569,7 +3569,7 @@ struct TaskMainView: View {
             planExecutionMode: planCheckpointExecutionMode,
             canOpenPlan: onOpenPlan != nil,
             isPlanCanvasVisible: isPlanCanvasVisible,
-            canRunApprovedPlan: taskQueue != nil,
+            canRunApprovedPlan: TaskApprovedPlanRunCommand.isEnabled(for: task, hasQueue: taskQueue != nil),
             latestRunHasNoUsableResult: pendingReview.dismissalReason == .noUsableResult || pendingReview.dismissalReason == .missingRequiredArtifact,
             completedTaskNeedsArtifactAttention: PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(reviewInput),
             canCancel: onCancelTask != nil,
@@ -4700,23 +4700,15 @@ struct TaskMainView: View {
 
     private func runApprovedPlan(_ plan: TaskPlanPayload, mode: TaskPlanExecutionMode) {
         guard let taskQueue,
-              task.status != .queued,
-              task.status != .running else { return }
+              TaskApprovedPlanRunCommand.isEnabled(for: task, hasQueue: true) else { return }
 
-        // Check before recording approval or enqueueing. A read-only fork must
-        // preserve its completed/pending state so the general queue cannot
-        // later reinterpret an approved-plan launch as a normal task run.
-        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
-            recordForkReadOnlyBlock(readOnlyReason)
-            return
-        }
-
-        guard case .success(let submission) = ExecutionRequestSubmissionService.submitPlan(
+        guard case .success(let submission)? = TaskApprovedPlanRunCommand.submit(
             plan: plan,
             mode: mode,
-            mutation: .existingTask,
-            for: task,
-            into: modelContext,
+            task: task,
+            modelContext: modelContext,
+            hasQueue: true,
+            recordReadOnlyBlock: recordForkReadOnlyBlock,
             recordAdditionalPolicy: {
                 recordCurrentTaskPolicyIfNeeded(source: "approved_plan_run")
             }
