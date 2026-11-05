@@ -145,9 +145,8 @@ struct RecoverableHistoryTests {
         let original = try reader.readHistory(try #require(TaskHistoryReadRequest.parse(["event_id": oldestID.uuidString])))
         #expect(original["payload"] as? String == "EXACT_RESULT_0")
         let store = TaskThreadHistoryStore(container: container)
-        let refreshed = try await store.initialPage(taskID: task.id, coveringEventCount: 10,
-            previousTotalEventCount: 0, eventPageSize: 10)
-        #expect(refreshed.events.count == 20)
+        let refreshed = try await store.initialPage(taskID: task.id, eventPageSize: 10)
+        #expect(refreshed.events.count == 10)
         #expect(refreshed.cursor.hasEarlierHistory)
     }
 

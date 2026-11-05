@@ -98,13 +98,12 @@ enum TaskExternalOutcomeFailureClassifier {
             }
             guard !hasLaterReceipt else { continue }
 
-            let decoded = ToolResultFailurePayload.decode(from: failedEvent.payload)
             let legacyPrecedingToolUse = runEvents.last {
                 $0.type == TaskEventTypes.Tool.use.rawValue && $0.timestamp <= failedEvent.timestamp
             }?.payload ?? ""
-            let message = decoded?.message ?? failedEvent.payload
-            let evidence = "\(decoded?.toolUseEvidence ?? legacyPrecedingToolUse)\n\(message)".lowercased()
-            guard describesPullRequestPublication(evidence) else { continue }
+            guard let message = publicationFailureMessage(
+                payload: failedEvent.payload, legacyPrecedingToolUse: legacyPrecedingToolUse
+            ) else { continue }
 
             return TaskRequiredExternalOutcomeFailure(
                 version: 1,
@@ -140,6 +139,15 @@ enum TaskExternalOutcomeFailureClassifier {
     @MainActor
     static func hasPendingGitHubPullRequestFailure(task: AgentTask) -> Bool {
         pendingGitHubPullRequestFailure(task: task) != nil
+    }
+
+    /// Shared by the durable resolver and the background evidence projection.
+    /// An embedded tool-use value takes precedence over legacy preceding use.
+    static func publicationFailureMessage(payload: String, legacyPrecedingToolUse: String) -> String? {
+        let decoded = ToolResultFailurePayload.decode(from: payload)
+        let message = decoded?.message ?? payload
+        let evidence = "\(decoded?.toolUseEvidence ?? legacyPrecedingToolUse)\n\(message)".lowercased()
+        return describesPullRequestPublication(evidence) ? message : nil
     }
 
     private static func describesPullRequestPublication(_ evidence: String) -> Bool {

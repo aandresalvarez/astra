@@ -224,6 +224,9 @@ struct TaskRunSnapshotInput: Identifiable, Sendable {
 }
 
 struct TaskThreadSnapshotInput: Sendable {
+    /// Nil is a non-storage input that derives evidence from its window; an
+    /// empty array is an authoritative storage answer with no publication work.
+    let publicationEvents: [TaskEventSnapshot]?
     let goal: String
     let createdAt: Date
     let events: [TaskEventSnapshot]
@@ -287,8 +290,10 @@ struct TaskThreadSnapshotInput: Sendable {
         totalEventCount: Int,
         omittedEventCount: Int,
         totalRunCount: Int,
-        omittedRunCount: Int
+        omittedRunCount: Int,
+        publicationEvents: [TaskEventSnapshot]? = nil
     ) {
+        self.publicationEvents = publicationEvents
         self.goal = goal
         self.createdAt = createdAt
         self.events = events
@@ -305,6 +310,7 @@ enum TaskThreadStateEventPolicy {
         "astra.todo.replace", "astra.complete", "astra.protocol.invalid",
         "astra.permission_manifest", "astra.permission_summary",
         "permission.approval.requested", "permission.request.resolved",
+        "git.publish.requested", "git.publish.receipt",
         "runtime.execution_ownership",
         "task.dismissed"
     ]
@@ -816,6 +822,9 @@ struct TaskThreadSnapshot: Sendable {
     /// Transcript shape computed while building the snapshot, so task-open
     /// readiness logging never rescans user-visible content on the main actor.
     let transcriptMetrics: TaskThreadTranscriptMetrics
+    /// Derived alongside the snapshot on its build executor. The view compares
+    /// this value without scanning event payloads or run output on the main actor.
+    let contentFingerprint: Int
 
     private let activityByRunID: [UUID: TaskRunActivity]
     private let protocolByRunID: [UUID: TaskRunProtocolState]
@@ -873,6 +882,7 @@ struct TaskThreadSnapshot: Sendable {
             omittedEventCount: input.omittedEventCount,
             totalRunCount: input.totalRunCount,
             omittedRunCount: input.omittedRunCount,
+            publicationEvents: input.publicationEvents,
             cancellationCheck: {}
         )
     }
@@ -893,6 +903,7 @@ struct TaskThreadSnapshot: Sendable {
             omittedEventCount: input.omittedEventCount,
             totalRunCount: input.totalRunCount,
             omittedRunCount: input.omittedRunCount,
+            publicationEvents: input.publicationEvents,
             cancellationCheck: { try Task.checkCancellation() }
         )
     }
@@ -938,12 +949,14 @@ struct TaskThreadSnapshot: Sendable {
         omittedEventCount: Int,
         totalRunCount: Int?,
         omittedRunCount: Int,
+        publicationEvents: [TaskEventSnapshot]? = nil,
         cancellationCheck: () throws -> Void
     ) throws {
         try cancellationCheck()
         sortedEvents = events.sorted { $0.timestamp < $1.timestamp }
         sortedRuns = runs.sorted { $0.startedAt < $1.startedAt }
-        decisionOutcomeInputs = try .init(events: sortedEvents, runs: sortedRuns, cancellationCheck: cancellationCheck)
+        decisionOutcomeInputs = try .init(events: sortedEvents, runs: sortedRuns,
+                                         publicationEvents: publicationEvents, cancellationCheck: cancellationCheck)
         try cancellationCheck()
         latestRun = sortedRuns.last
         self.totalEventCount = totalEventCount ?? events.count
@@ -1071,6 +1084,18 @@ struct TaskThreadSnapshot: Sendable {
             cancellationCheck: cancellationCheck
         )
         transcriptMetrics = try TaskThreadTranscriptMetrics(items: conversationItems, cancellationCheck: cancellationCheck)
+        var content = Hasher()
+        content.combine(goal)
+        content.combine(createdAt)
+        for event in sortedEvents {
+            try cancellationCheck()
+            content.combine(event)
+        }
+        for run in sortedRuns {
+            try cancellationCheck()
+            content.combine(run)
+        }
+        contentFingerprint = content.finalize()
     }
 
     func activityPresentation(for run: TaskRunSnapshot) -> RunActivityPresentation {
@@ -1620,6 +1645,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
     let latestRunStatus: RunStatus?
     let latestRunOutputBucket: Int
     let latestRunOutputCount: Int
+    private let publicationEvents: [TaskEventSnapshot]?
 
     init(task: AgentTask) {
         let start = DispatchTime.now().uptimeNanoseconds
@@ -1630,6 +1656,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
         ownerID = task.persistentModelID
         revision = task.updatedAt
         usesDurableRevision = false
+        publicationEvents = nil
         eventCount = events.count
         visibleEventCount = events.reduce(0) { count, event in
             Self.highFrequencyEventTypes.contains(event.type) ? count : count + 1
@@ -1670,6 +1697,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
         ownerID = task.persistentModelID
         revision = inputRevision
         usesDurableRevision = true
+        publicationEvents = input.publicationEvents
         eventCount = input.totalEventCount
         // Storage-backed refresh is already driven by the durable task revision
         // and typed insertion notifications. Avoid rescanning loaded events just
@@ -1685,6 +1713,8 @@ struct TaskThreadSnapshotTrigger: Equatable {
 
     static func == (lhs: TaskThreadSnapshotTrigger, rhs: TaskThreadSnapshotTrigger) -> Bool {
         lhs.taskID == rhs.taskID &&
+            lhs.ownerID == rhs.ownerID &&
+            lhs.publicationEvents == rhs.publicationEvents &&
             (!lhs.usesDurableRevision && !rhs.usesDurableRevision || lhs.revision == rhs.revision) &&
             lhs.visibleEventCount == rhs.visibleEventCount &&
             lhs.runCount == rhs.runCount &&
@@ -1747,10 +1777,12 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
     let createdAt: Date
     let completedAt: Date?
     let maxRuns: Int
+    let historyInvalidation: Int
 
     init?(
         task: AgentTask,
-        maxRuns: Int
+        maxRuns: Int,
+        historyInvalidation: Int = 0
     ) {
         guard Self.isCacheable(status: task.status) else { return nil }
         taskID = task.id
@@ -1760,6 +1792,7 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
         createdAt = task.createdAt
         completedAt = task.completedAt
         self.maxRuns = maxRuns
+        self.historyInvalidation = historyInvalidation
     }
 
     private static func isCacheable(status: TaskStatus) -> Bool {
@@ -1773,6 +1806,24 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
 }
 
 struct TaskThreadSnapshotCache {
+    struct Value {
+        let snapshot: TaskThreadSnapshot
+        /// The reader's page boundary can name a state event omitted by the
+        /// presentation projection. It cannot be rebuilt from rendered rows.
+        let historyCursor: TaskThreadHistoryCursor?
+    }
+
+    private struct Entry {
+        let value: Value
+        // The observation lives with the cached owner, including while another
+        // task is selected. Eviction releases it; at most maxEntries are held.
+        let saveObservation: TaskPublicationDecisionEvidenceReader.MutationTracker?
+        let readRevision: Int?
+
+        var isCurrent: Bool {
+            saveObservation.map { $0.revision == readRevision } ?? true
+        }
+    }
     struct Stats: Equatable {
         var hitCount = 0
         var missCount = 0
@@ -1780,7 +1831,7 @@ struct TaskThreadSnapshotCache {
     }
 
     private let maxEntries: Int
-    private var entries: [TaskThreadSnapshotCacheKey: TaskThreadSnapshot] = [:]
+    private var entries: [TaskThreadSnapshotCacheKey: Entry] = [:]
     private var recentKeys: [TaskThreadSnapshotCacheKey] = []
     private(set) var stats = Stats()
 
@@ -1789,17 +1840,37 @@ struct TaskThreadSnapshotCache {
     }
 
     mutating func snapshot(for key: TaskThreadSnapshotCacheKey) -> TaskThreadSnapshot? {
-        guard let snapshot = entries[key] else {
+        value(for: key)?.snapshot
+    }
+
+    mutating func value(for key: TaskThreadSnapshotCacheKey) -> Value? {
+        guard let entry = entries[key], entry.isCurrent else {
+            entries.removeValue(forKey: key)
+            recentKeys.removeAll { $0 == key }
+            stats.entryCount = entries.count
             stats.missCount += 1
             return nil
         }
         stats.hitCount += 1
         markRecentlyUsed(key)
-        return snapshot
+        return entry.value
     }
 
-    mutating func store(_ snapshot: TaskThreadSnapshot, for key: TaskThreadSnapshotCacheKey) {
-        entries[key] = snapshot
+    func saveObservation(ownerID: PersistentIdentifier, container: ModelContainer) -> TaskPublicationDecisionEvidenceReader.MutationTracker? {
+        for key in recentKeys.reversed() where key.ownerID == ownerID {
+            if let observation = entries[key]?.saveObservation,
+               observation.containerID == ObjectIdentifier(container) { return observation }
+        }
+        return nil
+    }
+
+    mutating func store(_ snapshot: TaskThreadSnapshot, for key: TaskThreadSnapshotCacheKey,
+                       historyCursor: TaskThreadHistoryCursor? = nil,
+                       saveObservation: TaskPublicationDecisionEvidenceReader.MutationTracker? = nil,
+                       readRevision: Int? = nil) {
+        guard saveObservation.map({ $0.revision == readRevision }) ?? true else { return }
+        entries[key] = Entry(value: Value(snapshot: snapshot, historyCursor: historyCursor),
+                             saveObservation: saveObservation, readRevision: readRevision)
         markRecentlyUsed(key)
         trimIfNeeded()
         stats.entryCount = entries.count
@@ -1809,6 +1880,12 @@ struct TaskThreadSnapshotCache {
         entries.removeAll()
         recentKeys.removeAll()
         stats = Stats()
+    }
+
+    mutating func remove(ownerID: PersistentIdentifier) {
+        entries = entries.filter { $0.key.ownerID != ownerID }
+        recentKeys.removeAll { $0.ownerID == ownerID }
+        stats.entryCount = entries.count
     }
 
     private mutating func markRecentlyUsed(_ key: TaskThreadSnapshotCacheKey) {
